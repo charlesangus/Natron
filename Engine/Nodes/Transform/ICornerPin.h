@@ -44,8 +44,8 @@ NATRON_NAMESPACE_ENTER
  * points blended from the "from" points by it, so the Map scales the pin's Amount per pixel.
  *
  * It has CornerPin's knobs, interact and behaviours (the points follow a new source until they
- * are edited; the copy buttons are undoable), and the Map's knobs. The extra matrix applies at
- * every Map value, as it does at every Amount.
+ * are edited; the copy buttons are undoable), and the Map's knobs. The extra matrix blends
+ * from the identity by the Map value, so a black Map leaves the source unchanged.
  **/
 class ICornerPin
     : public IWarp {

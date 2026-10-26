@@ -449,8 +449,9 @@ STMap::getRegionOfDefinition(U64 /*hash*/,
         return eStatusFailed;
     }
 
-    // Under a mask or a partial mix the Source shows through outside the warped region.
-    if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
+    // Under a mask or a partial mix the Source shows through outside the warped region, and with
+    // a Map wherever the Map holds a pixel in place.
+    if (isMaskApplied() || (getMixValue(time, view) != 1.) || getInput(kSTMapInputMap)) {
         RectD sourceRoD;
         if (inputRegion(source, time, view, scale, &sourceRoD) && !sourceRoD.isNull()) {
             if (rod->isNull()) {

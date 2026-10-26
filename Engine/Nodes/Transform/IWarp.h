@@ -160,7 +160,11 @@ protected:
     /// Refreshes the Map warning; a subclass that overrides it calls it.
     virtual void onInputChanged(int inputNo) OVERRIDE;
 
-    /// The region the transforms at time make of from: forward pushes a source region to the output.
+    /**
+     * @brief The region the transforms at time make of from: forward pushes a source region to the
+     * output. With a Map or a directional blur it holds every point the corners of from reach
+     * along the matrix curve over all Map values (MatrixCurve::pointRange()).
+     **/
     void warpRegion(const RectD& from, double time, ViewIdx view, bool forward, RectD* to) const;
 
 private:

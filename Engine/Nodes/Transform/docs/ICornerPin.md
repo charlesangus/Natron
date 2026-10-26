@@ -15,10 +15,11 @@ amount the Map input gives. CornerPin (`CornerPin.reg.inc`) is its base node in 
   standard Mask and Mix still limit the result. Map Channel picks one channel of any of its layers (alpha by
   default) and Invert Map inverts it; the value is clamped to [0, 1] and remapped by Map Gamma and Map Response
   exactly as in IBlur (see `Engine/Nodes/Filter/docs/IBlur.md`). The Map is sampled in output space, at the pixel
-  being written, not where that pixel comes from in the source. Outside the Map's image the raw value is 0.
+  being written, not where that pixel comes from in the source. Outside the Map's image the Map value is 0,
+  neither inverted nor remapped, on the CPU and the GPU alike.
 - **Interpolation.** Each output pixel samples the source once, through the pin at its Map value m: the "to" points
   blended from the "from" points by m, as CornerPin's Amount blends them, and the homography solved at that blend.
-  The extra matrix applies everywhere. The matrix comes from a `TransformInterp::MatrixCurve`: exact homographies at
+  The extra matrix blends from the identity by m too, so the matrix at m = 0 is the identity. The matrix comes from a `TransformInterp::MatrixCurve`: exact homographies at
   evenly spaced knots of m (0, 1/2 and 1 among them), joined by cubic Hermite interpolation. The pin is
   interpolated, never the images of two pins, so a soft Map bends the image instead of mixing two copies.
 - **Tearing.** A Map edge between black and white tears the image along it when the pin moves the image far: the

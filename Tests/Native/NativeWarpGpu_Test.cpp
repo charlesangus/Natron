@@ -742,6 +742,29 @@ TEST_F(NativeWarpGpuTest, ConnectedMapMatchesTheCpuFrame)
     }
 }
 
+// A Map whose image covers only part of the frame: beyond it the Map is 0 and not inverted, so
+// Invert Map leaves those pixels in place on either device.
+TEST_F(NativeWarpGpuTest, InvertedMapOutsideItsImageMatchesTheCpuFrame)
+{
+    for (const char* filter : { "impulse", "cubic" }) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr uv = makeUV();
+        ASSERT_TRUE(source && uv);
+        NodePtr stmap = makeSTMap(source, uv, filter);
+        NodePtr idistort = makeIDistort(source, uv, filter);
+        ASSERT_TRUE(stmap && idistort);
+        for (const NodePtr& node : { stmap, idistort }) {
+            NodePtr map = makeSource();
+            ASSERT_TRUE(bool(map));
+            setParitySourceOrigin(map, 24, 16);
+            connectNodes(map, node, (node == stmap) ? kSTMapInputMap : kIDistortInputMap, true);
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+            expectParity(source, node, toleranceFor(filter), node->getPluginID() + " inverted Map in part of the frame " + filter);
+        }
+    }
+}
+
 // The UV Alpha gate applies only where the Map moves the pixel at all.
 TEST_F(NativeWarpGpuTest, MapWithUVAlphaMatchesTheCpuFrame)
 {

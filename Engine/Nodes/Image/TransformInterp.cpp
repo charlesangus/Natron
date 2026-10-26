@@ -65,6 +65,75 @@ namespace {
 
         return out;
     }
+
+    // The least and greatest of c0 + c1 t + c2 t^2 + c3 t^3 over t in [0, 1]: at an end or where
+    // the derivative 3 c3 t^2 + 2 c2 t + c1 vanishes. The vertex of the derivative is taken too, so
+    // a double root that rounding pushes off the real line is still seen.
+    void
+    cubicRange(double c0,
+               double c1,
+               double c2,
+               double c3,
+               double* lo,
+               double* hi)
+    {
+        const auto at = [&](double t) {
+            return c0 + t * (c1 + t * (c2 + t * c3));
+        };
+        *lo = (std::min)(c0, at(1.));
+        *hi = (std::max)(c0, at(1.));
+        const auto consider = [&](double t) {
+            if ((t > 0.) && (t < 1.)) {
+                const double v = at(t);
+                *lo = (std::min)(*lo, v);
+                *hi = (std::max)(*hi, v);
+            }
+        };
+        const double a = 3. * c3;
+        const double b = 2. * c2;
+        const double c = c1;
+        if (a == 0.) {
+            if (b != 0.) {
+                consider(-c / b);
+            }
+
+            return;
+        }
+        consider(-b / (2. * a));
+        const double disc = b * b - 4. * a * c;
+        if (!(disc >= 0.)) {
+            return;
+        }
+        // The root of larger magnitude first, then the other from the product of the roots.
+        const double q = -0.5 * (b + std::copysign(std::sqrt(disc), b));
+        consider(q / a);
+        if (q != 0.) {
+            consider(c / q);
+        }
+    }
+
+    // The cubic of evaluate() over one segment, t in [0, 1], from the ends' values fa and fb and
+    // their derivatives in t (the derivatives in m times the segment's width).
+    void
+    hermiteRange(double fa,
+                 double da,
+                 double fb,
+                 double db,
+                 double* lo,
+                 double* hi)
+    {
+        cubicRange(fa, da, 3. * (fb - fa) - 2. * da - db, 2. * (fa - fb) + da + db, lo, hi);
+    }
+
+    // Row r of mat applied to (x, y, 1).
+    double
+    rowAt(const Mat3& mat,
+          int r,
+          double x,
+          double y)
+    {
+        return mat.m[3 * r] * x + mat.m[3 * r + 1] * y + mat.m[3 * r + 2];
+    }
 } // anonymous namespace
 
 Mat3
@@ -197,6 +266,59 @@ MatrixCurve::evaluate(double m,
         dH->m[i] = (g00 * h0.m[i] + g01 * h1.m[i]) * segments + g10 * d0.m[i] + g11 * d1.m[i];
     }
 } // MatrixCurve::evaluate
+
+bool
+MatrixCurve::pointRange(double x,
+                        double y,
+                        double* x1,
+                        double* y1,
+                        double* x2,
+                        double* y2) const
+{
+    const int segments = (int)_h.size() - 1;
+    const double width = 1. / segments;
+    double bounds[4] = { 0., 0., 0., 0. };
+
+    for (int k = 0; k < segments; ++k) {
+        const Mat3& h0 = _h[k];
+        const Mat3& h1 = _h[k + 1];
+        const Mat3& d0 = _d[k];
+        const Mat3& d1 = _d[k + 1];
+        double lo[3];
+        double hi[3];
+        for (int r = 0; r < 3; ++r) {
+            hermiteRange(rowAt(h0, r, x, y), width * rowAt(d0, r, x, y), rowAt(h1, r, x, y), width * rowAt(d1, r, x, y), &lo[r], &hi[r]);
+        }
+        if (!(lo[2] > 0.)) {
+            return false;
+        }
+        // n / z for n in [lo, hi] and z in [lo[2], hi[2]], z > 0: each extreme at an end of z.
+        double segment[4];
+        for (int r = 0; r < 2; ++r) {
+            segment[r] = (std::min)(lo[r] / lo[2], lo[r] / hi[2]);
+            segment[r + 2] = (std::max)(hi[r] / lo[2], hi[r] / hi[2]);
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (!std::isfinite(segment[i])) {
+                return false;
+            }
+        }
+        if (k == 0) {
+            std::copy(segment, segment + 4, bounds);
+        } else {
+            bounds[0] = (std::min)(bounds[0], segment[0]);
+            bounds[1] = (std::min)(bounds[1], segment[1]);
+            bounds[2] = (std::max)(bounds[2], segment[2]);
+            bounds[3] = (std::max)(bounds[3], segment[3]);
+        }
+    }
+    *x1 = bounds[0];
+    *y1 = bounds[1];
+    *x2 = bounds[2];
+    *y2 = bounds[3];
+
+    return true;
+} // MatrixCurve::pointRange
 
 bool
 MatrixCurve::isConstant() const

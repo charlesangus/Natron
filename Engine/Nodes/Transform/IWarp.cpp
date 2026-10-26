@@ -59,9 +59,6 @@ using TransformMath::Mat3;
 using TransformMath::Point3;
 
 namespace {
-// The Map values a region samples between 0 and 1 when the Map can take any of them.
-const int kRegionAmountSteps = 32;
-
 // The fewest segments of the matrix curve of one shutter time.
 const int kMinTimeCurveSegments = 32;
 
@@ -304,14 +301,6 @@ IWarp::warpRegion(const RectD& from,
     // Every Map value with a Map connected or a directional blur (whose amounts span [0, 1] under
     // any Map), else only the full transform.
     const bool spread = (bool)getInput(kIWarpInputMap) || hasDirectionalBlur(settings);
-    std::vector<double> amounts;
-    if (spread) {
-        for (int j = 0; j <= kRegionAmountSteps; ++j) {
-            amounts.push_back((double)j / (double)kRegionAmountSteps);
-        }
-    } else {
-        amounts.push_back(1.);
-    }
 
     // The shutter at every quarter frame, as Resampler::transformRegion() samples it.
     std::vector<double> times;
@@ -334,15 +323,63 @@ IWarp::warpRegion(const RectD& from,
         times.push_back(time);
     }
 
+    // The segments of the render's curves: renderOp()'s at time, and its shutter times' under a
+    // time blur.
+    const int segments = curveSegments(time, view);
+    const int timeSegments = timeBlur ? (std::max)(kMinTimeCurveSegments, segments / 4) : segments;
+
     RectD box(0., 0., 0., 0.);
+    // Everything the corners of from reach over every Map value along the curve of fn, which is
+    // the render's matrix curve in canonical coordinates; with knots, the corners at each knot.
+    const auto addCurve = [&](const TransformInterp::MatrixFn& fn,
+                              int curveSegmentCount,
+                              std::vector<Corners>* knots) {
+        TransformInterp::MatrixCurve curve;
+        if (!fn || !curve.build(fn, curveSegmentCount)) {
+            return false;
+        }
+        const double xs[4] = { from.x1, from.x1, from.x2, from.x2 };
+        const double ys[4] = { from.y1, from.y2, from.y2, from.y1 };
+        RectD region;
+        for (int k = 0; k < 4; ++k) {
+            RectD reach;
+            if (!curve.pointRange(xs[k], ys[k], &reach.x1, &reach.y1, &reach.x2, &reach.y2)) {
+                return false;
+            }
+            if (k == 0) {
+                region = reach;
+            } else {
+                region.x1 = (std::min)(region.x1, reach.x1);
+                region.y1 = (std::min)(region.y1, reach.y1);
+                region.x2 = (std::max)(region.x2, reach.x2);
+                region.y2 = (std::max)(region.y2, reach.y2);
+            }
+        }
+        box = boundingBox(box, region);
+        if (knots) {
+            knots->resize((std::size_t)curve.segments() + 1);
+            for (int k = 0; k <= curve.segments(); ++k) {
+                (*knots)[k] = projectCorners(from, curve.knot(k));
+            }
+        }
+
+        return true;
+    };
+
     double expand = 0.;
     std::vector<Corners> previousTime;
     for (std::size_t ti = 0; ti < times.size(); ++ti) {
         const TransformInterp::MatrixFn fn = canonicalMatrixFn(times[ti], view, invert);
-        std::vector<Corners> corners(amounts.size());
-        for (std::size_t a = 0; a < amounts.size(); ++a) {
+        std::vector<Corners> corners;
+        if (spread) {
+            if (!addCurve(fn, timeSegments, &corners)) {
+                *to = infiniteRect();
+
+                return;
+            }
+        } else {
             Mat3 matrix;
-            if (!fn || !fn(amounts[a], &matrix)) {
+            if (!fn || !fn(1., &matrix)) {
                 *to = infiniteRect();
 
                 return;
@@ -350,18 +387,23 @@ IWarp::warpRegion(const RectD& from,
             RectD region;
             Resampler::transformRegionFromRect(from, matrix, &region);
             box = boundingBox(box, region);
-            corners[a] = projectCorners(from, matrix);
-            if (a > 0) {
-                expand = (std::max)(expand, cornerStep(corners[a - 1], corners[a]));
-            }
-            if (!previousTime.empty()) {
+            corners.push_back(projectCorners(from, matrix));
+        }
+        if (previousTime.size() == corners.size()) {
+            for (std::size_t a = 0; a < corners.size(); ++a) {
                 expand = (std::max)(expand, cornerStep(previousTime[a], corners[a]));
             }
         }
         previousTime.swap(corners);
     }
+    // A time blur whose shutter times share one transform renders the curve at time.
+    if (spread && timeBlur && !addCurve(canonicalMatrixFn(time, view, invert), segments, NULL)) {
+        *to = infiniteRect();
 
-    // The corners move along curves between the samples: grow by the largest step between them.
+        return;
+    }
+
+    // The corners move between the shutter samples: grow by the largest step between them.
     if (box.x1 > kOfxFlagInfiniteMin) {
         box.x1 -= expand;
     }

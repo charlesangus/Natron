@@ -379,4 +379,91 @@ TEST(TransformInterpTest, FailingFunctionLeavesTheCurveInvalid)
     EXPECT_FALSE(curve.isValid());
 }
 
+// Every point the curve takes for (x, y) over a dense sweep of m lies in pointRange()'s box.
+void
+expectRangeHoldsTheSweep(const TransformInterp::MatrixCurve& curve,
+                         double x,
+                         double y,
+                         double x1,
+                         double y1,
+                         double x2,
+                         double y2,
+                         const std::string& what)
+{
+    const int steps = 200000;
+    for (int i = 0; i <= steps; ++i) {
+        Mat3 H, dH;
+        curve.evaluate((double)i / steps, &H, &dH);
+        const double z = H.m[6] * x + H.m[7] * y + H.m[8];
+        ASSERT_GT(z, 0.) << what;
+        const double px = (H.m[0] * x + H.m[1] * y + H.m[2]) / z;
+        const double py = (H.m[3] * x + H.m[4] * y + H.m[5]) / z;
+        ASSERT_TRUE((px >= x1) && (px <= x2) && (py >= y1) && (py <= y2)) << what << ": m " << (double)i / steps << " reaches (" << px << ", " << py << ")";
+    }
+}
+
+// A rotation of 32 whole turns is the identity at every m = j / 32, yet the point sweeps the whole
+// circle between: pointRange() holds the circle, and no more than a sliver past it.
+TEST(TransformInterpTest, PointRangeHoldsAManyTurnRotation)
+{
+    TransformParams p;
+    p.rotate = 11520.;
+    TransformInterp::MatrixCurve curve;
+    ASSERT_TRUE(curve.build(transformFn(p, false), TransformInterp::segmentsForTransform(p)));
+
+    const double r = 40.;
+    double x1, y1, x2, y2;
+    ASSERT_TRUE(curve.pointRange(r, 0., &x1, &y1, &x2, &y2));
+    EXPECT_LE(x1, -r + 0.01);
+    EXPECT_GE(x2, r - 0.01);
+    EXPECT_LE(y1, -r + 0.01);
+    EXPECT_GE(y2, r - 0.01);
+    EXPECT_GE(x1, -r - 0.1);
+    EXPECT_LE(x2, r + 0.1);
+    EXPECT_GE(y1, -r - 0.1);
+    EXPECT_LE(y2, r + 0.1);
+    expectRangeHoldsTheSweep(curve, r, 0., x1, y1, x2, y2, "rotation");
+}
+
+// An affine curve that only translates gives the ends' points exactly; a homography's box holds
+// its sweep.
+TEST(TransformInterpTest, PointRangeOfTranslateAndCornerPin)
+{
+    TransformParams p;
+    p.translateX = 10.;
+    p.translateY = -4.;
+    TransformInterp::MatrixCurve translate;
+    ASSERT_TRUE(translate.build(transformFn(p, false), 16));
+    double x1, y1, x2, y2;
+    ASSERT_TRUE(translate.pointRange(3., 5., &x1, &y1, &x2, &y2));
+    // The sampling matrix maps the output to the source, so it moves points by minus the translate.
+    EXPECT_NEAR(-7., x1, 1e-9);
+    EXPECT_NEAR(3., x2, 1e-9);
+    EXPECT_NEAR(5., y1, 1e-9);
+    EXPECT_NEAR(9., y2, 1e-9);
+
+    TransformInterp::MatrixCurve pin;
+    ASSERT_TRUE(pin.build(cornerPinFn(busyPin(), false), 64));
+    const double corners[4][2] = { { 0., 0. }, { 640., 0. }, { 640., 480. }, { 0., 480. } };
+    for (const auto& c : corners) {
+        ASSERT_TRUE(pin.pointRange(c[0], c[1], &x1, &y1, &x2, &y2));
+        expectRangeHoldsTheSweep(pin, c[0], c[1], x1, y1, x2, y2, "corner pin");
+    }
+}
+
+// A point whose z reaches 0 along the curve has no bounded range.
+TEST(TransformInterpTest, PointRangeFailsThroughInfinity)
+{
+    const TransformInterp::MatrixFn tilts = [](double m, Mat3* matrix) {
+        *matrix = Mat3(1., 0., 0., 0., 1., 0., -0.02 * m, 0., 1.);
+
+        return true;
+    };
+    TransformInterp::MatrixCurve curve;
+    ASSERT_TRUE(curve.build(tilts, 16));
+    double x1, y1, x2, y2;
+    EXPECT_TRUE(curve.pointRange(10., 0., &x1, &y1, &x2, &y2));
+    EXPECT_FALSE(curve.pointRange(100., 0., &x1, &y1, &x2, &y2));
+}
+
 NATRON_NAMESPACE_EXIT

@@ -59,14 +59,15 @@ IWarp iwarpLoad(StructuredBuffer<uint> params)
     return w;
 }
 
-// The remapped Map value at (x, y): 1 with no Map, the remap of 0 off the Map's pixels.
+// The remapped Map value at (x, y): 1 with no Map, and 0, neither remapped nor inverted, off the
+// Map's pixels or when its channel is not read, as MapInput::fill() gives it.
 float iwarpMap(IWarp w, int x, int y)
 {
     if ((w.flags & kIWarpMapConnected) == 0)
         return 1.0;
-    float raw = 0.0;
-    if ((w.flags & kIWarpMapRead) != 0 && w.mapComponent >= 0 && wrapInside(int2(x, y), w.mapX1, w.mapY1, w.mapX2, w.mapY2))
-        raw = mapBuf[w.mapOffset + uint(y - w.mapY1) * w.mapStride + uint(x - w.mapX1) * w.mapComps + uint(w.mapComponent)];
+    if ((w.flags & kIWarpMapRead) == 0 || w.mapComponent < 0 || !wrapInside(int2(x, y), w.mapX1, w.mapY1, w.mapX2, w.mapY2))
+        return 0.0;
+    const float raw = mapBuf[w.mapOffset + uint(y - w.mapY1) * w.mapStride + uint(x - w.mapX1) * w.mapComps + uint(w.mapComponent)];
     return mapRemap(raw, (w.flags & kIWarpMapInvert) != 0, (w.flags & kIWarpMapSmooth) != 0, w.exponent);
 }
 

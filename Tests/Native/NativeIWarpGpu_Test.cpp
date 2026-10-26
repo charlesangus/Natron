@@ -333,6 +333,14 @@ TEST_F(NativeIWarpGpuTest, MapOutsideItsImageMatchesTheCpu)
     ASSERT_TRUE(bool(source) && bool(map) && bool(node));
 
     expectParity(std::vector<NodePtr>({ node }), node, "half Map");
+
+    // Inverted, the Map is 0 on the right; on the left, beyond its image, it stays 0, uninverted.
+    ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+    expectParity(std::vector<NodePtr>({ node }), node, "half Map, inverted");
+    NodePtr icornerpin = makeICornerPin(source, map);
+    ASSERT_TRUE(bool(icornerpin));
+    ASSERT_TRUE(setKnobValues(icornerpin, kMapInputParamInvert, { 1. }));
+    expectParity(std::vector<NodePtr>({ icornerpin }), icornerpin, "ICornerPin, half Map, inverted");
 }
 
 // ICornerPin's homography blended by the Map, with and without the Black Outside border.

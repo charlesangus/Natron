@@ -55,7 +55,9 @@
 #include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -233,16 +235,17 @@ protected:
         return source;
     }
 
-    // A Constant of color over kWideExtent.
-    NodePtr makeConstant(const std::vector<double>& color)
+    // A Constant of color over extent.
+    NodePtr makeConstant(const std::vector<double>& color,
+                         const RectI& extent = kWideExtent)
     {
         NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
 
         EXPECT_TRUE(bool(constant));
         if (constant) {
             EXPECT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentSize)));
-            EXPECT_TRUE(setKnobValues(constant, kNativeGeneratorParamBottomLeft, { (double)kWideExtent.x1, (double)kWideExtent.y1 }));
-            EXPECT_TRUE(setKnobValues(constant, kNativeGeneratorParamSize, { (double)kWideExtent.width(), (double)kWideExtent.height() }));
+            EXPECT_TRUE(setKnobValues(constant, kNativeGeneratorParamBottomLeft, { (double)extent.x1, (double)extent.y1 }));
+            EXPECT_TRUE(setKnobValues(constant, kNativeGeneratorParamSize, { (double)extent.width(), (double)extent.height() }));
             EXPECT_TRUE(setKnobValues(constant, kConstantParamColor, color));
         }
 
@@ -593,6 +596,52 @@ TEST_F(NativeIDistortAmountTest, STMapMapMovesPartOfTheWay)
 
         return true; }, ParityTolerance::exact(), "Map from the alpha bands");
     EXPECT_EQ(0u, wrong);
+}
+
+// Outside its image the Map is 0, not inverted: with Invert Map, a Map white over the right part
+// of the frame is 0 there once inverted and 0 on the left beyond its image, so nothing moves.
+TEST_F(NativeIDistortAmountTest, InvertedMapOutsideItsImageLeavesTheSource)
+{
+    const RectI right(kParitySourceWidth / 2, kWideExtent.y1, kWideExtent.x2, kWideExtent.y2);
+    for (const char* filter : kFilters) {
+        const bool impulse = std::string(filter) == "impulse";
+        NodePtr source = makeSource();
+        NodePtr uv;
+        NodePtr idistort = makeIDistortField(source, makeConstant({ 1., 1., 1., 1. }, right), filter, &uv);
+        NodePtr stmap = makeSTMap(source, makeSource(), makeConstant({ 1., 1., 1., 1. }, right), filter);
+        ASSERT_TRUE(source && idistort && stmap);
+        ASSERT_TRUE(setKnobValues(idistort, kMapInputParamInvert, { 1. }));
+        ASSERT_TRUE(setKnobValues(stmap, kMapInputParamInvert, { 1. }));
+        expectSource(source, idistort, impulse, std::string("IDistort, inverted Map in part of the frame, ") + filter);
+        expectSource(source, stmap, impulse, std::string("STMap, inverted Map in part of the frame, ") + filter);
+    }
+}
+
+// A black Map holds every pixel in place, so with the Map connected STMap's region of definition
+// covers the Source's beyond the UV format, and the Source shows there whole.
+TEST_F(NativeIDistortAmountTest, STMapBlackMapShowsTheSourceBeyondTheUV)
+{
+    NodePtr source = makeSource();
+    NodePtr uv = makeSource();
+    ASSERT_TRUE(source && uv);
+    setParitySourceOrigin(source, -16, -8);
+    NodePtr node = makeSTMap(source, uv, makeMap(0.), "impulse");
+    ASSERT_TRUE(bool(node));
+
+    bool isProjectFormat = false;
+    EffectInstancePtr sourceEffect = source->getEffectInstance();
+    RectD srcRoD;
+    ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition_public(sourceEffect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &srcRoD, &isProjectFormat));
+    EffectInstancePtr effect = node->getEffectInstance();
+    RectD rod;
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    EXPECT_LE(rod.x1, srcRoD.x1);
+    EXPECT_LE(rod.y1, srcRoD.y1);
+    EXPECT_GE(rod.x2, srcRoD.x2);
+    EXPECT_GE(rod.y2, srcRoD.y2);
+    EXPECT_LT(srcRoD.x1, 0.) << "the Source reaches past the UV format";
+
+    expectSource(source, node, true, "black Map beyond the UV");
 }
 
 // Regression fixtures: the parity source warped through a UV that is another parity source and a

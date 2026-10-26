@@ -129,14 +129,15 @@ bool warpMapped(Warp w)
 }
 
 // The remapped Map value at (x, y), as MapInput::read() and MapInputParams::remap() give it: 1
-// with no Map, the remap of 0 off the Map's pixels.
+// with no Map, and 0, neither remapped nor inverted, off the Map's pixels or when its channel is
+// not read.
 float warpMap(Warp w, int x, int y)
 {
     if (!warpMapped(w))
         return 1.0;
-    float raw = 0.0;
-    if ((w.flags & kWarpMapRead) != 0 && w.map.component >= 0 && wrapInside(int2(x, y), w.map.x1, w.map.y1, w.map.x2, w.map.y2))
-        raw = mapBuf[w.map.offset + uint(y - w.map.y1) * w.map.stride + uint(x - w.map.x1) * w.map.comps + uint(w.map.component)];
+    if ((w.flags & kWarpMapRead) == 0 || w.map.component < 0 || !wrapInside(int2(x, y), w.map.x1, w.map.y1, w.map.x2, w.map.y2))
+        return 0.0;
+    const float raw = mapBuf[w.map.offset + uint(y - w.map.y1) * w.map.stride + uint(x - w.map.x1) * w.map.comps + uint(w.map.component)];
     return mapRemap(raw, (w.flags & kWarpMapInvert) != 0, (w.flags & kWarpMapSmooth) != 0, w.map.exponent);
 }
 

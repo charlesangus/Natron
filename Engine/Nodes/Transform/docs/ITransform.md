@@ -15,7 +15,8 @@ amount the Map input gives. Transform (`net.sf.openfx.TransformPlugin`) is its b
   standard Mask and Mix still limit the result. Map Channel picks one channel of any of its layers (alpha by
   default) and Invert Map inverts it; the value is clamped to [0, 1] and remapped by Map Gamma and Map Response
   exactly as in IBlur (see `Engine/Nodes/Filter/docs/IBlur.md`). The Map is sampled in output space, at the pixel
-  being written, not where that pixel comes from in the source. Outside the Map's image the raw value is 0.
+  being written, not where that pixel comes from in the source. Outside the Map's image the Map value is 0,
+  neither inverted nor remapped, on the CPU and the GPU alike.
 - **Interpolation.** Each output pixel samples the source once, through the transform at its Map value m: the
   identity at 0 and Transform's matrix at 1, translate, rotate and skew linear in m and scale geometric from 1, the
   centre fixed, as Transform's Amount blends. The matrix comes from a `TransformInterp::MatrixCurve`: exact matrices
@@ -31,7 +32,9 @@ amount the Map input gives. Transform (`net.sf.openfx.TransformPlugin`) is its b
   transforms, so a Transform above it and one below it each resample the image.
 - **Region.** The region of definition is the source's pushed forward through the transforms at every Map value the
   render may see (only the full transform with the Map disconnected), grown by a pixel with Black Outside, and
-  unioned with the source's under a mask or a mix. The source is read over the window pulled back the same way.
+  unioned with the source's under a mask or a mix. Over the Map values each corner's path is bounded per segment of
+  the matrix curve from the extremes of its cubics (`MatrixCurve::pointRange()`), so no turn between knots, however
+  large the rotation, escapes the region. The source is read over the window pulled back the same way.
 - **Motion blur.** Motion blur averages the warp over the shutter, and Directional Blur over the transform from none
   to the pixel's, with the Monte Carlo sampling of `Resampler::resampleRow()`. It renders on the CPU only.
 - **Knobs.** Transform's knobs except Amount, which the Map replaces, the Map knobs (Map Channel, Invert Map, Map

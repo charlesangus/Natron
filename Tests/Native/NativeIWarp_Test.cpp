@@ -307,6 +307,75 @@ TEST_F(NativeIWarpTest, MapZeroIsTheIdentity)
     EXPECT_GE(maxDifference(icornerpin, source), 0.);
 }
 
+// The extra matrix blends from the identity with the pin, so a black Map leaves the source
+// unchanged under it too, while the whole pin still applies it.
+TEST_F(NativeIWarpTest, BlackMapLeavesTheExtraMatrixOut)
+{
+    NodePtr source = makeParitySource();
+    NodePtr black = makeConstant(RectI(-64, -64, 128, 112), { 0., 0., 0., 0. });
+    NodePtr icornerpin = makeICornerPin(source, black);
+    NodePtr whole = makeICornerPin(source, NodePtr());
+    ASSERT_TRUE(bool(source) && bool(black) && bool(icornerpin) && bool(whole));
+    // A uniform scale reads the same whatever the order of the matrix's entries.
+    const std::vector<double> extra = { 1.5, 0., 0., 0., 1.5, 0., 0., 0., 1. };
+    ASSERT_TRUE(setKnobValues(icornerpin, kCornerPinNodeParamExtraMatrix, extra));
+    ASSERT_TRUE(setKnobValues(whole, kCornerPinNodeParamExtraMatrix, extra));
+    ASSERT_TRUE(setKnobValues(whole, kCornerPinNodeParamEnable1, { 0. }) && setKnobValues(whole, kCornerPinNodeParamEnable2, { 0. }) && setKnobValues(whole, kCornerPinNodeParamEnable3, { 0. }) && setKnobValues(whole, kCornerPinNodeParamEnable4, { 0. }));
+
+    const double black0 = maxDifference(icornerpin, source);
+    EXPECT_GE(black0, 0.);
+    EXPECT_LE(black0, 1e-6);
+    EXPECT_GT(maxDifference(whole, source), 0.1);
+}
+
+// Outside its image the Map is 0, not inverted: with Invert Map, a Map white over the right half
+// is 0 there once inverted and 0 on the left beyond its image, so nothing moves.
+TEST_F(NativeIWarpTest, InvertedMapOutsideItsImageLeavesTheSource)
+{
+    const int half = kParitySourceWidth / 2;
+    NodePtr source = makeParitySource();
+    NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 1., 1., 1., 1. });
+    NodePtr itransform = makeITransform(source, map);
+    NodePtr icornerpin = makeICornerPin(source, map);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(itransform) && bool(icornerpin));
+    ASSERT_TRUE(setKnobValues(itransform, kMapInputParamInvert, { 1. }));
+    ASSERT_TRUE(setKnobValues(icornerpin, kMapInputParamInvert, { 1. }));
+
+    const double dt = maxDifference(itransform, source);
+    const double dc = maxDifference(icornerpin, source);
+    EXPECT_GE(dt, 0.);
+    EXPECT_LE(dt, 1e-6);
+    EXPECT_GE(dc, 0.);
+    EXPECT_LE(dc, 1e-6);
+}
+
+// 32 whole turns are the identity at every Map value j / 32, but the Map values between turn the
+// source through every angle: the region of definition holds the circle its corners sweep.
+TEST_F(NativeIWarpTest, RegionHoldsEveryTurnOfAManyTurnRotation)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr itransform = makeNode(PLUGINID_NATRON_ITRANSFORM, PLUGIN_MAJOR_NATRON_ITRANSFORM, source, map);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(itransform));
+    const RectI src = paritySourceWindow(source, kTime, 0);
+    const double cx = 0.5 * (src.x1 + src.x2);
+    const double cy = 0.5 * (src.y1 + src.y2);
+    ASSERT_TRUE(setKnobValues(itransform, kTransformNodeParamCenter, { cx, cy }));
+    ASSERT_TRUE(setKnobValues(itransform, kTransformNodeParamRotate, { 11520. }));
+
+    EffectInstancePtr effect = itransform->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    // The matrix curve between its knots, 22.5 degrees apart, is within a hundredth of a pixel of
+    // the circle.
+    const double r = std::hypot(0.5 * src.width(), 0.5 * src.height()) - 0.01;
+    EXPECT_LE(rod.x1, cx - r);
+    EXPECT_LE(rod.y1, cy - r);
+    EXPECT_GE(rod.x2, cx + r);
+    EXPECT_GE(rod.y2, cy + r);
+}
+
 // A white Map, and no Map at all, render as the base node does.
 TEST_F(NativeIWarpTest, MapOneMatchesTheBaseNode)
 {

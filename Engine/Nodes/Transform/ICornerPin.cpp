@@ -45,7 +45,7 @@ constexpr NodeSpec kICornerPinNodeSpec = {
                    "\n"
                    "Each output pixel takes the pin at its Map value: the \"to\" points blended from the \"from\" points by it, "
                    "as Amount blends them, so the pin is not applied where the Map is black and applied whole where it is white. "
-                   "The extra matrix applies everywhere. The source is resampled once per pixel, so a soft Map bends the image "
+                   "The extra matrix blends from the identity by the Map value in the same way. The source is resampled once per pixel, so a soft Map bends the image "
                    "rather than mixing two copies of it; a hard Map edge tears the image along it. Map Channel picks the Map's "
                    "channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a "
                    "Linear or Smooth (smoothstep) curve. The Map is read at the output pixel; outside the Map image it reads black. "
@@ -242,8 +242,21 @@ ICornerPin::canonicalMatrixFn(double time,
 {
     const CornerPinPoints pin = bakeParams(_op, time, view).pin;
 
+    // The extra matrix blends from the identity by m as the points do, so that m = 0 is the
+    // identity exactly.
     return [pin, invert](double m, TransformMath::Mat3* matrix) {
-        return CornerPinOp::inverseMatrix(pin, m, invert, matrix);
+        if (m == 0.) {
+            *matrix = TransformMath::Mat3::identity();
+
+            return true;
+        }
+        CornerPinPoints at = pin;
+        const TransformMath::Mat3 identity = TransformMath::Mat3::identity();
+        for (int k = 0; k < 9; ++k) {
+            at.extraMatrix.m[k] = identity.m[k] + m * (pin.extraMatrix.m[k] - identity.m[k]);
+        }
+
+        return CornerPinOp::inverseMatrix(at, m, invert, matrix);
     };
 }
 

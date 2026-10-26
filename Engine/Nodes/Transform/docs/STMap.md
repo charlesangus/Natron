@@ -26,11 +26,12 @@ Gamma and Map Response as in IBlur (`Engine/Nodes/Filter/docs/IBlur.md`). Where 
 samples its own centre exactly, so a black Map is an identity of the Source, non-finite UV
 included; where m is 1 the pixel samples p as without a Map; at 0.5 it goes half-way to its UV
 position. UV Alpha blacks a pixel out only where m is above 0: a pixel the Map keeps in place
-shows the Source whatever the UV's alpha. With no Map connected the output is bit for bit the
+shows the Source whatever the UV's alpha. With the Map connected the region of definition also covers the Source's, where a black
+Map shows the Source untouched. With no Map connected the output is bit for bit the
 node's without the input.
 
 - The Map is sampled in output space, at the pixel being written, as the UV is. Outside its image
-  the raw Map value is 0 (the pixel stays in place).
+  the Map value is 0, neither inverted nor remapped (the pixel stays in place).
 - The Jacobian takes the Map's gradient with the UV's, so the Map is read one pixel past the
   render window. A hard Map edge between black and white tears the image along it when the UV
   moves pixels far; soften the Map to bend the image instead.

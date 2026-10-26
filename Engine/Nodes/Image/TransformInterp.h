@@ -128,6 +128,20 @@ public:
      **/
     void evaluate(double m, TransformMath::Mat3* H, TransformMath::Mat3* dH) const;
 
+    /**
+     * @brief The bounding box (x1, y1)-(x2, y2) of the point H(m) (x, y, 1), divided by its z, over
+     * every m in [0, 1], H(m) being the curve as evaluate() interpolates it. Per segment it takes
+     * the extremes of the cubic numerators and denominator and bounds their quotient, so the box
+     * holds every point the curve reaches. False when the point's z can reach 0 or below, or a
+     * bound is not finite. The curve must be valid.
+     **/
+    bool pointRange(double x,
+                    double y,
+                    double* x1,
+                    double* y1,
+                    double* x2,
+                    double* y2) const;
+
     /// Whether every knot holds the same matrix, so the Map does not change the transform.
     bool isConstant() const;
 

@@ -60,7 +60,7 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
   - verify: `ctest -R NativePluginList` passes; docs reviewed at the gate.
   - size: S
 
-- [ ] M185.P2.T3 — Exact Source pixel where the Map is 0
+- [x] M185.P2.T3 — Exact Source pixel where the Map is 0
   - files: `Engine/Nodes/Transform/{IDistort,ITransform,ICornerPin}.cpp`, `Engine/Gpu/Kernels/{stmap,iwarp}.slang`, `Tests/Native/NativeIDistortAmount_Test.cpp` and the ITransform/ICornerPin tests
   - approach: mirror STMap's 6a0688c79: where the Map is 0, copy the Source pixel unfiltered on CPU and GPU.
   - verify: with Mitchell and Cubic filters and a hard and a soft Map, every Map=0 pixel equals the Source bit for bit on CPU and GPU; goldens re-recorded where they change.
@@ -78,3 +78,5 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 
 **Verification gate:** the full build and ctest pass, including the new suites; GPU parity on lavapipe and RADV. Under Xvfb an ITransform (scale up with a radial Map), an ICornerPin and a Map-scaled IDistort are rendered with Cubic and Impulse filters; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
 Rebased on M184 - Variable-Size Filter Kit's head; Codex review round (PR #121): five findings fixed at bd394d4cc/6a0688c79, Map goldens re-recorded; release gate green. GPU seeds pending the GPU host; UAT pending.
+
+2026-10-26: P2.T3 done at 3c62b1e93 + goldens; release gate green (run 40317895326); AppImage Natron-m185-warps.AppImage for UAT.

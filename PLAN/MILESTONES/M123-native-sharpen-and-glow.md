@@ -214,8 +214,27 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: each doc names every knob that exists in the node code (reviewed at the gate).
   - size: S
 
+## Phase 122.5: UAT round 1
+
+- [ ] M123.P5.T1 — EdgeExtend inputs, threshold and order
+  - files: `Engine/Nodes/Filter/EdgeExtend.{h,cpp}`, tests, docs
+  - approach: make the premultiplied/unpremultiply input handling behave as documented; add a threshold (0–1 on alpha) where the extend begins; put the premultiplied control above Size.
+  - verify: gtests for premultiplied and straight inputs and for the threshold; the GUI check.
+  - size: M
+- [ ] M123.P5.T2 — Glow mix, no "(Un)premult by" on filters
+  - files: `Engine/Nodes/Filter/{Glow,Bloom}.{h,cpp}`
+  - approach: Glow gets the standard Mix knob; Glow and Bloom drop the "(Un)premult by" knob, as filtering nodes do.
+  - verify: gtests; knob list check.
+  - size: M
+- [ ] M123.P5.T3 — EdgeBlur through IBlur
+  - files: `Engine/Nodes/Filter/EdgeBlur.{h,cpp}`, `IBlur`
+  - approach: blur with M184's variable-size IBlur driven by the edge distance, so the result has no ghosting from blended slices; CPU and GPU.
+  - verify: gtests; goldens re-recorded.
+  - size: L
+
 ## Decisions
 
+- 2026-10-26 — **UAT round 1 (user):** EdgeExtend's premultiply/unpremultiply inputs don't work as described; it needs a threshold on alpha (0–1) where the extend begins, and the premultiply control above Size. Glow lacks Mix. Filtering nodes (Glow, Bloom) don't get the "(Un)premult by" knob. EdgeBlur uses IBlur to avoid ghosting.
 - 2026-10-25 — **Glow ports every PyPlug control (bosley-native-nodes):** rotate (the stretch turns clockwise; non-axis angles bloom in a turned frame resampled from absolute positions so tiles match the whole frame), hue isolation (HSVTool's key), and the mask multiplying the highlight map as the PyPlug did (Glow has no mix or mask-invert, as before). The mask applies in image space rather than the PyPlug's unrotated turned frame. A recursive (IIR) filter under a non-axis rotation still depends on where the turned frame starts, so only the FIR and box filters are tile-exact there. Bloom repeats the edge pixel outside the image while Glow treats it as black; Bloom's size defaults to 0 (identity).
 - 2026-10-25 — **Bloom spike 2 (GPU) results (bosley-native-nodes):** on the RX 7900 XTX (RADV) every GPU variant matches its CPU reference within 4e-7 relative (pass bar 1e-4). Per frame, 4 channels, count 5: the full-resolution line IIR costs 23 ms at HD and 55 ms at UHD at any size; the pyramid costs 0.45-1.4 ms at HD and 2.7-5.3 ms at UHD, flat in size. [1 3 3 1] + bicubic, the CPU accuracy winner, is 1.3 ms HD / 5.2 ms UHD; box + bilinear is the fastest but the least accurate. The pyramid with [1 3 3 1] downsample and bicubic upsample is the GPU-resident path; it is 10-40 times cheaper than the IIR and the closer match to the FIR default.
 - 2026-10-25 — **Bloom spike 1 (CPU) results (bosley-native-nodes):** a decimated pyramid with a [1 3 3 1] downsample and bicubic upsample stays within 4e-4 to 3e-3 RMS (relative to peak) of the full-resolution FIR sum on an HDR plate at sizes 3 to 400, count 5, and tiles are bit-exact across windows (seam test exact for every variant). The full-resolution IIR sum (the CPU-fallback-free alternative) differs from the FIR sum by 6e-4 to 4e-2 RMS, ten times more, because the recursive filter is a different kernel; with FIR the default, the pyramid is the closer match. Box downsampling is markedly worse (up to 1e-2 RMS). The spike's CPU timings are not representative of an optimised pyramid. Spike 2 (GPU cost on the RX 7900 XTX) decides between them.

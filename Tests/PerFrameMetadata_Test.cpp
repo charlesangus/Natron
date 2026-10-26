@@ -505,6 +505,138 @@ TEST_F(PerFrameMetadataTest, FrameSnapshotHashesMatchTheArgs)
     EXPECT_EQ(3, outputNComps(args[blur]->metadata));
 }
 
+// An edit landing while the answer is derived: the hash given is the one the answer returned
+// belongs to, here the edited state's, never the hash read before the derivation.
+TEST_F(PerFrameMetadataTest, HashGivenWithAnAnswerIsTheOneItBelongsTo)
+{
+    NodePtr source = createSource(4);
+    ASSERT_TRUE(bool(source));
+    MetadataSourceTestEffect* effect = metadataSourceOf(source);
+    ASSERT_TRUE(effect != NULL);
+    KnobIntPtr nComps = effect->getNCompsKnob();
+    const U64 before = source->getHashValue();
+
+    int edits = 0;
+    effect->setDeriveHook([&]() {
+        if (edits == 0) {
+            ++edits;
+            nComps->setValue(3, ViewSpec::all(), 0);
+        }
+    });
+    U64 hash = 0;
+    NodeMetadataConstPtr metadata = source->getEffectInstance()->getMetadata(5, ViewIdx(0), &hash);
+    effect->setDeriveHook(std::function<void()>());
+
+    EXPECT_EQ(1, edits);
+    ASSERT_TRUE(bool(metadata));
+    EXPECT_NE(before, source->getHashValue());
+    EXPECT_EQ(source->getHashValue(), hash);
+    EXPECT_EQ(3, outputNComps(metadata));
+}
+
+// A purge of the node's cache while an answer is derived: the answer may predate whatever the
+// purge stood for, so it is not stored and the next query derives again.
+TEST_F(PerFrameMetadataTest, AnswerDerivedAcrossACachePurgeIsNotStored)
+{
+    NodePtr source = createSource(4);
+    ASSERT_TRUE(bool(source));
+    MetadataSourceTestEffect* effect = metadataSourceOf(source);
+    ASSERT_TRUE(effect != NULL);
+    EffectInstancePtr instance = source->getEffectInstance();
+
+    int purges = 0;
+    effect->setDeriveHook([&]() {
+        if (purges == 0) {
+            ++purges;
+            instance->clearActionsCache();
+        }
+    });
+    const int derivations = effect->nodeMetadataDerivationCount();
+    ASSERT_TRUE(bool(instance->getMetadata(5, ViewIdx(0))));
+    effect->setDeriveHook(std::function<void()>());
+    EXPECT_EQ(1, purges);
+    EXPECT_EQ(derivations + 1, effect->nodeMetadataDerivationCount());
+
+    ASSERT_TRUE(bool(instance->getMetadata(5, ViewIdx(0))));
+    EXPECT_EQ(derivations + 2, effect->nodeMetadataDerivationCount());
+    ASSERT_TRUE(bool(instance->getMetadata(5, ViewIdx(0))));
+    EXPECT_EQ(derivations + 2, effect->nodeMetadataDerivationCount());
+}
+
+// A graph edited on every snapshot attempt: the frame is aborted rather than rendered from
+// answers of states it was not set up with; a frame that cannot be aborted reads the nodes the
+// edits reached live, keeping none of those answers.
+TEST_F(PerFrameMetadataTest, SnapshotThatNeverSettlesAbortsTheFrame)
+{
+    NodePtr sourceA, sourceB;
+    NodePtr switchNode = createKeyedSwitch(&sourceA, &sourceB);
+    ASSERT_TRUE(bool(switchNode));
+    NodePtr blur = createBlurBelow(switchNode);
+    ASSERT_TRUE(bool(blur));
+    KnobIntPtr nComps = metadataSourceOf(sourceB)->getNCompsKnob();
+
+    ParallelRenderArgsSetter::setMetadataSnapshotHookForTests([&](const NodePtr& node) {
+        if (node == sourceB) {
+            nComps->setValue((nComps->getValue() == 3) ? 4 : 3, ViewSpec::all(), 0);
+        }
+    });
+    for (int abortable = 0; abortable < 2; ++abortable) {
+        SCOPED_TRACE(abortable);
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(abortable != 0, 0);
+        std::map<NodePtr, ParallelRenderArgsPtr> args;
+        ParallelRenderArgsSetter::buildArgsMap(2, ViewIdx(0), false, false, abortInfo, blur, 0,
+                                               getApp()->getTimeLine().get(), NodePtr(), false, false, RenderStatsPtr(),
+                                               true, OSGLContextPtr(), &args);
+        EXPECT_EQ(abortable != 0, abortInfo->isAborted());
+        ASSERT_TRUE(args.find(blur) != args.end());
+        EXPECT_FALSE(bool(args[blur]->metadata));
+        EXPECT_FALSE(bool(args[switchNode]->metadata));
+        // Upstream of the edits, the snapshot stands.
+        ASSERT_TRUE(args.find(sourceA) != args.end());
+        EXPECT_TRUE(bool(args[sourceA]->metadata));
+    }
+    ParallelRenderArgsSetter::setMetadataSnapshotHookForTests(ParallelRenderArgsSetter::MetadataSnapshotHook());
+}
+
+// A time other than the frame's is answered under the hash the frame was set up with, from its
+// first read on: an edit made after that read does not reach the frame, and one made before it
+// aborts the frame as the edit does.
+TEST_F(PerFrameMetadataTest, OtherTimesReadTheFramesHashes)
+{
+    NodePtr source = createSource(4);
+    ASSERT_TRUE(bool(source));
+    NodePtr blur = createBlurBelow(source);
+    ASSERT_TRUE(bool(blur));
+    KnobIntPtr nComps = metadataSourceOf(source)->getNCompsKnob();
+    EffectInstancePtr instance = source->getEffectInstance();
+
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    std::map<NodePtr, ParallelRenderArgsPtr> args;
+    ParallelRenderArgsSetter::buildArgsMap(2, ViewIdx(0), false, false, abortInfo, blur, 0,
+                                           getApp()->getTimeLine().get(), NodePtr(), false, false, RenderStatsPtr(),
+                                           true, OSGLContextPtr(), &args);
+    ASSERT_TRUE(args.find(source) != args.end());
+    const ParallelRenderArgsPtr frameArgs = args[source];
+    ASSERT_TRUE(bool(frameArgs->metadata));
+    EXPECT_FALSE(bool(instance->findRenderMetadata(frameArgs, 7, ViewIdx(0))));
+
+    NodeMetadataConstPtr other = instance->getRenderMetadata(frameArgs, 1, ViewIdx(0));
+    ASSERT_TRUE(bool(other));
+    EXPECT_EQ(4, outputNComps(other));
+    EXPECT_FALSE(abortInfo->isAborted());
+
+    nComps->setValue(3, ViewSpec::all(), 0);
+    EXPECT_EQ(other.get(), instance->getRenderMetadata(frameArgs, 1, ViewIdx(0)).get());
+    EXPECT_EQ(other.get(), instance->findRenderMetadata(frameArgs, 1, ViewIdx(0)).get());
+    EXPECT_EQ(4, outputNComps(instance->getRenderMetadata(frameArgs, 2, ViewIdx(0))));
+    EXPECT_FALSE(abortInfo->isAborted());
+
+    NodeMetadataConstPtr afterEdit = instance->getRenderMetadata(frameArgs, 3, ViewIdx(0));
+    ASSERT_TRUE(bool(afterEdit));
+    EXPECT_EQ(3, outputNComps(afterEdit));
+    EXPECT_TRUE(abortInfo->isAborted());
+}
+
 // The render reads the frame's own layout: a Switch keyed from an RGB reader at frame 1 to an RGBA
 // reader at frame 2 renders a 3-channel colour plane at frame 1 and a 4-channel one at frame 2,
 // whichever frame renders first.

@@ -2658,6 +2658,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 view,
                                                 rectToRender.isIdentity,
                                                 rectToRender.identityTime,
+                                                rectToRender.identityView,
                                                 rectToRender.identityInput,
                                                 compsNeeded,
                                                 rectToRender.imgs,
@@ -2939,7 +2940,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             // If color layer, request the preferred comp of the identity input
             if (tls->currentRenderArgs.identityInput && it->second.renderMappedImage->getComponents().isColorLayer()) {
                 ImageLayerDesc prefInputComps, prefInputCompsPaired;
-                getLayersFromMetadata(*tls->currentRenderArgs.identityInput->getRenderMetadata(tls->currentRenderArgs.identityTime, view), -1, &prefInputComps, &prefInputCompsPaired);
+                getLayersFromMetadata(*tls->currentRenderArgs.identityInput->getRenderMetadata(tls->currentRenderArgs.identityTime, tls->currentRenderArgs.identityView), -1, &prefInputComps, &prefInputCompsPaired);
                 comps.push_back(prefInputComps);
             } else {
                 comps.push_back( it->second.renderMappedImage->getComponents() );
@@ -2951,7 +2952,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(tls->currentRenderArgs.identityTime,
                                                                                                     actionArgs.originalScale,
                                                                                                     mipmapLevel,
-                                                                                                    view,
+                                                                                                    tls->currentRenderArgs.identityView,
                                                                                                     false,
                                                                                                     downscaledRectToRender,
                                                                                                     RectD(),
@@ -6924,9 +6925,35 @@ EffectInstance::getOpenFXMetadataForInputsAt(U64 hash,
 }
 
 namespace {
-// A frame range wider than this is sampled at its ends only: its frames are not all read at once,
-// and reading each one's metadata would cost more than the render it serves.
-const int kMaxFramesMergedPerRange = 1000;
+// How often getMetadata() derives an answer again whose derivation raced an edit, before giving
+// up telling which hash it belongs to.
+const int kMaxMetadataDerivationAttempts = 3;
+
+// Calls f with each time a reader asking for [min, max] can be given: every frame from min on, at
+// min's fraction, then max itself. An integral range gives the frames a render pre-fetches, and a
+// range of one time, whole or not, that time.
+template <typename F>
+void
+forEachTimeInRange(double min,
+                   double max,
+                   F f)
+{
+    double t = min;
+    for (; t <= max; t += 1.) {
+        f(t);
+    }
+    if (t - 1. != max) {
+        f(max);
+    }
+}
+
+// Whether a and b widen a reader's output alike.
+bool
+widensAlike(const NodeMetadata& a,
+            const NodeMetadata& b)
+{
+    return (a.getComponentsType(-1) == b.getComponentsType(-1)) && (a.getNComps(-1) == b.getNComps(-1)) && (metadataNComps(a, -1) == metadataNComps(b, -1)) && (a.getBitDepth(-1) == b.getBitDepth(-1));
+}
 
 // Widens widened to metadata's colour components and depth where those are wider. Everything
 // else stays as read at the frame being answered.
@@ -6962,6 +6989,9 @@ EffectInstance::getInputsMetadataOverFramesNeeded(U64 hash,
     } catch (...) {
         return;
     }
+    // Widening the input's answer at time and view by itself changes nothing, so a range is
+    // widened over all its times, whatever time it is read for, and its answers are kept with
+    // the input's hash for the next reader of the same range.
     for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
         const int inputNb = it->first;
         if ((inputNb < 0) || (inputNb >= (int)inputs->size()) || !(*inputsMetadata)[inputNb]) {
@@ -6969,26 +6999,30 @@ EffectInstance::getInputsMetadataOverFramesNeeded(U64 hash,
         }
         const EffectInstancePtr& input = (*inputs)[inputNb];
         std::shared_ptr<NodeMetadata> widened;
+        std::vector<NodeMetadataConstPtr> answers;
         for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
             for (std::vector<RangeD>::const_iterator range = viewIt->second.begin(); range != viewIt->second.end(); ++range) {
-                const double first = std::ceil(range->min);
-                const double last = std::floor(range->max);
-                if (last < first) {
+                if (range->max < range->min) {
                     continue;
                 }
-                const bool sampled = (last - first) > kMaxFramesMergedPerRange;
-                for (double frame = first; frame <= last; frame = (sampled && (frame < last)) ? last : frame + 1.) {
-                    if ((frame == time) && (viewIt->first == view)) {
-                        continue;
-                    }
-                    NodeMetadataConstPtr metadata = input->getMetadata(frame, viewIt->first);
-                    if (!metadata) {
+                answers.clear();
+                if (range->max - range->min < 1.) {
+                    forEachTimeInRange(range->min, range->max, [&](double t) {
+                        if ((t != time) || (viewIt->first != view)) {
+                            answers.push_back(input->getMetadata(t, viewIt->first));
+                        }
+                    });
+                } else {
+                    input->getMetadataOverRange(viewIt->first, range->min, range->max, &answers);
+                }
+                for (std::vector<NodeMetadataConstPtr>::const_iterator answer = answers.begin(); answer != answers.end(); ++answer) {
+                    if (!*answer) {
                         continue;
                     }
                     if (!widened) {
                         widened = std::make_shared<NodeMetadata>(*(*inputsMetadata)[inputNb]);
                     }
-                    widenOutputMetadata(*metadata, widened.get());
+                    widenOutputMetadata(**answer, widened.get());
                 }
             }
         }
@@ -6996,6 +7030,50 @@ EffectInstance::getInputsMetadataOverFramesNeeded(U64 hash,
             (*inputsMetadata)[inputNb] = widened;
         }
     }
+}
+
+void
+EffectInstance::getMetadataOverRange(ViewIdx view,
+                                     double min,
+                                     double max,
+                                     std::vector<NodeMetadataConstPtr>* answers)
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    const U64 generation = _imp->actionsCache->getMetadataGeneration();
+    // Keyed as getMetadata() keys each answer, so each context keeps its own summary.
+    const U64 contextKey = renderContextsInUse() ? restrictContextToNode(getCurrentRenderContext(), node, 0) : 0;
+    const U64 hash = mixRenderContextKey(node->getHashValue(), contextKey);
+    if (_imp->actionsCache->getRangeMetadataSummary(hash, view, min, max, answers)) {
+        return;
+    }
+    RangeMetadataSummary summary;
+    summary.view = view;
+    summary.min = min;
+    summary.max = max;
+    // Kept only if every time's answer belongs to the hash it is kept under.
+    bool belongs = true;
+    forEachTimeInRange(min, max, [&](double t) {
+        U64 answerHash = 0;
+        NodeMetadataConstPtr answer = getMetadata(t, view, &answerHash);
+        belongs = belongs && (answerHash == hash);
+        if (!answer) {
+            return;
+        }
+        for (std::vector<NodeMetadataConstPtr>::const_iterator kept = summary.answers.begin(); kept != summary.answers.end(); ++kept) {
+            if (widensAlike(**kept, *answer)) {
+                return;
+            }
+        }
+        summary.answers.push_back(answer);
+    });
+    if (belongs) {
+        _imp->actionsCache->setRangeMetadataSummary(hash, summary, generation);
+    }
+    *answers = summary.answers;
 }
 
 void
@@ -7031,8 +7109,10 @@ EffectInstance::getMetadata(double time,
                             ViewIdx view)
 {
     U64 hash = 0;
+    bool validated = false;
 
-    return getMetadata(time, view, &hash);
+    // Live: an answer raced by an edit is as good as the next one, so it is not derived again.
+    return getMetadataAttempt(time, view, &hash, &validated);
 }
 
 NodeMetadataConstPtr
@@ -7040,15 +7120,37 @@ EffectInstance::getMetadata(double time,
                             ViewIdx view,
                             U64* hashOut)
 {
+    NodeMetadataConstPtr metadata;
+
+    for (int attempt = 0; attempt < kMaxMetadataDerivationAttempts; ++attempt) {
+        bool validated = false;
+        metadata = getMetadataAttempt(time, view, hashOut, &validated);
+        if (validated) {
+            return metadata;
+        }
+    }
+    // The hash read before the last attempt need not be the state it saw.
+    *hashOut = 0;
+
+    return metadata;
+}
+
+NodeMetadataConstPtr
+EffectInstance::getMetadataAttempt(double time,
+                                   ViewIdx view,
+                                   U64* hashOut,
+                                   bool* validated)
+{
     NodePtr node = getNode();
 
     *hashOut = 0;
+    *validated = true;
     if (!node) {
         return std::make_shared<const NodeMetadata>();
     }
     // The identity check can ask for this node's layers (an OpenFX clip's components, a render's
     // planes), which read its metadata: that is the answer being checked, whatever the time, since
-    // deriving it again would re-enter the check.
+    // deriving it again would re-enter the check. The derivation running the check validates it.
     const IdentityCheck* checking = findIdentityCheck(this);
     if (checking) {
         *hashOut = checking->hash;
@@ -7087,7 +7189,9 @@ EffectInstance::getMetadata(double time,
         metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
     }
     U64 hashAfter = 0;
-    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == nodeHash) && KnobContentWrite::isSettled(writes)) {
+    // An edit moves the node's own hash; hash also carries the context key, which an edit leaves.
+    *validated = (node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == nodeHash) && KnobContentWrite::isSettled(writes) && (_imp->actionsCache->getMetadataGeneration() == generation);
+    if (*validated) {
         _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
     }
 
@@ -7141,17 +7245,76 @@ EffectInstance::getTimeInvariantMetadata()
 }
 
 NodeMetadataConstPtr
+EffectInstance::findRenderMetadata(const ParallelRenderArgsPtr& frameArgs,
+                                   double time,
+                                   ViewIdx view) const
+{
+    if (!frameArgs || !frameArgs->metadata) {
+        return NodeMetadataConstPtr();
+    }
+    if ((frameArgs->time == time) && (frameArgs->view == view)) {
+        return frameArgs->metadata;
+    }
+    const std::pair<double, int> key(time, (int)view);
+    {
+        std::lock_guard<std::mutex> l(frameArgs->retainedMetadata.mutex);
+        std::map<std::pair<double, int>, NodeMetadataConstPtr>::const_iterator found = frameArgs->retainedMetadata.answers.find(key);
+        if (found != frameArgs->retainedMetadata.answers.end()) {
+            return found->second;
+        }
+    }
+    NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(frameArgs->nodeHash, time, view);
+    if (!cached) {
+        return cached;
+    }
+    // Kept for the frame, so a later read finds the same answer once the cache moved on.
+    std::lock_guard<std::mutex> l(frameArgs->retainedMetadata.mutex);
+
+    return frameArgs->retainedMetadata.answers.insert(std::make_pair(key, cached)).first->second;
+}
+
+NodeMetadataConstPtr
 EffectInstance::getRenderMetadata(const ParallelRenderArgsPtr& frameArgs,
                                   double time,
                                   ViewIdx view) const
 {
-    if (frameArgs && frameArgs->metadata && (frameArgs->time == time) && (frameArgs->view == view)) {
-        return frameArgs->metadata;
+    NodeMetadataConstPtr found = findRenderMetadata(frameArgs, time, view);
+    if (found) {
+        return found;
+    }
+    if (!frameArgs) {
+        return const_cast<EffectInstance*>(this)->getMetadata(time, view);
+    }
+    // The answer is the one of the context the args carry, whatever context the caller's thread
+    // acts under: nodeHash has that context's key folded in, and a scheduler thread acts under none.
+    ActionContextScope underArgsContext(renderContextsInUse(), frameArgs->context);
+    if (!frameArgs->metadata) {
+        return const_cast<EffectInstance*>(this)->getMetadata(time, view);
+    }
+    // A time or view other than the frame's (a time remap or a view switch downstream) is derived
+    // when first read: only the times and views the frame reaches cost anything, which a snapshot
+    // of every frame and view requested could not promise on a deep or wide graph.
+    U64 hash = 0;
+    NodeMetadataConstPtr metadata = const_cast<EffectInstance*>(this)->getMetadata(time, view, &hash);
+    // As in a frame's snapshot, an answer no derivation could tell the hash of (a knob written
+    // anywhere while deriving) is the frame's while the node is still at its hash.
+    U64 current = 0;
+    NodePtr node = getNode();
+    if ((hash == frameArgs->nodeHash) || ((hash == 0) && node && node->getHashValueIfUpToDate(&current) && (mixRenderContextKey(current, frameArgs->contextKey) == frameArgs->nodeHash))) {
+        const std::pair<double, int> key(time, (int)view);
+        std::lock_guard<std::mutex> l(frameArgs->retainedMetadata.mutex);
+
+        return frameArgs->retainedMetadata.answers.insert(std::make_pair(key, metadata)).first->second;
+    }
+    // The node moved since the frame was set up: the edit that moved it aborts the frame, which
+    // must not render meanwhile with an answer of the new state. A render that cannot be aborted
+    // goes on with it, as with any edit.
+    AbortableRenderInfoPtr abortInfo = frameArgs->abortInfo.lock();
+    if (abortInfo && abortInfo->canAbort()) {
+        abortInfo->setAborted();
     }
 
-    // The snapshot is taken at the frame's own time only; a time this node is pulled at by a time
-    // remap downstream is answered live.
-    return const_cast<EffectInstance*>(this)->getMetadata(time, view);
+    return metadata;
 }
 
 NodeMetadataConstPtr
@@ -7161,7 +7324,16 @@ EffectInstance::getRenderMetadata(double time,
     const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
     U64 key = 0;
     if (actingUnderOtherKey(this, frameArgs, &key)) {
-        // The snapshot is the installed args' context's: under another, the metadata is read live.
+        // The snapshot is the installed args' context's: under another, the answers are the ones the
+        // frame keeps for this node under that context, read live when the request pass planned none.
+        const std::shared_ptr<const ContextFrameArgsMap> planned = frameArgs->contextArgs.lock();
+        if (planned && (key != 0)) {
+            ContextFrameArgsMap::const_iterator found = planned->find(NodeCtxKey(getNode(), key));
+            if ((found != planned->end()) && found->second) {
+                return getRenderMetadata(found->second, time, view);
+            }
+        }
+
         return const_cast<EffectInstance*>(this)->getMetadata(time, view);
     }
 

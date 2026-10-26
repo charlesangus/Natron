@@ -1155,15 +1155,20 @@ public:
 
     /**
      * @brief As getMetadata(), also giving in hash the node hash the answer belongs to, which a
-     * caller that read the hash earlier compares to tell whether the node moved meanwhile.
+     * caller that read the hash earlier compares to tell whether the node moved meanwhile. An
+     * answer whose derivation raced an edit is derived again, a bounded number of times; if none
+     * could be told to belong to one hash, hash is 0, which no node hash is.
      **/
     NodeMetadataConstPtr getMetadata(double time, ViewIdx view, U64* hash) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The metadata a render reads at time and view. On a thread rendering a frame, that is
-     * the answer snapshotted with the frame's node hashes when time and view are the frame's, so
-     * an edit made since the frame was set up does not reach it; otherwise getMetadata(time,
-     * view). Never null for a node that has one.
+     * @brief The metadata a render reads at time and view. On a thread rendering a frame set up
+     * with a snapshot, that is the answer belonging to the node hash the frame was set up with, so
+     * an edit made since does not reach it: the snapshot at the frame's time and view, and at any
+     * other the answer first read there in the frame, which then stays for the frame. Should the
+     * node have moved before that first read, the frame is aborted, as the edit that moved it
+     * aborts it, and the current answer returned. Outside such a frame, getMetadata(time, view).
+     * Never null for a node that has one.
      **/
     NodeMetadataConstPtr getRenderMetadata(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
@@ -1178,6 +1183,12 @@ public:
      * args in a frame read without installing them on the calling thread.
      **/
     NodeMetadataConstPtr getRenderMetadata(const ParallelRenderArgsPtr& frameArgs, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief As getRenderMetadata(frameArgs, time, view), without deriving: null unless frameArgs
+     * has a snapshot and the answer belonging to its node hash at time and view is already known.
+     **/
+    NodeMetadataConstPtr findRenderMetadata(const ParallelRenderArgsPtr& frameArgs, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The layers metadata gives for inputNb (-1 for the output, the layout it stores and
@@ -1301,6 +1312,13 @@ private:
                              std::vector<NodeMetadataConstPtr>* inputsMetadata);
 
     NodeMetadataConstPtr deriveMetadataAt(U64 hash, double time, ViewIdx view);
+
+    // One getMetadata() lookup or derivation; validated tells whether the answer belongs to hash.
+    NodeMetadataConstPtr getMetadataAttempt(double time, ViewIdx view, U64* hash, bool* validated);
+
+    // This node's answers over every frame getFramesNeeded_public() lists in [min, max] in view,
+    // one per distinct colour components and depth.
+    void getMetadataOverRange(ViewIdx view, double min, double max, std::vector<NodeMetadataConstPtr>* answers);
 
     NodeMetadataConstPtr deriveTimeInvariantMetadata();
 
@@ -2622,6 +2640,7 @@ public:
         bool validArgs; //< are the args valid ?
         bool isIdentity;
         double identityTime;
+        ViewIdx identityView; //< the view of identityInput the identity area is taken from
         EffectInstancePtr identityInput;
         EffectInstance::InputImagesMap inputImages;
         std::map<ImageLayerDesc, LayerToRender> outputLayers;

@@ -1762,8 +1762,8 @@ namespace {
 std::mutex g_metadataSnapshotHookMutex;
 ParallelRenderArgsSetter::MetadataSnapshotHook g_metadataSnapshotHook;
 
-// A snapshot that raced an edit is retaken at most this many times, then kept as it is: a graph
-// edited faster than it can be snapshotted must still render.
+// A snapshot that raced an edit is retaken at most this many times, so a graph edited faster than
+// it can be snapshotted does not hold the render thread; see buildArgsMap() for what follows.
 const int kMaxMetadataSnapshotRetries = 3;
 
 // Inputs come before the nodes reading them, so each derivation finds its inputs' answers already
@@ -1804,20 +1804,22 @@ upstreamFirstOrder(const std::set<NodePtr>& nodes)
     return order;
 }
 
-// False when some node's answer belongs to another hash than its args', that is when an edit
-// landed between reading the hashes and reading the answers.
-bool
+// Fills moved with the nodes whose answer belongs to another hash than their args', that is
+// where an edit landed between reading the hashes and reading the answers. Empty when the snapshot
+// is consistent.
+void
 snapshotMetadata(double time,
                  ViewIdx view,
                  const std::vector<NodePtr>& order,
-                 const std::map<NodePtr, ParallelRenderArgsPtr>& args)
+                 const std::map<NodePtr, ParallelRenderArgsPtr>& args,
+                 std::vector<NodePtr>* moved)
 {
     ParallelRenderArgsSetter::MetadataSnapshotHook hook;
     {
         std::lock_guard<std::mutex> lock(g_metadataSnapshotHookMutex);
         hook = g_metadataSnapshotHook;
     }
-    bool consistent = true;
+    moved->clear();
     for (std::vector<NodePtr>::const_iterator it = order.begin(); it != order.end(); ++it) {
         std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator found = args.find(*it);
         EffectInstancePtr effect = (*it)->getEffectInstance();
@@ -1826,15 +1828,17 @@ snapshotMetadata(double time,
         }
         U64 hash = 0;
         found->second->metadata = effect->getMetadata(time, view, &hash);
-        if (hash != found->second->nodeHash) {
-            consistent = false;
+        // 0: no derivation could be told to belong to one hash, which a knob written anywhere in
+        // the project while deriving causes. A node still at nodeHash then has not moved, and a
+        // write to it not yet marked aborts the frame when it marks, as any edit made after.
+        U64 current = 0;
+        if ((hash != found->second->nodeHash) && ((hash != 0) || !(*it)->getHashValueIfUpToDate(&current) || (current != found->second->nodeHash))) {
+            moved->push_back(*it);
         }
         if (hook) {
             hook(*it);
         }
     }
-
-    return consistent;
 }
 } // anon namespace
 
@@ -2043,9 +2047,24 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
     // render it through these args, and a query they make is answered live.
     if (setUpstreamArgs && !renderedNodes.empty()) {
         const std::vector<NodePtr> order = upstreamFirstOrder(renderedNodes);
-        for (int retry = 0; !snapshotMetadata(time, view, order, *out) && (retry < kMaxMetadataSnapshotRetries); ++retry) {
+        std::vector<NodePtr> moved;
+        snapshotMetadata(time, view, order, *out, &moved);
+        for (int retry = 0; !moved.empty() && (retry < kMaxMetadataSnapshotRetries); ++retry) {
             for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = out->begin(); it != out->end(); ++it) {
                 it->second->nodeHash = it->first->getHashValue();
+            }
+            snapshotMetadata(time, view, order, *out, &moved);
+        }
+        if (!moved.empty()) {
+            // Still edited: the frame is aborted, as the edits abort it, rather than rendered from
+            // answers of states it was not set up with. A render that cannot be aborted reads
+            // those nodes live instead, as before snapshots; their args keep no answer of a
+            // state other than nodeHash's.
+            if (abortInfo && abortInfo->canAbort()) {
+                abortInfo->setAborted();
+            }
+            for (std::vector<NodePtr>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
+                (*out)[*it]->metadata.reset();
             }
         }
     }

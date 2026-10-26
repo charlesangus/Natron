@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -63,12 +64,20 @@ public:
         , _format()
         , _nodeMetadataDerivations(0)
         , _identityEvaluations(0)
+        , _deriveHook()
     {
     }
 
     virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
     {
         return false;
+    }
+
+    // Called inside each getPreferredMetadataAt(), so a test can edit or purge while a derivation
+    // runs. Set from the thread that asks for metadata.
+    void setDeriveHook(const std::function<void()>& hook)
+    {
+        _deriveHook = hook;
     }
 
     virtual ImageMetadata deriveOutputMetadata(double time,
@@ -163,6 +172,9 @@ protected:
     {
         ++_nodeMetadataDerivations;
         applyNodeMetadata(time, metadata);
+        if (_deriveHook) {
+            _deriveHook();
+        }
 
         return eStatusOK;
     }
@@ -247,6 +259,7 @@ private:
     KnobIntWPtr _format;
     std::atomic<int> _nodeMetadataDerivations;
     std::atomic<int> _identityEvaluations;
+    std::function<void()> _deriveHook;
 };
 
 // A one-input filter that counts its identity evaluations, so a test can tell a cached

@@ -103,7 +103,7 @@ private:
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    std::string getFilenameAtTime(double time) const WARN_UNUSED_RETURN;
+    std::string getFilenameAt(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     KnobFileWPtr _filename;
 

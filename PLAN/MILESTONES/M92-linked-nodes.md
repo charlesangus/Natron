@@ -290,3 +290,5 @@ Out of scope, left unchanged: the **internal** `slaveTo` users that wire a node'
 - 2026-10-10 — **Deps M24:** M24 - Node Graph Category Colour is reworking the same `NodeGui` body and border drawing, including the clone colour exception, so this milestone starts after it lands.
 
 2026-10-26: UAT approved (user). Merges after M167 - Per-Frame Node Metadata lands, with main merged in and PR CI re-run.
+
+Shipped 2026-10-26: PR #105, squash 0625a91d1.

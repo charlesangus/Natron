@@ -1,0 +1,9 @@
+Noise4D.h, and its GPU mirror Engine/Gpu/Kernels/noisecore.slang, contain code ported from
+FastNoise2 (https://github.com/Auburn/FastNoise2), Copyright (c) 2020 Jordan Peck, distributed
+under the MIT License; see LICENSE in this directory.
+
+Ported from commit 721400f9560831be2fc9790be9b72c44bee7d33f: the 4D Perlin, SuperSimplex,
+Value, White and Cellular generators, their hashing and gradient functions, and the FBm and
+Ridged fractal combiners (in Engine/Nodes/Generator/NoiseCore.h). The split integer-cell
+coordinate, the cellular distance-to-edge and smooth F1 outputs, the Manhattan and Chebyshev
+cellular output ranges, and the billow and hybrid multifractal combiners are Natron's own.

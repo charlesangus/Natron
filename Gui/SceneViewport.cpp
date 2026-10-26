@@ -1464,6 +1464,12 @@ SceneViewport::paintGL()
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
     refreshTransformHandles();
+    {
+        // The free camera this paint draws with, for scripts: pivot x, y, z, distance, azimuth,
+        // elevation and vertical field of view.
+        const SceneViewportRenderer::FreeCamera& camera = _imp->renderer.getFreeCamera();
+        setProperty("natronSceneFreeCamera", QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY });
+    }
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done.
@@ -1521,11 +1527,13 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
 
         return;
     }
-    _imp->button = e->button();
-    _imp->pressPos = e->position().toPoint();
-    _imp->lastPos = _imp->pressPos;
-    _imp->dragging = false;
+    // Only a press that starts a camera drag records its button: a plain right press opens the
+    // context menu, which takes the release, so a recorded button would never be cleared.
     if ((e->button() == Qt::LeftButton) || (e->button() == Qt::MiddleButton) || ((e->button() == Qt::RightButton) && (e->modifiers() & Qt::AltModifier))) {
+        _imp->button = e->button();
+        _imp->pressPos = e->position().toPoint();
+        _imp->lastPos = _imp->pressPos;
+        _imp->dragging = false;
         e->accept();
     } else {
         QOpenGLWidget::mousePressEvent(e);
@@ -1542,6 +1550,11 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
         e->accept();
 
         return;
+    }
+    // A release that went to a popup or another window never reaches this widget.
+    if ((_imp->button != Qt::NoButton) && !(e->buttons() & _imp->button)) {
+        _imp->button = Qt::NoButton;
+        _imp->dragging = false;
     }
     if (_imp->button == Qt::NoButton) {
         highlightHandleAt(pos);
@@ -1715,6 +1728,9 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
 
         return;
     }
+    // The menu takes the release, so no drag may outlive it.
+    _imp->button = Qt::NoButton;
+    _imp->dragging = false;
     Menu menu(this);
 
     QActionGroup* modes = new QActionGroup(&menu);

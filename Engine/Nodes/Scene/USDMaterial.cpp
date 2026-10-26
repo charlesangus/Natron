@@ -56,6 +56,8 @@ makeTextureKnob(USDMaterial* holder,
     knob->setName(name);
     knob->setHintToolTip(toolTip);
     knob->setAnimationEnabled(false);
+    // The formats USD's Hio image plugins read, since Storm, not a Natron reader, loads the texture.
+    knob->setFileExtensions({ "exr", "tif", "tiff", "tx", "png", "jpg", "jpeg", "tga", "bmp", "hdr", "avif" });
     page->addKnob(knob);
 
     return knob;

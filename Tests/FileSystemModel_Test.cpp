@@ -254,3 +254,39 @@ TEST(FileSystemModelTest, CleanPath) {
     EXPECT_EQ(expectedOutput, output.toStdString()) << " input '" << testCase.input << "'";
   }
 }
+// Non-image file knobs open their dialog with a bare `*`, which has to list every file.
+TEST(FileSystemModelTest, RegexpFilters)
+{
+    MockSortableView sortableView;
+    auto model = std::make_shared<FileSystemModel>();
+    model->initialize(&sortableView);
+
+    const QString usda = QString::fromUtf8("scene.usda");
+    const QString txt = QString::fromUtf8("notes.txt");
+    const QString bare = QString::fromUtf8("README");
+
+    model->setRegexpFilters(QString::fromUtf8("*"));
+    EXPECT_TRUE(model->isAcceptedByRegexps(usda));
+    EXPECT_TRUE(model->isAcceptedByRegexps(txt));
+    EXPECT_TRUE(model->isAcceptedByRegexps(bare));
+
+    model->setRegexpFilters(QString::fromUtf8("*.usd *.usda *.usdc *.usdz *.abc"));
+    EXPECT_TRUE(model->isAcceptedByRegexps(usda));
+    EXPECT_TRUE(model->isAcceptedByRegexps(QString::fromUtf8("SCENE.USDA")));
+    EXPECT_FALSE(model->isAcceptedByRegexps(txt));
+    EXPECT_FALSE(model->isAcceptedByRegexps(bare));
+    EXPECT_FALSE(model->isAcceptedByRegexps(QString::fromUtf8("scene.usda.bak")));
+
+    // A `*` alongside extension patterns still lists everything.
+    model->setRegexpFilters(QString::fromUtf8("*.usda *"));
+    EXPECT_TRUE(model->isAcceptedByRegexps(txt));
+
+    // `*.*` keeps rejecting files without an extension.
+    model->setRegexpFilters(QString::fromUtf8("*.*"));
+    EXPECT_TRUE(model->isAcceptedByRegexps(txt));
+    EXPECT_FALSE(model->isAcceptedByRegexps(bare));
+
+    model->setRegexpFilters(QString());
+    EXPECT_TRUE(model->isAcceptedByRegexps(txt));
+    EXPECT_TRUE(model->isAcceptedByRegexps(bare));
+}

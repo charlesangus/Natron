@@ -156,10 +156,24 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
   - verify: merge two branches with different transforms on one prim, then Append: both branches' ops survive.
   - size: S
 
+- [ ] M20.P4.T5 — USDWrite deletes stale sidecars
+  - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
+  - approach: after a layered write, delete the `<name>_layerN` files in the target folder that this write did not produce, matching only USDWrite's own sidecar pattern for this output name. Delete them after the new files are written, so a failed write leaves the old set intact.
+  - verify: a write that produces 3 sidecars, then removing a layer and writing again, leaves 2 and the main file resolves; unrelated files in the folder are untouched.
+  - size: M
+
+- [ ] M20.P4.T6 — Free GPU Memory is a global action
+  - files: the "Free GPU Memory" menu action, `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, the Vulkan pool and GPU cache owners, a test
+  - approach: one app-wide entry point frees every GPU-resident cache: USDRender engines and stages, Natron's Vulkan pools, and GPU image and texture caches. It waits for or aborts in-flight GPU work as the existing purge does. The menu item and the Python API call it.
+  - verify: after GPU renders, the action drops the Hydra engine count and the Vulkan pool usage to zero, and the next render rebuilds them correctly.
+  - size: M
+
 **Verification gate:** release gate green; strict-GL USDRender test passes; perf numbers for USDRender recorded.
 
 ## Decisions
 
+- 2026-10-26 — **USDWrite conforms its target (user):** a write makes the output folder match the render source, deleting any `<name>_layerN` sidecars this write no longer produces (for example after layers were removed upstream).
+- 2026-10-26 — **Free GPU Memory is global (user):** one app-wide action frees every GPU cache Natron holds: USDRender's Hydra engines and stages, the Vulkan pools, and the GPU image and texture caches. It is not specific to USD.
 - 2026-10-25 — **Redesign around a long-lived scene (user):** the viewer and USDRender hold one long-lived USD stage and one Hydra engine each, fed incremental layer updates, instead of composing a new stage and rebuilding Storm per edit; Reload re-reads layers safely against it. A thorough review of all USD work (done and planned) against the USD code, reference implementations and docs comes first and shapes the new phase.
 - 2026-10-25 — **USDLight normalizes by default (bosley-native-nodes):** Storm scales an unnormalized light by its area, so a default distant light (0.53°) gave about 7e-5 of its Intensity and USDRender came out black. Normalize now defaults on, so Intensity alone sets brightness for every light type. A lost GPU during a USDRender hand-off reports the loss.
 - 2026-10-25 — **USDRender's GL context (bosley-native-nodes):** one serialized context on a dedicated Hydra render thread; every USDRender render queues on it and the caller blocks; the thread holds the context, one Storm engine per node and the FBO. In the GUI the context comes from Qt; with no GUI it is a surfaceless EGL 4.5 compatibility context loaded at run time, and a failure (no EGL, wrong version) is kept and reported on every render. depth.Z is planar camera-space Z, +inf on a miss; primId.id is Cryptomatte's MurmurHash3 of the prim path with the hash→path map in frame metadata. The Hydra libraries move into Engine's link set; Engine does not depend on Gui.

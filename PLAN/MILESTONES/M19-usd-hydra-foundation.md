@@ -174,6 +174,7 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay im
 
 ## Decisions
 
+- 2026-10-26 — **Reload only (user):** a USD file changed on disk is picked up only when Reload is pressed; no file watching. The code already does this: `FileStampRegistry` stats each file once and re-stats only on Reload (`USDRead::purgeCaches`).
 - 2026-10-25 — **Long-lived scene choices (user):** the viewer syncs on a worker thread under a lock; Reload aborts viewer renders and waits for every other render; USDRender keeps a stage and engine per node sharing one GL device, with a way to purge them to free memory; M54 geometry keys on time only when something upstream varies with time.
 - 2026-10-25 — **Redesign around a long-lived scene (user):** the viewer and USDRender hold one long-lived USD stage and one Hydra engine each, fed incremental layer updates, instead of composing a new stage and rebuilding Storm per edit; Reload re-reads layers safely against it. A thorough review of all USD work (done and planned) against the USD code, reference implementations and docs comes first and shapes the new phase.
 - 2026-10-25 — **The scene view holds its stage while shown (bosley-native-nodes):** the viewer's Storm view keeps the composed stage it displays, since it redraws on every repaint; other consumers still release a stage after their evaluation. Storm lives in the scene view widget's own GL context (Natron does not share contexts), created there, released on context loss, with GL state saved and restored around each draw.

@@ -132,25 +132,25 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD/Hydra Foundation's Phase 19.3.
 
-- [ ] M20.P4.T1 — Restack on M19 - USD/Hydra Foundation's head
+- [x] M20.P4.T1 — Restack on M19 - USD/Hydra Foundation's head
   - files: the branch
   - approach: rebase onto the M19 branch after Phase 19.3; resolve the Scene files; every M20 node uses the query pool instead of StageCache.
   - verify: release gate green.
   - size: S
 
-- [ ] M20.P4.T2 — USDRender keeps a stage and engine per node, purgeable
+- [x] M20.P4.T2 — USDRender keeps a stage and engine per node, purgeable
   - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, `USDRender.cpp`, `Tests/Scene/USDRender*_Test.cpp`
   - approach: on the Hydra thread, one `SceneStage` and one `UsdImagingGLEngine` per USDRender node, all sharing one HgiGL through `UsdImagingGLEngine::Parameters::driver`. Each job syncs the stage to the request's stack, then renders at the frame; frames with the same stack only change time. Engines are released when the node is deleted, on cache purge / clear-all-caches, under memory pressure (LRU past a budget), and from a "Free GPU memory" action (user: purgeable).
   - verify: a 10-frame render with one edit between frames 5 and 6 builds one engine; purge frees it and the next render rebuilds; the strict-GL Storm reference still matches.
   - size: M
 
-- [ ] M20.P4.T3 — USDWrite keeps stack order and re-reads through the barrier
+- [x] M20.P4.T3 — USDWrite keeps stack order and re-reads through the barrier
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: layered mode flattens each run of consecutive anonymous layers in place between the external files, so strength order is kept; asset paths are authored anchored and made relative only on write; re-reading its own output goes through the scene write barrier instead of `Reload(true)`.
   - verify: a file read downstream of an authored layer keeps its strength after write → read; relative paths resolve from the written file's folder.
   - size: M
 
-- [ ] M20.P4.T4 — Merge wording and Transform append under merge
+- [x] M20.P4.T4 — Merge wording and Transform append under merge
   - files: this plan's text, `Engine/Nodes/Scene/USDTransform.cpp`, `Tests/Scene/USDMerge_Test.cpp`
   - approach: the plan says a repeated layer keeps its weakest position (as the code does). An Append-mode Transform downstream of a merge authors ops that keep the other branch's xformOps (append to the composed order, not its own branch's).
   - verify: merge two branches with different transforms on one prim, then Append: both branches' ops survive.
@@ -187,3 +187,4 @@ Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD
 - 2026-10-24 — The old M20.P3.T1 was split into the readback render (P3.T1), the headless EGL context (P3.T5), the interop ladder (P3.T4) and the strict GL test (P3.T6); `USDWrite` was re-sized S → M: per the task sizing rule, each is one coherent change, and the export logic plus its tests is not haiku-safe.
 - 2026-10-24 — `USDWrite` has a path-mode knob, relative (default) or absolute: user's call, since relative-only was an arbitrary restriction; relative stays the default so exports can be moved.
 All tasks done at d9bfcc47e (release gate green, Storm reference recorded under llvmpipe). Pending: hardware check on AMD/NVIDIA (zero-copy rung, reference match), screenshots, PR stacked on M19 - USD/Hydra Foundation.
+Phase 20.4 (long-lived scene) done at 6cb13d39e: merged onto M19 - USD/Hydra Foundation's long-lived scene; release gate green incl. the Storm reference; scene viewer GUI scripts pass. Pending: hardware check, perf numbers, user calls on USDWrite sidecar cleanup and Free GPU Memory scope.

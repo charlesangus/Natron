@@ -203,7 +203,7 @@ TEST(SceneReparentTest, GraftsEveryInputsRootsUnderTheDestination)
     EXPECT_EQ(3u, result.getNumLayers());
 
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(result);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_EQ(std::vector<std::string>({ "T1" }), rootPrimNames(stage));
     EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/T1")).GetTypeName());
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Card1/Geo")).IsValid());
@@ -230,9 +230,9 @@ TEST(SceneReparentTest, AnimatedXformOpSurvivesTheGraft)
     const ScenePayload result = reparent(graftUnderT1({ stack({ makeLayer(kCard) }) }), &memo);
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(result);
 
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     const PXR_NS::UsdGeomXformable card(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Card1")));
-    ASSERT_TRUE(card);
+    ASSERT_TRUE(static_cast<bool>(card));
     bool resetsXformStack = false;
     const std::vector<PXR_NS::UsdGeomXformOp> ops = card.GetOrderedXformOps(&resetsXformStack);
     ASSERT_EQ(1u, ops.size());
@@ -250,7 +250,7 @@ TEST(SceneReparentTest, CollidingRootsComposeWithTheLaterInputStronger)
     SceneGraftMemo memo;
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ weak, strong }), &memo));
 
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     const PXR_NS::UsdPrim card = stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Card1"));
     ASSERT_TRUE(card.IsValid());
     int who = 0;
@@ -272,7 +272,7 @@ TEST(SceneReparentTest, AutoRenameTakesTheFirstFreeSuffix)
     std::vector<SceneRootGraft> grafts;
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ first, second, third }, true), &memo, &grafts));
 
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     const char* const paths[] = { "/T1/Card1", "/T1/Card1_1", "/T1/Card1_2" };
     for (int i = 0; i < 3; ++i) {
         const PXR_NS::UsdPrim card = stage->GetPrimAtPath(PXR_NS::SdfPath(paths[i]));
@@ -294,7 +294,7 @@ TEST(SceneReparentTest, NestedDestinationDefinesItsAncestors)
     SceneGraftMemo memo;
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(args, &memo));
 
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_EQ(PXR_NS::TfToken("Scope"), stage->GetPrimAtPath(PXR_NS::SdfPath("/set")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("Scope"), stage->GetPrimAtPath(PXR_NS::SdfPath("/set/props")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/set/props/T1")).GetTypeName());
@@ -310,7 +310,7 @@ TEST(SceneReparentTest, InputsWithoutRootsContributeNothing)
 
     EXPECT_EQ(1u, result.getNumLayers());
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(result);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_EQ(std::vector<std::string>({ "T1" }), rootPrimNames(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1")).GetChildren().empty());
 }
@@ -446,14 +446,14 @@ TEST(SceneReparentTest, PayloadHeldPastItsMemoStillComposes)
         reparent(graftUnderT1({ stack({ makeLayer(sphere(6.)) }) }), &memo);
         const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(held);
         ASSERT_EQ(3u, layers.size());
-        ASSERT_TRUE(layers[2].dependencies);
+        ASSERT_TRUE(static_cast<bool>(layers[2].dependencies));
         ASSERT_EQ(1u, layers[2].dependencies->layers.size());
         wrapperIdentifier = layers[2].dependencies->layers[0]->GetIdentifier();
     }
 
     EXPECT_TRUE(PXR_NS::SdfLayer::Find(wrapperIdentifier));
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(held);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Card1/Geo")).IsValid());
     double radius = 0.;
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Sphere1")).GetAttribute(PXR_NS::TfToken("radius")).Get(&radius));
@@ -465,7 +465,7 @@ TEST(SceneReparentTest, PayloadHeldPastItsMemoStillComposes)
     held = ScenePayload();
     EXPECT_TRUE(PXR_NS::SdfLayer::Find(wrapperIdentifier));
     const PXR_NS::UsdStageRefPtr mergedStage = SceneOps::compose(merged);
-    ASSERT_TRUE(mergedStage);
+    ASSERT_TRUE(static_cast<bool>(mergedStage));
     EXPECT_TRUE(mergedStage->GetPrimAtPath(PXR_NS::SdfPath("/T1/Sphere1")).GetAttribute(PXR_NS::TfToken("radius")).Get(&radius));
     EXPECT_EQ(5., radius);
 }
@@ -481,8 +481,8 @@ TEST(SceneReparentTest, GraftedSamplesKeepTheirInputsRate)
     EXPECT_EQ(48., result.getMetadata().timeCodesPerSecond);
     const PXR_NS::UsdStageRefPtr flat = SceneOps::compose(input);
     const PXR_NS::UsdStageRefPtr grafted = SceneOps::compose(result);
-    ASSERT_TRUE(flat);
-    ASSERT_TRUE(grafted);
+    ASSERT_TRUE(static_cast<bool>(flat));
+    ASSERT_TRUE(static_cast<bool>(grafted));
     for (double time : { 0., 24., 48. }) {
         double flatValue = -1.;
         double graftedValue = -2.;
@@ -536,7 +536,7 @@ TEST(SceneReparentTest, GraftedBindingFollowsItsMaterial)
     std::vector<SceneUnmappedLink> unmapped;
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ input }), &memo, NULL, &unmapped));
 
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_TRUE(unmapped.empty());
     EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/M"), boundMaterial(stage, "/T1/geo"));
     EXPECT_EQ(PXR_NS::SdfPath("/T1/looks/M"), boundMaterial(stage, "/T1/geo/sub"));
@@ -556,7 +556,7 @@ TEST(SceneReparentTest, UnmappableTargetsAreReported)
     std::vector<SceneUnmappedLink> unmapped;
     const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(reparent(graftUnderT1({ input }), &memo, NULL, &unmapped));
 
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     std::vector<std::string> reported;
     for (const SceneUnmappedLink& link : unmapped) {
         EXPECT_EQ(0u, link.inputIndex);

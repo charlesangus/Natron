@@ -361,7 +361,7 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredSublayersTheReadFile)
         ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
 
         PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-        ASSERT_TRUE(layer);
+        ASSERT_TRUE(static_cast<bool>(layer));
         const std::vector<std::string> subLayers = layer->GetSubLayerPaths();
         ASSERT_EQ((std::size_t)1, subLayers.size());
         const QString subLayer = QString::fromStdString(subLayers[0]);
@@ -375,7 +375,7 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredSublayersTheReadFile)
         EXPECT_FALSE(layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")));
 
         PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
-        ASSERT_TRUE(stage);
+        ASSERT_TRUE(static_cast<bool>(stage));
         EXPECT_EQ(PXR_NS::TfToken("Cube"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).GetTypeName());
     }
 }
@@ -445,13 +445,13 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelative
 
     // The read file is the written scene's strongest sublayer, referred to, not copied.
     PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     const std::vector<std::string> subLayers = layer->GetSubLayerPaths();
     ASSERT_FALSE(subLayers.empty());
     EXPECT_EQ(cleanAbsolute(overPath), QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(subLayers[0])))) << subLayers[0];
 
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     const PXR_NS::UsdGeomXformable written(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")));
     ASSERT_TRUE(bool(written));
     EXPECT_EQ(PXR_NS::GfVec3d(0., 7., 0.), written.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation());
@@ -467,13 +467,13 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelative
     NodePtr reread = createReader(path.toStdString());
     ASSERT_TRUE(bool(reread));
     PXR_NS::UsdStageRefPtr before = composeOutput(reread);
-    ASSERT_TRUE(before);
+    ASSERT_TRUE(static_cast<bool>(before));
     EXPECT_EQ(file, textureFileOf(before));
     before.Reset();
     texture->setValue(std::string("textures/oak.png"));
     ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
     PXR_NS::UsdStageRefPtr after = composeOutput(reread);
-    ASSERT_TRUE(after);
+    ASSERT_TRUE(static_cast<bool>(after));
     const std::string oak = textureFileOf(after);
     EXPECT_EQ(QDir::cleanPath(QDir::current().absoluteFilePath(QString::fromUtf8("textures/oak.png"))),
               QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(oak))))
@@ -570,7 +570,7 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
 
     // The written file opens, every sublayer it names is there, and it composes the shorter stack.
     PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     const std::vector<std::string> subLayers = layer->GetSubLayerPaths();
     EXPECT_EQ(2u, subLayers.size());
     for (const std::string& subLayer : subLayers) {
@@ -578,7 +578,7 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredRemovesStaleSidecars)
         EXPECT_TRUE(PXR_NS::SdfLayer::FindOrOpen(subPath.toStdString())) << subLayer;
     }
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Other")).IsValid());
     EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/FromB")).IsValid());
     const PXR_NS::UsdGeomXformable written(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")));
@@ -661,10 +661,10 @@ TEST_F(SceneIntegrationTest, USDWriteFlattenedRemovesStaleSidecarsWithAWarning)
 
     // The flattened file stands on its own: no sublayers, and what the removed sidecars held is in it.
     PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     EXPECT_TRUE(layer->GetSubLayerPaths().empty());
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Other")).IsValid());
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/FromB")).IsValid());
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).IsValid());
@@ -690,7 +690,7 @@ TEST_F(SceneIntegrationTest, USDWriteFrameRangeClipsTheTimeSamples)
     EXPECT_EQ((U64)1, getWriter(writer)->getWriteCount());
 
     PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     EXPECT_EQ(5., layer->GetStartTimeCode());
     EXPECT_EQ(10., layer->GetEndTimeCode());
     const PXR_NS::SdfPath translate("/World/Ball.xformOp:translate");
@@ -738,7 +738,7 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
     EXPECT_TRUE(QFile::exists(overridden));
     EXPECT_FALSE(QFile::exists(original));
     PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(overridden.toStdString());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     EXPECT_EQ(1., layer->GetStartTimeCode());
     EXPECT_EQ(10., layer->GetEndTimeCode());
 }
@@ -816,7 +816,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
 
     // The written layer stack: the flattened node opinions over the read file.
     PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     const std::vector<std::string> subLayers = layer->GetSubLayerPaths();
     ASSERT_EQ((std::size_t)1, subLayers.size());
     EXPECT_TRUE(QDir::isRelativePath(QString::fromStdString(subLayers[0]))) << subLayers[0];
@@ -824,12 +824,12 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     EXPECT_FALSE(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.size")));
     // USDEditTransform: an xform op on the box.
     PXR_NS::SdfPrimSpecHandle box = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Box"));
-    ASSERT_TRUE(box);
+    ASSERT_TRUE(static_cast<bool>(box));
     EXPECT_TRUE(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.xformOpOrder")));
     // USDMaterial: the binding on the card, and the texture relative to the written file.
     EXPECT_TRUE(layer->GetRelationshipAtPath(PXR_NS::SdfPath("/World/Props/Card.material:binding")));
     PXR_NS::SdfAttributeSpecHandle textureFile = layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Props/Card/Red/diffuseColorTexture.inputs:file"));
-    ASSERT_TRUE(textureFile);
+    ASSERT_TRUE(static_cast<bool>(textureFile));
     EXPECT_EQ(std::string("../textures/red.png"), textureFile->GetDefaultValue().Get<PXR_NS::SdfAssetPath>().GetAssetPath());
     // USDXformPrim and USDLight: their prims defined.
     PXR_NS::SdfPrimSpecHandle propsSpec = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Props"));
@@ -839,13 +839,13 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     EXPECT_EQ(PXR_NS::SdfSpecifierDef, keySpec->GetSpecifier());
     // USDPrune: the camera deactivated.
     PXR_NS::SdfPrimSpecHandle camera = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam"));
-    ASSERT_TRUE(camera);
+    ASSERT_TRUE(static_cast<bool>(camera));
     EXPECT_TRUE(camera->HasActive());
     EXPECT_FALSE(camera->GetActive());
 
     // And composed, the file holds the scene the graph built.
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     const PXR_NS::UsdPrim boxPrim = stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box"));
     ASSERT_TRUE(bool(boxPrim));
     EXPECT_EQ(PXR_NS::TfToken("Cube"), boxPrim.GetTypeName());

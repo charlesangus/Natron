@@ -26,14 +26,18 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <list>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QObject>
 #include <QString>
@@ -55,6 +59,7 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
 
@@ -99,6 +104,14 @@ protected:
         connectNodes(_grade, _writer, 0, true);
 
         setPattern(dir);
+
+        // The layout readFlatExr() reads.
+        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(_writer->getKnobByName("bitDepth").get());
+        ASSERT_TRUE(bitDepth != NULL);
+        bitDepth->setValueFromID("32f", 0);
+        KnobChoice* compression = dynamic_cast<KnobChoice*>(_writer->getKnobByName("compression").get());
+        ASSERT_TRUE(compression != NULL);
+        compression->setValueFromID("none", 0);
     }
 
     // Points the Write at `dir`.
@@ -117,13 +130,23 @@ protected:
         return QString::fromStdString(SequenceParsing::generateFileNameFromPattern(_pattern, viewNames, frame, 0));
     }
 
+    // The thread an action passed to renderWithActionAtFrame() runs on.
+    enum ActionThreadEnum {
+        // A thread of its own, as an edit from outside the render that may come from any thread.
+        eActionThreadOwn,
+        // The main thread, for main-thread-only calls such as deactivating a node, as the GUI makes them.
+        eActionThreadMain
+    };
+
     /**
-     * @brief Renders the Write over the whole range, blocking, and runs `action` on a thread of its own once frame
-     * kActionFrame is reported, as an edit from the GUI would come from a thread other than the render's. The render
-     * waits for the action to return, so the action always lands while frames remain to be rendered.
+     * @brief Renders the Write over the whole range, blocking, and runs `action` on `actionThread` once frame
+     * kActionFrame is reported. The render runs on a thread of its own while the main thread processes events, so
+     * the main thread is free to run the action. The render waits for the action to return, so the action always
+     * lands while frames remain to be rendered.
      * Returns the render's exit code, or -1 if it never reported one.
      **/
     int renderWithActionAtFrame(const std::function<void()>& action,
+                                ActionThreadEnum actionThread,
                                 bool* actionRan)
     {
         *actionRan = false;
@@ -134,18 +157,34 @@ protected:
         }
         RenderEnginePtr engine = writerEffect->getRenderEngine();
 
+        // A deactivation runs Python, as an edit may through callbacks.
+        const auto runAction = [&action]() {
+            PythonGILLocker pgl;
+            action();
+        };
+
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool mainActionPending = false;
+        bool mainActionDone = false;
+        bool renderReturned = false;
+
         std::atomic<bool> ran { false };
-        // Runs on the scheduler thread, which nothing pumps this thread's event loop for while the render blocks.
+        // Runs on the scheduler thread, which is in the render's own context: the action must run elsewhere.
         const auto runActionAtFrame = [&](int time, double /*progress*/) {
             if ((time != kActionFrame) || ran.exchange(true)) {
                 return;
             }
-            std::thread actionThread([&action]() {
-                // A deactivation runs Python, as an edit may through callbacks.
-                PythonGILLocker pgl;
-                action();
-            });
-            actionThread.join();
+            if (actionThread == eActionThreadOwn) {
+                std::thread ownThread(runAction);
+                ownThread.join();
+
+                return;
+            }
+            std::unique_lock<std::mutex> lock(mutex);
+            mainActionPending = true;
+            changed.notify_all();
+            changed.wait(lock, [&mainActionDone]() { return mainActionDone; });
         };
         QMetaObject::Connection onFrame = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), runActionAtFrame, Qt::DirectConnection);
         int finishedCode = -1;
@@ -153,7 +192,36 @@ protected:
 
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, kFirstFrame, kLastFrame, 1, false));
-        getApp()->startWritersRendering(eRenderModeBlocking, works);
+        AppInstancePtr app = getApp();
+        std::thread renderThread([&]() {
+            app->startWritersRendering(eRenderModeBlocking, works);
+            appPTR->getAppTLS()->cleanupTLSForThread();
+            std::lock_guard<std::mutex> lock(mutex);
+            renderReturned = true;
+            changed.notify_all();
+        });
+
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            while (!renderReturned) {
+                if (mainActionPending) {
+                    mainActionPending = false;
+                    lock.unlock();
+                    runAction();
+                    lock.lock();
+                    mainActionDone = true;
+                    changed.notify_all();
+                    continue;
+                }
+                lock.unlock();
+                QCoreApplication::processEvents();
+                lock.lock();
+                changed.wait_for(lock, std::chrono::milliseconds(10), [&]() { return renderReturned || mainActionPending; });
+            }
+        }
+        renderThread.join();
+        QCoreApplication::processEvents();
+
         QObject::disconnect(onFrame);
         QObject::disconnect(finished);
         *actionRan = ran.load();
@@ -203,7 +271,7 @@ TEST_F(RenderIsolation, EditUpstreamIsRefusedDuringWriteRender)
     const double before = multiply->getValue(0);
 
     bool actionRan = false;
-    ASSERT_EQ(0, renderWithActionAtFrame([]() { }, &actionRan));
+    ASSERT_EQ(0, renderWithActionAtFrame([]() { }, eActionThreadOwn, &actionRan));
     std::vector<FlatExrImage> reference;
     ASSERT_TRUE(readFrames(&reference));
 
@@ -219,7 +287,7 @@ TEST_F(RenderIsolation, EditUpstreamIsRefusedDuringWriteRender)
             threw = true;
         }
     };
-    const int finishedCode = renderWithActionAtFrame(edit, &actionRan);
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
     EXPECT_FALSE(threw.load());
@@ -277,7 +345,7 @@ TEST_F(RenderIsolation, RefusedPythonWriteRaisesRuntimeError)
         scriptPassed = NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output);
     };
     bool actionRan = false;
-    const int finishedCode = renderWithActionAtFrame(edit, &actionRan);
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
     EXPECT_TRUE(scriptPassed.load()) << error;
@@ -311,7 +379,7 @@ TEST_F(RenderIsolation, BeforeFrameCallbackWritesUpstream)
     beforeFrame->setValue(std::string("renderIsolationBeforeFrame"));
 
     bool actionRan = false;
-    EXPECT_EQ(0, renderWithActionAtFrame([]() { }, &actionRan));
+    EXPECT_EQ(0, renderWithActionAtFrame([]() { }, eActionThreadOwn, &actionRan));
     beforeFrame->setValue(std::string());
 
     EXPECT_DOUBLE_EQ(1.25, multiply->getValue(0));
@@ -336,7 +404,7 @@ TEST_F(RenderIsolation, EditOutsideTheRenderGoesThrough)
         returnCode = (int)looseMultiply->setValue(1.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     };
     bool actionRan = false;
-    const int finishedCode = renderWithActionAtFrame(edit, &actionRan);
+    const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
     EXPECT_NE((int)KnobHelper::eValueChangedReturnCodeNothingChanged, returnCode.load());
@@ -393,7 +461,7 @@ TEST_F(RenderIsolation, DeactivatingUpstreamAbortsWriteRender)
     const std::function<void()> deactivate = [grade]() {
         grade->deactivate(std::list<NodePtr>(), true, false, true, false);
     };
-    const int finishedCode = renderWithActionAtFrame(deactivate, &actionRan);
+    const int finishedCode = renderWithActionAtFrame(deactivate, eActionThreadMain, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
     EXPECT_FALSE(grade->isActivated());

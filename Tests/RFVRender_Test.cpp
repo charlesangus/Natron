@@ -509,7 +509,18 @@ TEST_F(RFVRender, TiledIdentityWalksThroughTheSet)
     NodePtr checker, grade;
     buildGradedChecker(&checker, &grade);
     ASSERT_TRUE(checker && grade);
-    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kTiledIdentityTestSize, kTiledIdentityTestSize, "rfvTiledFormat", 1.));
+    // The checkerboard covers the whole window by its own extent: the project format is set once per
+    // process, so it stays the small one and would leave every identity tile outside the checker's RoD.
+    KnobChoicePtr extent = std::dynamic_pointer_cast<KnobChoice>(checker->getKnobByName(kNativeGeneratorParamExtent));
+    KnobDoublePtr bottomLeft = std::dynamic_pointer_cast<KnobDouble>(checker->getKnobByName(kNativeGeneratorParamBottomLeft));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(checker->getKnobByName(kNativeGeneratorParamSize));
+    ASSERT_TRUE(extent && bottomLeft && size);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    ASSERT_EQ(std::string(kNativeGeneratorExtentSize), extent->getActiveEntry().id);
+    for (int i = 0; i < 2; ++i) {
+        bottomLeft->setValue(0., ViewSpec::all(), i);
+        size->setValue((double)kTiledIdentityTestSize, ViewSpec::all(), i);
+    }
     NodePtr setA = createStringSet("var", "a");
     NodePtr inputA = createNode(QString::fromUtf8(kTestPluginIDCounting));
     NodePtr tiled = createNode(QString::fromUtf8(kTestPluginIDTiledIdentity));

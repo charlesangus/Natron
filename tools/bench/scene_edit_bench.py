@@ -44,7 +44,7 @@ def make_file(argv):
     layer = Sdf.Layer.CreateNew(out)
     with Sdf.ChangeBlock():
         layer.defaultPrim = "World"
-        layer.SetField(Sdf.Path.absoluteRootPath, "upAxis", "Y")
+        layer.pseudoRoot.SetInfo("upAxis", "Y")
         world = Sdf.CreatePrimInLayer(layer, "/World")
         world.specifier = Sdf.SpecifierDef
         world.typeName = "Xform"

@@ -26,6 +26,7 @@
 #include "USDRead.h"
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -87,6 +88,10 @@ struct USDRead::Implementation {
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
     // Their files on disk, in the same order.
     std::vector<std::string> closurePaths;
+    // SceneOps::getFileLayerReloadCount() when closure was walked: authoring skips the walk,
+    // which visits every spec of every layer, while closure starts with the layer it sublayers
+    // and no reload has run since. Reload walks afresh, which also finds files that were missing.
+    std::uint64_t closureReloadCount;
     // The stamps of closurePaths as of the last purge, 0 before any: keys the node, so a Reload
     // that read a changed file again, however deep, re-authors the layer. Taken only when the
     // files are read again, never by an evaluation, so an evaluation cannot re-key the node
@@ -94,12 +99,15 @@ struct USDRead::Implementation {
     std::atomic<U64> closureDigest;
 
     Implementation()
-        : closureDigest(0)
+        : closureReloadCount(0)
+        , closureDigest(0)
     {
     }
 
     void setClosure(const PXR_NS::SdfLayerRefPtr& layer)
     {
+        // Read before the walk, so a reload during it leaves the result marked stale.
+        const std::uint64_t reloadCount = SceneOps::getFileLayerReloadCount();
         std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer) : std::vector<PXR_NS::SdfLayerRefPtr>();
         std::vector<std::string> paths;
         paths.reserve(layers.size());
@@ -109,6 +117,20 @@ struct USDRead::Implementation {
         std::lock_guard<std::mutex> lock(fileLayerMutex);
         closure.swap(layers);
         closurePaths.swap(paths);
+        closureReloadCount = reloadCount;
+    }
+
+    // Walks layer's closure unless the last walk was of layer and no reload has run since: file
+    // layers are never edited, so only a reload changes what they bring in.
+    void updateClosure(const PXR_NS::SdfLayerRefPtr& layer)
+    {
+        {
+            std::lock_guard<std::mutex> lock(fileLayerMutex);
+            if (!closure.empty() && (closure.front() == layer) && (closureReloadCount == SceneOps::getFileLayerReloadCount())) {
+                return;
+            }
+        }
+        setClosure(layer);
     }
 };
 
@@ -312,7 +334,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
         std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
         _imp->fileLayer = fileLayer;
     }
-    _imp->setClosure(fileLayer);
+    _imp->updateClosure(fileLayer);
 
     return true;
 } // USDRead::authorLayer

@@ -362,8 +362,22 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 - CI is green.
 - The user signs off the UAT.
 
+## Phase 101.8: UAT round 1 — presentation
+
+- [ ] M101.P8.T1 — Layer model and panel redesign
+  - files: design note, then `Engine/Nodes/Merge/Merge.*`, the layer-knob framework
+  - approach: a design that replaces the universal layer knob with Merge's own, answers "mask all B layers by A's alpha" directly, and lays the panel out as the user asked; mockup to the user before building.
+  - verify: user sign-off on the mockup, then Xvfb screenshots.
+  - size: L
+- [ ] M101.P8.T2 — Shortcuts and menu
+  - files: the node-menu Python items, `GuiApplicationManager.cpp` shortcuts
+  - approach: ; Mask, ' Stencil, Shift+; Mask all layers, Shift+' Stencil all layers; no In/Out shortcuts; presets in a Merge Presets submenu.
+  - verify: GUI script checks the menu tree and shortcuts.
+  - size: M
+
 ## Decisions
 
+- 2026-10-26 — **UAT round 1 (user):** presentation before correctness. Merge's layer knob replaces the universal layer knob, and the A/B layer model needs a rethink (e.g. how to mask all B layers by A's alpha) because it collides with the global layer control. Layout: Operation with Set BBox, Metadata From and Range From on one line at the top, then a divider; B knobs above A knobs (B is the main input); A layer, A alpha source and A alpha on one line. Shortcuts: ; Mask, ' Stencil, Shift+; Mask all layers, Shift+' Stencil all layers; drop the In and Out shortcuts; the individual merge presets move to a Merge Presets submenu of the Merge menu.
 - 2026-10-25 — **Merge metadata comes from B by default (user):** B, the background/main input, is the default metadata source, not A. This replaces M74's documented "metadata from A" policy for Merge; the policy doc and its test change to B. Range From stays B.
 - 2026-10-25 — **Per-plane limits to check at the P3 gate (bosley-native-nodes):** (1) a per-channel B alpha with A on Universal/PerLayer reads A's same-named layer in the alpha plane, not A's broadcast alpha; (2) layers pair by ID but the input request matches channels, so a same-ID layer with different channels on A reads black; (3) every produced plane is requested from every non-mask input on any render of the node, which may fetch planes the rendered plane doesn't need — measure, and narrow to the rendered plane if the host requests them eagerly; (4) the extra layers follow the layer knob's channel mask. All-matching takes A as the union of the connected A inputs; an empty List merges only the output layer.
 - 2026-10-25 — **Layer modes stay per-plane (bosley-native-nodes):** Merge stays non-multiplanar. A "produced planes" hook consulted by `getComponentsNeededDefault` declares the planes All-matching and List modes produce, and each plane renders separately with A and B read in that plane; Per-channel output alpha is one of those planes (B's alpha layer). The GPU path keeps one plane per query, so P4 holds. Rejected: making Merge multiplanar, which breaks the one-layer GPU path. Non-multiplanar Staged nodes now declare their input layers through `EffectInstance::addInputLayersNeeded`.

@@ -140,3 +140,5 @@ A script's write to a node a running foreground job reads is refused with an err
 - 2026-10-24 — **Created at the user's request (user):** foreground renders block the UI; background renders work from a frozen copy captured at submission; tracker and colour sampler block the UI like a foreground render; only the viewer restarts on a knob change. Kept out of M167 at the user's request.
 All tasks done; debug gate green, the three m177 Xvfb scripts pass on the release AppImage. PR #120 (stacked on M167 - Per-Frame Node Metadata) under review; UAT pending.
 Review round (Claude, PR #120): nine findings fixed (closure gaps, Cancel, queueing, tracking job lifetime), render-job threads propagated to task-graph/tiled/OFX/deep workers, bookkeeping knobs exempt; debug gate green, GUI scripts pass on release. UAT pending.
+
+2026-10-26: UAT approved (user). Merge waits on M167 - Per-Frame Node Metadata (#111), its base, which is still in UAT.

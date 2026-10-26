@@ -54,7 +54,7 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
   - verify: tests: an unconnected Map is bit-identical to before; Map 0 identity, Map 1 equals unmapped, Map 0.5 halves displacement; GPU parity within the existing tolerance.
   - size: M
 
-- [ ] M185.P2.T2 — Icons, cost seeds and docs
+- [x] M185.P2.T2 — Icons, cost seeds and docs
   - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Transform/*.costseed.inc`, `Engine/Nodes/Transform/docs/{ITransform,ICornerPin}.md`, the Map sections of `docs/IDistort.md` and `docs/STMap.md`
   - approach: Per the native checklist; docs state output-space Map sampling, the tear behaviour, and broken concatenation.
   - verify: `ctest -R NativePluginList` passes; docs reviewed at the gate.

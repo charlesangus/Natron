@@ -70,3 +70,4 @@ Exact native I-warps (user, 2026-10-24). Slicing a transform and blending the sl
 - 2026-10-25 — **IDistort and STMap get an optional Map input, not new nodes (user).
 
 **Verification gate:** the full build and ctest pass, including the new suites; GPU parity on lavapipe and RADV. Under Xvfb an ITransform (scale up with a radial Map), an ICornerPin and a Map-scaled IDistort are rendered with Cubic and Impulse filters; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+Rebased on M184 - Variable-Size Filter Kit's head; Codex review round (PR #121): five findings fixed at bd394d4cc/6a0688c79, Map goldens re-recorded; release gate green. GPU seeds pending the GPU host; UAT pending.

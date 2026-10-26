@@ -1993,8 +1993,15 @@ Node::getExtraContextReads() const
     return _imp->effect ? _imp->effect->getExtraContextReads() : RenderContextReadSet();
 }
 
+RenderContextReadSet
+EffectInstance::getOverriddenContextVariables(int /*inputNb*/) const
+{
+    return RenderContextReadSet();
+}
+
 void
-Node::getContextReadSuccessors(std::vector<NodePtr>* successors) const
+Node::getContextReadSuccessors(std::vector<NodePtr>* successors,
+                               std::vector<RenderContextReadSet>* overridden) const
 {
     if (!_imp->effect) {
         return;
@@ -2003,6 +2010,7 @@ Node::getContextReadSuccessors(std::vector<NodePtr>* successors) const
         NodePtr input = getInput(i);
         if (input && (input.get() != this)) {
             successors->push_back(std::move(input));
+            overridden->push_back(_imp->effect->getOverriddenContextVariables((int)i));
         }
     }
     std::set<NodePtr> dependencies;
@@ -2010,9 +2018,33 @@ Node::getContextReadSuccessors(std::vector<NodePtr>* successors) const
     for (const NodePtr& dependency : dependencies) {
         if (dependency && (dependency.get() != this)) {
             successors->push_back(dependency);
+            overridden->push_back(RenderContextReadSet());
         }
     }
 }
+
+namespace {
+
+/**
+ * @brief Merges into reads what a successor reads, less the variables the edge to it overrides.
+ **/
+void
+mergeSuccessorReads(RenderContextReadSet* reads,
+                    const RenderContextReadSet& successorReads,
+                    const RenderContextReadSet& overridden)
+{
+    if (overridden.empty() || overridden.readsAll() || successorReads.readsAll()) {
+        reads->merge(successorReads);
+
+        return;
+    }
+    for (const RenderContextName& name : successorReads.names()) {
+        if (!overridden.contains(name)) {
+            reads->add(name);
+        }
+    }
+}
+} // anonymous namespace
 
 void
 Node::appendOwnContextReads(RenderContextReadSet* reads) const
@@ -2074,6 +2106,7 @@ Node::getUpstreamContextReadSet() const
         const Node* node;
         NodePtr hold;
         std::vector<NodePtr> successors;
+        std::vector<RenderContextReadSet> overridden;
         std::size_t next;
         std::size_t index;
         std::size_t lowlink;
@@ -2098,7 +2131,7 @@ Node::getUpstreamContextReadSet() const
         visit.lowlink = v;
         visit.onStack = true;
         node->appendOwnContextReads(&visit.reads);
-        node->getContextReadSuccessors(&visit.successors);
+        node->getContextReadSuccessors(&visit.successors, &visit.overridden);
         visitOf[node] = v;
         callStack.push_back(v);
         componentStack.push_back(v);
@@ -2108,19 +2141,20 @@ Node::getUpstreamContextReadSet() const
     while (!callStack.empty()) {
         const std::size_t v = callStack.back();
         if (visits[v].next < visits[v].successors.size()) {
-            const NodePtr w = visits[v].successors[visits[v].next++];
+            const std::size_t edge = visits[v].next++;
+            const NodePtr w = visits[v].successors[edge];
             std::unordered_map<const Node*, std::size_t>::const_iterator found = visitOf.find(w.get());
             if (found == visitOf.end()) {
                 RenderContextReadSetConstPtr memo = w->getMemoizedContextReads(generation);
                 if (memo) {
-                    visits[v].reads.merge(*memo);
+                    mergeSuccessorReads(&visits[v].reads, *memo, visits[v].overridden[edge]);
                 } else {
                     open(w.get(), w);
                 }
             } else if (visits[found->second].onStack) {
                 visits[v].lowlink = std::min(visits[v].lowlink, visits[found->second].index);
             } else {
-                visits[v].reads.merge(*visits[found->second].closure);
+                mergeSuccessorReads(&visits[v].reads, *visits[found->second].closure, visits[v].overridden[edge]);
             }
             continue;
         }
@@ -2147,7 +2181,7 @@ Node::getUpstreamContextReadSet() const
             Visit& parent = visits[callStack.back()];
             parent.lowlink = std::min(parent.lowlink, visits[v].lowlink);
             if (!visits[v].onStack) {
-                parent.reads.merge(*visits[v].closure);
+                mergeSuccessorReads(&parent.reads, *visits[v].closure, parent.overridden[parent.next - 1]);
             }
         }
     }

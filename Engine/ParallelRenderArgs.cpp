@@ -26,6 +26,7 @@
 #include "ParallelRenderArgs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <iterator>
 #include <list>
@@ -438,6 +439,10 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
             }
         }
 
+        // The input's metadata, read below for the depth and pixel aspect ratio to pull it at, is
+        // the one of the context it is pulled under.
+        inputContext.install();
+
         {
             ///Notify the node that we're going to render something with the input
             EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
@@ -578,9 +583,10 @@ makeVisitItem(const NodePtr& node,
 }
 
 /**
- * @brief The RoD cache keys the pass has already checked or scheduled: effect, time, view and mipmap level.
+ * @brief The RoD cache keys the pass has already checked or scheduled: effect, time, view, mipmap level and the
+ * context key the effect answers under.
  **/
-typedef std::set<std::tuple<const EffectInstance*, double, int, unsigned int>> WarmedRoDSet;
+typedef std::set<std::tuple<const EffectInstance*, double, int, unsigned int, U64>> WarmedRoDSet;
 
 /**
  * @brief Collects a warm item for each input frame/view the effect needs at time/view whose components, or RoD at the
@@ -601,6 +607,11 @@ collectInputRoDWarmItems(const EffectInstancePtr& effect,
     // getRegionOfDefinition_public runs the action at scale 1 for effects without render scale support.
     const unsigned int inputLevel = (effect->supportsRenderScaleMaybe() == EffectInstance::eSupportsNo) ? 0 : rodMipmapLevel;
     const RenderScale inputScale = RenderScale::fromMipmapLevel(inputLevel);
+    // The inputs answer the effect's queries under the context its actions answer for.
+    RenderContextPtr acting;
+    if (renderContextsInUse()) {
+        ActionContextScope::current(&acting);
+    }
 
     for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
         const EffectInstancePtr input = effect->getInput(it->first);
@@ -615,7 +626,12 @@ collectInputRoDWarmItems(const EffectInstancePtr& effect,
                 for (double f = range->min; f <= range->max; f += 1.) {
                     // Clips query the nearest enabled node upstream, with its own render hash.
                     const EffectInstancePtr target = input->getNearestNonDisabled(f);
-                    if (!target || !warmed->insert(std::make_tuple(target.get(), f, viewIt->first.value(), inputLevel)).second) {
+                    if (!target) {
+                        continue;
+                    }
+                    RenderContextPtr targetContext;
+                    const U64 targetKey = acting ? restrictContextToNode(acting, target->getNode(), &targetContext) : 0;
+                    if (!warmed->insert(std::make_tuple(target.get(), f, viewIt->first.value(), inputLevel, targetKey)).second) {
                         continue;
                     }
                     const U64 targetHash = target->getRenderHash();
@@ -629,6 +645,8 @@ collectInputRoDWarmItems(const EffectInstancePtr& effect,
                     warmItem.time = f;
                     warmItem.view = viewIt->first;
                     warmItem.mipmapLevel = inputLevel;
+                    warmItem.context = targetContext;
+                    warmItem.contextKey = targetKey;
                     warmItems->push_back(warmItem);
                 }
             }
@@ -659,6 +677,8 @@ warmRoDItem(const RequestPassItem& item,
             std::vector<RequestPassItem>* stack)
 {
     const EffectInstancePtr effect = item.node->getEffectInstance();
+    // The effect answers under the context of the consumer that needs its RoD.
+    ActionContextScope acting(item.contextKey != 0, item.context);
     const U64 hash = effect->getRenderHash();
     std::vector<RequestPassItem> warmItems;
 
@@ -836,6 +856,13 @@ visitRequestPassItem(bool useTransforms,
 
     if ( foundFrameView != nodeRequest->frames.end() ) {
         fvRequest = &foundFrameView->second;
+        if (fvRequest->walking && renderContextsInUse()) {
+            // Reached from what it depends on, through inputs and the nodes effects request under
+            // contexts they name: it would wait on itself.
+            effect->setPersistentMessage(eMessageTypeError, EffectInstance::tr("%1 depends on its own output at frame %2 through the contexts its upstream nodes request.").arg(QString::fromUtf8(node->getScriptName_mt_safe().c_str())).arg(time).toStdString());
+
+            return eStatusFailed;
+        }
     } else {
         ///Set up global data specific for this frame view, this is the first time it has been requested so far
 
@@ -924,6 +951,7 @@ visitRequestPassItem(bool useTransforms,
         // be safe in release mode otherwise we hit an infinite recursion
         if ((fvRequest->globalData.inputIdentityTime != time) || (viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant)) {
             ViewIdx inputView = (view != 0 && viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : view;
+            fvRequest->walking = true;
             stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, node, item.contextKey, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2));
             stack->push_back(makeVisitItem(node, item.context, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, canonicalRenderWindow));
 
@@ -937,6 +965,7 @@ visitRequestPassItem(bool useTransforms,
         if (inputEffectIdentity) {
             NodePtr inputIdentityNode = inputEffectIdentity->getNode();
             const RequestPassItem visit = makeVisitItem(inputIdentityNode, item.context, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, canonicalRenderWindow);
+            fvRequest->walking = true;
             stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, inputIdentityNode, visit.contextKey, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb));
             stack->push_back(visit);
 
@@ -1051,7 +1080,7 @@ visitRequestPassItem(bool useTransforms,
             continue;
         }
         const RequestPassItem visit = makeVisitItem(contextRequest.node, contextRequest.context, contextRequest.time, contextRequest.view, upstreamMipmapLevel, contextRequest.roi);
-        if ((contextRequest.node == node) && (visit.contextKey == item.contextKey)) {
+        if ((contextRequest.node == node) && (visit.contextKey == item.contextKey) && (contextRequest.time == time) && (contextRequest.view == view)) {
             // The node would wait on its own output.
             effect->setPersistentMessage(eMessageTypeError, EffectInstance::tr("%1 requests its own output under the context it renders under.").arg(QString::fromUtf8(node->getScriptName_mt_safe().c_str())).toStdString());
 
@@ -1068,6 +1097,7 @@ visitRequestPassItem(bool useTransforms,
         inputItems.push_back(consumerItem);
     }
 
+    fvRequest->walking = true;
     stack->push_back(makeConsumerItem(RequestPassItem::eKindFinish, fvRequest, NodePtr(), item.contextKey, time, view, originalMipmapLevel, -1));
     // Reversed so the first input frame is walked first and each edge item pops right after its visit's whole subtree.
     stack->insert(stack->end(), std::make_move_iterator(inputItems.rbegin()), std::make_move_iterator(inputItems.rend()));
@@ -1095,6 +1125,10 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     // The frame args the pass runs each entry under a nonzero context key under. Kept apart from
     // the frame's, which are made from the finished entries.
     ContextFrameArgsMap passArgs;
+    // The pass answers for its own entries' contexts, whatever context the actions it was started
+    // from answer for.
+    RenderContextPtr acting;
+    ActionContextScope emptyContext(renderContextsInUse() && ActionContextScope::current(&acting) && acting, RenderContextPtr());
 
     // The root renders under the empty context.
     stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
@@ -1120,10 +1154,12 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
             const std::list<ImageLayerDesc> comps = item.consumer->componentsRequested;
             addTaskEdge(requests, item.consumer, item.node, item.contextKey, item.time, item.view, item.mipmapLevel, item.inputNb, comps);
             assignDfsPostOrder(requests, item.consumer);
+            item.consumer->walking = false;
             break;
         }
         case RequestPassItem::eKindFinish:
             assignDfsPostOrder(requests, item.consumer);
+            item.consumer->walking = false;
             break;
         case RequestPassItem::eKindWarmRoD:
             warmRoDItem(item, &warmed, &stack);
@@ -1137,15 +1173,69 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 namespace {
 
 /**
- * @brief Past kContextCountWarningThreshold contexts in request, posts a warning naming the
- * nodes fanning them out on the outermost one and logs it once per render; at or below it, takes
- * the warning back from them.
+ * @brief The contexts reached from the fan-out rendering under the empty context: the most
+ * entries under nonzero keys a node has among those its entry reaches through dependencies under
+ * nonzero keys. Adds the nodes reached to reached.
+ **/
+int
+contextsUnderFanOut(const FrameRequestMap& request,
+                    const NodePtr& fanOut,
+                    std::set<const Node*>* reached)
+{
+    std::map<const Node*, int> entriesPerNode;
+    std::set<NodeCtxKey> seen;
+    std::vector<NodeCtxKey> pending(1, NodeCtxKey(fanOut, 0));
+    int contextCount = 0;
+
+    while (!pending.empty()) {
+        const NodeCtxKey key = pending.back();
+        pending.pop_back();
+        FrameRequestMap::const_iterator found = request.find(key);
+        if ((found == request.end()) || !found->second) {
+            continue;
+        }
+        for (NodeFrameViewRequestData::const_iterator fv = found->second->frames.begin(); fv != found->second->frames.end(); ++fv) {
+            for (const FrameViewRequest::TaskEdge& dependency : fv->second.dependencies) {
+                if (dependency.contextKey == 0) {
+                    continue;
+                }
+                NodePtr dependencyNode = dependency.node.lock();
+                if (!dependencyNode) {
+                    continue;
+                }
+                NodeCtxKey dependencyKey(dependencyNode, dependency.contextKey);
+                if (!seen.insert(dependencyKey).second) {
+                    continue;
+                }
+                reached->insert(dependencyNode.get());
+                contextCount = std::max(contextCount, ++entriesPerNode[dependencyNode.get()]);
+                pending.push_back(std::move(dependencyKey));
+            }
+        }
+    }
+
+    return contextCount;
+}
+
+typedef std::map<NodeWPtr, std::vector<NodeWPtr>, std::owner_less<NodeWPtr>> ContextCountWarningsMap;
+
+std::mutex contextCountWarningsMutex;
+// By tree root, the fan-outs its last request pass posted the warning on.
+ContextCountWarningsMap contextCountWarnings;
+std::atomic<bool> anyContextCountWarnings { false };
+
+/**
+ * @brief Past kContextCountWarningThreshold contexts in request, posts a warning on each fan-out
+ * rendering under the empty context whose contexts, its nested fan-outs' included, are past it
+ * (else, the contexts being spread over several, on the one with the most), naming the fan-outs
+ * multiplying them, and logs it once per render. Takes the warning back from the other fan-outs of
+ * request and from those the previous pass of treeRoot posted it on.
  **/
 void
 reportContextCount(const NodePtr& treeRoot,
                    const FrameRequestMap& request)
 {
-    if (request.contextFanOuts.empty()) {
+    if (request.contextFanOuts.empty() && !anyContextCountWarnings.load()) {
         return;
     }
     // The contexts of the frame are those of the node rendering under the most: the entries of
@@ -1158,28 +1248,87 @@ reportContextCount(const NodePtr& treeRoot,
             contextCount = std::max(contextCount, ++entriesPerNode[it->first.node.get()]);
         }
     }
-    if (contextCount <= kContextCountWarningThreshold) {
+
+    struct Warning {
+        NodePtr node;
+        int contextCount;
+        std::set<const Node*> reached;
+    };
+    std::vector<Warning> warnings;
+    if ((contextCount > kContextCountWarningThreshold) && !request.contextFanOuts.empty()) {
+        Warning most;
+        most.contextCount = -1;
         for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
-            fanOut.first->clearContextCountWarning();
+            if (!fanOut.second) {
+                continue;
+            }
+            Warning warning;
+            warning.node = fanOut.first;
+            warning.contextCount = contextsUnderFanOut(request, fanOut.first, &warning.reached);
+            if (warning.contextCount > kContextCountWarningThreshold) {
+                warnings.push_back(warning);
+            } else if (warning.contextCount > most.contextCount) {
+                most = warning;
+            }
+        }
+        if (warnings.empty() && most.node) {
+            most.contextCount = contextCount;
+            warnings.push_back(most);
+        }
+    }
+
+    std::vector<NodeWPtr> previous;
+    {
+        std::vector<NodeWPtr> posted;
+        for (const Warning& warning : warnings) {
+            posted.push_back(warning.node);
+        }
+        std::lock_guard<std::mutex> l(contextCountWarningsMutex);
+        ContextCountWarningsMap::iterator found = contextCountWarnings.find(treeRoot);
+        if (found != contextCountWarnings.end()) {
+            previous.swap(found->second);
+            if (posted.empty()) {
+                contextCountWarnings.erase(found);
+            } else {
+                found->second.swap(posted);
+            }
+        } else if (!posted.empty()) {
+            contextCountWarnings[treeRoot].swap(posted);
+        }
+        // Roots deleted since they posted one have nothing left to take back.
+        for (ContextCountWarningsMap::iterator it = contextCountWarnings.begin(); it != contextCountWarnings.end();) {
+            if (it->first.expired()) {
+                it = contextCountWarnings.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        anyContextCountWarnings.store(!contextCountWarnings.empty());
+    }
+    auto warned = [&warnings](const Node* node) {
+        for (const Warning& warning : warnings) {
+            if (warning.node.get() == node) {
+                return true;
+            }
         }
 
-        return;
-    }
-    NodePtr outermost = request.contextFanOuts.front().first;
-    QStringList names;
+        return false;
+    };
     for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
-        names.push_back(QString::fromUtf8(fanOut.first->getFullyQualifiedName().c_str()));
-    }
-    for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
-        if (fanOut.second) {
-            outermost = fanOut.first;
-            break;
+        if (!warned(fanOut.first.get())) {
+            fanOut.first->clearContextCountWarning();
         }
     }
-    const QString message = EffectInstance::tr("A frame renders under %1 contexts, more than the %2 expected; they are fanned out by %3.")
-                                .arg(contextCount)
-                                .arg(kContextCountWarningThreshold)
-                                .arg(names.join(QString::fromUtf8(", ")));
+    for (const NodeWPtr& previousNode : previous) {
+        const NodePtr node = previousNode.lock();
+        if (node && !warned(node.get())) {
+            node->clearContextCountWarning();
+        }
+    }
+    if (warnings.empty()) {
+        return;
+    }
+
     U64 renderSequence = 0;
     const EffectInstancePtr rootEffect = treeRoot ? treeRoot->getEffectInstance() : EffectInstancePtr();
     const ParallelRenderArgsPtr rootArgs = rootEffect ? rootEffect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
@@ -1187,10 +1336,22 @@ reportContextCount(const NodePtr& treeRoot,
     if (abortInfo) {
         renderSequence = abortInfo->getRenderSequence();
     }
-    if (outermost->setContextCountWarning(message, renderSequence)) {
-        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(outermost->getLabel_mt_safe().c_str()), QDateTime::currentDateTime(), message);
+    for (const Warning& warning : warnings) {
+        QStringList names;
+        for (const std::pair<NodePtr, bool>& fanOut : request.contextFanOuts) {
+            if ((fanOut.first == warning.node) || warning.reached.count(fanOut.first.get())) {
+                names.push_back(QString::fromUtf8(fanOut.first->getFullyQualifiedName().c_str()));
+            }
+        }
+        const QString message = EffectInstance::tr("A frame renders under %1 contexts, more than the %2 expected; they are fanned out by %3.")
+                                    .arg(warning.contextCount)
+                                    .arg(kContextCountWarningThreshold)
+                                    .arg(names.join(QString::fromUtf8(", ")));
+        if (warning.node->setContextCountWarning(message, renderSequence)) {
+            appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(warning.node->getLabel_mt_safe().c_str()), QDateTime::currentDateTime(), message);
+        }
     }
-}
+} // reportContextCount
 } // namespace
 
 StatusEnum
@@ -1377,7 +1538,60 @@ inputContextScopes()
     return scopes;
 }
 
+typedef std::vector<RenderContextPtr> ActionContextStack;
+
+ActionContextStack&
+actionContexts()
+{
+    thread_local ActionContextStack contexts;
+
+    return contexts;
+}
+
 } // namespace
+
+ActionContextScope::ActionContextScope(bool active,
+                                       const RenderContextPtr& context)
+{
+    if (active) {
+        open(context);
+    }
+}
+
+ActionContextScope::~ActionContextScope()
+{
+    if (!_open) {
+        return;
+    }
+    ActionContextStack& contexts = actionContexts();
+    assert(!contexts.empty());
+    if (!contexts.empty()) {
+        contexts.pop_back();
+    }
+}
+
+void
+ActionContextScope::open(const RenderContextPtr& context)
+{
+    if (_open) {
+        return;
+    }
+    actionContexts().push_back(context);
+    _open = true;
+}
+
+bool
+ActionContextScope::current(RenderContextPtr* context)
+{
+    const ActionContextStack& contexts = actionContexts();
+
+    if (contexts.empty()) {
+        return false;
+    }
+    *context = contexts.back();
+
+    return true;
+}
 
 InputContextScope::InputContextScope(const EffectInstance* consumer,
                                      const RenderContextPtr& context)
@@ -1434,10 +1648,14 @@ ContextFrameArgsScope::install(const EffectInstancePtr& effect,
     }
     effect->setParallelRenderArgsTLS(args);
     _effect = effect;
+    _actions.open(args->context);
 }
 
 InputContextArgs::InputContextArgs(const EffectInstance* consumer,
-                                   const EffectInstancePtr& input)
+                                   const EffectInstancePtr& input,
+                                   int inputNb,
+                                   double time,
+                                   ViewIdx view)
     : _input(input)
 {
     if (!consumer || !input) {
@@ -1447,10 +1665,18 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     const bool scoped = InputContextScope::current(consumer, &context);
     const ParallelRenderArgsPtr consumerArgs = consumer->getParallelRenderArgsTLS();
     if (!scoped) {
-        if (!consumerArgs || !consumerArgs->context) {
+        const RenderContextPtr consumerContext = consumerArgs ? consumerArgs->context : RenderContextPtr();
+        // An input the consumer requests under one context of its own is pulled under it, as the
+        // request pass planned it.
+        std::vector<RenderContextPtr> inputContexts;
+        if ((inputNb >= 0) && consumer->getInputContexts(inputNb, time, view, consumerContext, &inputContexts) && (inputContexts.size() == 1)) {
+            context = inputContexts.front();
+        } else {
+            context = consumerContext;
+        }
+        if (!context) {
             return;
         }
-        context = consumerArgs->context;
     }
     const NodePtr inputNode = input->getNode();
     RenderContextPtr restricted;
@@ -1488,9 +1714,20 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
 void
 InputContextArgs::install()
 {
-    if (_args && !_installed) {
+    if (_installed) {
+        return;
+    }
+    _installed = true;
+    if (_args) {
         _scope.install(_input, _args);
-        _installed = true;
+
+        return;
+    }
+    // Under key 0 the input answers under the empty context, whatever context the actions running
+    // on this thread answer for.
+    RenderContextPtr acting;
+    if (_input && ActionContextScope::current(&acting) && acting) {
+        _emptyActions.open(RenderContextPtr());
     }
 }
 

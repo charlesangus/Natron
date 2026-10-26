@@ -295,6 +295,10 @@ struct FrameViewRequest
 
     /// Every dependency reachable on the first walk of this frame/view has a lower number
     int dfsPostOrder = -1;
+
+    /// Set while the request pass walks what this frame/view depends on: reached again meanwhile,
+    /// it depends on itself.
+    bool walking = false;
 };
 
 struct FrameView_compare_less
@@ -411,8 +415,41 @@ public:
 };
 
 /**
+ * @brief The context the actions run on this thread answer for, for the scope's lifetime: a node
+ * asked for its region of definition, identity, components, metadata or render hash while one is
+ * open answers under it restricted to what the node's output reads, whatever frame args the node
+ * has installed. Opened by ContextFrameArgsScope and InputContextArgs, so the inputs an effect
+ * queries while it renders or is planned under a context answer under that context too, and by
+ * the metadata derivation. A null context stands for the empty one. Scopes nest, innermost wins.
+ **/
+class ActionContextScope {
+public:
+    ActionContextScope() = default;
+    ActionContextScope(bool active,
+                       const RenderContextPtr& context);
+    ~ActionContextScope();
+
+    ActionContextScope(const ActionContextScope&) = delete;
+    ActionContextScope& operator=(const ActionContextScope&) = delete;
+
+    /**
+     * @brief Opens the scope, once.
+     **/
+    void open(const RenderContextPtr& context);
+
+    /**
+     * @brief Whether a scope is open on this thread, and if so its context.
+     **/
+    static bool current(RenderContextPtr* context);
+
+private:
+    bool _open = false;
+};
+
+/**
  * @brief Pushes args on effect's frame args for its lifetime when args is not null, so the effect
- * renders under args' context; pops them on destruction.
+ * renders under args' context, and opens an ActionContextScope for that context; pops them on
+ * destruction.
  **/
 class ContextFrameArgsScope {
 public:
@@ -429,18 +466,26 @@ public:
 
 private:
     EffectInstancePtr _effect;
+    ActionContextScope _actions;
 };
 
 /**
  * @brief The context key input renders under when consumer pulls it, and the frame args for it:
- * the context consumer pulls under (an InputContextScope, else the one it renders under) restricted
- * to what the input's output can read. Key 0 and null args when that is empty, the input's own args
- * then applying unchanged. install() pushes the args on the input for the object's lifetime.
+ * the context consumer pulls under restricted to what the input's output can read. That context is
+ * the one of an open InputContextScope; else, given inputNb, the single context
+ * consumer->getInputContexts() names for that input at time/view; else the one consumer renders
+ * under. An input getInputContexts() names several contexts for is pulled under the one consumer
+ * renders under unless a scope is open. Key 0 and null args when the context is empty, the input's
+ * own args then applying unchanged. install() pushes the args on the input for the object's
+ * lifetime and opens an ActionContextScope for the input's context (the empty one under key 0).
  **/
 class InputContextArgs {
 public:
     InputContextArgs(const EffectInstance* consumer,
-                     const EffectInstancePtr& input);
+                     const EffectInstancePtr& input,
+                     int inputNb = -1,
+                     double time = 0.,
+                     ViewIdx view = ViewIdx(0));
 
     U64 contextKey() const
     {
@@ -459,6 +504,7 @@ private:
     ParallelRenderArgsPtr _args;
     U64 _contextKey = 0;
     ContextFrameArgsScope _scope;
+    ActionContextScope _emptyActions;
     bool _installed = false;
 };
 

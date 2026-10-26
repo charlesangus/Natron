@@ -342,7 +342,10 @@ public:
     /**
      * @brief The render context variables this node's output can depend on: what its own
      * knobs' read sources and getExtraContextReads() name, and the same for every node it
-     * reads, through inputs and through expressions and links. Memoized until the next
+     * reads, through inputs and through expressions and links, less, for an input, the variables
+     * the effect sets on it under every context (see
+     * EffectInstance::getOverriddenContextVariables(); not subtracted when the input reads this
+     * node back through an expression, the two then sharing one read-set). Memoized until the next
      * invalidateRenderContextReads(), which every hash mark raises. MT-safe.
      **/
     RenderContextReadSetConstPtr getUpstreamContextReadSet() const;
@@ -1984,9 +1987,11 @@ private:
 
     /**
      * @brief The nodes whose context reads this node's read-set folds in: its inputs, through
-     * group redirections, and the nodes its knobs' expressions and links read.
+     * group redirections, and the nodes its knobs' expressions and links read. overridden gets,
+     * for each, the variables the effect sets on it, which it does not fold in.
      **/
-    void getContextReadSuccessors(std::vector<NodePtr>* successors) const;
+    void getContextReadSuccessors(std::vector<NodePtr>* successors,
+                                  std::vector<RenderContextReadSet>* overridden) const;
 
     void appendOwnContextReads(RenderContextReadSet* reads) const;
 

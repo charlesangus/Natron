@@ -472,34 +472,35 @@ EffectInstance::getHash() const
 
 namespace {
 
-// The contexts the getMetadata() derivations running on this thread derive under, innermost last.
-// A derivation reads its inputs' metadata, which must be derived under the same context.
-thread_local std::vector<RenderContextPtr> t_metadataDerivationContexts;
-
-class MetadataDerivationContextScope {
-public:
-    MetadataDerivationContextScope(bool active,
-                                   const RenderContextPtr& context)
-        : _active(active)
-    {
-        if (_active) {
-            t_metadataDerivationContexts.push_back(context);
-        }
+/**
+ * @brief Whether the actions running on this thread answer for a context under which effect's
+ * output has another key than the one of args, the frame args installed on it, and if so that key.
+ **/
+bool
+actingUnderOtherKey(const EffectInstance* effect,
+                    const ParallelRenderArgsPtr& args,
+                    U64* key)
+{
+    if (!args || !renderContextsInUse()) {
+        return false;
     }
-
-    ~MetadataDerivationContextScope()
-    {
-        if (_active) {
-            t_metadataDerivationContexts.pop_back();
-        }
+    RenderContextPtr acting;
+    if (!ActionContextScope::current(&acting) || (acting == args->context)) {
+        return false;
     }
+    *key = restrictContextToNode(acting, effect->getNode(), 0);
 
-    MetadataDerivationContextScope(const MetadataDerivationContextScope&) = delete;
-    MetadataDerivationContextScope& operator=(const MetadataDerivationContextScope&) = delete;
+    return *key != args->contextKey;
+}
 
-private:
-    bool _active;
-};
+/**
+ * @brief The render hash args give, for the context they carry.
+ **/
+U64
+argsRenderHash(const ParallelRenderArgsPtr& args)
+{
+    return args->request ? args->request->nodeHash : args->nodeHash;
+}
 } // anonymous namespace
 
 RenderContextPtr
@@ -508,8 +509,9 @@ EffectInstance::getCurrentRenderContext() const
     if (!renderContextsInUse()) {
         return RenderContextPtr();
     }
-    if (!t_metadataDerivationContexts.empty()) {
-        return t_metadataDerivationContexts.back();
+    RenderContextPtr acting;
+    if (ActionContextScope::current(&acting)) {
+        return acting;
     }
     EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
     if (!tls || tls->frameArgs.empty()) {
@@ -541,13 +543,21 @@ EffectInstance::getRenderHash() const
 
     const ParallelRenderArgsPtr &args = tls->frameArgs.back();
 
-    if (args->request) {
-        //A request pass was made, Hash for this thread was already computed, use it
-        return args->request->nodeHash;
+    // Asked under a context its installed args do not carry (an input queried by a consumer acting
+    // under one), the node answers with its context-free hash with that context's key folded in, as
+    // the request pass keys its entry under that context.
+    U64 key = 0;
+    if (actingUnderOtherKey(this, args, &key)) {
+        for (std::list<ParallelRenderArgsPtr>::const_reverse_iterator it = tls->frameArgs.rbegin(); it != tls->frameArgs.rend(); ++it) {
+            if ((*it)->contextKey == 0) {
+                return mixRenderContextKey(argsRenderHash(*it), key);
+            }
+        }
     }
 
-    //Use the hash that was computed when we set the ParallelRenderArgs TLS
-    return args->nodeHash;
+    // A request pass was made, Hash for this thread was already computed, use it; else use the hash
+    // that was computed when we set the ParallelRenderArgs TLS
+    return argsRenderHash(args);
 }
 
 bool
@@ -1088,7 +1098,7 @@ EffectInstance::getImage(int inputNb,
     }
 
     // The input renders under the context this effect pulls it under, for the whole fetch.
-    InputContextArgs inputContext(this, inputEffect);
+    InputContextArgs inputContext(this, inputEffect, inputNb, time, view);
     inputContext.install();
 
     ///Is this input a mask or not
@@ -7073,7 +7083,7 @@ EffectInstance::getMetadata(double time,
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata;
     {
-        MetadataDerivationContextScope derivingUnder(contexts, context);
+        ActionContextScope derivingUnder(contexts, context);
         metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
     }
     U64 hashAfter = 0;
@@ -7112,7 +7122,7 @@ EffectInstance::getTimeInvariantMetadata()
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     NodeMetadataConstPtr metadata;
     // Keyed by the node hash alone, so derived under the empty context whatever this thread renders under.
-    MetadataDerivationContextScope derivingUnder(renderContextsInUse(), RenderContextPtr());
+    ActionContextScope derivingUnder(renderContextsInUse(), RenderContextPtr());
     if (openFX) {
         // The parameters the plug-in sets in its clip preferences come back to
         // refreshMetadataSideEffects(), which waits for this derivation to end.
@@ -7148,7 +7158,14 @@ NodeMetadataConstPtr
 EffectInstance::getRenderMetadata(double time,
                                   ViewIdx view) const
 {
-    return getRenderMetadata(getParallelRenderArgsTLS(), time, view);
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    U64 key = 0;
+    if (actingUnderOtherKey(this, frameArgs, &key)) {
+        // The snapshot is the installed args' context's: under another, the metadata is read live.
+        return const_cast<EffectInstance*>(this)->getMetadata(time, view);
+    }
+
+    return getRenderMetadata(frameArgs, time, view);
 }
 
 NodeMetadataConstPtr
@@ -7157,7 +7174,7 @@ EffectInstance::getRenderMetadata() const
     ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
 
     if (frameArgs) {
-        return getRenderMetadata(frameArgs, frameArgs->time, frameArgs->view);
+        return getRenderMetadata(frameArgs->time, frameArgs->view);
     }
 
     return const_cast<EffectInstance*>(this)->getMetadata(getCurrentTime(), getCurrentView());

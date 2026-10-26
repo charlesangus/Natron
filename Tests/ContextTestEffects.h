@@ -32,6 +32,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -54,6 +55,9 @@
 #define kTestPluginIDContextFanOut "test.natron.built-in.ContextFanOut"
 #define kTestPluginIDContextChain "test.natron.built-in.ContextChain"
 #define kTestPluginIDContextFormat "test.natron.built-in.ContextFormat"
+#define kTestPluginIDContextRegion "test.natron.built-in.ContextRegion"
+#define kTestPluginIDContextUnion "test.natron.built-in.ContextUnion"
+#define kTestPluginIDContextSet "test.natron.built-in.ContextSet"
 
 NATRON_NAMESPACE_ENTER
 
@@ -131,10 +135,30 @@ public:
         return found == regions().end() ? 0 : found->second;
     }
 
+    // The right edge of a region of definition answered under the given value.
+    static void noteRegionRight(const Node* node,
+                                double value,
+                                double right)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        rights()[std::make_pair(node, value)].insert(right);
+    }
+
+    // The right edges of the regions of definition node answered under value.
+    static std::set<double> regionRights(const Node* node,
+                                         double value)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        std::map<std::pair<const Node*, double>, std::set<double>>::const_iterator found = rights().find(std::make_pair(node, value));
+
+        return found == rights().end() ? std::set<double>() : found->second;
+    }
+
     static void reset()
     {
         std::lock_guard<std::mutex> k(mutex());
         regions().clear();
+        rights().clear();
     }
 
 private:
@@ -148,6 +172,13 @@ private:
     static std::map<std::pair<const Node*, double>, int>& regions()
     {
         static std::map<std::pair<const Node*, double>, int> r;
+
+        return r;
+    }
+
+    static std::map<std::pair<const Node*, double>, std::set<double>>& rights()
+    {
+        static std::map<std::pair<const Node*, double>, std::set<double>> r;
 
         return r;
     }
@@ -181,17 +212,25 @@ public:
         return eRenderSafetyFullySafe;
     }
 
-    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
-                                             double /*time*/,
-                                             const RenderScale& /*scale*/,
-                                             ViewIdx /*view*/,
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        ContextTestRegistry::noteRegionOfDefinition(getNode().get(), contextTestValue(getCurrentRenderContext()));
+        const double v = contextTestValue(getCurrentRenderContext());
+        ContextTestRegistry::noteRegionOfDefinition(getNode().get(), v);
+        if (regionOfDefinitionFromInputs()) {
+            const StatusEnum stat = EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
+            ContextTestRegistry::noteRegionRight(getNode().get(), v, rod->x2);
+
+            return stat;
+        }
         rod->x1 = 0.;
         rod->y1 = 0.;
-        rod->x2 = kCountingTestSize;
+        rod->x2 = regionWidth(getCurrentRenderContext());
         rod->y2 = kCountingTestSize;
+        ContextTestRegistry::noteRegionRight(getNode().get(), v, rod->x2);
 
         return eStatusOK;
     }
@@ -212,6 +251,22 @@ protected:
      * @brief What the output holds besides its inputs, under the context the effect renders under.
      **/
     virtual double value(const RenderContextPtr& context) const = 0;
+
+    /**
+     * @brief The width of the region of definition, from the origin, under context.
+     **/
+    virtual double regionWidth(const RenderContextPtr& /*context*/) const
+    {
+        return kCountingTestSize;
+    }
+
+    /**
+     * @brief Whether the region of definition is the host's default, the union of the inputs'.
+     **/
+    virtual bool regionOfDefinitionFromInputs() const
+    {
+        return false;
+    }
 
     /**
      * @brief The contexts input 0 is pulled under, one pull each; the render's own when empty.
@@ -407,6 +462,17 @@ public:
         return true;
     }
 
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL
+    {
+        RenderContextReadSet overridden;
+        if (inputNb == 0) {
+            KnobStringPtr variableKnob = _variable.lock();
+            overridden.add(variableKnob ? RenderContextName::plain(variableKnob->getValue()) : contextTestVariable());
+        }
+
+        return overridden;
+    }
+
 protected:
     virtual std::vector<RenderContextPtr> inputContexts(const RenderContextPtr& context) const OVERRIDE FINAL
     {
@@ -488,7 +554,9 @@ private:
 /**
  * @brief Reads the test variable and, under a value k > 0, requests its own output under k - 1, the
  * way a feedback loop requests its previous iteration. With selfTarget set it requests its own
- * output under the context it renders under instead.
+ * output under the context it renders under instead; with cycle set, under 1 - k, so that the
+ * contexts 0 and 1 request each other; with previousFrame set, at the previous frame under the same
+ * context while the frame is past 0.
  **/
 class ContextChainTestEffect
     : public ContextTestEffectBase {
@@ -518,17 +586,32 @@ public:
                                         std::vector<ContextNodeRequest>* requests) const OVERRIDE FINAL
     {
         KnobBoolPtr selfTargetKnob = _selfTarget.lock();
+        KnobBoolPtr cycleKnob = _cycle.lock();
+        KnobBoolPtr previousFrameKnob = _previousFrame.lock();
         const bool selfTarget = selfTargetKnob && selfTargetKnob->getValue();
+        const bool cycle = cycleKnob && cycleKnob->getValue();
+        const bool previousFrame = previousFrameKnob && previousFrameKnob->getValue();
         const double k = contextTestValue(context);
-        if (!selfTarget && (k <= 0.)) {
-            return;
-        }
         ContextNodeRequest request;
         request.node = getNode();
-        request.context = selfTarget ? context : RenderContext::Builder(context).set(contextTestVariable(), RenderContextValue(k - 1.)).build();
         request.time = time;
         request.view = view;
         request.roi = roi;
+        if (previousFrame) {
+            if (time <= 0.) {
+                return;
+            }
+            request.context = context;
+            request.time = time - 1.;
+        } else if (cycle) {
+            request.context = RenderContext::Builder(context).set(contextTestVariable(), RenderContextValue(1. - k)).build();
+        } else if (selfTarget) {
+            request.context = context;
+        } else if (k > 0.) {
+            request.context = RenderContext::Builder(context).set(contextTestVariable(), RenderContextValue(k - 1.)).build();
+        } else {
+            return;
+        }
         requests->push_back(request);
     }
 
@@ -542,6 +625,20 @@ private:
         selfTarget->setDefaultValue(false);
         page->addKnob(selfTarget);
         _selfTarget = selfTarget;
+
+        KnobBoolPtr cycle = createKnob<KnobBool>(std::string("Cycle"));
+        cycle->setName("cycle");
+        cycle->setAnimationEnabled(false);
+        cycle->setDefaultValue(false);
+        page->addKnob(cycle);
+        _cycle = cycle;
+
+        KnobBoolPtr previousFrame = createKnob<KnobBool>(std::string("Previous Frame"));
+        previousFrame->setName("previousFrame");
+        previousFrame->setAnimationEnabled(false);
+        previousFrame->setDefaultValue(false);
+        page->addKnob(previousFrame);
+        _previousFrame = previousFrame;
     }
 
     virtual double value(const RenderContextPtr& context) const OVERRIDE FINAL
@@ -565,6 +662,8 @@ private:
     }
 
     KnobBoolWPtr _selfTarget;
+    KnobBoolWPtr _cycle;
+    KnobBoolWPtr _previousFrame;
 };
 
 /**
@@ -652,6 +751,194 @@ private:
 
     KnobBoolWPtr _reads;
     std::atomic<int> _derivations;
+};
+
+/**
+ * @brief Reads the test variable v into its region of definition, kCountingTestSize + v wide, and
+ * into its output, which is v.
+ **/
+class ContextRegionTestEffect
+    : public ContextTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ContextRegionTestEffect(n);
+    }
+
+    explicit ContextRegionTestEffect(NodePtr n)
+        : ContextTestEffectBase(n)
+    {
+    }
+
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL
+    {
+        RenderContextReadSet reads;
+        reads.add(contextTestVariable());
+
+        return reads;
+    }
+
+    // The width of the region of definition under a context where the test variable is v.
+    static double regionWidthUnder(double v)
+    {
+        return kCountingTestSize + v;
+    }
+
+private:
+    virtual double regionWidth(const RenderContextPtr& context) const OVERRIDE FINAL
+    {
+        return regionWidthUnder(contextTestValue(context));
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual double value(const RenderContextPtr& context) const OVERRIDE FINAL
+    {
+        return contextTestValue(context);
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDContextRegion,
+        .label = "Test Context Region",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief Reads no variable: its region of definition is the host's default, the union of its
+ * input's, and its output is its input.
+ **/
+class ContextUnionTestEffect
+    : public ContextTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ContextUnionTestEffect(n);
+    }
+
+    explicit ContextUnionTestEffect(NodePtr n)
+        : ContextTestEffectBase(n)
+    {
+    }
+
+private:
+    virtual bool regionOfDefinitionFromInputs() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual double value(const RenderContextPtr& /*context*/) const OVERRIDE FINAL
+    {
+        return 0.;
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDContextUnion,
+        .label = "Test Context Union",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief Requests its input under a single context of its own, which sets the test variable to its
+ * value knob, through getInputContexts() alone: its render pulls the input with getImage() and no
+ * InputContextScope. Its output is its input.
+ **/
+class ContextSetTestEffect
+    : public ContextTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ContextSetTestEffect(n);
+    }
+
+    explicit ContextSetTestEffect(NodePtr n)
+        : ContextTestEffectBase(n)
+    {
+    }
+
+    virtual bool getInputContexts(int inputNb,
+                                  double /*time*/,
+                                  ViewIdx /*view*/,
+                                  const RenderContextPtr& context,
+                                  std::vector<RenderContextPtr>* contexts) const OVERRIDE FINAL
+    {
+        if (inputNb != 0) {
+            return false;
+        }
+        KnobDoublePtr valueKnob = _value.lock();
+        contexts->push_back(RenderContext::Builder(context).set(contextTestVariable(), RenderContextValue(valueKnob ? valueKnob->getValue() : 0.)).build());
+
+        return true;
+    }
+
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL
+    {
+        RenderContextReadSet overridden;
+        if (inputNb == 0) {
+            overridden.add(contextTestVariable());
+        }
+
+        return overridden;
+    }
+
+private:
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobDoublePtr value = createKnob<KnobDouble>(std::string("Value"));
+        value->setName("value");
+        value->setAnimationEnabled(false);
+        value->setDefaultValue(5.);
+        page->addKnob(value);
+        _value = value;
+    }
+
+    virtual double value(const RenderContextPtr& /*context*/) const OVERRIDE FINAL
+    {
+        return 0.;
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDContextSet,
+        .label = "Test Context Set",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    KnobDoubleWPtr _value;
 };
 
 NATRON_NAMESPACE_EXIT

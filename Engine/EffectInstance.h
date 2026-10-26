@@ -1769,6 +1769,14 @@ public:
     virtual RenderContextReadSet getExtraContextReads() const;
 
     /**
+     * @brief The context variables every context getInputContexts() names for input inputNb sets,
+     * whatever the context this effect renders under: what the input reads of them does not reach
+     * this effect's output, so they are left out of its read-set. Names only; empty, the default,
+     * leaves the input's reads whole. Call invalidateRenderContextReads() when the answer changes.
+     **/
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const;
+
+    /**
      * @brief The contexts to request input inputNb under when this effect renders under context
      * (null for the empty context) at time/view. Return false, the default, to request it under
      * context alone. An effect returning several contexts pulls the input once per context in its

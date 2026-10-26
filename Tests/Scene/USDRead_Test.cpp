@@ -28,6 +28,9 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -46,7 +49,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -61,10 +66,19 @@ void
 writeFile(const std::string& path,
           const std::string& content)
 {
-    QFile f(QString::fromStdString(path));
+    {
+        QFile f(QString::fromStdString(path));
 
-    ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
-    f.write(content.c_str(), (qint64)content.size());
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(content.c_str(), (qint64)content.size());
+    }
+    // Each write a second later than the last: USD reloads a layer only when its file's
+    // modification time moved (SdfLayer::_Reload), and two writes can land in one clock tick.
+    static int writes = 0;
+    ++writes;
+    std::error_code ec;
+    std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(writes), ec);
+    ASSERT_FALSE(ec) << ec.message();
 }
 
 // A layer defining one Xform at /<primName>. Two names of different lengths give files of
@@ -73,6 +87,33 @@ std::string
 sceneDefining(const std::string& primName)
 {
     return "#usda 1.0\n\ndef Xform \"" + primName + "\"\n{\n}\n";
+}
+
+// A layer sublayering subLayer.
+std::string
+sceneSublayering(const std::string& subLayer)
+{
+    return "#usda 1.0\n(\n    subLayers = [@./" + subLayer + "@]\n)\n";
+}
+
+// A layer defining /Leaf with a radius.
+std::string
+leafWithRadius(double radius)
+{
+    return "#usda 1.0\n\ndef Sphere \"Leaf\"\n{\n    double radius = " + std::to_string(radius) + "\n}\n";
+}
+
+double
+leafRadius(const PXR_NS::UsdStageRefPtr& stage)
+{
+    double radius = -1.;
+    PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Leaf")) : PXR_NS::UsdPrim();
+
+    if (!prim.IsValid() || !prim.GetAttribute(PXR_NS::TfToken("radius")).Get(&radius)) {
+        return -1.;
+    }
+
+    return radius;
 }
 
 // Whether the stage's only root prim is /<primName>.
@@ -103,7 +144,7 @@ protected:
         if (_projectFrameRate) {
             _projectFrameRate->setValue(_originalFrameRate);
         }
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -162,6 +203,17 @@ protected:
         frameRate->setValue(framesPerSecond);
     }
 
+    // A stage composing payload, borrowed from the pool nodes read their upstream through.
+    static SceneQueryPool::Lease borrow(const ScenePayload& payload)
+    {
+        std::string error;
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+
+        EXPECT_TRUE(lease.isValid()) << error;
+
+        return lease;
+    }
+
     KnobDouble* _projectFrameRate = NULL;
     double _originalFrameRate = 24.;
 };
@@ -184,7 +236,8 @@ TEST_F(USDReadTest, ReadsTheFilesPrimsAndMetadata)
     EXPECT_EQ(std::string("World"), metadata.defaultPrim);
     EXPECT_DOUBLE_EQ(24., metadata.timeCodesPerSecond);
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    SceneQueryPool::Lease lease = borrow(payload);
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).IsValid());
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Ball")).IsValid());
@@ -222,9 +275,9 @@ TEST_F(USDReadTest, ReadsAlembic)
     ScenePayload payload;
     std::string error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
-    ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).IsValid());
+    SceneQueryPool::Lease lease = borrow(payload);
+    ASSERT_TRUE(bool(lease.getStage()));
+    EXPECT_TRUE(lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).IsValid());
 }
 
 TEST_F(USDReadTest, MissingFileFailsWithANodeError)
@@ -274,9 +327,8 @@ TEST_F(USDReadTest, ReloadReadsTheRewrittenFile)
     std::string error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &before, &error)) << error;
     {
-        PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(before);
-        ASSERT_TRUE(bool(stage));
-        EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Before")).IsValid());
+        SceneQueryPool::Lease lease = borrow(before);
+        EXPECT_TRUE(holdsOnly(lease.getStage(), "Before"));
     }
 
     writeFile(path, sceneDefining("AfterTheRewrite"));
@@ -285,16 +337,14 @@ TEST_F(USDReadTest, ReloadReadsTheRewrittenFile)
     ScenePayload after;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &after, &error)) << error;
     EXPECT_NE(before.getStackHash(), after.getStackHash());
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(after);
-    ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/AfterTheRewrite")).IsValid());
-    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Before")).IsValid());
+    SceneQueryPool::Lease lease = borrow(after);
+    EXPECT_TRUE(holdsOnly(lease.getStage(), "AfterTheRewrite"));
 }
 
-// The file's layer is keyed by the file's stamp: once the stamp moves (dropped here as a Read
-// node's purge of the same path drops it), a new USDRead reads the file as it now is on disk,
-// though a cached stage still holds the layer of the old content open. That stage is untouched.
-TEST_F(USDReadTest, ANewReaderReadsTheRewrittenFileOnceItsStampMoves)
+// The file's layer is USD's one layer for the file, shared by every reader: a file rewritten on
+// disk is read again only by a Reload, and a Reload on one reader shows the new content in every
+// stage composing the file, a long-lived one like the viewer's included.
+TEST_F(USDReadTest, AReloadOnOneReaderUpdatesEveryStageReadingTheFile)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -306,26 +356,79 @@ TEST_F(USDReadTest, ANewReaderReadsTheRewrittenFileOnceItsStampMoves)
     ScenePayload before;
     std::string error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(first, &before, &error)) << error;
-    PXR_NS::UsdStageRefPtr cached = StageCache::instance().getStage(before);
-    ASSERT_TRUE(holdsOnly(cached, "Before"));
+    SceneStage shown;
+    shown.sync(before);
+    ASSERT_TRUE(holdsOnly(shown.getStage(), "Before"));
 
     writeFile(path, sceneDefining("AfterTheRewrite"));
-    FileStampRegistry::instance().invalidate(path);
     NodePtr second = createReader(path);
     ASSERT_TRUE(bool(second));
+    ScenePayload stale;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(second, &stale, &error)) << error;
+    {
+        SceneQueryPool::Lease lease = borrow(stale);
+        EXPECT_TRUE(holdsOnly(lease.getStage(), "Before")) << "read again without a Reload";
+    }
 
+    pressReload(second);
+    EXPECT_FALSE(second->hasPersistentMessage());
+    EXPECT_TRUE(holdsOnly(shown.getStage(), "AfterTheRewrite"));
     ScenePayload after;
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(second, &after, &error)) << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(first, &after, &error)) << error;
+    // The other reader re-keyed too: its file's stamp was dropped with the reloading one's.
     EXPECT_NE(before.getStackHash(), after.getStackHash());
-    EXPECT_TRUE(holdsOnly(StageCache::instance().getStage(after), "AfterTheRewrite"));
-    EXPECT_TRUE(holdsOnly(cached, "Before"));
+    SceneQueryPool::Lease lease = borrow(after);
+    EXPECT_TRUE(holdsOnly(lease.getStage(), "AfterTheRewrite"));
 }
 
-// Reload edits no layer: while the main thread rewrites the file and reloads it, a render thread
-// reading the stage composed before, and composing that payload again as a cache miss would,
-// keeps seeing the content it was composed from. A reload in place would change it under the
-// reader on the first composition after a Reload, besides racing the reads.
-TEST_F(USDReadTest, ReloadLeavesTheStagesOfEarlierEvaluationsUntouched)
+// A file two sublayers down changes on disk: the Reload reads it again, in the stage a viewer
+// keeps and in a new evaluation, and the reader's key moves although its own file did not change.
+TEST_F(USDReadTest, ANestedSublayerChangeShowsAfterReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string middle = dir.filePath(QString::fromUtf8("middle.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(leaf, leafWithRadius(1.));
+    writeFile(middle, sceneSublayering("leaf.usda"));
+    writeFile(top, sceneSublayering("middle.usda"));
+    NodePtr reader = createReader(top);
+    ASSERT_TRUE(bool(reader));
+
+    ScenePayload before;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &before, &error)) << error;
+    SceneStage shown;
+    shown.sync(before);
+    ASSERT_DOUBLE_EQ(1., leafRadius(shown.getStage()));
+
+    writeFile(leaf, leafWithRadius(2.));
+    // Nothing reads the disk again until Reload.
+    ScenePayload unchanged;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &unchanged, &error)) << error;
+    EXPECT_TRUE(before.isSameStack(unchanged));
+    EXPECT_DOUBLE_EQ(1., leafRadius(shown.getStage()));
+
+    pressReload(reader);
+    EXPECT_FALSE(reader->hasPersistentMessage());
+    EXPECT_DOUBLE_EQ(2., leafRadius(shown.getStage()));
+    ScenePayload after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &after, &error)) << error;
+    EXPECT_NE(before.getStackHash(), after.getStackHash());
+    {
+        SceneQueryPool::Lease lease = borrow(after);
+        EXPECT_DOUBLE_EQ(2., leafRadius(lease.getStage()));
+    }
+    // A stage opened afresh agrees.
+    EXPECT_DOUBLE_EQ(2., leafRadius(SceneOps::compose(after)));
+}
+
+// Reload edits layers in place behind SceneWriteBarrier: a render thread composing and reading
+// through 20 Reload rounds, through pool leases and through a long-lived stage it guards with a
+// barrier participant as the viewer does, never reads a half-reloaded layer, and every round the
+// long-lived stage shows the rewrite.
+TEST_F(USDReadTest, RenderThreadsComposeThroughTwentyReloads)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -337,18 +440,45 @@ TEST_F(USDReadTest, ReloadLeavesTheStagesOfEarlierEvaluationsUntouched)
     ScenePayload before;
     std::string error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &before, &error)) << error;
-    // Held as the viewer holds the stage it shows, which keeps the file's first layer open.
-    PXR_NS::UsdStageRefPtr shown = StageCache::instance().getStage(before);
-    ASSERT_TRUE(holdsOnly(shown, "Before"));
+    // Held as the viewer holds its stage, read outside any ReadScope under its own lock.
+    std::mutex shownMutex;
+    SceneStage shown;
+    shown.sync(before);
+    ASSERT_TRUE(holdsOnly(shown.getStage(), "Before"));
+    const SceneWriteBarrier::ParticipantId participant = SceneWriteBarrier::registerParticipant([&shownMutex]() { shownMutex.lock(); }, [&shownMutex]() { shownMutex.unlock(); });
 
     std::atomic<bool> done(false);
     std::atomic<int> reads(0);
     std::atomic<int> wrongReads(0);
+    // One root prim, named as one of the rewrites names it.
+    const auto consistent = [](const PXR_NS::UsdStageRefPtr& stage) {
+        if (!stage) {
+            return false;
+        }
+        std::size_t count = 0;
+        for (const PXR_NS::UsdPrim& prim : stage->GetPseudoRoot().GetChildren()) {
+            const std::string name = prim.GetName().GetString();
+            if ((name != "Before") && (name.compare(0, 5, "After") != 0)) {
+                return false;
+            }
+            ++count;
+        }
+
+        return count == 1;
+    };
     std::thread renderThread([&]() {
         while (!done.load()) {
-            const bool shownIntact = holdsOnly(shown, "Before");
-            const bool composedIntact = holdsOnly(SceneOps::compose(before), "Before");
-            if (!shownIntact || !composedIntact) {
+            bool intact = true;
+            {
+                std::string borrowError;
+                SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(before, &borrowError);
+                intact = lease.isValid() && consistent(lease.getStage());
+            }
+            {
+                std::lock_guard<std::mutex> lock(shownMutex);
+                intact = intact && consistent(shown.getStage());
+            }
+            if (!intact) {
                 ++wrongReads;
             }
             ++reads;
@@ -358,38 +488,51 @@ TEST_F(USDReadTest, ReloadLeavesTheStagesOfEarlierEvaluationsUntouched)
         std::this_thread::yield();
     }
 
+    const U64 writesBefore = SceneWriteBarrier::getWriteCount();
     for (int i = 0; i < 20; ++i) {
         // A longer name each time, so every rewrite also changes the file's size.
         const std::string primName = "After" + std::string(i + 1, 'x');
         writeFile(path, sceneDefining(primName));
         pressReload(reader);
+        EXPECT_FALSE(reader->hasPersistentMessage()) << "Rewrite " << i;
+        {
+            std::lock_guard<std::mutex> lock(shownMutex);
+            EXPECT_TRUE(holdsOnly(shown.getStage(), primName)) << "Rewrite " << i;
+        }
         ScenePayload after;
         if (evaluate(reader, &after, &error) != EffectInstance::eRenderRoIRetCodeOk) {
             ADD_FAILURE() << "Rewrite " << i << ": " << error;
             break;
         }
-        EXPECT_TRUE(holdsOnly(StageCache::instance().getStage(after), primName)) << "Rewrite " << i;
+        SceneQueryPool::Lease lease = borrow(after);
+        EXPECT_TRUE(holdsOnly(lease.getStage(), primName)) << "Rewrite " << i;
     }
     done = true;
     renderThread.join();
+    SceneWriteBarrier::unregisterParticipant(participant);
 
+    EXPECT_EQ(writesBefore + 20, SceneWriteBarrier::getWriteCount());
+    EXPECT_LT(0, reads.load());
     EXPECT_EQ(0, wrongReads.load());
 }
 
-TEST_F(USDReadTest, ResettingTheProjectEmptiesTheStageCache)
+TEST_F(USDReadTest, ResettingTheProjectReleasesIdleQueryStages)
 {
     NodePtr reader = createReader(kReferenceScene);
     ASSERT_TRUE(bool(reader));
     ScenePayload payload;
     std::string error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
-    ASSERT_TRUE(bool(StageCache::instance().getStage(payload)));
-    ASSERT_LT((std::size_t)0, StageCache::instance().getNumEntries());
+    {
+        SceneQueryPool::Lease lease = borrow(payload);
+        ASSERT_TRUE(bool(lease.getStage()));
+    }
+    ASSERT_LT((std::size_t)0, SceneQueryPool::instance().getNumIdle());
     reader.reset();
 
     getApp()->getProject()->reset(false, true);
 
-    EXPECT_EQ((std::size_t)0, StageCache::instance().getNumEntries());
+    EXPECT_EQ((std::size_t)0, SceneQueryPool::instance().getNumIdle());
 }
 
 // Time maps by seconds: frame 25 of a 25 fps project is one second in, timecode 24 of a 24 tcps
@@ -415,7 +558,8 @@ TEST_F(USDReadTest, TimeMapsBySecondsWithTheFrameOffset)
         std::string error;
         ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
         *timeCode = SceneOps::frameToTimeCode(payload, frame, getApp()->getProjectFrameRate());
-        PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+        SceneQueryPool::Lease lease = borrow(payload);
+        PXR_NS::UsdStageRefPtr stage = lease.getStage();
         ASSERT_TRUE(bool(stage));
         PXR_NS::UsdAttribute attribute = stage->GetAttributeAtPath(PXR_NS::SdfPath("/Timed.natron:timeCode"));
         ASSERT_TRUE(attribute.IsValid());

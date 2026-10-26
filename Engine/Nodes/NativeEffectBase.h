@@ -596,6 +596,27 @@ protected:
                         std::string* errorMessage) WARN_UNUSED_RETURN;
 
     /**
+     * @brief How a node's layer key covers upstream and time: by default the whole upstream stack
+     * and the project frame range.
+     **/
+    struct SceneLayerReads {
+        SceneLayerMemo::Key::UpstreamReadEnum upstream = SceneLayerMemo::Key::eUpstreamReadWholeStack;
+        // For eUpstreamReadFacts: a hash of every upstream fact the author reads.
+        U64 factsDigest = 0;
+        bool frameRange = true;
+    };
+
+    /**
+     * @brief emitSceneLayer(), keyed on only what reads says the node reads, so an upstream edit
+     * re-authors this layer only when something it reads changed. author must read nothing more.
+     **/
+    bool emitSceneLayer(const ScenePayload& upstream,
+                        const SceneLayerReads& reads,
+                        const SceneLayerMemo::AuthorFunc& author,
+                        ScenePayload* output,
+                        std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Makes the next emitSceneLayer() author a new layer, for a change none of its inputs
      * see.
      **/

@@ -31,6 +31,7 @@
 #include <string>
 
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ParallelRenderArgs.h"
 
 NATRON_NAMESPACE_ENTER
@@ -98,6 +99,10 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return eRenderRoIRetCodeFailed;
     }
     *outputScene = ScenePayload();
+
+    // An evaluation reads layers and opens files from start to end: a layer reload waits for it,
+    // and one waiting holds new evaluations off. Re-entrant, so only the outermost one counts.
+    SceneWriteBarrier::ReadScope read;
 
     // Same guard as renderDeepRoI(): a render clone forwards to the main instance, which owns
     // the node's memoized layer and the TLS.

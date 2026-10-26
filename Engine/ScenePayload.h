@@ -76,7 +76,7 @@ struct ScenePayloadImpl;
  * layers themselves are never edited once they are in a payload.
  *
  * USD types never appear here. Code that needs the layers or the composed stage goes through
- * Engine/Nodes/Scene/ (SceneOps, StageCache), the only place pxr headers are included.
+ * Engine/Nodes/Scene/ (SceneOps, SceneStage, SceneQueryPool), the only place pxr headers are included.
  **/
 class ScenePayload {
 public:

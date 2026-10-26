@@ -1371,7 +1371,7 @@ AppManager::clearAllCaches()
     clearDiskCache();
     clearNodeCache();
     _imp->_deepImageCache->clear();
-    SceneCaches::clearComposedStages();
+    SceneCaches::releaseIdleQueryStages();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {

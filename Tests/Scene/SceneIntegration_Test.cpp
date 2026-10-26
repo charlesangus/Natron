@@ -40,7 +40,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -48,14 +48,14 @@
 NATRON_NAMESPACE_USING
 
 // The headless end-to-end path a viewer takes: USDRead, the scene action through a Dot, the
-// composed stage from the StageCache, and what the stage holds. If USD's libraries or plug-ins
+// stage a query borrows from the SceneQueryPool, and what the stage holds. If USD's libraries or plug-ins
 // fail to load at run time, it fails here rather than in the GUI.
 class SceneIntegrationTest
     : public BaseTest {
 protected:
     virtual void TearDown() OVERRIDE
     {
-        StageCache::instance().clear();
+        SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
     }
@@ -78,10 +78,10 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
               dot->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
         << error;
 
-    PXR_NS::UsdStageRefPtr stage = StageCache::instance().getStage(payload);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    ASSERT_TRUE(lease.isValid()) << error;
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
-    // The cache hands every consumer of the stack the same stage.
-    EXPECT_EQ(stage, StageCache::instance().getStage(payload));
 
     const char* const prims[] = { "/World", "/World/Box", "/World/Ball", "/World/Cam" };
     for (const char* path : prims) {

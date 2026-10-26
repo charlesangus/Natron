@@ -28,7 +28,6 @@
 
 #include "Global/Macros.h"
 
-#include <atomic>
 #include <memory>
 #include <string>
 
@@ -85,8 +84,9 @@ public:
     virtual ~USDRead();
 
     /**
-     * @brief Drops the file's stamp and the memoized layer, so the next evaluation authors the
-     * layer again and opens the file anew if it changed on disk. Edits no USD layer.
+     * @brief Drops the stamps of the file and the files it brings in, and the memoized layer, so
+     * the next evaluation authors the layer again. Edits no USD layer: the Reload button reloads
+     * them in place.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
 
@@ -117,10 +117,6 @@ private:
     KnobFileWPtr _filename;
     KnobDoubleWPtr _frameOffset;
     KnobButtonWPtr _reload;
-
-    // A process-wide unique token taken by each Reload, 0 before any: keys the node and the file's
-    // layer, so a Reload reads the file again even when its stamp did not move.
-    std::atomic<U64> _reloadGeneration;
 
     std::unique_ptr<Implementation> _imp;
 };

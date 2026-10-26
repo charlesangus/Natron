@@ -3173,9 +3173,9 @@ Project::doResetEnd(bool aboutToQuit)
     } else {
         clearNodesNonBlocking();
     }
-    // The cached stages compose the closed project's layers and keep the files they read open, so a
-    // file changed on disk since is read again by the next project.
-    SceneCaches::clearComposedStages();
+    // Idle query stages compose the closed project's layers and keep the files they read open, so
+    // a file changed on disk since is read again by the next project.
+    SceneCaches::releaseIdleQueryStages();
 
     if (!aboutToQuit) {
         {

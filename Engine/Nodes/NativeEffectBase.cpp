@@ -863,6 +863,16 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
                                  ScenePayload* output,
                                  std::string* errorMessage)
 {
+    return emitSceneLayer(upstream, SceneLayerReads(), author, output, errorMessage);
+}
+
+bool
+NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
+                                 const SceneLayerReads& reads,
+                                 const SceneLayerMemo::AuthorFunc& author,
+                                 ScenePayload* output,
+                                 std::string* errorMessage)
+{
     NodePtr node = getNode();
     AppInstancePtr app = getApp();
 
@@ -894,6 +904,9 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
     key.nodeDigest = h.finalize();
     app->getProject()->getFrameRange(&key.firstFrame, &key.lastFrame);
     key.framesPerSecond = app->getProject()->getProjectFrameRate();
+    key.upstreamRead = reads.upstream;
+    key.factsDigest = reads.factsDigest;
+    key.readsFrameRange = reads.frameRange;
 
     return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage);
 } // NativeEffectBase::emitSceneLayer

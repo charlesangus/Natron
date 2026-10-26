@@ -54,11 +54,17 @@ NATRON_NAMESPACE_ENTER
  * @brief Draws a scene with Storm (UsdImagingGLEngine on HgiGL) into a framebuffer of the GL
  * context current when its methods run, with a ground grid over it, and picks prims at pixels.
  *
- * Holds the composed stage it shows, fetched from StageCache, for as long as it shows it: the
- * stage is drawn at every repaint, not once per evaluation. The engine lives in the context that
- * was current at the first render() and must be released with releaseGL() in that context.
+ * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
+ * an edit upstream reaches the engine as the stage's change notices, which it applies to the
+ * changed prims alone. The engine is made
+ * once per GL context, at the first render() in it, and must be released with releaseGL() in
+ * that context: when the context goes away or the renderer does, never because the scene changed.
  *
- * Main thread only, except prepareStage().
+ * The stage and the engine are guarded by one lock, the viewer lock: syncScene() holds it while
+ * it edits the stage, and render(), pick(), frameScene() and getStageCameraPaths() while they read.
+ * It also takes part in SceneWriteBarrier, so a layer reload keeps them all out.
+ *
+ * syncScene() may run on any thread; everything else is for the main thread.
  **/
 class SceneViewportRenderer {
 public:
@@ -82,25 +88,42 @@ public:
 
     ~SceneViewportRenderer();
 
+    enum RenderStatusEnum {
+        eRenderStatusDone = 0, // the image is final
+        eRenderStatusRefining, // Storm has not converged; another render would refine the image
+        eRenderStatusBusy // a sync holds the viewer lock: nothing was drawn
+    };
+
     /**
-     * @brief Composes payload's stage, through StageCache, on the calling thread, so the main
-     * thread's setScene() finds it composed. MT-safe.
+     * @brief Syncs the renderer's stage to payload, under the viewer lock, on the calling thread.
+     * Shows nothing for an empty payload. Returns false with *error set if USD is unusable.
+     * MT-safe; does not move the camera.
      **/
-    static void prepareStage(const ScenePayload& payload);
+    bool syncScene(const ScenePayload& payload, std::string* error);
 
     /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
      * camera is framed on the scene the first time a scene is shown, and kept for later scenes.
-     * Returns false with *error set if USD is unusable or could not compose the stage, and then
-     * shows nothing.
+     * Returns false with *error set if USD is unusable, and then shows nothing. Syncs on the
+     * calling thread.
      **/
     bool setScene(const ScenePayload& payload, double frame, double framesPerSecond, std::string* error);
 
     void setFrame(double frame, double framesPerSecond);
 
+    // Shows nothing. Keeps the stage and the engine for the next scene.
     void clearScene();
 
     bool hasScene() const;
+
+    // Whether the free camera has been framed on a scene, or placed, yet.
+    bool isFramed() const;
+
+    // How many engines this renderer has made: one per GL context it rendered in.
+    U64 getEngineCount() const;
+
+    // How many engines every renderer of the process has made.
+    static U64 getEngineConstructionCount();
 
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
@@ -154,6 +177,12 @@ public:
     bool render(unsigned int fbo, int width, int height);
 
     /**
+     * @brief render(), unless a sync holds the viewer lock, in which case nothing is drawn and the
+     * framebuffer keeps what it had. For paints, which must not wait for a sync.
+     **/
+    RenderStatusEnum renderIfIdle(unsigned int fbo, int width, int height);
+
+    /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
      * a width x height view, or empty if none is. Needs the context of render() current.
      **/
@@ -166,6 +195,8 @@ public:
     static void getBackgroundColor(float rgb[3]);
 
 private:
+    bool renderLocked(unsigned int fbo, int width, int height);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };
@@ -174,6 +205,9 @@ private:
  * @brief The viewer tab's view of a scene input: SceneViewportRenderer in a QOpenGLWidget, with
  * the camera driven from the mouse, prim picking, and a context menu for the draw mode and the
  * camera to look through. Shows an error message in place of the scene when there is one.
+ *
+ * setScene() hands the payload to a worker thread, which syncs the renderer's stage; a paint that
+ * finds the worker syncing keeps the last frame, and the widget repaints once the sync is done.
  **/
 class SceneViewport
     : public QOpenGLWidget {
@@ -186,7 +220,14 @@ public:
 
     ~SceneViewport() override;
 
+    /**
+     * @brief Shows payload once the worker has synced it; a newer call before that replaces it.
+     * The free camera is framed on the first scene shown.
+     **/
     void setScene(const ScenePayload& payload, double frame, double framesPerSecond);
+
+    // Whether every setScene(), setError() and clearScene() so far has been synced.
+    bool isSceneSynced() const;
 
     void setFrame(double frame, double framesPerSecond);
 
@@ -228,9 +269,16 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
-    // Mirrors the error and whether a scene is shown into the natronSceneError and
-    // natronSceneShown properties.
+    // Mirrors the error, whether a scene is shown, whether every request is synced and how many
+    // engines the renderer made into the natronSceneError, natronSceneShown, natronSceneSynced
+    // and natronSceneEngineCount properties.
     void publishState();
+
+    // Queues payload for the worker; the error shown once it is synced.
+    void requestSync(const ScenePayload& payload, const QString& error);
+
+    // Main thread: the worker synced request serial, with error set on failure.
+    void onSynced(U64 serial, bool ok, const QString& error);
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

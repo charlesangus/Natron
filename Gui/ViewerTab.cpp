@@ -959,16 +959,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( wrapperNode.get(), SIGNAL(inputLabelChanged(int,QString)), this, SLOT(onInputNameChanged(int,QString)) );
     QObject::connect( _imp->viewerNode, SIGNAL(clipPreferencesChanged()), this, SLOT(onClipPreferencesChanged()) );
     QObject::connect(_imp->viewerNode, &ViewerInstance::activeInputDataKindChanged, this, &ViewerTab::onActiveInputDataKindChanged);
-    {
-        // Composes the stage on the render thread that evaluated the scene, so the main thread
-        // only finds it in the cache.
-        ViewerInstance* viewerNode = _imp->viewerNode;
-        QObject::connect(viewerNode, &ViewerInstance::sceneEvaluated, viewerNode, [viewerNode](int textureIndex) {
-            ScenePayload scene;
-            if ( (textureIndex == 0) && viewerNode->getLastEvaluatedScene(0, &scene, NULL) ) {
-                SceneViewportRenderer::prepareStage(scene);
-            } }, Qt::DirectConnection);
-    }
+    // The scene viewport syncs its stage on its own worker thread, off the main thread.
     QObject::connect(_imp->viewerNode, &ViewerInstance::sceneEvaluated, this, &ViewerTab::onSceneEvaluated, Qt::QueuedConnection);
     QObject::connect( _imp->viewerNode, SIGNAL(availableComponentsChanged()), this, SLOT(onAvailableComponentsChanged()) );
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>( wrapperNode.get() );
@@ -1122,7 +1113,7 @@ ViewerTab::onActiveInputDataKindChanged()
         onSceneEvaluated(0);
     } else {
         _imp->sceneViewport->hide();
-        // Lets go of the stage it held.
+        // Lets go of the scene's layers; the viewport keeps its stage and engine for the next one.
         _imp->sceneViewport->clearScene();
         _imp->viewer->show();
     }

@@ -26,11 +26,17 @@
 #include "SceneViewport.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <QActionGroup>
 #include <QContextMenuEvent>
+#include <QDateTime>
 #include <QKeyEvent>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -38,7 +44,8 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
@@ -197,27 +204,60 @@ const GLenum StormGLStateGuard::kCaps[StormGLStateGuard::kNumCaps] = {
 };
 } // anon namespace
 
+std::atomic<U64> engineConstructionCount(0);
+
 struct SceneViewportRenderer::Implementation {
-    ScenePayload payload;
-    UsdStageRefPtr stage;
-    double timeCode = 0.;
-    bool zUp = false;
-    double metersPerUnit = 0.01;
+    // The viewer lock: held while sync edits the stage, and while anything reads the stage or
+    // touches the engine (whose stage scene index queues the stage's change notices without a
+    // lock of its own, OpenUSD v26.08 usdImaging/stageSceneIndex.cpp).
+    std::mutex stageMutex;
+    // Created by the first sync and kept for the renderer's life: the engine binds the first
+    // stage it renders for good (v26.08 usdImagingGL/engine.cpp, PrepareBatch populates once).
+    std::unique_ptr<SceneStage> sceneStage;
+    SceneWriteBarrier::ParticipantId participant = 0;
+
+    // Written by sync on whichever thread runs it, read by the main thread.
+    std::atomic<bool> shown;
+    std::atomic<bool> zUp;
+    std::atomic<double> metersPerUnit;
+    std::atomic<double> timeCodesPerSecond;
+    std::atomic<double> frame;
+    std::atomic<double> framesPerSecond;
+
+    // Main thread only.
     DrawModeEnum drawMode = eDrawModeShaded;
     bool showGrid = true;
     FreeCamera freeCamera;
     bool framedOnce = false;
     std::string lookThrough;
     std::string selected;
-
     std::unique_ptr<UsdImagingGLEngine> engine;
-    // The stage the engine was populated with: an engine shows one stage for its whole life.
-    UsdStageRefPtr engineStage;
+    U64 engineCount = 0;
 
     Implementation()
+        : shown(false)
+        , zUp(false)
+        , metersPerUnit(0.01)
+        , timeCodesPerSecond(24.)
+        , frame(0.)
+        , framesPerSecond(24.)
     {
         freeCamera.azimuth = 35.;
         freeCamera.elevation = 25.;
+    }
+
+    // The stage shown, null when none is. Needs stageMutex.
+    UsdStageRefPtr currentStage() const
+    {
+        return (shown && sceneStage) ? sceneStage->getStage() : UsdStageRefPtr();
+    }
+
+    // The project frame mapped by seconds, as SceneOps::frameToTimeCode.
+    double timeCode() const
+    {
+        const double fps = framesPerSecond.load();
+
+        return (fps > 0.) ? (frame.load() * timeCodesPerSecond.load() / fps) : frame.load();
     }
 
     GfVec3d worldUp() const
@@ -246,6 +286,7 @@ struct SceneViewportRenderer::Implementation {
 
     UsdGeomCamera lookThroughCamera() const
     {
+        const UsdStageRefPtr stage = currentStage();
         if (!stage || lookThrough.empty() || !SdfPath::IsValidPathString(lookThrough)) {
             return UsdGeomCamera();
         }
@@ -260,7 +301,7 @@ struct SceneViewportRenderer::Implementation {
         const double aspect = double(std::max(width, 1)) / double(std::max(height, 1));
 
         if (UsdGeomCamera camera = lookThroughCamera()) {
-            GfCamera gfCamera = camera.GetCamera(UsdTimeCode(timeCode));
+            GfCamera gfCamera = camera.GetCamera(UsdTimeCode(timeCode()));
             // Keeps the camera's vertical aperture, as usdview does without a camera mask.
             CameraUtilConformWindow(&gfCamera, CameraUtilMatchVertically, aspect);
 
@@ -282,7 +323,7 @@ struct SceneViewportRenderer::Implementation {
     {
         UsdImagingGLRenderParams params;
 
-        params.frame = UsdTimeCode(timeCode);
+        params.frame = UsdTimeCode(timeCode());
         params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
         params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
         params.highlight = true;
@@ -316,19 +357,21 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
-    // Needs the GL context current. False if there is nothing to draw.
+    // Needs the GL context current and stageMutex. False if there is nothing to draw. The engine
+    // is made once per GL context and kept through every edit of the stage: it hears of them
+    // through the stage's notices and updates on its next render.
     bool ensureEngine()
     {
-        if (!stage) {
+        if (!currentStage()) {
             return false;
         }
-        if (engine && (engineStage == stage)) {
+        if (engine) {
             return true;
         }
-        engine.reset();
-        engineStage = stage;
         UsdImagingGLEngine::Parameters parameters;
         engine.reset(new UsdImagingGLEngine(parameters));
+        ++engineCount;
+        ++engineConstructionCount;
         engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
         applySelection();
 
@@ -369,7 +412,7 @@ struct SceneViewportRenderer::Implementation {
     // Storm's presented depth.
     void drawGrid(const GfFrustum& frustum) const
     {
-        const double mpu = (metersPerUnit > 0.) ? metersPerUnit : 0.01;
+        const double mpu = (metersPerUnit.load() > 0.) ? metersPerUnit.load() : 0.01;
         const double distance = std::max(frustum.GetPosition().GetLength(), freeCamera.distance);
         const double distanceMeters = std::max(distance * mpu, 1e-6);
         const double spacing = std::pow(10., std::floor(std::log10(distanceMeters * 0.5))) / mpu;
@@ -437,10 +480,16 @@ struct SceneViewportRenderer::Implementation {
 SceneViewportRenderer::SceneViewportRenderer()
     : _imp(new Implementation)
 {
+    // A layer reload edits layers the stage composes: it waits until no paint, pick or sync is
+    // reading the stage, and keeps them out until it is done.
+    std::mutex* stageMutex = &_imp->stageMutex;
+    _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
+                                                               [stageMutex]() { stageMutex->unlock(); });
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
+    SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
@@ -448,15 +497,43 @@ SceneViewportRenderer::~SceneViewportRenderer()
     }
 }
 
-void
-SceneViewportRenderer::prepareStage(const ScenePayload& payload)
+bool
+SceneViewportRenderer::syncScene(const ScenePayload& payload,
+                                 std::string* error)
 {
-    std::string error;
+    std::string runtimeError;
 
-    if (payload.isEmpty() || !SceneOps::checkUsdRuntime(&error)) {
-        return;
+    if (!SceneOps::checkUsdRuntime(&runtimeError)) {
+        _imp->shown = false;
+        if (error) {
+            *error = runtimeError;
+        }
+
+        return false;
     }
-    (void)StageCache::instance().getStage(payload);
+
+    // Before the viewer lock, the order every reader takes them in.
+    SceneWriteBarrier::ReadScope read;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    if (!_imp->sceneStage) {
+        _imp->sceneStage.reset(new SceneStage);
+    }
+    if (!_imp->sceneStage->isValid()) {
+        _imp->shown = false;
+        if (error) {
+            *error = "OpenUSD could not open a stage for the scene.";
+        }
+
+        return false;
+    }
+    _imp->sceneStage->sync(payload);
+    const SceneMetadata& metadata = payload.getMetadata();
+    _imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
+    _imp->metersPerUnit = metadata.metersPerUnit;
+    _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
+    _imp->shown = !payload.isEmpty();
+
+    return true;
 }
 
 bool
@@ -465,30 +542,10 @@ SceneViewportRenderer::setScene(const ScenePayload& payload,
                                 double framesPerSecond,
                                 std::string* error)
 {
-    std::string runtimeError;
-
-    if (!SceneOps::checkUsdRuntime(&runtimeError)) {
-        clearScene();
-        if (error) {
-            *error = runtimeError;
-        }
-
-        return false;
-    }
-    UsdStageRefPtr stage = StageCache::instance().getStage(payload);
-    if (!stage) {
-        clearScene();
-        if (error) {
-            *error = "OpenUSD could not compose the scene.";
-        }
-
-        return false;
-    }
-    _imp->payload = payload;
-    _imp->stage = stage;
-    _imp->zUp = (payload.getMetadata().upAxis == SceneMetadata::eUpAxisZ);
-    _imp->metersPerUnit = payload.getMetadata().metersPerUnit;
     setFrame(frame, framesPerSecond);
+    if (!syncScene(payload, error)) {
+        return false;
+    }
     if (!_imp->framedOnce) {
         frameScene();
     }
@@ -500,26 +557,45 @@ void
 SceneViewportRenderer::setFrame(double frame,
                                 double framesPerSecond)
 {
-    _imp->timeCode = _imp->stage ? SceneOps::frameToTimeCode(_imp->payload, frame, framesPerSecond) : frame;
+    _imp->frame = frame;
+    _imp->framesPerSecond = framesPerSecond;
 }
 
 void
 SceneViewportRenderer::clearScene()
 {
-    _imp->payload = ScenePayload();
-    _imp->stage.Reset();
+    // Keeps the stage and the engine: the next scene is synced into them.
+    syncScene(ScenePayload(), nullptr);
 }
 
 bool
 SceneViewportRenderer::hasScene() const
 {
-    return bool(_imp->stage);
+    return _imp->shown;
 }
 
 double
 SceneViewportRenderer::getTimeCode() const
 {
-    return _imp->timeCode;
+    return _imp->timeCode();
+}
+
+bool
+SceneViewportRenderer::isFramed() const
+{
+    return _imp->framedOnce;
+}
+
+U64
+SceneViewportRenderer::getEngineCount() const
+{
+    return _imp->engineCount;
+}
+
+U64
+SceneViewportRenderer::getEngineConstructionCount()
+{
+    return engineConstructionCount.load();
 }
 
 void
@@ -566,11 +642,16 @@ void
 SceneViewportRenderer::frameScene()
 {
     _imp->lookThrough.clear();
-    if (!_imp->stage) {
-        return;
+    GfRange3d range;
+    {
+        std::lock_guard<std::mutex> lock(_imp->stageMutex);
+        const UsdStageRefPtr stage = _imp->currentStage();
+        if (!stage) {
+            return;
+        }
+        UsdGeomBBoxCache bboxes(UsdTimeCode(_imp->timeCode()), { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
+        range = bboxes.ComputeWorldBound(stage->GetPseudoRoot()).ComputeAlignedRange();
     }
-    UsdGeomBBoxCache bboxes(UsdTimeCode(_imp->timeCode), { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
-    const GfRange3d range = bboxes.ComputeWorldBound(_imp->stage->GetPseudoRoot()).ComputeAlignedRange();
     if (range.IsEmpty()) {
         return;
     }
@@ -624,10 +705,12 @@ SceneViewportRenderer::getStageCameraPaths() const
 {
     std::vector<std::string> paths;
 
-    if (!_imp->stage) {
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const UsdStageRefPtr stage = _imp->currentStage();
+    if (!stage) {
         return paths;
     }
-    for (const UsdPrim& prim : _imp->stage->Traverse()) {
+    for (const UsdPrim& prim : stage->Traverse()) {
         if (prim.IsA<UsdGeomCamera>()) {
             paths.push_back(prim.GetPath().GetString());
         }
@@ -652,6 +735,7 @@ void
 SceneViewportRenderer::setSelectedPrim(const std::string& path)
 {
     _imp->selected = path;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
     _imp->applySelection();
 }
 
@@ -665,6 +749,30 @@ bool
 SceneViewportRenderer::render(unsigned int fbo,
                               int width,
                               int height)
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    return renderLocked(fbo, width, height);
+}
+
+SceneViewportRenderer::RenderStatusEnum
+SceneViewportRenderer::renderIfIdle(unsigned int fbo,
+                                    int width,
+                                    int height)
+{
+    std::unique_lock<std::mutex> lock(_imp->stageMutex, std::try_to_lock);
+
+    if (!lock.owns_lock()) {
+        return eRenderStatusBusy;
+    }
+
+    return renderLocked(fbo, width, height) ? eRenderStatusDone : eRenderStatusRefining;
+}
+
+bool
+SceneViewportRenderer::renderLocked(unsigned int fbo,
+                                    int width,
+                                    int height)
 {
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return true;
@@ -684,12 +792,13 @@ SceneViewportRenderer::render(unsigned int fbo,
         return true;
     }
 
+    const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     _imp->setCamera(frustum, width, height, fbo);
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
-        _imp->engine->Render(_imp->stage->GetPseudoRoot(), params);
+        _imp->engine->Render(stage->GetPseudoRoot(), params);
         converged = _imp->engine->IsConverged();
     }
 
@@ -705,7 +814,7 @@ SceneViewportRenderer::render(unsigned int fbo,
     }
 
     return converged;
-} // render
+} // renderLocked
 
 std::string
 SceneViewportRenderer::pick(int x,
@@ -716,11 +825,13 @@ SceneViewportRenderer::pick(int x,
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return std::string();
     }
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
 
     if (!_imp->ensureEngine()) {
         return std::string();
     }
+    const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     // The pixel's centre in normalized device coordinates, y up, and a one-pixel window.
     const GfVec2d centre(2. * (x + 0.5) / width - 1., 1. - 2. * (y + 0.5) / height);
@@ -730,7 +841,7 @@ SceneViewportRenderer::pick(int x,
     pickParams.resolveMode = HdxPickTokens->resolveNearestToCenter;
     UsdImagingGLEngine::IntersectionResultVector results;
     if (!_imp->engine->TestIntersection(pickParams, pickFrustum.ComputeViewMatrix(), pickFrustum.ComputeProjectionMatrix(),
-                                        _imp->stage->GetPseudoRoot(), _imp->renderParams(), &results)
+                                        stage->GetPseudoRoot(), _imp->renderParams(), &results)
         || results.empty()) {
         return std::string();
     }
@@ -741,8 +852,9 @@ SceneViewportRenderer::pick(int x,
 void
 SceneViewportRenderer::releaseGL()
 {
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
     _imp->engine.reset();
-    _imp->engineStage.Reset();
 }
 
 void
@@ -764,17 +876,21 @@ struct SceneViewport::Implementation {
     QPoint lastPos;
     bool dragging = false;
 
-    // Destroys the renderer's engine, its GL objects and the stage it holds, in the widget's
-    // context, so none outlives the scene it drew.
-    void releaseEngine(QOpenGLWidget* widget)
-    {
-        if (!glInitialized || !widget->context()) {
-            return;
-        }
-        widget->makeCurrent();
-        renderer.releaseGL();
-        widget->doneCurrent();
-    }
+    // The worker syncing the renderer's stage, and the latest payload waiting for it. A newer
+    // request replaces one the worker has not taken yet.
+    std::thread worker;
+    std::mutex queueMutex;
+    std::condition_variable queueChanged;
+    bool quit = false;
+    bool hasPending = false;
+    ScenePayload pending;
+    U64 pendingSerial = 0;
+
+    // Main thread: the last request made, the last one synced, and the error the last request
+    // shows once synced.
+    U64 requestedSerial = 0;
+    U64 syncedSerial = 0;
+    QString requestedError;
 };
 
 SceneViewport::SceneViewport(QWidget* parent)
@@ -784,11 +900,91 @@ SceneViewport::SceneViewport(QWidget* parent)
     setFocusPolicy(Qt::ClickFocus);
     setMouseTracking(false);
     setObjectName(QString::fromUtf8("SceneViewport"));
+    // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
+    // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
+    // framebuffer's content between paints; not checked against Qt's source.
+    setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+
+    Implementation* imp = _imp.get();
+    _imp->worker = std::thread([this, imp]() {
+        for (;;) {
+            ScenePayload payload;
+            U64 serial = 0;
+            {
+                std::unique_lock<std::mutex> lock(imp->queueMutex);
+                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending; });
+                if (imp->quit) {
+                    return;
+                }
+                payload = imp->pending;
+                imp->pending = ScenePayload();
+                imp->hasPending = false;
+                serial = imp->pendingSerial;
+            }
+            std::string error;
+            const bool ok = imp->renderer.syncScene(payload, &error);
+            const QString qerror = QString::fromStdString(error);
+            // Dropped by Qt if the widget is gone by then.
+            QMetaObject::invokeMethod(this, [this, serial, ok, qerror]() { onSynced(serial, ok, qerror); }, Qt::QueuedConnection);
+        }
+    });
+    publishState();
 }
 
 SceneViewport::~SceneViewport()
 {
+    {
+        std::lock_guard<std::mutex> lock(_imp->queueMutex);
+        _imp->quit = true;
+    }
+    _imp->queueChanged.notify_all();
+    if (_imp->worker.joinable()) {
+        _imp->worker.join();
+    }
     GLContextLoss::releaseNow(this);
+}
+
+void
+SceneViewport::requestSync(const ScenePayload& payload,
+                           const QString& error)
+{
+    _imp->requestedError = error;
+    {
+        std::lock_guard<std::mutex> lock(_imp->queueMutex);
+        _imp->pending = payload;
+        _imp->hasPending = true;
+        _imp->pendingSerial = ++_imp->requestedSerial;
+    }
+    _imp->queueChanged.notify_one();
+    publishState();
+}
+
+void
+SceneViewport::onSynced(U64 serial,
+                        bool ok,
+                        const QString& error)
+{
+    _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    if (serial != _imp->requestedSerial) {
+        // A newer request is on its way.
+        publishState();
+
+        return;
+    }
+    _imp->error = ok ? _imp->requestedError : error;
+    if (ok && _imp->renderer.hasScene() && !_imp->renderer.isFramed()) {
+        _imp->renderer.frameScene();
+    }
+    // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
+    setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+    publishState();
+    update();
+}
+
+bool
+SceneViewport::isSceneSynced() const
+{
+    return _imp->syncedSerial == _imp->requestedSerial;
 }
 
 void
@@ -796,15 +992,8 @@ SceneViewport::setScene(const ScenePayload& payload,
                         double frame,
                         double framesPerSecond)
 {
-    std::string error;
-
-    if (_imp->renderer.setScene(payload, frame, framesPerSecond, &error)) {
-        _imp->error.clear();
-    } else {
-        _imp->error = QString::fromStdString(error);
-    }
-    publishState();
-    update();
+    _imp->renderer.setFrame(frame, framesPerSecond);
+    requestSync(payload, QString());
 }
 
 void
@@ -818,20 +1007,18 @@ SceneViewport::setFrame(double frame,
 void
 SceneViewport::setError(const QString& message)
 {
-    _imp->renderer.clearScene();
-    _imp->releaseEngine(this);
+    // Shown at once; the stage lets go of the scene's layers once the worker syncs it empty. The
+    // engine stays.
     _imp->error = message;
-    publishState();
+    requestSync(ScenePayload(), message);
     update();
 }
 
 void
 SceneViewport::clearScene()
 {
-    _imp->renderer.clearScene();
-    _imp->releaseEngine(this);
     _imp->error.clear();
-    publishState();
+    requestSync(ScenePayload(), QString());
     update();
 }
 
@@ -841,6 +1028,8 @@ SceneViewport::publishState()
 {
     setProperty("natronSceneError", _imp->error);
     setProperty("natronSceneShown", _imp->renderer.hasScene());
+    setProperty("natronSceneSynced", isSceneSynced());
+    setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
 }
 
 const QString&
@@ -940,7 +1129,14 @@ SceneViewport::paintGL()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
-    const bool converged = _imp->renderer.render(defaultFramebufferObject(), w, h);
+    const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
+    if (status == SceneViewportRenderer::eRenderStatusBusy) {
+        // The worker is syncing; it asks for a repaint when it is done.
+        return;
+    }
+    const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    // The engine is made at the first render in a context.
+    setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
@@ -973,8 +1169,10 @@ SceneViewport::paintGL()
         painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, hud);
     }
     painter.end();
-
-    if (!converged) {
+    if (converged) {
+        // When the last finished frame was drawn, for benchmarks and scripts.
+        setProperty("natronSceneLastPaintMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+    } else {
         update();
     }
 } // paintGL

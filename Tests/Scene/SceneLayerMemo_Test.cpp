@@ -40,7 +40,9 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/StageCache.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_USING
@@ -180,63 +182,113 @@ TEST(SceneLayerMemoTest, InvalidateForcesAuthoring)
     EXPECT_NE(topLayer(first), topLayer(second));
 }
 
-TEST(StageCacheTest, RepeatedStackHitsAndNewStackMisses)
+namespace {
+int
+sourceValue(const PXR_NS::UsdStageRefPtr& stage)
 {
-    StageCache cache(4);
-    const ScenePayload a = makePayload(1);
-    const ScenePayload b = makePayload(2);
-
-    PXR_NS::UsdStageRefPtr first = cache.getStage(a);
-    ASSERT_TRUE(bool(first));
-    EXPECT_EQ((U64)0, cache.getHitCount());
-    EXPECT_EQ((U64)1, cache.getMissCount());
-
-    PXR_NS::UsdStageRefPtr again = cache.getStage(a);
-    EXPECT_EQ(first, again);
-    EXPECT_EQ((U64)1, cache.getHitCount());
-
-    PXR_NS::UsdStageRefPtr other = cache.getStage(b);
-    ASSERT_TRUE(bool(other));
-    EXPECT_NE(first, other);
-    EXPECT_EQ((U64)2, cache.getMissCount());
-    EXPECT_EQ((std::size_t)2, cache.getNumEntries());
-
     int value = 0;
-    PXR_NS::UsdPrim prim = other->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath));
-    ASSERT_TRUE(prim.IsValid());
-    EXPECT_TRUE(prim.GetAttribute(PXR_NS::TfToken(kSceneTestSourceAttribute)).Get(&value));
-    EXPECT_EQ(2, value);
-}
+    PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath)) : PXR_NS::UsdPrim();
 
-TEST(StageCacheTest, EvictsTheLeastRecentlyUsedStack)
+    if (!prim.IsValid() || !prim.GetAttribute(PXR_NS::TfToken(kSceneTestSourceAttribute)).Get(&value)) {
+        return -1;
+    }
+
+    return value;
+}
+} // anonymous namespace
+
+TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
 {
-    StageCache cache(2);
+    SceneQueryPool pool(4);
     const ScenePayload a = makePayload(1);
     const ScenePayload b = makePayload(2);
-    const ScenePayload c = makePayload(3);
+    std::string error;
+    const U64 opensBefore = SceneOps::getStageOpenCount();
+    PXR_NS::UsdStage* stageA = nullptr;
+    {
+        SceneQueryPool::Lease lease = pool.borrow(a, &error);
+        ASSERT_TRUE(lease.isValid()) << error;
+        EXPECT_EQ(1, sourceValue(lease.getStage()));
+        stageA = lease.getStage().operator->();
+        EXPECT_EQ((std::size_t)0, pool.getNumIdle());
+    }
+    EXPECT_EQ((std::size_t)1, pool.getNumIdle());
 
-    PXR_NS::UsdStageRefPtr stageA = cache.getStage(a);
-    cache.getStage(b);
-    // Touching a makes b the least recently used.
-    EXPECT_EQ(stageA, cache.getStage(a));
-    cache.getStage(c);
-    EXPECT_EQ((std::size_t)2, cache.getNumEntries());
+    {
+        // The idle stage is synced to the new stack rather than a new one opened.
+        SceneQueryPool::Lease lease = pool.borrow(b, &error);
+        ASSERT_TRUE(lease.isValid()) << error;
+        EXPECT_EQ(stageA, lease.getStage().operator->());
+        EXPECT_EQ(2, sourceValue(lease.getStage()));
 
-    const U64 missesBefore = cache.getMissCount();
-    EXPECT_EQ(stageA, cache.getStage(a));
-    EXPECT_EQ(missesBefore, cache.getMissCount());
-    cache.getStage(b);
-    EXPECT_EQ(missesBefore + 1, cache.getMissCount());
+        // A second borrower at the same time gets a stage of its own.
+        SceneQueryPool::Lease other = pool.borrow(a, &error);
+        ASSERT_TRUE(other.isValid()) << error;
+        EXPECT_NE(lease.getStage(), other.getStage());
+        EXPECT_EQ(1, sourceValue(other.getStage()));
+    }
+    EXPECT_EQ((std::size_t)2, pool.getNumIdle());
+    EXPECT_EQ(opensBefore + 2, SceneOps::getStageOpenCount());
 
-    cache.clear();
-    EXPECT_EQ((std::size_t)0, cache.getNumEntries());
+    {
+        // The stage last synced to a stack is the one handed out for it again.
+        SceneQueryPool::Lease lease = pool.borrow(b, &error);
+        EXPECT_EQ(stageA, lease.getStage().operator->());
+        EXPECT_EQ(2, sourceValue(lease.getStage()));
+    }
+    EXPECT_EQ(opensBefore + 2, SceneOps::getStageOpenCount());
 }
 
-TEST(StageCacheTest, EmptyPayloadGivesNoStage)
+TEST(SceneQueryPoolTest, KeepsAtMostItsCapacityAndReleasesIdleStages)
 {
-    StageCache cache(2);
+    SceneQueryPool pool(2);
+    std::string error;
+    {
+        SceneQueryPool::Lease first = pool.borrow(makePayload(1), &error);
+        SceneQueryPool::Lease second = pool.borrow(makePayload(2), &error);
+        SceneQueryPool::Lease third = pool.borrow(makePayload(3), &error);
+        ASSERT_TRUE(first.isValid() && second.isValid() && third.isValid()) << error;
+        // Released early: the lease is invalid afterwards and gives nothing back twice.
+        third.release();
+        EXPECT_FALSE(third.isValid());
+        EXPECT_EQ((std::size_t)1, pool.getNumIdle());
+    }
+    EXPECT_EQ((std::size_t)2, pool.getNumIdle());
+    pool.releaseIdle();
+    EXPECT_EQ((std::size_t)0, pool.getNumIdle());
+}
 
-    EXPECT_FALSE(bool(cache.getStage(ScenePayload())));
+TEST(SceneQueryPoolTest, EmptyPayloadGivesAnEmptyStage)
+{
+    SceneQueryPool pool(2);
+    std::string error;
+    SceneQueryPool::Lease lease = pool.borrow(ScenePayload(), &error);
+
+    ASSERT_TRUE(lease.isValid()) << error;
+    EXPECT_EQ(-1, sourceValue(lease.getStage()));
+    EXPECT_TRUE(lease.getStage()->GetPseudoRoot().GetChildren().empty());
+}
+
+// A lease holds the write barrier's read side: a layer reload cannot start while one is out, and a
+// thread holding one is refused rather than deadlocked.
+TEST(SceneQueryPoolTest, ALeaseKeepsLayerWritesOut)
+{
+    SceneQueryPool pool(2);
+    std::string error;
+    SceneQueryPool::Lease lease = pool.borrow(makePayload(1), &error);
+
+    ASSERT_TRUE(lease.isValid()) << error;
+    EXPECT_TRUE(SceneWriteBarrier::isReadingOnThisThread());
+    bool wrote = false;
+    std::string writeError;
+    EXPECT_FALSE(SceneWriteBarrier::runExclusive([&wrote]() { wrote = true; }, &writeError));
+    EXPECT_FALSE(wrote);
+    EXPECT_FALSE(writeError.empty());
+
+    lease.release();
+    EXPECT_FALSE(SceneWriteBarrier::isReadingOnThisThread());
+    EXPECT_TRUE(SceneWriteBarrier::runExclusive([&wrote]() { wrote = true; }, &writeError)) << writeError;
+    EXPECT_TRUE(wrote);
 }
 
 // Source -> Op -> Op, evaluated through the scene action: a knob change re-authors the changed
@@ -364,4 +416,187 @@ TEST_F(SceneLayerChainTest, ChangingAMiddleNodeLeavesUpstreamUntouched)
     ASSERT_EQ((std::size_t)3, afterLayers.size());
     EXPECT_EQ(beforeLayers[0].layer, afterLayers[0].layer);
     EXPECT_NE(beforeLayers[1].layer, afterLayers[1].layer);
+}
+
+// Source -> 30 Ops. Each op's Upstream Read knob picks what its layer key covers.
+class SceneLongChainTest
+    : public BaseTest {
+protected:
+    static const int kChainLength = 30;
+
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+
+        _source = createNode(QString::fromUtf8(kTestPluginIDSceneSource));
+        ASSERT_TRUE(_source != NULL);
+        NodePtr previous = _source;
+        for (int i = 0; i < kChainLength; ++i) {
+            NodePtr op = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
+            ASSERT_TRUE(op != NULL);
+            connectNodes(previous, op, 0, true);
+            _ops.push_back(op);
+            previous = op;
+        }
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        for (std::vector<NodePtr>::reverse_iterator it = _ops.rbegin(); it != _ops.rend(); ++it) {
+            (*it)->destroyNode(false, false);
+        }
+        _ops.clear();
+        if (_source) {
+            _source->destroyNode(false, false);
+        }
+        _source.reset();
+        SceneQueryPool::instance().releaseIdle();
+
+        BaseTest::TearDown();
+    }
+
+    EffectInstance::RenderRoIRetCode evaluate(ScenePayload* payload, std::string* error)
+    {
+        return _ops.back()->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), payload, error);
+    }
+
+    static U64 authorCount(const NodePtr& node)
+    {
+        if (SceneTestSource* source = dynamic_cast<SceneTestSource*>(node->getEffectInstance().get())) {
+            return source->getLayerAuthorCount();
+        }
+        SceneTestOp* op = dynamic_cast<SceneTestOp*>(node->getEffectInstance().get());
+
+        return op ? op->getLayerAuthorCount() : 0;
+    }
+
+    U64 totalAuthorCount() const
+    {
+        U64 total = authorCount(_source);
+
+        for (const NodePtr& op : _ops) {
+            total += authorCount(op);
+        }
+
+        return total;
+    }
+
+    static void setInt(const NodePtr& node, const char* name, int value)
+    {
+        KnobInt* knob = dynamic_cast<KnobInt*>(node->getKnobByName(name).get());
+
+        ASSERT_TRUE(knob != NULL) << name;
+        knob->setValue(value);
+    }
+
+    void setUpstreamRead(int mode)
+    {
+        for (const NodePtr& op : _ops) {
+            setInt(op, "upstreamRead", mode);
+        }
+    }
+
+    NodePtr _source;
+    std::vector<NodePtr> _ops;
+};
+
+// A consumer following the chain, like the viewer or a node querying its upstream, keeps its
+// stage: edits at the head sync it in place rather than opening a stage per edit, and the work
+// per edit grows with the chain only through the layers that edit re-authors.
+TEST_F(SceneLongChainTest, HeadEditsSyncOneStageWithoutOpeningAnother)
+{
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ((std::size_t)(kChainLength + 1), payload.getNumLayers());
+
+    SceneStage viewer;
+    viewer.sync(payload);
+    SceneQueryPool pool(1);
+    {
+        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        ASSERT_TRUE(lease.isValid()) << error;
+    }
+    const U64 opens = SceneOps::getStageOpenCount();
+
+    for (int edit = 1; edit <= 5; ++edit) {
+        const U64 authoredBefore = totalAuthorCount();
+        setInt(_source, "value", edit);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+        // Keyed on the whole stack: the head and every op below it, once each.
+        EXPECT_EQ(authoredBefore + kChainLength + 1, totalAuthorCount()) << "edit " << edit;
+
+        EXPECT_TRUE(viewer.sync(payload));
+        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        ASSERT_TRUE(lease.isValid()) << error;
+        int value = 0;
+        PXR_NS::UsdPrim prim = viewer.getStage()->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath));
+        EXPECT_TRUE(prim.GetAttribute(PXR_NS::TfToken(kSceneTestSourceAttribute)).Get(&value));
+        EXPECT_EQ(edit, value);
+        prim = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath));
+        EXPECT_TRUE(prim.GetAttribute(PXR_NS::TfToken(kSceneTestSourceAttribute)).Get(&value));
+        EXPECT_EQ(edit, value);
+    }
+    EXPECT_EQ(opens, SceneOps::getStageOpenCount());
+}
+
+// Ops that read nothing upstream: an edit at the head re-authors the head's layer alone, and the
+// ops' memoized layers are re-stacked on the new stack, which still composes the edit.
+TEST_F(SceneLongChainTest, AHeadEditReAuthorsOneLayerWhenNothingDownstreamReadsIt)
+{
+    setUpstreamRead(1);
+    ScenePayload before, after;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&before, &error)) << error;
+    const U64 authoredBefore = totalAuthorCount();
+    EXPECT_EQ((U64)(kChainLength + 1), authoredBefore);
+
+    setInt(_source, "value", 42);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&after, &error)) << error;
+    EXPECT_EQ(authoredBefore + 1, totalAuthorCount());
+    EXPECT_EQ((U64)2, authorCount(_source));
+    EXPECT_FALSE(before.isSameStack(after));
+
+    const std::vector<SceneLayerEntry> beforeLayers = SceneOps::getLayers(before);
+    const std::vector<SceneLayerEntry> afterLayers = SceneOps::getLayers(after);
+    ASSERT_EQ(beforeLayers.size(), afterLayers.size());
+    EXPECT_NE(beforeLayers[0].layer, afterLayers[0].layer);
+    for (std::size_t i = 1; i < afterLayers.size(); ++i) {
+        EXPECT_EQ(beforeLayers[i].layer, afterLayers[i].layer) << "layer " << i;
+    }
+
+    SceneStage stage;
+    stage.sync(after);
+    int value = 0;
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath)).GetAttribute(PXR_NS::TfToken(kSceneTestSourceAttribute)).Get(&value));
+    EXPECT_EQ(42, value);
+}
+
+// An op reading one upstream fact (the source value, through SceneQueryPool) re-authors when that
+// fact changes and not when an upstream edit leaves it as it was.
+TEST_F(SceneLongChainTest, AFactsReadingOpReAuthorsWhenItsFactChanges)
+{
+    setUpstreamRead(1);
+    const NodePtr reader = _ops.back();
+    setInt(reader, "upstreamRead", 2);
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ((U64)1, authorCount(reader));
+
+    // An op above it changes; the source value it reads does not.
+    setInt(_ops[3], "value", 9);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ((U64)2, authorCount(_ops[3]));
+    EXPECT_EQ((U64)1, authorCount(reader));
+
+    // The source value changes.
+    setInt(_source, "value", 5);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ((U64)2, authorCount(reader));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    int read = 0;
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath)).GetAttribute(PXR_NS::TfToken(kSceneTestFactAttribute)).Get(&read));
+    EXPECT_EQ(5, read);
 }

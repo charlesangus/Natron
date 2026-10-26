@@ -26,10 +26,13 @@
 #include "SceneOps.h"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
+#include <set>
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -143,6 +146,77 @@ readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
     return metadata;
 }
 
+std::vector<std::string>
+getSubLayerPaths(const ScenePayload& payload)
+{
+    std::vector<std::string> subLayerPaths;
+
+    subLayerPaths.reserve(payload.getNumLayers());
+    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+        subLayerPaths.push_back(link->top.layer->GetIdentifier());
+    }
+
+    return subLayerPaths;
+}
+
+void
+writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
+                  const SceneMetadata& metadata,
+                  const SceneMetadata* applied)
+{
+    if (!root) {
+        return;
+    }
+
+    // upAxis and metersPerUnit are plug-in metadata (UsdGeom's plugInfo.json), and the stage
+    // scene index resyncs the whole stage when plug-in metadata changes on / (OpenUSD v26.08
+    // usdImaging/stageSceneIndex.cpp, _OnUsdObjectsChanged), so unchanged fields are not
+    // rewritten. Writing a field its current value sends no notice either, but skipping it costs
+    // nothing.
+    const PXR_NS::SdfPath& rootPath = PXR_NS::SdfPath::AbsoluteRootPath();
+    if (!applied || (applied->upAxis != metadata.upAxis)) {
+        root->SetField(rootPath, PXR_NS::UsdGeomTokens->upAxis,
+                       (metadata.upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y);
+    }
+    if (!applied || (applied->metersPerUnit != metadata.metersPerUnit)) {
+        root->SetField(rootPath, PXR_NS::UsdGeomTokens->metersPerUnit, metadata.metersPerUnit);
+    }
+    if (!applied || (applied->defaultPrim != metadata.defaultPrim)) {
+        if (metadata.defaultPrim.empty()) {
+            root->ClearDefaultPrim();
+        } else {
+            root->SetDefaultPrim(PXR_NS::TfToken(metadata.defaultPrim));
+        }
+    }
+    if (!applied || (applied->timeCodesPerSecond != metadata.timeCodesPerSecond)) {
+        root->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
+    }
+}
+
+namespace {
+    std::atomic<U64> stageOpenCount(0);
+}
+
+PXR_NS::UsdStageRefPtr
+openStage(const PXR_NS::SdfLayerRefPtr& root)
+{
+    if (!root) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+    ++stageOpenCount;
+
+    // The session layer is passed explicitly as null: the Open overload without one creates an
+    // anonymous session layer (stage.h). Nothing edits these stages but their owner, through the
+    // root layer.
+    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
+}
+
+U64
+getStageOpenCount()
+{
+    return stageOpenCount.load();
+}
+
 PXR_NS::UsdStageRefPtr
 compose(const ScenePayload& payload)
 {
@@ -155,27 +229,86 @@ compose(const ScenePayload& payload)
     if (!root) {
         return PXR_NS::UsdStageRefPtr();
     }
+    root->SetSubLayerPaths(getSubLayerPaths(payload));
+    writeRootMetadata(root, payload.getMetadata(), nullptr);
 
-    // Sublayer order is strongest first, the reverse of the stack's.
-    std::vector<std::string> subLayerPaths;
-    subLayerPaths.reserve(payload.getNumLayers());
-    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
-        subLayerPaths.push_back(link->top.layer->GetIdentifier());
+    return openStage(root);
+}
+
+std::vector<PXR_NS::SdfLayerRefPtr>
+getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> closure;
+
+    if (!layer) {
+        return closure;
     }
-    root->SetSubLayerPaths(subLayerPaths);
 
-    const SceneMetadata& metadata = payload.getMetadata();
-    const PXR_NS::SdfPath& rootPath = PXR_NS::SdfPath::AbsoluteRootPath();
-    root->SetField(rootPath, PXR_NS::UsdGeomTokens->upAxis,
-                   (metadata.upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y);
-    root->SetField(rootPath, PXR_NS::UsdGeomTokens->metersPerUnit, metadata.metersPerUnit);
-    if (!metadata.defaultPrim.empty()) {
-        root->SetDefaultPrim(PXR_NS::TfToken(metadata.defaultPrim));
+    // GetCompositionAssetDependencies lists one layer's own sublayer, reference and payload asset
+    // paths, without recursing (sdf/layer.h), so the walk recurses itself.
+    std::set<std::string> visited;
+    std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
+    PXR_NS::TfErrorMark mark;
+    while (!pending.empty()) {
+        const PXR_NS::SdfLayerRefPtr current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current->GetIdentifier()).second) {
+            continue;
+        }
+        if (!current->IsAnonymous()) {
+            closure.push_back(current);
+        }
+        for (const std::string& assetPath : current->GetCompositionAssetDependencies()) {
+            if (assetPath.empty()) {
+                continue;
+            }
+            // Resolves assetPath against current's location; FindOrOpenRelativeToLayer needs a
+            // valid anchor, which current is.
+            const PXR_NS::SdfLayerRefPtr dependency = PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(current, assetPath);
+            if (dependency) {
+                pending.push_back(dependency);
+            }
+        }
     }
-    root->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
+    // A missing or unreadable dependency is the stage's error to report when it composes, not
+    // this walk's.
+    mark.Clear();
 
-    // No session layer: the stage is shared read-only between consumers, so nothing may edit it.
-    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
+    return closure;
+}
+
+bool
+reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                 std::string* errorMessage)
+{
+    std::set<PXR_NS::SdfLayerHandle> fileLayers;
+
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        // UsdStage::Reload documents that reloading an anonymous layer clears its content.
+        if (layer && !layer->IsAnonymous()) {
+            fileLayers.insert(layer);
+        }
+    }
+    if (fileLayers.empty()) {
+        return true;
+    }
+
+    bool reloaded = true;
+    if (!SceneWriteBarrier::runExclusive([&fileLayers, &reloaded]() {
+            // Only layers whose file changed since they were read reload (force = false compares
+            // modification times, sdf/layer.h). All of them in one call: ReloadLayers wraps the
+            // reloads in one change block (OpenUSD v26.08 sdf/layer.cpp), so each stage recomposes
+            // once.
+            reloaded = PXR_NS::SdfLayer::ReloadLayers(fileLayers, false);
+        },
+                                         errorMessage)) {
+        return false;
+    }
+    if (!reloaded && errorMessage) {
+        *errorMessage = "Some USD files could not be read again.";
+    }
+
+    return reloaded;
 }
 
 double
@@ -219,9 +352,23 @@ SceneLayerMemo::produce(const Key& key,
 {
     ContentHasher h;
     h.appendU64(key.nodeDigest);
-    h.appendU64(upstream.getStackHash());
-    h.appendDouble(key.firstFrame);
-    h.appendDouble(key.lastFrame);
+    h.appendI64((std::int64_t)key.upstreamRead);
+    switch (key.upstreamRead) {
+    case Key::eUpstreamReadWholeStack:
+        h.appendU64(upstream.getStackHash());
+        break;
+    case Key::eUpstreamReadFacts:
+        h.appendU64(key.factsDigest);
+        break;
+    case Key::eUpstreamReadNothing:
+        break;
+    }
+    h.appendBool(key.readsFrameRange);
+    if (key.readsFrameRange) {
+        h.appendDouble(key.firstFrame);
+        h.appendDouble(key.lastFrame);
+    }
+    // Always: time codes are authored per second of the project rate.
     h.appendDouble(key.framesPerSecond);
     const U64 layerHash = h.finalize();
 
@@ -229,6 +376,9 @@ SceneLayerMemo::produce(const Key& key,
         return false;
     }
 
+    // Authoring reads the upstream layers and opens files: no layer reload may run meanwhile.
+    // Taken before the memo's mutex, so a thread waiting on the mutex holds no write off.
+    SceneWriteBarrier::ReadScope read;
     // Held while authoring: two threads evaluating the same node author one layer, not two.
     std::lock_guard<std::mutex> lock(_imp->mutex);
     if (_imp->valid && (_imp->layerHash == layerHash)) {
@@ -245,7 +395,10 @@ SceneLayerMemo::produce(const Key& key,
 
     SceneLayerEdit edit;
     edit.layer = SceneOps::createNodeLayer(layerTag);
-    edit.upstream = upstream;
+    // A node that reads nothing upstream is not handed it, so it cannot read what its key misses.
+    if (key.upstreamRead != Key::eUpstreamReadNothing) {
+        edit.upstream = upstream;
+    }
     edit.firstFrame = key.firstFrame;
     edit.lastFrame = key.lastFrame;
     edit.framesPerSecond = key.framesPerSecond;

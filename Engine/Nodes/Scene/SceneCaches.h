@@ -32,14 +32,14 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Entry points into the scene caches for code that cannot include pxr headers: the
- * project and AppManager are compiled under Py_LIMITED_API. Implemented in StageCache.cpp.
+ * project and AppManager are compiled under Py_LIMITED_API. Implemented in SceneQueryPool.cpp.
  **/
 namespace SceneCaches {
 /**
- * @brief Drops every stage StageCache holds, and with them the layers only those stages kept
- * open. A consumer still holding a stage keeps it. MT-safe.
+ * @brief Drops the idle stages of SceneQueryPool, and with them the layers only those stages
+ * kept open. Borrowed stages are dropped when they come back past the pool's capacity. MT-safe.
  **/
-void clearComposedStages();
+void releaseIdleQueryStages();
 } // namespace SceneCaches
 
 NATRON_NAMESPACE_EXIT

@@ -30,6 +30,7 @@
 #include <string>
 
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "SceneTestEffect.h"
 
 NATRON_NAMESPACE_ENTER
@@ -81,6 +82,34 @@ sceneTestAuthorOp(const SceneLayerEdit& edit,
                   std::string* errorMessage)
 {
     return authorIntAttribute(edit, PXR_NS::SdfSpecifierOver, kSceneTestOpAttribute, value, errorMessage);
+}
+
+bool
+sceneTestAuthorFactOp(const SceneLayerEdit& edit,
+                      int value,
+                      int sourceValue,
+                      std::string* errorMessage)
+{
+    return authorIntAttribute(edit, PXR_NS::SdfSpecifierOver, kSceneTestOpAttribute, value, errorMessage)
+        && authorIntAttribute(edit, PXR_NS::SdfSpecifierOver, kSceneTestFactAttribute, sourceValue, errorMessage);
+}
+
+bool
+sceneTestReadSourceValue(const ScenePayload& payload,
+                         int* value,
+                         std::string* errorMessage)
+{
+    *value = 0;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, errorMessage);
+    if (!lease.isValid()) {
+        return false;
+    }
+    const PXR_NS::UsdPrim prim = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath));
+    if (prim.IsValid()) {
+        prim.GetAttribute(PXR_NS::TfToken(kSceneTestSourceAttribute)).Get(value);
+    }
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

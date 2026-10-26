@@ -424,6 +424,55 @@ TEST_F(USDReadTest, ANestedSublayerChangeShowsAfterReload)
     EXPECT_DOUBLE_EQ(2., leafRadius(SceneOps::compose(after)));
 }
 
+// Re-authoring an unchanged file reuses the file's closure walk, but a reload through another
+// reader can change what a shared layer brings in: the next authoring walks again, so this
+// reader's Reload reaches the layer the shared one sublayers since.
+TEST_F(USDReadTest, AReAuthorAfterAnotherReadersReloadFindsTheNewDependency)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string topA = dir.filePath(QString::fromUtf8("topA.usda")).toStdString();
+    const std::string topB = dir.filePath(QString::fromUtf8("topB.usda")).toStdString();
+    const std::string shared = dir.filePath(QString::fromUtf8("shared.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(shared, leafWithRadius(1.));
+    writeFile(topA, sceneSublayering("shared.usda"));
+    writeFile(topB, sceneSublayering("shared.usda"));
+    NodePtr readerA = createReader(topA);
+    NodePtr readerB = createReader(topB);
+    ASSERT_TRUE(bool(readerA));
+    ASSERT_TRUE(bool(readerB));
+
+    ScenePayload payloadA;
+    ScenePayload payloadB;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(readerA, &payloadA, &error)) << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(readerB, &payloadB, &error)) << error;
+    ASSERT_DOUBLE_EQ(1., leafRadius(SceneOps::compose(payloadA)));
+
+    // The shared layer moves /Leaf out to a file of its own; B's Reload reads it again in place.
+    writeFile(leaf, leafWithRadius(1.));
+    writeFile(shared, sceneSublayering("leaf.usda"));
+    pressReload(readerB);
+    EXPECT_FALSE(readerB->hasPersistentMessage());
+
+    // A frame offset edit re-authors A's layer over the same, unchanged file.
+    KnobDouble* frameOffset = dynamic_cast<KnobDouble*>(readerA->getKnobByName(kUSDReadParamFrameOffset).get());
+    ASSERT_TRUE(frameOffset != NULL);
+    frameOffset->setValue(3.);
+    ScenePayload offsetA;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(readerA, &offsetA, &error)) << error;
+    ASSERT_FALSE(payloadA.isSameStack(offsetA));
+    SceneStage shown;
+    shown.sync(offsetA);
+    ASSERT_DOUBLE_EQ(1., leafRadius(shown.getStage()));
+
+    writeFile(leaf, leafWithRadius(2.));
+    pressReload(readerA);
+    EXPECT_FALSE(readerA->hasPersistentMessage());
+    EXPECT_DOUBLE_EQ(2., leafRadius(shown.getStage()));
+}
+
 // Reload edits layers in place behind SceneWriteBarrier: a render thread composing and reading
 // through 20 Reload rounds, through pool leases and through a long-lived stage it guards with a
 // barrier participant as the viewer does, never reads a half-reloaded layer, and every round the

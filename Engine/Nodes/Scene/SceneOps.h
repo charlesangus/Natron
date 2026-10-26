@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -147,6 +148,13 @@ std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRe
  **/
 bool reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
                       std::string* errorMessage);
+
+/**
+ * @brief How many times reloadFileLayers() has reloaded layers in this process. A reload can
+ * change what any open file layer sublayers, references or loads as a payload, so a
+ * getFileLayerClosure() result taken at one count may be stale at a later one.
+ **/
+std::uint64_t getFileLayerReloadCount();
 
 /**
  * @brief The timecode of payload's composed stage at frame of a project running at

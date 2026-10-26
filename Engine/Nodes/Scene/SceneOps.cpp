@@ -277,6 +277,10 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
     return closure;
 }
 
+namespace {
+    std::atomic<std::uint64_t> fileLayerReloadCount(0);
+} // anonymous namespace
+
 bool
 reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
                  std::string* errorMessage)
@@ -300,6 +304,8 @@ reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
             // reloads in one change block (OpenUSD v26.08 sdf/layer.cpp), so each stage recomposes
             // once.
             reloaded = PXR_NS::SdfLayer::ReloadLayers(fileLayers, false);
+            // Counted even when some layers failed: the others may have reloaded.
+            fileLayerReloadCount.fetch_add(1);
         },
                                          errorMessage)) {
         return false;
@@ -309,6 +315,12 @@ reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
     }
 
     return reloaded;
+}
+
+std::uint64_t
+getFileLayerReloadCount()
+{
+    return fileLayerReloadCount.load();
 }
 
 double

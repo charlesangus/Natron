@@ -6634,9 +6634,8 @@ bool
 KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
                                  bool doAlias)
 {
-    //Sanity check
-    if ( !master || ( master->getDimension() != getDimension() ) ||
-         ( master->typeName() != typeName() ) ) {
+    // Sanity check
+    if (!master || (master->getDimension() != getDimension()) || (master->typeName() != typeName())) {
         return false;
     }
 
@@ -6644,7 +6643,7 @@ KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
        For choices, copy exactly the menu entries because they have to be the same
      */
     if (doAlias) {
-        master->onKnobAboutToAlias( shared_from_this() );
+        master->onKnobAboutToAlias(shared_from_this());
     }
     // Set first, so that getAliasesOfThis() finds this knob when the link notifies its members.
     {
@@ -6657,7 +6656,7 @@ KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
     }
     beginChanges();
     for (int i = 0; i < getDimension(); ++i) {
-        if ( isSlave(i) ) {
+        if (isSlave(i)) {
             unSlave(i, false);
         }
     }
@@ -6690,7 +6689,7 @@ KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
 }
 
 KnobIPtr
-KnobHelper::getAliasMaster()  const
+KnobHelper::getAliasMaster() const
 {
     QReadLocker k(&_imp->mastersMutex);
 

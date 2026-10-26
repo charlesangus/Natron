@@ -194,8 +194,9 @@ public:
 
     /**
      * @brief Restores the expressions and links saved with the project's variables, the way a
-     * node's user knobs get theirs. Called once every node exists, since either may refer to one.
-     * A link whose target is missing is left out with a load warning.
+     * node's user knobs get theirs. Called once every node exists, since either may refer to one,
+     * and before KnobHelper::restoreLinkGroups(), which rebuilds the link groups stored here. A link
+     * whose target is missing is left out with a load warning.
      **/
     void restoreRFVVariableLinksAndExpressions(const std::list<Serialization::KnobSerialization>& projectSerializedValues,
                                                const NodesList& allNodes);

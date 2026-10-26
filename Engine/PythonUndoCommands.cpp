@@ -318,6 +318,14 @@ applyKnobState(const KnobIPtr& knob,
         NodePtr node = effect ? effect->getNode() : NodePtr();
         if (node) {
             node->emitLinksChanged(previousLinkNodes);
+        } else {
+            // A knob with no node, such as a project knob, draws no link line: the nodes it was and
+            // is now linked to redraw theirs.
+            NodesList nodes = previousLinkNodes;
+            collectGroupLinkNodes(knob, &nodes);
+            for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+                (*it)->emitLinksChanged(NodesList());
+            }
         }
     }
     knob->evaluateValueChange(-1, knob->getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);

@@ -41,6 +41,12 @@
 
 NATRON_NAMESPACE_ENTER
 
+/*
+ * The owner a saved link group id names for a member held by the project, as in
+ * "@project.knob.dimension". A node script name is a Python identifier, so it never starts with '@'.
+ */
+#define kKnobLinkGroupProjectOwner "@project"
+
 /**
  * @brief One dimension of another knob that shares a link group with a dimension of this knob.
  **/

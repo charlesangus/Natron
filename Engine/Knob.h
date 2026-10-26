@@ -2015,8 +2015,11 @@ public:
      * instead join the group the knob that id names is still in, when that group has a member on an
      * active node other than the given ones: copies join the groups of the knobs they were copied
      * from, and link only to each other when those are gone.
+     *
+     * otherKnobs are knobs held outside the nodes, such as the project's, whose stored groups are
+     * rebuilt together with those of the nodes' knobs.
      **/
-    static void restoreLinkGroups(const NodesList& nodes, bool joinExistingGroups = false);
+    static void restoreLinkGroups(const NodesList& nodes, bool joinExistingGroups = false, const KnobsVec& otherKnobs = KnobsVec());
 
     virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;

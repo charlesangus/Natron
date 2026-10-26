@@ -6206,8 +6206,9 @@ namespace {
 
 /*
  * The group the knob dimension a saved link group id names is in, when that group still has a member on
- * an active node that is not one of the restored nodes: the group of the knob a copy was made from. The
- * id is "node.knob.dimension" or "node/track.knob.dimension", the node name fully qualified.
+ * the project, or on an active node that is not one of the restored nodes: the group of the knob a copy
+ * was made from. The id is "node.knob.dimension" or "node/track.knob.dimension", the node name fully
+ * qualified, or "@project.knob.dimension" for a project knob.
  */
 KnobLinkGroupPtr
 findOriginalLinkGroup(const std::string& id,
@@ -6237,17 +6238,22 @@ findOriginalLinkGroup(const std::string& id,
     const std::size_t slash = owner.find('/');
     const std::string nodeName = owner.substr(0, slash);
 
-    NodePtr node = app->getNodeByFullySpecifiedName(nodeName);
-    if (!node || (std::find(restoredNodes.begin(), restoredNodes.end(), node) != restoredNodes.end())) {
-        return KnobLinkGroupPtr();
-    }
     KnobIPtr knob;
-    if (slash == std::string::npos) {
-        knob = node->getKnobByName(knobName);
+    if (owner == kKnobLinkGroupProjectOwner) {
+        ProjectPtr project = app->getProject();
+        knob = project ? project->getKnobByName(knobName) : KnobIPtr();
     } else {
-        TrackerContextPtr tracker = node->getTrackerContext();
-        TrackMarkerPtr marker = tracker ? tracker->getMarkerByName(owner.substr(slash + 1)) : TrackMarkerPtr();
-        knob = marker ? marker->getKnobByName(knobName) : KnobIPtr();
+        NodePtr node = app->getNodeByFullySpecifiedName(nodeName);
+        if (!node || (std::find(restoredNodes.begin(), restoredNodes.end(), node) != restoredNodes.end())) {
+            return KnobLinkGroupPtr();
+        }
+        if (slash == std::string::npos) {
+            knob = node->getKnobByName(knobName);
+        } else {
+            TrackerContextPtr tracker = node->getTrackerContext();
+            TrackMarkerPtr marker = tracker ? tracker->getMarkerByName(owner.substr(slash + 1)) : TrackMarkerPtr();
+            knob = marker ? marker->getKnobByName(knobName) : KnobIPtr();
+        }
     }
     KnobHelperPtr helper = std::dynamic_pointer_cast<KnobHelper>(knob);
     if (!helper || (dimension < 0) || (dimension >= helper->getDimension())) {
@@ -6263,7 +6269,8 @@ findOriginalLinkGroup(const std::string& id,
     for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
         KnobIPtr member = it->knob.lock();
         NodePtr memberNode = linkMemberNode(member.get());
-        if (memberNode && memberNode->isActivated() && (std::find(restoredNodes.begin(), restoredNodes.end(), memberNode) == restoredNodes.end())) {
+        const bool onProject = member && dynamic_cast<Project*>(member->getHolder());
+        if (onProject || (memberNode && memberNode->isActivated() && (std::find(restoredNodes.begin(), restoredNodes.end(), memberNode) == restoredNodes.end()))) {
             *originalKnob = helper;
 
             return group;
@@ -6277,7 +6284,8 @@ findOriginalLinkGroup(const std::string& id,
 
 void
 KnobHelper::restoreLinkGroups(const NodesList& nodes,
-                              bool joinExistingGroups)
+                              bool joinExistingGroups,
+                              const KnobsVec& otherKnobs)
 {
     NodesList allNodes;
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
@@ -6298,17 +6306,7 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes,
         bool nodeLink;
     };
     std::map<std::string, std::vector<StoredMember>> stored;
-    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
-        KnobsVec knobs = (*it)->getKnobs();
-        TrackerContextPtr tracker = (*it)->getTrackerContext();
-        if (tracker) {
-            std::vector<TrackMarkerPtr> markers;
-            tracker->getAllMarkers(&markers);
-            for (std::vector<TrackMarkerPtr>::const_iterator m = markers.begin(); m != markers.end(); ++m) {
-                const KnobsVec markerKnobs = (*m)->getKnobs_mt_safe();
-                knobs.insert(knobs.end(), markerKnobs.begin(), markerKnobs.end());
-            }
-        }
+    const auto takeStoredGroups = [&stored](const KnobsVec& knobs) {
         for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
             const std::vector<StoredLinkGroup> groups = (*k)->takeStoredLinkGroups();
             KnobHelperPtr helper = std::dynamic_pointer_cast<KnobHelper>(*k);
@@ -6324,7 +6322,23 @@ KnobHelper::restoreLinkGroups(const NodesList& nodes,
                 stored[g->id].push_back(m);
             }
         }
+    };
+    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+        KnobsVec knobs = (*it)->getKnobs();
+        TrackerContextPtr tracker = (*it)->getTrackerContext();
+        if (tracker) {
+            std::vector<TrackMarkerPtr> markers;
+            tracker->getAllMarkers(&markers);
+            for (std::vector<TrackMarkerPtr>::const_iterator m = markers.begin(); m != markers.end(); ++m) {
+                const KnobsVec markerKnobs = (*m)->getKnobs_mt_safe();
+                knobs.insert(knobs.end(), markerKnobs.begin(), markerKnobs.end());
+            }
+        }
+        takeStoredGroups(knobs);
     }
+    // Every group is rebuilt once all of its members are collected, so a group is restored the same
+    // whether a node knob or a project knob holds its first member.
+    takeStoredGroups(otherKnobs);
 
     // Knob link changes do not emit Node::linksChanged(): the nodes that gained links are told at the end.
     NodesList linkedNodes;

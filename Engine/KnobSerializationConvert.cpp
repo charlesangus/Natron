@@ -58,6 +58,7 @@
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
 #include "Engine/StringAnimationManager.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
@@ -287,20 +288,31 @@ fillMasterSerialization(const std::pair<int, KnobIPtr>& master,
 }
 
 /*
- * The id a link group is saved under: the lowest "node.knob.dimension" or "node/track.knob.dimension"
- * among its members on active nodes and their tracks. Every member saved at the same time gets the
- * same id, and two groups never share one, since a knob dimension is in one group at most and active
- * node names, and the script names of a tracker's tracks, are unique.
+ * The id a link group is saved under. With a member on the project it is the lowest
+ * "@project.knob.dimension" among those: a project knob is never copied or renamed by a paste, so a
+ * pasted copy finds the group again through it. Otherwise it is the lowest "node.knob.dimension" or
+ * "node/track.knob.dimension" among its members on active nodes and their tracks. Every member saved
+ * at the same time gets the same id, and two groups never share one, since a knob dimension is in one
+ * group at most, project knob names and active node names are unique, as are the script names of a
+ * tracker's tracks, and no node name is the project owner.
  */
 std::string
 linkGroupSerializationId(const KnobLinkGroup& group)
 {
     std::string id;
+    std::string projectId;
     std::vector<KnobLinkGroup::Member> members = group.getMembers();
 
     for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
         KnobIPtr knob = it->knob.lock();
         KnobHolder* holder = knob ? knob->getHolder() : 0;
+        if (dynamic_cast<Project*>(holder)) {
+            const std::string name = std::string(kKnobLinkGroupProjectOwner) + '.' + knob->getName() + '.' + std::to_string(it->dimension);
+            if (projectId.empty() || (name < projectId)) {
+                projectId = name;
+            }
+            continue;
+        }
         NodePtr node;
         std::string track;
         if (EffectInstance* effect = dynamic_cast<EffectInstance*>(holder)) {
@@ -324,7 +336,7 @@ linkGroupSerializationId(const KnobLinkGroup& group)
         }
     }
 
-    return id;
+    return projectId.empty() ? id : projectId;
 }
 
 bool

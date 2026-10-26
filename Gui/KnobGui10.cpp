@@ -35,6 +35,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
@@ -132,6 +133,8 @@ getLinkMemberName(const KnobLinkGroup::Member& member,
     if (effect) {
         name += QString::fromUtf8(effect->getNode()->getFullyQualifiedName().c_str());
         name += QLatin1Char('.');
+    } else if (dynamic_cast<Project*>(knob->getHolder())) {
+        name += QString::fromUtf8("Project.");
     }
     name += QString::fromUtf8(knob->getName().c_str());
     if (withDimension && (knob->getDimension() > 1)) {

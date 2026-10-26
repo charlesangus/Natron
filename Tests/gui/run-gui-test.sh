@@ -39,7 +39,7 @@ NATRON="${2:-$ROOT/build/release/App/Natron}"
 TIMEOUT="${GUI_TEST_TIMEOUT:-300}"
 DISPLAY_NUM="${GUI_TEST_DISPLAY:-79}"
 OUT="${NATRON_GUI_TEST_OUT:-$ROOT/build/gui-test-out}"
-SCREEN_SIZE=1600x1000
+SCREEN_SIZE=1920x1080
 
 if [ ! -f "$SCRIPT" ]; then
     echo "no such script: $1" >&2

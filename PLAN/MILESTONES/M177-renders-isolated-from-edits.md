@@ -122,7 +122,7 @@ Filed from M167 - Per-Frame Node Metadata, Phase 3, which inherited M144's "edit
 
 A script's write to a node a running foreground job reads is refused with an error. Before-frame callbacks get no frame-at-a-time ordering.
 
-- [ ] M177.P5.T1 — Refuse writes to nodes a foreground job reads
+- [x] M177.P5.T1 — Refuse writes to nodes a foreground job reads
   - files: `Engine/IsolatedJob.h`, `Engine/IsolatedJob.cpp` (new), `Engine/KnobImpl.h` (entry of `setValue` :1141, `setValueAtTime` :1557), `Engine/Knob.cpp` (expression and slave entry points carrying `KnobContentWrite`), `Engine/OutputSchedulerThread.cpp`, `Engine/TrackerContext.cpp`
   - approach: An RAII `IsolatedJob` registered on the app for a Foreground render or a track holds the root's upstream closure. The job's own threads are marked thread-local: the frame runnable at `OutputSchedulerThread.cpp:2312` and the track functor. A content write to a holder in an active job's closure from an unmarked thread throws `std::runtime_error` before any state changes, which Python surfaces. `KnobContentWrite` carries no holder today, so the check needs the holder passed in.
   - verify: a gtest edits an upstream knob from a second thread during a Foreground render on a background app and catches the error, with every frame identical to a reference render; a write from the before-frame callback succeeds.

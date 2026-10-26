@@ -341,20 +341,31 @@ HSVKeyerOp::row(const Params& params,
     for (int c = 0; c < 4; ++c) {
         process[c] = io.channels[pixelKernelChannelBit(nComps, c)];
     }
-    // In Alpha mode RGB is the source, which the pass-through already wrote.
-    const bool writeRgb = (params.output != eOutputModeAlpha) && (process[0] || process[1] || process[2]);
-    if (!writeRgb && !process[3]) {
+    // io.dst starts undefined and the stage pipeline reads back every processed channel, so Alpha
+    // mode writes the source RGB.
+    const bool processRgb = process[0] || process[1] || process[2];
+    if (!processRgb && !process[3]) {
         return;
     }
+    const bool needKey = process[3] || (processRgb && (params.output != eOutputModeAlpha));
     const float* src = io.src[0];
     float* dst = io.dst;
     for (int x = 0; x < io.width; ++x, src += 4, dst += 4) {
-        const float k = key(params, src);
-        if (writeRgb) {
-            for (int c = 0; c < 3; ++c) {
-                if (process[c]) {
-                    dst[c] = (params.output == eOutputModeMatte) ? k : (src[c] * k);
-                }
+        const float k = needKey ? key(params, src) : 0.f;
+        for (int c = 0; c < 3; ++c) {
+            if (!process[c]) {
+                continue;
+            }
+            switch (params.output) {
+            case eOutputModeAlpha:
+                dst[c] = src[c];
+                break;
+            case eOutputModePremultiplied:
+                dst[c] = src[c] * k;
+                break;
+            case eOutputModeMatte:
+                dst[c] = k;
+                break;
             }
         }
         if (process[3]) {
@@ -433,6 +444,8 @@ HSVKeyerOp::recentreLinear(double* points,
 
 HSVKeyer::HSVKeyer(NodePtr node)
     : ImageNode<HSVKeyerOp>(node)
+    , _recentrePending(false)
+    , _recentreTime(0.)
 {
 }
 
@@ -527,10 +540,26 @@ HSVKeyer::knobChanged(KnobI* k,
     if (loading || (reason == eValueChangedReasonTimeChanged) || (reason == eValueChangedReasonSlaveRefresh) || (reason == eValueChangedReasonRestoreDefault)) {
         return true;
     }
-    recentreOnSource(time);
+    // knobChanged() runs once per dimension set, so a colour set one channel at a time passes
+    // through colours mixing old and new channels. evaluate() runs once the outermost change
+    // bracket closes, when every channel holds its new value.
+    _recentrePending = true;
+    _recentreTime = time;
 
     return true;
 } // HSVKeyer::knobChanged
+
+void
+HSVKeyer::evaluate(bool isSignificant,
+                   bool refreshMetadatas)
+{
+    if (_recentrePending) {
+        // Cleared first: recentring sets the ranges, whose own change bracket evaluates again.
+        _recentrePending = false;
+        recentreOnSource(_recentreTime);
+    }
+    ImageNode<HSVKeyerOp>::evaluate(isSignificant, refreshMetadatas);
+}
 
 void
 HSVKeyer::addAcceptedComponents(int inputNb,

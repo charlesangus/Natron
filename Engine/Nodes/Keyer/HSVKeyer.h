@@ -203,8 +203,15 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
+    // Recentres on the source colour once its change bracket closes.
+    virtual void evaluate(bool isSignificant, bool refreshMetadatas) OVERRIDE FINAL;
+
     // The output is RGBA whatever the source: the key is its alpha.
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // Set by knobChanged() for a source, model or Recentre edit, consumed by evaluate().
+    bool _recentrePending;
+    double _recentreTime;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -77,6 +77,8 @@ public:
     AppManager::AppTypeEnum _appType; //< the type of app
     mutable QMutex _appInstancesMutex;
     std::vector<AppInstancePtr> _appInstances; //< the instances mapped against their ID
+    // IDs of the instances inside afterQuitProcessingCallback(); main thread only.
+    std::vector<int> quittingAppIDs;
     int _availableID; //< the ID for the next instance
     int _topLevelInstanceID; //< the top level app ID
     SettingsPtr _settings; //< app settings

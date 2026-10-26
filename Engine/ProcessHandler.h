@@ -98,6 +98,7 @@ class ProcessHandler
     QString _processLog; //< used to record the log of the process
     QStringList _processArgs;
     QString _projectPath; //< the project file the process loads
+    QString _childServerName; //< the socket the render process listens on, removed once it is killed
 
 public:
     /**

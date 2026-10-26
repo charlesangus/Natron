@@ -124,7 +124,9 @@ MemoryFilePrivate::openInternal(MemoryFile::FileOpenModeEnum open_mode)
        CHOOSING FILE OPEN MODE
      ********************************************************
      *********************************************************/
-    int posix_open_mode = O_RDWR;
+    // Close-on-exec keeps the cache file out of every spawned process (browser,
+    // background render), which would otherwise pin it after Natron exits.
+    int posix_open_mode = O_RDWR | O_CLOEXEC;
     switch (open_mode) {
     case MemoryFile::eFileOpenModeEnumIfExistsFailElseCreate:
         posix_open_mode |= O_EXCL | O_CREAT;

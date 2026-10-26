@@ -41,6 +41,12 @@
 #include <QDir>
 #include <QDebug>
 
+#if defined(Q_OS_LINUX)
+#include <csignal>
+#include <sys/prctl.h>
+#include <unistd.h>
+#endif
+
 #ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
 #endif
@@ -136,8 +142,13 @@ ProcessHandler::~ProcessHandler()
         delete _bgProcessInputSocket;
     }
     if (_process) {
+        // Kills the render process and waits for it.
         _process->close();
         delete _process;
+    }
+    // A killed render process can't remove its own socket file.
+    if (!_childServerName.isEmpty()) {
+        QLocalServer::removeServer(_childServerName);
     }
 }
 
@@ -157,6 +168,21 @@ ProcessHandler::startProcess()
     if (launchDisabledForTesting) {
         return;
     }
+#if defined(Q_OS_LINUX)
+    // The render process gets none of this process's descriptors: it must not hold this
+    // process's cache files, sockets or a launcher's keep-alive pipe.
+    _process->setUnixProcessParameters(QProcess::UnixProcessFlag::CloseFileDescriptors);
+    // The render process belongs to this one and must not outlive it, even when this process
+    // is killed or crashes and never reaches the destructor. The parent check covers a parent
+    // that died between fork and prctl.
+    const pid_t parentPid = ::getpid();
+    _process->setChildProcessModifier([parentPid]() {
+        ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (::getppid() != parentPid) {
+            ::_exit(1);
+        }
+    });
+#endif
     _process->start(QCoreApplication::applicationFilePath(), _processArgs);
 }
 
@@ -209,6 +235,7 @@ ProcessHandler::onDataWrittenToSocket()
         ///don't do anything
     } else if ( str.startsWith( QString::fromUtf8(kBgProcessServerCreatedShort) ) ) {
         str = str.remove( QString::fromUtf8(kBgProcessServerCreatedShort) );
+        _childServerName = str;
         ///the bg process wants us to create the pipe for its input
         if (!_bgProcessInputSocket) {
             _bgProcessInputSocket = new QLocalSocket();

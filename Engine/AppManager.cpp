@@ -130,6 +130,7 @@
 #include "Engine/OneViewNode.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
+#include "Engine/ProcessLifetime.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RotoPaint.h"
@@ -163,31 +164,19 @@ AppManager* AppManager::_instance = 0;
 
 #ifdef __NATRON_UNIX__
 
-//namespace  {
+// Runs on the dispatcher thread, never in the signal handler. Aborting from here reaches a
+// render that blocks the main thread, as in a background render; the quit itself goes through
+// the main thread's event loop, the only place app instances are torn down.
 static void
-handleShutDownSignal( int /*signalId*/ )
+onShutdownSignalReceived(int /*signalId*/)
 {
-    if (appPTR) {
-        std::cerr << "\nCaught termination signal, exiting!" << std::endl;
-        appPTR->quitApplication();
+    AppManager* manager = appPTR;
+    if (!manager) {
+        return;
     }
-}
-
-static void
-setShutDownSignal(int signalId)
-{
-#if defined(__NATRON_UNIX__)
-    struct sigaction sa;
-    sa.sa_flags = 0;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_handler = handleShutDownSignal;
-    if (sigaction(signalId, &sa, NULL) == -1) {
-        std::perror("setting up termination signal");
-        std::exit(1);
-    }
-#else
-    std::signal(signalId, handleShutDownSignal);
-#endif
+    std::cerr << "\nCaught termination signal, exiting!" << std::endl;
+    manager->abortAnyProcessing();
+    QMetaObject::invokeMethod(manager, [manager]() { manager->quitApplication(); }, Qt::QueuedConnection);
 }
 
 #endif
@@ -450,25 +439,13 @@ AppManager::loadW(int argc,
 
 AppManager::~AppManager()
 {
-    bool appsEmpty;
-    {
-        QMutexLocker k(&_imp->_appInstancesMutex);
-        appsEmpty = _imp->_appInstances.empty();
-    }
-    while (!appsEmpty) {
-        AppInstancePtr front;
-        {
-            QMutexLocker k(&_imp->_appInstancesMutex);
-            front = _imp->_appInstances.front();
-        }
-        if (front) {
-            front->quitNow();
-        }
-        {
-            QMutexLocker k(&_imp->_appInstancesMutex);
-            appsEmpty = _imp->_appInstances.empty();
-        }
-    }
+#ifdef __NATRON_UNIX__
+    // The dispatcher thread calls into this manager. With the default actions back, a signal
+    // during the teardown below ends the process outright.
+    ShutdownSignalDispatcher::uninstall();
+#endif
+
+    quitApplication();
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
@@ -550,10 +527,23 @@ AppManager::afterQuitProcessingCallback(const GenericWatcherCallerArgsPtr& args)
     }
 
     AppInstancePtr instance = inArgs->instance.lock();
+    if (!instance) {
+        return;
+    }
+
+    // One instance can be asked to quit twice, by a window close and a termination signal, or
+    // from the events aboutToQuit() processes. Tearing it down a second time would reach a
+    // Gui and project already destroyed.
+    const int appID = instance->getAppID();
+    if (std::find(_imp->quittingAppIDs.begin(), _imp->quittingAppIDs.end(), appID) != _imp->quittingAppIDs.end()) {
+        return;
+    }
+    _imp->quittingAppIDs.push_back(appID);
 
     instance->aboutToQuit();
 
-    appPTR->removeInstance( instance->getAppID() );
+    appPTR->removeInstance(appID);
+    _imp->quittingAppIDs.erase(std::remove(_imp->quittingAppIDs.begin(), _imp->quittingAppIDs.end(), appID), _imp->quittingAppIDs.end());
 
     int nbApps = getNumInstances();
     ///if we exited the last instance, exit the event loop, this will make
@@ -570,6 +560,9 @@ AppManager::afterQuitProcessingCallback(const GenericWatcherCallerArgsPtr& args)
 void
 AppManager::quitNow(const AppInstancePtr& instance)
 {
+    if (std::find(_imp->quittingAppIDs.begin(), _imp->quittingAppIDs.end(), instance->getAppID()) != _imp->quittingAppIDs.end()) {
+        return;
+    }
     NodesList nodesToWatch;
 
     instance->getProject()->getNodes_recursive(nodesToWatch, false);
@@ -597,25 +590,16 @@ AppManager::quit(const AppInstancePtr& instance)
 void
 AppManager::quitApplication()
 {
-    bool appsEmpty;
+    // A snapshot rather than a loop on the front: an instance already being torn down further
+    // up the stack stays registered until that teardown returns, and quitNow() skips it.
+    AppInstanceVec instances;
     {
         QMutexLocker k(&_imp->_appInstancesMutex);
-        appsEmpty = _imp->_appInstances.empty();
+        instances = _imp->_appInstances;
     }
-
-    while (!appsEmpty) {
-        AppInstancePtr app;
-        {
-            QMutexLocker k(&_imp->_appInstancesMutex);
-            app = _imp->_appInstances.front();
-        }
-        if (app) {
-            quitNow(app);
-        }
-
-        {
-            QMutexLocker k(&_imp->_appInstancesMutex);
-            appsEmpty = _imp->_appInstances.empty();
+    for (AppInstanceVec::iterator it = instances.begin(); it != instances.end(); ++it) {
+        if (*it) {
+            quitNow(*it);
         }
     }
 }
@@ -735,8 +719,9 @@ AppManager::loadInternal(const CLArgs& cl)
 
 # ifdef __NATRON_UNIX__
     if (mustSetSignalsHandlers) {
-        setShutDownSignal(SIGINT);   // shut down on ctrl-c
-        setShutDownSignal(SIGTERM);   // shut down on killall
+        // Ctrl-C, kill and session logout.
+        ShutdownSignalDispatcher::install({ SIGINT, SIGTERM, SIGHUP }, onShutdownSignalReceived);
+        markInheritedDescriptorsCloseOnExec();
 #     if defined(__NATRON_LINUX__) && !defined(__FreeBSD__)
         setSigSegvSignal();
 #     endif

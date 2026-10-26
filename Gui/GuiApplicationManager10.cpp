@@ -309,7 +309,10 @@ GuiApplicationManager::initializeQApp(int &argc,
 
     setCurrentLogicalDPI(dpiX, dpiY);
 
-    app->setQuitOnLastWindowClosed(true);
+    // The event loop ends when the last app instance has quit (AppManager::afterQuitProcessingCallback).
+    // Ending it when the last window closes would return from exec() while that quit is still
+    // pending, and the manager's destructor would then tear down an instance whose Gui is gone.
+    app->setQuitOnLastWindowClosed(false);
 
     // use namespace workaround
     // https://doc.qt.io/qt-5/qdir.html#Q_INIT_RESOURCE

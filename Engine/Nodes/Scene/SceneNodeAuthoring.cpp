@@ -36,6 +36,9 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
+
+#include <pxr/usd/usd/primRange.h>
 
 #include <QDir>
 #include <QString>
@@ -469,6 +472,75 @@ matchPrims(const PXR_NS::UsdStageRefPtr& stage,
 
     return true;
 } // matchPrims
+
+bool
+graftMaterialInput(const ScenePayload& material,
+                   const std::string& primPath,
+                   const std::string& layerTag,
+                   SceneGraftMemo* memo,
+                   SceneMaterialGraft* graft,
+                   std::string* errorMessage)
+{
+    *graft = SceneMaterialGraft();
+    if (!material.isEmpty()) {
+        SceneReparentArgs args;
+        args.inputs.push_back(material);
+        args.destinationPath = primPath;
+        args.layerTag = layerTag;
+        std::vector<SceneRootGraft> grafts;
+        if (!SceneOps::reparentRoots(args, memo, &graft->payload, &grafts, &graft->unmappedLinks, errorMessage)) {
+            return false;
+        }
+
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        if (!stage) {
+            if (errorMessage->empty()) {
+                *errorMessage = EffectInstance::tr("USD could not compose the material input.").toStdString();
+            }
+
+            return false;
+        }
+        for (const SceneRootGraft& root : grafts) {
+            const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(root.sourcePath));
+            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
+                if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                    graft->materialPath = prim.GetPath().ReplacePrefix(PXR_NS::SdfPath(root.sourcePath), PXR_NS::SdfPath(root.graftedPath)).GetString();
+                    break;
+                }
+            }
+            if (!graft->materialPath.empty()) {
+                break;
+            }
+        }
+    }
+
+    ContentHasher facts;
+    appendUpstreamMetadata(graft->payload, &facts);
+    facts.appendString(graft->materialPath);
+    graft->factsDigest = facts.finalize();
+
+    return true;
+} // graftMaterialInput
+
+bool
+authorMaterialBinding(const PXR_NS::UsdPrim& prim,
+                      const std::string& materialPath,
+                      std::string* errorMessage)
+{
+    if (materialPath.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdShadeMaterialBindingAPI binding = prim ? PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim) : PXR_NS::UsdShadeMaterialBindingAPI();
+    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false) : PXR_NS::UsdRelationship();
+    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) })) {
+        *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at %2.").arg(QString::fromStdString(prim ? prim.GetPath().GetString() : std::string())).arg(QString::fromStdString(materialPath)).toStdString();
+
+        return false;
+    }
+
+    return true;
+}
 
 int
 getRotateOrderAxis(SceneRotateOrderEnum rotateOrder,

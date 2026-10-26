@@ -66,6 +66,7 @@
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "SceneTestEffect.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
 
@@ -299,7 +300,8 @@ protected:
 
     /**
      * The reference scene, laid out by the create and edit nodes over the fixture's box and ball:
-     * the ball lifted by 1, the box given a green material, the fixture's camera pruned, and a rig
+     * the ball lifted by 1, the box given a green material by a geometry stand-in defining the same
+     * cube at its path and carrying the material, the fixture's camera pruned, and a rig
      * holding the camera rendered through, two units further back than the pruned one, and a key
      * light. Returns the USDRender, kWidth x kHeight, null after a gtest failure.
      **/
@@ -308,13 +310,14 @@ protected:
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
         NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr box = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
         NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
         NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
         NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!reader || !transform || !material || !rig || !camera || !light || !merge || !prune || !render) {
+        if (!reader || !transform || !material || !box || !rig || !camera || !light || !merge || !prune || !render) {
             ADD_FAILURE() << "a 3D node is not registered";
 
             return NodePtr();
@@ -334,8 +337,8 @@ protected:
         ok = ok && setString(transform, kUSDEditTransformParamPrimPattern, "/World/Ball");
         ok = ok && setTriple(transform, kSceneParamTranslate, 0., 1., 0.);
 
-        ok = ok && setString(material, kSceneParamPrimPath, "/World/Looks/Green");
-        ok = ok && setString(material, kUSDMaterialParamPrimPattern, "/World/Box");
+        ok = ok && setString(material, kSceneParamPrimPath, "/Green");
+        ok = ok && setString(box, kSceneParamPrimPath, "/World/Box");
         diffuse->setValue(0.1, ViewSpec::all(), 0);
         diffuse->setValue(0.8, ViewSpec::all(), 1);
         diffuse->setValue(0.2, ViewSpec::all(), 2);
@@ -352,11 +355,12 @@ protected:
         }
 
         connectNodes(reader, transform, 0, true);
-        connectNodes(transform, material, 0, true);
+        connectNodes(material, box, 0, true);
         connectNodes(camera, rig, 0, true);
         connectNodes(light, rig, 1, true);
-        connectNodes(material, merge, 0, true);
-        connectNodes(rig, merge, 1, true);
+        connectNodes(box, merge, 0, true);
+        connectNodes(transform, merge, 1, true);
+        connectNodes(rig, merge, 2, true);
         connectNodes(merge, prune, 0, true);
         connectNodes(prune, render, 0, true);
 

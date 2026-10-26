@@ -126,9 +126,11 @@ void
 registerSceneTestPlugins()
 {
     // A scene source and a scene op, so Scene/SceneAction_Test.cpp can pull scenes through the
-    // engine's action before any shipped scene node exists.
+    // engine's action before any shipped scene node exists, and a geometry stand-in for the
+    // Material input until shipped primitives exist.
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
+    registerTestBuiltInPlugin<SceneTestGeometry>();
 }
 
 void

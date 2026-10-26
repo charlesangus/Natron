@@ -41,6 +41,23 @@ NATRON_NAMESPACE_ENTER
 class ContentHasher;
 
 /**
+ * @brief What a geometry node's Material input adds to its scene: see
+ * SceneNodeAuthoring::graftMaterialInput().
+ **/
+struct SceneMaterialGraft {
+    // The input's root prims grafted under the geometry prim, for the geometry node to stack its
+    // own layer on. Empty when the input is.
+    ScenePayload payload;
+    // Where the input's first material landed, which the geometry binds itself to. Empty when the
+    // input holds no material.
+    std::string materialPath;
+    // A hash of what the geometry's layer reads of payload: its metadata and materialPath. A
+    // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
+    U64 factsDigest = 0;
+    std::vector<SceneUnmappedLink> unmappedLinks;
+};
+
+/**
  * @brief What the scene nodes that author prims from knobs share: a stage to author their layer
  * through with the Usd API, and the time policy for knob values. A knob that is not animated
  * authors the attribute's default; an animated one (keyframes or an expression in any dimension)
@@ -127,6 +144,31 @@ authorValue(const PXR_NS::UsdAttribute& attribute,
 
     return true;
 }
+
+/**
+ * @brief For a geometry node's optional Material input: grafts every root prim of material under
+ * the geometry prim at primPath through SceneOps::reparentRoots, memoized in memo, so the material
+ * lives and moves with the geometry and each geometry node holds its own copy. The graft defines
+ * primPath and its missing ancestors typeless: the geometry's own layer, stacked on
+ * graft->payload, gives them their types and binds the prim with authorMaterialBinding().
+ * graft->materialPath is the grafted path of material's first UsdShadeMaterial, depth first.
+ * Returns false with *errorMessage set when primPath is not an absolute prim path, a root of
+ * material is at primPath itself, or authoring fails.
+ **/
+bool graftMaterialInput(const ScenePayload& material,
+                        const std::string& primPath,
+                        const std::string& layerTag,
+                        SceneGraftMemo* memo,
+                        SceneMaterialGraft* graft,
+                        std::string* errorMessage);
+
+/**
+ * @brief Binds prim to the material at materialPath (material:binding, with
+ * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty.
+ **/
+bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
+                           const std::string& materialPath,
+                           std::string* errorMessage);
 
 /**
  * @brief Authors knobs as xformable's op stack: xformOp:translate, xformOp:rotate<order> and

@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -36,6 +37,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "SceneTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -46,6 +48,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -102,37 +105,44 @@ protected:
         return SceneOps::compose(payload);
     }
 
-    // /World holding /World/A and /World/B, and a material after them.
-    void buildGraph()
+    // A node of pluginID named name, its inputs connected in order.
+    NodePtr node(const char* pluginID,
+                 const char* name,
+                 const std::vector<NodePtr>& inputs = std::vector<NodePtr>())
     {
-        NodePtr world = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
-        NodePtr a = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
-        NodePtr b = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
-        _material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
-        ASSERT_TRUE(world && a && b && _material);
-        setString(world, kSceneParamPrimPath, "/World");
-        setString(a, kSceneParamPrimPath, "/A");
-        setString(b, kSceneParamPrimPath, "/B");
-        ASSERT_TRUE(world->connectInput(a, 0));
-        ASSERT_TRUE(world->connectInput(b, 1));
-        ASSERT_TRUE(_material->connectInput(world, 0));
+        NodePtr result = createNode(QString::fromUtf8(pluginID));
+
+        EXPECT_TRUE(bool(result)) << pluginID;
+        if (!result) {
+            return result;
+        }
+        result->setScriptName(name);
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            EXPECT_TRUE(result->connectInput(inputs[i], (int)i)) << name << " input " << i;
+        }
+
+        return result;
     }
 
-    std::string materialPath() const
+    static PXR_NS::SdfPath boundMaterial(const PXR_NS::UsdStageRefPtr& stage,
+                                         const char* path)
     {
-        return "/" + _material->getScriptName_mt_safe();
-    }
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(path));
 
-    NodePtr _material;
+        EXPECT_TRUE(prim.IsValid()) << path;
+
+        return prim ? PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial().GetPath() : PXR_NS::SdfPath();
+    }
 };
 
-TEST_F(USDMaterialTest, TheMaterialIsAuthoredAndBoundToTheMatches)
+TEST_F(USDMaterialTest, TheMaterialIsASourceAtItsOwnPath)
 {
-    buildGraph();
-    EXPECT_EQ(materialPath(), dynamic_cast<KnobString*>(_material->getKnobByName(kSceneParamPrimPath).get())->getValue());
-    setString(_material, kUSDMaterialParamPrimPattern, "/World/A");
-    KnobColor* diffuse = dynamic_cast<KnobColor*>(_material->getKnobByName(kUSDMaterialParamDiffuseColor).get());
-    KnobDouble* roughness = dynamic_cast<KnobDouble*>(_material->getKnobByName(kUSDMaterialParamRoughness).get());
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    EXPECT_EQ(0, material->getNInputs());
+    EXPECT_EQ(std::string("/Material1"), dynamic_cast<KnobString*>(material->getKnobByName(kSceneParamPrimPath).get())->getValue());
+    KnobColor* diffuse = dynamic_cast<KnobColor*>(material->getKnobByName(kUSDMaterialParamDiffuseColor).get());
+    KnobDouble* roughness = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDMaterialParamRoughness).get());
     ASSERT_TRUE(diffuse && roughness);
     diffuse->setValue(0.8, ViewSpec::all(), 0);
     diffuse->setValue(0.1, ViewSpec::all(), 1);
@@ -140,12 +150,12 @@ TEST_F(USDMaterialTest, TheMaterialIsAuthoredAndBoundToTheMatches)
     roughness->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
     roughness->setValueAtTime(11., 0.7, ViewSpec::all(), 0);
 
-    PXR_NS::UsdStageRefPtr stage = compose(_material);
+    PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdShadeMaterial material(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath())));
-    ASSERT_TRUE(bool(material));
-    EXPECT_TRUE(material.GetPrim().IsA<PXR_NS::UsdShadeMaterial>());
-    const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource();
+    const PXR_NS::UsdShadeMaterial shadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1")));
+    ASSERT_TRUE(bool(shadeMaterial));
+    EXPECT_TRUE(shadeMaterial.GetPrim().IsA<PXR_NS::UsdShadeMaterial>());
+    const PXR_NS::UsdShadeShader surface = shadeMaterial.ComputeSurfaceSource();
     ASSERT_TRUE(bool(surface));
     PXR_NS::TfToken id;
     ASSERT_TRUE(surface.GetShaderId(&id));
@@ -164,35 +174,81 @@ TEST_F(USDMaterialTest, TheMaterialIsAuthoredAndBoundToTheMatches)
     EXPECT_FLOAT_EQ(0.7f, value);
     ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("emissiveColor")).Get(&color));
     EXPECT_EQ(PXR_NS::GfVec3f(0.f), color);
+    EXPECT_FALSE(material->hasPersistentMessage());
+}
 
-    // Bound to the match only.
-    const PXR_NS::UsdShadeMaterial boundA = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A"))).ComputeBoundMaterial();
-    ASSERT_TRUE(bool(boundA));
-    EXPECT_EQ(material.GetPath(), boundA.GetPath());
-    EXPECT_FALSE(bool(PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/B"))).ComputeBoundMaterial()));
-    EXPECT_FALSE(_material->hasPersistentMessage());
+TEST_F(USDMaterialTest, AGeometryBindsTheMaterialGraftedUnderIt)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
+    ASSERT_TRUE(material && card);
 
-    // A wildcard binds every match.
-    setString(_material, kUSDMaterialParamPrimPattern, "/World/*");
-    stage = compose(_material);
+    PXR_NS::UsdStageRefPtr stage = compose(card);
     ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/B"))).ComputeBoundMaterial()));
+    EXPECT_EQ(PXR_NS::TfToken("Cube"), stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1")).GetTypeName());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1")).IsValid());
+    const PXR_NS::UsdShadeMaterial grafted(stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Material1")));
+    ASSERT_TRUE(bool(grafted));
+    // The shader network comes with it, its connections inside the grafted material.
+    const PXR_NS::UsdShadeShader surface = grafted.ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    EXPECT_EQ(PXR_NS::SdfPath("/Card1/Material1/PreviewSurface"), surface.GetPath());
+    EXPECT_EQ(PXR_NS::SdfPath("/Card1/Material1"), boundMaterial(stage, "/Card1"));
+
+    // Unplugged, the geometry is unbound.
+    card->disconnectInput(0);
+    stage = compose(card);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Material1")).IsValid());
+    EXPECT_TRUE(boundMaterial(stage, "/Card1").IsEmpty());
+}
+
+TEST_F(USDMaterialTest, TheBindingFollowsTheGeometryUnderAnXformPrim)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
+    NodePtr transform = node(PLUGINID_NATRON_USDXFORMPRIM, "Transform1", { card });
+    ASSERT_TRUE(material && card && transform);
+
+    PXR_NS::UsdStageRefPtr stage = compose(transform);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1")).IsValid());
+    EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Transform1/Card1/Material1")))));
+    EXPECT_EQ(PXR_NS::SdfPath("/Transform1/Card1/Material1"), boundMaterial(stage, "/Transform1/Card1"));
+    EXPECT_FALSE(transform->hasPersistentMessage());
+}
+
+TEST_F(USDMaterialTest, OneMaterialFeedingTwoGeometriesGivesEachItsOwnCopy)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
+    NodePtr sphere = node(kTestPluginIDSceneGeometry, "Sphere1", { material });
+    NodePtr merge = node(PLUGINID_NATRON_USDMERGE, "Merge1", { card, sphere });
+    ASSERT_TRUE(material && card && sphere && merge);
+
+    PXR_NS::UsdStageRefPtr stage = compose(merge);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Material1")))));
+    EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Sphere1/Material1")))));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1")).IsValid());
+    EXPECT_EQ(PXR_NS::SdfPath("/Card1/Material1"), boundMaterial(stage, "/Card1"));
+    EXPECT_EQ(PXR_NS::SdfPath("/Sphere1/Material1"), boundMaterial(stage, "/Sphere1"));
 }
 
 TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
 {
-    buildGraph();
-    setString(_material, kUSDMaterialParamPrimPattern, "/World/A");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const std::string missing = dir.filePath(QString::fromUtf8("missing_albedo.exr")).toStdString();
-    setString(_material, kUSDMaterialParamDiffuseTexture, missing);
+    setString(material, kUSDMaterialParamDiffuseTexture, missing);
 
-    PXR_NS::UsdStageRefPtr stage = compose(_material);
+    PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdShadeMaterial material(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath())));
-    ASSERT_TRUE(bool(material));
-    const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource();
+    const PXR_NS::UsdShadeMaterial shadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1")));
+    ASSERT_TRUE(bool(shadeMaterial));
+    const PXR_NS::UsdShadeShader surface = shadeMaterial.ComputeSurfaceSource();
     ASSERT_TRUE(bool(surface));
     // The diffuse colour comes from a UsdUVTexture of the file, read at the st primvar.
     PXR_NS::UsdShadeConnectableAPI source;
@@ -217,7 +273,7 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
     // The untextured inputs stay unconnected.
     EXPECT_FALSE(surface.GetInput(PXR_NS::TfToken("roughness")).HasConnectedSource());
 
-    const std::string warning = warningOf(_material);
+    const std::string warning = warningOf(material);
     EXPECT_NE(std::string::npos, warning.find(missing)) << warning;
 
     // A texture that resolves clears the warning.
@@ -227,43 +283,25 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
         ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
         f.write("not read");
     }
-    setString(_material, kUSDMaterialParamDiffuseTexture, std::string());
-    setString(_material, kUSDMaterialParamRoughnessTexture, present);
-    stage = compose(_material);
+    setString(material, kUSDMaterialParamDiffuseTexture, std::string());
+    setString(material, kUSDMaterialParamRoughnessTexture, present);
+    stage = compose(material);
     ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdShadeShader rough = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath()))).ComputeSurfaceSource();
+    const PXR_NS::UsdShadeShader rough = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
     ASSERT_TRUE(bool(rough));
     ASSERT_TRUE(rough.GetInput(PXR_NS::TfToken("roughness")).GetConnectedSource(&source, &sourceName, &sourceType));
     EXPECT_EQ(PXR_NS::TfToken("r"), sourceName);
     EXPECT_FALSE(rough.GetInput(PXR_NS::TfToken("diffuseColor")).HasConnectedSource());
-    EXPECT_FALSE(_material->hasPersistentMessage()) << warningOf(_material);
-}
-
-TEST_F(USDMaterialTest, ZeroMatchesAuthorTheMaterialUnboundWithAWarning)
-{
-    buildGraph();
-    setString(_material, kUSDMaterialParamPrimPattern, "/Nowhere");
-    PXR_NS::UsdStageRefPtr stage = compose(_material);
-    ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath())))));
-    EXPECT_FALSE(bool(PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A"))).ComputeBoundMaterial()));
-    const std::string warning = warningOf(_material);
-    EXPECT_NE(std::string::npos, warning.find("/Nowhere")) << warning;
-
-    // No pattern: the material alone, quietly.
-    setString(_material, kUSDMaterialParamPrimPattern, std::string());
-    stage = compose(_material);
-    ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath())))));
-    EXPECT_FALSE(_material->hasPersistentMessage());
+    EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
 }
 
 TEST_F(USDMaterialTest, ThePathFollowsARename)
 {
-    buildGraph();
-    _material->setScriptName("Chrome");
-    EXPECT_EQ(std::string("/Chrome"), dynamic_cast<KnobString*>(_material->getKnobByName(kSceneParamPrimPath).get())->getValue());
-    PXR_NS::UsdStageRefPtr stage = compose(_material);
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    material->setScriptName("Chrome");
+    EXPECT_EQ(std::string("/Chrome"), dynamic_cast<KnobString*>(material->getKnobByName(kSceneParamPrimPath).get())->getValue());
+    PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Chrome")))));
 }

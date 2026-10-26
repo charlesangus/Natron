@@ -45,6 +45,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "SceneTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CLArgs.h"
@@ -416,26 +417,24 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelative
                 "    }\n}\n");
     }
 
-    // Nodes author the box at x = 5 and a textured material bound to it; the file read above them
-    // moves the box to y = 7.
+    // Nodes author the box at x = 5 holding a card with a textured material; the file read above
+    // them moves the box to y = 7.
     NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    NodePtr card = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
     NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
     NodePtr reader = createReader(overPath.toStdString());
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
-    ASSERT_TRUE(box && material && reader && merge);
+    ASSERT_TRUE(box && card && material && reader && merge);
     KnobString* boxPath = getKnob<KnobString>(box, kSceneParamPrimPath);
     KnobDouble* translate = getKnob<KnobDouble>(box, kSceneParamTranslate);
-    KnobString* materialPath = getKnob<KnobString>(material, kSceneParamPrimPath);
-    KnobString* pattern = getKnob<KnobString>(material, kUSDMaterialParamPrimPattern);
     KnobFile* texture = getKnob<KnobFile>(material, kUSDMaterialParamDiffuseTexture);
-    ASSERT_TRUE(boxPath && translate && materialPath && pattern && texture);
+    ASSERT_TRUE(boxPath && translate && texture);
     boxPath->setValue(std::string("/World/Box"));
     translate->setValue(5., ViewSpec::all(), 0);
-    materialPath->setValue(std::string("/World/Looks/Wood"));
-    pattern->setValue(std::string("/World/Box"));
     texture->setValue(std::string("textures/wood.png"));
-    ASSERT_TRUE(material->connectInput(box, 0));
-    ASSERT_TRUE(merge->connectInput(material, 0));
+    ASSERT_TRUE(card->connectInput(material, 0));
+    ASSERT_TRUE(box->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(box, 0));
     ASSERT_TRUE(merge->connectInput(reader, 1));
 
     const QString outDir = tmp.path() + QString::fromUtf8("/out");
@@ -748,7 +747,9 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
 //
 //   USDRead -> USDEditTransform ----------------------------\
 //                                                        USDMerge -> USDPrune -> USDWrite
-//   USDLight -> USDXformPrim -> USDMaterial ------------/
+//   USDLight ------------------\
+//                          USDXformPrim ---------------/
+//   USDMaterial -> geometry --/
 //
 // Every node's opinions reach the written file: Layered mode flattens what the nodes authored
 // into it and keeps the read file as its sublayer.
@@ -762,9 +763,10 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     NodePtr props = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
     NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr card = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
     NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
-    ASSERT_TRUE(reader && transform && props && light && material && merge && prune);
+    ASSERT_TRUE(reader && transform && props && light && material && card && merge && prune);
 
     const auto setString = [](const NodePtr& node, const char* name, const char* value) {
         KnobString* knob = getKnob<KnobString>(node, name);
@@ -780,13 +782,13 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     // The box lifted by 5.
     setString(transform, kUSDEditTransformParamPrimPattern, "/World/Box");
     setTranslate(transform, 1, 5.);
-    // A props xform at x = 7 holding a light, and a red textured material bound to
-    // it: USDMaterial binds what its own input holds.
+    // A props xform at x = 7 holding a light and a card, the card carrying a red textured
+    // material under its own prim.
     setString(props, kSceneParamPrimPath, "/World/Props");
     setTranslate(props, 0, 7.);
     setString(light, kSceneParamPrimPath, "/Key");
-    setString(material, kSceneParamPrimPath, "/World/Looks/Red");
-    setString(material, kUSDMaterialParamPrimPattern, "/World/Props");
+    setString(card, kSceneParamPrimPath, "/Card");
+    setString(material, kSceneParamPrimPath, "/Red");
     KnobColor* diffuse = getKnob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
     KnobFile* texture = getKnob<KnobFile>(material, kUSDMaterialParamDiffuseTexture);
     ASSERT_TRUE(diffuse && texture);
@@ -799,10 +801,11 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     setString(prune, kUSDPruneParamPrimPattern, "/World/Cam");
 
     ASSERT_TRUE(transform->connectInput(reader, 0));
+    ASSERT_TRUE(card->connectInput(material, 0));
     ASSERT_TRUE(props->connectInput(light, 0));
-    ASSERT_TRUE(material->connectInput(props, 0));
+    ASSERT_TRUE(props->connectInput(card, 1));
     ASSERT_TRUE(merge->connectInput(transform, 0));
-    ASSERT_TRUE(merge->connectInput(material, 1));
+    ASSERT_TRUE(merge->connectInput(props, 1));
     ASSERT_TRUE(prune->connectInput(merge, 0));
 
     const QString path = tmp.path() + QString::fromUtf8("/out/scene.usda");
@@ -823,9 +826,9 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     PXR_NS::SdfPrimSpecHandle box = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Box"));
     ASSERT_TRUE(box);
     EXPECT_TRUE(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.xformOpOrder")));
-    // USDMaterial: the binding on the props, and the texture relative to the written file.
-    EXPECT_TRUE(layer->GetRelationshipAtPath(PXR_NS::SdfPath("/World/Props.material:binding")));
-    PXR_NS::SdfAttributeSpecHandle textureFile = layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Looks/Red/diffuseColorTexture.inputs:file"));
+    // USDMaterial: the binding on the card, and the texture relative to the written file.
+    EXPECT_TRUE(layer->GetRelationshipAtPath(PXR_NS::SdfPath("/World/Props/Card.material:binding")));
+    PXR_NS::SdfAttributeSpecHandle textureFile = layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Props/Card/Red/diffuseColorTexture.inputs:file"));
     ASSERT_TRUE(textureFile);
     EXPECT_EQ(std::string("../textures/red.png"), textureFile->GetDefaultValue().Get<PXR_NS::SdfAssetPath>().GetAssetPath());
     // USDXformPrim and USDLight: their prims defined.
@@ -850,7 +853,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam")).IsActive());
     EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("DistantLight"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Key")).GetTypeName());
-    EXPECT_EQ(PXR_NS::TfToken("Material"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Looks/Red")).GetTypeName());
+    EXPECT_EQ(PXR_NS::TfToken("Material"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Card/Red")).GetTypeName());
 
     const PXR_NS::GfVec3d boxAt = PXR_NS::UsdGeomXformable(boxPrim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation();
     EXPECT_NEAR(5., boxAt[1], 1e-9);
@@ -858,7 +861,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
                                       .ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.))
                                       .ExtractTranslation();
     EXPECT_NEAR(7., keyAt[0], 1e-9);
-    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props"))).ComputeBoundMaterial();
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Card"))).ComputeBoundMaterial();
     ASSERT_TRUE(bool(bound));
-    EXPECT_EQ(PXR_NS::SdfPath("/World/Looks/Red"), bound.GetPath());
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Props/Card/Red"), bound.GetPath());
 }

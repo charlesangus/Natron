@@ -242,6 +242,22 @@ computeFrame(const GfMatrix4d& space,
         frame.axes[i] = space.TransformDir(axis);
         frame.scaleAxes[i] = space.TransformDir(rotation.TransformDir(axis));
     }
+    // The rotation is A * B * C over row vectors, the order's first axis A applying first.
+    // Adding d to A's angle gives A(d) * A * B * C = A * B * C * (B * C)^-1 * A(d) * (B * C): a
+    // turn by d about A's axis carried through B and C. So component i turns the prim about axis
+    // i taken through the factors after it, and the last axis turns about itself.
+    for (int position = 0; position < 3; ++position) {
+        const int i = SceneNodeAuthoring::getRotateOrderAxis(rotateOrder, position);
+        GfVec3d axis(0.);
+        axis[i] = 1.;
+        for (int later = position + 1; later < 3; ++later) {
+            const int j = SceneNodeAuthoring::getRotateOrderAxis(rotateOrder, later);
+            GfVec3d direction(0.);
+            direction[j] = 1.;
+            axis = GfMatrix4d(1.).SetRotate(GfRotation(direction, rotate[j])).TransformDir(axis);
+        }
+        frame.rotateAxes[i] = space.TransformDir(axis);
+    }
 
     return frame;
 }
@@ -313,12 +329,15 @@ buildHandles(const Frame& frame,
         arrow.points = { frame.origin + axis * (kArrowStart * length), tip, back + u * barb, tip, back - u * barb };
         shapes.push_back(arrow);
 
+        const GfVec3d rotateAxis = frame.rotateAxes[i].GetNormalized();
+        GfVec3d ru, rv;
+        makeBasis(rotateAxis, &ru, &rv);
         HandleShape ring;
         ring.handle = makeHandle(eHandleKindRotate, i);
         ring.closed = true;
         for (int k = 0; k < kRingSegments; ++k) {
             const double angle = 2. * M_PI * k / kRingSegments;
-            ring.points.push_back(frame.origin + (u * std::cos(angle) + v * std::sin(angle)) * (kRingRadius * length));
+            ring.points.push_back(frame.origin + (ru * std::cos(angle) + rv * std::sin(angle)) * (kRingRadius * length));
         }
         shapes.push_back(ring);
 
@@ -398,8 +417,8 @@ getHandlePixel(const View& view,
         break;
     case eHandleKindRotate: {
         GfVec3d u, v;
-        makeBasis(frame.axes[axis].GetNormalized(), &u, &v);
-        // Half way between the ring's crossings of the other two arrows.
+        makeBasis(frame.rotateAxes[axis].GetNormalized(), &u, &v);
+        // On the ring, where buildHandles() draws it, half way between two of its basis directions.
         point = frame.origin + (u + v).GetNormalized() * (kRingRadius * length);
         break;
     }
@@ -435,7 +454,7 @@ computeDragChange(const View& view,
         return true;
     }
     case eHandleKindRotate: {
-        const GfVec3d n = frame.axes[axis].GetNormalized();
+        const GfVec3d n = frame.rotateAxes[axis].GetNormalized();
         GfVec3d p0, p1;
         if (!intersectPlane(view, frame.origin, n, pressPixel, &p0) || !intersectPlane(view, frame.origin, n, pixel, &p1)) {
             return false;

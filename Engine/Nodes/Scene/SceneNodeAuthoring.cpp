@@ -432,16 +432,24 @@ matchPrims(const PXR_NS::UsdStageRefPtr& stage,
     return true;
 } // matchPrims
 
+int
+getRotateOrderAxis(SceneRotateOrderEnum rotateOrder,
+                   int position)
+{
+    static const char* const kOrders[] = { "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX" };
+    const int order = ((int)rotateOrder >= 0 && (int)rotateOrder < 6) ? (int)rotateOrder : 0;
+
+    return kOrders[order][std::min(std::max(position, 0), 2)] - 'X';
+}
+
 PXR_NS::GfMatrix4d
 composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
                       SceneRotateOrderEnum rotateOrder)
 {
-    static const char* const kOrders[] = { "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX" };
-    const int order = ((int)rotateOrder >= 0 && (int)rotateOrder < 6) ? (int)rotateOrder : 0;
     // With row vectors the leftmost factor applies first, as the order's first axis does.
     PXR_NS::GfMatrix4d rotation(1.);
     for (int i = 0; i < 3; ++i) {
-        const int axis = kOrders[order][i] - 'X';
+        const int axis = getRotateOrderAxis(rotateOrder, i);
         PXR_NS::GfVec3d direction(0.);
         direction[axis] = 1.;
         PXR_NS::GfMatrix4d factor(1.);

@@ -271,6 +271,88 @@ TEST(SceneGizmo, DragsMapToKnobChanges)
     EXPECT_FALSE(computeDragChange(view, frame, kNoHandle, PXR_NS::GfVec2d(0.), PXR_NS::GfVec2d(1.), &change));
 }
 
+namespace {
+// A camera 10 units from the origin along eye's direction, looking at the origin.
+View
+viewFrom(const PXR_NS::GfVec3d& eye)
+{
+    const PXR_NS::GfVec3d direction = eye.GetNormalized();
+    const PXR_NS::GfVec3d up = (std::abs(direction[1]) < 0.9) ? PXR_NS::GfVec3d(0., 1., 0.) : PXR_NS::GfVec3d(1., 0., 0.);
+    PXR_NS::GfMatrix4d lookAt;
+
+    lookAt.SetLookAt(direction * 10., PXR_NS::GfVec3d(0.), up);
+    PXR_NS::GfFrustum frustum;
+    frustum.SetPositionAndRotationFromMatrix(lookAt.GetInverse());
+    frustum.SetPerspective(45., 1., 0.1, 1000.);
+
+    return View(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), kSize, kSize);
+}
+
+const SceneRotateOrderEnum kAllRotateOrders[] = {
+    eSceneRotateOrderXYZ, eSceneRotateOrderXZY, eSceneRotateOrderYXZ, eSceneRotateOrderYZX, eSceneRotateOrderZXY, eSceneRotateOrderZYX
+};
+} // anonymous namespace
+
+TEST(SceneGizmo, RotateOrdersComposeAsUsdRotateOps)
+{
+    const PXR_NS::GfVec3d rotate(30., -45., 60.);
+
+    for (SceneRotateOrderEnum order : kAllRotateOrders) {
+        // The orders are listed as USD lists its three-angle rotate ops.
+        const PXR_NS::UsdGeomXformOp::Type type = (PXR_NS::UsdGeomXformOp::Type)(PXR_NS::UsdGeomXformOp::TypeRotateXYZ + (int)order);
+        const PXR_NS::GfMatrix4d expected = PXR_NS::UsdGeomXformOp::GetOpTransform(type, PXR_NS::VtValue(rotate));
+        EXPECT_TRUE(PXR_NS::GfIsClose(expected, SceneNodeAuthoring::composeRotationMatrix(rotate, order), 1e-9)) << "order " << (int)order;
+    }
+}
+
+TEST(SceneGizmo, EachRingTurnsThePrimAboutItselfThroughItsOwnAngle)
+{
+    // A quarter turn about Y in XYZ order carries the X angle's axis to -Z: the X ring faces Z.
+    const Frame quarter = computeFrame(PXR_NS::GfMatrix4d(1.), PXR_NS::GfVec3d(0.), PXR_NS::GfVec3d(0., 90., 0.), PXR_NS::GfVec3d(0.), eSceneRotateOrderXYZ);
+    expectVecNear(PXR_NS::GfVec3d(0., 0., -1.), quarter.rotateAxes[0], 1e-9);
+    expectVecNear(PXR_NS::GfVec3d(0., 1., 0.), quarter.rotateAxes[1], 1e-9);
+    expectVecNear(PXR_NS::GfVec3d(0., 0., 1.), quarter.rotateAxes[2], 1e-9);
+
+    const PXR_NS::GfVec3d rotates[] = {
+        PXR_NS::GfVec3d(0.), PXR_NS::GfVec3d(0., 90., 0.), PXR_NS::GfVec3d(30., -45., 60.), PXR_NS::GfVec3d(120., 75., -150.), PXR_NS::GfVec3d(-20., 10., 85.)
+    };
+    const double kTurn = 5.;
+
+    for (SceneRotateOrderEnum order : kAllRotateOrders) {
+        for (const PXR_NS::GfVec3d& rotate : rotates) {
+            const Frame frame = computeFrame(PXR_NS::GfMatrix4d(1.), PXR_NS::GfVec3d(0.), rotate, PXR_NS::GfVec3d(0.), order);
+            const PXR_NS::GfMatrix4d before = SceneNodeAuthoring::composeRotationMatrix(rotate, order);
+            const double length = 1.;
+            const std::vector<HandleShape> shapes = buildHandles(frame, length);
+
+            for (int axis = 0; axis < 3; ++axis) {
+                const std::string where = "order " + std::to_string((int)order) + " rotate (" + std::to_string(rotate[0]) + ", " + std::to_string(rotate[1]) + ", " + std::to_string(rotate[2]) + ") axis " + std::to_string(axis);
+                const PXR_NS::GfVec3d n = frame.rotateAxes[axis].GetNormalized();
+                // The ring is drawn about the axis its drag is measured about.
+                const HandleShape& ring = shapes[axis * 3 + 1];
+                ASSERT_EQ(makeHandle(eHandleKindRotate, axis), ring.handle);
+                for (const PXR_NS::GfVec3d& p : ring.points) {
+                    EXPECT_NEAR(0., PXR_NS::GfDot(p - frame.origin, n), 1e-9) << where;
+                }
+                // A small drag along the ring, seen from near its axis so the ring faces the camera.
+                const View view = viewFrom(n + PXR_NS::GfVec3d(0.2, 0.3, 0.1));
+                const PXR_NS::GfVec3d start = ring.points[0];
+                const PXR_NS::GfVec3d end = PXR_NS::GfMatrix4d(1.).SetRotate(PXR_NS::GfRotation(n, kTurn)).Transform(start);
+                double change = 0.;
+                ASSERT_TRUE(computeDragChange(view, frame, ring.handle, pixelOf(view, start), pixelOf(view, end), &change)) << where;
+                EXPECT_NEAR(kTurn, change, 1e-6) << where;
+
+                // The viewer adds the change to the ring's own component only; the prim then
+                // turns about the drawn ring's axis, after its rotation.
+                PXR_NS::GfVec3d after = rotate;
+                after[axis] += change;
+                const PXR_NS::GfMatrix4d expected = before * PXR_NS::GfMatrix4d(1.).SetRotate(PXR_NS::GfRotation(n, change));
+                EXPECT_TRUE(PXR_NS::GfIsClose(expected, SceneNodeAuthoring::composeRotationMatrix(after, order), 1e-9)) << where;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 namespace {

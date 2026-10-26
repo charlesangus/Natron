@@ -180,7 +180,7 @@ bool withRender(const Request& request,
 
 /**
  * @brief Runs job on the render thread with the context current and waits for it, passing the
- * context's GL entry point lookup. False with *error set if there is no context.
+ * context's GL entry point lookup. False with *error set if there is no context or job threw.
  **/
 bool withContext(const std::function<void(const std::function<void*(const char*)>& getProcAddress)>& job,
                  std::string* error) WARN_UNUSED_RETURN;

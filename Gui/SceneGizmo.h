@@ -105,12 +105,15 @@ double worldSizeOfPixel(const View& view, const PXR_NS::GfVec3d& world);
 /**
  * @brief Where an op's handles sit. origin is the op's pivot after the op's move; axes[i] is the
  * world direction, and length, that one unit of translate along axis i moves the prim by;
- * scaleAxes[i] is the world direction of the prim's axis i after the op's rotation, the
- * direction scale along axis i stretches it in.
+ * rotateAxes[i] is the world direction the prim turns about when component i of rotate grows:
+ * axis i turned by the rotations that follow it in the rotate order; scaleAxes[i] is the world
+ * direction of the prim's axis i after the op's rotation, the direction scale along axis i
+ * stretches it in.
  **/
 struct Frame {
     PXR_NS::GfVec3d origin;
     PXR_NS::GfVec3d axes[3];
+    PXR_NS::GfVec3d rotateAxes[3];
     PXR_NS::GfVec3d scaleAxes[3];
 };
 
@@ -160,7 +163,7 @@ bool getHandlePixel(const View& view, const Frame& frame, int handle, PXR_NS::Gf
 /**
  * @brief The knob change dragging handle from pressPixel to pixel makes, for the frame the op had
  * at the press: for an arrow, the amount added to translate along its axis; for a ring, the
- * degrees added to rotate about its axis; for a box, the factor scale along its axis is
+ * degrees added to its component of rotate, measured about the ring's axis; for a box, the factor scale along its axis is
  * multiplied by (at least 0.001). False if the drag says nothing, such as a ring seen edge-on.
  **/
 bool computeDragChange(const View& view,

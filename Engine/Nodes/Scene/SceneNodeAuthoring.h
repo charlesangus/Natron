@@ -149,6 +149,9 @@ PXR_NS::GfMatrix4d composeTransformMatrix(const PXR_NS::GfVec3d& translate,
                                           const PXR_NS::GfVec3d& pivot,
                                           SceneRotateOrderEnum rotateOrder);
 
+// The axis (0 for X, 1 for Y, 2 for Z) rotateOrder turns about at position (0 first, 2 last).
+int getRotateOrderAxis(SceneRotateOrderEnum rotateOrder, int position);
+
 // The rotation part of composeTransformMatrix(), as a Gf (row-vector) matrix.
 PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
                                          SceneRotateOrderEnum rotateOrder);

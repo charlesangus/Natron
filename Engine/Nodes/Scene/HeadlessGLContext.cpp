@@ -93,6 +93,7 @@ struct HeadlessGLContext::Implementation {
     decltype(&::eglGetProcAddress) getProcAddress = nullptr;
     decltype(&::eglQueryString) queryString = nullptr;
     decltype(&::eglInitialize) initialize = nullptr;
+    decltype(&::eglTerminate) terminate = nullptr;
     decltype(&::eglBindAPI) bindApi = nullptr;
     decltype(&::eglChooseConfig) chooseConfig = nullptr;
     decltype(&::eglCreateContext) createContext = nullptr;
@@ -113,7 +114,7 @@ struct HeadlessGLContext::Implementation {
             return fn != nullptr;
         };
 
-        return load(getProcAddress, "eglGetProcAddress") && load(queryString, "eglQueryString") && load(initialize, "eglInitialize") && load(bindApi, "eglBindAPI") && load(chooseConfig, "eglChooseConfig") && load(createContext, "eglCreateContext") && load(destroyContext, "eglDestroyContext") && load(makeCurrent, "eglMakeCurrent") && load(getCurrentContext, "eglGetCurrentContext") && load(getError, "eglGetError");
+        return load(getProcAddress, "eglGetProcAddress") && load(queryString, "eglQueryString") && load(initialize, "eglInitialize") && load(terminate, "eglTerminate") && load(bindApi, "eglBindAPI") && load(chooseConfig, "eglChooseConfig") && load(createContext, "eglCreateContext") && load(destroyContext, "eglDestroyContext") && load(makeCurrent, "eglMakeCurrent") && load(getCurrentContext, "eglGetCurrentContext") && load(getError, "eglGetError");
     }
 
     // The GL version and profile of the context current on this thread, and its description.
@@ -146,7 +147,10 @@ struct HeadlessGLContext::Implementation {
         *text = os.str();
     }
 
-    // Tries one display. On success the context is current; otherwise *error says why.
+    /**
+     * @brief Tries one display. On success the context is current; otherwise *error says why and
+     * the display is terminated again if it was initialized.
+     **/
     bool tryDisplay(EGLDisplay dpy,
                     const std::string& platform,
                     std::string* error)
@@ -156,6 +160,20 @@ struct HeadlessGLContext::Implementation {
 
             return false;
         }
+        if (!tryInitializedDisplay(dpy, platform, error)) {
+            terminate(dpy);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // tryDisplay() on a display eglInitialize accepted; on failure no context is left on it.
+    bool tryInitializedDisplay(EGLDisplay dpy,
+                               const std::string& platform,
+                               std::string* error)
+    {
         const char* extensions = queryString(dpy, EGL_EXTENSIONS);
         if (!hasExtension(extensions, "EGL_KHR_surfaceless_context")) {
             *error = platform + ": no EGL_KHR_surfaceless_context";

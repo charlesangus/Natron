@@ -240,18 +240,37 @@ public:
         return true;
     }
 
-    // Runs job on the thread and waits for it.
+    /**
+     * @brief Runs job on the thread and waits for it. False, with *error set if error is not
+     * null, if job threw: the exception stops at the thread, which goes on to its next job.
+     **/
     template <typename Fn>
-    void runAndWait(Fn job)
+    bool runAndWait(Fn job,
+                    std::string* error)
     {
-        std::promise<void> done;
-        std::future<void> finished = done.get_future();
+        std::promise<std::string> done;
+        std::future<std::string> finished = done.get_future();
         post([&job, &done]() {
-            job();
-            done.set_value();
+            std::string failure;
+            try {
+                job();
+            } catch (const std::exception& e) {
+                failure = std::string("USDRender's render thread failed: ") + e.what();
+            } catch (...) {
+                failure = "USDRender's render thread failed.";
+            }
+            done.set_value(failure);
         },
              true);
-        finished.wait();
+        const std::string failure = finished.get();
+        if (failure.empty()) {
+            return true;
+        }
+        if (error) {
+            *error = failure;
+        }
+
+        return false;
     }
 
     // The members below are the thread's alone.
@@ -375,7 +394,12 @@ private:
                 job = std::move(_jobs.front());
                 _jobs.pop_front();
             }
-            job();
+            // A job that does not wait has no one to report to; its exception must not end the
+            // thread.
+            try {
+                job();
+            } catch (...) {
+            }
         }
     }
 
@@ -1153,7 +1177,7 @@ render(const Request& request,
     }
     bool ok = false;
     RenderThread& thread = RenderThread::instance();
-    thread.runAndWait([&]() {
+    const bool ran = thread.runAndWait([&]() {
         try {
             EngineEntry* entry = thread.renderStorm(request, error);
             ok = entry && thread.frame(*entry, result, error);
@@ -1161,9 +1185,10 @@ render(const Request& request,
             *error = std::string("Storm failed: ") + e.what();
             ok = false;
         }
-    });
+    },
+                                       error);
 
-    return ok;
+    return ran && ok;
 }
 
 bool
@@ -1178,7 +1203,7 @@ withRender(const Request& request,
     }
     bool ok = false;
     RenderThread& thread = RenderThread::instance();
-    thread.runAndWait([&]() {
+    const bool ran = thread.runAndWait([&]() {
         try {
             EngineEntry* entry = thread.renderStorm(request, error);
             if (entry) {
@@ -1189,9 +1214,10 @@ withRender(const Request& request,
             *error = std::string("Storm failed: ") + e.what();
             ok = false;
         }
-    });
+    },
+                                       error);
 
-    return ok;
+    return ran && ok;
 }
 
 bool
@@ -1201,15 +1227,16 @@ withContext(const std::function<void(const std::function<void*(const char*)>& ge
     bool ok = false;
     RenderThread& thread = RenderThread::instance();
 
-    thread.runAndWait([&]() {
+    const bool ran = thread.runAndWait([&]() {
         if (thread.ensureContext(error)) {
             ok = true;
             const std::function<void*(const char*)> getProcAddress = [&thread](const char* name) { return thread.getProcAddress(name); };
             job(getProcAddress);
         }
-    });
+    },
+                                       error);
 
-    return ok;
+    return ran && ok;
 }
 
 void
@@ -1238,7 +1265,7 @@ renderWindow(const Request& request,
     }
     bool ok = false;
     RenderThread& thread = RenderThread::instance();
-    thread.runAndWait([&]() {
+    const bool ran = thread.runAndWait([&]() {
         try {
             EngineEntry* entry = thread.renderStorm(request, error);
             if (!entry) {
@@ -1253,9 +1280,10 @@ renderWindow(const Request& request,
             *error = std::string("Storm failed: ") + e.what();
             ok = false;
         }
-    });
+    },
+                                       error);
 
-    return ok;
+    return ran && ok;
 }
 
 bool
@@ -1264,12 +1292,13 @@ packsOnGpu()
     bool ok = false;
     RenderThread& thread = RenderThread::instance();
 
-    thread.runAndWait([&]() {
+    const bool ran = thread.runAndWait([&]() {
         std::string error;
         ok = thread.ensureContext(&error) && thread.packAvailable(&error);
-    });
+    },
+                                       nullptr);
 
-    return ok;
+    return ran && ok;
 }
 
 void
@@ -1286,13 +1315,14 @@ contextDescription(std::string* error)
     std::string description;
     RenderThread& thread = RenderThread::instance();
 
-    thread.runAndWait([&]() {
+    const bool ran = thread.runAndWait([&]() {
         if (thread.ensureContext(error)) {
             description = thread.contextDescription();
         }
-    });
+    },
+                                       error);
 
-    return description;
+    return ran ? description : std::string();
 }
 } // namespace HydraRender
 

@@ -415,8 +415,8 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphRemoveNodes "remove"
 #define kShortcutDescActionGraphRemoveNodes "Remove Nodes"
 
-#define kShortcutIDActionGraphShowExpressions "displayExp"
-#define kShortcutDescActionGraphShowExpressions "Show Expressions Links"
+#define kShortcutIDActionGraphShowLinkLines "showLinkLines"
+#define kShortcutDescActionGraphShowLinkLines "Show Link Lines"
 
 #define kShortcutIDActionGraphNavigateUpstream "navigateUp"
 #define kShortcutDescActionGraphNavigateUpstream "Navigate Tree Upward"
@@ -448,11 +448,11 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphPaste "paste"
 #define kShortcutDescActionGraphPaste "Paste Nodes"
 
-#define kShortcutIDActionGraphClone "clone"
-#define kShortcutDescActionGraphClone "Clone Nodes"
+#define kShortcutIDActionGraphCreateLinkedNode "createLinkedNode"
+#define kShortcutDescActionGraphCreateLinkedNode "Create Linked Node"
 
-#define kShortcutIDActionGraphDeclone "declone"
-#define kShortcutDescActionGraphDeclone "De-clone Nodes"
+#define kShortcutIDActionGraphUnlinkNode "unlinkNode"
+#define kShortcutDescActionGraphUnlinkNode "Unlink Node"
 
 #define kShortcutIDActionGraphCut "cut"
 #define kShortcutDescActionGraphCut "Cut Nodes"

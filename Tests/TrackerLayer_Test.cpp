@@ -317,37 +317,39 @@ TEST_F(TrackerLayerTest, TransformSolveEndsBeforeTrackingJobFinished)
 
 namespace {
 
-// The tracker's knobs that drive its internal CornerPin: the tracker-side name, and the name of
-// the CornerPin knob it is linked to.
+// The tracker's knobs that drive its internal CornerPin: the tracker-side name, the name of the
+// CornerPin knob it drives, and whether the tracker knob is the internal Transform's alias, which
+// the CornerPin knob is slaved to, rather than the CornerPin knob's own alias.
 struct TrackerCornerPinLink {
     const char* trackerName;
     const char* cornerPinName;
+    bool sharedWithTransform;
 };
 
 const TrackerCornerPinLink kCornerPinLinks[] = {
-    { kCornerPinNodeParamFrom1, kCornerPinNodeParamFrom1 },
-    { kCornerPinNodeParamFrom2, kCornerPinNodeParamFrom2 },
-    { kCornerPinNodeParamFrom3, kCornerPinNodeParamFrom3 },
-    { kCornerPinNodeParamFrom4, kCornerPinNodeParamFrom4 },
-    { kCornerPinNodeParamTo1, kCornerPinNodeParamTo1 },
-    { kCornerPinNodeParamTo2, kCornerPinNodeParamTo2 },
-    { kCornerPinNodeParamTo3, kCornerPinNodeParamTo3 },
-    { kCornerPinNodeParamTo4, kCornerPinNodeParamTo4 },
-    { kCornerPinNodeParamEnable1, kCornerPinNodeParamEnable1 },
-    { kCornerPinNodeParamEnable2, kCornerPinNodeParamEnable2 },
-    { kCornerPinNodeParamEnable3, kCornerPinNodeParamEnable3 },
-    { kCornerPinNodeParamEnable4, kCornerPinNodeParamEnable4 },
-    { kCornerPinNodeParamOverlayPoints, kCornerPinNodeParamOverlayPoints },
-    { kCornerPinNodeParamExtraMatrix, kCornerPinNodeParamExtraMatrix },
+    { kCornerPinNodeParamFrom1, kCornerPinNodeParamFrom1, false },
+    { kCornerPinNodeParamFrom2, kCornerPinNodeParamFrom2, false },
+    { kCornerPinNodeParamFrom3, kCornerPinNodeParamFrom3, false },
+    { kCornerPinNodeParamFrom4, kCornerPinNodeParamFrom4, false },
+    { kCornerPinNodeParamTo1, kCornerPinNodeParamTo1, false },
+    { kCornerPinNodeParamTo2, kCornerPinNodeParamTo2, false },
+    { kCornerPinNodeParamTo3, kCornerPinNodeParamTo3, false },
+    { kCornerPinNodeParamTo4, kCornerPinNodeParamTo4, false },
+    { kCornerPinNodeParamEnable1, kCornerPinNodeParamEnable1, false },
+    { kCornerPinNodeParamEnable2, kCornerPinNodeParamEnable2, false },
+    { kCornerPinNodeParamEnable3, kCornerPinNodeParamEnable3, false },
+    { kCornerPinNodeParamEnable4, kCornerPinNodeParamEnable4, false },
+    { kCornerPinNodeParamOverlayPoints, kCornerPinNodeParamOverlayPoints, false },
+    { kCornerPinNodeParamExtraMatrix, kCornerPinNodeParamExtraMatrix, false },
     // Shared with the internal Transform, so these carry its script names.
-    { "invert", kCornerPinNodeParamInvert },
-    { "filter", kCornerPinNodeParamFilter },
-    { "clamp", kCornerPinNodeParamClamp },
-    { "black_outside", kCornerPinNodeParamBlackOutside },
-    { "motionBlur", kCornerPinNodeParamMotionBlur },
-    { "shutter", kCornerPinNodeParamShutter },
-    { "shutterOffset", kCornerPinNodeParamShutterOffset },
-    { "shutterCustomOffset", kCornerPinNodeParamShutterCustomOffset },
+    { "invert", kCornerPinNodeParamInvert, true },
+    { "filter", kCornerPinNodeParamFilter, true },
+    { "clamp", kCornerPinNodeParamClamp, true },
+    { "black_outside", kCornerPinNodeParamBlackOutside, true },
+    { "motionBlur", kCornerPinNodeParamMotionBlur, true },
+    { "shutter", kCornerPinNodeParamShutter, true },
+    { "shutterOffset", kCornerPinNodeParamShutterOffset, true },
+    { "shutterCustomOffset", kCornerPinNodeParamShutterCustomOffset, true },
 };
 
 const char* const kToNames[4] = { kCornerPinNodeParamTo1, kCornerPinNodeParamTo2, kCornerPinNodeParamTo3, kCornerPinNodeParamTo4 };
@@ -535,8 +537,16 @@ TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalCornerPin)
         KnobIPtr cornerPinKnob = _cornerPin->getKnobByName(link.cornerPinName);
         ASSERT_TRUE(bool(trackerKnob)) << "tracker has no " << link.trackerName;
         ASSERT_TRUE(bool(cornerPinKnob)) << "CornerPin has no " << link.cornerPinName;
+        if (link.sharedWithTransform) {
+            for (int d = 0; d < cornerPinKnob->getDimension(); ++d) {
+                EXPECT_EQ(trackerKnob, cornerPinKnob->getMaster(d).second) << link.cornerPinName << " dim " << d << " is not slaved to the tracker's " << link.trackerName;
+            }
+            continue;
+        }
+        EXPECT_EQ(trackerKnob, cornerPinKnob->getAliasMaster()) << link.cornerPinName << " is not an alias of the tracker's " << link.trackerName;
         for (int d = 0; d < cornerPinKnob->getDimension(); ++d) {
-            EXPECT_EQ(trackerKnob, cornerPinKnob->getMaster(d).second) << link.cornerPinName << " dim " << d << " is not driven by the tracker's " << link.trackerName;
+            EXPECT_TRUE(cornerPinKnob->isLinkPermanent(d)) << link.cornerPinName << " dim " << d;
+            EXPECT_EQ(trackerKnob->getLinkGroup(d), cornerPinKnob->getLinkGroup(d)) << link.cornerPinName << " dim " << d << " is not driven by the tracker's " << link.trackerName;
         }
     }
 
@@ -548,6 +558,12 @@ TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalCornerPin)
     ASSERT_TRUE(trackerTo1 && cornerPinTo1);
     trackerTo1->setValue(123.5, ViewSpec::all(), 0);
     EXPECT_DOUBLE_EQ(123.5, cornerPinTo1->getValue(0));
+
+    KnobDoublePtr trackerShutter = std::dynamic_pointer_cast<KnobDouble>(_tracker->getKnobByName("shutter"));
+    KnobDoublePtr cornerPinShutter = std::dynamic_pointer_cast<KnobDouble>(_cornerPin->getKnobByName(kCornerPinNodeParamShutter));
+    ASSERT_TRUE(trackerShutter && cornerPinShutter);
+    trackerShutter->setValue(0.25, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(0.25, cornerPinShutter->getValue(0));
 }
 
 TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalTransform)
@@ -568,8 +584,10 @@ TEST_F(TrackerCornerPinTest, DuplicatedKnobsDriveInternalTransform)
         KnobIPtr transformKnob = transform->getKnobByName(name);
         ASSERT_TRUE(bool(trackerKnob)) << "tracker has no " << name;
         ASSERT_TRUE(bool(transformKnob)) << "Transform has no " << name;
+        EXPECT_EQ(trackerKnob, transformKnob->getAliasMaster()) << name << " is not an alias of the tracker's knob";
         for (int d = 0; d < transformKnob->getDimension(); ++d) {
-            EXPECT_EQ(trackerKnob, transformKnob->getMaster(d).second) << name << " dim " << d << " is not driven by the tracker";
+            EXPECT_TRUE(transformKnob->isLinkPermanent(d)) << name << " dim " << d;
+            EXPECT_EQ(trackerKnob->getLinkGroup(d), transformKnob->getLinkGroup(d)) << name << " dim " << d << " is not driven by the tracker";
         }
     }
 }

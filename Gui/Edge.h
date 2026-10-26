@@ -185,6 +185,13 @@ public:
 
     void setWidth(int lineWidth);
 
+    /**
+     * @brief An undirected link is drawn without an arrow head.
+     **/
+    void setUndirected(bool undirected);
+
+    void setDashed(bool dashed);
+
 public Q_SLOTS:
 
     /**
@@ -200,6 +207,8 @@ private:
     QColor _renderColor;
     QColor _headColor;
     int _lineWidth;
+    bool _undirected;
+    bool _dashed;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -25,6 +25,7 @@
 
 #include "PyParameter.h"
 
+#include <algorithm> // find
 #include <cassert>
 #include <cctype>
 #include <cmath>
@@ -44,6 +45,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
@@ -447,12 +449,75 @@ Param::copy(Param* other,
     return true;
 }
 
-bool
-Param::slaveTo(Param* other,
-               int thisDimension,
-               int otherDimension)
+// Adds the nodes of the members of the knob's link groups to nodes.
+static void
+addParamLinkGroupNodes(const KnobIPtr& knob,
+                       NodesList* nodes)
 {
-    if (!checkIsEditable()) {
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        KnobLinkGroupPtr group = knob->getLinkGroup(i);
+        if (!group) {
+            continue;
+        }
+        const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr member = it->knob.lock();
+            EffectInstance* effect = member ? dynamic_cast<EffectInstance*>(member->getHolder()) : 0;
+            NodePtr node = effect ? effect->getNode() : NodePtr();
+            if (node && (std::find(nodes->begin(), nodes->end(), node) == nodes->end())) {
+                nodes->push_back(node);
+            }
+        }
+    }
+}
+
+// Knob link changes do not emit Node::linksChanged(): emits it on the knob's node, the nodes it is
+// now linked to and the ones in previousLinkNodes, so that their link lines are redrawn. A knob with
+// no node, such as a project knob, has no link line of its own: only the nodes it is or was linked
+// to redraw theirs.
+static void
+emitParamLinksChanged(const KnobIPtr& knob,
+                      const NodesList& previousLinkNodes)
+{
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (node) {
+        node->emitLinksChanged(previousLinkNodes);
+
+        return;
+    }
+    NodesList nodes = previousLinkNodes;
+    addParamLinkGroupNodes(knob, &nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->emitLinksChanged(NodesList());
+    }
+}
+
+// The nodes the knob's node is linked to now, or those of the knob's link group members for a knob
+// with no node, which must redraw their link lines if a link changes.
+static NodesList
+getParamLinkNodes(const KnobIPtr& knob)
+{
+    NodesList nodes;
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (node) {
+        node->getKnobLinkedNodes(&nodes);
+    } else {
+        addParamLinkGroupNodes(knob, &nodes);
+    }
+
+    return nodes;
+}
+
+bool
+Param::linkTo(Param* other,
+              int thisDimension,
+              int otherDimension)
+{
+    if (!other || !checkIsEditable() || !other->checkIsEditable()) {
         return false;
     }
     if (!recordPythonKnobEdit(getInternalKnob())) {
@@ -461,31 +526,92 @@ Param::slaveTo(Param* other,
     KnobIPtr thisKnob = _knob.lock();
     KnobIPtr otherKnob = other->_knob.lock();
 
-    if ( !KnobI::areTypesCompatibleForSlave( thisKnob.get(), otherKnob.get() ) ) {
+    if (!thisKnob || !otherKnob) {
         return false;
     }
-    if ( (thisDimension < 0) || ( thisDimension >= thisKnob->getDimension() ) || (otherDimension < 0) || ( otherDimension >= otherKnob->getDimension() ) ) {
+    if ((thisDimension < -1) || (thisDimension >= thisKnob->getDimension()) || (otherDimension < -1) || (otherDimension >= otherKnob->getDimension())) {
         return false;
     }
+    NodesList previousLinkNodes = getParamLinkNodes(thisKnob);
+    if (!thisKnob->linkTo(thisDimension, otherKnob, otherDimension)) {
+        return false;
+    }
+    emitParamLinksChanged(thisKnob, previousLinkNodes);
 
-    return thisKnob->slaveTo(thisDimension, otherKnob, otherDimension);
+    return true;
 }
 
-void
-Param::unslave(int dimension)
+bool
+Param::unlink()
 {
     if (!checkIsEditable()) {
-        return;
+        return false;
     }
     if (!recordPythonKnobEdit(getInternalKnob())) {
-        return;
+        return false;
     }
     KnobIPtr thisKnob = _knob.lock();
 
     if (!thisKnob) {
-        return;
+        return false;
     }
-    thisKnob->unSlave(dimension, false);
+    for (int i = 0; i < thisKnob->getDimension(); ++i) {
+        if (thisKnob->isLinkPermanent(i)) {
+            const std::string message = "The parameter " + thisKnob->getName() + " is an alias or has aliases, so it cannot be unlinked.";
+            PyErr_SetString(PyExc_ValueError, message.c_str());
+
+            return false;
+        }
+    }
+    NodesList previousLinkNodes = getParamLinkNodes(thisKnob);
+    if (!thisKnob->unlinkFromGroups()) {
+        return false;
+    }
+    emitParamLinksChanged(thisKnob, previousLinkNodes);
+
+    return true;
+}
+
+bool
+Param::relink()
+{
+    if (!checkIsEditable()) {
+        return false;
+    }
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return false;
+    }
+    KnobIPtr thisKnob = _knob.lock();
+
+    if (!thisKnob || !thisKnob->hasRelinkableGroups()) {
+        return false;
+    }
+    if (!thisKnob->relinkToGroups()) {
+        return false;
+    }
+    emitParamLinksChanged(thisKnob, NodesList());
+
+    return true;
+}
+
+bool
+Param::isLinked(int dimension) const
+{
+    KnobIPtr thisKnob = _knob.lock();
+
+    if (!thisKnob || (dimension < -1) || (dimension >= thisKnob->getDimension())) {
+        return false;
+    }
+    if (dimension != -1) {
+        return thisKnob->isLinked(dimension);
+    }
+    for (int i = 0; i < thisKnob->getDimension(); ++i) {
+        if (thisKnob->isLinked(i)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 double

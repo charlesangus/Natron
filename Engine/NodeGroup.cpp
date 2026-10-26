@@ -49,6 +49,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -1975,13 +1976,9 @@ exportUserKnob(int indentLevel,
     KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(knob.get());
     KnobIPtr aliasedParam;
     {
-        KnobI::ListenerDimsMap listeners;
-        knob->getListeners(listeners);
-        if ( !listeners.empty() ) {
-            KnobIPtr listener = listeners.begin()->first.lock();
-            if ( listener && (listener->getAliasMaster() == knob) ) {
-                aliasedParam = listener;
-            }
+        KnobsVec aliases = knob->getAliasesOfThis();
+        if (!aliases.empty()) {
+            aliasedParam = aliases.front();
         }
     }
 
@@ -2643,6 +2640,81 @@ exportAllNodeKnobs(int indentLevel,
     }
 } // exportAllNodeKnobs
 
+// The node whose knobs belong to a link group member, or a null pointer.
+static NodePtr
+getLinkMemberNode(const KnobIPtr& knob)
+{
+    EffectInstance* holder = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : 0;
+
+    return holder ? holder->getNode() : NodePtr();
+}
+
+// Whether the export script of node, written with groupNode as the group it is in, can name a knob of
+// partner: one of the same collection or of groupNode. The exported group's own knobs (node is
+// groupNode) can only name its own: the nodes around it are not part of the export.
+static bool
+canExportLinkTo(const NodePtr& node,
+                const NodePtr& groupNode,
+                const NodePtr& partner)
+{
+    if (!partner) {
+        return false;
+    }
+    if (node == groupNode) {
+        return partner == node;
+    }
+
+    return (partner == groupNode) || (partner->getGroup() == node->getGroup());
+}
+
+// The group node the export of node is written with: the group holding it, or node itself when that
+// is not a group node.
+static NodePtr
+getExportGroupNode(const NodePtr& node)
+{
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());
+
+    return isGroup ? isGroup->getNode() : node;
+}
+
+/*
+ * The linked member of group that the export of dimension of knob on node links it to, or -1 if it
+ * writes no link for it. Each member links to the first member before it in the group that its script
+ * can name. The first one it can name links to nothing unless the script of that member cannot name it
+ * back, so that each pair is written once. An alias is never a partner: linking to the member it is an
+ * alias of joins the same group, whichever of the two the script runs first.
+ */
+static int
+getExportLinkPartner(const KnobLinkGroup& group,
+                     const KnobIPtr& knob,
+                     int dimension,
+                     const NodePtr& node,
+                     const NodePtr& groupNode)
+{
+    const std::vector<KnobLinkGroup::Member> members = group.getMembers();
+    bool isBefore = true;
+
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        if ((members[i].key == knob.get()) && (members[i].dimension == dimension)) {
+            isBefore = false;
+            continue;
+        }
+        KnobIPtr partner = members[i].knob.lock();
+        NodePtr partnerNode = getLinkMemberNode(partner);
+        // An alias is written through its own alias statement, which joins it to the group of its master.
+        if (!members[i].linked || members[i].alias || !canExportLinkTo(node, groupNode, partnerNode)) {
+            continue;
+        }
+        if (isBefore) {
+            return (int)i;
+        }
+        // The partner writes the link if it comes first and its script can name this knob.
+        return canExportLinkTo(partnerNode, getExportGroupNode(partnerNode), node) ? -1 : (int)i;
+    }
+
+    return -1;
+}
+
 static bool
 exportKnobLinks(int indentLevel,
                 const NodePtr& groupNode,
@@ -2697,33 +2769,40 @@ exportKnobLinks(int indentLevel,
                                                              hasRetVar + QString::fromUtf8(", ") + NUM_INT(i) + QString::fromUtf8(")") );
                 }
 
-                std::pair<int, KnobIPtr> master = (*it2)->getMaster(i);
-                if (master.second) {
-                    if (!hasDefined) {
-                        WRITE_INDENT(indentLevel); WRITE_STRING(QString::fromUtf8("param = ") + paramName);
-                        hasDefined = true;
-                    }
-                    hasExportedLink = true;
-
-                    EffectInstance* masterHolder = dynamic_cast<EffectInstance*>( master.second->getHolder() );
-                    assert(masterHolder);
-                    if (!masterHolder) {
-                        throw std::logic_error("exportKnobLinks");
-                    }
-                    QString masterName;
-                    if ( groupNode && masterHolder == groupNode->getEffectInstance().get() ) {
-                        masterName = groupName;
-                    } else {
-                        masterName = groupName + QString::fromUtf8( masterHolder->getNode()->getScriptName_mt_safe().c_str() );
-                    }
-                    masterName += QLatin1String(".getParam(");
-                    masterName += ESC(QString::fromUtf8( master.second->getName().c_str() ));
-                    masterName += QLatin1String(")");
-
-
-                    WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("param.slaveTo(") +  masterName + QString::fromUtf8(", ") +
-                                                             NUM_INT(i) + QString::fromUtf8(", ") + NUM_INT(master.first) + QString::fromUtf8(")") );
+                // Two-way links that are not aliases (those were written above), each pair once.
+                KnobLinkGroupPtr group = (*it2)->getLinkGroup(i);
+                if (!group || !group->isMemberLinked(it2->get(), i)) {
+                    continue;
                 }
+                const int partnerIndex = getExportLinkPartner(*group, *it2, i, node, groupNode);
+                if (partnerIndex == -1) {
+                    continue;
+                }
+                const KnobLinkGroup::Member partner = group->getMembers()[partnerIndex];
+                KnobIPtr partnerKnob = partner.knob.lock();
+                NodePtr partnerNode = getLinkMemberNode(partnerKnob);
+                if (!partnerKnob || !partnerNode) {
+                    continue;
+                }
+                if (!hasDefined) {
+                    WRITE_INDENT(indentLevel);
+                    WRITE_STRING(QString::fromUtf8("param = ") + paramName);
+                    hasDefined = true;
+                }
+                hasExportedLink = true;
+
+                QString partnerName;
+                if (partnerNode == groupNode) {
+                    partnerName = groupName;
+                } else {
+                    partnerName = groupName + QString::fromUtf8(partnerNode->getScriptName_mt_safe().c_str());
+                }
+                partnerName += QLatin1String(".getParam(");
+                partnerName += ESC(QString::fromUtf8(partnerKnob->getName().c_str()));
+                partnerName += QLatin1String(")");
+
+                WRITE_INDENT(indentLevel);
+                WRITE_STRING(QString::fromUtf8("param.linkTo(") + partnerName + QString::fromUtf8(", ") + NUM_INT(i) + QString::fromUtf8(", ") + NUM_INT(partner.dimension) + QString::fromUtf8(")"));
             }
         }
         if (hasDefined) {

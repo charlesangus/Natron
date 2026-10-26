@@ -650,7 +650,7 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
         std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = clipboard.nodes.begin();
         std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
         for (; itOther != clipboard.nodes.end(); ++itOther, ++itSource) {
-            NodeGuiPtr node = _imp->pasteNode(*itOther, *itSource, QPointF(0, 0), group, std::string(), false, &oldNewScriptNamesMapping);
+            NodeGuiPtr node = _imp->pasteNode(*itOther, *itSource, QPointF(0, 0), group, std::string(), 0, &oldNewScriptNamesMapping);
             assert(node);
             if (node) {
                 oldNewScriptNamesMapping[(*itOther)->scriptName] = node->getNode()->getScriptName();
@@ -670,11 +670,14 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
         getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
         std::list<Serialization::NodeSerializationPtr>::const_iterator itSerialization = clipboard.nodes.begin();
+        NodesList copies;
         for (std::list<std::pair<std::string, NodeGuiPtr> > ::iterator it = createdNodes.begin(); it != createdNodes.end(); ++it, ++itSerialization) {
             it->second->getNode()->storeKnobsLinks(**itSerialization, oldNewScriptNamesMapping);
             it->second->getNode()->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, true); // may not fail
+            copies.push_back(it->second->getNode());
         }
-
+        // The copies keep the links of the nodes they replace.
+        KnobHelper::restoreLinkGroups(copies, true);
     }
 
     getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();

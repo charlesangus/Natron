@@ -247,16 +247,19 @@ public:
 
     /**
      * @brief Create a new node given the serialization of another one
-     * @param sourceNode[in] The node internalSerialization was made from, if known. A clone is slaved to it.
+     * @param sourceNode[in] The node internalSerialization was made from, if known.
      * @param offset[in] The offset applied to the new node position relative to the serialized node's position.
      * A serialization without a position is placed automatically and not offset.
+     * @param linkedNodes[out] If not null, each new node that is to become a Linked Node of its source node,
+     * children of a group included, is appended to it with that source node, for the caller to link once
+     * every node is created. Dots are copied but not linked.
      **/
     NodeGuiPtr pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
                          const NodePtr& sourceNode,
                          const QPointF& offset,
                          const NodeCollectionPtr& group,
                          const std::string& parentName,
-                         bool clone,
+                         std::list<std::pair<NodePtr, NodePtr>>* linkedNodes,
                          std::map<std::string, std::string>* oldNewScriptNamesMapping);
 
     /**

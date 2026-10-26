@@ -292,11 +292,12 @@ NodeGraph::toggleKnobLinksVisible()
     _imp->_knobLinksVisible = !_imp->_knobLinksVisible;
     {
         QMutexLocker l(&_imp->_nodesMutex);
+        // Each kind of line still follows its own preference while the switch is on.
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-            (*it)->setKnobLinksVisible(_imp->_knobLinksVisible);
+            (*it)->refreshLinkLinesAppearance();
         }
         for (NodesGuiList::iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
-            (*it)->setKnobLinksVisible(_imp->_knobLinksVisible);
+            (*it)->refreshLinkLinesAppearance();
         }
     }
 }
@@ -358,14 +359,14 @@ NodeGraph::showMenu(const QPoint & pos)
                                                       kShortcutDescActionGraphDuplicate, editMenu);
     editMenu->addAction(duplicateAction);
 
-    QAction* cloneAction = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphClone,
-                                                  kShortcutDescActionGraphClone, editMenu);
-    editMenu->addAction(cloneAction);
+    QAction* createLinkedAction = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateLinkedNode,
+                                                         kShortcutDescActionGraphCreateLinkedNode, editMenu);
+    editMenu->addAction(createLinkedAction);
 
-    QAction* decloneAction = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphDeclone,
-                                                    kShortcutDescActionGraphDeclone, editMenu);
-    QObject::connect( decloneAction, SIGNAL(triggered()), this, SLOT(decloneSelectedNodes()) );
-    editMenu->addAction(decloneAction);
+    QAction* unlinkAction = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphUnlinkNode,
+                                                   kShortcutDescActionGraphUnlinkNode, editMenu);
+    QObject::connect(unlinkAction, SIGNAL(triggered()), this, SLOT(unlinkSelectedNodes()));
+    editMenu->addAction(unlinkAction);
 
     QAction* switchInputs = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphExtractNode,
                                                    kShortcutDescActionGraphExtractNode, editMenu);
@@ -439,9 +440,8 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( hideInputs, SIGNAL(triggered()), this, SLOT(toggleHideInputs()) );
     viewMenu->addAction(hideInputs);
 
-
-    QAction* knobLinks = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphShowExpressions,
-                                                kShortcutDescActionGraphShowExpressions, viewMenu);
+    QAction* knobLinks = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines,
+                                                kShortcutDescActionGraphShowLinkLines, viewMenu);
     knobLinks->setCheckable(true);
     knobLinks->setChecked( areKnobLinksVisible() );
     QObject::connect( knobLinks, SIGNAL(triggered()), this, SLOT(toggleKnobLinksVisible()) );
@@ -490,15 +490,15 @@ NodeGraph::showMenu(const QPoint & pos)
     } else if (ret == duplicateAction) {
         // Duplicate at mouse click position:
         QPointF scenePos = mapToScene( mapFromGlobal(pos) );
-        cloneSelectedNodes(scenePos);
-    } else if (ret == cloneAction) {
-        // Clone at mouse click position:
+        duplicateSelectedNodes(scenePos);
+    } else if (ret == createLinkedAction) {
+        // Create the Linked Nodes at mouse click position:
         QPointF scenePos = mapToScene( mapFromGlobal(pos) );
-        cloneSelectedNodes(scenePos);
+        createLinkedNodes(scenePos);
     } else if (ret == pasteAction) {
         // Paste at mouse click position:
         QPointF scenePos = mapToScene( mapFromGlobal(pos) );
-        cloneSelectedNodes(scenePos);
+        pasteNodeClipBoards(scenePos);
     }
 } // NodeGraph::showMenu
 

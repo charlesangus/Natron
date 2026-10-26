@@ -262,6 +262,20 @@ public:
 
     bool isLoadingProjectInternal() const;
 
+    /**
+     * @brief A random id made with a new project and saved in its file, so copied nodes can tell whether
+     * they are pasted into the project they came from, even after it is closed and opened again. Loading
+     * a file restores its id; File > New and a reset make a new one; Save As keeps it, the copy being the
+     * same project under another name.
+     **/
+    std::string getProjectId() const;
+
+    /**
+     * @brief Whether projectId, as a clipboard records it, is this project's id: whether nodes copied
+     * under it are pasted into the project they came from.
+     **/
+    bool isProjectId(const std::string& projectId) const;
+
     QString getProjectFilename() const WARN_UNUSED_RETURN;
 
     QString getLastAutoSaveFilePath() const;

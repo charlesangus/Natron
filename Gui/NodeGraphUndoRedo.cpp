@@ -44,14 +44,15 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
-#include "Gui/NodeClipBoard.h"
-#include "Gui/NodeGui.h"
-#include "Gui/NodeGraph.h"
+#include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
-#include "Gui/Edge.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/KnobUndoCommand.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeClipBoard.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -885,48 +886,55 @@ ResizeBackdropCommand::mergeWith(const QUndoCommand *command)
     return true;
 }
 
-DecloneMultipleNodesCommand::DecloneMultipleNodesCommand(NodeGraph* graph,
-                                                         const std::list<NodeGuiPtr> & nodes,
-                                                         QUndoCommand *parent)
+UnlinkMultipleNodesCommand::UnlinkMultipleNodesCommand(NodeGraph* graph,
+                                                       const std::list<NodeGuiPtr>& nodes,
+                                                       QUndoCommand* parent)
     : QUndoCommand(parent)
     , _nodes()
     , _graph(graph)
 {
     for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        NodeToDeclone n;
+        NodeToUnlink n;
         n.node = *it;
-        n.master = (*it)->getNode()->getMasterNode();
-        assert( n.master.lock() );
         _nodes.push_back(n);
     }
-    setText( tr("Declone node(s)") );
+    setText(tr("Unlink node(s)"));
 }
 
-DecloneMultipleNodesCommand::~DecloneMultipleNodesCommand()
+UnlinkMultipleNodesCommand::~UnlinkMultipleNodesCommand()
 {
 }
 
 void
-DecloneMultipleNodesCommand::undo()
+UnlinkMultipleNodesCommand::undo()
 {
-    for (std::list<NodeToDeclone>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+    for (std::list<NodeToUnlink>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         NodeGuiPtr node = it->node.lock();
-        NodePtr master = it->master.lock();
-        if (node && master) {
-            node->getNode()->getEffectInstance()->slaveAllKnobs(master->getEffectInstance().get(), false);
+        if (node) {
+            KnobsVec knobs;
+            for (std::vector<KnobIWPtr>::const_iterator k = it->unlinkedKnobs.begin(); k != it->unlinkedKnobs.end(); ++k) {
+                if (KnobIPtr knob = k->lock()) {
+                    knobs.push_back(knob);
+                }
+            }
+            node->getNode()->relinkKnobs(knobs);
         }
+        it->unlinkedKnobs.clear();
     }
 
     _graph->getGui()->getApp()->triggerAutoSave();
 }
 
 void
-DecloneMultipleNodesCommand::redo()
+UnlinkMultipleNodesCommand::redo()
 {
-    for (std::list<NodeToDeclone>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+    for (std::list<NodeToUnlink>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         NodeGuiPtr node = it->node.lock();
+        it->unlinkedKnobs.clear();
         if (node) {
-            node->getNode()->getEffectInstance()->unslaveAllKnobs();
+            KnobsVec knobs;
+            node->getNode()->unlinkAllKnobs(&knobs);
+            it->unlinkedKnobs.assign(knobs.begin(), knobs.end());
         }
     }
 
@@ -1393,6 +1401,9 @@ LoadNodePresetsCommand::undo()
     internalNode->deleteUserKnobs(_createdUserKnobs);
     _createdUserKnobs.clear();
     internalNode->applyPresetSerialization(*_oldSerialization.front(), Node::ePresetApplyModeSnapshot, NULL);
+    // The snapshot only relinks knobs of this node to each other: its links to other nodes are made again here.
+    restoreKnobLinkPartners(_linkPartners);
+    internalNode->emitLinksChanged(NodesList());
 
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
@@ -1410,6 +1421,10 @@ LoadNodePresetsCommand::redo()
 
     if (!_firstRedoCalled) {
         node->serializeInternal(_oldSerialization);
+        const KnobsVec& knobs = internalNode->getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            getKnobLinkPartners(*it, -1, &_linkPartners);
+        }
 
         if (panel) {
             const std::list<std::pair<NodeWPtr, bool> >& children = panel->getInstances();
@@ -1447,6 +1462,17 @@ LoadNodePresetsCommand::redo()
     std::list<KnobIPtr> created;
     internalNode->applyPresetSerialization(*_newSerializations.front(), Node::ePresetApplyModePreset, &created);
     _createdUserKnobs.assign(created.begin(), created.end());
+    // The preset removed the links: the nodes they went to redraw their link lines too.
+    NodesList partnerNodes;
+    for (std::vector<KnobLinkPartner>::const_iterator it = _linkPartners.begin(); it != _linkPartners.end(); ++it) {
+        KnobIPtr partner = it->partner.lock();
+        EffectInstance* effect = partner ? dynamic_cast<EffectInstance*>(partner->getHolder()) : 0;
+        NodePtr partnerNode = effect ? effect->getNode() : NodePtr();
+        if (partnerNode && (std::find(partnerNodes.begin(), partnerNodes.end(), partnerNode) == partnerNodes.end())) {
+            partnerNodes.push_back(partnerNode);
+        }
+    }
+    internalNode->emitLinksChanged(partnerNodes);
 
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();

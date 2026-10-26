@@ -130,8 +130,51 @@ the whole GUI moves to one GL 4.5+ compatibility context instead (grilled
 
 **Verification gate:** CI green with USD pinned and linked and `import pxr` working in Natron's Python; USDRead loads USD and Alembic, reports errors as node errors, reloads on demand, and maps time by seconds; the GUI runs on the 4.5 compatibility context with every pre-existing GL path (viewer, overlays, an OFX interact) unchanged, and refuses to start below 4.5 while NatronRenderer still works; the Viewer switches to the Storm view for a scene input and back for an image; M19.P2.T7's Storm test passes under the strict Xvfb runner; manual check on AMD and NVIDIA hardware (display, scrub, picking, look-through), with screenshots shared before sign-off; pre-existing ctest suite green; packaging (M15 tarball/AppImage) still builds with the new dependency.
 
+## Phase 19.3: Long-lived scene
+
+Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`: node layers stay immutable and memoized, and a `ScenePayload` is still the stack; each consumer owns one long-lived stage on a private root layer whose sublayer list is synced in place, and one persistent engine. StageCache goes.
+
+- [ ] M19.P3.T1 — `SceneStage`: a long-lived stage synced incrementally to a payload's stack
+  - files: `Engine/Nodes/Scene/SceneStage.{h,cpp}` (new), `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/Scene/SceneStage_Test.cpp`
+  - approach: owns a private anonymous root layer and `UsdStage::Open(root, SdfLayerHandle(), load)`; `sync(payload)` diffs the applied stack against the new one and calls `SetSubLayerPaths` inside an `SdfChangeBlock`; root metadata (upAxis, metersPerUnit, time codes) is written only when it changes. Not thread-safe by itself: the owner serializes sync and reads.
+  - verify: gtest counts `UsdNotice::ObjectsChanged` resynced paths: editing one node's layer resyncs only that node's paths, never `/`; values match a freshly composed stage for chains, merges and diamonds.
+  - size: M
+
+- [ ] M19.P3.T2 — The viewer keeps one stage and one engine
+  - files: `Gui/SceneViewport.{h,cpp}`, `Gui/ViewerTab*.cpp`, `Tests/Scene/SceneViewportStorm_Test.cpp`
+  - approach: one `SceneStage` and one `UsdImagingGLEngine` per viewer for the widget's lifetime (scene-index path). Edits sync on a worker thread under a viewer lock; paint skips redrawing while a sync holds the lock (user: worker + lock). Picking, bbox, camera framing and look-through read the viewer's stage. Selection and the free camera survive edits. Delete the per-stage engine rebuild.
+  - verify: Storm test: 50 edits to an upstream knob reuse one engine (count constructions) and the picture matches a fresh render after each; GUI script under Xvfb edits a Transform while the scene is shown, no rebuild logged.
+  - size: M
+
+- [ ] M19.P3.T3 — Query stages replace StageCache
+  - files: `Engine/Nodes/Scene/SceneQueryPool.{h,cpp}` (new), `StageCache.*` (deleted), every caller (`USDTransform.cpp`, `USDPrune.cpp`, `USDMaterial.cpp`, `USDRead.cpp` and others found by grep)
+  - approach: a pool of `SceneStage`s, about one per render thread, borrowed exclusively and synced to the stack the caller needs; returned after the query. Bounded; idle stages are dropped on cache purge and project close.
+  - verify: gtests for every former caller; a 30-node chain edit does no full composition (count `UsdStage::Open` calls) and stays linear in chain length.
+  - size: M
+
+- [ ] M19.P3.T4 — Scene write barrier and a real Reload
+  - files: `Engine/Nodes/Scene/SceneWriteBarrier.{h,cpp}` (new), `USDRead.cpp`, `USDWrite.cpp` (M20), `Tests/Scene/USDRead_Test.cpp`
+  - approach: a process-wide barrier for in-place USD layer edits: abort viewer renders, wait for every other in-flight render (user), idle the Hydra thread and take back every query stage, then run `SdfLayer::ReloadLayers` over the file's closure (`GetCompositionAssetDependencies` / the stages' used layers), so notices reach every live stage. Drop the per-stamp/per-Reload format-argument keying. Hash every file in the closure's mtimes, not only the top file.
+  - verify: a nested sublayer changed on disk shows after Reload in the viewer's stage and in a new evaluation; a render thread composing through 20 Reload rounds never crashes (TSan-friendly stress test).
+  - size: L
+
+- [ ] M19.P3.T5 — Layer keys cover only what a node reads
+  - files: `Engine/Nodes/Scene/SceneOps.cpp`, `SceneNodeAuthoring.cpp` (M20), per-node key functions
+  - approach: a node's layer key mixes its own knobs and only the upstream facts it reads (matched prim paths, read values), not the whole upstream stack hash, so an upstream edit re-authors only nodes whose inputs changed. Animated knobs author only the frames needed.
+  - verify: gtest: editing the head of a 30-node chain re-authors one layer; changing a prim a downstream Prune matches re-authors the Prune.
+  - size: M
+
+- [ ] M19.P3.T6 — Edit-to-frame performance gate
+  - files: `tools/bench/scene_edit_bench.py` (new), `tools/bench/README.md`
+  - approach: measure edit-to-frame latency in the viewer and USDRender for a 30-node chain and a 1M-prim file, before and after the phase.
+  - verify: numbers recorded in Decisions; an upstream edit on the 1M-prim file costs far less than a reopen.
+  - size: M
+
+**Verification gate:** release gate green; the Storm and GUI tests pass under the strict GL runner; the perf gate's numbers are recorded; screenshots shared.
+
 ## Decisions
 
+- 2026-10-25 — **Long-lived scene choices (user):** the viewer syncs on a worker thread under a lock; Reload aborts viewer renders and waits for every other render; USDRender keeps a stage and engine per node sharing one GL device, with a way to purge them to free memory; M54 geometry keys on time only when something upstream varies with time.
 - 2026-10-25 — **Redesign around a long-lived scene (user):** the viewer and USDRender hold one long-lived USD stage and one Hydra engine each, fed incremental layer updates, instead of composing a new stage and rebuilding Storm per edit; Reload re-reads layers safely against it. A thorough review of all USD work (done and planned) against the USD code, reference implementations and docs comes first and shapes the new phase.
 - 2026-10-25 — **The scene view holds its stage while shown (bosley-native-nodes):** the viewer's Storm view keeps the composed stage it displays, since it redraws on every repaint; other consumers still release a stage after their evaluation. Storm lives in the scene view widget's own GL context (Natron does not share contexts), created there, released on context loss, with GL state saved and restored around each draw.
 - 2026-10-25 — **GL context strategy for Storm (bosley-native-nodes):** M19.P2.T5 passes, so M19.P2.T8 proceeds as planned: the GUI requests a 4.5 compatibility-profile context as the default format and refuses to start below 4.5 with a message naming the version it got; NatronRenderer and ctest skip the check. All three drivers tested (radeonsi, NVIDIA 580, llvmpipe) give a compatibility context that Storm and the immediate-mode viewer share.

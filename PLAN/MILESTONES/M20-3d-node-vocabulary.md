@@ -43,7 +43,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - Rays that hit nothing: `depth.Z` = +inf, and `primId.id` = 0 with no metadata entry.
 - `USDTransform` matches several prims: each gets the same appended `xformOp:transform:<nodename>` and turns about its own local-space pivot knob. The gizmo sits at the first match's local origin, and a "centre pivot" button sets the pivot knob from the matches' bbox. Zero matches: node warning, scene passed through unchanged.
 - `USDTransform` over a prim that already has an xformOp stack: Append mode (the default) keeps the stack and its animation underneath. Replace mode writes `!resetXformStack!` plus the node's op.
-- The same upstream layer reaches `USDMerge` more than once (shared ancestor, diamond graphs): each layer handle stays only once, at its strongest position.
+- The same upstream layer reaches `USDMerge` more than once (shared ancestor, diamond graphs): each layer handle stays only once, at its weakest position.
 - `USDMaterial` or a dome `USDLight` texture path that doesn't resolve: the path is authored anyway (it may resolve on the farm or through an `ArResolver`), a persistent node warning names it, and Storm shows its fallback.
 - `USDWrite` asset paths: a path-mode knob chooses relative to the output file (default, the Solaris "Use Relative Paths" behaviour) or absolute; a path on another filesystem root that can't be made relative is written absolute.
 - `USDWrite` output exists: overwritten, as Write does. Its frame-range knob (default: project range) clips the exported time samples.
@@ -78,7 +78,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 - [x] M20.P2.T2 — `USDMerge` and `USDPrune`
   - files: `Engine/Nodes/Scene/USDMerge.cpp`, `Engine/Nodes/Scene/USDPrune.cpp`, CMake source list
-  - approach: `USDMerge` — layer-stack union (Nuke GeoMerge "merge layers" mode; duplicate/flatten modes deferred to a future amendment), multi-input. Later inputs are stronger, as in the Solaris Merge LOP, so input N+1's layers stack above input N's in the strongest-last `layerStack`. A layer handle that arrives more than once is kept only at its strongest position. `USDPrune` — deactivation/visibility opinions by prim pattern.
+  - approach: `USDMerge` — layer-stack union (Nuke GeoMerge "merge layers" mode; duplicate/flatten modes deferred to a future amendment), multi-input. Later inputs are stronger, as in the Solaris Merge LOP, so input N+1's layers stack above input N's in the strongest-last `layerStack`. A layer handle that arrives more than once is kept only at its weakest position. `USDPrune` — deactivation/visibility opinions by prim pattern.
   - verify: unit tests — the last input wins a conflicting attribute; a diamond graph (one source through two branches into one merge) yields that source's layer once; pruned prims are inactive on the composed stage.
   - size: M
 
@@ -128,6 +128,36 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 
 **Verification gate:** CI green including M20.P3.T3; M20.P3.T6 passes under the strict llvmpipe GL runner; `NatronRenderer` renders a `USDRender` comp headless with no display; on real AMD and NVIDIA hardware a scene built purely from create/edit nodes renders through `USDRender` to an image matching the committed reference, M20.P3.T4's report shows the zero-copy rung reached, and screenshots are shared before sign-off; the same scene round-trips through `USDWrite`/`USDRead` in both modes; gizmo manipulation works with undo; pre-existing ctest suite green.
 
+## Phase 20.4: Long-lived scene
+
+Per `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`, on top of M19 - USD/Hydra Foundation's Phase 19.3.
+
+- [ ] M20.P4.T1 — Restack on M19 - USD/Hydra Foundation's head
+  - files: the branch
+  - approach: rebase onto the M19 branch after Phase 19.3; resolve the Scene files; every M20 node uses the query pool instead of StageCache.
+  - verify: release gate green.
+  - size: S
+
+- [ ] M20.P4.T2 — USDRender keeps a stage and engine per node, purgeable
+  - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, `USDRender.cpp`, `Tests/Scene/USDRender*_Test.cpp`
+  - approach: on the Hydra thread, one `SceneStage` and one `UsdImagingGLEngine` per USDRender node, all sharing one HgiGL through `UsdImagingGLEngine::Parameters::driver`. Each job syncs the stage to the request's stack, then renders at the frame; frames with the same stack only change time. Engines are released when the node is deleted, on cache purge / clear-all-caches, under memory pressure (LRU past a budget), and from a "Free GPU memory" action (user: purgeable).
+  - verify: a 10-frame render with one edit between frames 5 and 6 builds one engine; purge frees it and the next render rebuilds; the strict-GL Storm reference still matches.
+  - size: M
+
+- [ ] M20.P4.T3 — USDWrite keeps stack order and re-reads through the barrier
+  - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
+  - approach: layered mode flattens each run of consecutive anonymous layers in place between the external files, so strength order is kept; asset paths are authored anchored and made relative only on write; re-reading its own output goes through the scene write barrier instead of `Reload(true)`.
+  - verify: a file read downstream of an authored layer keeps its strength after write → read; relative paths resolve from the written file's folder.
+  - size: M
+
+- [ ] M20.P4.T4 — Merge wording and Transform append under merge
+  - files: this plan's text, `Engine/Nodes/Scene/USDTransform.cpp`, `Tests/Scene/USDMerge_Test.cpp`
+  - approach: the plan says a repeated layer keeps its weakest position (as the code does). An Append-mode Transform downstream of a merge authors ops that keep the other branch's xformOps (append to the composed order, not its own branch's).
+  - verify: merge two branches with different transforms on one prim, then Append: both branches' ops survive.
+  - size: S
+
+**Verification gate:** release gate green; strict-GL USDRender test passes; perf numbers for USDRender recorded.
+
 ## Decisions
 
 - 2026-10-25 — **Redesign around a long-lived scene (user):** the viewer and USDRender hold one long-lived USD stage and one Hydra engine each, fed incremental layer updates, instead of composing a new stage and rebuilding Storm per edit; Reload re-reads layers safely against it. A thorough review of all USD work (done and planned) against the USD code, reference implementations and docs comes first and shapes the new phase.
@@ -147,7 +177,7 @@ one anonymous layer each via `SceneOps`, memoized per M19.P1.T3.
 - 2026-10-24 — `USDRender` is proven by a strict llvmpipe GL test plus a manual AMD/NVIDIA check: M19 - USD/Hydra Foundation showed Storm runs under the strict runner, so the old "no GL under Xvfb" exclusion was stale; hardware proves the zero-copy rung.
 - 2026-10-24 — `USDTransform` follows the Solaris Transform LOP: the same `xformOp:transform:<nodename>` on every match, a local pivot, no `XformCommonAPI` pivots, and Append by default with a Replace mode. The gizmo sits at the first match's origin, with a centre-pivot button. Asked to follow Solaris by the user.
 - 2026-10-24 — In `USDMerge`, later inputs are stronger: matches the Solaris Merge LOP and the strongest-last `layerStack`.
-- 2026-10-24 — `USDMerge` keeps each layer handle once, at its strongest position: the composition is the same, and diamond graphs no longer grow the stack exponentially.
+- 2026-10-24 — `USDMerge` keeps each layer handle once, at its weakest position: the composition is the same, and diamond graphs no longer grow the stack exponentially.
 - 2026-10-24 — `USDWrite` is a render-triggered output that writes once, with a frame-range knob that clips samples: it fits Write, the render queue and `NatronRenderer -w` without wasting the time-sample design.
 - 2026-10-24 — `USDWrite` layered mode flattens implicit layers, Solaris-style: anonymous Natron layers go into the output, external layers stay referenced. Per-node save paths are M52's. Asked to follow Solaris by the user.
 - 2026-10-24 — Colours are in the project working space throughout, with no implicit transform and USD `colorSpace` metadata ignored in v1: M50's explicit-only rule.

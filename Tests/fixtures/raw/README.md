@@ -90,6 +90,30 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `dng-colorcal-camera.tif` | CAT16, as shot in camera, embedded matrix | RCD |
 | `{cr2,raf,dng}-scene-referred-default.tif` | `scene-referred (sigmoid)` workflow with its automatic presets, sigmoid, exposure and sharpen off: darktable's default temperature (as shot to reference) and color calibration | RCD, Markesteijn, RCD |
 
+### Color balance rgb
+
+`canon-eos-5d-mark-iii-colorbalancergb-*.tif` (`make-reference.py --only colorbalancergb`, 34
+jobs) are the CR2 developed with RCD in darktable's linear Rec. 2020 working space (colorin's
+work profile) and exported as linear Rec. 2020 (colorout and `--icc-type LIN_REC2020`), the
+space color balance rgb grades in. `-base.tif` is the develop without the module;
+`Tests/Native/NativeColorBalanceRGB_Test.cpp` feeds it to ColorBalanceRGB in a Linear Rec.2020
+project and compares the result with every other job, each the same develop with the module on
+(params version 5, every field not listed at its default):
+
+| File | color balance rgb |
+| --- | --- |
+| `-preset-{legacy,natural-skin,vibrant-colors,standard}.tif` | darktable's four "basic colorfulness" presets |
+| `-defaults-{jzazbz,ucs}.tif` | Defaults under each saturation formula |
+| `-4ways-{offset,lift,gain,power}.tif` | One wheel each: luminance, chroma and hue (global 0.02, 0.005, 40; shadows 0.15, 0.2, 200; highlights -0.1, 0.1, 80; mid-tones 0.1, 0.05, 300) |
+| `-{saturation,brilliance}-{global,shadows,midtones,highlights}-{jzazbz,ucs}.tif` | One range each at 0.3, 0.4, -0.3, 0.5, under each formula |
+| `-chroma.tif` | Linear chroma global 0.2, shadows 0.3, mid-tones -0.2, highlights 0.4 |
+| `-hue-shift.tif` | Hue shift 25 degrees |
+| `-{vibrance,contrast}-{plus,minus}.tif` | Vibrance and contrast +0.4 and -0.4 |
+| `-masks.tif` | Shadows and highlights fall-off 2 and 0.5, mask grey fulcrum 0.3, white fulcrum 1.5 EV, contrast grey fulcrum 0.25 with contrast 0.2, and lift, gain and power luminance to show them |
+
+Render them alone with `tools/raw/make-reference.sh --only colorbalancergb`; the other
+references do not change.
+
 ### darktable settings
 
 Each render's history sets only what differs from darktable's per-image defaults, so rawprepare

@@ -114,6 +114,9 @@ makeShape(const NodePtr& node,
         return BezierPtr();
     }
     BezierPtr shape = context->makeEllipse(spec.cx, spec.cy, spec.diameter, true, time);
+    // The context selects a new shape, slaving its knobs to the node's: deselect it so its own
+    // values are the ones set and read.
+    context->clearSelection(RotoItem::eSelectionReasonOther);
     if (!shape || !applySpec(shape, spec)) {
         return BezierPtr();
     }
@@ -149,6 +152,7 @@ makeBezierShape(const NodePtr& node,
         shape->setRightBezierPoint((int)i, time, points[i].rx, points[i].ry);
     }
     shape->setCurveFinished(true);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
     if (!applySpec(shape, spec)) {
         return BezierPtr();
     }

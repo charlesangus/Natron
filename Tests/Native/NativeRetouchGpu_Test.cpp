@@ -153,9 +153,13 @@ TEST_F(NativeRetouchGpuTest, Eligibility)
         EXPECT_FALSE(effect->canRenderOnGpu(q)) << "bit depth " << (int)depth;
     }
 
-    // The CPU renders the scale and residual previews, merged scales and the bilateral blur.
+    // The CPU renders the scale and residual previews, merged scales and the bilateral blur. Current
+    // Scale on scale 0 is the result.
     ASSERT_TRUE(setKnobValue(node, kRetouchParamOutput, std::string(kRetouchOutputCurrentScale)));
+    EXPECT_TRUE(effect->canRenderOnGpu(eligibleQuery()) == supported) << "current scale 0 output";
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamCurrentScale, { 2. }));
     EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "current scale output";
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamCurrentScale, { 0. }));
     ASSERT_TRUE(setKnobValue(node, kRetouchParamOutput, std::string(kRetouchOutputResidual)));
     EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "residual output";
     ASSERT_TRUE(setKnobValue(node, kRetouchParamOutput, std::string(kRetouchOutputResult)));

@@ -231,19 +231,6 @@ cpuKernelRender(const Setting& setting,
     return cpuRowsOf<eColorMathOperationGamma>(effect, src, width, height, nComps, channelMask);
 }
 
-// A device may flush a denormal to zero on input or output, so a result the CPU computes below
-// the smallest normal float may come back as 0: the value or 0. Everything else is compared.
-void
-allowFlushedToZero(std::vector<float>& want,
-                   const std::vector<float>& got)
-{
-    for (size_t i = 0; (i < want.size()) && (i < got.size()); ++i) {
-        if ((got[i] == 0.f) && (std::fabs(want[i]) < std::numeric_limits<float>::min())) {
-            want[i] = 0.f;
-        }
-    }
-}
-
 // Special values and the subnormals around zero, with finite values small enough that pow stays
 // inside the transcendental bound for exponents up to 3.
 std::vector<float>
@@ -323,9 +310,8 @@ TEST_F(NativeColorMathGpuTest, MatchesTheCpuKernelOnSpecialValues)
                 ASSERT_TRUE(run.ok);
                 EXPECT_EQ(0u, run.writtenOutside);
                 ASSERT_EQ(want.size(), run.pixels.size());
-                allowFlushedToZero(want, run.pixels);
 
-                const ImageDiff diff = compareImages(want, run.pixels, toleranceOf(setting));
+                const ImageDiff diff = compareImages(want, run.pixels, toleranceOf(setting).flushing());
                 EXPECT_EQ(0u, diff.mismatches) << setting.id << " components " << nComps << " channels " << channelMask << ": first at float "
                                                << diff.firstMismatchIndex << " in " << src[diff.firstMismatchIndex] << " gpu "
                                                << run.pixels[diff.firstMismatchIndex] << " cpu " << want[diff.firstMismatchIndex];
@@ -432,9 +418,8 @@ TEST_F(NativeColorMathGpuTest, MatchesTheCpuRender)
             ASSERT_TRUE(run.ok) << setting.id << " " << c.name;
             EXPECT_EQ(0u, run.writtenOutside) << c.name;
             ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << c.name;
-            allowFlushedToZero(cpu.pixels, run.pixels);
 
-            const ImageDiff diff = compareImages(cpu.pixels, run.pixels, toleranceOf(setting));
+            const ImageDiff diff = compareImages(cpu.pixels, run.pixels, toleranceOf(setting).flushing());
             EXPECT_EQ(0u, diff.mismatches) << setting.id << " " << c.name << ": first at float " << diff.firstMismatchIndex << " gpu "
                                            << run.pixels[diff.firstMismatchIndex] << " cpu " << cpu.pixels[diff.firstMismatchIndex];
         }

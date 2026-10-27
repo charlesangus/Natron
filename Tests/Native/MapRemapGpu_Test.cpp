@@ -37,6 +37,7 @@
 
 #include <gtest/gtest.h>
 
+#include "Tests/Gpu/Tolerance.h"
 #include "Tests/Native/NativeGpuParity.h"
 
 #include "Engine/Nodes/Filter/MapInput.h"
@@ -73,15 +74,6 @@ floatOf(std::uint32_t u)
 }
 
 #ifdef NATRON_HAVE_GPU
-
-// The bits of v, or of the zero of its sign when |v| is below zeroBelow. GPUs may flush subnormal
-// values where the CPU keeps them, so a comparison through this is exact from zeroBelow up.
-std::uint32_t
-flushedBitsOf(float v,
-              float zeroBelow)
-{
-    return bitsOf(std::fabs(v) < zeroBelow ? std::copysign(0.f, v) : v);
-}
 
 // Mirrors MapRemapTestParams of mapremap_test.slang.
 struct MapRemapTestParams {
@@ -292,7 +284,7 @@ TEST(MapRemapGpu, RemapMatchesTheCpu)
                 std::size_t mismatches = 0;
                 std::size_t first = 0;
                 for (std::size_t i = 0; i < raw.size(); ++i) {
-                    if (flushedBitsOf(gpu[i], zeroBelow) != flushedBitsOf(cpuParams.remap(raw[i]), zeroBelow)) {
+                    if (bitsOf(tol::flushed(gpu[i], zeroBelow)) != bitsOf(tol::flushed(cpuParams.remap(raw[i]), zeroBelow))) {
                         if (mismatches++ == 0) {
                             first = i;
                         }

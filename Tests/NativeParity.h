@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cfloat>
 #include <initializer_list>
 #include <list>
 #include <string>
@@ -169,6 +170,8 @@ ImageLayerDesc paritySourceExtraLayer();
 struct ParityTolerance {
     double absolute = 0.;
     double relative = 0.;
+    // Values with |v| < flushBelow count as a zero of their sign, on both sides. Zero means off.
+    float flushBelow = 0.f;
 
     static ParityTolerance exact() { return ParityTolerance(); }
     static ParityTolerance arithmetic() { return make(0., 1e-6); }
@@ -183,6 +186,18 @@ struct ParityTolerance {
 
         t.absolute = absolute_;
         t.relative = relative_;
+
+        return t;
+    }
+
+    // A device may flush subnormal results to zero where the CPU keeps them. Opt-in, as a
+    // comparison against the OFX plugins has no such excuse. The floor is FLT_MIN by default; a
+    // caller whose arithmetic scales a flushed intermediate passes a larger one.
+    ParityTolerance flushing(float floor = FLT_MIN) const
+    {
+        ParityTolerance t = *this;
+
+        t.flushBelow = floor;
 
         return t;
     }

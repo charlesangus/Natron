@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -25,6 +26,14 @@ classify(double v)
     if (std::isinf(v))
         return v > 0 ? Kind::PosInf : Kind::NegInf;
     return Kind::Finite;
+}
+
+// v, or the zero of its sign when |v| is below `below`. GPUs may flush subnormal results where the
+// CPU keeps them.
+inline float
+flushed(float v, float below = FLT_MIN)
+{
+    return std::fabs(v) < below ? std::copysign(0.f, v) : v;
 }
 
 inline int64_t
@@ -77,10 +86,18 @@ struct ErrorStats {
     int64_t maxUlp = 0;
     std::array<uint64_t, 6> hist {}; // 0, 1, 2, 3-4, 5-16, >16
     Worst worst;
+    // Zero leaves values alone; otherwise both got and want are flushed below this before comparing.
+    float flushBelow = 0.f;
+
+    void flushSubnormals(float below = FLT_MIN) { flushBelow = below; }
 
     // `group` and `index` only label the worst pixel: group is a case or frame number.
     Sample add(float got, double ref, size_t group, size_t index)
     {
+        if (flushBelow > 0.f) {
+            got = flushed(got, flushBelow);
+            ref = flushed(static_cast<float>(ref), flushBelow);
+        }
         const float want = static_cast<float>(ref);
         Sample s;
         if (classify(got) != classify(want)) {

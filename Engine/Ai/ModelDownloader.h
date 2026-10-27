@@ -86,6 +86,14 @@ public:
     bool isDownloading(const std::string& id) const;
 
     /**
+     * @brief Deletes the installed package of model id, and so every model of that package, and
+     * drops the cached inference sessions so none keeps a deleted model open. Refused, setting
+     * error, while the package is downloading or when the folder cannot be deleted. Emits
+     * removed() for every model of the package.
+     **/
+    bool remove(const std::string& id, std::string* error = nullptr);
+
+    /**
      * @brief start(), then waits for the result on a local event loop. For the command line
      * and tests.
      **/
@@ -95,6 +103,7 @@ Q_SIGNALS:
     // total is -1 while the size is unknown.
     void progress(const QString& id, qint64 received, qint64 total);
     void finished(const QString& id, bool ok, const QString& error);
+    void removed(const QString& id);
 
 private:
     struct Job;

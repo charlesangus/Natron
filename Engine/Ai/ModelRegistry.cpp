@@ -26,6 +26,7 @@
 #include "ModelRegistry.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -249,6 +250,21 @@ ModelRegistry::builtinManifest()
 }
 
 std::string
+ModelRegistry::processManifest()
+{
+    const char* path = std::getenv(kManifestEnvVar);
+    if (!path || !*path) {
+        return builtinManifest();
+    }
+    QFile file(QString::fromLocal8Bit(path));
+    if (!file.open(QIODevice::ReadOnly)) {
+        throw ModelRegistryError(std::string("AI model manifest: cannot read ") + path + " (" + kManifestEnvVar + "): " + file.errorString().toStdString());
+    }
+
+    return file.readAll().toStdString();
+}
+
+std::string
 ModelRegistry::defaultModelsDirectory()
 {
     return (std::filesystem::path(StandardPaths::writableLocation(StandardPaths::eStandardLocationData).toStdString()) / "models").string();
@@ -261,7 +277,7 @@ ModelRegistry::process()
     static std::shared_ptr<const ModelRegistry> registry;
 
     std::call_once(once, [] {
-        registry = std::make_shared<const ModelRegistry>(builtinManifest(), defaultModelsDirectory());
+        registry = std::make_shared<const ModelRegistry>(processManifest(), defaultModelsDirectory());
     });
 
     return registry;

@@ -119,13 +119,22 @@ public:
      **/
     static std::string builtinManifest();
 
+    // Names a manifest file that replaces the built-in one, for tests that must not use the network.
+    static constexpr const char* kManifestEnvVar = "NATRON_AI_MANIFEST";
+
+    /**
+     * @brief The manifest process() uses: the file NATRON_AI_MANIFEST names, else the built-in one.
+     * Throws ModelRegistryError when that file cannot be read.
+     **/
+    static std::string processManifest();
+
     /**
      * @brief <user data dir>/models.
      **/
     static std::string defaultModelsDirectory();
 
     /**
-     * @brief The built-in manifest over the default models directory, built on first use.
+     * @brief processManifest() over the default models directory, built on first use.
      **/
     static std::shared_ptr<const ModelRegistry> process();
 

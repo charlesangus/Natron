@@ -14,6 +14,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
@@ -211,6 +212,14 @@ registerCacheStressTestPlugins()
     // A filter whose knob edits queue under a render, for the queued-edit tests.
     registerTestBuiltInPlugin<QueuedEditTestEffect>();
 }
+
+void
+registerAiTestPlugins()
+{
+    // An AI node needs a model knob; none ships before the AI nodes, so ModelKnob_Test.cpp has
+    // a constant generator that carries one.
+    registerTestBuiltInPlugin<AiModelTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -263,6 +272,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerCacheStressTestPlugins();
+    registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

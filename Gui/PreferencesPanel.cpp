@@ -50,6 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/ActionShortcuts.h"
+#include "Gui/AiModelsPage.h"
 #include "Gui/AnimatedCheckBox.h"
 #include "Gui/Button.h"
 #include "Gui/DialogButtonBox.h"
@@ -751,12 +752,15 @@ PreferencesPanel::createGui()
     QFontMetrics fm = fontMetrics();
     QGridLayout* pluginsFrameLayout = 0;
     QTreeWidgetItem* uiTabTreeItem = 0;
+    QTreeWidgetItem* aiTabTreeItem = 0;
     for (std::size_t i = 0; i < _imp->tabs.size(); ++i) {
         KnobPagePtr pageKnob = _imp->tabs[i].page.lock()->pageKnob.lock();
         if (pageKnob->getName() == "plugins") {
             pluginsFrameLayout = _imp->tabs[i].page.lock()->gridLayout;
         } else if (pageKnob->getName() == "userInterfacePage") {
             uiTabTreeItem = _imp->tabs[i].treeItem;
+        } else if (pageKnob->getName() == "aiPage") {
+            aiTabTreeItem = _imp->tabs[i].treeItem;
         }
         QString label = QString::fromUtf8( pageKnob->getLabel().c_str() );
         int w = fm.horizontalAdvance(label);
@@ -764,6 +768,7 @@ PreferencesPanel::createGui()
     }
     assert(pluginsFrameLayout);
     assert(uiTabTreeItem);
+    assert(aiTabTreeItem);
     _imp->tree->setFixedWidth(maxLength + 100);
 
     _imp->buttonBox = new DialogButtonBox(Qt::Horizontal);
@@ -799,6 +804,21 @@ PreferencesPanel::createGui()
     // Create the shortcut Editor
     createShortcutEditor(uiTabTreeItem);
 
+    // Models are not knobs: their page is a plain widget, listed right after the AI settings.
+    {
+        AiModelsPage* aiModels = new AiModelsPage(this);
+        KnobPageGuiPtr page = std::make_shared<KnobPageGui>();
+        page->gridLayout = 0;
+        page->tab = aiModels;
+        PreferenceTab tab;
+        tab.tab = aiModels;
+        tab.tab->hide();
+        tab.treeItem = new QTreeWidgetItem();
+        _imp->tree->insertTopLevelItem(_imp->tree->indexOfTopLevelItem(aiTabTreeItem) + 1, tab.treeItem);
+        tab.treeItem->setText(0, tr("AI Models"));
+        tab.page = page;
+        _imp->tabs.push_back(tab);
+    }
 
     _imp->tabs[0].treeItem->setSelected(true);
     onItemSelectionChanged();

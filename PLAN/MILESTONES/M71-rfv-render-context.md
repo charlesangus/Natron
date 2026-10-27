@@ -92,30 +92,32 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
 
 UAT found that an animated RFV is frozen at the time the request passes the Set node: a Transform whose translate reads an animated RFV does not motion-blur, and a TimeBlur above the Set does nothing. An animated or expression-driven variable becomes a binding (the Set's knob plus the restricted context the Set received), evaluated at the reading expression's time. Constants stay values.
 
-- [ ] M71.P5.T1 — `RenderContextBinding` value alternative
+- [x] M71.P5.T1 — `RenderContextBinding` value alternative
   - size: L
   - files: Engine/RenderContext.{h,cpp}, Tests/RenderContext_Test.cpp
   - approach: add `{KnobIPtr knob; RenderContextPtr captured; U64 identity}` to the value variant (RenderContext.h:81). identity mixes the knob's content digest (the per-knob entries behind Node::getKnobsContentDigest), the variable name and captured->hash(). hash()/equality use identity; restriction keeps bindings.
   - verify: tests for identity changing on a curve/expression edit and a constant collapsing to a value.
-- [ ] M71.P5.T2 — Sets store bindings for animated or expression variables
+- [x] M71.P5.T2 — Sets store bindings for animated or expression variables
   - size: M
   - files: Engine/RFV.cpp (overlayDeclaredVariables), Engine/Nodes/RFV/ReverseFlowVariableSet.cpp
   - approach: a knob with animation or an expression (any expression counts as time-varying, user 2026-10-26) stores a binding capturing the incoming context restricted to the read-set of the Set's own knobs; otherwise the value at the request time as now.
   - verify: RFVRender tests below.
-- [ ] M71.P5.T3 — Expressions resolve RFVs at their own time
+- [x] M71.P5.T3 — Expressions resolve RFVs at their own time
   - size: L
   - files: Engine/PyRFV.{h,cpp}, Engine/Knob.cpp (~3762, 2971, 3090)
   - approach: ExpressionEntry/ExpressionScope carry the expression time; PyRFV::getVariable evaluates a binding at that time under ActionContextScope(true, captured) via RFV::getVariableValue; the project-variable fallback (PyRFV.cpp:~323) uses the expression time too. Nested bindings recurse; the isEvaluating guard catches self-reads.
   - verify: RFVRender tests below.
-- [ ] M71.P5.T4 — Time-sampling behaviour tests
+- [x] M71.P5.T4 — Time-sampling behaviour tests
   - size: M
   - files: Tests/RFVRender_Test.cpp
   - approach: through renderBothWays: Transform translate.x = rfv.v with v keyed 0→100, motionBlur 1, shutter 1 differs from motion blur off; fr.natron.test.FrameWindow timeOffset 2 above the Set reads v at the shifted frame, below it as before; a nested Set reading an animated outer variable at a fractional time; DiamondRendersTheReaderOncePerSet still renders once with constant Sets.
   - verify: remote release gate green; GUI repro (Checkerboard → Transform ← animated RFV, motion blur on) shows blur.
-- [ ] M71.P5.T5 — Revise the design records
+- [x] M71.P5.T5 — Revise the design records
   - size: S
   - files: plan only
   - approach: DECISIONS/2026-10-08-reverse-flow-variables-design.md line 7 superseded; M190 stub note; M180/M181 note that loop.* stay plain values.
+
+Phase 71.5 shipped at 92d08cbb5: release gate 487/487; Tests/gui/m71_rfv_time_sampling.py passes (RFV-driven Transform motion blur, TimeBlur above and below the Set). UAT round 2 pending.
 
 ## Decisions
 

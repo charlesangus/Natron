@@ -101,6 +101,7 @@ Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfv
 
 ## Decisions
 
+- 2026-10-27 — **RFV category icon (user):** an italic lowercase x with a short left-pointing arrow beneath it.
 - 2026-10-27 — UAT round 1 (user): fixes in Phase 72.6. RFVSet is the node name; RFV nodes get their own toolbar category.
 - 2026-10-27 — **Frame range follows the Set too (bosley-native-nodes):** P1.T2 found format, RoD and layers already follow the Set below a node (M71), but frame range read the project's values. For consistency the frame range is computed under each input's context and its cache keyed by context. Code for P1.T1-P2.T1 at f2e3d8525; P1.T1's engine part was already in M71 (`registerRFVListeners`), `knobsAge` no longer exists.
 

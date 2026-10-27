@@ -125,3 +125,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-27 — **Rescoped by the trap policy (user):** see `PLAN/DECISIONS/2026-10-27-debug-float-traps-are-a-test-input-contract.md`. The knob→float narrowing fixes (P2.T2, P2.T4–P2.T7) stay as hygiene, with no trap holds: setup maths narrows first, then computes in double, with guarded reciprocals. The P2.T3 sweep is cancelled. The two RADV-only failures inherited from main get their own tasks (P3.T1, P3.T2).
 
 **Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), with every RADV failure inherited from main fixed.
+
+- 2026-10-27 — **Runs in a lane of the E5 - GPU Compute run (user):** the gpu PM's `--parallel 4` run for E5 keeps this milestone in one of its lanes, since it fixes the RADV failures the GPU work keeps meeting.

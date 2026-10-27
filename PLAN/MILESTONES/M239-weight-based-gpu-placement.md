@@ -89,4 +89,6 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
 
 - 2026-10-27 — **Constants from the bench (gpu, same boot, Ryzen 7 9800X3D + Radeon AI PRO R9700, release):** a source plus two Grades (weight 3) ran about 10% slower on the GPU, three Grades broke even and six won by 20%, so z = 4. Lone Blur and Transform regions broke even or won, so the Filter weight stays at 4, and the pixel floor stays at 256². All three comps run faster on Auto: keying_grade 0.80–0.93, cg_multipass 0.84–0.86, defocus_retime 0.52–0.54. With z = 4 a lone UHD point op stays on the CPU, so the strip-pipelining concern from P2.T1 doesn't arise there. The full table is on PR #127.
 
+- 2026-10-27 — **Rebased onto main after M184 - Variable-Size Filter Kit (gpu):** the rebase drops the earlier merge commit, so its fixes are re-applied in 3edc835b8: IBlur and IErodeDilate declare weights, and the ten `*.costseed.inc` files main's M122 - Native Colour Utilities added are deleted. The old gate run predates the rebase, and its RADV ctest exited 1 with no log, so the gate is re-run.
+
 **Verification gate:** the full debug and release builds and ctest pass. The GPU suites pass on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`). The bench comps' same-boot Auto vs Off table shows no case where Auto is clearly slower. PR CI is green.

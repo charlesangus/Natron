@@ -290,6 +290,12 @@ public:
 
     int getNCurves() const;
 
+    /**
+     * @brief True for a node knob that mirrors the selected item's knob of the same name; its
+     * animation belongs to the item, so the editors list it under the item instead.
+     **/
+    bool isItemProxyKnob(const KnobIPtr& knob) const;
+
     NodePtr getNode() const;
 
     RotoLayerPtr getLayerByName(const std::string& n) const;

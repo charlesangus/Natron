@@ -2350,6 +2350,76 @@ Bezier::setPointAtIndex(bool feather,
     setPointAtIndexInternal(true, true, true, feather, false, index, time, x, y, lx, ly, rx, ry);
 }
 
+bool
+Bezier::setPointPositionAtKeyframe(int index,
+                                   double time,
+                                   double x,
+                                   double y)
+{
+    /// only called on the main-thread
+    assert(QThread::currentThread() == qApp->thread());
+    bool useGuiCurve = !canSetInternalPoints();
+    bool featherLink = getContext()->isFeatherLinkEnabled();
+    bool useFeather = useFeatherPoints();
+    BezierCPPtr cp, fp;
+
+    {
+        QMutexLocker l(&itemMutex);
+        if ((index < 0) || (index >= (int)_imp->points.size())) {
+            return false;
+        }
+        BezierCPs::iterator cpIt = _imp->points.begin();
+        std::advance(cpIt, index);
+        cp = *cpIt;
+        if (!cp->hasKeyFrameAtTime(useGuiCurve, time)) {
+            return false;
+        }
+        if (useFeather && (index < (int)_imp->featherPoints.size())) {
+            BezierCPs::iterator fpIt = _imp->featherPoints.begin();
+            std::advance(fpIt, index);
+            fp = *fpIt;
+        }
+        // Decided before the move, which would separate them.
+        bool moveFeather = fp && (featherLink || cp->equalsAtTime(useGuiCurve, time, ViewIdx(0), *fp));
+
+        double px, py;
+        cp->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &px, &py);
+        const double dx = x - px;
+        const double dy = y - py;
+
+        BezierCP* toMove[2] = { cp.get(), moveFeather ? fp.get() : 0 };
+        for (int i = 0; i < 2; ++i) {
+            BezierCP* p = toMove[i];
+            if (!p) {
+                continue;
+            }
+            double ox, oy, lx, ly, rx, ry;
+            p->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &ox, &oy);
+            p->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &lx, &ly);
+            p->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &rx, &ry);
+            p->setPositionAtTime(useGuiCurve, time, ox + dx, oy + dy);
+            p->setLeftBezierPointAtTime(useGuiCurve, time, lx + dx, ly + dy);
+            p->setRightBezierPointAtTime(useGuiCurve, time, rx + dx, ry + dy);
+        }
+        if (!moveFeather) {
+            fp.reset();
+        }
+    }
+
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    syncGuiAfterEdit(useGuiCurve, cp, fp, time, false, false);
+
+    return true;
+} // setPointPositionAtKeyframe
+
+void
+Bezier::requestPointsInCurveEditor(const std::list<BezierCPPtr>& points,
+                                   bool show)
+{
+    Q_EMIT curveEditorPointsRequested(points, show);
+}
+
 void
 Bezier::onTransformSet(double time)
 {

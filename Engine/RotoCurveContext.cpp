@@ -1499,6 +1499,27 @@ RotoCurveContext::getNCurves() const
     return (int)curves.size();
 }
 
+bool
+RotoCurveContext::isItemProxyKnob(const KnobIPtr& knob) const
+{
+    if (!knob) {
+        return false;
+    }
+#ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
+    // These sit in the knob list but drive the whole node, not one item.
+    if ((knob == _imp->motionBlurTypeKnob.lock()) || (knob == _imp->globalMotionBlurKnob.lock()) || (knob == _imp->globalShutterKnob.lock()) || (knob == _imp->globalShutterTypeKnob.lock()) || (knob == _imp->globalCustomOffsetKnob.lock())) {
+        return false;
+    }
+#endif
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        if (it->lock() == knob) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 RotoLayerPtr
 RotoCurveContext::getLayerByName(const std::string& n) const
 {

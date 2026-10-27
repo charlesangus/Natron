@@ -1236,6 +1236,11 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
 
         CurvePtr curve = it->first->getInternalCurve();
         std::vector<MoveKeysCommand::KeyToMove>& vect = keysToMove[it->first];
+        if (dynamic_cast<BezierCPCurveGui*>(it->first.get())) {
+            // A control point's key times are the shape's keyframes, moved in the dope sheet.
+            maxLeft = 0.;
+            maxRight = 0.;
+        }
         if (curve) {
             for (std::list<KeyPtr>::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
                 MoveKeysCommand::KeyToMove keyToMove;
@@ -1256,47 +1261,6 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
                         maxLeft = std::min( 0., std::max(diff, maxLeft) );
                     } else {
                         keyToMove.prevIsSelected = true;
-                    }
-                }
-                vect.push_back(keyToMove);
-            }
-        } else {
-            BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>( it->first.get() );
-            assert(bezierCurve);
-            if (!bezierCurve) {
-                throw std::logic_error("CurveWidgetPrivate::moveSelectedKeyFrames");
-            }
-            std::set<double> keyframes;
-            bezierCurve->getBezier()->getKeyframeTimes(&keyframes);
-
-            for (std::list<KeyPtr>::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-                MoveKeysCommand::KeyToMove keyToMove;
-                keyToMove.key = *it2;
-                keyToMove.prevIsSelected = false;
-                keyToMove.nextIsSelected = false;
-
-                std::set<double>::iterator found = keyframes.find( (*it2)->key.getTime() );
-                assert( found != keyframes.end() );
-                if ( found != keyframes.begin() ) {
-                    std::set<double>::iterator prev = found;
-                    --prev;
-                    if ( !_widget->isSelectedKey(it->first, *prev) ) {
-                        double diff = *prev  - *found + epsilon;
-                        maxLeft = std::min( 0., std::max(diff, maxLeft) );
-                    } else {
-                        keyToMove.prevIsSelected = true;
-                    }
-                }
-                if ( found != keyframes.end() ) {
-                    std::set<double>::iterator next = found;
-                    ++next;
-                    if ( next != keyframes.end() ) {
-                        if ( !_widget->isSelectedKey(it->first, *next) ) {
-                            double diff = *next - *found - epsilon;
-                            maxRight = std::max( 0., std::min(diff, maxRight) );
-                        } else {
-                            keyToMove.nextIsSelected = true;
-                        }
                     }
                 }
                 vect.push_back(keyToMove);

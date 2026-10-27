@@ -1691,6 +1691,10 @@ Node::flushHashDirtyMarks()
                     NodePtr node = std::move(stopped.back());
                     stopped.pop_back();
                     LoopEnd::appendFeedbackBeginsOf(node, &dependents);
+                    // A LoopEnd is not in its own body, but its LoopBegin folds its knobs in.
+                    if (node->_imp->effect) {
+                        node->_imp->effect->appendExtraHashDependents(&dependents);
+                    }
                 } else {
                     NodePtr node = std::move(toExpand.back());
                     toExpand.pop_back();

@@ -436,6 +436,34 @@ LinearResponseLimit clip, the GainMap flat field and hot pixels, which multiply 
 photosites. Against the unclipped mosaic, clip changes 97 (Bayer) and 84 (X-Trans) photosites
 by up to 1, opposed 104 and 115 by up to 0.74, LCh 173 and 134 by up to 0.54.
 
+### Contrast & texture
+
+darktable's contrast & texture module (`src/iop/contrastntexture.c`) is only on darktable
+master, so its jobs render with a second `darktable-cli` at `DARKTABLE_MASTER_REF`
+(`tools/ci/local/fetch-assets.sh`, `fee19b421fdb`). `make-reference.sh` builds that image only
+when a selected job needs it; `tools/raw/make-reference.sh --only contrastntexture` renders just
+these. The module's radii and detail levels follow the size of the whole image it is given, so
+these jobs are whole images, not crops. First a plate: the CR2 with highlights opposed, RCD,
+exposure +0.7 EV and the standard matrix into linear Rec. 2020, exported at 384 px on the long
+side. Then each job reads the plate back with linear Rec. 2020 as both the input and the working
+profile, so the module's input is the plate, and exports in linear Rec. 2020.
+
+| Reference | Settings |
+| --- | --- |
+| `contrastntexture-plate.tif` | The plate, 384 px on the long side, RGB float, LFS |
+| `contrastntexture-default.tif` | All controls at their defaults |
+| `contrastntexture-{coarse,medium}-{1,minus-0.5}.tif`, `contrastntexture-fine-{1,3}.tif` | One detail gain |
+| `contrastntexture-detail-level-{2,9}.tif` | Medium 1, base detail level 2 and 9 |
+| `contrastntexture-halo-{minus-3,3}.tif` | Fine 1, halo control -3 and 3 |
+| `contrastntexture-noise-bias-{0.05,0}.tif` | Fine 1, noise bias 0.05 and 0 |
+| `contrastntexture-{shadows,highlights}-{1,minus-1}.tif` | Shadows or highlights alone |
+| `contrastntexture-combined.tif` | Coarse 0.4, medium 0.6, fine 0.8, detail level 4, halo 1, noise bias 0.01, shadows 0.5, highlights -0.5 |
+
+`NativeContrastTextureTest.MatchesDarktableReferences` runs the node's kernels on the plate and
+compares each job as `RawReference_Test` compares a crop, mean and largest error relative to the
+reference's mean level, at 0.1 % and 1 % (`Engine/Nodes/Filter/docs/ContrastTexture.md`). It
+skips, with a notice, while the plate is missing or an LFS pointer.
+
 ## Memory bounds on the 100 MP mosaic
 
 `Tests/Native/RawLarge_Test.cpp` develops a synthetic 12288 x 8192 mosaic through the whole chain,

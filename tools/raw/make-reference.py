@@ -2,15 +2,17 @@
 """Renders the darktable references of Tests/fixtures/raw/reference with darktable-cli.
 
 Runs inside the image tools/raw/make-reference.sh builds. Each job writes a sidecar XMP whose
-history packs the parameters of the darktable modules the raw nodes port, exports a 32-bit float
-linear Rec. 709 TIFF and keeps either a crop of it (camera files) or its white-balanced mosaic
-(synthetic DNGs). Usage:
+history packs the parameters of the darktable modules the native nodes port, exports a 32-bit
+float linear TIFF and keeps either a crop of it (camera files), its white-balanced mosaic
+(synthetic DNGs) or all of it (the plate jobs and the jobs that render on a plate). Usage:
 
-    make-reference.py [--dry-run] [--only TEXT] <fixtures dir> <output dir> <scratch dir>
+    make-reference.py [--dry-run] [--only TEXT] [--ref NAME] <fixtures dir> <output dir> <scratch dir>
 
 --dry-run lists every job and writes every XMP to the scratch directory without running
 darktable-cli or writing a fixture, with placeholder white balance coefficients in place of the
-probed ones. --only keeps the jobs whose output name contains TEXT.
+probed ones. --only keeps the jobs whose output name contains TEXT. --ref keeps the jobs rendered
+at one darktable revision: "release" (DARKTABLE_REF) or "master" (DARKTABLE_MASTER_REF); a job's
+source that another job writes must be rendered at the same revision.
 """
 
 import argparse
@@ -89,6 +91,7 @@ DT_IOP_TEMP_D65_LATE = 4
 USER_COEFFS = (2.2, 1.0, 1.6)
 
 DT_COLORSPACE_LIN_REC709 = 3
+DT_COLORSPACE_LIN_REC2020 = 4
 DT_COLORSPACE_EMBEDDED_MATRIX = 10
 DT_COLORSPACE_STANDARD_MATRIX = 11
 DT_COLORSPACE_ENHANCED_MATRIX = 12
@@ -134,16 +137,15 @@ def highlights_params(mode, strength=0.0, clip=1.0, noise_level=0.0, iterations=
                        iterations, 6, 0.4, 2.0, RECOVERY_MODES[recovery], solid_color)
 
 
-def colorin_params(input_profile, normalize=0):
+def colorin_params(input_profile, normalize=0, work=DT_COLORSPACE_LIN_REC709):
     # dt_iop_colorin_params_t, version 7: perceptual intent (a matrix profile ignores it), no blue
-    # mapping, linear Rec. 709 working space.
-    return struct.pack("<i%dsiiii%ds" % (ICC_LEN, ICC_LEN), input_profile, b"", 0, normalize, 0,
-                       DT_COLORSPACE_LIN_REC709, b"")
+    # mapping, linear Rec. 709 working space unless work says otherwise.
+    return struct.pack("<i%dsiiii%ds" % (ICC_LEN, ICC_LEN), input_profile, b"", 0, normalize, 0, work, b"")
 
 
-def colorout_params():
-    # dt_iop_colorout_params_t, version 5: linear Rec. 709.
-    return struct.pack("<i%dsi" % ICC_LEN, DT_COLORSPACE_LIN_REC709, b"", 0)
+def colorout_params(profile=DT_COLORSPACE_LIN_REC709):
+    # dt_iop_colorout_params_t, version 5.
+    return struct.pack("<i%dsi" % ICC_LEN, profile, b"", 0)
 
 
 def flip_params():
@@ -202,9 +204,9 @@ def sigmoid_params():
     return struct.pack("<4fi8fi", 1.5, 0.0, 100.0, 0.0152, 0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 
 
-def exposure_params():
-    # dt_iop_exposure_params_t, version 7, at its defaults.
-    return struct.pack("<i4fii", 0, 0.0, 0.0, 50.0, -4.0, 0, 1)
+def exposure_params(exposure=0.0):
+    # dt_iop_exposure_params_t, version 7, at its defaults but for the exposure in EV.
+    return struct.pack("<i4fii", 0, 0.0, exposure, 50.0, -4.0, 0, 1)
 
 
 def sharpen_params():
@@ -273,10 +275,15 @@ def write_xmp(path, entries, auto_presets_applied=True):
 
 
 class Job:
-    """One reference: a crop of a camera file's develop, or a synthetic DNG's mosaic."""
+    """One reference: a crop of a camera file's develop, a synthetic DNG's mosaic or a whole image.
+
+    ref names the darktable revision that renders it ("release" or "master"), icc the --icc-type
+    of the export, size its --width and --height (0 for the full size). whole keeps the whole
+    export rather than a crop.
+    """
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None):
+                 log_line=None, mosaic=None, ref="release", icc="LIN_REC709", size=0, whole=False):
         self.name = name
         self.source = source
         self.entries = entries
@@ -287,6 +294,10 @@ class Job:
         self.log_line = log_line
         # (pattern, period) of a synthetic mosaic; None for a camera crop.
         self.mosaic = mosaic
+        self.ref = ref
+        self.icc = icc
+        self.size = size
+        self.whole = whole
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -517,14 +528,101 @@ def colour_calibration_jobs(coeffs):
     return jobs
 
 
-def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0):
+# darktable's contrast & texture (src/iop/contrastntexture.c at DARKTABLE_MASTER_REF), rendered on
+# a plate: the CR2 developed to linear Rec. 2020 and exported small, then read back as a float TIFF
+# whose input and working profiles are both linear Rec. 2020, so the module's input is the plate.
+# The module's radii and detail levels follow the size of the image it is given, so the plate is
+# the whole image there and in Tests/Native/NativeContrastTexture_Test.cpp.
+#
+# dt_iop_contrastntexture_params_t, DT_MODULE_INTROSPECTION version 2, eight floats in this order
+# (darktable's min, max, default; description):
+#   gain_coarse      -1 .. 5,    0      "coarse details"
+#   gain_medium      -1 .. 5,    0      "medium details"
+#   gain_fine        -1 .. 5,    0      "fine details"
+#   detail_level      1 .. 15,   5      "base detail level"
+#   halo_control    -10 .. 10,   0      "halo control"
+#   noise_bias        0 .. 1,    0.001  "noise bias"
+#   gain_shadows     -5 .. 5,    0      "shadows"
+#   gain_highlights  -5 .. 5,    0      "highlights"
+# GUI: base detail level (soft 1 .. 10, with a mask toggle showing the low-pass), highlights and
+# shadows (soft -2 .. 2); "local contrast": coarse, medium and fine details (soft -1 .. 1.5, shown
+# in %, each with a mask toggle showing its band); "filter settings": halo control (soft -5 .. 5,
+# in %) and noise bias (soft 0 .. 0.2). The mask toggles are GUI state, not params.
+CONTRASTNTEXTURE_PLATE = "contrastntexture-plate.tif"
+CONTRASTNTEXTURE_PLATE_SIZE = 384
+CONTRASTNTEXTURE_PLATE_EXPOSURE = 0.7
+CONTRASTNTEXTURE_FIELDS = ("gain_coarse", "gain_medium", "gain_fine", "detail_level", "halo_control", "noise_bias",
+                           "gain_shadows", "gain_highlights")
+CONTRASTNTEXTURE_DEFAULTS = (0.0, 0.0, 0.0, 5.0, 0.0, 0.001, 0.0, 0.0)
+
+
+def contrastntexture_params(**fields):
+    unknown = set(fields) - set(CONTRASTNTEXTURE_FIELDS)
+    if unknown:
+        raise ValueError("unknown contrastntexture fields %s" % sorted(unknown))
+    values = [fields.get(name, default) for name, default in zip(CONTRASTNTEXTURE_FIELDS, CONTRASTNTEXTURE_DEFAULTS)]
+    return struct.pack("<8f", *values)
+
+
+CONTRASTNTEXTURE_VARIANTS = [
+    ("default", {}),
+    ("coarse-1", {"gain_coarse": 1.0}),
+    ("coarse-minus-0.5", {"gain_coarse": -0.5}),
+    ("medium-1", {"gain_medium": 1.0}),
+    ("medium-minus-0.5", {"gain_medium": -0.5}),
+    ("fine-1", {"gain_fine": 1.0}),
+    ("fine-3", {"gain_fine": 3.0}),
+    ("detail-level-2", {"gain_medium": 1.0, "detail_level": 2.0}),
+    ("detail-level-9", {"gain_medium": 1.0, "detail_level": 9.0}),
+    ("halo-minus-3", {"gain_fine": 1.0, "halo_control": -3.0}),
+    ("halo-3", {"gain_fine": 1.0, "halo_control": 3.0}),
+    ("noise-bias-0.05", {"gain_fine": 1.0, "noise_bias": 0.05}),
+    ("noise-bias-0", {"gain_fine": 1.0, "noise_bias": 0.0}),
+    ("shadows-1", {"gain_shadows": 1.0}),
+    ("shadows-minus-1", {"gain_shadows": -1.0}),
+    ("highlights-1", {"gain_highlights": 1.0}),
+    ("highlights-minus-1", {"gain_highlights": -1.0}),
+    ("combined", {"gain_coarse": 0.4, "gain_medium": 0.6, "gain_fine": 0.8, "detail_level": 4.0,
+                  "halo_control": 1.0, "noise_bias": 0.01, "gain_shadows": 0.5, "gain_highlights": -0.5}),
+]
+
+
+def contrastntexture_jobs():
+    work = {"work": DT_COLORSPACE_LIN_REC2020}
+    rec2020 = DT_COLORSPACE_LIN_REC2020
+    plate_entries = [
+        ("flip", 0, 2, flip_params()),
+        ("highlights", 1, 4, highlights_params("opposed")),
+        ("demosaic", 1, 6, demosaic_params("rcd")),
+        ("exposure", 1, 7, exposure_params(CONTRASTNTEXTURE_PLATE_EXPOSURE)),
+        ("colorin", 1, 7, colorin_params(DT_COLORSPACE_STANDARD_MATRIX, **work)),
+        ("colorout", 1, 5, colorout_params(rec2020)),
+    ]
+    jobs = [Job(CONTRASTNTEXTURE_PLATE, CR2, plate_entries,
+                "demosaic rcd, highlights opposed, exposure %+g EV, standard matrix to linear Rec. 2020, "
+                "exported at %d px" % (CONTRASTNTEXTURE_PLATE_EXPOSURE, CONTRASTNTEXTURE_PLATE_SIZE),
+                ref="master", icc="LIN_REC2020", size=CONTRASTNTEXTURE_PLATE_SIZE, whole=True)]
+    for suffix, fields in CONTRASTNTEXTURE_VARIANTS:
+        entries = [
+            ("flip", 0, 2, flip_params()),
+            ("colorin", 1, 7, colorin_params(rec2020, **work)),
+            ("contrastntexture", 1, 2, contrastntexture_params(**fields)),
+            ("colorout", 1, 5, colorout_params(rec2020)),
+        ]
+        what = "contrast & texture %s" % (" ".join("%s=%g" % kv for kv in sorted(fields.items())) or "at its defaults")
+        jobs.append(Job("contrastntexture-%s.tif" % suffix, CONTRASTNTEXTURE_PLATE, entries, what, ref="master",
+                        icc="LIN_REC2020", whole=True))
+    return jobs
+
+
+def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc="LIN_REC709"):
     if os.path.exists(output):
         os.remove(output)
     config = os.path.join(scratch, "config-" + re.sub(r"[^a-z]+", "-", workflow))
     os.makedirs(config, exist_ok=True)
     command = [
         "darktable-cli", source, xmp, output,
-        "--hq", "true", "--apply-custom-presets", "false", "--icc-type", "LIN_REC709",
+        "--hq", "true", "--apply-custom-presets", "false", "--icc-type", icc,
         "--width", str(size), "--height", str(size),
         "--core", "--configdir", config, "--disable-opencl",
         "--conf", "plugins/darkroom/workflow=%s" % workflow,
@@ -660,17 +758,22 @@ def run_job(job, out, scratch):
     xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
     write_xmp(xmp, job.entries, job.auto_presets_applied)
     image, log = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
-                               job.workflow, job.debug)
+                               job.workflow, job.debug, job.size, job.icc)
     height, width = image.shape[:2]
     logged = [line.strip() for line in log if job.log_line and job.log_line.search(line)]
     for line in logged:
         print("%s: log: %s" % (job.name, line))
-    if job.mosaic is None:
+    space = "linear Rec. 2020" if job.icc == "LIN_REC2020" else "linear Rec. 709"
+    if job.whole:
+        result = image
+        where = "whole image %dx%d, %s" % (width, height, space)
+        summary = "%dx%d mean %s max %s" % (width, height, result.mean(axis=(0, 1)), result.max())
+    elif job.mosaic is None:
         left, top = CROP_ORIGIN[job.source]
         result = image[top:top + CROP_SIZE, left:left + CROP_SIZE, :]
         if result.shape[:2] != (CROP_SIZE, CROP_SIZE):
             raise RuntimeError("%s: developed %dx%d, too small for the crop" % (job.name, width, height))
-        where = "developed %dx%d, crop left %d top %d size %d, linear Rec. 709" % (width, height, left, top, CROP_SIZE)
+        where = "developed %dx%d, crop left %d top %d size %d, %s" % (width, height, left, top, CROP_SIZE, space)
         summary = "mean %s max %s" % (result.mean(axis=(0, 1)), result.max())
     else:
         if (height, width) != (SYNTH_HEIGHT, SYNTH_WIDTH):
@@ -686,23 +789,29 @@ def run_job(job, out, scratch):
         where = "photosite colour, white-balanced mosaic"
         summary = "max %g, largest other-channel value %g" % (result.max(), leak)
     description = "darktable %s, %s, workflow %s, %s, %s" % (
-        os.environ.get("DARKTABLE_REF", "?"), job.source, job.workflow, job.what, where)
+        revision(job.ref), job.source, job.workflow, job.what, where)
     if logged:
         description += "; darktable log: " + " | ".join(logged)
     write_reference(os.path.join(out, job.name), result, description)
     print("%s: %s" % (job.name, summary))
 
 
+def revision(ref):
+    """The darktable commit a ref names, from the environment make-reference.sh sets."""
+    return os.environ.get("DARKTABLE_MASTER_REF" if ref == "master" else "DARKTABLE_REF", "?")
+
+
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs))
+            + colour_calibration_jobs(coeffs) + contrastntexture_jobs())
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--only")
+    parser.add_argument("--ref", choices=("release", "master"))
     parser.add_argument("fixtures")
     parser.add_argument("out")
     parser.add_argument("scratch")
@@ -713,6 +822,8 @@ def main():
     jobs = all_jobs({f: PLACEHOLDER_COEFFS for f in CAMERA_FIXTURES})
     if args.only:
         jobs = [job for job in jobs if args.only in job.name]
+    if args.ref:
+        jobs = [job for job in jobs if job.ref == args.ref]
     names = [job.name for job in jobs]
     if len(set(names)) != len(names):
         raise RuntimeError("duplicate output names")
@@ -720,15 +831,23 @@ def main():
     if args.dry_run:
         for job in jobs:
             write_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job.entries, job.auto_presets_applied)
-            print("%s <- %s, workflow %s%s: %s" % (job.name, job.source, job.workflow,
-                                                     ", -d %s" % job.debug if job.debug else "", job.what))
+            print("%s <- %s, darktable %s (%s), workflow %s%s: %s" % (
+                job.name, job.source, job.ref, revision(job.ref), job.workflow,
+                ", -d %s" % job.debug if job.debug else "", job.what))
         print("%d jobs, %d XMPs in %s" % (len(jobs), len(jobs), args.scratch))
         return
 
-    for fixture in sorted({job.source for job in jobs if job.mosaic is None}):
+    produced = {job.name for job in jobs}
+    cameras = sorted({job.source for job in jobs if job.mosaic is None and job.source in CAMERA_FIXTURES})
+    for job in jobs:
+        if job.mosaic is None and job.source not in CAMERA_FIXTURES and job.source not in produced:
+            raise RuntimeError("%s: its source %s is another job's output; run that job too" % (job.name, job.source))
+    for fixture in cameras:
         with open(os.path.join(args.fixtures, fixture), "rb") as src, open(os.path.join(args.scratch, fixture), "wb") as dst:
             dst.write(src.read())
-    coeffs = {f: probe_coefficients(f, args.scratch) for f in sorted({job.source for job in jobs if job.mosaic is None})}
+    # Only the jobs that crop a camera file pack the probed coefficients.
+    probed = sorted({job.source for job in jobs if job.mosaic is None and not job.whole})
+    coeffs = {f: probe_coefficients(f, args.scratch) for f in probed}
     for f in CAMERA_FIXTURES:
         coeffs.setdefault(f, PLACEHOLDER_COEFFS)
     jobs = [job for job in all_jobs(coeffs) if job.name in names]
@@ -741,6 +860,9 @@ def main():
             dst.write(src.read())
     for job in jobs:
         run_job(job, args.out, args.scratch)
+        if job.name in {other.source for other in jobs}:
+            with open(os.path.join(args.out, job.name), "rb") as src, open(os.path.join(args.scratch, job.name), "wb") as dst:
+                dst.write(src.read())
 
 
 if __name__ == "__main__":

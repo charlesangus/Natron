@@ -394,7 +394,7 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(fixtureEffect, firstFrame, lastFrame, 1, false));
-    getApp()->startWritersRendering(false, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
     const std::string frameTwoPath = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, lastFrame, 0);

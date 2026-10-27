@@ -26,6 +26,7 @@
 #include "OutputSchedulerThread.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <iostream>
 #include <limits>
@@ -57,6 +58,7 @@
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/OpenGLViewerI.h"
@@ -254,6 +256,12 @@ struct OutputSchedulerThreadPrivate
     QMutex bufferedOutputMutex;
     int lastBufferedOutputSize;
 
+    // From startRender() to stopRender() of a render that is not a viewer's: what the render reads
+    // refuses writes from outside it. The scheduler thread is in its context for as long.
+    std::unique_ptr<IsolatedJob> isolatedJob;
+    std::unique_ptr<IsolatedJob::ThreadScope> schedulerInJob;
+    // isolatedJob, for the render's other threads.
+    std::atomic<const IsolatedJob*> runningJob { nullptr };
 
     OutputSchedulerThreadPrivate(RenderEngine* engine,
                                  const OutputEffectInstancePtr& effect,
@@ -294,6 +302,13 @@ struct OutputSchedulerThreadPrivate
         , bufferedOutputMutex()
         , lastBufferedOutputSize(0)
     {
+    }
+
+    void endIsolatedJob()
+    {
+        runningJob.store(nullptr);
+        schedulerInJob.reset();
+        isolatedJob.reset();
     }
 
     void appendBufferedFrame(double time,
@@ -593,6 +608,18 @@ OutputSchedulerThread::~OutputSchedulerThread()
 
     ///Make sure they are all gone, there will be a deadlock here if that's not the case.
     _imp->waitForRenderThreadsToQuit();
+
+    // The scope belongs to the scheduler thread, not this one, whose context it must not change.
+    if (_imp->schedulerInJob) {
+        _imp->schedulerInJob->detach();
+    }
+    _imp->endIsolatedJob();
+}
+
+const IsolatedJob*
+OutputSchedulerThread::getRunningIsolatedJob() const
+{
+    return _imp->runningJob.load();
 }
 
 bool
@@ -835,8 +862,9 @@ OutputSchedulerThread::pushFramesToRender(int nThreads)
     }
 }
 
-int
+bool
 OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
+                                         int* frame,
                                          bool* enableRenderStats,
                                          std::vector<ViewIdx>* viewsToRender)
 {
@@ -851,9 +879,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
         _imp->allRenderThreadsInactiveCond.wakeOne();
     }
 
-
     bool gotFrame = false;
-    int frame = -1;
     {
         QMutexLocker l(&_imp->framesToRenderMutex);
         while ( _imp->framesToRender.empty() && !thread->mustQuit() ) {
@@ -863,11 +889,12 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
             _imp->framesToRenderNotEmptyCond.wait(l.mutex());
         }
 
-        if ( !_imp->framesToRender.empty() ) {
+        // A quitting thread leaves the queued frames to the others.
+        if (!_imp->framesToRender.empty() && !thread->mustQuit()) {
             ///Notify that we're running for good, will do nothing if flagged already running
             thread->notifyIsRunning(true);
 
-            frame = _imp->framesToRender.front();
+            *frame = _imp->framesToRender.front();
 
             _imp->framesToRender.pop_front();
 
@@ -881,7 +908,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
 
         *enableRenderStats = false;
 
-        return -1;
+        return false;
     } else {
         ///Flag the thread as active
         {
@@ -895,7 +922,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
         *enableRenderStats = args->enableRenderStats;
         *viewsToRender = args->viewsToRender;
 
-        return frame;
+        return true;
     }
 } // OutputSchedulerThread::pickFrameToRender
 
@@ -1082,6 +1109,15 @@ OutputSchedulerThread::startRender()
     startingFrame = timelineGetTime();
     forward = args->pushTimelineDirection == eRenderDirectionForward;
 
+    _imp->endIsolatedJob();
+    {
+        OutputEffectInstancePtr output = _imp->outputEffect.lock();
+        if (output && !dynamic_cast<ViewerInstance*>(output.get())) {
+            _imp->isolatedJob.reset(new IsolatedJob(output->getNode(), "render"));
+            _imp->schedulerInJob.reset(new IsolatedJob::ThreadScope(_imp->isolatedJob.get()));
+            _imp->runningJob.store(_imp->isolatedJob.get());
+        }
+    }
 
     aboutToStartRender();
 
@@ -1207,6 +1243,8 @@ OutputSchedulerThread::stopRender()
 
     bool wasAborted = isBeingAborted();
 
+    // Before anything learns the render is over, so writes made once it has finished go through.
+    _imp->endIsolatedJob();
 
     ///Notify everyone that the render is finished
     _imp->engine->s_renderFinished(wasAborted ? 1 : 0);
@@ -2003,6 +2041,8 @@ void
 OutputSchedulerThread::runCallbackWithVariables(const QString& callback)
 {
     if ( !callback.isEmpty() ) {
+        // The render's own callbacks may change what it reads.
+        IsolatedJob::ThreadScope inJob(_imp->runningJob.load());
         OutputEffectInstancePtr effect = _imp->outputEffect.lock();
         QString script = callback;
         std::string appID = effect->getApp()->getAppIDString();
@@ -2114,9 +2154,11 @@ RenderThreadTask::run()
     for (;; ) {
         bool enableRenderStats;
         std::vector<ViewIdx> viewsToRender;
-        int time = _imp->scheduler->pickFrameToRender(this, &enableRenderStats, &viewsToRender);
+        int time = 0;
 
-        if ( mustQuit() ) {
+        // A frame picked before a concurrent scheduleForRemoval() is rendered all the same: it is off the
+        // queue, and dropping it would leave the render waiting forever for its count of frames.
+        if (!_imp->scheduler->pickFrameToRender(this, &time, &enableRenderStats, &viewsToRender)) {
             break;
         }
 
@@ -2327,6 +2369,7 @@ private:
         ///Even if enableRenderStats is false, we at least profile the time spent rendering the frame when rendering with a Write node.
         ///Though we don't enable render stats for sequential renders (e.g: WriteFFMPEG) since this is 1 file.
         RenderStatsPtr stats = std::make_shared<RenderStats>(enableRenderStats);
+        IsolatedJob::ThreadScope inJob(_imp->scheduler->getRunningIsolatedJob());
         NodePtr outputNode = output->getNode();
         std::string cb = outputNode->getBeforeFrameRenderCallback();
         if ( !cb.empty() ) {
@@ -2417,6 +2460,24 @@ private:
                     _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
 
                     return;
+                }
+                if (output->writesFrameRangeAtOnce()) {
+                    // The render was narrowed to this one frame; the node writes the whole range
+                    // it was asked for here, rather than rendering an output of its own.
+                    int firstFrame = time;
+                    int lastFrame = time;
+                    output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
+                    if (output->writeFrameRange(firstFrame, lastFrame, viewsToRender[view]) == eStatusFailed) {
+                        QString message;
+                        int type = 0;
+                        activeInputNode->getPersistentMessage(&message, &type, false);
+                        _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
                 }
 
                 // The frame's region, layers and layout all come from the snapshot its args took,

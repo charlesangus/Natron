@@ -107,7 +107,7 @@ CurveWidget::pushUndoCommand(QUndoCommand* cmd)
             if (KnobCurveGui* knobCurve = dynamic_cast<KnobCurveGui*>(it->get())) {
                 scope.touchKnob(knobCurve->getInternalKnob());
             } else if (BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>(it->get())) {
-                RotoContextPtr roto = bezierCurve->getRotoContext();
+                RotoCurveContextPtr roto = bezierCurve->getRotoContext();
                 if (roto) {
                     scope.touchNode(roto->getNode());
                 }
@@ -1207,13 +1207,13 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
             }
 
             std::map<KnobHolder*, bool> toEvaluate;
-            std::list<RotoContextPtr> rotoToEvaluate;
+            std::list<RotoCurveContextPtr> rotoToEvaluate;
             for (SelectedKeys::iterator it = _imp->_selectedKeyFrames.begin(); it != _imp->_selectedKeyFrames.end(); ++it) {
                 KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
                 BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( it->first.get() );
                 if (isKnobCurve) {
                     if ( !isKnobCurve->getKnobGui() ) {
-                        RotoContextPtr roto = isKnobCurve->getRotoContext();
+                        RotoCurveContextPtr roto = isKnobCurve->getRotoContext();
                         assert(roto);
                         rotoToEvaluate.push_back(roto);
                     } else {
@@ -1236,7 +1236,7 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
             for (std::map<KnobHolder*, bool>::iterator it = toEvaluate.begin(); it != toEvaluate.end(); ++it) {
                 it->first->incrHashAndEvaluate(it->second, false);
             }
-            for (std::list<RotoContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
+            for (std::list<RotoCurveContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
                 (*it)->evaluateChange();
             }
         } else if (_imp->_state == eEventStateDraggingTangent) {
@@ -1248,7 +1248,7 @@ CurveWidget::mouseReleaseEvent(QMouseEvent*)
             BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( _imp->_selectedDerivative.second->curve.get() );
             if (isKnobCurve) {
                 if ( !isKnobCurve->getKnobGui() ) {
-                    RotoContextPtr roto = isKnobCurve->getRotoContext();
+                    RotoCurveContextPtr roto = isKnobCurve->getRotoContext();
                     assert(roto);
                     roto->evaluateChange();
                 } else {

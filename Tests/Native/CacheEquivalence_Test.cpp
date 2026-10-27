@@ -656,8 +656,19 @@ protected:
                               const std::list<ImageLayerDesc>& layers,
                               ColdRenders* earlier = 0)
     {
-        Verdict verdict;
         const OutputState cached = render(s, layers, false);
+
+        return judgeAgainstCold(s, layers, { &cached }, earlier);
+    }
+
+    // Judges renders made through the caches earlier, each against one cold render of the state
+    // `s` is in now.
+    Verdict judgeAgainstCold(const Scenario& s,
+                             const std::list<ImageLayerDesc>& layers,
+                             const std::vector<const OutputState*>& cachedRenders,
+                             ColdRenders* earlier = 0)
+    {
+        Verdict verdict;
         const OutputState cold = render(s, layers, true);
         const U64 hash = s.output->getHashValue();
         const ColdRenders::const_iterator found = earlier ? earlier->find(hash) : ColdRenders::const_iterator();
@@ -672,8 +683,8 @@ protected:
                 diff = "an earlier state with the same hash renders differently cold: " + acrossStates;
             }
         }
-        if (diff.empty()) {
-            diff = compareStates(cached, cold);
+        for (std::size_t i = 0; i < cachedRenders.size() && diff.empty(); ++i) {
+            diff = compareStates(*cachedRenders[i], cold);
         }
         if (diff.empty()) {
             if (earlier && !seenBefore) {
@@ -750,6 +761,79 @@ protected:
                 const std::list<ImageLayerDesc> layers = legacyLayersFor(s);
                 const std::string where = name + " [" + modeName(_mode) + "] after " + path;
                 const Verdict verdict = judgeCachedRender(s, layers, &coldRenders);
+                EXPECT_TRUE(verdict.nondeterminism.empty()) << nondeterminismMessage(where, verdict.nondeterminism);
+                EXPECT_TRUE(verdict.hashGap.empty()) << where << ": the cached render differs from a cold one, a hash gap: " << verdict.hashGap;
+                if (!verdict.coldRendered) {
+                    std::cout << "[cache equivalence] " << where << ": the cold renders failed: " << verdict.coldError << std::endl;
+                }
+            }
+        }
+        _mode = ambient;
+        resetProject();
+    }
+
+    // Compares every intermediate state like runScenario at a cost linear in the steps, where a
+    // rebuild per prefix is quadratic and too slow for the UHD bench comps in a debug build. One
+    // build walks every step through the caches, keeping the render made right after each edit and
+    // a second render of the same state, which the caches serve. A second build walks the steps
+    // again and renders each state cold. A cold render starts from empty caches, so it depends on
+    // the state alone and is the same ground truth a rebuild per prefix gives. The warm walk is
+    // one history, so each state's renders also reuse whatever every earlier state left cached.
+    void runScenarioInOneWalk(const std::string& name,
+                              const Builder& build,
+                              RenderSchedulerModeEnum mode)
+    {
+        struct WarmState {
+            std::string path;
+            std::list<ImageLayerDesc> layers;
+            OutputState afterEdit;
+            OutputState cached;
+        };
+
+        const RenderSchedulerModeEnum ambient = _mode;
+        _mode = mode;
+        std::vector<WarmState> warmStates;
+        {
+            resetProject();
+            Scenario s;
+            if (!build(&s) || !s.output) {
+                ADD_FAILURE() << name << ": the scenario could not be built";
+                _mode = ambient;
+
+                return;
+            }
+            appPTR->clearAllCaches();
+            for (std::size_t i = 0; i <= s.steps.size(); ++i) {
+                WarmState state;
+                state.path = "start";
+                if (i > 0) {
+                    s.steps[i - 1].edit();
+                    state.path = warmStates.back().path + " -> " + s.steps[i - 1].label;
+                }
+                state.layers = legacyLayersFor(s);
+                state.afterEdit = render(s, state.layers, false);
+                state.cached = render(s, state.layers, false);
+                warmStates.push_back(state);
+            }
+        }
+
+        {
+            resetProject();
+            Scenario s;
+            if (!build(&s) || !s.output || (s.steps.size() + 1 != warmStates.size())) {
+                ADD_FAILURE() << name << ": the scenario could not be built the same way twice";
+                _mode = ambient;
+
+                return;
+            }
+            ColdRenders coldRenders;
+            for (std::size_t i = 0; i < warmStates.size(); ++i) {
+                if (i > 0) {
+                    s.steps[i - 1].edit();
+                }
+                const WarmState& state = warmStates[i];
+                const std::string where = name + " [" + modeName(_mode) + "] after " + state.path;
+                const Verdict verdict = judgeAgainstCold(s, state.layers, { &state.afterEdit, &state.cached }, &coldRenders);
                 EXPECT_TRUE(verdict.nondeterminism.empty()) << nondeterminismMessage(where, verdict.nondeterminism);
                 EXPECT_TRUE(verdict.hashGap.empty()) << where << ": the cached render differs from a cold one, a hash gap: " << verdict.hashGap;
                 if (!verdict.coldRendered) {
@@ -883,7 +967,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 3, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         QString savedPath;
         if (!project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("sub.ntpz"), &savedPath)) {
@@ -1442,10 +1526,12 @@ TEST_F(CacheEquivalenceTest, SyntheticRotoPaintGraph)
 }
 
 // The bench comps are UHD, so a window at the centre of the format stands for the frame. Each comp
-// and scheduler mode is its own case, which keeps every one inside the per-case timeout.
-// defocus_retime pulls dozens of plate frames through blurs of up to 300 px for any window, so it
-// renders at 1/8 scale, where that upstream area is over an order of magnitude smaller and a debug
-// build fits the timeout.
+// and scheduler mode is its own case, and each walks its edits once rather than once per prefix.
+// keying_grade renders at full scale, so the full-resolution paths stay covered. cg_multipass
+// feeds eight passes through 90 px and 60 px blurs, so it renders at 1/4 scale, where the upstream
+// area those blurs pull for the window is several times smaller. defocus_retime pulls dozens of
+// plate frames through blurs of up to 300 px for any window, so it renders at 1/16 scale, where
+// that upstream area is over an order of magnitude smaller and still spans many frames.
 struct BenchComp {
     const char* file;
     RenderSchedulerModeEnum mode;
@@ -1469,7 +1555,7 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
     const QString dir = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/../../tools/bench/comps/");
     const QString name = QString::fromUtf8(GetParam().file);
 
-    runScenario(GetParam().file, [this, &dir, &name](Scenario* s) {
+    const Builder build = [this, &dir, &name](Scenario* s) {
         if (!project()->loadProject(dir, name, false, false)) {
             return false;
         }
@@ -1505,18 +1591,18 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
         s->steps.push_back(setBool(middle->getScriptName() + " enabled", middle->getDisabledKnob(), false));
 
         return true;
-    },
-                { GetParam().mode });
+    };
+    runScenarioInOneWalk(GetParam().file, build, GetParam().mode);
 }
 
 INSTANTIATE_TEST_CASE_P(Comps,
                         CacheEquivalenceBenchCompTest,
                         ::testing::Values(BenchComp { "keying_grade.ntpz", eRenderSchedulerModeLegacy, 0 },
                                           BenchComp { "keying_grade.ntpz", eRenderSchedulerModeTaskGraph, 0 },
-                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeLegacy, 0 },
-                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeTaskGraph, 0 },
-                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeLegacy, 3 },
-                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeTaskGraph, 3 }));
+                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeLegacy, 2 },
+                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeTaskGraph, 2 },
+                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeLegacy, 4 },
+                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeTaskGraph, 4 }));
 
 // Each bundled plugin is rendered on a checkerboard feeding every input, and each sampled knob
 // dimension is perturbed, rendered, reverted and rendered again through the caches before that
@@ -1542,10 +1628,16 @@ protected:
     }
 
     // The Viewer draws into its own textures and a Backdrop renders nothing, so neither has an
-    // image of its own in the caches under test.
+    // image of its own in the caches under test. Nor has a node whose output is scene data:
+    // it never writes the pixels the comparison reads.
     static bool rendersAnImage(const NodePtr& node)
     {
-        return !node->isEffectViewer() && (node->getPluginID() != PLUGINID_NATRON_BACKDROP);
+        if (node->isEffectViewer() || (node->getPluginID() == PLUGINID_NATRON_BACKDROP)) {
+            return false;
+        }
+        const DataKindEnum kind = node->getEffectiveOutputDataKind();
+
+        return kind != eDataKindScene;
     }
 
     struct Findings {

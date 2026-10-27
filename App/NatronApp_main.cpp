@@ -162,10 +162,15 @@ int main(int argc, char *argv[])
 
         // coverity[tainted_data]
 #ifdef Q_OS_WIN
-        return manager.loadW(argc, argv, args);
+        const bool loaded = manager.loadW(argc, argv, args);
 #else
-        return manager.load(argc, argv, args);
+        const bool loaded = manager.load(argc, argv, args);
 #endif
+        if (manager.hasRefusedGLContext()) {
+            return 1;
+        }
+
+        return loaded;
         //exec() is called within the GuiApplicationManager
     }
 } // main

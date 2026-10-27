@@ -2,9 +2,13 @@
 
 #include "GpuDevice.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <span>
+#include <string>
 
 namespace gpu {
 
@@ -71,6 +75,56 @@ private:
     VmaAllocation allocation_ = nullptr;
     VkImageView view_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
+};
+
+// Device textures kept under a caller's key, so that texels many dispatches sample unchanged, such
+// as a colour transform's LUTs, are uploaded once per device and shared by every caller: record
+// contexts and the viewer alike. The key must identify the description and the texels, since a
+// lookup of a key already held returns its texture whatever it is given.
+//
+// Once the cached textures take more than the budget, entries that nothing outside the cache
+// holds go, least recently used first. A held entry is never released, so the cache may run over
+// its budget while its textures are in use.
+//
+// Thread safe. The cache and every texture it handed out must be destroyed before its GpuDevice,
+// once the recorded work sampling them is done.
+class GpuTextureCache {
+public:
+    static constexpr uint64_t kDefaultBudgetBytes = 256ull << 20;
+
+    explicit GpuTextureCache(GpuDevice& device, uint64_t budgetBytes = kDefaultBudgetBytes);
+    GpuTextureCache(const GpuTextureCache&) = delete;
+    GpuTextureCache& operator=(const GpuTextureCache&) = delete;
+
+    // The texture under `key`, created from `desc` and `texels` as GpuTexture::create when the
+    // cache does not hold it. `uploaded`, when given, tells whether this call created it.
+    GpuStatus acquire(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
+                      std::shared_ptr<const GpuTexture>& out, bool* uploaded = nullptr);
+
+    // Textures created since the cache was, to tell a hit from an upload.
+    size_t created() const;
+
+    // Device bytes of the textures the cache holds.
+    uint64_t bytes() const;
+
+    size_t size() const;
+
+private:
+    struct Entry {
+        std::shared_ptr<const GpuTexture> texture;
+        uint64_t bytes = 0;
+        uint64_t lastUse = 0;
+    };
+
+    void trimLocked();
+
+    GpuDevice& device_;
+    const uint64_t budget_;
+    mutable std::mutex mutex_;
+    std::map<std::string, Entry> entries_;
+    uint64_t bytes_ = 0;
+    uint64_t clock_ = 0;
+    size_t created_ = 0;
 };
 
 } // namespace gpu

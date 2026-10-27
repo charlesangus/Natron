@@ -354,6 +354,9 @@ TrackMarker::fromSerialization(const Serialization::TrackSerialization& serializ
                 (*it2)->blockValueChanges();
                 (*it2)->clone(serializedKnob);
                 (*it2)->unblockValueChanges();
+                // Paste Links between tracks are rebuilt by KnobHelper::restoreLinkGroups() with the rest of
+                // what loads with this track.
+                (*it2)->storeLinkGroupsFromSerialization(*it);
                 break;
             }
         }
@@ -1233,12 +1236,13 @@ void
 TrackMarker::onKnobSlaved(const KnobIPtr& slave,
                           const KnobIPtr& master,
                           int dimension,
-                          bool isSlave)
+                          bool isSlave,
+                          bool isExpression)
 {
     EffectInstancePtr effect = getContext()->getNode()->getEffectInstance();
 
     if (effect) {
-        effect->onKnobSlaved(slave, master, dimension, isSlave);
+        effect->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
     }
 }
 

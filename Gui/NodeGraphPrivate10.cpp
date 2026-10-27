@@ -109,7 +109,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
                     ++itSource;
                 }
                 const std::string& oldScriptName = (*itOther)->scriptName;
-                NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), false, &oldNewScriptNamesMapping);
+                NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
 
                 if (!node) {
                     missingNodePlugins.insert((*itOther)->pluginID);
@@ -144,10 +144,17 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
             //Restore links once all children are created for alias knobs/expressions
+            NodesList pastedNodes;
             for (std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>::iterator it = newNodesMap.begin(); it != newNodesMap.end(); ++it) {
                 it->second->storeKnobsLinks(*(it->first), oldNewScriptNamesMapping);
                 it->second->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, false); // may fail
+                pastedNodes.push_back(it->second);
             }
+            // In the project they were copied from, the pasted copies of linked knobs join the groups of the
+            // knobs they were copied from, or link to each other when those are gone. In another project a
+            // node of the same name is another node, so there they link only to each other.
+            const bool sameProject = _publicInterface->getGui()->getApp()->getProject()->isProjectId(clipboard.sourceProject);
+            KnobHelper::restoreLinkGroups(pastedNodes, sameProject);
         }
 
         if (newNodesList.size() > 1) {
@@ -187,7 +194,7 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
                             const QPointF& offset,
                             const NodeCollectionPtr& grp,
                             const std::string& parentName,
-                            bool clone,
+                            std::list<std::pair<NodePtr, NodePtr>>* linkedNodes,
                             std::map<std::string, std::string>* oldNewScriptNamesMapping)
 {
     CreateNodeArgs args(internalSerialization->pluginID, grp);
@@ -237,16 +244,6 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
         //If we paste the node in a different graph, it can keep its scriptname/label
     }
 
-    const std::string& masterNodeName = internalSerialization->masterNodeName;
-    if ( !masterNodeName.empty() ) {
-        NodePtr masterNode = _publicInterface->getGui()->getApp()->getProject()->getNodeByName(masterNodeName);
-
-        ///the node could not exist any longer if the user deleted it in the meantime
-        if ( masterNode && masterNode->isActivated() ) {
-            n->getEffectInstance()->slaveAllKnobs( masterNode->getEffectInstance().get(), true );
-        }
-    }
-
     //All nodes that are reachable via expressions
     NodesList allNodes;
     _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
@@ -257,12 +254,11 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
         n->setPosition(x + offset.x(), y + offset.y());
     }
 
-    if (clone) {
-        assert(sourceNode);
+    if (linkedNodes && sourceNode) {
         DotGui* isDot = dynamic_cast<DotGui*>( gui.get() );
-        ///Dots cannot be cloned, just copy them
+        /// Dots cannot be linked, just copy them
         if (!isDot) {
-            n->getEffectInstance()->slaveAllKnobs(sourceNode->getEffectInstance().get(), false);
+            linkedNodes->push_back(std::make_pair(n, sourceNode));
         }
     }
 
@@ -304,7 +300,7 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
             if (sourceCollection) {
                 childSourceNode = sourceCollection->getNodeByName((*it)->scriptName);
             }
-            NodeGuiPtr newChild = pasteNode(*it, childSourceNode, QPointF(0, 0), collection, parentName, clone, oldNewScriptNamesMapping);
+            NodeGuiPtr newChild = pasteNode(*it, childSourceNode, QPointF(0, 0), collection, parentName, linkedNodes, oldNewScriptNamesMapping);
             if (newChild) {
                 newNodes.push_back(std::make_pair((*it)->scriptName, newChild));
                 if ((*it)->scriptName != newChild->getNode()->getScriptName()) {

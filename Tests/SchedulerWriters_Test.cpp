@@ -362,7 +362,7 @@ TEST_F(SchedulerWriters, DeepOutputFramesFallBackToLegacyAndNameTheReason)
         QMetaObject::Connection connection = QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [&finishedCode](int retCode) { finishedCode = retCode; }, Qt::DirectConnection);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
         QObject::disconnect(connection);
         EXPECT_EQ(0, finishedCode);
     }

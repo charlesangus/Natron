@@ -34,6 +34,7 @@
 #include <cstring>
 #include <functional>
 #include <future>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -2352,6 +2353,7 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         }
     } profileOff;
 
+    const int kTimedRuns = 3;
     const char* const modes[] = { "whole", "serial strips", "pipelined strips" };
     for (int mode = 0; mode < 3; ++mode) {
         SCOPED_TRACE(modes[mode]);
@@ -2361,67 +2363,75 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
             setGpuStripOverridesForTests(2u << 20, 0);
             setGpuStripPipeliningForTests((mode == 2) ? GpuStripPipelining::On : GpuStripPipelining::Off);
         }
-        *last = RenderScheduler::RegionReport();
-        FrameRun run;
-        std::string error;
-        ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
-        const int blurTask = taskOf(run.graph, blur);
-        const int gradeTask = taskOf(run.graph, grade);
-        ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
-        assignRegions(&run.graph, { { blurTask, gradeTask } });
-        const std::vector<int> members = run.graph.regions[0].members;
-        ASSERT_EQ(2u, members.size());
-        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
-        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
-        const RenderScheduler::RegionReport report = *last;
-        EXPECT_EQ(0, fallbacksOf(run));
-        EXPECT_EQ(mode > 0, report.strips > 1);
-        if (mode > 0) {
-            EXPECT_EQ((mode == 2) && canPipeline(), report.stripsInFlight > 1);
-        }
-        ASSERT_EQ(2u, report.memberNs.size());
-
-        const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
-        const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
-        const double sumMs = (double)(blurNs + gradeNs) * 1e-6;
-        std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, ownership %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, "
-                    "submit/wait %.3f ms; %llu pool misses, %llu imports of %llu bytes; %zu member intervals\n",
-                    modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.ownershipMs, report.kernelMs, report.planMs, report.recordMs,
-                    report.acquireMs, report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes, report.memberIntervals.size());
-        EXPECT_GT(gradeNs, 0);
-        EXPECT_GT(blurNs, gradeNs);
-        EXPECT_GT(report.kernelMs, 0.);
-        if (mode == 2 && report.stripsInFlight > 1) {
-            // Pipelined strips run their queue-ownership barriers inside the strip's timed span, outside every member.
-            EXPECT_NEAR(report.kernelMs, sumMs + report.ownershipMs, report.kernelMs * 0.05);
-        } else {
-            EXPECT_EQ(0., report.ownershipMs);
-            EXPECT_NEAR(report.kernelMs, sumMs, report.kernelMs * 0.05);
-        }
-        if (runtime()->transfer().timestampsSupported()) {
-            EXPECT_EQ((std::size_t)std::max(1, report.strips) * members.size(), report.memberIntervals.size());
-            std::map<int, long long> stripEnd;
-            long long intervalsNs = 0;
-            for (const GpuMemberInterval& interval : report.memberIntervals) {
-                EXPECT_GE(interval.beginNs, 0);
-                EXPECT_LE(interval.beginNs, interval.endNs);
-                EXPECT_GT(interval.pixels, 0u);
-                const std::map<int, long long>::const_iterator previous = stripEnd.find(interval.strip);
-                if (previous != stripEnd.end()) {
-                    EXPECT_GE(interval.beginNs, previous->second) << "strip " << interval.strip << ", member " << interval.member;
-                }
-                stripEnd[interval.strip] = interval.endNs;
-                intervalsNs += interval.endNs - interval.beginNs;
+        // One run's member time can carry a spike from other work on the device, so Blur outweighing Grade is judged
+        // on each member's fastest of several runs.
+        long long minBlurNs = std::numeric_limits<long long>::max();
+        long long minGradeNs = std::numeric_limits<long long>::max();
+        for (int timedRun = 0; timedRun < kTimedRuns; ++timedRun) {
+            *last = RenderScheduler::RegionReport();
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+            const int blurTask = taskOf(run.graph, blur);
+            const int gradeTask = taskOf(run.graph, grade);
+            ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+            assignRegions(&run.graph, { { blurTask, gradeTask } });
+            const std::vector<int> members = run.graph.regions[0].members;
+            ASSERT_EQ(2u, members.size());
+            run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            const RenderScheduler::RegionReport report = *last;
+            EXPECT_EQ(0, fallbacksOf(run));
+            EXPECT_EQ(mode > 0, report.strips > 1);
+            if (mode > 0) {
+                EXPECT_EQ((mode == 2) && canPipeline(), report.stripsInFlight > 1);
             }
-            // Each interval and each member's time round their timestamps to whole ns apart.
-            EXPECT_NEAR(sumMs, (double)intervalsNs * 1e-6, 1e-6 * 2. * (double)(report.memberIntervals.size() + 1));
-        } else {
-            EXPECT_TRUE(report.memberIntervals.empty());
+            ASSERT_EQ(2u, report.memberNs.size());
+
+            const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
+            const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
+            const double sumMs = (double)(blurNs + gradeNs) * 1e-6;
+            std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, ownership %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, "
+                        "submit/wait %.3f ms; %llu pool misses, %llu imports of %llu bytes; %zu member intervals\n",
+                        modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.ownershipMs, report.kernelMs, report.planMs, report.recordMs,
+                        report.acquireMs, report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes, report.memberIntervals.size());
+            minBlurNs = std::min(minBlurNs, blurNs);
+            minGradeNs = std::min(minGradeNs, gradeNs);
+            EXPECT_GT(report.kernelMs, 0.);
+            if (mode == 2 && report.stripsInFlight > 1) {
+                // Pipelined strips run their queue-ownership barriers inside the strip's timed span, outside every member.
+                EXPECT_NEAR(report.kernelMs, sumMs + report.ownershipMs, report.kernelMs * 0.05);
+            } else {
+                EXPECT_EQ(0., report.ownershipMs);
+                EXPECT_NEAR(report.kernelMs, sumMs, report.kernelMs * 0.05);
+            }
+            if (runtime()->transfer().timestampsSupported()) {
+                EXPECT_EQ((std::size_t)std::max(1, report.strips) * members.size(), report.memberIntervals.size());
+                std::map<int, long long> stripEnd;
+                long long intervalsNs = 0;
+                for (const GpuMemberInterval& interval : report.memberIntervals) {
+                    EXPECT_GE(interval.beginNs, 0);
+                    EXPECT_LE(interval.beginNs, interval.endNs);
+                    EXPECT_GT(interval.pixels, 0u);
+                    const std::map<int, long long>::const_iterator previous = stripEnd.find(interval.strip);
+                    if (previous != stripEnd.end()) {
+                        EXPECT_GE(interval.beginNs, previous->second) << "strip " << interval.strip << ", member " << interval.member;
+                    }
+                    stripEnd[interval.strip] = interval.endNs;
+                    intervalsNs += interval.endNs - interval.beginNs;
+                }
+                // Each interval and each member's time round their timestamps to whole ns apart.
+                EXPECT_NEAR(sumMs, (double)intervalsNs * 1e-6, 1e-6 * 2. * (double)(report.memberIntervals.size() + 1));
+            } else {
+                EXPECT_TRUE(report.memberIntervals.empty());
+            }
+            EXPECT_GT(report.recordMs, 0.);
+            EXPECT_GE(report.planMs, 0.);
+            EXPECT_GE(report.submitWaitMs, 0.);
+            expectReleased(run);
         }
-        EXPECT_GT(report.recordMs, 0.);
-        EXPECT_GE(report.planMs, 0.);
-        EXPECT_GE(report.submitWaitMs, 0.);
-        expectReleased(run);
+        EXPECT_GT(minGradeNs, 0);
+        EXPECT_GT(minBlurNs, minGradeNs);
     }
     RenderScheduler::flushProfile();
     const std::string profilePath = RenderScheduler::getProfileFilePath();
@@ -2439,7 +2449,7 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         }
         EXPECT_EQ(runtime()->transfer().timestampsSupported(), record.find("\"memberIntervals\":[{") != std::string::npos) << record;
     }
-    EXPECT_EQ(3, regionRecords);
+    EXPECT_EQ(3 * kTimedRuns, regionRecords);
 }
 
 // Copies sharing the device with pipelined strips slow their members several times over, so the cost model takes its
@@ -2491,12 +2501,18 @@ TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
         return code;
     });
 
+    // One run calibrates from one sample, and other work sharing the device or, on a CPU device, the host's cores only
+    // ever slows a sample down. Each mode is judged on its fastest of several runs, and the modes alternate so that a
+    // stretch of load falls on both. A copy overlapping a sample is no such accident: pipelined strips overlap one in
+    // every run, so a contended sample taken into the model shows in the fastest run too.
+    const int kRunsPerMode = 5;
+    const double inf = std::numeric_limits<double>::infinity();
     const char* const modes[] = { "serial strips", "pipelined strips" };
-    double calibratedMsPerMpx[2] = { 0., 0. };
-    double rawMsPerMpx[2] = { 0., 0. };
-    bool sampled[2] = { false, false };
-    int skipped[2] = { 0, 0 };
-    for (int mode = 0; mode < 2; ++mode) {
+    double calibratedMsPerMpx[2] = { inf, inf };
+    double rawMsPerMpx[2] = { inf, inf };
+    int sampledRuns[2] = { 0, 0 };
+    for (int timedRun = 0; timedRun < 2 * kRunsPerMode; ++timedRun) {
+        const int mode = timedRun % 2;
         SCOPED_TRACE(modes[mode]);
         GpuCostModel& model = GpuCostModel::session();
         model.reset();
@@ -2530,32 +2546,39 @@ TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
 
         // The region observes Grade once: a seeded rate moves kEmaWeight of the way to the sample, and an unseeded
         // one takes the sample whole.
-        sampled[mode] = (after != before);
-        calibratedMsPerMpx[mode] = std::isfinite(before) ? before + (after - before) / GpuCostModel::kEmaWeight : after;
+        const bool sampled = (after != before);
+        const double calibrated = std::isfinite(before) ? before + (after - before) / GpuCostModel::kEmaWeight : after;
         const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
-        rawMsPerMpx[mode] = (double)gradeNs * 1e-6 / gradeMpx;
-        skipped[mode] = report.calibrationSkipped;
+        const double raw = (double)gradeNs * 1e-6 / gradeMpx;
+        rawMsPerMpx[mode] = std::min(rawMsPerMpx[mode], raw);
+        if (sampled) {
+            ++sampledRuns[mode];
+            calibratedMsPerMpx[mode] = std::min(calibratedMsPerMpx[mode], calibrated);
+        }
+        if (mode == 0) {
+            // Serial strips run no copy alongside their members, so each of them calibrates.
+            EXPECT_EQ(0, report.calibrationSkipped);
+        } else if (!sampled) {
+            EXPECT_GT(report.calibrationSkipped, 0);
+        }
         std::printf("[          ] %s: Grade raw %.4f ms/Mpx, calibrated %.4f ms/Mpx%s; %d members skipped, %zu member intervals\n",
-                    modes[mode], rawMsPerMpx[mode], calibratedMsPerMpx[mode], sampled[mode] ? "" : " (no sample)", skipped[mode],
+                    modes[mode], raw, calibrated, sampled ? "" : " (no sample)", report.calibrationSkipped,
                     report.memberIntervals.size());
         expectReleased(run);
     }
 
-    // Serial strips run no copy alongside their members, so each of them calibrates.
-    EXPECT_EQ(0, skipped[0]);
-    ASSERT_TRUE(sampled[0]);
+    ASSERT_EQ(kRunsPerMode, sampledRuns[0]);
     ASSERT_GT(calibratedMsPerMpx[0], 0.);
-    std::printf("[          ] pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
-                sampled[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
-    if (sampled[1]) {
-        // Each mode calibrates from one sample: a CPU device such as lavapipe shares its cores with the rest of the
-        // host, so one of its samples strays further than a GPU's.
+    std::printf("[          ] fastest pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
+                sampledRuns[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
+    if (sampledRuns[1] > 0) {
+        // A single run lands at 0.87-1.10 on an NVIDIA GPU and at 0.56-0.92 on lavapipe, a CPU device sharing its cores
+        // with the rest of the host, and the fastest of several runs only narrows that. A Grade sample overlapped by a
+        // copy runs 2.9-6.8 times slower, well outside either band.
         const bool cpuDevice = runtime()->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU;
         const double ratio = calibratedMsPerMpx[1] / calibratedMsPerMpx[0];
         EXPECT_GE(ratio, cpuDevice ? 0.4 : 0.67);
         EXPECT_LE(ratio, cpuDevice ? 2.5 : 1.5);
-    } else {
-        EXPECT_GT(skipped[1], 0);
     }
 }
 

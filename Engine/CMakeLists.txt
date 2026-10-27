@@ -44,6 +44,10 @@ file(GLOB_RECURSE NatronEngineNodes_HEADERS Nodes/*.h)
 file(GLOB_RECURSE NatronEngineNodes_SOURCES Nodes/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineNodes_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineNodes_SOURCES})
+# OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
+# the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
+file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
@@ -222,6 +226,7 @@ target_link_libraries(NatronEngine
         openMVG
         tess
         rawspeed::rawspeed
+        ${NATRON_USD_ENGINE_LIBRARIES}
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every

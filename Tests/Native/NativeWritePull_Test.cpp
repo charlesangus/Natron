@@ -238,7 +238,7 @@ protected:
         ASSERT_TRUE(effect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     void setFile(const std::string& name)

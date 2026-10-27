@@ -1,10 +1,11 @@
 """Interaction checks and screenshots for the minor-cleanup changes: no crash when a node dies with
 its panel's undo stack active, easier-to-grab input stubs, pick-up connection mode and the
-disconnect on a click away from a node, Y/Shift+Y and U/Shift+U connection shortcuts,
-paste-onto-a-node and paste when the graph holds only the click focus, the pane menu from
-anywhere in the tab header, scene-referred viewer picking with input/output modifiers, the
-multi-point roto feather drag and broken tangent, curve-editor tangent break, join and handle
-length, a folded knob's single curve and its edits, and an expanded knob staying expanded until
+disconnect on a click away from a node, pipe pick-up that tolerates jitter under the drag distance
+and carries the end of the pipe nearest the click, output stubs picked up to start a connection,
+Y/Shift+Y and U/Shift+U connection shortcuts, paste-onto-a-node and paste when the graph holds
+only the click focus, the pane menu from anywhere in the tab header, scene-referred viewer picking
+with input/output modifiers, the multi-point roto feather drag and broken tangent, curve-editor
+tangent break, join and handle length, a folded knob's single curve and its edits, and an expanded knob staying expanded until
 it is folded by hand, with the fold state kept through a save and reload.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -821,6 +822,245 @@ try:
         yield ("sleep", 100)
         app.clearSelection()
         destroy_nodes([backdrop, pp_dst, pp_src, pb2, pk, pc, pb])
+        yield ("sleep", SETTLE_MS)
+
+        # =====================================================================================
+        # A click on a connected pipe stays a click under the drag distance, and picks up the
+        # end of the pipe nearest the click: the arrowhead end re-routes the source to another
+        # node's preferred input, the source end re-routes the input to another source.
+        gt.section("pipe-pick-up")
+        ep_src = create("net.sf.openfx.ConstantPlugin", 1500, -300)
+        ep_dst = create("net.sf.cimg.CImgBlur", 1500, 0)
+        ep_other_dst = create("net.sf.cimg.CImgBlur", 1850, 0)
+        ep_other_src = create("net.sf.openfx.CheckerBoardPlugin", 1850, -300)
+        ep_nodes = [ep_src, ep_dst, ep_other_dst, ep_other_src]
+        app.clearSelection()
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        graph = root_graph()
+        vp = graph.viewport()
+        drag_distance = QApplication.startDragDistance()
+        report("NOTE pipe-pick-up: drag distance %d px" % drag_distance)
+
+        def ep_reset():
+            app.clearSelection()
+            ep_other_dst.disconnectInput(0)
+            ep_dst.connectInput(0, ep_src)
+            frame(graph, ep_nodes, max_zoom=1.0)
+            QApplication.processEvents()
+            check(same(input_of(ep_dst, 0), ep_src), "pipe-pick-up: the Blur starts fed by the Constant")
+            check(input_of(ep_other_dst, 0) is None, "pipe-pick-up: the other Blur starts unconnected")
+
+        def ep_on_pipe(y_from_dest):
+            """A scene point on the pipe, y_from_dest scene units above the Blur's top edge,
+            following the line between the two nodes' centres that the pipe is clipped from."""
+            dcx, dcy = centre(ep_dst)
+            scx, scy = centre(ep_src)
+            _x, top, _w, _h = box(ep_dst)
+            y = top - y_from_dest
+            t = (dcy - y) / (dcy - scy)
+            return (dcx + (scx - dcx) * t, y)
+
+        def ep_gap():
+            _x, top, _w, _h = box(ep_dst)
+            _sx, sy, _sw, sh = box(ep_src)
+            return top - (sy + sh)
+
+        def ep_near_dest():
+            return ep_on_pipe(15.0)
+
+        def ep_near_source():
+            return ep_on_pipe(ep_gap() - 15.0)
+
+        def ep_mid_source_side():
+            return ep_on_pipe(ep_gap() / 2.0 + 10.0)
+
+        def ep_empty():
+            x, y, w, h = box(ep_dst)
+            return (x + w / 2.0 - 160.0, y - 110.0)
+
+        def ep_held(label):
+            p = aim(ep_empty())
+            QApplication.processEvents()
+            hits = drawn_near(graph, p)
+            report("NOTE %s: %d drawn px at the cursor" % (label, hits))
+            return hits > 0
+
+        def ep_jitter_click(scene_pt, modifiers=Qt.NoModifier):
+            p = to_vp(graph, scene_pt)
+            press(vp, p, Qt.LeftButton, modifiers)
+            for d in (QPointF(1, 0), QPointF(2, 1), QPointF(1, 2), QPointF(2, 1)):
+                move(vp, p + d, Qt.LeftButton, modifiers)
+            release(vp, p + QPointF(2, 1), Qt.LeftButton, modifiers)
+
+        # A jittered click near the source end picks the source end up, and a click on another
+        # source node re-routes the Blur's input to it.
+        ep_reset()
+        undo_then = undo_text()
+        ep_jitter_click(ep_near_source())
+        QApplication.processEvents()
+        check(same(input_of(ep_dst, 0), ep_src), "jitter click: the pipe is not disconnected as a drag would")
+        check(ep_held("jitter click"), "jitter click: the pipe is held at the cursor")
+        graph_shot("pipe-pickup-01-jitter-held")
+        click(vp, aim(centre(ep_other_src)))
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ep_dst, 0), ep_other_src), "jitter click near the source: a click on the CheckerBoard feeds the Blur from it")
+        check(input_of(ep_other_dst, 0) is None, "jitter click near the source: the other Blur is untouched")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(same(input_of(ep_dst, 0), ep_src), "jitter click near the source: one undo restores the Constant")
+        check(undo_text() == undo_then, "jitter click near the source: that undo leaves the stack as it was (%r)" % (undo_text()[0],))
+
+        # A press that travels past the drag distance is still a drag.
+        ep_reset()
+        undo_then = undo_text()
+        start = to_vp(graph, ep_near_source())
+        press(vp, start)
+        move(vp, start + QPointF(drag_distance + 4, 0), Qt.LeftButton)
+        target = to_vp(graph, centre(ep_other_src))
+        for i in range(1, DRAG_STEPS + 1):
+            move(vp, start + (target - start) * (i / float(DRAG_STEPS)), Qt.LeftButton)
+        release(vp, target)
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ep_dst, 0), ep_other_src), "drag past the drag distance: releasing on the CheckerBoard connects it at once")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(same(input_of(ep_dst, 0), ep_src), "drag past the drag distance: one undo restores the Constant")
+        click(vp, aim(ep_empty()))
+        QApplication.processEvents()
+        check(same(input_of(ep_dst, 0), ep_src), "drag past the drag distance: nothing is held afterwards")
+        check(undo_text() == undo_then, "drag past the drag distance: the stack is as it was (%r)" % (undo_text()[0],))
+
+        # A click just past the midpoint on the source side carries the source end too.
+        ep_reset()
+        undo_then = undo_text()
+        click(vp, to_vp(graph, ep_mid_source_side()))
+        check(ep_held("mid-pipe click"), "mid-pipe click: the pipe is held at the cursor")
+        click(vp, aim(centre(ep_other_dst)))
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ep_dst, 0), ep_other_dst), "mid-pipe click on the source side: the source end moved, the Blur is fed by the other Blur")
+        check(input_of(ep_other_dst, 0) is None, "mid-pipe click on the source side: the other Blur's input is untouched")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(same(input_of(ep_dst, 0), ep_src), "mid-pipe click on the source side: one undo restores the Constant")
+        check(undo_text() == undo_then, "mid-pipe click on the source side: the stack is as it was (%r)" % (undo_text()[0],))
+
+        # A click near the arrowhead carries the destination end: dropped on another node, the
+        # same source feeds that node's preferred input and the original input is let go.
+        ep_reset()
+        undo_then = undo_text()
+        ep_jitter_click(ep_near_dest())
+        check(ep_held("arrowhead click"), "arrowhead click: the pipe is held at the cursor")
+        graph_shot("pipe-pickup-02-arrowhead-held")
+        click(vp, aim(centre(ep_other_dst)))
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ep_other_dst, 0), ep_src), "arrowhead click: the other Blur is now fed by the Constant")
+        check(input_of(ep_dst, 0) is None, "arrowhead click: the original Blur's input is let go")
+        graph_shot("pipe-pickup-03-arrowhead-moved")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(same(input_of(ep_dst, 0), ep_src), "arrowhead click: one undo feeds the original Blur again")
+        check(input_of(ep_other_dst, 0) is None, "arrowhead click: the same undo disconnects the other Blur")
+        check(undo_text() == undo_then, "arrowhead click: the move is one undo step (%r)" % (undo_text()[0],))
+
+        # Arrowhead carried, dropped on empty space: the input is disconnected, as a drag would.
+        ep_reset()
+        undo_then = undo_text()
+        click(vp, to_vp(graph, ep_near_dest()))
+        check(ep_held("arrowhead empty drop"), "arrowhead empty drop: the pipe is held at the cursor")
+        click(vp, aim(ep_empty()))
+        yield ("sleep", SETTLE_MS)
+        check(input_of(ep_dst, 0) is None, "arrowhead empty drop: the Blur's input is disconnected")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(same(input_of(ep_dst, 0), ep_src), "arrowhead empty drop: one undo reconnects it")
+        check(undo_text() == undo_then, "arrowhead empty drop: the stack is as it was (%r)" % (undo_text()[0],))
+
+        def ep_cancel_run(label, where, cancel):
+            ep_reset()
+            undo_then = undo_text()
+            click(vp, to_vp(graph, where()))
+            check(ep_held(label), "%s: the pipe is held at the cursor" % label)
+            popups.arm()
+            cancel()
+            popups.disarm()
+            QApplication.processEvents()
+            check(not popups.seen, "%s: no menu opened (%d seen)" % (label, len(popups.seen)))
+            check(same(input_of(ep_dst, 0), ep_src), "%s: the original connection is kept" % label)
+            click(vp, aim(centre(ep_other_dst)))
+            QApplication.processEvents()
+            check(input_of(ep_other_dst, 0) is None, "%s: nothing is held any more (a click on the other Blur connects nothing)" % label)
+            check(same(input_of(ep_dst, 0), ep_src), "%s: the connection is still the original one" % label)
+            check(undo_text() == undo_then, "%s: no undo entry was added (%r)" % (label, undo_text()[0]))
+
+        ep_cancel_run("arrowhead escape", ep_near_dest, lambda: graph_key(Qt.Key_Escape))
+        yield ("sleep", 100)
+        ep_cancel_run("source-end escape", ep_near_source, lambda: graph_key(Qt.Key_Escape))
+        yield ("sleep", 100)
+        ep_cancel_run("arrowhead click on its source", ep_near_dest, lambda: click(vp, aim(centre(ep_src))))
+        yield ("sleep", 100)
+
+        # Ctrl no longer turns a still pipe click into a drag.
+        ep_reset()
+        undo_then = undo_text()
+        click(vp, to_vp(graph, ep_near_source()), Qt.LeftButton, Qt.ControlModifier)
+        QApplication.processEvents()
+        check(same(input_of(ep_dst, 0), ep_src), "ctrl click on a pipe: it is not disconnected as a drag would")
+        check(ep_held("ctrl click"), "ctrl click on a pipe: the pipe is held at the cursor")
+        graph_key(Qt.Key_Escape)
+        QApplication.processEvents()
+        check(same(input_of(ep_dst, 0), ep_src), "ctrl click on a pipe: Escape keeps the connection")
+        check(undo_text() == undo_then, "ctrl click on a pipe: no undo entry was added (%r)" % (undo_text()[0],))
+
+        # The output stub below a node that feeds nothing is picked up by a click too, carrying
+        # its loose end: a click on another node feeds that node's preferred input from it.
+        def ep_on_output_stub(node):
+            """A scene point on the output stub, a little below the node's bottom edge."""
+            x, y, w, h = box(node)
+            return (x + w / 2.0, y + h + 6.0)
+
+        ep_reset()
+        undo_then = undo_text()
+        ep_jitter_click(ep_on_output_stub(ep_other_src))
+        QApplication.processEvents()
+        check(ep_held("output stub click"), "output stub click: the stub's loose end is held at the cursor")
+        graph_shot("pipe-pickup-04-output-stub-held")
+        click(vp, aim(centre(ep_other_dst)))
+        yield ("sleep", SETTLE_MS)
+        check(same(input_of(ep_other_dst, 0), ep_other_src), "output stub click: the other Blur is now fed by the CheckerBoard")
+        check(same(input_of(ep_dst, 0), ep_src), "output stub click: the original Blur is untouched")
+        graph_shot("pipe-pickup-05-output-stub-connected")
+        trigger("undo")
+        yield ("sleep", 150)
+        check(input_of(ep_other_dst, 0) is None, "output stub click: one undo disconnects the other Blur again")
+        check(undo_text() == undo_then, "output stub click: the connection is one undo step (%r)" % (undo_text()[0],))
+
+        def ep_output_cancel_run(label, cancel):
+            ep_reset()
+            undo_then = undo_text()
+            click(vp, to_vp(graph, ep_on_output_stub(ep_other_src)))
+            check(ep_held(label), "%s: the stub's loose end is held at the cursor" % label)
+            popups.arm()
+            cancel()
+            popups.disarm()
+            QApplication.processEvents()
+            check(not popups.seen, "%s: no menu opened (%d seen)" % (label, len(popups.seen)))
+            check(input_of(ep_other_dst, 0) is None, "%s: nothing was connected" % label)
+            click(vp, aim(centre(ep_other_dst)))
+            QApplication.processEvents()
+            check(input_of(ep_other_dst, 0) is None, "%s: nothing is held any more (a click on the other Blur connects nothing)" % label)
+            check(same(input_of(ep_dst, 0), ep_src), "%s: the original Blur is untouched" % label)
+            check(undo_text() == undo_then, "%s: no undo entry was added (%r)" % (label, undo_text()[0]))
+
+        ep_output_cancel_run("output stub escape", lambda: graph_key(Qt.Key_Escape))
+        yield ("sleep", 100)
+        ep_output_cancel_run("output stub empty drop", lambda: click(vp, aim(ep_empty())))
+        yield ("sleep", 100)
+        ep_output_cancel_run("output stub click on its own node", lambda: click(vp, aim(centre(ep_other_src))))
+        yield ("sleep", 100)
+
+        app.clearSelection()
+        destroy_nodes([ep_other_src, ep_other_dst, ep_dst, ep_src])
         yield ("sleep", SETTLE_MS)
 
         # =====================================================================================

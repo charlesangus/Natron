@@ -575,6 +575,9 @@ Gui::createMenuActions()
     _imp->actionClearAllCaches = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionClearAllCaches, kShortcutDescActionClearAllCaches, this);
     QObject::connect( _imp->actionClearAllCaches, SIGNAL(triggered()), appPTR, SLOT(clearAllCaches()) );
 
+    _imp->actionFreeGpuMemory = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionFreeGpuMemory, kShortcutDescActionFreeGpuMemory, this);
+    QObject::connect(_imp->actionFreeGpuMemory, SIGNAL(triggered()), appPTR, SLOT(freeGpuMemory()));
+
     _imp->actionShowAboutWindow = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionShowAbout, kShortcutDescActionShowAbout, this);
     _imp->actionShowAboutWindow->setMenuRole(QAction::AboutRole);
     QObject::connect( _imp->actionShowAboutWindow, SIGNAL(triggered()), this, SLOT(showAbout()) );
@@ -775,6 +778,7 @@ Gui::createMenuActions()
     _imp->cacheMenu->addAction(_imp->actionClearPlayBackCache);
     _imp->cacheMenu->addAction(_imp->actionClearNodeCache);
     _imp->cacheMenu->addAction(_imp->actionClearAllCaches);
+    _imp->cacheMenu->addAction(_imp->actionFreeGpuMemory);
     _imp->cacheMenu->addSeparator();
     _imp->cacheMenu->addAction(_imp->actionClearPluginsLoadingCache);
 

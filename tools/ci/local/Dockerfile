@@ -18,6 +18,14 @@
 # FROM ci-common:7-clang21 and neither adds distro packages of its own), and
 # every Conan package version is shared, because both read the same "2027"
 # package_versions block in aswf-docker's versions.yaml.
+#
+# OpenUSD comes from this base too (0.26.08 in 2027-clang21.1): shared
+# libusd_*.so under /usr/local/lib, Python bindings built against the image's
+# Python 3.13 (/usr/local/lib/python3.13/site-packages/pxr), the Alembic
+# file-format plug-in (/usr/local/plugin/usd/usdAbc), Storm and HgiGL. Its
+# pxrConfig.cmake still names Conan build directories for its dependencies;
+# cmake/NatronUsd.cmake redirects them and checks the Python version. Re-check
+# all of that when bumping the base tag.
 FROM aswf/ci-vfxall:2027-clang21.1
 
 # --- CI package list, for drift-checking against ci.yml -------------------

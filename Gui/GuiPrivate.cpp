@@ -160,6 +160,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , actionClearNodeCache(0)
     , actionClearPluginsLoadingCache(0)
     , actionClearAllCaches(0)
+    , actionFreeGpuMemory(0)
     , actionShowAboutWindow(0)
     , actionsOpenRecentFile()
     , renderAllWriters(0)

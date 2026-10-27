@@ -947,23 +947,13 @@ enum SplineChangedReason
 };
 }
 
-
-Bezier::Bezier(const RotoContextPtr& ctx,
-               const std::string & name,
+Bezier::Bezier(const RotoCurveContextPtr& ctx,
+               const std::string& name,
                const RotoLayerPtr& parent,
                bool isOpenBezier)
     : RotoDrawableItem(ctx, name, parent, false)
-    , _imp( new BezierPrivate(isOpenBezier) )
+    , _imp(new BezierPrivate(isOpenBezier))
 {
-}
-
-Bezier::Bezier(const Bezier & other,
-               const RotoLayerPtr& parent)
-    : RotoDrawableItem( other.getContext(), other.getScriptName(), other.getParentLayer(), false )
-    , _imp( new BezierPrivate(false) )
-{
-    clone(&other);
-    setParentLayer(parent);
 }
 
 bool

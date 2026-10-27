@@ -229,7 +229,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         if (!QFile::exists(QString::fromStdString(path))) {
             *error = "frame was not rendered: " + path;
@@ -1006,7 +1006,7 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
     ASSERT_TRUE(writePngEffect != NULL);
     std::list<AppInstance::RenderWork> writeWorks;
     writeWorks.push_back(AppInstance::RenderWork(writePngEffect, 1, 1, 1, false));
-    getApp()->startWritersRendering(false, writeWorks);
+    getApp()->startWritersRendering(eRenderModeBlocking, writeWorks);
     ASSERT_TRUE(QFile::exists(QString::fromStdString(pngPath))) << pngPath;
 
     OIIO::ImageInput::unique_ptr png = OIIO::ImageInput::open(pngPath);

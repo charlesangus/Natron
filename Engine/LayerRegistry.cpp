@@ -203,6 +203,15 @@ LayerRegistry::LayerRegistry()
         initial.push_back(e);
     }
 
+    {
+        // USDRender's per-pixel prim identity: a hash of the prim path, bit-cast to float.
+        static const char* primIdChannels[1] = { "id" };
+        LayerRegistryEntry e;
+        e.desc = ImageLayerDesc("primId", "primId", "", primIdChannels, 1);
+        e.origin = LayerRegistryEntry::eOriginUser;
+        initial.push_back(e);
+    }
+
     _entries.reset(new std::vector<LayerRegistryEntry>(initial));
 }
 

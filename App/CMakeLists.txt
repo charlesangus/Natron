@@ -37,6 +37,7 @@ target_link_libraries(Natron
         NatronGui
         Python3::Python
 )
+natron_link_embedded_python(Natron)
 target_include_directories(Natron
     PRIVATE
         ..

@@ -232,7 +232,7 @@ renderJointly(const std::vector<JointOutput>& outputs,
         connections.push_back(QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [code](int retCode) { *code = retCode; }, Qt::DirectConnection));
         works.push_back(AppInstance::RenderWork(outputs[i].effect, kFirstFrame, kLastFrame, 1, false));
     }
-    outputs.front().effect->getApp()->startWritersRendering(true, works);
+    outputs.front().effect->getApp()->startWritersRendering(eRenderModeBlocking, works);
     for (std::size_t i = 0; i < connections.size(); ++i) {
         QObject::disconnect(connections[i]);
     }

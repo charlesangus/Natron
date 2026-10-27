@@ -170,8 +170,7 @@ private:
 class Roto
 {
 public:
-
-    Roto(const RotoContextPtr& ctx);
+    Roto(const RotoCurveContextPtr& ctx);
 
     ~Roto();
 
@@ -183,8 +182,7 @@ public:
     BezierCurve* createRectangle(double x, double y, double size, double time);
 
 private:
-
-    RotoContextPtr _ctx;
+    RotoCurveContextPtr _ctx;
 };
 
 NATRON_PYTHON_NAMESPACE_EXIT;

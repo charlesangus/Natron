@@ -88,12 +88,12 @@ NATRON_NAMESPACE_ENTER
 ////////////////////////////////////Stroke//////////////////////////////////
 
 RotoStrokeItem::RotoStrokeItem(RotoStrokeType type,
-                               const RotoContextPtr& context,
-                               const std::string & name,
+                               const RotoCurveContextPtr& context,
+                               const std::string& name,
                                const RotoLayerPtr& parent)
 
     : RotoDrawableItem(context, name, parent, true)
-    , _imp( new RotoStrokeItemPrivate(type) )
+    , _imp(new RotoStrokeItemPrivate(type))
 {
 }
 
@@ -328,8 +328,11 @@ RotoStrokeItem::setStrokeFinished()
         frameHoldNode->markHashDirty();
     }
 
-    getContext()->setWhileCreatingPaintStrokeOnMergeNodes(false);
-    getContext()->clearViewersLastRenderedStrokes();
+    RotoContextPtr paintContext = getPaintContext();
+    if (paintContext) {
+        paintContext->setWhileCreatingPaintStrokeOnMergeNodes(false);
+        paintContext->clearViewersLastRenderedStrokes();
+    }
     //Might have to do this somewhere else if several viewers are active on the rotopaint node
     resetNodesThreadSafety();
 }

@@ -26,7 +26,6 @@
 #include "Global/Macros.h"
 
 #include <cmath>
-#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -54,65 +53,42 @@ mapPoint(const TransformMath::Mat3& m,
     *oy = (m.m[3] * x + m.m[4] * y + m.m[5]) / w;
 }
 
-// The segment from (x1, y1) to (x2, y2) of the corrected image, mapped back into the input.
-Ashift::Segment
-inputSegment(const TransformMath::Mat3& inverse,
-             double x1,
-             double y1,
-             double x2,
-             double y2)
+// The guide line from (x1, y1) to (x2, y2) of the corrected image, mapped back into the input.
+Ashift::DrawnLine
+inputLine(const TransformMath::Mat3& inverse,
+          double x1,
+          double y1,
+          double x2,
+          double y2,
+          bool vertical)
 {
-    Ashift::Segment s;
+    Ashift::DrawnLine line;
 
-    mapPoint(inverse, x1, y1, &s.x1, &s.y1);
-    mapPoint(inverse, x2, y2, &s.x2, &s.y2);
-    s.width = 1.5;
-    s.p = 0.125;
-    s.logNfa = 10.;
+    mapPoint(inverse, x1, y1, &line.x1, &line.y1);
+    mapPoint(inverse, x2, y2, &line.x2, &line.y2);
+    line.vertical = vertical;
 
-    return s;
+    return line;
 }
 
-// A grid of 7 verticals and 5 horizontals that model makes axis-aligned, as the input sees it,
-// with three diagonals and, when withOutlier, one vertical tilted by 10 degrees.
-std::vector<Ashift::Segment>
-gridSegments(const Ashift::Model& model,
-             bool withOutlier)
+// Four verticals and three horizontals that model makes axis-aligned, as the input sees them.
+std::vector<Ashift::DrawnLine>
+gridLines(const Ashift::Model& model)
 {
     const TransformMath::Mat3 forward = Ashift::homography(model, kWidth, kHeight, false);
     const TransformMath::Mat3 inverse = Ashift::homography(model, kWidth, kHeight, true);
     double cx = 0., cy = 0.;
 
     mapPoint(forward, kWidth / 2., kHeight / 2., &cx, &cy);
-    std::vector<Ashift::Segment> segments;
-    for (int k = -3; k <= 3; ++k) {
-        segments.push_back(inputSegment(inverse, cx + 40. * k, cy - 80., cx + 40. * k, cy + 80.));
+    std::vector<Ashift::DrawnLine> lines;
+    for (int k = -2; k <= 1; ++k) {
+        lines.push_back(inputLine(inverse, cx + 50. * k + 25., cy - 80., cx + 50. * k + 25., cy + 80., true));
     }
-    for (int k = -2; k <= 2; ++k) {
-        segments.push_back(inputSegment(inverse, cx - 110., cy + 30. * k, cx + 110., cy + 30. * k));
-    }
-    for (int k = 0; k < 3; ++k) {
-        Ashift::Segment s;
-        s.x1 = 40. + 60. * k;
-        s.y1 = 50.;
-        s.x2 = s.x1 + 40.;
-        s.y2 = s.y1 + 40.;
-        s.p = 0.125;
-        segments.push_back(s);
-    }
-    if (withOutlier) {
-        const double tilt = 10. * M_PI / 180.;
-        Ashift::Segment s;
-        s.x1 = 300.;
-        s.y1 = 40.;
-        s.x2 = s.x1 + 150. * std::sin(tilt);
-        s.y2 = s.y1 + 150. * std::cos(tilt);
-        s.width = 1.5;
-        s.p = 0.125;
-        segments.push_back(s);
+    for (int k = -1; k <= 1; ++k) {
+        lines.push_back(inputLine(inverse, cx - 110., cy + 40. * k, cx + 110., cy + 40. * k, false));
     }
 
-    return segments;
+    return lines;
 }
 
 int
@@ -129,95 +105,93 @@ countType(const Ashift::LineSet& set,
 }
 } // namespace
 
-// The detector a test passes stands in for LSD: detectLines() classifies its segments, the
-// outlier removal keeps the grid and the rotation fit recovers the 3 degree tilt.
-TEST(AshiftLines, RotatedGridIsClassifiedAndFitWithinATenthOfADegree)
+// makeLine(): darktable's homogeneous line through both end points, normalised, weight 1.
+TEST(AshiftLines, MakeLineIsTheNormalisedCrossProduct)
 {
-    Ashift::Model truth;
-    truth.rotation = 3.;
-    const std::vector<Ashift::Segment> segments = gridSegments(truth, true);
-    const Ashift::SegmentDetector detector = [&segments](const std::vector<double>& grey, int width, int height) {
-        EXPECT_EQ((std::size_t)width * height, grey.size());
+    const Ashift::Line line = Ashift::makeLine(10., 20., 10., 120., Ashift::eLineVerticalSelected);
 
-        return segments;
-    };
-    std::vector<float> rgba((std::size_t)kWidth * kHeight * 4, 0.5f);
-    Ashift::LineSet set;
-    std::string error;
+    EXPECT_DOUBLE_EQ(10., line.p1[0]);
+    EXPECT_DOUBLE_EQ(120., line.p2[1]);
+    EXPECT_DOUBLE_EQ(1., line.p1[2]);
+    EXPECT_DOUBLE_EQ(100., line.length);
+    EXPECT_DOUBLE_EQ(1., line.weight);
+    EXPECT_EQ(Ashift::eLineVerticalSelected, line.type);
+    // Both end points lie on the line.
+    EXPECT_NEAR(0., line.L[0] * line.p1[0] + line.L[1] * line.p1[1] + line.L[2], 1e-9);
+    EXPECT_NEAR(0., line.L[0] * line.p2[0] + line.L[1] * line.p2[1] + line.L[2], 1e-9);
+}
 
-    ASSERT_TRUE(Ashift::detectLines(rgba, kWidth, kHeight, 1., Ashift::eEnhanceNone, detector, &set, &error)) << error;
+// drawnLines() keeps each drawn line's tag, counts and weighs them per direction and drops lines
+// of zero length.
+TEST(AshiftLines, DrawnLinesKeepTheirTags)
+{
+    std::vector<Ashift::DrawnLine> drawn = gridLines(Ashift::Model());
+    Ashift::DrawnLine degenerate;
+    degenerate.x1 = degenerate.x2 = 40.;
+    degenerate.y1 = degenerate.y2 = 50.;
+    drawn.push_back(degenerate);
+    // A steep line tagged horizontal stays horizontal: the tag, not the direction, decides.
+    Ashift::DrawnLine steep;
+    steep.x1 = 30.;
+    steep.y1 = 20.;
+    steep.x2 = 34.;
+    steep.y2 = 200.;
+    steep.vertical = false;
+    drawn.push_back(steep);
+
+    const Ashift::LineSet set = Ashift::drawnLines(drawn, kWidth, kHeight);
+
     EXPECT_EQ(kWidth, set.width);
     EXPECT_EQ(kHeight, set.height);
-    EXPECT_EQ(8, set.verticalCount);
-    EXPECT_EQ(5, set.horizontalCount);
-    EXPECT_EQ(3, countType(set, Ashift::eLineIrrelevant));
-    EXPECT_EQ(8, countType(set, Ashift::eLineVerticalSelected));
-
-    Ashift::removeOutliers(&set, 1);
-    EXPECT_EQ(7, countType(set, Ashift::eLineVerticalSelected));
-    EXPECT_EQ(5, countType(set, Ashift::eLineHorizontalSelected));
-    EXPECT_EQ(Ashift::eLineVerticalNotSelected, set.lines.back().type & Ashift::eLineMask);
-
-    Ashift::Model fitted;
-    ASSERT_EQ(Ashift::eNmsSuccess, Ashift::fit(set, Ashift::eFitRotationBothLines, &fitted));
-    EXPECT_NEAR(truth.rotation, fitted.rotation, 0.1);
+    ASSERT_EQ(8u, set.lines.size());
+    EXPECT_EQ(4, countType(set, Ashift::eLineVerticalSelected));
+    EXPECT_EQ(4, countType(set, Ashift::eLineHorizontalSelected));
+    EXPECT_EQ(4, set.verticalCount);
+    EXPECT_EQ(4, set.horizontalCount);
+    EXPECT_DOUBLE_EQ(4., set.verticalWeight);
+    EXPECT_DOUBLE_EQ(4., set.horizontalWeight);
+    EXPECT_EQ(Ashift::eLineHorizontalSelected, set.lines.back().type);
 }
 
-// detectLines() scales x by the pixel aspect ratio and widens the line set to match.
-TEST(AshiftLines, PixelAspectRatioScalesTheSegments)
+// Drawn lines that a 3 degree rotation makes axis-aligned fit back within a tenth of a degree,
+// and a keystone with rotation fits back from the drawn lines alone.
+TEST(AshiftLines, DrawnLinesFitRecoversTheModel)
 {
-    std::vector<Ashift::Segment> segments(1);
-    segments[0].x1 = 50.;
-    segments[0].y1 = 20.;
-    segments[0].x2 = 50.;
-    segments[0].y2 = 120.;
-    segments[0].p = 0.125;
-    const Ashift::SegmentDetector detector = [&segments](const std::vector<double>&, int, int) {
-        return segments;
-    };
-    std::vector<float> rgba((std::size_t)kWidth * kHeight * 4, 0.5f);
-    Ashift::LineSet set;
-    std::string error;
+    {
+        Ashift::Model truth;
+        truth.rotation = 3.;
+        const Ashift::LineSet set = Ashift::drawnLines(gridLines(truth), kWidth, kHeight);
+        Ashift::Model fitted;
 
-    ASSERT_TRUE(Ashift::detectLines(rgba, kWidth, kHeight, 2., Ashift::eEnhanceNone, detector, &set, &error)) << error;
-    EXPECT_EQ(2 * kWidth, set.width);
-    ASSERT_EQ(1u, set.lines.size());
-    EXPECT_DOUBLE_EQ(100., set.lines[0].p1[0] / set.lines[0].p1[2]);
-    EXPECT_EQ(Ashift::eLineVerticalSelected, set.lines[0].type & Ashift::eLineMask);
-}
-
-// Segments hugging the image border are dropped, as darktable drops them; an empty result fails.
-TEST(AshiftLines, BorderSegmentsAreDroppedAndNothingFails)
-{
-    std::vector<Ashift::Segment> segments(2);
-    segments[0].x1 = segments[0].x2 = 0.5;
-    segments[0].y1 = 10.;
-    segments[0].y2 = 200.;
-    segments[1].x1 = 10.;
-    segments[1].x2 = 300.;
-    segments[1].y1 = segments[1].y2 = kHeight - 1.;
-    const Ashift::SegmentDetector detector = [&segments](const std::vector<double>&, int, int) {
-        return segments;
-    };
-    std::vector<float> rgba((std::size_t)kWidth * kHeight * 4, 0.5f);
-    Ashift::LineSet set;
-    std::string error;
-
-    EXPECT_FALSE(Ashift::detectLines(rgba, kWidth, kHeight, 1., Ashift::eEnhanceEdges | Ashift::eEnhanceDetail, detector, &set, &error));
-    EXPECT_EQ("could not detect structural data in image", error);
-}
-
-TEST(AshiftLines, NoDetectorFails)
-{
-    if (Ashift::hasSegmentDetector()) {
-        return;
+        ASSERT_EQ(Ashift::eNmsSuccess, Ashift::fit(set, Ashift::eFitRotationBothLines, &fitted));
+        EXPECT_NEAR(truth.rotation, fitted.rotation, 0.1);
     }
-    std::vector<float> rgba((std::size_t)16 * 16 * 4, 0.5f);
-    Ashift::LineSet set;
-    std::string error;
+    {
+        Ashift::Model truth;
+        truth.rotation = -2.;
+        truth.lensShiftV = 0.25;
+        truth.lensShiftH = 0.1;
+        const Ashift::LineSet set = Ashift::drawnLines(gridLines(truth), kWidth, kHeight);
+        Ashift::Model fitted;
 
-    EXPECT_FALSE(Ashift::detectLines(rgba, 16, 16, 1., Ashift::eEnhanceNone, Ashift::SegmentDetector(), &set, &error));
-    EXPECT_EQ("no line segment detector is available", error);
+        ASSERT_EQ(Ashift::eNmsSuccess, Ashift::fit(set, Ashift::eFitBoth, &fitted));
+        EXPECT_NEAR(truth.rotation, fitted.rotation, 0.05);
+        EXPECT_NEAR(truth.lensShiftV, fitted.lensShiftV, 0.01);
+        EXPECT_NEAR(truth.lensShiftH, fitted.lensShiftH, 0.01);
+    }
+}
+
+// Too few lines in a fitted direction: the fit says so and leaves the model alone.
+TEST(AshiftLines, TooFewDrawnLinesFail)
+{
+    std::vector<Ashift::DrawnLine> drawn = gridLines(Ashift::Model());
+    drawn.resize(1);
+    const Ashift::LineSet set = Ashift::drawnLines(drawn, kWidth, kHeight);
+    Ashift::Model fitted;
+
+    EXPECT_EQ(Ashift::eNmsNotEnoughLines, Ashift::fit(set, Ashift::eFitVertically, &fitted));
+    EXPECT_EQ(0., fitted.rotation);
+    EXPECT_EQ(0., fitted.lensShiftV);
 }
 
 // darktable's rectangle mode: two verticals (left, right) then two horizontals (top, bottom).
@@ -264,62 +238,4 @@ TEST(AshiftLines, QuadFitRecoversTheModel)
     EXPECT_NEAR(truth.rotation, fitted.rotation, 0.05);
     EXPECT_NEAR(truth.lensShiftV, fitted.lensShiftV, 0.01);
     EXPECT_NEAR(truth.lensShiftH, fitted.lensShiftH, 0.01);
-}
-
-TEST(AshiftLines, GammaClampsNegativesAndLeavesAlpha)
-{
-    std::vector<float> rgba = { 0.25f, -1.f, 1.f, 0.3f };
-
-    Ashift::gammaCorrect(&rgba);
-    EXPECT_NEAR(std::pow(0.25, 0.45), rgba[0], 1e-6);
-    EXPECT_EQ(0.f, rgba[1]);
-    EXPECT_NEAR(1., rgba[2], 1e-6);
-    EXPECT_EQ(0.3f, rgba[3]);
-}
-
-TEST(AshiftLines, GreyIsLumaTimes256)
-{
-    const std::vector<float> rgba = { 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 0.f, 1.f };
-    const std::vector<double> grey = Ashift::rgbToGrey256(rgba, 2, 1);
-
-    ASSERT_EQ(2u, grey.size());
-    EXPECT_NEAR(256., grey[0], 1e-4);
-    EXPECT_NEAR(0.3 * 256., grey[1], 1e-4);
-}
-
-// The gradient magnitude is zero on flat areas and peaks on a step.
-TEST(AshiftLines, EdgeEnhanceFindsAStep)
-{
-    const int w = 16, h = 12;
-    std::vector<double> grey((std::size_t)w * h);
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            grey[(std::size_t)y * w + x] = (x < w / 2) ? 10. : 200.;
-        }
-    }
-    Ashift::edgeEnhance(&grey, w, h);
-    for (int y = 2; y < h - 2; ++y) {
-        EXPECT_NEAR(0., grey[(std::size_t)y * w + 3], 1e-9);
-        EXPECT_NEAR(0., grey[(std::size_t)y * w + w - 4], 1e-9);
-        EXPECT_GT(std::max(grey[(std::size_t)y * w + w / 2 - 1], grey[(std::size_t)y * w + w / 2]), 50.);
-    }
-}
-
-// The detail enhancement leaves a flat colour as it is.
-TEST(AshiftLines, DetailEnhanceKeepsAFlatColour)
-{
-    const int w = 24, h = 20;
-    std::vector<float> rgba((std::size_t)w * h * 4);
-    for (std::size_t p = 0; p < (std::size_t)w * h; ++p) {
-        rgba[4 * p] = 0.4f;
-        rgba[4 * p + 1] = 0.3f;
-        rgba[4 * p + 2] = 0.2f;
-        rgba[4 * p + 3] = 1.f;
-    }
-    Ashift::detailEnhance(&rgba, w, h);
-    for (std::size_t p = 0; p < (std::size_t)w * h; ++p) {
-        EXPECT_NEAR(0.4, rgba[4 * p], 2e-3);
-        EXPECT_NEAR(0.3, rgba[4 * p + 1], 2e-3);
-        EXPECT_NEAR(0.2, rgba[4 * p + 2], 2e-3);
-    }
 }

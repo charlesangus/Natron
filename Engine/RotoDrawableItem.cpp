@@ -126,6 +126,14 @@ RotoDrawableItem::addKnob(const KnobIPtr& knob)
 }
 
 void
+RotoDrawableItem::addHostKnob(const KnobIPtr& knob)
+{
+    if (knob) {
+        addKnob(knob);
+    }
+}
+
+void
 RotoDrawableItem::setNodesThreadSafetyForRotopainting()
 {
     assert( std::dynamic_pointer_cast<RotoStrokeItem>( std::dynamic_pointer_cast<RotoDrawableItem>( shared_from_this() ) ) );
@@ -904,15 +912,12 @@ RotoDrawableItem::clone(const RotoItem* other)
     if (!otherDrawable) {
         return;
     }
-    const std::list<KnobIPtr>& otherKnobs = otherDrawable->getKnobs();
-    assert( otherKnobs.size() == _imp->knobs.size() );
-    if ( otherKnobs.size() != _imp->knobs.size() ) {
-        return;
-    }
-    std::list<KnobIPtr>::iterator it = _imp->knobs.begin();
-    std::list<KnobIPtr>::const_iterator otherIt = otherKnobs.begin();
-    for (; it != _imp->knobs.end(); ++it, ++otherIt) {
-        (*it)->clone(*otherIt);
+    // By name: a hosting effect may add knobs of its own after the built-in ones.
+    for (std::list<KnobIPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr otherKnob = otherDrawable->getKnobByName((*it)->getName());
+        if (otherKnob) {
+            (*it)->clone(otherKnob);
+        }
     }
     {
         QMutexLocker l(&itemMutex);

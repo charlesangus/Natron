@@ -1,9 +1,13 @@
 """Checks the native AutoStraighten node in the running GUI and takes the screenshots for sign-off.
 
-The source is a CheckerBoard rotated by a Transform, standing in for a tilted architecture plate.
+The source is a CheckerBoard rotated by a Transform, standing in for a tilted architecture plate,
+or keystoned by a CornerPin, standing in for converging verticals.
 Sections (all by default; AUTOSTRAIGHTEN_GUI_SECTIONS selects some, comma-separated):
-    panel       the settings panel in Detected Lines mode, and Fit Both there (which needs a line
-                detector; without one the node says to use Rectangle mode and leaves the knobs alone)
+    panel       the settings panel in Drawn Lines mode; Fit Both with no guide lines says there are
+                too few and leaves the knobs alone
+    lines       on a keystoned checker, picks the Draw Line tool in the viewer toolbar, drags two
+                guide lines along the converging sides, and Fit Vertical moves the vertical lens
+                shift and straightens the picture: before and after screenshots
     rectangle   Rectangle mode with the corners on the rotated checker's inner square: Fit Both
                 moves the rotation knob to undo the tilt, before and after screenshots
     drag        drags the top left corner handle in the viewer and checks that its knob follows
@@ -23,18 +27,22 @@ STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 170
 SETTLE_MS = 700
 FALLBACK_SIZE = (1920.0, 1080.0)
-ALL_SECTIONS = ("panel", "rectangle", "drag")
+ALL_SECTIONS = ("panel", "lines", "rectangle", "drag")
 
 PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
 PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
 PLUGIN_TRANSFORM = "net.sf.openfx.TransformPlugin"
 PLUGIN_STRAIGHTEN = "AutoStraighten"
+PLUGIN_CORNERPIN = "CornerPin"
 
 TILT_DEGREES = 4.0
 ROTATION_TOLERANCE = 0.3
 PIXEL_DIFF_MIN = 60
 CHANGED_PIXELS_MIN = 150
 DRAG_PIXELS = (60, 40)
+# The CornerPin pulls each top corner in by this fraction of the width.
+KEYSTONE = 0.12
+LENS_SHIFT_MIN = 0.05
 
 try:
     import faulthandler
@@ -119,6 +127,38 @@ try:
         center.setValue(w / 2.0, 0)
         center.setValue(h / 2.0, 1)
         return checker, transform, w, h
+
+    def keystoned_plate():
+        """A CheckerBoard whose top corners a CornerPin pulls in, its CornerPin and its size."""
+        checker = create(PLUGIN_CHECKER, 0, 0)
+        w, h = rod_size(checker)
+        param(checker, "boxSize").set(w / 8.0, h / 6.0)
+        pin = create(PLUGIN_CORNERPIN, 0, 120)
+        connect(pin, 0, checker)
+        # to1..to4: bottom left, bottom right, top right, top left.
+        for name, (x, y) in (("to1", (0.0, 0.0)), ("to2", (w, 0.0)), ("to3", (w * (1.0 - KEYSTONE), h)), ("to4", (w * KEYSTONE, h))):
+            p = param(pin, name)
+            p.setValue(x, 0)
+            p.setValue(y, 1)
+        for name, (x, y) in (("from1", (0.0, 0.0)), ("from2", (w, 0.0)), ("from3", (w, h)), ("from4", (0.0, h))):
+            p = param(pin, name)
+            p.setValue(x, 0)
+            p.setValue(y, 1)
+        return checker, pin, w, h
+
+    def tool_action(tool_id):
+        """The viewer toolbar's action for tool_id, from the visible tool buttons."""
+        for button in gt.widgets_of("ViewerToolButton"):
+            try:
+                if not button.isVisible():
+                    continue
+                for act in button.actions():
+                    data = act.data()
+                    if data and len(data) > 1 and data[1] == tool_id:
+                        return act
+            except RuntimeError:
+                continue
+        return None
 
     def set_corners_on_tilted_square(node, w, h):
         """Puts the corners on the inner square of the source, as the Transform rotated it."""
@@ -227,12 +267,9 @@ try:
         param(straighten, "fitBoth").trigger()
         yield ("sleep", SETTLE_MS)
         message = persistent_message(straighten)
-        report("NOTE Fit Both in Detected Lines mode: rotation %g, message %r" % (rotation.get(), message))
-        if "line detector unavailable" in message:
-            check(rotation.get() == 0.0, "without a line detector Fit Both leaves the rotation at 0")
-        else:
-            check(abs(abs(rotation.get()) - TILT_DEGREES) <= ROTATION_TOLERANCE,
-                  "the detected-lines fit undoes the %g degree tilt (rotation %g)" % (TILT_DEGREES, rotation.get()))
+        report("NOTE Fit Both with no guide lines: rotation %g, message %r" % (rotation.get(), message))
+        check("not enough guide lines" in message, "Fit Both with no guide lines says there are too few")
+        check(rotation.get() == 0.0, "Fit Both with no guide lines leaves the rotation at 0")
         gt.shot("autostraighten-panel-lines-fit.png")
 
         param(straighten, "lensModel").set("Specific")
@@ -242,6 +279,64 @@ try:
         gt.close_all_panels()
         connect(viewer, 0, checker)
         destroy_all([straighten, transform, checker])
+
+    def section_lines():
+        gt.section("lines")
+        viewer = viewer_node()
+        checker, pin, w, h = keystoned_plate()
+        # The checker fills the format, so its on-screen rectangle maps canonical to widget pixels.
+        yield from show(viewer, checker)
+        rect = image_rect(viewer_grab())
+        gt.require(rect is not None, "the source image can be located in the viewer")
+        rx, ry, rw, rh = rect
+
+        def to_widget(x, y):
+            return QPointF(rx + x / w * rw, ry + (h - y) / h * rh)
+
+        straighten = create(PLUGIN_STRAIGHTEN, 0, 240, panel=True)
+        connect(straighten, 0, pin)
+        check(param(straighten, "structure").get() == 0, "the structure defaults to Drawn Lines")
+        yield from show(viewer, straighten)
+        gl = visible_viewer()
+        gt.require(gl is not None, "the viewer is visible")
+        before = viewer_grab()
+        gt.shot("autostraighten-lines-before.png")
+
+        action = tool_action("drawLineTool")
+        gt.require(action is not None, "the viewer toolbar has the Draw Line tool")
+        action.trigger()
+        yield ("sleep", SETTLE_MS)
+
+        # Along the keystoned left and right sides of the checker, which were vertical, from 10%
+        # to 90% of the height.
+        for x_bottom, x_top in ((0.0, w * KEYSTONE), (w, w * (1.0 - KEYSTONE))):
+            start = to_widget(x_bottom + 0.1 * (x_top - x_bottom) + (8.0 if x_bottom == 0.0 else -8.0), 0.1 * h)
+            end = to_widget(x_bottom + 0.9 * (x_top - x_bottom) + (8.0 if x_bottom == 0.0 else -8.0), 0.9 * h)
+            drag(gl, start, end, steps=10)
+            yield ("sleep", SETTLE_MS)
+        gt.shot("autostraighten-lines-drawn.png")
+
+        lens_shift_v = param(straighten, "lensShiftV")
+        param(straighten, "fitVertical").trigger()
+        yield ("sleep", SETTLE_MS)
+        message = persistent_message(straighten)
+        report("NOTE Fit Vertical on two drawn lines: lensShiftV %g, rotation %g, message %r"
+               % (lens_shift_v.get(), param(straighten, "rotation").get(), message))
+        check(abs(lens_shift_v.get()) >= LENS_SHIFT_MIN,
+              "Fit Vertical on the drawn lines corrects the keystone (lensShiftV %g, message %r)" % (lens_shift_v.get(), message))
+        check(abs(param(straighten, "rotation").get()) <= ROTATION_TOLERANCE,
+              "a symmetric keystone needs no rotation (rotation %g)" % param(straighten, "rotation").get())
+        yield from show(viewer, straighten)
+        after = viewer_grab()
+        moved, total = changed_pixels(before, after)
+        check(moved >= CHANGED_PIXELS_MIN, "the fit changes the picture (%d of %d sampled pixels)" % (moved, total))
+        gt.shot("autostraighten-lines-after.png")
+
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        gt.shot("autostraighten-lines-after-no-overlay.png")
+        connect(viewer, 0, checker)
+        destroy_all([straighten, pin, checker])
 
     def section_rectangle():
         gt.section("rectangle")
@@ -318,7 +413,7 @@ try:
         yield ("sleep", 1000)
         gt.close_all_panels()
 
-        runners = {"panel": section_panel, "rectangle": section_rectangle, "drag": section_drag}
+        runners = {"panel": section_panel, "lines": section_lines, "rectangle": section_rectangle, "drag": section_drag}
         for name in SECTIONS:
             report("NOTE running section " + name)
             try:

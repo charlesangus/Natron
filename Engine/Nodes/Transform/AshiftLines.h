@@ -28,8 +28,6 @@
 
 #include "Global/Macros.h"
 
-#include <functional>
-#include <string>
 #include <vector>
 
 #include "Engine/Nodes/Transform/AshiftFit.h"
@@ -38,74 +36,34 @@ NATRON_NAMESPACE_ENTER
 
 namespace Ashift {
 
-enum EnhanceFlags {
-    eEnhanceNone = 0,
-    eEnhanceEdges = 1 << 0,
-    eEnhanceDetail = 1 << 1,
-};
-
 /**
- * @brief One segment a line segment detector found: its end points in pixel coordinates (pixel
- * (i, j) at (i, j), y down), its width, the angle precision p it was grown with and its -log10(NFA).
+ * @brief One guide line the user drew, in darktable's square-pixel input coordinates (y down),
+ * tagged vertical or horizontal.
  **/
-struct Segment {
+struct DrawnLine {
     double x1 = 0.;
     double y1 = 0.;
     double x2 = 0.;
     double y2 = 0.;
-    double width = 1.;
-    double p = 0.;
-    double logNfa = 0.;
+    bool vertical = true;
 };
 
 /**
- * @brief A line segment detector on a greyscale image of width x height values in [0, 256], row
- * major, top row first.
+ * @brief A selected line through (x1, y1) and (x2, y2) with its homogeneous form, weight 1.
  **/
-using SegmentDetector = std::function<std::vector<Segment>(const std::vector<double>& grey, int width, int height)>;
+Line makeLine(double x1, double y1, double x2, double y2, int type);
 
 /**
- * @brief The detector detectLines() uses; none is set until one is registered.
+ * @brief The line set of drawn guide lines in a width x height image: each segment of non-zero
+ * length becomes a selected line of its tagged direction, every line weighing 1.
  **/
-void setSegmentDetector(const SegmentDetector& detector);
-bool hasSegmentDetector();
-
-/**
- * @brief darktable's line_detect() on an RGBA float image (row major, top row first): gamma,
- * detail and edge enhancement, segment detection, then each segment's weight and its
- * classification as vertical, horizontal or irrelevant. xScale (the pixel aspect ratio) maps the
- * segments to square pixels; the line set's width is the image width scaled by it. Returns false,
- * with error set, when no detector is registered or nothing was found.
- **/
-bool detectLines(std::vector<float> rgba,
-                 int width,
-                 int height,
-                 double xScale,
-                 int enhance,
-                 const SegmentDetector& detector,
-                 LineSet* lines,
-                 std::string* error);
-
-/**
- * @brief _remove_outliers(): RANSAC over the selected vertical lines, then the horizontal ones,
- * deselecting those that do not share the best vanishing point. seed makes the shuffles
- * reproducible where darktable uses rand().
- **/
-void removeOutliers(LineSet* lines, unsigned int seed);
+LineSet drawnLines(const std::vector<DrawnLine>& segments, int width, int height);
 
 /**
  * @brief The four lines of a quadrilateral, darktable's rectangle mode: points are the top left,
  * bottom left, top right and bottom right corners in pixel coordinates, y down.
  **/
 LineSet quadLines(const double points[8], int width, int height);
-
-/**
- * @brief Steps of line_detect(), exposed for tests.
- **/
-void gammaCorrect(std::vector<float>* rgba);
-void detailEnhance(std::vector<float>* rgba, int width, int height);
-std::vector<double> rgbToGrey256(const std::vector<float>& rgba, int width, int height);
-void edgeEnhance(std::vector<double>* grey, int width, int height);
 
 } // namespace Ashift
 

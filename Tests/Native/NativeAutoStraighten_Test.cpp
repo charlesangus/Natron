@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,6 +43,7 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
@@ -49,9 +51,10 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/Transform/AshiftFit.h"
-#include "Engine/Nodes/Transform/AshiftLines.h"
 #include "Engine/Nodes/Transform/AutoStraighten.h"
 #include "Engine/Project.h"
+#include "Engine/RotoCurveContext.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -159,7 +162,7 @@ protected:
                         const RawTestSource::ValueFn& value)
     {
         resetProject(width, height);
-        NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
+        NodePtr source = createNode(QString::fromUtf8(kImageTestSourceID));
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_AUTOSTRAIGHTEN), PLUGIN_MAJOR_NATRON_AUTOSTRAIGHTEN);
 
         EXPECT_TRUE(source && node);
@@ -432,25 +435,160 @@ TEST_F(NativeAutoStraightenTest, RectangleFitRecoversTheModel)
     EXPECT_EQ(4u, effect->lines(kTime).lines.size());
 }
 
-// Detected-lines mode without a detector says to use the rectangle and leaves the knobs alone.
-TEST_F(NativeAutoStraightenTest, DetectedLinesWithoutADetectorFails)
+namespace {
+// A guide line in the corrected image (darktable pixels, y down), mapped back through the model
+// into the source: what a user straightening the plate traces.
+struct GuideLine {
+    double x1, y1, x2, y2;
+};
+
+BezierPtr
+drawLine(const NodePtr& node,
+         const TransformMath::Mat3& inverse,
+         int height,
+         const GuideLine& line)
 {
-    if (Ashift::hasSegmentDetector()) {
-        return;
+    RotoCurveContextPtr context = node->getCurveContext();
+    if (!context) {
+        return BezierPtr();
     }
-    NodePtr node = createChain(64, 48, pattern);
+    double ax = 0., ay = 0., bx = 0., by = 0.;
+    mapPoint(inverse, line.x1, line.y1, &ax, &ay);
+    mapPoint(inverse, line.x2, line.y2, &bx, &by);
+    // Pixel (i, j) of darktable's input is canonical (i + 0.5, height - 0.5 - j).
+    BezierPtr bezier = context->makeBezier(ax + 0.5, height - 0.5 - ay, "Line", kTime, true /*isOpenBezier*/);
+    if (bezier) {
+        bezier->addControlPoint(bx + 0.5, height - 0.5 - by, kTime);
+        bezier->setCurveFinished(true);
+    }
+
+    return bezier;
+}
+} // namespace
+
+// Drawn Lines mode: guide lines that a known model makes vertical and horizontal fit back to
+// that model, verticals alone for Fit Vertical and both sets for Fit Both.
+TEST_F(NativeAutoStraightenTest, DrawnLinesFitRecoversTheModel)
+{
+    const int width = 320, height = 240;
+    NodePtr node = createChain(width, height, pattern);
+    ASSERT_TRUE(bool(node));
+    AutoStraighten* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+
+    // Fit Vertical, every parameter: rotation and vertical lens shift from verticals alone.
+    {
+        const double rotationKnob = 2., lensShiftV = 0.25;
+        Ashift::Model truth;
+        truth.rotation = -rotationKnob;
+        truth.lensShiftV = lensShiftV;
+        const TransformMath::Mat3 forward = Ashift::homography(truth, width, height, false);
+        const TransformMath::Mat3 inverse = Ashift::homography(truth, width, height, true);
+        double cx = 0., cy = 0.;
+        mapPoint(forward, width / 2., height / 2., &cx, &cy);
+
+        // One is drawn bottom to top; each is tagged by its direction.
+        std::list<BezierPtr> lines;
+        for (const GuideLine& g : { GuideLine { cx - 100., cy - 80., cx - 100., cy + 80. }, GuideLine { cx, cy - 70., cx, cy + 70. },
+                                    GuideLine { cx + 100., cy + 80., cx + 100., cy - 80. } }) {
+            BezierPtr line = drawLine(node, inverse, height, g);
+            ASSERT_TRUE(bool(line));
+            effect->setLineOrientationFromDirection(line, kTime);
+            AutoStraighten::LineOrientationEnum orientation;
+            ASSERT_TRUE(AutoStraighten::getLineOrientation(line, &orientation));
+            EXPECT_EQ(AutoStraighten::eLineOrientationVertical, orientation);
+            EXPECT_EQ(std::string("Vertical"), effect->getItemText(line, 0));
+            lines.push_back(line);
+        }
+
+        ASSERT_TRUE(effect->fit(AutoStraighten::eFitButtonVertical, kTime, ViewIdx(0))) << persistentMessage(node);
+        EXPECT_EQ(3u, effect->lines(kTime).lines.size());
+        EXPECT_NEAR(rotationKnob, doubleKnob(node, kAutoStraightenParamRotation)->getValue(), 0.05);
+        EXPECT_NEAR(lensShiftV, doubleKnob(node, kAutoStraightenParamLensShiftV)->getValue(), 0.01);
+        EXPECT_EQ(0., doubleKnob(node, kAutoStraightenParamLensShiftH)->getValue());
+
+        for (const BezierPtr& line : lines) {
+            context->removeItem(line);
+        }
+        for (const char* name : { kAutoStraightenParamRotation, kAutoStraightenParamLensShiftV }) {
+            ASSERT_TRUE(setKnobValues(node, name, { 0. })) << name;
+        }
+    }
+
+    // Fit Both, rotation and lens shift: verticals and horizontals, the horizontals tagged
+    // explicitly.
+    const double rotationKnob = -1.5, lensShiftV = 0.2, lensShiftH = -0.1;
+    Ashift::Model truth;
+    truth.rotation = -rotationKnob;
+    truth.lensShiftV = lensShiftV;
+    truth.lensShiftH = lensShiftH;
+    const TransformMath::Mat3 forward = Ashift::homography(truth, width, height, false);
+    const TransformMath::Mat3 inverse = Ashift::homography(truth, width, height, true);
+    double cx = 0., cy = 0.;
+    mapPoint(forward, width / 2., height / 2., &cx, &cy);
+    for (const GuideLine& g : { GuideLine { cx - 100., cy - 80., cx - 100., cy + 80. }, GuideLine { cx + 100., cy - 80., cx + 100., cy + 80. },
+                                GuideLine { cx, cy - 70., cx, cy + 70. } }) {
+        BezierPtr line = drawLine(node, inverse, height, g);
+        ASSERT_TRUE(bool(line));
+        effect->setLineOrientation(line, AutoStraighten::eLineOrientationVertical);
+    }
+    for (const GuideLine& g : { GuideLine { cx - 110., cy - 60., cx + 110., cy - 60. }, GuideLine { cx - 90., cy + 75., cx + 90., cy + 75. },
+                                GuideLine { cx - 100., cy, cx + 100., cy } }) {
+        BezierPtr line = drawLine(node, inverse, height, g);
+        ASSERT_TRUE(bool(line));
+        effect->setLineOrientation(line, AutoStraighten::eLineOrientationHorizontal);
+        EXPECT_EQ(std::string("Horizontal"), effect->getItemText(line, 0));
+    }
+    ASSERT_TRUE(setKnobValue(node, kAutoStraightenParamFitParameters, std::string("rotationAndLensShift")));
+    ASSERT_TRUE(effect->fit(AutoStraighten::eFitButtonBoth, kTime, ViewIdx(0))) << persistentMessage(node);
+    EXPECT_EQ(6u, effect->lines(kTime).lines.size());
+    EXPECT_NEAR(rotationKnob, doubleKnob(node, kAutoStraightenParamRotation)->getValue(), 0.05);
+    EXPECT_NEAR(lensShiftV, doubleKnob(node, kAutoStraightenParamLensShiftV)->getValue(), 0.01);
+    EXPECT_NEAR(lensShiftH, doubleKnob(node, kAutoStraightenParamLensShiftH)->getValue(), 0.01);
+    EXPECT_EQ(0., doubleKnob(node, kAutoStraightenParamShear)->getValue());
+}
+
+// Drawn Lines mode with too few lines in the fitted direction fails and leaves the knobs alone;
+// a line drawn mostly sideways is tagged horizontal and does not count as a vertical.
+TEST_F(NativeAutoStraightenTest, TooFewDrawnLinesFail)
+{
+    const int width = 160, height = 120;
+    NodePtr node = createChain(width, height, pattern);
     ASSERT_TRUE(bool(node));
     AutoStraighten* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
 
-    EXPECT_FALSE(effect->fit(AutoStraighten::eFitButtonBoth, kTime, ViewIdx(0)));
-    EXPECT_EQ("line detector unavailable: use Rectangle mode", persistentMessage(node));
+    const TransformMath::Mat3 identity = Ashift::homography(Ashift::Model(), width, height, true);
+    EXPECT_FALSE(effect->fit(AutoStraighten::eFitButtonVertical, kTime, ViewIdx(0)));
+    EXPECT_EQ("not enough guide lines for automatic correction\nminimum 2 lines in each relevant direction", persistentMessage(node));
+
+    BezierPtr vertical = drawLine(node, identity, height, GuideLine { 40., 10., 42., 100. });
+    BezierPtr sideways = drawLine(node, identity, height, GuideLine { 20., 50., 140., 60. });
+    ASSERT_TRUE(vertical && sideways);
+    effect->setLineOrientationFromDirection(vertical, kTime);
+    effect->setLineOrientationFromDirection(sideways, kTime);
+    AutoStraighten::LineOrientationEnum orientation;
+    ASSERT_TRUE(AutoStraighten::getLineOrientation(sideways, &orientation));
+    EXPECT_EQ(AutoStraighten::eLineOrientationHorizontal, orientation);
+
+    EXPECT_FALSE(effect->fit(AutoStraighten::eFitButtonVertical, kTime, ViewIdx(0)));
     EXPECT_EQ(0., doubleKnob(node, kAutoStraightenParamRotation)->getValue());
+    EXPECT_EQ(0., doubleKnob(node, kAutoStraightenParamLensShiftV)->getValue());
+
+    // The panel menu retags it, undoably.
+    std::list<RotoItemPtr> items;
+    items.push_back(sideways);
+    effect->onItemMenuActionTriggered(kAutoStraightenActionSetVertical, items);
+    ASSERT_TRUE(AutoStraighten::getLineOrientation(sideways, &orientation));
+    EXPECT_EQ(AutoStraighten::eLineOrientationVertical, orientation);
 }
 
 // dt_iop_ashift_params_t against the knobs: each field's knob, default and range. The crop box
 // is computed, not stored (its interactive adjustment belongs to the viewer work of M165), the
-// drawn lines are viewer state, and last_quad_lines is the four corner knobs.
+// drawn lines are the node's curves with their own orientation knob, and last_quad_lines is the
+// four corner knobs.
 TEST_F(NativeAutoStraightenTest, KnobsCoverDarktableParameters)
 {
     NodePtr node = createChain(64, 48, pattern);
@@ -492,7 +630,6 @@ TEST_F(NativeAutoStraightenTest, KnobsCoverDarktableParameters)
         { "mode", kAutoStraightenParamLensModel, "Lens Model", 0, { "generic", "specific" } },
         { "cropmode", kAutoStraightenParamAutoCrop, "Auto Crop", 1, { "off", "largest", "original" } },
         { "(gui) structure", kAutoStraightenParamStructure, "Structure", 0, { "lines", "rectangle" } },
-        { "(gui) enhance", kAutoStraightenParamEnhance, "Enhance", 0, { "none", "edges", "detail", "edgesAndDetail" } },
         { "(gui) fit parameters", kAutoStraightenParamFitParameters, "Fit Parameters", 0, { "all", "rotation", "lensShift", "rotationAndLensShift" } },
     };
     for (const auto& c : choices) {
@@ -546,7 +683,7 @@ TEST_F(NativeAutoStraightenTest, KnobsCoverDarktableParameters)
     for (const auto& c : corners) {
         EXPECT_FALSE(doubleKnob(node, c.knob)->getIsSecret()) << c.knob << " in rectangle mode";
     }
-    EXPECT_TRUE(node->getKnobByName(kAutoStraightenParamEnhance)->getIsSecret());
+    EXPECT_TRUE(node->getKnobByName(kAutoStraightenParamLineOrientation)->getIsSecret());
 
     // The specific lens knobs show only for the specific lens model.
     for (const char* name : { kAutoStraightenParamFocalLength, kAutoStraightenParamCropFactor, kAutoStraightenParamLensDependence, kAutoStraightenParamAspectAdjust }) {

@@ -38,9 +38,16 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include <QPointF>
+
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
+#include "Engine/ChoiceOption.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -48,17 +55,23 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/PluginActionShortcut.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
+#include "Engine/RotoCurveContext.h"
+#include "Engine/RotoCurveInteract.h"
+#include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
+#include "Engine/Transform.h"
+#include "Engine/UndoCommand.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-constexpr unsigned int kOutlierSeed = 1;
 constexpr int kMinimumOutputSize = 4;
 
-const char* const kNotEnoughStructure = "not enough structure for automatic correction\nminimum 2 lines in each relevant direction";
+const char* const kNotEnoughStructure = "not enough guide lines for automatic correction\nminimum 2 lines in each relevant direction";
 const char* const kFitFailed = "automatic correction failed, please correct manually";
 
 bool
@@ -147,6 +160,371 @@ sameModel(const Ashift::Model& a,
     return (a.rotation == b.rotation) && (a.lensShiftV == b.lensShiftV) && (a.lensShiftH == b.lensShiftH) && (a.shear == b.shear)
         && (a.focalLength == b.focalLength) && (a.orthocorr == b.orthocorr) && (a.aspect == b.aspect);
 }
+
+KnobChoicePtr
+lineOrientationKnob(const RotoItemPtr& item)
+{
+    const RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
+
+    return drawable ? std::dynamic_pointer_cast<KnobChoice>(drawable->getKnobByName(kAutoStraightenParamLineOrientation)) : KnobChoicePtr();
+}
+
+std::vector<ChoiceOption>
+lineOrientationOptions()
+{
+    std::vector<ChoiceOption> options;
+
+    options.push_back(ChoiceOption("vertical", "Vertical", "The line should be vertical."));
+    options.push_back(ChoiceOption("horizontal", "Horizontal", "The line should be horizontal."));
+
+    return options;
+}
+
+/**
+ * @brief The line orientation knob: a detached one for an item (host NULL) or the node's.
+ **/
+KnobChoicePtr
+makeLineOrientationKnob(AutoStraighten* host)
+{
+    const std::string label = kAutoStraightenParamLineOrientationLabel;
+    KnobChoicePtr k;
+
+    if (host) {
+        k = AppManager::createKnob<KnobChoice>(host, label, 1);
+    } else {
+        k = std::make_shared<KnobChoice>((KnobHolder*)NULL, label, 1, true);
+        k->populate();
+    }
+    k->setName(kAutoStraightenParamLineOrientation);
+    k->setHintToolTip(std::string("Whether the selected guide line should be vertical or horizontal once corrected."));
+    k->populateChoices(lineOrientationOptions());
+    k->setDefaultValue((int)AutoStraighten::eLineOrientationVertical);
+    k->setAnimationEnabled(false);
+
+    return k;
+}
+
+/**
+ * @brief An item's own orientation. While items are selected their knobs are slaved to the node's
+ * knob, whose single value would stand for every selected line, so the master is bypassed: the
+ * node keeps the items' own values current (AutoStraighten::knobChanged).
+ **/
+int
+ownOrientation(const KnobChoicePtr& knob)
+{
+    return knob->getValueAtTime(knob->getCurrentTime(), 0, ViewSpec::current(), true, true /*byPassMaster*/);
+}
+
+/**
+ * @brief Draws a guide line, as MakeRectangleUndoCommand draws a rectangle: the press and the
+ * drag after it merge into one step, which creates the line and leaves its end where the drag
+ * stopped.
+ **/
+class DrawLineUndoCommand
+    : public UndoCommand,
+      public UndoGestureMember {
+    RotoCurveInteractWPtr _roto;
+    RotoLayerPtr _parentLayer;
+    int _indexInLayer;
+    BezierPtr _curve;
+    bool _create;
+    bool _firstRedoCalled;
+    double _fromx, _fromy, _tox, _toy;
+    double _time;
+
+public:
+    DrawLineUndoCommand(const RotoCurveInteractPtr& roto,
+                        bool create,
+                        double fromx,
+                        double fromy,
+                        double tox,
+                        double toy,
+                        double time)
+        : UndoCommand()
+        , _roto(roto)
+        , _parentLayer()
+        , _indexInLayer(-1)
+        , _curve()
+        , _create(create)
+        , _firstRedoCalled(false)
+        , _fromx(fromx)
+        , _fromy(fromy)
+        , _tox(tox)
+        , _toy(toy)
+        , _time(time)
+    {
+        setGestureKey(roto->undoGesture.key());
+        if (!_create) {
+            _curve = roto->getBezierBeingBuild();
+        }
+        setText("Draw Guide Line");
+    }
+
+    virtual ~DrawLineUndoCommand()
+    {
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        RotoCurveInteractPtr roto = _roto.lock();
+        if (!roto || !_curve) {
+            return;
+        }
+        roto->removeCurve(_curve);
+        roto->evaluate(true);
+        roto->setSelection(BezierPtr(), std::make_pair(BezierCPPtr(), BezierCPPtr()));
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        RotoCurveInteractPtr roto = _roto.lock();
+        if (!roto) {
+            return;
+        }
+        RotoCurveContextPtr context = roto->getCurveContext();
+        if (!context) {
+            return;
+        }
+        if (_firstRedoCalled) {
+            if (_create) {
+                context->addItem(_parentLayer, _indexInLayer, _curve, RotoItem::eSelectionReasonOverlayInteract);
+                roto->evaluate(true);
+            }
+        } else {
+            if (_create) {
+                _curve = context->makeBezier(_fromx, _fromy, kAutoStraightenLineBaseName, _time, true /*isOpenBezier*/);
+                if (!_curve) {
+                    return;
+                }
+                _curve->addControlPoint(_tox, _toy, _time);
+                _curve->setCurveFinished(true);
+                RotoLayerPtr layer = _curve->getParentLayer();
+                if (layer) {
+                    _parentLayer = std::dynamic_pointer_cast<RotoLayer>(context->getItemByName(layer->getScriptName()));
+                    if (_parentLayer) {
+                        _indexInLayer = _parentLayer->getChildIndex(_curve);
+                    }
+                }
+            } else if (_curve && (_curve->getControlPointsCount() >= 2)) {
+                _curve->setPointByIndex(1, _time, _tox, _toy);
+            }
+        }
+        if (!_curve) {
+            return;
+        }
+        roto->setBuiltBezier(_curve);
+        _firstRedoCalled = true;
+        roto->setSelection(_curve, std::make_pair(BezierCPPtr(), BezierCPPtr()));
+    }
+
+    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL
+    {
+        const DrawLineUndoCommand* cmd = dynamic_cast<const DrawLineUndoCommand*>(other.get());
+        if (!cmd || !inSameGestureAs(*cmd) || cmd->_create || (cmd->_curve != _curve)) {
+            return false;
+        }
+        _tox = cmd->_tox;
+        _toy = cmd->_toy;
+
+        return true;
+    }
+};
+
+/**
+ * @brief Sets the orientation of guide lines from the curve panel's menu, undone as one step.
+ **/
+class LineOrientationCommand
+    : public UndoCommand {
+    struct Entry {
+        RotoDrawableItemPtr item;
+        int oldValue;
+    };
+
+    NodeWPtr _node;
+    std::list<Entry> _entries;
+    int _value;
+
+public:
+    LineOrientationCommand(const NodePtr& node,
+                           const std::list<RotoDrawableItemPtr>& items,
+                           int value)
+        : UndoCommand()
+        , _node(node)
+        , _value(value)
+    {
+        for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+            KnobChoicePtr k = lineOrientationKnob(*it);
+            if (k) {
+                Entry e;
+                e.item = *it;
+                e.oldValue = ownOrientation(k);
+                _entries.push_back(e);
+            }
+        }
+        setText((value == (int)AutoStraighten::eLineOrientationVertical) ? "Set Guide Lines Vertical" : "Set Guide Lines Horizontal");
+    }
+
+    virtual ~LineOrientationCommand()
+    {
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        for (std::list<Entry>::const_iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            apply(it->item, _value);
+        }
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        for (std::list<Entry>::const_iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            apply(it->item, it->oldValue);
+        }
+    }
+
+private:
+    void apply(const RotoDrawableItemPtr& item,
+               int value)
+    {
+        NodePtr node = _node.lock();
+        AutoStraighten* effect = node ? dynamic_cast<AutoStraighten*>(node->getEffectInstance().get()) : NULL;
+        if (effect) {
+            effect->setLineOrientation(item, (value == (int)AutoStraighten::eLineOrientationHorizontal) ? AutoStraighten::eLineOrientationHorizontal : AutoStraighten::eLineOrientationVertical);
+        }
+    }
+};
+
+/**
+ * @brief The curve interact with a Guide Lines tool group, whose Draw Line tool makes a two-point
+ * open curve by a click and drag, then tags it vertical or horizontal by its direction.
+ **/
+class AutoStraightenInteract
+    : public RotoCurveInteract {
+    AutoStraighten* _node;
+    double _lineTime;
+    bool _drawing;
+
+    struct MakeSharedEnabler;
+
+protected:
+    explicit AutoStraightenInteract(AutoStraighten* node)
+        : RotoCurveInteract(node)
+        , _node(node)
+        , _lineTime(0.)
+        , _drawing(false)
+    {
+    }
+
+public:
+    KnobGroupWPtr guideLinesToolGroup;
+    KnobButtonWPtr drawLineAction;
+
+    static RotoCurveInteractPtr create(AutoStraighten* node);
+
+    virtual ~AutoStraightenInteract()
+    {
+    }
+
+    virtual bool getRoleForGroup(const KnobGroupPtr& group,
+                                 RotoRoleEnum* role) const OVERRIDE FINAL
+    {
+        if (group && (group == guideLinesToolGroup.lock())) {
+            *role = eRotoRoleBezierEdition;
+
+            return true;
+        }
+
+        return RotoCurveInteract::getRoleForGroup(group, role);
+    }
+
+    virtual bool getToolForAction(const KnobButtonPtr& action,
+                                  RotoToolEnum* tool) const OVERRIDE FINAL
+    {
+        if (action && (action == drawLineAction.lock())) {
+            *tool = eRotoToolDrawLine;
+
+            return true;
+        }
+
+        return RotoCurveInteract::getToolForAction(action, tool);
+    }
+
+protected:
+    virtual bool onPaintToolPenDown(double time,
+                                    const QPointF& pos,
+                                    double /*pressure*/,
+                                    double /*timestamp*/) OVERRIDE FINAL
+    {
+        if (selectedTool != eRotoToolDrawLine) {
+            return false;
+        }
+        click = pos;
+        _lineTime = time;
+        _drawing = false;
+        state = eEventStateBuildingLine;
+
+        return true;
+    }
+
+    virtual bool setPaintToolCursor(bool* /*redraw*/) OVERRIDE FINAL
+    {
+        if (selectedTool != eRotoToolDrawLine) {
+            return false;
+        }
+        getHost()->setCurrentCursor(eCursorCross);
+
+        return true;
+    }
+
+    virtual bool onPaintStatePenMotion(const QPointF& pos,
+                                       double /*pressure*/,
+                                       double /*timestamp*/,
+                                       double /*dx*/,
+                                       double /*dy*/) OVERRIDE FINAL
+    {
+        if (state != eEventStateBuildingLine) {
+            return false;
+        }
+        if (!_drawing && (pos == click)) {
+            return true;
+        }
+        pushUndoCommand(new DrawLineUndoCommand(shared_from_this(), !_drawing, click.x(), click.y(), pos.x(), pos.y(), _lineTime));
+        _drawing = true;
+        evaluateOnPenUp = true;
+
+        return true;
+    }
+
+    virtual bool onPaintStatePenUp() OVERRIDE FINAL
+    {
+        if (state != eEventStateBuildingLine) {
+            return false;
+        }
+        if (_drawing) {
+            BezierPtr line = getBezierBeingBuild();
+            if (line) {
+                _node->setLineOrientationFromDirection(line, _lineTime);
+            }
+        }
+        _drawing = false;
+
+        return true;
+    }
+};
+
+struct AutoStraightenInteract::MakeSharedEnabler
+    : public AutoStraightenInteract {
+    explicit MakeSharedEnabler(AutoStraighten* node)
+        : AutoStraightenInteract(node)
+    {
+    }
+};
+
+RotoCurveInteractPtr
+AutoStraightenInteract::create(AutoStraighten* node)
+{
+    return std::make_shared<AutoStraightenInteract::MakeSharedEnabler>(node);
+}
 } // anonymous namespace
 
 AutoStraightenOp::Params
@@ -232,6 +610,10 @@ AutoStraightenOp::costHint(const Params& /*params*/,
 
 AutoStraighten::AutoStraighten(NodePtr node)
     : ImageNode<AutoStraightenOp>(node)
+    // Built here, as RotoPaint does: Node::load() creates the curve context before initializeKnobs()
+    // and its endChanges() already calls knobChanged().
+    , _ui(AutoStraightenInteract::create(this))
+    , _settingLineOrientation(false)
 {
     op().node = this;
 }
@@ -248,10 +630,48 @@ AutoStraighten::addAcceptedComponents(int inputNb,
     comps->push_back(ImageLayerDesc::getXYComponents());
 }
 
+RotoCurvePanelHook*
+AutoStraighten::getCurvePanelHook() const
+{
+    return const_cast<AutoStraighten*>(this);
+}
+
 void
 AutoStraighten::initializeKnobs()
 {
+    _ui->connectToCurveContext();
+
     const KnobPagePtr page = createControlsPage();
+    _ui->createViewerButtonKnobs(page);
+    {
+        // Guide lines are selected and their end points moved with the curve tools, and drawn with
+        // the Draw Line tool.
+        KnobPagePtr toolbar = _ui->createToolbarKnobs(eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition);
+        AutoStraightenInteract* ui = static_cast<AutoStraightenInteract*>(_ui.get());
+
+        KnobGroupPtr guideLines = createKnob<KnobGroup>(tr(kAutoStraightenUIParamGuideLinesToolButtonLabel));
+        guideLines->setName(kAutoStraightenUIParamGuideLinesToolButton);
+        guideLines->setAsToolButton(true);
+        guideLines->setEvaluateOnChange(false);
+        guideLines->setSecretByDefault(true);
+        guideLines->setInViewerContextCanHaveShortcut(true);
+        guideLines->setIsPersistent(false);
+        toolbar->addKnob(guideLines);
+        ui->guideLinesToolGroup = guideLines;
+
+        KnobButtonPtr drawLine = createKnob<KnobButton>(tr(kAutoStraightenUIParamDrawLineToolButtonActionLabel));
+        drawLine->setName(kAutoStraightenUIParamDrawLineToolButtonAction);
+        drawLine->setHintToolTip(tr(kAutoStraightenUIParamDrawLineToolButtonActionHint));
+        drawLine->setCheckable(true);
+        drawLine->setDefaultValue(true);
+        drawLine->setSecretByDefault(true);
+        drawLine->setEvaluateOnChange(false);
+        drawLine->setIconLabel(NATRON_ICONS_PATH "lucide/pencil.svg");
+        drawLine->setIsPersistent(false);
+        guideLines->addKnob(drawLine);
+        ui->drawLineAction = drawLine;
+    }
+    _ui->createRightClickMenuKnobs(page);
 
     const auto makeDouble = [&](const QString& label, const char* name, const QString& hint, double def, double mini, double maxi,
                                 double dispMin, double dispMax) {
@@ -345,33 +765,30 @@ AutoStraighten::initializeKnobs()
 
     KnobChoicePtr structure = createKnob<KnobChoice>(tr("Structure"));
     structure->setName(kAutoStraightenParamStructure);
-    structure->setHintToolTip(tr("What the fit buttons straighten: the lines detected in the source, or the four sides of a rectangle placed in the viewer."));
+    structure->setHintToolTip(tr("What the fit buttons straighten: the guide lines drawn in the viewer, or the four sides of a rectangle placed in the viewer."));
     {
         std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption("lines", tr("Detected Lines").toStdString(), tr("Automatically analyse the line structure of the image.").toStdString()));
+        options.push_back(ChoiceOption("lines", tr("Drawn Lines").toStdString(), tr("Guide lines drawn in the viewer with the Draw Line tool, each tagged vertical or horizontal.").toStdString()));
         options.push_back(ChoiceOption("rectangle", tr("Rectangle").toStdString(), tr("Manually define the perspective rectangle with the four corners.").toStdString()));
         structure->populateChoices(options);
     }
-    structure->setDefaultValue((int)eStructureDetectedLines);
+    structure->setDefaultValue((int)eStructureDrawnLines);
     structure->setAnimationEnabled(false);
     page->addKnob(structure);
     _structure = structure;
 
-    KnobChoicePtr enhance = createKnob<KnobChoice>(tr("Enhance"));
-    enhance->setName(kAutoStraightenParamEnhance);
-    enhance->setHintToolTip(tr("The enhancement applied to the source before the lines are detected."));
+    // The selected guide line's orientation, slaved to it by the curve context.
     {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption("none", tr("None").toStdString(), ""));
-        options.push_back(ChoiceOption("edges", tr("Edges").toStdString(), tr("An additional edge enhancement.").toStdString()));
-        options.push_back(ChoiceOption("detail", tr("Detail").toStdString(), tr("An additional detail enhancement.").toStdString()));
-        options.push_back(ChoiceOption("edgesAndDetail", tr("Edges And Detail").toStdString(), tr("A combination of both.").toStdString()));
-        enhance->populateChoices(options);
+        KnobChoicePtr lineOrientation = makeLineOrientationKnob(this);
+        lineOrientation->setDefaultAllDimensionsEnabled(false);
+        lineOrientation->setIsPersistent(false);
+        page->addKnob(lineOrientation);
+        _lineOrientation = lineOrientation;
+        RotoCurveContextPtr context = getNode()->getCurveContext();
+        if (context) {
+            context->addHostItemKnob(lineOrientation);
+        }
     }
-    enhance->setDefaultValue(0);
-    enhance->setAnimationEnabled(false);
-    page->addKnob(enhance);
-    _enhance = enhance;
 
     KnobChoicePtr fitParameters = createKnob<KnobChoice>(tr("Fit Parameters"));
     fitParameters->setName(kAutoStraightenParamFitParameters);
@@ -484,7 +901,11 @@ AutoStraighten::refreshVisibility()
     setSecretAndDisabled(op().cropFactor.lock(), !specific);
     setSecretAndDisabled(op().lensDependence.lock(), !specific);
     setSecretAndDisabled(op().aspectAdjust.lock(), !specific);
-    setSecretAndDisabled(_enhance.lock(), rectangle);
+    KnobChoicePtr lineOrientation = _lineOrientation.lock();
+    if (lineOrientation) {
+        // Not disabled here: the curve context enables it while a line is selected.
+        lineOrientation->setSecret(rectangle);
+    }
     for (int i = 0; i < 4; ++i) {
         setSecretAndDisabled(_corners[i].lock(), !rectangle);
     }
@@ -506,6 +927,11 @@ AutoStraighten::updateClampEnabled(double time,
 void
 AutoStraighten::onKnobsLoaded()
 {
+    KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
+
+    _ui->setCurrentTool(defaultAction);
+    _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
+    _ui->onToolChangedInternal(defaultAction);
     refreshVisibility();
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
@@ -517,6 +943,31 @@ AutoStraighten::knobChanged(KnobI* k,
                             double time,
                             bool /*originatedFromMainThread*/)
 {
+    bool ret = false;
+
+    if (k && _ui->onKnobChanged(k, time, &ret)) {
+        return ret;
+    }
+    if (k && (k->getName() == kAutoStraightenParamLineOrientation)) {
+        // The node's knob edits every selected line: write the value to each line's own knob,
+        // which the fit reads.
+        RotoCurveContextPtr context = getNode()->getCurveContext();
+        KnobChoicePtr master = _lineOrientation.lock();
+        if (context && master && !_settingLineOrientation) {
+            const int value = master->getValue();
+            const std::list<RotoDrawableItemPtr> selected = context->getSelectedCurves();
+            for (std::list<RotoDrawableItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+                KnobChoicePtr own = lineOrientationKnob(*it);
+                if (own && (ownOrientation(own) != value)) {
+                    own->setValue(value, ViewSpec::all(), 0, true);
+                    context->emitItemPanelColumnsChanged(*it);
+                }
+            }
+        }
+
+        return true;
+    }
+
     const ViewIdx viewIdx = (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view);
     KnobChoicePtr filterKnob = op().filter.lock();
 
@@ -741,68 +1192,323 @@ AutoStraighten::rectangleLines(double time,
     return Ashift::quadLines(pts, (int)std::lround(format.width() * par), format.height());
 }
 
-bool
-AutoStraighten::detectStructure(double time,
-                                ViewIdx view,
-                                Ashift::LineSet* lines,
-                                std::string* error)
+Ashift::LineSet
+AutoStraighten::drawnLines(double time,
+                           ViewIdx view) const
 {
-    if (!getInput(0)) {
-        *error = "could not detect structural data in image";
-
-        return false;
-    }
     RectI format;
     double par = 1.;
     getSourceFormat(time, view, &format, &par);
-    const int width = format.width();
-    const int height = format.height();
-    if ((width <= 0) || (height <= 0)) {
-        *error = "could not detect structural data in image";
-
-        return false;
-    }
-    const RectD bounds = toCanonical(format, par);
-    RectI roi;
-    ImagePtr src = getImage(0, time, RenderScale::identity, view, &bounds, NULL, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
-    if (!src || (src->getBitDepth() != eImageBitDepthFloat)) {
-        *error = "could not detect structural data in image";
-
-        return false;
-    }
-    // Top row first, as darktable's buffers are.
-    std::vector<float> rgba((std::size_t)width * height * 4, 0.f);
-    const int nComps = (int)src->getComponentsCount();
-    const RectI area = format.intersect(src->getBounds());
-    {
-        Image::ReadAccess access(src.get());
-        for (int py = area.y1; py < area.y2; ++py) {
-            const float* pix = (const float*)access.pixelAt(area.x1, py);
-            if (!pix) {
+    // Canonical to darktable's square-pixel input coordinates, as rectangleLines().
+    const double x0 = (0.5 + format.x1) * par;
+    const double y0 = format.y2 - 0.5;
+    std::vector<Ashift::DrawnLine> segments;
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (context) {
+        const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(true);
+        for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+            BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
+            LineOrientationEnum orientation;
+            if (!bezier || !bezier->isOpenBezier() || !bezier->isActivated(time) || !getLineOrientation(bezier, &orientation)) {
                 continue;
             }
-            float* dst = &rgba[4 * ((std::size_t)(format.y2 - 1 - py) * width + (area.x1 - format.x1))];
-            for (int px = area.x1; px < area.x2; ++px, pix += nComps, dst += 4) {
-                for (int c = 0; c < 3; ++c) {
-                    dst[c] = pix[(nComps >= 3) ? c : 0];
+            Transform::Matrix3x3 transform;
+            bezier->getTransformAtTime(time, &transform);
+            const int count = bezier->getControlPointsCount();
+            bool havePrevious = false;
+            double px = 0., py = 0.;
+            for (int i = 0; i < count; ++i) {
+                BezierCPPtr cp = bezier->getControlPointAtIndex(i);
+                Transform::Point3D p;
+                p.z = 1.;
+                if (!cp) {
+                    continue;
                 }
-                dst[3] = (nComps == 4) ? pix[3] : 1.f;
+                cp->getPositionAtTime(false /*useGuiCurves*/, time, view, &p.x, &p.y);
+                p = Transform::matApply(transform, p);
+                const double x = p.x / p.z - x0;
+                const double y = y0 - p.y / p.z;
+                if (havePrevious) {
+                    Ashift::DrawnLine segment;
+                    segment.x1 = px;
+                    segment.y1 = py;
+                    segment.x2 = x;
+                    segment.y2 = y;
+                    segment.vertical = (orientation == eLineOrientationVertical);
+                    segments.push_back(segment);
+                }
+                px = x;
+                py = y;
+                havePrevious = true;
             }
         }
     }
-    KnobChoicePtr enhanceKnob = _enhance.lock();
-    const int enhance = enhanceKnob ? enhanceKnob->getValue() : 0;
-    if (!Ashift::detectLines(std::move(rgba), width, height, par, enhance, Ashift::SegmentDetector(), lines, error)) {
-        if (!Ashift::hasSegmentDetector()) {
-            *error = "line detector unavailable: use Rectangle mode";
-        }
 
+    return Ashift::drawnLines(segments, (int)std::lround(format.width() * par), format.height());
+} // AutoStraighten::drawnLines
+
+bool
+AutoStraighten::getLineOrientation(const RotoItemPtr& item,
+                                   LineOrientationEnum* orientation)
+{
+    KnobChoicePtr k = lineOrientationKnob(item);
+    if (!k) {
         return false;
     }
-    Ashift::removeOutliers(lines, kOutlierSeed);
+    *orientation = (ownOrientation(k) == (int)eLineOrientationHorizontal) ? eLineOrientationHorizontal : eLineOrientationVertical;
 
     return true;
-} // AutoStraighten::detectStructure
+}
+
+void
+AutoStraighten::setLineOrientation(const RotoDrawableItemPtr& item,
+                                   LineOrientationEnum orientation)
+{
+    KnobChoicePtr k = lineOrientationKnob(item);
+    if (!k) {
+        return;
+    }
+    k->setValue((int)orientation, ViewSpec::all(), 0, true);
+    // A selected item shows through the node's knob: show the new value there without writing it
+    // back to the other selected items.
+    KnobChoicePtr master = _lineOrientation.lock();
+    if (master && k->isSlave(0)) {
+        _settingLineOrientation = true;
+        master->setValue((int)orientation, ViewSpec::all(), 0, true);
+        _settingLineOrientation = false;
+    }
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (context) {
+        context->emitItemPanelColumnsChanged(item);
+    }
+}
+
+void
+AutoStraighten::setLineOrientationFromDirection(const BezierPtr& line,
+                                                double time)
+{
+    if (!line || (line->getControlPointsCount() < 2)) {
+        return;
+    }
+    BezierCPPtr first = line->getControlPointAtIndex(0);
+    BezierCPPtr last = line->getControlPointAtIndex(line->getControlPointsCount() - 1);
+    double x1 = 0., y1 = 0., x2 = 0., y2 = 0.;
+    if (!first || !last) {
+        return;
+    }
+    first->getPositionAtTime(false /*useGuiCurves*/, time, ViewIdx(0), &x1, &y1);
+    last->getPositionAtTime(false /*useGuiCurves*/, time, ViewIdx(0), &x2, &y2);
+    setLineOrientation(line, (std::fabs(x2 - x1) > std::fabs(y2 - y1)) ? eLineOrientationHorizontal : eLineOrientationVertical);
+}
+
+void
+AutoStraighten::onCurveItemCreated(const RotoDrawableItemPtr& item)
+{
+    if (!std::dynamic_pointer_cast<Bezier>(item)) {
+        return;
+    }
+    KnobChoicePtr orientation = makeLineOrientationKnob(NULL);
+    item->addHostKnob(orientation);
+
+    // Keep the panel's Orientation column current.
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (context && orientation->getSignalSlotHandler()) {
+        RotoDrawableItemWPtr weakItem = item;
+        std::weak_ptr<RotoCurveContext> weakContext = context;
+        QObject::connect(orientation->getSignalSlotHandler().get(), &KnobSignalSlotHandler::valueChanged, context.get(),
+                         [weakItem, weakContext](ViewSpec, int, int) {
+                             RotoCurveContextPtr c = weakContext.lock();
+                             RotoDrawableItemPtr i = weakItem.lock();
+                             if (c && i) {
+                                 c->emitItemPanelColumnsChanged(i);
+                             }
+                         });
+    }
+}
+
+std::vector<RotoCurvePanelHook::Column>
+AutoStraighten::getColumns() const
+{
+    std::vector<Column> columns(1);
+    columns[0].header = tr("Orientation").toStdString();
+    columns[0].toolTip = tr("Whether the guide line should be vertical or horizontal once corrected.").toStdString();
+
+    return columns;
+}
+
+std::string
+AutoStraighten::getItemText(const RotoItemPtr& item,
+                            int column) const
+{
+    LineOrientationEnum orientation;
+    if ((column != 0) || !getLineOrientation(item, &orientation)) {
+        return std::string();
+    }
+
+    return (orientation == eLineOrientationHorizontal) ? tr("Horizontal").toStdString() : tr("Vertical").toStdString();
+}
+
+std::vector<RotoCurvePanelHook::MenuAction>
+AutoStraighten::getItemMenuActions(const std::list<RotoItemPtr>& items) const
+{
+    std::vector<MenuAction> actions;
+    bool any = false;
+    for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        any = any || bool(lineOrientationKnob(*it));
+    }
+    if (!any) {
+        return actions;
+    }
+    actions.resize(2);
+    actions[0].id = kAutoStraightenActionSetVertical;
+    actions[0].label = tr("Set Vertical").toStdString();
+    actions[1].id = kAutoStraightenActionSetHorizontal;
+    actions[1].label = tr("Set Horizontal").toStdString();
+
+    return actions;
+}
+
+void
+AutoStraighten::onItemMenuActionTriggered(const std::string& actionId,
+                                          const std::list<RotoItemPtr>& items)
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    if (!context) {
+        return;
+    }
+    int value;
+    if (actionId == kAutoStraightenActionSetVertical) {
+        value = (int)eLineOrientationVertical;
+    } else if (actionId == kAutoStraightenActionSetHorizontal) {
+        value = (int)eLineOrientationHorizontal;
+    } else {
+        return;
+    }
+    std::list<RotoDrawableItemPtr> lines;
+    for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        if (lineOrientationKnob(*it)) {
+            lines.push_back(std::dynamic_pointer_cast<RotoDrawableItem>(*it));
+        }
+    }
+    if (!lines.empty()) {
+        pushUndoCommand(new LineOrientationCommand(getNode(), lines, value));
+    }
+}
+
+void
+AutoStraighten::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    const int toolSet = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition;
+
+    RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
+    RotoCurveInteract::getToolbarShortcuts(toolSet, shortcuts);
+    shortcuts->push_back(PluginActionShortcut(kAutoStraightenUIParamGuideLinesToolButton, kAutoStraightenUIParamGuideLinesToolButtonLabel, Key_V));
+    RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+}
+
+void
+AutoStraighten::refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                                  double time)
+{
+    ImageNode<AutoStraightenOp>::refreshExtraStateAfterTimeChanged(isPlayback, time);
+    _ui->refreshAfterTimeChanged(time);
+}
+
+void
+AutoStraighten::drawOverlay(double time,
+                            const RenderScale& /*renderScale*/,
+                            ViewIdx /*view*/)
+{
+    _ui->drawOverlay(time);
+}
+
+bool
+AutoStraighten::onOverlayPenDown(double time,
+                                 const RenderScale& /*renderScale*/,
+                                 ViewIdx /*view*/,
+                                 const QPointF& /*viewportPos*/,
+                                 const QPointF& pos,
+                                 double pressure,
+                                 double timestamp,
+                                 PenType pen)
+{
+    return _ui->onOverlayPenDown(time, pos, pressure, timestamp, pen);
+}
+
+bool
+AutoStraighten::onOverlayPenMotion(double time,
+                                   const RenderScale& /*renderScale*/,
+                                   ViewIdx /*view*/,
+                                   const QPointF& /*viewportPos*/,
+                                   const QPointF& pos,
+                                   double pressure,
+                                   double timestamp)
+{
+    return _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
+}
+
+bool
+AutoStraighten::onOverlayPenUp(double /*time*/,
+                               const RenderScale& /*renderScale*/,
+                               ViewIdx /*view*/,
+                               const QPointF& /*viewportPos*/,
+                               const QPointF& /*pos*/,
+                               double /*pressure*/,
+                               double /*timestamp*/)
+{
+    return _ui->onOverlayPenUp();
+}
+
+bool
+AutoStraighten::onOverlayPenDoubleClicked(double /*time*/,
+                                          const RenderScale& /*renderScale*/,
+                                          ViewIdx /*view*/,
+                                          const QPointF& /*viewportPos*/,
+                                          const QPointF& pos)
+{
+    return _ui->onOverlayPenDoubleClicked(pos);
+}
+
+bool
+AutoStraighten::onOverlayKeyDown(double /*time*/,
+                                 const RenderScale& /*renderScale*/,
+                                 ViewIdx /*view*/,
+                                 Key key,
+                                 KeyboardModifiers /*modifiers*/)
+{
+    return _ui->onOverlayKeyDown(key);
+}
+
+bool
+AutoStraighten::onOverlayKeyUp(double /*time*/,
+                               const RenderScale& /*renderScale*/,
+                               ViewIdx /*view*/,
+                               Key key,
+                               KeyboardModifiers /*modifiers*/)
+{
+    return _ui->onOverlayKeyUp(key);
+}
+
+bool
+AutoStraighten::onOverlayFocusLost(double /*time*/,
+                                   const RenderScale& /*renderScale*/,
+                                   ViewIdx /*view*/)
+{
+    return _ui->onOverlayFocusLost();
+}
+
+void
+AutoStraighten::onInteractViewportSelectionCleared()
+{
+    _ui->onViewportSelectionCleared();
+}
+
+void
+AutoStraighten::onInteractViewportSelectionUpdated(const RectD& rectangle,
+                                                   bool onRelease)
+{
+    _ui->onViewportSelectionUpdated(rectangle, onRelease);
+}
 
 bool
 AutoStraighten::fit(FitButtonEnum button,
@@ -812,15 +1518,7 @@ AutoStraighten::fit(FitButtonEnum button,
     clearPersistentMessage(false);
 
     KnobChoicePtr structure = _structure.lock();
-    Ashift::LineSet lines;
-    std::string error;
-    if (structure && (structure->getValue() == (int)eStructureRectangle)) {
-        lines = rectangleLines(time, view);
-    } else if (!detectStructure(time, view, &lines, &error)) {
-        setPersistentMessage(eMessageTypeError, error);
-
-        return false;
-    }
+    const Ashift::LineSet lines = (structure && (structure->getValue() == (int)eStructureRectangle)) ? rectangleLines(time, view) : drawnLines(time, view);
     {
         std::lock_guard<std::mutex> lock(_mutex);
         _lastLines = lines;

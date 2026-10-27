@@ -113,6 +113,7 @@
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
 #include "Gui/SceneGizmo.h"
+#include "Gui/SceneGuides.h"
 #include "Gui/UndoHistory.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -269,6 +270,12 @@ struct SceneViewportRenderer::Implementation {
     // Main thread only.
     DrawModeEnum drawMode = eDrawModeShaded;
     bool showGrid = true;
+    bool showGuides = true;
+    bool showProxy = true;
+    bool showRender = false;
+    bool showGuidePurpose = false;
+    LightingModeEnum lightingMode = eLightingModeAuto;
+    bool sceneLit = false;
     FreeCamera freeCamera;
     ClipPlanes clipPlanes;
     bool framedOnce = false;
@@ -280,6 +287,18 @@ struct SceneViewportRenderer::Implementation {
     std::vector<std::string> selected;
     std::unique_ptr<UsdImagingGLEngine> engine;
     U64 engineCount = 0;
+
+    // The guide prims of the stage as of an edit count, and their guides as of a time: both need
+    // stageMutex.
+    std::vector<SceneGuides::GuidePrim> guidePrims;
+    bool stageHasLights = false;
+    bool guidePrimsValid = false;
+    U64 guidePrimsEditCount = 0;
+    std::vector<SceneGuides::Guide> guides;
+    bool guidesValid = false;
+    double guidesTimeCode = 0.;
+    double guidesLength = 0.;
+    std::vector<DrawnGuide> drawnGuides;
 
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
@@ -305,6 +324,74 @@ struct SceneViewportRenderer::Implementation {
     UsdStageRefPtr currentStage() const
     {
         return (shown && sceneStage) ? sceneStage->getStage() : UsdStageRefPtr();
+    }
+
+    // Finds the guide prims again after the stage is edited. Needs stageMutex.
+    void refreshGuidePrims()
+    {
+        const UsdStageRefPtr stage = currentStage();
+        if (!stage) {
+            guidePrims.clear();
+            stageHasLights = false;
+            guidePrimsValid = false;
+            guidesValid = false;
+
+            return;
+        }
+        const U64 editCount = sceneStage->getEditCount();
+        if (guidePrimsValid && (guidePrimsEditCount == editCount)) {
+            return;
+        }
+        guidePrims = SceneGuides::findGuidePrims(stage, &stageHasLights);
+        guidePrimsEditCount = editCount;
+        guidePrimsValid = true;
+        guidesValid = false;
+    }
+
+    // How far camera frustums reach and how big light icons are, in stage units: the scale the
+    // scene nodes author at (a USDLight is one unit wide).
+    double guideLength() const
+    {
+        return 1.;
+    }
+
+    // The guides at the shown time, built again when the stage or the time changed. Needs
+    // stageMutex.
+    const std::vector<SceneGuides::Guide>& currentGuides()
+    {
+        refreshGuidePrims();
+        const double time = timeCode();
+        const double length = guideLength();
+        if (!guidesValid || (guidesTimeCode != time) || (guidesLength != length)) {
+            guides = SceneGuides::buildGuides(currentStage(), guidePrims, UsdTimeCode(time), length);
+            guidesTimeCode = time;
+            guidesLength = length;
+            guidesValid = true;
+        }
+
+        return guides;
+    }
+
+    bool isSelected(const std::string& path) const
+    {
+        return std::find(selected.begin(), selected.end(), path) != selected.end();
+    }
+
+    // Whether the shaded mode is lit by the stage's lights. Needs stageMutex.
+    bool usesSceneLights()
+    {
+        switch (lightingMode) {
+        case eLightingModeAuto:
+            refreshGuidePrims();
+
+            return stageHasLights;
+        case eLightingModeScene:
+            return true;
+        case eLightingModeHeadlight:
+            return false;
+        }
+
+        return false;
     }
 
     // The project frame mapped by seconds, as SceneOps::frameToTimeCode.
@@ -491,6 +578,10 @@ struct SceneViewportRenderer::Implementation {
         params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
         params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
         params.highlight = true;
+        params.showProxy = showProxy;
+        params.showRender = showRender;
+        params.showGuides = showGuidePurpose;
+        params.enableSceneLights = sceneLit;
         switch (drawMode) {
         case eDrawModeUnshaded:
             params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
@@ -548,8 +639,9 @@ struct SceneViewportRenderer::Implementation {
         return true;
     }
 
-    // A light at the camera, as usdview's default camera light.
-    void setHeadlight()
+    // A light at the camera, as usdview's default camera light, or none when the stage's own
+    // lights light the scene (Storm adds those itself with enableSceneLights).
+    void setLights()
     {
         GlfSimpleLight light;
 
@@ -562,7 +654,7 @@ struct SceneViewportRenderer::Implementation {
         material.SetAmbient(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
         material.SetSpecular(GfVec4f(0.1f, 0.1f, 0.1f, 1.f));
         material.SetShininess(32.);
-        engine->SetLightingState(GlfSimpleLightVector(1, light), material, GfVec4f(0.01f, 0.01f, 0.01f, 1.f));
+        engine->SetLightingState(sceneLit ? GlfSimpleLightVector() : GlfSimpleLightVector(1, light), material, GfVec4f(0.01f, 0.01f, 0.01f, 1.f));
     }
 
     void setCamera(const GfFrustum& frustum,
@@ -574,7 +666,7 @@ struct SceneViewportRenderer::Implementation {
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
         engine->SetPresentationOutput(HgiTokens->OpenGL, VtValue(uint32_t(fbo)));
-        setHeadlight();
+        setLights();
     }
 
     // Needs stageMutex: a camera looked through is a prim of the stage.
@@ -747,6 +839,91 @@ struct SceneViewportRenderer::Implementation {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
     }
+
+    // The camera and light guides, but the camera looked through's, as one batch of lines per
+    // colour, depth-tested against Storm's presented depth; selected ones in the selection colour.
+    // Records where each is in drawnGuides. Needs stageMutex.
+    void drawGuides(const GfFrustum& frustum,
+                    int width,
+                    int height)
+    {
+        drawnGuides.clear();
+        const std::vector<SceneGuides::Guide>& all = currentGuides();
+        if (all.empty()) {
+            return;
+        }
+        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+        for (const SceneGuides::Guide& guide : all) {
+            if (guide.path == lookThrough) {
+                continue;
+            }
+            for (std::size_t k = 0; k + 1 < guide.segments.size(); k += 2) {
+                GfVec2d a, b;
+                if (!SceneGizmo::project(view, guide.segments[k], &a) || !SceneGizmo::project(view, guide.segments[k + 1], &b)) {
+                    continue;
+                }
+                const GfVec2d middle = (a + b) * 0.5;
+                if ((middle[0] >= 0.) && (middle[0] < width) && (middle[1] >= 0.) && (middle[1] < height)) {
+                    DrawnGuide drawn;
+                    drawn.path = guide.path;
+                    drawn.kind = SceneGuides::getGuideKindName(guide.kind);
+                    drawn.x = middle[0];
+                    drawn.y = middle[1];
+                    drawnGuides.push_back(drawn);
+                    break;
+                }
+            }
+        }
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
+
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Unselected cameras, unselected lights, then the selection drawn thicker over them.
+        for (int pass = 0; pass < 3; ++pass) {
+            if (pass == 0) {
+                glColor4f(0.45f, 0.85f, 0.85f, 1.f);
+            } else if (pass == 1) {
+                glColor4f(0.95f, 0.9f, 0.55f, 1.f);
+            } else {
+                glColor4f(1.f, 0.8f, 0.1f, 1.f);
+            }
+            glLineWidth((pass == 2) ? 2.f : 1.f);
+            glBegin(GL_LINES);
+            for (const SceneGuides::Guide& guide : all) {
+                if (guide.path == lookThrough) {
+                    continue;
+                }
+                const bool isCamera = (guide.kind == SceneGuides::eGuideKindCamera);
+                const int guidePass = isSelected(guide.path) ? 2 : (isCamera ? 0 : 1);
+                if (guidePass != pass) {
+                    continue;
+                }
+                for (const GfVec3d& p : guide.segments) {
+                    glVertex3d(p[0], p[1], p[2]);
+                }
+            }
+            glEnd();
+        }
+        glLineWidth(1.f);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    } // drawGuides
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -898,6 +1075,78 @@ bool
 SceneViewportRenderer::getShowGrid() const
 {
     return _imp->showGrid;
+}
+
+void
+SceneViewportRenderer::setShowGuides(bool show)
+{
+    _imp->showGuides = show;
+}
+
+bool
+SceneViewportRenderer::getShowGuides() const
+{
+    return _imp->showGuides;
+}
+
+void
+SceneViewportRenderer::setShowProxy(bool show)
+{
+    _imp->showProxy = show;
+}
+
+bool
+SceneViewportRenderer::getShowProxy() const
+{
+    return _imp->showProxy;
+}
+
+void
+SceneViewportRenderer::setShowRender(bool show)
+{
+    _imp->showRender = show;
+}
+
+bool
+SceneViewportRenderer::getShowRender() const
+{
+    return _imp->showRender;
+}
+
+void
+SceneViewportRenderer::setShowGuidePurpose(bool show)
+{
+    _imp->showGuidePurpose = show;
+}
+
+bool
+SceneViewportRenderer::getShowGuidePurpose() const
+{
+    return _imp->showGuidePurpose;
+}
+
+void
+SceneViewportRenderer::setLightingMode(LightingModeEnum mode)
+{
+    _imp->lightingMode = mode;
+}
+
+SceneViewportRenderer::LightingModeEnum
+SceneViewportRenderer::getLightingMode() const
+{
+    return _imp->lightingMode;
+}
+
+bool
+SceneViewportRenderer::isSceneLit() const
+{
+    return _imp->sceneLit;
+}
+
+const std::vector<SceneViewportRenderer::DrawnGuide>&
+SceneViewportRenderer::getDrawnGuides() const
+{
+    return _imp->drawnGuides;
 }
 
 void
@@ -1406,6 +1655,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
+    _imp->sceneLit = _imp->usesSceneLights();
     _imp->setCamera(frustum, width, height, fbo);
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
@@ -1414,7 +1664,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         converged = _imp->engine->IsConverged();
     }
 
-    if (_imp->showGrid || _imp->hasHandles) {
+    _imp->drawnGuides.clear();
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
         // Storm leaves its own program, vertex array and framebuffer bound.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -1424,6 +1675,9 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         glDisable(GL_FRAMEBUFFER_SRGB);
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
+        }
+        if (_imp->showGuides) {
+            _imp->drawGuides(frustum, width, height);
         }
         _imp->drawTransformHandles(frustum, width, height);
     }
@@ -1455,13 +1709,25 @@ SceneViewportRenderer::pick(int x,
     UsdImagingGLEngine::PickParams pickParams;
     pickParams.resolveMode = HdxPickTokens->resolveNearestToCenter;
     UsdImagingGLEngine::IntersectionResultVector results;
-    if (!_imp->engine->TestIntersection(pickParams, pickFrustum.ComputeViewMatrix(), pickFrustum.ComputeProjectionMatrix(),
-                                        stage->GetPseudoRoot(), _imp->renderParams(), &results)
-        || results.empty()) {
-        return std::string();
+    const bool hitPrim = _imp->engine->TestIntersection(pickParams, pickFrustum.ComputeViewMatrix(), pickFrustum.ComputeProjectionMatrix(),
+                                                        stage->GetPseudoRoot(), _imp->renderParams(), &results)
+        && !results.empty();
+
+    int guide = -1;
+    GfVec3d guidePoint;
+    if (_imp->showGuides) {
+        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+        guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
+    }
+    if (guide >= 0) {
+        // The nearer wins: depth is -z in the camera's space, for either projection.
+        const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+        if (!hitPrim || (viewMatrix.Transform(guidePoint)[2] >= viewMatrix.Transform(results.front().hitPoint)[2])) {
+            return _imp->guides[guide].path;
+        }
     }
 
-    return results.front().hitPrimPath.GetString();
+    return hitPrim ? results.front().hitPrimPath.GetString() : std::string();
 }
 
 std::vector<std::string>
@@ -1502,12 +1768,21 @@ SceneViewportRenderer::pickRect(int x0,
     UsdImagingGLEngine::IntersectionResultVector results;
     if (!_imp->engine->TestIntersection(pickParams, pickFrustum.ComputeViewMatrix(), pickFrustum.ComputeProjectionMatrix(),
                                         stage->GetPseudoRoot(), _imp->renderParams(), &results)) {
-        return paths;
+        results.clear();
     }
     for (const UsdImagingGLEngine::IntersectionResult& result : results) {
         const std::string path = result.hitPrimPath.GetString();
         if (!path.empty() && (std::find(paths.begin(), paths.end(), path) == paths.end())) {
             paths.push_back(path);
+        }
+    }
+    if (_imp->showGuides) {
+        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+        const std::vector<SceneGuides::Guide>& guides = _imp->currentGuides();
+        for (int index : SceneGuides::guidesInRect(view, guides, GfVec2d(left, top), GfVec2d(right + 1., bottom + 1.), _imp->lookThrough)) {
+            if (std::find(paths.begin(), paths.end(), guides[index].path) == paths.end()) {
+                paths.push_back(guides[index].path);
+            }
         }
     }
     // Hits come in hash order; sorted, a marquee's selection does not depend on it.
@@ -1579,6 +1854,11 @@ const DefaultKeyBinding kDefaultKeyBindings[] = {
     { kShortcutIDActionViewer3DTop, Qt::NoModifier, Qt::Key_C },
     { kShortcutIDActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C },
     { kShortcutIDActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L },
+    { kShortcutIDActionViewer3DWireframe, Qt::ControlModifier, Qt::Key_4 },
+    { kShortcutIDActionViewer3DShaded, Qt::ControlModifier, Qt::Key_5 },
+    { kShortcutIDActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6 },
+    { kShortcutIDActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G },
+    { kShortcutIDActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G },
 };
 
 const DefaultKeyBinding*
@@ -1676,6 +1956,71 @@ viewModeForKey(Qt::KeyboardModifiers modifiers,
     }
 
     return -1;
+}
+
+// The draw modes, their key actions and menu labels.
+struct DrawModeEntry {
+    SceneViewportRenderer::DrawModeEnum mode;
+    const char* actionID;
+    const char* label;
+    const char* name;
+};
+
+const DrawModeEntry kDrawModes[] = {
+    { SceneViewportRenderer::eDrawModeUnshaded, kShortcutIDActionViewer3DUnshaded, kShortcutDescActionViewer3DUnshaded, "unshaded" },
+    { SceneViewportRenderer::eDrawModeShaded, kShortcutIDActionViewer3DShaded, kShortcutDescActionViewer3DShaded, "shaded" },
+    { SceneViewportRenderer::eDrawModeWireframe, kShortcutIDActionViewer3DWireframe, kShortcutDescActionViewer3DWireframe, "wireframe" },
+};
+
+// The draw mode a key press asks for, or -1.
+int
+drawModeForKey(Qt::KeyboardModifiers modifiers,
+               int key)
+{
+    for (const DrawModeEntry& entry : kDrawModes) {
+        if (matchesKeyBinding(entry.actionID, modifiers, key)) {
+            return (int)entry.mode;
+        }
+    }
+
+    return -1;
+}
+
+const char*
+drawModeName(SceneViewportRenderer::DrawModeEnum mode)
+{
+    for (const DrawModeEntry& entry : kDrawModes) {
+        if (entry.mode == mode) {
+            return entry.name;
+        }
+    }
+
+    return "";
+}
+
+// The lighting modes, their menu labels and script names.
+struct LightingModeEntry {
+    SceneViewportRenderer::LightingModeEnum mode;
+    const char* label;
+    const char* name;
+};
+
+const LightingModeEntry kLightingModes[] = {
+    { SceneViewportRenderer::eLightingModeAuto, QT_TRANSLATE_NOOP("SceneViewport", "Auto"), "auto" },
+    { SceneViewportRenderer::eLightingModeScene, QT_TRANSLATE_NOOP("SceneViewport", "Scene Lights"), "scene" },
+    { SceneViewportRenderer::eLightingModeHeadlight, QT_TRANSLATE_NOOP("SceneViewport", "Headlight"), "headlight" },
+};
+
+const char*
+lightingModeName(SceneViewportRenderer::LightingModeEnum mode)
+{
+    for (const LightingModeEntry& entry : kLightingModes) {
+        if (entry.mode == mode) {
+            return entry.name;
+        }
+    }
+
+    return "";
 }
 
 // The script name of a view mode, as the natronSceneViewMode property reports it.
@@ -2111,6 +2456,13 @@ SceneViewport::publishState()
     setProperty("natronSceneClip", QVariantList { clip.automatic, clip.nearClip, clip.farClip });
     setProperty("natronSceneLockView", _imp->lockView);
     setProperty("natronSceneLockMessage", _imp->lockMessage);
+    // The display settings: the draw mode's and lighting mode's script names, and the proxy,
+    // render and guide purposes shown.
+    setProperty("natronSceneDrawMode", QString::fromUtf8(drawModeName(_imp->renderer.getDrawMode())));
+    setProperty("natronSceneShowGrid", _imp->renderer.getShowGrid());
+    setProperty("natronSceneShowGuides", _imp->renderer.getShowGuides());
+    setProperty("natronScenePurposes", QVariantList { _imp->renderer.getShowProxy(), _imp->renderer.getShowRender(), _imp->renderer.getShowGuidePurpose() });
+    setProperty("natronSceneLighting", QString::fromUtf8(lightingModeName(_imp->renderer.getLightingMode())));
 }
 
 const QString&
@@ -2129,6 +2481,43 @@ void
 SceneViewport::setDrawMode(SceneViewportRenderer::DrawModeEnum mode)
 {
     _imp->renderer.setDrawMode(mode);
+    publishState();
+    update();
+}
+
+void
+SceneViewport::setShowGrid(bool show)
+{
+    _imp->renderer.setShowGrid(show);
+    publishState();
+    update();
+}
+
+void
+SceneViewport::setShowGuides(bool show)
+{
+    _imp->renderer.setShowGuides(show);
+    publishState();
+    update();
+}
+
+void
+SceneViewport::setShowPurposes(bool proxy,
+                               bool render,
+                               bool guide)
+{
+    _imp->renderer.setShowProxy(proxy);
+    _imp->renderer.setShowRender(render);
+    _imp->renderer.setShowGuidePurpose(guide);
+    publishState();
+    update();
+}
+
+void
+SceneViewport::setLightingMode(SceneViewportRenderer::LightingModeEnum mode)
+{
+    _imp->renderer.setLightingMode(mode);
+    publishState();
     update();
 }
 
@@ -2728,6 +3117,16 @@ SceneViewport::paintGL()
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    // Whether the stage's own lights lit this paint, and the guides it drew: path, kind and a
+    // point on each in widget pixels.
+    setProperty("natronSceneSceneLit", _imp->renderer.isSceneLit());
+    {
+        QVariantList guides;
+        for (const SceneViewportRenderer::DrawnGuide& guide : _imp->renderer.getDrawnGuides()) {
+            guides.push_back(QVariantList { QString::fromStdString(guide.path), QString::fromStdString(guide.kind), guide.x / dpr, guide.y / dpr });
+        }
+        setProperty("natronSceneGuides", guides);
+    }
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
@@ -2736,16 +3135,10 @@ SceneViewport::paintGL()
         painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, _imp->error);
     } else if (_imp->renderer.hasScene()) {
         QString mode;
-        switch (_imp->renderer.getDrawMode()) {
-        case SceneViewportRenderer::eDrawModeUnshaded:
-            mode = tr("Unshaded");
-            break;
-        case SceneViewportRenderer::eDrawModeShaded:
-            mode = tr("Shaded");
-            break;
-        case SceneViewportRenderer::eDrawModeWireframe:
-            mode = tr("Wireframe");
-            break;
+        for (const DrawModeEntry& entry : kDrawModes) {
+            if (entry.mode == _imp->renderer.getDrawMode()) {
+                mode = tr(entry.label);
+            }
         }
         const std::string& camera = _imp->renderer.getLookThroughCamera();
         QString view = tr("Free camera");
@@ -3096,7 +3489,8 @@ SceneViewport::event(QEvent* e)
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
         if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, k->modifiers(), k->key()) || matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DLockView, k->modifiers(), k->key()) || (viewModeForKey(k->modifiers(), k->key()) >= 0)
-            || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
+            || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
             return true;
@@ -3130,6 +3524,25 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     const int mode = viewModeForKey(e->modifiers(), e->key());
     if (mode >= 0) {
         setViewMode((SceneViewportRenderer::ViewModeEnum)mode);
+        e->accept();
+
+        return;
+    }
+    const int drawMode = drawModeForKey(e->modifiers(), e->key());
+    if (drawMode >= 0) {
+        setDrawMode((SceneViewportRenderer::DrawModeEnum)drawMode);
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, e->modifiers(), e->key())) {
+        setShowGrid(!_imp->renderer.getShowGrid());
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, e->modifiers(), e->key())) {
+        setShowGuides(!_imp->renderer.getShowGuides());
         e->accept();
 
         return;
@@ -3195,20 +3608,12 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     Menu menu(this);
 
     QActionGroup* modes = new QActionGroup(&menu);
-    const struct
-    {
-        SceneViewportRenderer::DrawModeEnum mode;
-        QString label;
-    } modeItems[] = {
-        { SceneViewportRenderer::eDrawModeUnshaded, tr("Unshaded") },
-        { SceneViewportRenderer::eDrawModeShaded, tr("Shaded") },
-        { SceneViewportRenderer::eDrawModeWireframe, tr("Wireframe") },
-    };
-    for (const auto& item : modeItems) {
-        QAction* action = menu.addAction(item.label);
+    for (const DrawModeEntry& item : kDrawModes) {
+        QAction* action = menu.addAction(tr(item.label));
         action->setCheckable(true);
         action->setChecked(_imp->renderer.getDrawMode() == item.mode);
         action->setActionGroup(modes);
+        action->setShortcut(keySequenceOf(item.actionID));
         const SceneViewportRenderer::DrawModeEnum mode = item.mode;
         QObject::connect(action, &QAction::triggered, this, [this, mode]() {
             setDrawMode(mode);
@@ -3352,12 +3757,59 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
         frameScene();
     });
 
-    QAction* grid = menu.addAction(tr("Show Grid"));
+    // The purposes and lights Storm draws with, and the overlays drawn over it.
+    QMenu* display = menu.addMenu(tr("Display"));
+    QMenu* purposes = display->addMenu(tr("Purposes"));
+    const struct
+    {
+        const char* name;
+        QString label;
+        bool shown;
+    } purposeItems[] = {
+        { "proxy", tr("Proxy"), _imp->renderer.getShowProxy() },
+        { "render", tr("Render"), _imp->renderer.getShowRender() },
+        { "guide", tr("Guide"), _imp->renderer.getShowGuidePurpose() },
+    };
+    QAction* purposeActions[3] = { nullptr, nullptr, nullptr };
+    for (int i = 0; i < 3; ++i) {
+        QAction* action = purposes->addAction(purposeItems[i].label);
+        action->setObjectName(QString::fromUtf8(purposeItems[i].name));
+        action->setCheckable(true);
+        action->setChecked(purposeItems[i].shown);
+        purposeActions[i] = action;
+    }
+    for (QAction* action : purposeActions) {
+        QObject::connect(action, &QAction::toggled, this, [this, purposeActions]() {
+            setShowPurposes(purposeActions[0]->isChecked(), purposeActions[1]->isChecked(), purposeActions[2]->isChecked());
+        });
+    }
+    QMenu* lighting = display->addMenu(tr("Lighting"));
+    QActionGroup* lightingModes = new QActionGroup(lighting);
+    for (const LightingModeEntry& entry : kLightingModes) {
+        QAction* action = lighting->addAction(tr(entry.label));
+        action->setObjectName(QString::fromUtf8(entry.name));
+        action->setCheckable(true);
+        action->setChecked(_imp->renderer.getLightingMode() == entry.mode);
+        action->setActionGroup(lightingModes);
+        const SceneViewportRenderer::LightingModeEnum mode = entry.mode;
+        QObject::connect(action, &QAction::triggered, this, [this, mode]() {
+            setLightingMode(mode);
+        });
+    }
+    display->addSeparator();
+    QAction* grid = display->addAction(tr(kShortcutDescActionViewer3DShowGrid));
     grid->setCheckable(true);
     grid->setChecked(_imp->renderer.getShowGrid());
+    grid->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGrid));
     QObject::connect(grid, &QAction::toggled, this, [this](bool show) {
-        _imp->renderer.setShowGrid(show);
-        update();
+        setShowGrid(show);
+    });
+    QAction* guides = display->addAction(tr(kShortcutDescActionViewer3DShowGuides));
+    guides->setCheckable(true);
+    guides->setChecked(_imp->renderer.getShowGuides());
+    guides->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGuides));
+    QObject::connect(guides, &QAction::toggled, this, [this](bool show) {
+        setShowGuides(show);
     });
 
     menu.exec(globalPos);

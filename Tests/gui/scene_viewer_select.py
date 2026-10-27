@@ -4,7 +4,8 @@ then F (frame selection) and A (frame all).
 Graph: USDRead(scene-reference.usda) into Viewer1, with the Nuke navigation preset. The script
 first frames everything with A and finds where /World/Box and /World/Ball are drawn by clicking a
 grid of points and reading the view's natronSceneSelection property (there is no Python access to
-the view's picking). /World/Cam is a camera and draws nothing, so it cannot be clicked.
+the view's picking). /World/Cam is a camera: the script hides the camera and light guides
+(Ctrl+Shift+G) so that it draws nothing and cannot be clicked; scene_viewer_guides.py covers them.
 
 Checks:
   - a click selects the prim under it, Shift+click adds, Ctrl+click toggles, a click on empty
@@ -118,6 +119,13 @@ try:
         QTest.keyClick(v, k)
         QApplication.processEvents()
 
+    def key_with(v, k, modifiers):
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        QTest.keyClick(v, k, modifiers)
+        QApplication.processEvents()
+
     def settle():
         """Asks for a paint, so natronSceneFreeCamera reflects the camera."""
         v = view()
@@ -142,6 +150,9 @@ try:
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))
         report("NOTE scene view %dx%d" % (v.width(), v.height()))
         check(v.property("natronSceneSelection") is not None and selection() == [], "nothing is selected at first")
+        key_with(v, Qt.Key_G, Qt.ControlModifier | Qt.ShiftModifier)
+        yield settle()
+        require(v.property("natronSceneShowGuides") is False, "Ctrl+Shift+G hides the guides")
 
         key(v, Qt.Key_A)
         yield settle()

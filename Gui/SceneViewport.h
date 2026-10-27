@@ -77,8 +77,17 @@ class SceneViewportRenderer {
 public:
     enum DrawModeEnum {
         eDrawModeUnshaded = 0, // the prims' display colours, no lighting
-        eDrawModeShaded, // lit by a light at the camera
+        eDrawModeShaded, // lit by the lighting mode's lights
         eDrawModeWireframe
+    };
+
+    // What lights the shaded mode: the stage's own lights when it has any, else a light at the
+    // camera (auto); always the stage's lights, dark when it has none (scene); or always the
+    // light at the camera (headlight).
+    enum LightingModeEnum {
+        eLightingModeAuto = 0,
+        eLightingModeScene,
+        eLightingModeHeadlight
     };
 
     // How the free camera looks at its pivot: in perspective, or orthographic along an axis of
@@ -187,6 +196,43 @@ public:
     void setShowGrid(bool show);
 
     bool getShowGrid() const;
+
+    // The camera and light guides, drawn over the scene by default. The camera looked through
+    // has none.
+    void setShowGuides(bool show);
+
+    bool getShowGuides() const;
+
+    // Whether prims of the proxy, render and guide purposes are drawn: proxy only by default.
+    void setShowProxy(bool show);
+
+    bool getShowProxy() const;
+
+    void setShowRender(bool show);
+
+    bool getShowRender() const;
+
+    void setShowGuidePurpose(bool show);
+
+    bool getShowGuidePurpose() const;
+
+    void setLightingMode(LightingModeEnum mode);
+
+    LightingModeEnum getLightingMode() const;
+
+    // Whether the last render lit the shaded mode with the stage's lights rather than the headlight.
+    bool isSceneLit() const;
+
+    // A guide the last render drew, its kind's script name and a pixel on it, counted from the top
+    // left, for scripts to aim at.
+    struct DrawnGuide {
+        std::string path;
+        std::string kind;
+        double x = 0.;
+        double y = 0.;
+    };
+
+    const std::vector<DrawnGuide>& getDrawnGuides() const;
 
     void setFreeCamera(const FreeCamera& camera);
 
@@ -323,13 +369,14 @@ public:
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
-     * a width x height view, or empty if none is. Needs the context of render() current.
+     * a width x height view, or empty if none is: a guide within a few pixels wins over a prim
+     * behind it. Needs the context of render() current.
      **/
     std::string pick(int x, int y, int width, int height);
 
     /**
-     * @brief The paths of the prims drawn in the rectangle with corners (x0, y0) and (x1, y1),
-     * pixels of a width x height view counted from the top left, sorted. Needs the context of
+     * @brief The paths of the prims and guides drawn in the rectangle with corners (x0, y0) and
+     * (x1, y1), pixels of a width x height view counted from the top left, sorted. Needs the context of
      * render() current.
      **/
     std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height);
@@ -388,6 +435,15 @@ public:
     SceneViewportRenderer& getRenderer();
 
     void setDrawMode(SceneViewportRenderer::DrawModeEnum mode);
+
+    void setShowGrid(bool show);
+
+    void setShowGuides(bool show);
+
+    // Whether prims of the proxy, render and guide purposes are drawn.
+    void setShowPurposes(bool proxy, bool render, bool guide);
+
+    void setLightingMode(SceneViewportRenderer::LightingModeEnum mode);
 
     void setLookThroughCamera(const QString& path);
 
@@ -486,7 +542,8 @@ private:
     // Mirrors the error, whether a scene is shown, whether every request is synced, how many
     // engines the renderer made and whether it holds one into the natronSceneError,
     // natronSceneShown, natronSceneSynced, natronSceneEngineCount and natronSceneEngineHeld
-    // properties.
+    // properties, and the display settings into natronSceneDrawMode, natronSceneShowGrid,
+    // natronSceneShowGuides, natronScenePurposes and natronSceneLighting.
     void publishState();
 
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there.

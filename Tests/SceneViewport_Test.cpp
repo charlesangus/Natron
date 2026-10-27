@@ -200,6 +200,8 @@ protected:
         _renderer.setDrawMode(SceneViewportRenderer::eDrawModeUnshaded);
         // Edge-on from this camera, the grid would be a line across the middle of the frame.
         _renderer.setShowGrid(false);
+        // /World/Cam's guide would draw lines across the frame and win picks near them.
+        _renderer.setShowGuides(false);
     }
 
     void TearDown() override
@@ -723,6 +725,7 @@ TEST_F(SceneViewportStorm, FiftyEditsReuseOneEngineAndMatchFreshRenders)
         fresh.setFreeCamera(camera);
         fresh.setDrawMode(SceneViewportRenderer::eDrawModeUnshaded);
         fresh.setShowGrid(false);
+        fresh.setShowGuides(false);
         fresh.setSelectedPrims({ "/World/Box" });
         bool converged = false;
         for (int i = 0; i < 4 && !converged; ++i) {

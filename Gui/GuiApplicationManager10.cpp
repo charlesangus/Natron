@@ -918,6 +918,12 @@ GuiApplicationManager::populateShortcuts()
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DTop, kShortcutDescActionViewer3DTop, Qt::NoModifier, Qt::Key_C);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DBottom, kShortcutDescActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DLockView, kShortcutDescActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L);
+        // Maya's 4/5/6 draw-mode keys, with Ctrl: plain digits connect the viewer's inputs.
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DWireframe, kShortcutDescActionViewer3DWireframe, Qt::ControlModifier, Qt::Key_4);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShaded, kShortcutDescActionViewer3DShaded, Qt::ControlModifier, Qt::Key_5);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DUnshaded, kShortcutDescActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShowGrid, kShortcutDescActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShowGuides, kShortcutDescActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G);
     }
 
     ///Player

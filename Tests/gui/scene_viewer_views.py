@@ -268,6 +268,10 @@ try:
         ok = yield ("until", scene_drawn, STARTUP_TIMEOUT_S)
         v = view()
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))
+        # The camera guides would count as cube or ball pixels; scene_viewer_guides.py covers them.
+        key(v, Qt.Key_G, CTRL | SHIFT)
+        yield settle()
+        require(v.property("natronSceneShowGuides") is False, "Ctrl+Shift+G hides the guides")
         key(v, Qt.Key_A)
         yield settle()
 

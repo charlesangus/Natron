@@ -453,6 +453,14 @@ EffectInstance::getParallelRenderArgsTLS() const
 }
 
 bool
+EffectInstance::isRenderingTLS() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && !args->isInstanceChangedAction;
+}
+
+bool
 EffectInstance::isRenderingOwnSequence() const
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
@@ -5930,6 +5938,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
                                                                 RenderStatsPtr(),
                                                                 false); // setUpstreamArgs
 #endif
+            const std::map<NodePtr, ParallelRenderArgsPtr>& installed = setter->getInstalledArgs();
+            const std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator own = installed.find(node);
+            if ((own != installed.end()) && own->second) {
+                own->second->isInstanceChangedAction = true;
+            }
         }
         {
             RECURSIVE_ACTION();

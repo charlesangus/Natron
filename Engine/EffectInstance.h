@@ -1029,6 +1029,13 @@ public:
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
     /**
+     * @brief Whether the calling thread renders this node: its frame args are installed and are not
+     * the ones the instance-changed action installs around knobChanged, which renders nothing.
+     * Outside a render, expressions read the enclosing loops' preview iterations.
+     **/
+    bool isRenderingTLS() const;
+
+    /**
      * @brief Whether the frame the calling thread renders belongs to a sequence render started by
      * this node's own RenderEngine. For a writer that is a render to disk (the Render button,
      * Render Selected, app.render, the -w command line); a frame a viewer or another node pulls

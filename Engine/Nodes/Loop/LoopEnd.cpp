@@ -610,8 +610,7 @@ LoopEnd::resolve() const
 } // LoopEnd::resolve
 
 LoopEnd::Resolved
-LoopEnd::resolveAt(double time,
-                   bool preview) const
+LoopEnd::resolveAt(double time) const
 {
     Resolved resolved = resolve();
 
@@ -623,7 +622,7 @@ LoopEnd::resolveAt(double time,
     if (expression.empty()) {
         return resolved;
     }
-    resolved.folded = evaluateStop(resolved, expression, time, preview, &resolved.stopError);
+    resolved.folded = evaluateStop(resolved, expression, time, &resolved.stopError);
     if (resolved.folded == 0) {
         if (resolved.stopError.empty()) {
             resolved.messageType = eMessageTypeWarning;
@@ -641,21 +640,20 @@ int
 LoopEnd::evaluateStop(const Resolved& resolved,
                       const std::string& expression,
                       double time,
-                      bool preview,
                       std::string* error) const
 {
     KnobStringPtr stopCondition = _stopCondition.lock();
     // The request pass, the render and every action of one frame agree on where the loop stops,
     // under each context the render asks under: rfv reads the context of the render that asks.
-    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
-    const AbortableRenderInfoPtr render = (frameArgs && !preview) ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    const ParallelRenderArgsPtr frameArgs = isRenderingTLS() ? getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     // Enclosing loops' variables reach the expression as loops.<name>.*, so where the loop stops
     // can change with the iteration of an enclosing loop: they key the result along with what the
     // stop condition reads through rfv.
     static const std::string kLoopsPrefix("loops.");
     RenderContextPtr context = getCurrentRenderContext();
     RenderContextPtr acting;
-    if (preview || (!frameArgs && !ActionContextScope::current(&acting))) {
+    if (!frameArgs && !ActionContextScope::current(&acting)) {
         // Outside a render, as knob expressions read: the enclosing loops' preview iterations.
         context = previewContextOf(getNode(), time);
     }
@@ -914,8 +912,7 @@ LoopEnd::knobChanged(KnobI* k,
             if ((k == _stopCondition.lock().get()) || (mode && (k == mode.get()))) {
                 refreshStopDependencies();
             }
-            // The instance-changed action runs under frame args of its own, which are no render.
-            refreshMessage(resolveAt(time, true));
+            refreshMessage(resolveAt(time));
 
             return true;
         }

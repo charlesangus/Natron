@@ -659,6 +659,60 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadingAnOuterLoopIsValidOutsideARende
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 
+// knobChanged runs under frame args of its own, which are no render: a body knob's expression read
+// there reads the loop's preview iteration, as it does outside any action.
+TEST_F(NativeLoopBlockTest, AnExpressionReadInKnobChangedReadsThePreviewIteration)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin("outer");
+    NodePtr body = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr end = createLoopEnd(3, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && body && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+
+    KnobDoublePtr value = std::dynamic_pointer_cast<KnobDouble>(body->getKnobByName("value"));
+    KnobBoolPtr fail = std::dynamic_pointer_cast<KnobBool>(body->getKnobByName("fail"));
+    ASSERT_TRUE(bool(value));
+    ASSERT_TRUE(bool(fail));
+    ASSERT_NO_THROW(value->setExpression(0, "loop.iteration * 10", false, true));
+    // Previewed after the expression's validity check, so knobChanged reads no result it cached.
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamSinglePassIteration, 2));
+
+    EffectInstancePtr effect = body->getEffectInstance();
+    int calls = 0;
+    bool underActionArgs = false;
+    bool rendering = true;
+    bool threw = false;
+    double read = -1.;
+    CountingTestRegistry::setKnobChangedHook([&](const Node* node,
+                                                 KnobI* knob,
+                                                 double time) {
+        if ((node != body.get()) || (knob != fail.get())) {
+            return;
+        }
+        ++calls;
+        underActionArgs = effect->getParallelRenderArgsTLS() != nullptr;
+        rendering = effect->isRenderingTLS();
+        try {
+            read = value->getValueAtTime(time, 0);
+        } catch (...) {
+            threw = true;
+        }
+    });
+    effect->onKnobValueChanged_public(fail.get(), eValueChangedReasonUserEdited, kTime, ViewIdx(0), true);
+    CountingTestRegistry::setKnobChangedHook(CountingTestRegistry::KnobChangedHook());
+
+    ASSERT_EQ(1, calls);
+    EXPECT_TRUE(underActionArgs);
+    EXPECT_FALSE(rendering);
+    EXPECT_FALSE(threw);
+    EXPECT_NEAR(20., read, 1e-9);
+    EXPECT_FALSE(effect->getParallelRenderArgsTLS() != nullptr);
+    EXPECT_NEAR(20., value->getValueAtTime(kTime, 0), 1e-9);
+}
+
 TEST_F(NativeLoopBlockTest, ALoopEndWithoutALoopBeginIsBlack)
 {
     NodePtr constant = createConstant(1.);

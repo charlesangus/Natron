@@ -3,7 +3,9 @@
 Tolerance: none recorded.
 
 - `LoopBegin`: marks the start of a loop body, which ends at the LoopEnd below it. The image
-  passes through unchanged. See [LoopEnd.md](LoopEnd.md) for the loop variables, modes and
+  passes through unchanged, except under a LoopEnd in Feedback mode: from the second
+  iteration on, it outputs the previous iteration's output of the body, converted to its
+  input's layer and bit depth. See [LoopEnd.md](LoopEnd.md) for the loop variables, modes and
   limits.
 - `name`: how a loop nested in this one sees its variables, as `loops.<name>.iteration`,
   `loops.<name>.count`, `loops.<name>.t` and `loops.<name>.frame`. An identifier, unique

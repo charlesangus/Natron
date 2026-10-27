@@ -776,12 +776,107 @@ noteContextFanOut(FrameRequestMap& requests,
     requests.contextFanOuts.push_back(std::make_pair(node, underEmptyContext));
 }
 
+/**
+ * @brief A frame/view whose context requests marked afterConsumers wait until the walk has
+ * reached it from every consumer it has.
+ **/
+struct DeferredContextRequest {
+    NodePtr node;
+    RenderContextPtr context;
+    U64 contextKey = 0;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    FrameViewRequest* fvRequest = 0;
+};
+
+struct DeferredContextRequests {
+    // Planned last in, first out: a chain of them, each requesting the one before, is planned
+    // from its last link down, each link once.
+    std::vector<DeferredContextRequest> pending;
+    std::set<const FrameViewRequest*> queued;
+};
+
+/**
+ * @brief The visit and edge items of the requests of contextRequests whose afterConsumers is
+ * afterConsumers, made by node's frame/view fvRequest under contextKey at time/view.
+ **/
+StatusEnum
+appendContextRequestItems(const EffectInstancePtr& effect,
+                          const NodePtr& node,
+                          FrameViewRequest* fvRequest,
+                          U64 contextKey,
+                          double time,
+                          ViewIdx view,
+                          unsigned int upstreamMipmapLevel,
+                          const std::vector<EffectInstance::ContextNodeRequest>& contextRequests,
+                          bool afterConsumers,
+                          std::vector<RequestPassItem>* items)
+{
+    for (const EffectInstance::ContextNodeRequest& contextRequest : contextRequests) {
+        if ((contextRequest.afterConsumers != afterConsumers) || !contextRequest.node || !contextRequest.node->getEffectInstance() || contextRequest.roi.isNull()) {
+            continue;
+        }
+        const RequestPassItem visit = makeVisitItem(contextRequest.node, contextRequest.context, contextRequest.time, contextRequest.view, upstreamMipmapLevel, contextRequest.roi);
+        if ((contextRequest.node == node) && (visit.contextKey == contextKey) && (contextRequest.time == time) && (contextRequest.view == view)) {
+            // The node would wait on its own output.
+            effect->setPersistentMessage(eMessageTypeError, EffectInstance::tr("%1 requests its own output under the context it renders under.").arg(QString::fromUtf8(node->getScriptName_mt_safe().c_str())).toStdString());
+
+            return eStatusFailed;
+        }
+        std::list<ImageLayerDesc> comps = contextRequest.comps;
+        if (comps.empty()) {
+            comps.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+        items->push_back(visit);
+        RequestPassItem consumerItem = makeConsumerItem(RequestPassItem::eKindInputEdge, fvRequest, contextRequest.node, visit.contextKey, contextRequest.time, contextRequest.view, upstreamMipmapLevel,
+                                                        FrameViewRequest::TaskEdge::kContextRequestInputNb);
+        consumerItem.comps = std::make_shared<std::list<ImageLayerDesc>>(std::move(comps));
+        items->push_back(consumerItem);
+    }
+
+    return eStatusOK;
+}
+
+/**
+ * @brief Plans the deferred requests of request, asked again for the whole region its consumers
+ * request by now.
+ **/
+StatusEnum
+planDeferredContextRequests(const DeferredContextRequest& request,
+                            FrameRequestMap& requests,
+                            ContextFrameArgsMap* passArgs,
+                            std::vector<RequestPassItem>* stack)
+{
+    const EffectInstancePtr effect = request.node ? request.node->getEffectInstance() : EffectInstancePtr();
+    const NodeCtxKey nodeKey(request.node, request.contextKey);
+    FrameRequestMap::iterator found = requests.find(nodeKey);
+
+    if (!effect || (found == requests.end()) || !found->second) {
+        return eStatusOK;
+    }
+    ContextFrameArgsScope contextScope;
+    if (request.contextKey != 0) {
+        contextScope.install(effect, passContextArgs(effect, nodeKey, *found->second, passArgs));
+    }
+    std::vector<EffectInstance::ContextNodeRequest> contextRequests;
+    effect->getContextNodeRequests(request.time, request.view, request.context, request.fvRequest->finalData.finalRoi, &contextRequests);
+    std::vector<RequestPassItem> items;
+    if (appendContextRequestItems(effect, request.node, request.fvRequest, request.contextKey, request.time, request.view, request.mipmapLevel, contextRequests, true, &items) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    stack->insert(stack->end(), std::make_move_iterator(items.rbegin()), std::make_move_iterator(items.rend()));
+
+    return eStatusOK;
+}
+
 StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
                      FrameRequestMap& requests,
                      WarmedRoDSet* warmed,
                      ContextFrameArgsMap* passArgs,
+                     DeferredContextRequests* deferred,
                      std::vector<RequestPassItem>* stack)
 {
     const NodePtr& node = item.node;
@@ -1087,26 +1182,22 @@ visitRequestPassItem(bool useTransforms,
     std::vector<RequestPassItem> contextItems;
     std::vector<EffectInstance::ContextNodeRequest> contextRequests;
     effect->getContextNodeRequests(time, view, item.context, canonicalRenderWindow, &contextRequests);
+    if (appendContextRequestItems(effect, node, fvRequest, item.contextKey, time, view, upstreamMipmapLevel, contextRequests, false, &contextItems) == eStatusFailed) {
+        return eStatusFailed;
+    }
     for (const EffectInstance::ContextNodeRequest& contextRequest : contextRequests) {
-        if (!contextRequest.node || !contextRequest.node->getEffectInstance() || contextRequest.roi.isNull()) {
-            continue;
+        if (contextRequest.afterConsumers && deferred->queued.insert(fvRequest).second) {
+            DeferredContextRequest pending;
+            pending.node = node;
+            pending.context = item.context;
+            pending.contextKey = item.contextKey;
+            pending.time = time;
+            pending.view = view;
+            pending.mipmapLevel = upstreamMipmapLevel;
+            pending.fvRequest = fvRequest;
+            deferred->pending.push_back(std::move(pending));
+            break;
         }
-        const RequestPassItem visit = makeVisitItem(contextRequest.node, contextRequest.context, contextRequest.time, contextRequest.view, upstreamMipmapLevel, contextRequest.roi);
-        if ((contextRequest.node == node) && (visit.contextKey == item.contextKey) && (contextRequest.time == time) && (contextRequest.view == view)) {
-            // The node would wait on its own output.
-            effect->setPersistentMessage(eMessageTypeError, EffectInstance::tr("%1 requests its own output under the context it renders under.").arg(QString::fromUtf8(node->getScriptName_mt_safe().c_str())).toStdString());
-
-            return eStatusFailed;
-        }
-        std::list<ImageLayerDesc> comps = contextRequest.comps;
-        if (comps.empty()) {
-            comps.push_back(ImageLayerDesc::getRGBAComponents());
-        }
-        contextItems.push_back(visit);
-        RequestPassItem consumerItem = makeConsumerItem(RequestPassItem::eKindInputEdge, fvRequest, contextRequest.node, visit.contextKey, contextRequest.time, contextRequest.view, upstreamMipmapLevel,
-                                                        FrameViewRequest::TaskEdge::kContextRequestInputNb);
-        consumerItem.comps = std::make_shared<std::list<ImageLayerDesc>>(std::move(comps));
-        contextItems.push_back(consumerItem);
     }
     inputItems.insert(inputItems.begin(), std::make_move_iterator(contextItems.begin()), std::make_move_iterator(contextItems.end()));
 
@@ -1143,16 +1234,30 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     RenderContextPtr acting;
     ActionContextScope emptyContext(renderContextsInUse() && ActionContextScope::current(&acting) && acting, RenderContextPtr());
 
+    DeferredContextRequests deferred;
+
     // The root renders under the empty context.
     stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
 
-    while (!stack.empty()) {
+    for (;;) {
+        if (stack.empty()) {
+            if (deferred.pending.empty()) {
+                break;
+            }
+            const DeferredContextRequest request = std::move(deferred.pending.back());
+            deferred.pending.pop_back();
+            deferred.queued.erase(request.fvRequest);
+            if (planDeferredContextRequests(request, requests, &passArgs, &stack) == eStatusFailed) {
+                return eStatusFailed;
+            }
+            continue;
+        }
         const RequestPassItem item = std::move(stack.back());
         stack.pop_back();
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;

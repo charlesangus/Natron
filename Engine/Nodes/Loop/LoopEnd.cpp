@@ -26,6 +26,8 @@
 #include "LoopEnd.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -36,6 +38,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -52,6 +55,8 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 const char* const kLoopVariables[] = { "iteration", "count", "t", "frame" };
+
+std::atomic<int> liveLoopEnds(0);
 
 typedef std::pair<Node*, int> WalkStep;
 
@@ -179,6 +184,153 @@ alphaIndexOf(const ImageLayerDesc& layer)
 LoopEnd::LoopEnd(NodePtr node)
     : NativeEffectBase(node)
 {
+    ++liveLoopEnds;
+}
+
+LoopEnd::~LoopEnd()
+{
+    --liveLoopEnds;
+}
+
+bool
+LoopEnd::anyExists()
+{
+    return liveLoopEnds.load() > 0;
+}
+
+std::shared_ptr<LoopEnd>
+LoopEnd::feedbackEndOf(const NodePtr& begin)
+{
+    if (!LoopBegin::isLoopBegin(begin)) {
+        return std::shared_ptr<LoopEnd>();
+    }
+    std::set<Node*> ends;
+    collectPairedEnds(begin, &ends);
+    if (ends.size() != 1) {
+        return std::shared_ptr<LoopEnd>();
+    }
+    std::shared_ptr<LoopEnd> end = std::dynamic_pointer_cast<LoopEnd>((*ends.begin())->getEffectInstance());
+    if (!end || !end->isFeedback() || (end->getLoopBegin() != begin)) {
+        return std::shared_ptr<LoopEnd>();
+    }
+
+    return end;
+}
+
+void
+LoopEnd::appendFeedbackBeginsOf(const NodePtr& node,
+                                std::vector<NodePtr>* begins)
+{
+    const std::vector<NodePtr> ends = enclosingLoopEnds(node);
+
+    for (const NodePtr& endNode : ends) {
+        const LoopEnd* end = dynamic_cast<const LoopEnd*>(endNode->getEffectInstance().get());
+        if (end && end->isFeedback()) {
+            const NodePtr begin = end->getLoopBegin();
+            if (begin) {
+                begins->push_back(begin);
+            }
+        }
+    }
+}
+
+bool
+LoopEnd::isFeedback() const
+{
+    KnobChoicePtr mode = _mode.lock();
+
+    return mode && (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
+}
+
+bool
+LoopEnd::feedbackStepBefore(const RenderContextPtr& context,
+                            double time,
+                            FeedbackStep* previous) const
+{
+    if (!context || !isFeedback()) {
+        return false;
+    }
+    const Resolved resolved = resolve();
+    if (!resolved.message.empty() || resolved.loopName.empty()) {
+        return false;
+    }
+    const RenderContextValue* tValue = context->find(RenderContextName::loops(resolved.loopName, "t"));
+    const RenderContextValue* countValue = context->find(RenderContextName::loops(resolved.loopName, "count"));
+    const RenderContextValue* frameValue = context->find(RenderContextName::loops(resolved.loopName, "frame"));
+    const double* t = tValue ? std::get_if<double>(tValue) : 0;
+    const std::int64_t* count = countValue ? std::get_if<std::int64_t>(countValue) : 0;
+    const double* frame = frameValue ? std::get_if<double>(frameValue) : 0;
+    if (!t || !count || !frame || (*count <= 1)) {
+        return false;
+    }
+    const int k = (int)std::llround(*t * (double)(*count - 1));
+    if ((k <= 0) || (k >= *count)) {
+        return false;
+    }
+    previous->tail = getNode()->getInput(0);
+    if (!previous->tail) {
+        return false;
+    }
+    const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
+    previous->context = iterationContext(context, resolved.loopName, k - 1, (int)*count, resolved.start, resolved.step, *frame - frameStep);
+    previous->time = time - frameStep;
+
+    return true;
+}
+
+void
+LoopEnd::appendFeedbackKnobsHash(ContentHasher& h) const
+{
+    const KnobIPtr knobs[] = {
+        _mode.lock(),
+        _singlePass.lock(),
+        _singlePassIteration.lock(),
+        _iterateOver.lock(),
+        _iterations.lock(),
+        _start.lock(),
+        _step.lock(),
+        _frameStart.lock(),
+        _frameEnd.lock(),
+        _frameStep.lock(),
+        _stopCondition.lock(),
+        _maxIterations.lock(),
+    };
+
+    for (const KnobIPtr& knob : knobs) {
+        h.appendBool(bool(knob));
+        if (knob) {
+            knob->appendContentHash(h);
+        }
+    }
+}
+
+ImagePtr
+LoopEnd::findFeedbackImage(U64 contextKey,
+                           double time,
+                           ViewIdx view,
+                           unsigned int mipmapLevel,
+                           const RectI& roi) const
+{
+    QMutexLocker k(&_feedbackMutex);
+
+    for (const FeedbackImage& kept : _feedbackImages) {
+        if ((kept.contextKey == contextKey) && (kept.time == time) && (kept.view == view) && (kept.mipmapLevel == mipmapLevel) && kept.image && kept.image->getBounds().contains(roi)) {
+            return kept.image;
+        }
+    }
+
+    return ImagePtr();
+}
+
+void
+LoopEnd::appendExtraHashDependents(std::vector<NodePtr>* dependents) const
+{
+    // A Feedback LoopBegin folds in this node's knobs, and in any mode whether it is in Feedback.
+    const NodePtr begin = getLoopBegin();
+
+    if (begin) {
+        dependents->push_back(begin);
+    }
 }
 
 bool
@@ -328,22 +480,33 @@ LoopEnd::initializeKnobs()
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kLoopEndParamModeAccumulate, tr("Accumulate").toStdString(),
-                                       tr("Folds every iteration together with the Operation.").toStdString()));
-        options.push_back(ChoiceOption(kLoopEndParamModeSinglePass, tr("Single Pass").toStdString(),
-                                       tr("Outputs the iteration Single Pass Iteration names, unfolded.").toStdString()));
+                                       tr("Renders every iteration from the LoopBegin's input and folds them together with the Operation.").toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamModeFeedback, tr("Feedback").toStdString(),
+                                       tr("Each iteration's LoopBegin outputs the iteration before it, the first one the LoopBegin's "
+                                          "input; the output is the last iteration.")
+                                           .toStdString()));
         mode->populateChoices(options);
     }
     mode->setDefaultValue(0);
     page->addKnob(mode);
     _mode = mode;
 
+    KnobBoolPtr singlePass = createKnob<KnobBool>(tr("Single Pass"));
+    singlePass->setName(kLoopEndParamSinglePass);
+    singlePass->setAnimationEnabled(false);
+    singlePass->setHintToolTip(tr("Outputs the iteration Single Pass Iteration names rather than the whole loop: unfolded "
+                                  "under Accumulate, and under Feedback after the iterations before it."));
+    singlePass->setDefaultValue(false);
+    page->addKnob(singlePass);
+    _singlePass = singlePass;
+
     KnobIntPtr singlePassIteration = createKnob<KnobInt>(tr("Single Pass Iteration"));
     singlePassIteration->setName(kLoopEndParamSinglePassIteration);
     singlePassIteration->setAnimationEnabled(false);
     singlePassIteration->setHintToolTip(tr("The iteration Single Pass outputs, counted from 0: its loop variables are "
                                            "the ones it has in the whole loop. Past the last iteration is an error. "
-                                           "In either mode, the knobs of the body show their driven values at this "
-                                           "iteration, the last one when it is past it."));
+                                           "With Single Pass on or off, the knobs of the body show their driven values at "
+                                           "this iteration, the last one when it is past it."));
     singlePassIteration->setMinimum(0);
     singlePassIteration->setDisplayMinimum(0);
     singlePassIteration->setDisplayMaximum(64);
@@ -539,13 +702,14 @@ LoopEnd::resolve() const
     KnobIntPtr step = _step.lock();
     KnobIntPtr maxIterations = _maxIterations.lock();
     KnobChoicePtr mode = _mode.lock();
+    KnobBoolPtr singlePass = _singlePass.lock();
     KnobIntPtr singlePassIteration = _singlePassIteration.lock();
     KnobChoicePtr iterateOver = _iterateOver.lock();
     KnobIntPtr frameStart = _frameStart.lock();
     KnobIntPtr frameEnd = _frameEnd.lock();
     KnobIntPtr frameStep = _frameStep.lock();
 
-    if (!iterations || !start || !step || !maxIterations || !mode || !singlePassIteration || !iterateOver || !frameStart || !frameEnd || !frameStep) {
+    if (!iterations || !start || !step || !maxIterations || !mode || !singlePass || !singlePassIteration || !iterateOver || !frameStart || !frameEnd || !frameStep) {
         resolved.message = "LoopEnd: missing knobs.";
 
         return resolved;
@@ -567,6 +731,7 @@ LoopEnd::resolve() const
         return resolved;
     }
     resolved.loopName = begin->getLoopName();
+    resolved.feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
     resolved.frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
     if (resolved.frames) {
         resolved.frameStart = frameStart->getValue();
@@ -595,7 +760,7 @@ LoopEnd::resolve() const
         return resolved;
     }
     resolved.folded = resolved.count;
-    if (mode->getActiveEntry().id == kLoopEndParamModeSinglePass) {
+    if (singlePass->getValue()) {
         const int k = singlePassIteration->getValue();
         if ((k < 0) || (k >= resolved.count)) {
             resolved.message = tr("Single Pass Iteration %1 is past the last iteration, %2.").arg(k).arg(resolved.count - 1).toStdString();
@@ -619,10 +784,14 @@ LoopEnd::resolveAt(double time) const
         return resolved;
     }
     const std::string expression = activeStopCondition();
-    if (expression.empty()) {
-        return resolved;
+    if (!expression.empty()) {
+        resolved.folded = evaluateStop(resolved, expression, time, &resolved.stopError);
     }
-    resolved.folded = evaluateStop(resolved, expression, time, &resolved.stopError);
+    if (resolved.feedback && (resolved.folded > 0)) {
+        // The output is the last iteration run, unfolded: the LoopBegin chains the ones before.
+        resolved.singlePass = resolved.folded - 1;
+        resolved.folded = 1;
+    }
     if (resolved.folded == 0) {
         if (resolved.stopError.empty()) {
             resolved.messageType = eMessageTypeWarning;
@@ -800,16 +969,18 @@ void
 LoopEnd::refreshKnobVisibility()
 {
     KnobChoicePtr mode = _mode.lock();
+    KnobBoolPtr singlePassKnob = _singlePass.lock();
     KnobChoicePtr iterateOver = _iterateOver.lock();
 
-    if (!mode || !iterateOver) {
+    if (!mode || !singlePassKnob || !iterateOver) {
         return;
     }
-    const bool singlePass = (mode->getActiveEntry().id == kLoopEndParamModeSinglePass);
+    const bool feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
+    const bool singlePass = singlePassKnob->getValue();
     const bool frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
     const std::pair<KnobIPtr, bool> visibility[] = {
-        std::make_pair(KnobIPtr(_operation.lock()), !singlePass),
-        std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass),
+        std::make_pair(KnobIPtr(_operation.lock()), !singlePass && !feedback),
+        std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass && !feedback),
         std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass),
         std::make_pair(KnobIPtr(_iterations.lock()), !frames),
         std::make_pair(KnobIPtr(_start.lock()), !frames),
@@ -829,9 +1000,9 @@ std::string
 LoopEnd::activeStopCondition() const
 {
     KnobStringPtr stopCondition = _stopCondition.lock();
-    KnobChoicePtr mode = _mode.lock();
+    KnobBoolPtr singlePass = _singlePass.lock();
 
-    if (!stopCondition || (mode && (mode->getActiveEntry().id == kLoopEndParamModeSinglePass))) {
+    if (!stopCondition || (singlePass && singlePass->getValue())) {
         return std::string();
     }
     const std::string expression = stopCondition->getValue();
@@ -889,6 +1060,7 @@ LoopEnd::knobChanged(KnobI* k,
         _iterations.lock(),
         _maxIterations.lock(),
         _mode.lock(),
+        _singlePass.lock(),
         _singlePassIteration.lock(),
         _iterateOver.lock(),
         _frameStart.lock(),
@@ -900,12 +1072,18 @@ LoopEnd::knobChanged(KnobI* k,
     for (const KnobIPtr& knob : resolving) {
         if (knob && (k == knob.get())) {
             KnobChoicePtr mode = _mode.lock();
+            KnobBoolPtr singlePass = _singlePass.lock();
             KnobChoicePtr iterateOver = _iterateOver.lock();
-            if ((mode && (k == mode.get())) || (iterateOver && (k == iterateOver.get()))) {
+            const bool modeChanged = mode && (k == mode.get());
+            const bool singlePassChanged = singlePass && (k == singlePass.get());
+            if (modeChanged || singlePassChanged || (iterateOver && (k == iterateOver.get()))) {
                 refreshKnobVisibility();
             }
-            if ((k == _stopCondition.lock().get()) || (mode && (k == mode.get()))) {
+            if ((k == _stopCondition.lock().get()) || singlePassChanged) {
                 refreshStopDependencies();
+            } else if (modeChanged) {
+                // Feedback has the paired LoopBegin read its own loop's variables.
+                invalidateRenderContextReads();
             }
             refreshMessage(resolveAt(time));
 
@@ -1191,6 +1369,56 @@ LoopEnd::takePreviousStep(const RenderActionArgs& args,
 }
 
 StatusEnum
+LoopEnd::renderFeedbackIterations(const RenderActionArgs& args,
+                                  const Resolved& resolved,
+                                  const RenderContextPtr& context,
+                                  int last,
+                                  const void* owner)
+{
+    const NodePtr tail = getNode()->getInput(0);
+
+    if (!tail) {
+        return eStatusFailed;
+    }
+    const RenderContextPtr base = RenderContext::Builder(context).erase(foldStepName()).build();
+    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
+    for (int k = 0; k < last; ++k) {
+        if (aborted()) {
+            return eStatusOK;
+        }
+        FeedbackImage kept;
+        kept.owner = owner;
+        kept.time = resolved.frames ? args.time + resolved.frameStart + (double)k * resolved.frameStep : args.time;
+        kept.view = args.view;
+        kept.mipmapLevel = mipmapLevel;
+        const RenderContextPtr iteration = iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, kept.time);
+        kept.contextKey = restrictContextToNode(iteration, tail, 0);
+        {
+            InputContextScope scope(this, iteration);
+            RectI inputRoI;
+            kept.image = getImage(0, kept.time, args.mappedScale, args.view, NULL, NULL, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
+        }
+        // Only the iteration the next one reads stays: the LoopBegin renders it from scratch when
+        // it is missing, as when the input is black.
+        QMutexLocker locker(&_feedbackMutex);
+        _feedbackImages.erase(std::remove_if(_feedbackImages.begin(), _feedbackImages.end(), [owner](const FeedbackImage& image) { return image.owner == owner; }), _feedbackImages.end());
+        if (kept.image) {
+            _feedbackImages.push_back(kept);
+        }
+    }
+
+    return eStatusOK;
+}
+
+void
+LoopEnd::releaseFeedbackImages(const void* owner)
+{
+    QMutexLocker locker(&_feedbackMutex);
+
+    _feedbackImages.erase(std::remove_if(_feedbackImages.begin(), _feedbackImages.end(), [owner](const FeedbackImage& image) { return image.owner == owner; }), _feedbackImages.end());
+}
+
+StatusEnum
 LoopEnd::render(const RenderActionArgs& args)
 {
     const Resolved resolved = resolveAt(args.time);
@@ -1204,6 +1432,20 @@ LoopEnd::render(const RenderActionArgs& args)
     const int step = foldStepOf(context, count);
     // Outside a scheduler task there is no store to find the previous step in.
     const bool chained = foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
+
+    // Without a frame store, the Feedback iterations before the output one are rendered here in
+    // order, so that each LoopBegin finds the one before it rather than rendering the whole chain
+    // below it again, recursively.
+    struct FeedbackImagesRelease {
+        LoopEnd* end;
+        ~FeedbackImagesRelease() { end->releaseFeedbackImages(this); }
+    } release { this };
+    if (resolved.feedback && !chained && (resolved.singlePass > 0)) {
+        const StatusEnum stat = renderFeedbackIterations(args, resolved, context, resolved.singlePass, &release);
+        if ((stat != eStatusOK) || aborted()) {
+            return stat;
+        }
+    }
     KnobChoicePtr operationKnob = _operation.lock();
     // A single iteration summed onto black is that iteration, whatever the Operation.
     const LoopFold::OperationEnum operation = (resolved.singlePass >= 0) ? LoopFold::eOperationSum

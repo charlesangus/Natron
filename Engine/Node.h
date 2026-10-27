@@ -816,6 +816,20 @@ public:
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
 
     /**
+     * @brief Walks the body of a loop running from begin up to tail, closed by end: the nodes the
+     * inputs of tail reach going up that begin's outputs reach going down without passing end.
+     * With digest, sets it to tail's hash with begin standing for a fixed tag and each body node
+     * hashed in the same way from its inputs, so that it covers the body without folding in a hash
+     * that folds begin's own. Nested in such a walk, the enclosing walk's nodes are hashed the
+     * same way. With outsideSources, appends the nodes outside the body feeding it.
+     **/
+    static void walkLoopBody(const NodePtr& begin,
+                             const NodePtr& tail,
+                             const NodePtr& end,
+                             U64* digest,
+                             std::vector<NodePtr>* outsideSources);
+
+    /**
      * @brief Each input name is appended to the vector, in the same order
      * as they are in the internal inputs vector. Disconnected inputs are
      * represented as empty strings.
@@ -2072,6 +2086,9 @@ private:
         // Other nodes whose hashes the knobs' content hashes fold: those whose metadata the
         // knobs' expressions read, directly or through the knobs they read.
         std::vector<NodePtr> metadataSources;
+        // Other nodes whose stored hashes the effect folds in (see
+        // EffectInstance::appendExtraHashSources()).
+        std::vector<NodePtr> extraSources;
     };
 
     /**
@@ -2151,7 +2168,13 @@ private:
      **/
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
-    U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
+    /**
+     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored one
+     * when it is null.
+     **/
+    U64 computeContentHash(U64 projectDigest,
+                           const HashInputs& inputs,
+                           const std::function<U64(const Node&)>* inputHash = 0) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

@@ -2035,6 +2035,7 @@ Node::getContextReadSuccessors(std::vector<NodePtr>* successors,
             overridden->push_back(RenderContextReadSet());
         }
     }
+    _imp->effect->appendExtraContextReadSuccessors(successors, overridden);
 }
 
 namespace {

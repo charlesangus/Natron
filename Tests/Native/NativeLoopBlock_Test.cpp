@@ -398,6 +398,20 @@ protected:
         return knob->getActiveEntry().id == id;
     }
 
+    static bool setBoolKnob(const NodePtr& node,
+                            const char* name,
+                            bool value)
+    {
+        KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(name));
+
+        if (!knob) {
+            return false;
+        }
+        knob->setValue(value);
+
+        return knob->getValue() == value;
+    }
+
     static bool setStopCondition(const NodePtr& node,
                                  const std::string& expression)
     {
@@ -936,7 +950,7 @@ TEST_F(NativeLoopBlockTest, SinglePassOutputsOneIteration)
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(grade->connectInput(begin, 0));
     ASSERT_TRUE(end->connectInput(grade, 0));
-    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamMode, kLoopEndParamModeSinglePass));
+    ASSERT_TRUE(setBoolKnob(end, kLoopEndParamSinglePass, true));
     ASSERT_TRUE(setIntKnob(end, kLoopEndParamSinglePassIteration, 2));
 
     float value = -1.f;

@@ -116,6 +116,7 @@
 
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
@@ -186,6 +187,9 @@ namespace {
 // Set while this thread computes a hash. A hash read from inside it, such as an expression's
 // random seed, gets the stored hash: recomputing there would nest node locks in no fixed order.
 thread_local int hashComputeDepth = 0;
+
+// The hashes of the body nodes of the loop walkLoopBody() is hashing on this thread, if any.
+thread_local const std::function<U64(const Node&)>* enclosingLoopBodyHash = 0;
 
 class HashComputeScope {
 public:
@@ -948,9 +952,13 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 
 U64
 Node::computeContentHash(U64 projectDigest,
-                         const HashInputs& inputs) const
+                         const HashInputs& inputs,
+                         const std::function<U64(const Node&)>* inputHash) const
 {
     ContentHasher h;
+    auto hashOf = [inputHash](const Node& input) -> U64 {
+        return inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+    };
 
     h.appendString(getPluginID());
     if (_imp->plugin) {
@@ -977,12 +985,12 @@ Node::computeContentHash(U64 projectDigest,
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
             const NodePtr& input = inputs.bySlot[i].second;
-            h.appendU64(input ? input->getStoredContentHash() : 0);
+            h.appendU64(input ? hashOf(*input) : 0);
         }
     } else {
         for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
             h.appendI64(inputs.bySlot[i].first);
-            h.appendU64(inputs.bySlot[i].second->getStoredContentHash());
+            h.appendU64(hashOf(*inputs.bySlot[i].second));
         }
         h.appendU64(inputs.bySlot.size());
     }
@@ -1046,6 +1054,122 @@ Node::computeContentHash(U64 projectDigest,
     return h.finalize();
 } // Node::computeContentHash
 
+void
+Node::walkLoopBody(const NodePtr& begin,
+                   const NodePtr& tail,
+                   const NodePtr& end,
+                   U64* digest,
+                   std::vector<NodePtr>* outsideSources)
+{
+    // Stands for begin, whatever it renders: what begin's own hash folds in is its input's.
+    const U64 kBeginTag = 0x6c6f6f70426567ULL;
+
+    if (digest) {
+        *digest = kBeginTag;
+    }
+    if (!begin || !tail) {
+        return;
+    }
+    // Downstream of begin, so only these can be in the body: the walk up from tail does not enter
+    // what feeds the body from outside.
+    std::unordered_set<const Node*> downstream;
+    {
+        std::vector<NodePtr> pending;
+        begin->appendOutputsWithGroupRedirection(&pending);
+        while (!pending.empty()) {
+            NodePtr node = std::move(pending.back());
+            pending.pop_back();
+            if (!node || (node == end) || (node == begin) || !downstream.insert(node.get()).second) {
+                continue;
+            }
+            node->appendOutputsWithGroupRedirection(&pending);
+        }
+    }
+    if ((tail != begin) && (downstream.find(tail.get()) == downstream.end())) {
+        return;
+    }
+
+    std::unordered_map<const Node*, U64> bodyHashes;
+    const std::function<U64(const Node&)>* enclosing = enclosingLoopBodyHash;
+    const std::function<U64(const Node&)> hashOf = [&](const Node& node) -> U64 {
+        if (&node == begin.get()) {
+            return kBeginTag;
+        }
+        std::unordered_map<const Node*, U64>::const_iterator found = bodyHashes.find(&node);
+        if (found != bodyHashes.end()) {
+            return found->second;
+        }
+
+        return enclosing ? (*enclosing)(node) : node.getStoredContentHash();
+    };
+    const U64 projectDigest = digest ? begin->getApp()->getProject()->getContentDigest() : 0;
+    std::unordered_set<const Node*> sourcesSeen;
+    std::unordered_set<const Node*> entered;
+    // Post-order, so every body node is hashed after the body nodes it reads.
+    std::vector<std::pair<NodePtr, bool>> stack(1, std::make_pair(tail, false));
+    HashInputs inputs;
+
+    struct LoopBodyHashScope {
+        const std::function<U64(const Node&)>* previous;
+        explicit LoopBodyHashScope(const std::function<U64(const Node&)>* current)
+            : previous(enclosingLoopBodyHash)
+        {
+            enclosingLoopBodyHash = current;
+        }
+
+        ~LoopBodyHashScope() { enclosingLoopBodyHash = previous; }
+    };
+    LoopBodyHashScope scope(&hashOf);
+    while (!stack.empty()) {
+        const NodePtr node = stack.back().first;
+        const bool expanded = stack.back().second;
+        if (node == begin) {
+            stack.pop_back();
+            continue;
+        }
+        if (expanded) {
+            stack.pop_back();
+            if (digest) {
+                node->getHashInputs(&inputs);
+                bodyHashes[node.get()] = node->computeContentHash(projectDigest, inputs, &hashOf);
+            } else {
+                bodyHashes[node.get()] = 0;
+            }
+            continue;
+        }
+        if (!entered.insert(node.get()).second) {
+            // Reached again through another path; a cycle leaves it to its first visit.
+            stack.pop_back();
+            continue;
+        }
+        stack.back().second = true;
+        node->getHashInputs(&inputs);
+        // A nested feedback loop's LoopBegin folds what feeds its body in: walked first, so it
+        // reads their hashes as this walk gives them.
+        std::vector<NodePtr> reads;
+        reads.reserve(inputs.bySlot.size() + inputs.extraSources.size());
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            reads.push_back(inputs.bySlot[i].second);
+        }
+        reads.insert(reads.end(), inputs.extraSources.begin(), inputs.extraSources.end());
+        for (const NodePtr& input : reads) {
+            if (!input || (input == begin)) {
+                continue;
+            }
+            if (downstream.find(input.get()) != downstream.end()) {
+                if (entered.find(input.get()) == entered.end()) {
+                    stack.push_back(std::make_pair(input, false));
+                }
+            } else if (outsideSources && sourcesSeen.insert(input.get()).second) {
+                outsideSources->push_back(input);
+            }
+        }
+    }
+    if (digest && (tail != begin)) {
+        *digest = hashOf(*tail);
+    }
+} // Node::walkLoopBody
+
 bool
 Node::dependsOnProjectFrameRange() const
 {
@@ -1108,6 +1232,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
+    _imp->effect->appendExtraHashDependents(dependents);
 
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
@@ -1135,6 +1260,7 @@ Node::getHashInputs(HashInputs* inputs) const
     inputs->isViewer = false;
     inputs->bySlot.clear();
     inputs->metadataSources.clear();
+    inputs->extraSources.clear();
     if (!_imp->effect) {
         return;
     }
@@ -1167,6 +1293,7 @@ Node::getHashInputs(HashInputs* inputs) const
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
     appendMetadataSources(&inputs->metadataSources, NULL);
+    _imp->effect->appendExtraHashSources(&inputs->extraSources);
 }
 
 bool
@@ -1497,6 +1624,7 @@ Node::flushHashDirtyMarks()
     std::vector<HashDirtyEntry>& batch = queue.batch;
     std::vector<NodePtr>& toExpand = queue.toExpand;
     std::vector<NodePtr>& dependents = queue.dependents;
+    std::vector<NodePtr> stopped;
     for (;;) {
         batch.clear();
         {
@@ -1516,7 +1644,10 @@ Node::flushHashDirtyMarks()
 
             return true;
         };
-        auto reach = [&visit, &toExpand](const NodePtr& node) {
+        // A feedback loop's LoopBegin folds its body's state in, not the body's hashes: a walk
+        // stopping at a dirty body node must still reach it, as it may be clean.
+        const bool feedbackLoops = LoopEnd::anyExists();
+        auto reach = [&visit, &toExpand, &stopped, feedbackLoops](const NodePtr& node) {
             if (!node || !visit(node)) {
                 return;
             }
@@ -1527,6 +1658,8 @@ Node::flushHashDirtyMarks()
             // still pending, so the walk stops at dirty nodes that are not pending.
             if (!wasDirty || node->_imp->hashDirtyQueued.load()) {
                 toExpand.push_back(node);
+            } else if (feedbackLoops) {
+                stopped.push_back(node);
             }
         };
         for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -1552,11 +1685,17 @@ Node::flushHashDirtyMarks()
                     }
                 }
             }
-            while (!toExpand.empty()) {
-                NodePtr node = std::move(toExpand.back());
-                toExpand.pop_back();
+            while (!toExpand.empty() || !stopped.empty()) {
                 dependents.clear();
-                node->getHashDependents(&dependents);
+                if (toExpand.empty()) {
+                    NodePtr node = std::move(stopped.back());
+                    stopped.pop_back();
+                    LoopEnd::appendFeedbackBeginsOf(node, &dependents);
+                } else {
+                    NodePtr node = std::move(toExpand.back());
+                    toExpand.pop_back();
+                    node->getHashDependents(&dependents);
+                }
                 for (std::size_t d = 0; d < dependents.size(); ++d) {
                     reach(dependents[d]);
                 }
@@ -1618,6 +1757,9 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
         }
         for (std::size_t i = 0; inputsClean && (i < inputs.metadataSources.size()); ++i) {
             inputsClean = !inputs.metadataSources[i]->isHashDirty();
+        }
+        for (std::size_t i = 0; inputsClean && (i < inputs.extraSources.size()); ++i) {
+            inputsClean = !inputs.extraSources[i]->isHashDirty();
         }
         if (!inputsClean && requireCleanInputs) {
             return false;
@@ -1698,6 +1840,12 @@ Node::refreshDirtyHashes()
             }
             for (std::size_t i = 0; i < inputs.metadataSources.size(); ++i) {
                 const NodePtr& source = inputs.metadataSources[i];
+                if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
+                    stack.push_back(std::make_pair(source, false));
+                }
+            }
+            for (std::size_t i = 0; i < inputs.extraSources.size(); ++i) {
+                const NodePtr& source = inputs.extraSources[i];
                 if (source->isHashDirty() && (state.find(source.get()) == state.end())) {
                     stack.push_back(std::make_pair(source, false));
                 }

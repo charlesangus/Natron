@@ -46,7 +46,8 @@
 #define kLoopEndParamStep "step"
 #define kLoopEndParamMode "mode"
 #define kLoopEndParamModeAccumulate "accumulate"
-#define kLoopEndParamModeSinglePass "singlePass"
+#define kLoopEndParamModeFeedback "feedback"
+#define kLoopEndParamSinglePass "singlePass"
 #define kLoopEndParamSinglePassIteration "singlePassIteration"
 #define kLoopEndParamIterateOver "iterateOver"
 #define kLoopEndParamIterateOverCount "count"
@@ -95,7 +96,60 @@ public:
 
     explicit LoopEnd(NodePtr node);
 
+    virtual ~LoopEnd();
+
     static bool isLoopEnd(const NodePtr& node) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether any LoopEnd exists in the process.
+     **/
+    static bool anyExists() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopEnd that pairs with begin when it is in Feedback mode, else null.
+     **/
+    static std::shared_ptr<LoopEnd> feedbackEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Appends the LoopBegins of the Feedback loops whose iterations render node.
+     **/
+    static void appendFeedbackBeginsOf(const NodePtr& node,
+                                       std::vector<NodePtr>* begins);
+
+    /**
+     * @brief What the LoopBegin outputs under a Feedback iteration after the first: tail, the
+     * node feeding this LoopEnd, under context at time.
+     **/
+    struct FeedbackStep {
+        NodePtr tail;
+        RenderContextPtr context;
+        double time = 0.;
+    };
+
+    /**
+     * @brief The step before the Feedback iteration context sets, for the LoopBegin rendering
+     * at time under it. False under the first iteration, outside the loop, or when the loop is
+     * not in Feedback mode.
+     **/
+    bool feedbackStepBefore(const RenderContextPtr& context,
+                            double time,
+                            FeedbackStep* previous) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Appends the knobs that decide which iterations the loop runs.
+     **/
+    void appendFeedbackKnobsHash(ContentHasher& h) const;
+
+    /**
+     * @brief An iteration's output that a render of this node on a scheduler without a frame
+     * store keeps for the LoopBegin of the next iteration: the tail's image under the context key
+     * contextKey of the tail at time, view and mipmapLevel, covering roi. Null when none is kept.
+     **/
+    ImagePtr findFeedbackImage(U64 contextKey,
+                               double time,
+                               ViewIdx view,
+                               unsigned int mipmapLevel,
+                               const RectI& roi) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The loop variables of iteration k of count, as LoopEnd sets them under loop.* and
@@ -157,10 +211,12 @@ private:
         bool frames = false;
         int frameStart = 0;
         int frameStep = 1;
+        bool feedback = false;
         // The iteration Single Pass outputs, or -1.
         int singlePass = -1;
         // How many iterations are folded: count, fewer when the stop condition ended the loop
-        // early, or 1 for Single Pass.
+        // early, or 1 for Single Pass. Under feedback, the last iteration rendered is folded - 1,
+        // or singlePass.
         int folded = 0;
         MessageTypeEnum messageType = eMessageTypeError;
         // Empty when the loop can render.
@@ -204,8 +260,10 @@ private:
                        "that frame. Accumulate folds the iterations together in order with the "
                        "Operation: their mean, sum, minimum or maximum, each iteration over the ones "
                        "before it (Over), or under them (Under); Reverse Order folds from the last "
-                       "iteration to the first. Single Pass outputs the one iteration Single Pass "
-                       "Iteration names, unfolded. A Stop Condition, a Python expression, is evaluated "
+                       "iteration to the first. Feedback feeds each iteration's output to the LoopBegin "
+                       "of the next, which starts from the loop's input, and outputs the last. "
+                       "Single Pass outputs the one iteration Single Pass Iteration names, unfolded; "
+                       "under Feedback, that iteration after the ones before it. A Stop Condition, a Python expression, is evaluated "
                        "before each iteration with loop.iteration, loop.count, loop.t, loop.frame and "
                        "frame set: the first iteration it is true for, and those after it, are not run. "
                        "A loop nested in another sees the outer loop's variables as loops.<name>.*, "
@@ -236,6 +294,8 @@ private:
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
@@ -278,7 +338,10 @@ private:
     // The loop as its knobs and graph define it, every iteration folded.
     Resolved resolve() const WARN_UNUSED_RETURN;
 
-    // resolve(), with the iterations the stop condition leaves at time.
+    bool isFeedback() const WARN_UNUSED_RETURN;
+
+    // resolve(), with the iterations the stop condition leaves at time. Under Feedback, the
+    // output iteration alone, as singlePass.
     Resolved resolveAt(double time) const WARN_UNUSED_RETURN;
 
     // The iteration the stop condition first holds for at time, count when none; error is set
@@ -292,6 +355,16 @@ private:
     std::vector<Iteration> foldedIterations(const Resolved& resolved,
                                             const RenderContextPtr& context,
                                             double time) const WARN_UNUSED_RETURN;
+
+    // Renders the Feedback iterations before last in order, each kept under owner for the
+    // LoopBegin of the next until that one has rendered, where no frame store chains them.
+    StatusEnum renderFeedbackIterations(const RenderActionArgs& args,
+                                        const Resolved& resolved,
+                                        const RenderContextPtr& context,
+                                        int last,
+                                        const void* owner);
+
+    void releaseFeedbackImages(const void* owner);
 
     // The index in foldedIterations() fold step k folds in.
     int iterationOfStep(int k,
@@ -326,6 +399,7 @@ private:
     KnobChoiceWPtr _operation;
     KnobBoolWPtr _reverseOrder;
     KnobIntWPtr _maxIterations;
+    KnobBoolWPtr _singlePass;
     KnobIntWPtr _singlePassIteration;
     KnobChoiceWPtr _iterateOver;
     KnobIntWPtr _frameStart;
@@ -338,6 +412,19 @@ private:
 
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;
+
+    struct FeedbackImage {
+        // The render that keeps it.
+        const void* owner = 0;
+        U64 contextKey = 0;
+        double time = 0.;
+        ViewIdx view;
+        unsigned int mipmapLevel = 0;
+        ImagePtr image;
+    };
+
+    mutable QMutex _feedbackMutex;
+    std::vector<FeedbackImage> _feedbackImages;
 };
 
 NATRON_NAMESPACE_EXIT

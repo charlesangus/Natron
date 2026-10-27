@@ -405,6 +405,31 @@ public:
     }
 
     /**
+     * @brief Appends nodes whose stored hashes appendNodeContentHash() folds in, besides the
+     * node's inputs: they are hashed before it, and it is only clean once they are.
+     **/
+    virtual void appendExtraHashSources(std::vector<NodePtr>* /*sources*/) const
+    {
+    }
+
+    /**
+     * @brief Appends nodes whose hashes fold this one's state in, besides its outputs: marking
+     * this node dirty marks them too.
+     **/
+    virtual void appendExtraHashDependents(std::vector<NodePtr>* /*dependents*/) const
+    {
+    }
+
+    /**
+     * @brief Appends nodes whose context reads this node's read-set folds in, besides its inputs
+     * and the nodes its expressions read, each with the variables it sets on that node.
+     **/
+    virtual void appendExtraContextReadSuccessors(std::vector<NodePtr>* /*successors*/,
+                                                  std::vector<RenderContextReadSet>* /*overridden*/) const
+    {
+    }
+
+    /**
      * @brief Forwarded to the node's name
      **/
     const std::string & getScriptName() const WARN_UNUSED_RETURN;
@@ -1939,6 +1964,9 @@ public:
         ViewIdx view;
         RectD roi;
         std::list<ImageLayerDesc> comps;
+        // Planned once every consumer of this frame/view is: the request is asked again then,
+        // with roi the whole region they request, rather than once per region a consumer adds.
+        bool afterConsumers = false;
     };
 
     /**

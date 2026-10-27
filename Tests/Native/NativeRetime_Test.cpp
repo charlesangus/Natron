@@ -64,23 +64,40 @@ protected:
                      int from,
                      double blend)
     {
+        expectMean(node, time, { from, from + 1 }, { 1. - blend, blend });
+    }
+
+    // The output at time is the mean of the input at frames, weighted by weights (which need not
+    // sum to 1), which are the frames it declares, and renders that mean in both schedulers.
+    void expectMean(const NodePtr& node,
+                    double time,
+                    const std::vector<int>& frames,
+                    const std::vector<double>& weights)
+    {
+        ASSERT_EQ(frames.size(), weights.size());
         EXPECT_EQ(Route::Kind::None, routeAt(node, time).kind) << "at " << time;
         Retime* retime = retimeOf(node);
         ASSERT_TRUE(retime != NULL);
         const Retime::Sample sample = retime->sample(time, ViewIdx(0));
         ASSERT_EQ(Retime::Sample::eBlend, sample.kind) << "at " << time;
-        EXPECT_DOUBLE_EQ((double)from, sample.times[0]) << "at " << time;
-        EXPECT_DOUBLE_EQ((double)from + 1., sample.times[1]) << "at " << time;
-        EXPECT_NEAR(blend, sample.blend, 1e-9) << "at " << time;
+        ASSERT_EQ(frames.size(), sample.times.size()) << "at " << time;
+        ASSERT_EQ(frames.size(), sample.weights.size()) << "at " << time;
+        double sum = 0.;
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            EXPECT_DOUBLE_EQ((double)frames[i], sample.times[i]) << "at " << time;
+            EXPECT_NEAR(weights[i], sample.weights[i], 1e-9) << "at " << time << ", frame " << frames[i];
+            sum += weights[i];
+        }
 
         const EffectInstancePtr effect = node->getEffectInstance();
-        const FramesNeededMap frames = effect->getFramesNeeded_public(effect->getRenderHash(), time, ViewIdx(0), 0);
-        ASSERT_EQ(1u, frames.size());
-        const FrameRangesMap::const_iterator ranges = frames.begin()->second.find(ViewIdx(0));
-        ASSERT_TRUE(ranges != frames.begin()->second.end());
-        ASSERT_EQ(2u, ranges->second.size());
-        EXPECT_EQ((double)from, ranges->second[0].min);
-        EXPECT_EQ((double)from + 1., ranges->second[1].min);
+        const FramesNeededMap needed = effect->getFramesNeeded_public(effect->getRenderHash(), time, ViewIdx(0), 0);
+        ASSERT_EQ(1u, needed.size());
+        const FrameRangesMap::const_iterator ranges = needed.begin()->second.find(ViewIdx(0));
+        ASSERT_TRUE(ranges != needed.begin()->second.end());
+        ASSERT_EQ(frames.size(), ranges->second.size());
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            EXPECT_EQ((double)frames[i], ranges->second[i].min);
+        }
 
         const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
         const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
@@ -91,9 +108,11 @@ protected:
             ASSERT_FALSE(planes.empty());
             ASSERT_GE(planes.front().pixels.size(), 4u);
             for (int c = 0; c < 4; ++c) {
-                const float a = NativeTimeNodes::colourAt(from, c);
-                const float b = NativeTimeNodes::colourAt(from + 1, c);
-                EXPECT_NEAR((b - a) * (float)blend + a, planes.front().pixels[c], 1e-6) << "mode " << (int)mode << ", channel " << c;
+                double expected = 0.;
+                for (std::size_t i = 0; i < frames.size(); ++i) {
+                    expected += weights[i] / sum * NativeTimeNodes::colourAt(frames[i], c);
+                }
+                EXPECT_NEAR(expected, planes.front().pixels[c], 1e-6) << "mode " << (int)mode << ", channel " << c;
             }
         }
 
@@ -207,6 +226,92 @@ TEST_F(NativeRetimeTest, ReverseRunsBackFromTheLastFrame)
     expectInputAt(retime, 10., 41.);
     expectInputAt(retime, 50., 1.);
     expectFrameRange(retime, 1., 50.);
+}
+
+// Reverse is read at the output frame asked for: off, then on from frame 10.
+TEST_F(NativeRetimeTest, AnimatedReverseIsReadAtTheTimeAskedFor)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    KnobBoolPtr reverse = std::dynamic_pointer_cast<KnobBool>(retime->getKnobByName(kRetimeParamReverse));
+    ASSERT_TRUE(bool(reverse));
+    reverse->setValueAtTime(1., false, ViewSpec::all(), 0);
+    reverse->setValueAtTime(10., true, ViewSpec::all(), 0);
+
+    expectInputAt(retime, 5., 5.);
+    expectInputAt(retime, 10., 41.);
+    expectInputAt(retime, 20., 31.);
+    EXPECT_TRUE(retime->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+}
+
+// At speed 1 the default shutter of 1 covers exactly one input frame, so Box passes it through.
+TEST_F(NativeRetimeTest, BoxAtSpeedOneReadsTheFrame)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+
+    expectInputAt(retime, 1., 1.);
+    expectInputAt(retime, 10., 10.);
+    expectInputAt(retime, 50., 50.);
+}
+
+// At speed 2 output frame 10 reads input frame 19, and its shutter covers [18, 20]: half of frame
+// 18, all of 19 and half of 20.
+TEST_F(NativeRetimeTest, BoxAveragesTheFramesTheShutterCovers)
+{
+    NodePtr retime = createRetime({ 17, 18, 19, 20, 21 });
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
+
+    expectMean(retime, 10., { 18, 19, 20 }, { 0.5, 1., 0.5 });
+
+    // A shutter of 1.5 covers [17.5, 20.5]: all of 18, 19 and 20.
+    setKnob<KnobDouble>(retime, kRetimeParamShutter, 1.5);
+    expectMean(retime, 10., { 18, 19, 20 }, { 1., 1., 1. });
+
+    // A shutter of 0 covers nothing: the nearest frame.
+    setKnob<KnobDouble>(retime, kRetimeParamShutter, 0.);
+    expectInputAt(retime, 10., 19.);
+}
+
+// At speed 0.25 output frame 4 reads input frame 1.75 and its shutter covers [1.625, 1.875],
+// inside frame 2; output frame 3 reads 1.5, covering [1.375, 1.625] across frames 1 and 2.
+TEST_F(NativeRetimeTest, BoxAtLowSpeedReadsTheFramesUnderTheShutter)
+{
+    NodePtr retime = createRetime({ 1, 2 });
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 0.25);
+
+    expectInputAt(retime, 4., 2.);
+    expectMean(retime, 3., { 1, 2 }, { 0.125, 0.125 });
+}
+
+// A frame Hold holds does not move, so it is not blurred; inside the input range the shutter
+// stops half a frame past its ends.
+TEST_F(NativeRetimeTest, BoxNeitherBlursAHeldFrameNorReadsPastTheInputRange)
+{
+    NodePtr retime = createRetime({ 49, 50 });
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
+
+    // The output range is [1, 25.5]; past it After holds input frame 50.
+    expectInputAt(retime, 30., 50.);
+    // The range's last output time, 25.5, reads input frame 50; its shutter's [49, 51] is clipped
+    // to [49, 50.5]: half of frame 49 and all of 50.
+    Retime* effect = retimeOf(retime);
+    ASSERT_TRUE(effect != NULL);
+    const Retime::Sample last = effect->sample(25.5, ViewIdx(0));
+    ASSERT_EQ(Retime::Sample::eBlend, last.kind);
+    ASSERT_EQ(2u, last.times.size());
+    ASSERT_EQ(2u, last.weights.size());
+    EXPECT_DOUBLE_EQ(49., last.times[0]);
+    EXPECT_DOUBLE_EQ(50., last.times[1]);
+    EXPECT_NEAR(0.5, last.weights[0], 1e-9);
+    EXPECT_NEAR(1., last.weights[1], 1e-9);
 }
 
 TEST_F(NativeRetimeTest, WarpCurveReshapesTheInputRange)

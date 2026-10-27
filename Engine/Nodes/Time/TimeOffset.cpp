@@ -26,12 +26,36 @@
 #include "TimeOffset.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+constexpr int kMaxOutputTimeIterations = 32;
+
+// The output frame that shows input frame frame: the t with t - offset(t) = frame. An animated
+// offset makes that a fixed point, iterated to from frame + offset(frame); for an offset moving
+// slower than time it converges, and a constant one is there at once.
+double
+outputTimeOf(const KnobDoublePtr& offset,
+             double frame)
+{
+    double t = frame + offset->getValueAtTime(frame);
+    for (int i = 0; i < kMaxOutputTimeIterations; ++i) {
+        const double next = frame + offset->getValueAtTime(t);
+        if (std::abs(next - t) < 1e-9) {
+            return next;
+        }
+        t = next;
+    }
+
+    return t;
+}
+} // anonymous namespace
 
 void
 TimeOffsetOp::createKnobs(KnobHolder* holder,
@@ -45,8 +69,6 @@ TimeOffsetOp::createKnobs(KnobHolder* holder,
     offsetKnob->setDefaultValue(0.);
     offsetKnob->setDisplayMinimum(-100.);
     offsetKnob->setDisplayMaximum(100.);
-    // The frame range moves by the offset, which an animated offset would leave undefined.
-    offsetKnob->setAnimationEnabled(false);
     page->addKnob(offsetKnob);
     timeOffset = offsetKnob;
 
@@ -120,12 +142,11 @@ TimeOffset::getFrameRange(double* first,
     if (!offset || !getInput(0)) {
         return;
     }
-    const double shift = offset->getValue();
     if (*first > std::numeric_limits<int>::min()) {
-        *first += shift;
+        *first = outputTimeOf(offset, *first);
     }
     if (*last < std::numeric_limits<int>::max()) {
-        *last += shift;
+        *last = outputTimeOf(offset, *last);
     }
 }
 

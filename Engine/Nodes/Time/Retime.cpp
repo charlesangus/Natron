@@ -51,6 +51,10 @@ namespace {
 // weight of nearly zero.
 constexpr double kWholeFrameTolerance = 1e-6;
 
+// The widest input span Box averages, so that a high speed cannot ask for an unbounded number of
+// frames per output frame.
+constexpr double kMaxBoxSpan = 255.;
+
 bool
 boundedRange(const EffectInstancePtr& input,
              double* first,
@@ -186,7 +190,6 @@ Retime::initializeKnobs()
     reverseKnob->setName(kRetimeParamReverse);
     reverseKnob->setHintToolTip(tr("Play the input range backwards, from its last frame to its first.").toStdString());
     reverseKnob->setDefaultValue(false);
-    reverseKnob->setAnimationEnabled(false);
     page->addKnob(reverseKnob);
     _reverse = reverseKnob;
 
@@ -228,12 +231,27 @@ Retime::initializeKnobs()
         options.push_back(ChoiceOption(kRetimeFilterBlend, tr("Blend").toStdString(), tr("The two nearest input frames blended linearly.").toStdString()));
         options.push_back(ChoiceOption(kRetimeFilterFractional, tr("Fractional").toStdString(),
                                        tr("The input at the fractional time, for an input that can render between frames.").toStdString()));
+        options.push_back(ChoiceOption(kRetimeFilterBox, tr("Box").toStdString(),
+                                       tr("The input frames the shutter covers, averaged, each weighted by how much of it the shutter covers.").toStdString()));
         filterKnob->populateChoices(options);
     }
     filterKnob->setDefaultValue((int)eFilterBlend);
     filterKnob->setAnimationEnabled(false);
     page->addKnob(filterKnob);
     _filter = filterKnob;
+
+    KnobDoublePtr shutterKnob = createKnob<KnobDouble>(tr("Shutter").toStdString());
+    shutterKnob->setName(kRetimeParamShutter);
+    shutterKnob->setHintToolTip(tr("With the Box filter, the output frames each output frame averages over, centred on it: the "
+                                   "input frames that span covers are blended. Lower values blend fewer frames; 0 reads the "
+                                   "nearest frame.")
+                                    .toStdString());
+    shutterKnob->setDefaultValue(1.);
+    shutterKnob->setMinimum(0.);
+    shutterKnob->setDisplayMinimum(0.);
+    shutterKnob->setDisplayMaximum(2.);
+    page->addKnob(shutterKnob);
+    _shutter = shutterKnob;
 
     addStageKnobs(page);
 
@@ -310,48 +328,63 @@ Retime::ranges(ViewIdx view) const
 } // Retime::ranges
 
 bool
-Retime::sourceTime(double time,
-                   ViewIdx view,
-                   double* source) const
+Retime::outputTime(double time,
+                   const Ranges& r,
+                   double* mapped,
+                   bool* moving) const
 {
-    KnobDoublePtr speedKnob = _speed.lock();
-    KnobBoolPtr reverseKnob = _reverse.lock();
     KnobChoicePtr beforeKnob = _before.lock();
     KnobChoicePtr afterKnob = _after.lock();
-    KnobParametricPtr warpKnob = _warp.lock();
-    if (!speedKnob || !reverseKnob || !beforeKnob || !afterKnob || !warpKnob || !getInput(0)) {
+    if (!beforeKnob || !afterKnob) {
         return false;
     }
-
-    const Ranges r = ranges(view);
     const double low = std::min(r.outputFirst, r.outputLast);
     const double high = std::max(r.outputFirst, r.outputLast);
-    double t = time;
-    if ((t < low) || (t > high)) {
-        const Outside outside = (Outside)std::clamp((t < low) ? beforeKnob->getValue() : afterKnob->getValue(), (int)eOutsideContinue, (int)eOutsideBlack);
-        switch (outside) {
-        case eOutsideContinue:
-            break;
-        case eOutsideHold:
-            t = std::clamp(t, low, high);
-            break;
-        case eOutsideLoop:
-        case eOutsideBounce: {
-            const ReadTimeDomain::BeforeAfter mode = toBeforeAfter(outside);
-            const ReadTimeDomain::RangeTime mapped = ReadTimeDomain::mapIntoRange(t, (int)std::floor(low), (int)std::ceil(high), mode, mode);
-            if (mapped.kind != ReadTimeDomain::RangeTime::eWithin) {
-                return false;
-            }
-            t = mapped.time;
-            break;
-        }
-        case eOutsideBlack:
+    *mapped = time;
+    *moving = true;
+    if ((time >= low) && (time <= high)) {
+        return true;
+    }
+    const Outside outside = (Outside)std::clamp((time < low) ? beforeKnob->getValue() : afterKnob->getValue(), (int)eOutsideContinue, (int)eOutsideBlack);
+    switch (outside) {
+    case eOutsideContinue:
+        return true;
+    case eOutsideHold:
+        *mapped = std::clamp(time, low, high);
+        *moving = false;
+
+        return true;
+    case eOutsideLoop:
+    case eOutsideBounce: {
+        const ReadTimeDomain::BeforeAfter mode = toBeforeAfter(outside);
+        const ReadTimeDomain::RangeTime wrapped = ReadTimeDomain::mapIntoRange(time, (int)std::floor(low), (int)std::ceil(high), mode, mode);
+        if (wrapped.kind != ReadTimeDomain::RangeTime::eWithin) {
             return false;
         }
+        *mapped = wrapped.time;
+
+        return true;
+    }
+    case eOutsideBlack:
+        break;
     }
 
-    const double integrated = r.fixedSpeed ? r.speed * (t - r.outputFirst) : speedKnob->getIntegrateFromTimeToTime(r.outputFirst, t, view, 0);
-    double s = reverseKnob->getValue() ? (r.inputLast - integrated) : (r.inputFirst + integrated);
+    return false;
+}
+
+double
+Retime::inputTime(double mapped,
+                  const Ranges& r,
+                  bool reverse,
+                  ViewIdx view) const
+{
+    KnobDoublePtr speedKnob = _speed.lock();
+    KnobParametricPtr warpKnob = _warp.lock();
+    if (!speedKnob || !warpKnob) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double integrated = r.fixedSpeed ? r.speed * (mapped - r.outputFirst) : speedKnob->getIntegrateFromTimeToTime(r.outputFirst, mapped, view, 0);
+    double s = reverse ? (r.inputLast - integrated) : (r.inputFirst + integrated);
     const double length = r.inputLast - r.inputFirst;
     if (length != 0.) {
         double warped = 0.;
@@ -359,6 +392,26 @@ Retime::sourceTime(double time,
             s = r.inputFirst + length * warped;
         }
     }
+
+    return s;
+}
+
+bool
+Retime::sourceTime(double time,
+                   ViewIdx view,
+                   double* source) const
+{
+    KnobBoolPtr reverseKnob = _reverse.lock();
+    if (!reverseKnob || !getInput(0)) {
+        return false;
+    }
+    const Ranges r = ranges(view);
+    double mapped = 0.;
+    bool moving = true;
+    if (!outputTime(time, r, &mapped, &moving)) {
+        return false;
+    }
+    const double s = inputTime(mapped, r, reverseKnob->getValueAtTime(time, 0, view), view);
     if (!std::isfinite(s)) {
         return false;
     }
@@ -373,35 +426,91 @@ Retime::sample(double time,
 {
     Sample result;
     KnobChoicePtr filterKnob = _filter.lock();
-    double s = 0.;
-    if (!filterKnob || !sourceTime(time, view, &s)) {
+    KnobBoolPtr reverseKnob = _reverse.lock();
+    KnobDoublePtr shutterKnob = _shutter.lock();
+    if (!filterKnob || !reverseKnob || !shutterKnob || !getInput(0)) {
+        return result;
+    }
+    const Ranges r = ranges(view);
+    double mapped = 0.;
+    bool moving = true;
+    if (!outputTime(time, r, &mapped, &moving)) {
+        return result;
+    }
+    const bool reverse = reverseKnob->getValueAtTime(time, 0, view);
+    const double s = inputTime(mapped, r, reverse, view);
+    if (!std::isfinite(s)) {
         return result;
     }
 
     result.kind = Sample::eInput;
+    const Filter filter = (Filter)std::clamp(filterKnob->getValue(), (int)eFilterNearest, (int)eFilterBox);
     double frame = 0.;
-    if (isWholeFrame(s, &frame)) {
-        result.times[0] = frame;
+    if ((filter != eFilterBox) && isWholeFrame(s, &frame)) {
+        result.times.push_back(frame);
 
         return result;
     }
-    switch ((Filter)std::clamp(filterKnob->getValue(), (int)eFilterNearest, (int)eFilterFractional)) {
+    switch (filter) {
     case eFilterNearest:
-        result.times[0] = std::floor(s + 0.5);
+        result.times.push_back(std::floor(s + 0.5));
         break;
     case eFilterFractional:
-        result.times[0] = s;
+        result.times.push_back(s);
         break;
-    case eFilterBlend:
+    case eFilterBlend: {
+        const double from = std::floor(s);
         result.kind = Sample::eBlend;
-        result.times[0] = std::floor(s);
-        result.times[1] = result.times[0] + 1.;
-        result.blend = s - result.times[0];
+        result.times = { from, from + 1. };
+        result.weights = { 1. - (s - from), s - from };
         break;
+    }
+    case eFilterBox: {
+        // The shutter's ends, mapped like its centre but without wrapping, so that a loop's seam
+        // or a held end does not stretch the span; the centre counts too, for a warp that turns.
+        double low = s;
+        double high = s;
+        const double half = moving ? 0.5 * std::max(0., shutterKnob->getValueAtTime(time, 0, view)) : 0.;
+        if (half > 0.) {
+            for (double end : { mapped - half, mapped + half }) {
+                const double e = inputTime(end, r, reverse, view);
+                if (std::isfinite(e)) {
+                    low = std::min(low, e);
+                    high = std::max(high, e);
+                }
+            }
+        }
+        // Within the input range the span stays inside it; Continue reads past it on purpose.
+        const double inputLow = std::min(r.inputFirst, r.inputLast);
+        const double inputHigh = std::max(r.inputFirst, r.inputLast);
+        if ((s >= inputLow) && (s <= inputHigh)) {
+            low = std::max(low, inputLow - 0.5);
+            high = std::min(high, inputHigh + 0.5);
+        }
+        low = std::max(low, s - 0.5 * kMaxBoxSpan);
+        high = std::min(high, s + 0.5 * kMaxBoxSpan);
+        // Frame f covers [f - 0.5, f + 0.5).
+        for (double f = std::floor(low + 0.5); f <= std::floor(high + 0.5); f += 1.) {
+            const double weight = std::min(high, f + 0.5) - std::max(low, f - 0.5);
+            if (weight > kWholeFrameTolerance) {
+                result.times.push_back(f);
+                result.weights.push_back(weight);
+            }
+        }
+        if (result.times.size() > 1) {
+            result.kind = Sample::eBlend;
+        } else {
+            if (result.times.empty()) {
+                result.times.push_back(isWholeFrame(s, &frame) ? frame : std::floor(s + 0.5));
+            }
+            result.weights.clear();
+        }
+        break;
+    }
     }
 
     return result;
-}
+} // Retime::sample
 
 Route
 Retime::route(double time,
@@ -452,12 +561,11 @@ Retime::getRegionOfDefinition(U64 /*hash*/,
         return eStatusOK;
     }
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-    const int nTimes = (s.kind == Sample::eBlend) ? 2 : 1;
-    for (int i = 0; i < nTimes; ++i) {
+    for (double t : s.times) {
         RectD inputRoD;
         bool isProjectFormat = false;
         // An input reports its empty region as a failure; it is still the region it has.
-        if ((input->getRegionOfDefinition_public(input->getRenderHash(), s.times[i], inputScale, view, &inputRoD, &isProjectFormat) == eStatusFailed) && !inputRoD.isNull()) {
+        if ((input->getRegionOfDefinition_public(input->getRenderHash(), t, inputScale, view, &inputRoD, &isProjectFormat) == eStatusFailed) && !inputRoD.isNull()) {
             return eStatusFailed;
         }
         if (inputRoD.isNull()) {
@@ -574,18 +682,17 @@ Retime::renderOp(const RenderActionArgs& args,
         // route() answers every other sample, so the host never renders it.
         return eStatusFailed;
     }
-    const double weights[2] = { 1. - s.blend, s.blend };
     for (const std::pair<ImageLayerDesc, ImagePtr>& output : args.outputLayers) {
-        // Both are fetched before any image is locked: fetching renders upstream. A null image
+        // All are fetched before any image is locked: fetching renders upstream. A null image
         // at a declared time is an input with nothing there, which reads as black.
-        ImagePtr images[2];
-        for (int i = 0; i < 2; ++i) {
+        std::vector<ImagePtr> images(s.times.size());
+        for (std::size_t i = 0; i < s.times.size(); ++i) {
             if (!declaresInputTime(0, args.time, args.view, s.times[i])) {
                 return eStatusFailed;
             }
             images[i] = fetchInputAt(0, s.times[i], args, &output.first);
         }
-        if (!TimeBlend::renderCpu(output.second, args.roi, images, weights)) {
+        if (!TimeBlend::renderCpu(output.second, args.roi, images, s.weights)) {
             return eStatusFailed;
         }
     }
@@ -602,17 +709,26 @@ Retime::canRenderOpOnGpu(const GpuQuery& query) const
         return false;
     }
     const Sample s = sample(query.time, query.view);
-    if (s.kind != Sample::eBlend) {
+    EffectInstancePtr input = getInput(0);
+    if ((s.kind != Sample::eBlend) || !input) {
         return false;
     }
+    const RenderScale inputScale = input->supportsRenderScale() ? query.mappedScale : RenderScale::identity;
     for (double t : s.times) {
         bool found = false;
-        for (const GpuInputTimes& input : query.inputTimes) {
-            if ((input.inputNb == 0) && (std::find(input.times.begin(), input.times.end(), t) != input.times.end())) {
+        for (const GpuInputTimes& times : query.inputTimes) {
+            if ((times.inputNb == 0) && (std::find(times.times.begin(), times.times.end(), t) != times.times.end())) {
                 found = true;
             }
         }
         if (!found && (t != query.time)) {
+            return false;
+        }
+        // A frame with nothing there reads as black on the CPU; a region has no view of it, so
+        // that blend renders on the CPU.
+        RectD rod;
+        bool isProjectFormat = false;
+        if ((input->getRegionOfDefinition_public(input->getRenderHash(), t, inputScale, query.view, &rod, &isProjectFormat) == eStatusFailed) || rod.isNull()) {
             return false;
         }
     }
@@ -644,10 +760,12 @@ Retime::renderOpGpu(const GpuRenderArgs& args)
     if (s.kind != Sample::eBlend) {
         return eStatusFailed;
     }
-    const GpuImageView* views[2] = { args.inputAt(0, s.times[0]), args.inputAt(0, s.times[1]) };
-    const double weights[2] = { 1. - s.blend, s.blend };
+    std::vector<const GpuImageView*> views;
+    for (double t : s.times) {
+        views.push_back(args.inputAt(0, t));
+    }
 
-    return TimeBlend::recordGpu(args, views, weights);
+    return TimeBlend::recordGpu(args, views, s.weights);
 }
 
 NATRON_NAMESPACE_EXIT

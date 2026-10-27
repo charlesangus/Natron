@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <vector>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
@@ -47,6 +49,7 @@
 #define kRetimeParamBefore "before"
 #define kRetimeParamAfter "after"
 #define kRetimeParamFilter "filter"
+#define kRetimeParamShutter "shutter"
 #define kRetimeParamWarp "warp"
 
 #define kRetimeOutsideContinue "continue"
@@ -58,6 +61,7 @@
 #define kRetimeFilterNearest "nearest"
 #define kRetimeFilterBlend "blend"
 #define kRetimeFilterFractional "fractional"
+#define kRetimeFilterBox "box"
 
 NATRON_NAMESPACE_ENTER
 
@@ -106,6 +110,7 @@ public:
         eFilterNearest = 0,
         eFilterBlend,
         eFilterFractional,
+        eFilterBox,
     };
 
     /**
@@ -123,9 +128,8 @@ public:
     };
 
     /**
-     * @brief What the output at a time shows: nothing (black), the input at one time, or a blend
-     * of the input at times[0] and times[1], (times[1] - times[0]) apart, weighted 1 - blend and
-     * blend.
+     * @brief What the output at a time shows: nothing (black), the input at times[0], or the
+     * weighted mean of the input at each of times, ascending whole frames, weighted by weights.
      **/
     struct Sample {
         enum Kind {
@@ -135,8 +139,8 @@ public:
         };
 
         Kind kind = eBlack;
-        double times[2] = { 0., 0. };
-        double blend = 0.;
+        std::vector<double> times;
+        std::vector<double> weights;
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -160,15 +164,16 @@ public:
 
     /**
      * @brief The input time the output at time reads, before the filter: the speed integrated
-     * from the output's first frame, from the input's first frame or, reversed, back from its
-     * last, then through the warp curve. Outside the output range, before and after decide.
-     * False for Black.
+     * from the output's first frame, from the input's first frame or, reversed (as reverse is
+     * at time), back from its last, then through the warp curve. Outside the output range,
+     * before and after decide. False for Black.
      **/
     bool sourceTime(double time, ViewIdx view, double* source) const;
 
     /**
-     * @brief The source time through the filter. A source time within 1e-6 of a whole frame
-     * counts as that frame.
+     * @brief The source time through the filter. Except with Box, a source time within 1e-6 of
+     * a whole frame counts as that frame. Box averages the input frames the shutter, centred on
+     * time and mapped to input frames, covers, each weighted by its overlap.
      **/
     Sample sample(double time, ViewIdx view) const;
 
@@ -224,6 +229,16 @@ private:
     // Shows the resolved ends in the knobs whose lock is off, which are read-only.
     void refreshDerivedKnobs();
 
+    /**
+     * @brief Where before and after send the output time time, before the speed: into *mapped,
+     * with *moving false where the mapped time stands still as time moves (held at an end).
+     * False for Black.
+     **/
+    bool outputTime(double time, const Ranges& r, double* mapped, bool* moving) const;
+
+    // The input time at the output time mapped (within or past the output range), not filtered.
+    double inputTime(double mapped, const Ranges& r, bool reverse, ViewIdx view) const;
+
     bool _refreshingKnobs = false;
     KnobDoubleWPtr _inputFirst;
     KnobBoolWPtr _inputFirstLock;
@@ -238,6 +253,7 @@ private:
     KnobChoiceWPtr _before;
     KnobChoiceWPtr _after;
     KnobChoiceWPtr _filter;
+    KnobDoubleWPtr _shutter;
     KnobParametricWPtr _warp;
 };
 

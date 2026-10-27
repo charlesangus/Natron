@@ -522,6 +522,28 @@ EffectInstance::getCurrentRenderContext() const
     return tls->frameArgs.back()->context;
 }
 
+U64
+EffectInstance::getCurrentRenderContextKey() const
+{
+    if (!renderContextsInUse()) {
+        return 0;
+    }
+
+    return restrictContextToNode(getCurrentRenderContext(), getNode(), 0);
+}
+
+RenderContextPtr
+EffectInstance::getCurrentRestrictedRenderContext() const
+{
+    if (!renderContextsInUse()) {
+        return RenderContextPtr();
+    }
+    RenderContextPtr restricted;
+    (void)restrictContextToNode(getCurrentRenderContext(), getNode(), &restricted);
+
+    return restricted;
+}
+
 bool
 EffectInstance::getInputActionContext(int inputNb,
                                       double time,
@@ -2714,7 +2736,8 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 rectToRender.inputRois,
                                                 firstFrame,
                                                 lastFrame,
-                                                layers->useOpenGL);
+                                                layers->useOpenGL,
+                                                layers->onTheFlyPlanes);
     ImagePtr maskImage;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
@@ -3565,6 +3588,13 @@ EffectInstance::allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDes
             p.tmpImage = p.renderMappedImage;
         }
         tls->currentRenderArgs.outputLayers.insert(std::make_pair(layer, p));
+        if (useCache && tls->currentRenderArgs.onTheFlyPlanes) {
+            std::lock_guard<std::mutex> l(tls->currentRenderArgs.onTheFlyPlanes->lock);
+            tls->currentRenderArgs.onTheFlyPlanes->images.push_back(p.fullscaleImage);
+            if (p.downscaleImage != p.fullscaleImage) {
+                tls->currentRenderArgs.onTheFlyPlanes->images.push_back(p.downscaleImage);
+            }
+        }
 
         return p.downscaleImage;
     }
@@ -4394,7 +4424,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
             return true;
         }
     }
-
+    const CleanHashSnapshot clean(useIdentityCache ? getNode() : NodePtr(), useIdentityCache ? getCurrentRestrictedRenderContext() : RenderContextPtr());
 
     ///EDIT: We now allow isIdentity to be called recursively.
     RECURSIVE_ACTION();
@@ -4436,7 +4466,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
         *inputView = view;
     }
 
-    if (useIdentityCache) {
+    if (useIdentityCache && clean.allowsStoreUnder(hash)) {
         _imp->actionsCache->setIdentityResult(hash, time, view, ret ? *inputNb : kIdentityCacheNotIdentity, *inputView, *inputTime);
     }
 
@@ -4529,6 +4559,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             return preferredInput->getEffectInstance()->getRegionOfDefinition_public(preferredInput->getEffectInstance()->getRenderHash(), time, scale, view, rod, isProjectFormat);
         }
 
+        const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
         StatusEnum ret;
         {
             RECURSIVE_ACTION();
@@ -4547,7 +4578,9 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
 
             if ( rod->isNull() ) {
                 // RoD is empty, which means output is black and transparent
-                _imp->actionsCache->setRoDResult( hash, time, view, mipmapLevel, RectD() );
+                if (clean.allowsStoreUnder(hash)) {
+                    _imp->actionsCache->setRoDResult(hash, time, view, mipmapLevel, RectD());
+                }
 
                 // What the cached result reports, so that whether the RoD came from the cache
                 // never shows in the status.
@@ -4563,7 +4596,9 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
         assert(rod->x1 <= rod->x2 && rod->y1 <= rod->y2);
 
         //if (!isDuringStrokeCreation) {
-        _imp->actionsCache->setRoDResult(hash, time, view,  mipmapLevel, *rod);
+        if (clean.allowsStoreUnder(hash)) {
+            _imp->actionsCache->setRoDResult(hash, time, view, mipmapLevel, *rod);
+        }
 
         //}
         // The cached result cannot tell a default reply from an explicit one, so neither can this.
@@ -4599,6 +4634,7 @@ EffectInstance::getFramesNeeded_public(U64 hash,
         return framesNeeded;
     }
 
+    const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     try {
         framesNeeded = getFramesNeeded(time, view);
     } catch (std::exception &e) {
@@ -4607,9 +4643,30 @@ EffectInstance::getFramesNeeded_public(U64 hash,
         }
     }
 
-    _imp->actionsCache->setFramesNeededResult(hash, time, view, mipmapLevel, framesNeeded);
+    if (clean.allowsStoreUnder(hash)) {
+        _imp->actionsCache->setFramesNeededResult(hash, time, view, mipmapLevel, framesNeeded);
+    }
 
     return framesNeeded;
+}
+
+bool
+EffectInstance::hasCachedFrameRange(U64 hash) const
+{
+    double first = 0., last = 0.;
+
+    return _imp->actionsCache->getTimeDomainResult(hash, &first, &last);
+}
+
+bool
+EffectInstance::hasCachedRoD(U64 hash,
+                             double time,
+                             ViewIdx view,
+                             unsigned int mipmapLevel) const
+{
+    RectD rod;
+
+    return _imp->actionsCache->getRoDResult(hash, time, view, mipmapLevel, &rod);
 }
 
 void
@@ -4640,8 +4697,11 @@ EffectInstance::getFrameRange_public(U64 hash,
         }
 
         NON_RECURSIVE_ACTION();
+        const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
         getFrameRange(first, last);
-        _imp->actionsCache->setTimeDomainResult(hash, *first, *last);
+        if (clean.allowsStoreUnder(hash)) {
+            _imp->actionsCache->setTimeDomainResult(hash, *first, *last);
+        }
     }
 }
 
@@ -4978,9 +5038,9 @@ EffectInstance::getLayersPassThroughInput(double time,
     // partial answers. Stored as getMetadata() stores, so an edit the hash does not yet reflect,
     // or a same-hash drop, leaves nothing behind; a render whose frame hash is not the node's
     // current one reads a snapshot this key does not name.
+    // Keyed by the plain node hash, so cacheable only where the render hash carries no context key.
     NodePtr node = getNode();
-    const U64 writes = KnobContentWrite::snapshot();
-    const U64 marks = node->getHashMarkCount();
+    const CleanHashSnapshot clean(node, RenderContextPtr());
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
     U64 hash = 0;
@@ -4990,8 +5050,7 @@ EffectInstance::getLayersPassThroughInput(double time,
             const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
             identity = isIdentity_public(false, 0, time, RenderScale::identity, metadata->getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
         }
-        U64 hashAfter = 0;
-        if (cacheable && (node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
+        if (cacheable && clean.allowsStoreUnder(hash)) {
             PassThroughIdentityResults results;
             results.metadata = metadata;
             results.identity = identity;
@@ -5381,6 +5440,7 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
         return cached;
     }
 
+    const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     std::shared_ptr<ComponentsNeededResults> results = std::make_shared<ComponentsNeededResults>();
     int passThroughView = 0;
     computeComponentsNeededAndProduced(time, view, &results->neededComps, &results->passThroughLayers, &results->passThroughTime, &passThroughView,
@@ -5392,7 +5452,7 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
 
     // Computed while this effect's own isIdentity() is choosing its pass-through input, the
     // result used the preferred-input fallback and must not outlive that query.
-    if (!isResolvingLayersPassThrough()) {
+    if (!isResolvingLayersPassThrough() && clean.allowsStoreUnder(hash)) {
         _imp->actionsCache->setComponentsNeededResults(hash, time, view, results);
     }
 
@@ -7217,8 +7277,7 @@ EffectInstance::getMetadataOverRange(ViewIdx view,
     }
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     // Keyed as getMetadata() keys each answer, so each context keeps its own summary.
-    const U64 contextKey = renderContextsInUse() ? restrictContextToNode(getCurrentRenderContext(), node, 0) : 0;
-    const U64 hash = mixRenderContextKey(node->getHashValue(), contextKey);
+    const U64 hash = mixRenderContextKey(node->getHashValue(), getCurrentRenderContextKey());
     if (_imp->actionsCache->getRangeMetadataSummary(hash, view, min, max, answers)) {
         return;
     }
@@ -7329,26 +7388,18 @@ EffectInstance::getMetadataAttempt(double time,
 
         return checking->own;
     }
-    // An upstream edit only marks this node, so its hash is not recomputed while the derivation runs and can read the same
-    // again after an input changed and changed back meanwhile, with the derivation having seen
-    // the other state: the mark count, read before the hash, catches that. The generation catches
-    // a drop under the same hash. A knob stores its value before it marks, so a derive can also
-    // see a value the hash and marks do not yet reflect: the write snapshot, read before both,
-    // catches that. A hash read under contention can be folded over a dirty input and stand for a
-    // state the graph has left; such a node stays dirty, so only an up-to-date hash keys an entry.
-    // Under a context, the answer is keyed by the node hash with the key of the context restricted to
-    // what the node's output reads folded in, as the node's render hash is, so each context
-    // derives and keeps its own; the inputs read during the derivation see the same context.
+    // The generation catches a drop under the same hash. Under a context, the answer is keyed by the node hash
+    // with the key of the context restricted to what the node's output reads folded in, as the
+    // node's render hash is, so each context derives and keeps its own; the inputs read during
+    // the derivation see the same context.
     const bool contexts = renderContextsInUse();
     RenderContextPtr context;
     U64 contextKey = 0;
     if (contexts) {
         contextKey = restrictContextToNode(getCurrentRenderContext(), node, &context);
     }
-    const U64 writes = KnobContentWrite::snapshot();
-    const U64 marks = node->getHashMarkCount();
-    const U64 nodeHash = node->getHashValue();
-    const U64 hash = mixRenderContextKey(nodeHash, contextKey);
+    const CleanHashSnapshot clean(node, context);
+    const U64 hash = mixRenderContextKey(node->getHashValue(), contextKey);
     *hashOut = hash;
     NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
     if (cached) {
@@ -7360,9 +7411,7 @@ EffectInstance::getMetadataAttempt(double time,
         ActionContextScope derivingUnder(contexts, context);
         metadata = isOpenFX() ? getOpenFXMetadataAt(hash, time, view) : deriveMetadataAt(hash, time, view);
     }
-    U64 hashAfter = 0;
-    // An edit moves the node's own hash; hash also carries the context key, which an edit leaves.
-    *validated = (node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == nodeHash) && KnobContentWrite::isSettled(writes) && (_imp->actionsCache->getMetadataGeneration() == generation);
+    *validated = clean.allowsStoreUnder(hash) && (_imp->actionsCache->getMetadataGeneration() == generation);
     if (*validated) {
         _imp->actionsCache->setMetadataResult(hash, time, view, metadata, generation);
     }
@@ -7383,9 +7432,8 @@ EffectInstance::getTimeInvariantMetadata()
     if (tls && tls->timeInvariantInProgress) {
         return tls->timeInvariantInProgress;
     }
-    // As getMetadata().
-    const U64 writes = KnobContentWrite::snapshot();
-    const U64 marks = node->getHashMarkCount();
+    // As getMetadata(), under the empty context it is derived under.
+    const CleanHashSnapshot clean(node, RenderContextPtr());
     const U64 hash = node->getHashValue();
     NodeMetadataConstPtr cached = _imp->actionsCache->getTimeInvariantMetadataResult(hash);
     if (cached) {
@@ -7408,8 +7456,7 @@ EffectInstance::getTimeInvariantMetadata()
     } else {
         metadata = deriveTimeInvariantMetadata();
     }
-    U64 hashAfter = 0;
-    if ((node->getHashMarkCount() == marks) && node->getHashValueIfUpToDate(&hashAfter) && (hashAfter == hash) && KnobContentWrite::isSettled(writes)) {
+    if (clean.allowsStoreUnder(hash)) {
         _imp->actionsCache->setTimeInvariantMetadataResult(hash, metadata, generation);
     }
 

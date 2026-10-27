@@ -26,14 +26,15 @@
 #include "EffectInstance.h"
 #include "EffectInstancePrivate.h"
 
-#include <map>
-#include <sstream>
 #include <algorithm> // min, max
-#include <limits>
-#include <fstream>
 #include <cassert>
-#include <stdexcept>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <set>
+#include <sstream>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QThreadPool>
 #include <QReadWriteLock>
@@ -268,6 +269,8 @@ class ImageBitMapMarker_RAII
     bool _isBeingRenderedElseWhere;
     bool _isValid;
     bool _committed;
+    bool _retracted;
+    bool _pendingRegionsRetracted;
     bool _renderFullScale;
 
 public:
@@ -282,6 +285,8 @@ public:
         , _isBeingRenderedElseWhere(false)
         , _isValid(true)
         , _committed(false)
+        , _retracted(false)
+        , _pendingRegionsRetracted(false)
         , _renderFullScale(renderFullScale)
     {
         std::vector<ImagePtr> cacheImages;
@@ -317,6 +322,19 @@ public:
         _committed = true;
     }
 
+    // The rendered pixels may belong to another state: the rectangles are cleared as for a failed
+    // render, and whoever waits on them learns the image left the cache and renders again.
+    void retract()
+    {
+        _retracted = true;
+    }
+
+    // Whether a rectangle this render waited on was retracted by its renderer.
+    bool pendingRegionsRetracted() const
+    {
+        return _pendingRegionsRetracted;
+    }
+
     void waitForPendingRegions()
     {
         if (!_isBeingRenderedElseWhere || !_isValid) {
@@ -330,8 +348,10 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                if (!_effect->_imp->waitForImageBeingRenderedElsewhere(_roi, cacheImage)) {
+                bool retracted = false;
+                if (!_effect->_imp->waitForImageBeingRenderedElsewhere(_roi, cacheImage, &retracted)) {
                     _isValid = false;
+                    _pendingRegionsRetracted = _pendingRegionsRetracted || retracted;
                 }
             }
         }
@@ -347,7 +367,7 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                _effect->_imp->unmarkImageAsBeingRendered(cacheImage, _rectsToRender, !_isValid || !_committed);
+                _effect->_imp->unmarkImageAsBeingRendered(cacheImage, _rectsToRender, !_isValid || !_committed || _retracted, _retracted);
             }
         }
     }
@@ -425,6 +445,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ///Use the hash at this time, and then copy it to the clips in the thread-local storage to use the same value
     ///through all the rendering of this frame.
     U64 nodeHash = frameArgs->nodeHash;
+    const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
     const ImageFieldingOrderEnum fieldingOrder = renderMetadata->getOutputFielding();
@@ -882,6 +903,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                           renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
 
     bool isDuringPaintStroke = isDuringPaintStrokeCreationThreadLocal();
+    // A frame hash the node has already left would key the new image to a state the graph is
+    // no longer in. A paint stroke keeps its image cached while its own knobs move: each stroke
+    // render paints over the last one.
+    if (createInCache && !isDuringPaintStroke && !clean.allowsStoreUnder(nodeHash)) {
+        createInCache = false;
+    }
 
     /*
      * Get the bitdepth and output components that the plug-in expects to render. The cached image does not necesserarily has the bitdepth
@@ -1569,16 +1596,50 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     } // if (!hasSomethingToRender) {
 
+    const bool renderSucceeded = (renderRetCode == EffectInstance::eRenderRoIStatusImageRendered) || (renderRetCode == EffectInstance::eRenderRoIStatusImageAlreadyRendered);
 #if NATRON_ENABLE_TRIMAP
     assert(guard);
-    if ((renderRetCode == EffectInstance::eRenderRoIStatusImageRendered) || (renderRetCode == EffectInstance::eRenderRoIStatusImageAlreadyRendered)) {
+    if (renderSucceeded) {
         guard->waitForPendingRegions();
-        guard->commit();
     }
 #endif // NATRON_ENABLE_TRIMAP
 
+    // An edit or a mark during the render means these images may hold another state's pixels.
+    // They leave the cache before their rectangles are published, so no waiter reads them.
+    const bool keepRenderedInCache = !renderSucceeded || !hasSomethingToRender || isDuringPaintStroke || clean.allowsStoreUnder(nodeHash);
+    if (!keepRenderedInCache) {
+        std::set<ImagePtr> rendered;
+        for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
+            rendered.insert(it->second.fullscaleImage);
+            rendered.insert(it->second.downscaleImage);
+        }
+        {
+            std::lock_guard<std::mutex> l(layersToRender->onTheFlyPlanes->lock);
+            rendered.insert(layersToRender->onTheFlyPlanes->images.begin(), layersToRender->onTheFlyPlanes->images.end());
+        }
+        for (std::set<ImagePtr>::const_iterator it = rendered.begin(); it != rendered.end(); ++it) {
+            if (*it) {
+                appPTR->removeFromNodeCache(*it);
+            }
+        }
+    }
+
 #if NATRON_ENABLE_TRIMAP
+    if (renderSucceeded) {
+        if (keepRenderedInCache) {
+            guard->commit();
+        } else {
+            guard->retract();
+        }
+    }
+    const bool pendingRegionsRetracted = guard->pendingRegionsRetracted();
     guard.reset();
+
+    // The render this one waited on was retracted, so the image this one returns has holes where
+    // that render's rectangles were.
+    if (pendingRegionsRetracted && !aborted()) {
+        return renderRoI(args, outputLayers);
+    }
 #endif
 
     if ( renderAborted && (renderRetCode != eRenderRoIStatusImageAlreadyRendered) ) {
@@ -1660,7 +1721,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     //bool multiplanar = isMultiPlanar();
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
         //If we have worked on a local swapped image, swap it in the cache
-        if (it->second.cacheSwapImage) {
+        if (it->second.cacheSwapImage && keepRenderedInCache) {
             const CacheAPI* cache = it->second.cacheSwapImage->getCacheAPI();
             const Cache<Image>* imgCache = dynamic_cast<const Cache<Image>*>(cache);
             if (imgCache) {

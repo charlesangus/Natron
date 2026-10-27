@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <list>
 #include <map>
 #include <mutex>
@@ -693,6 +694,7 @@ public:
     explicit ContextFormatTestEffect(NodePtr n)
         : ContextTestEffectBase(n)
         , _derivations(0)
+        , _imageMetadataDerivations(0)
     {
     }
 
@@ -713,10 +715,34 @@ public:
         return _derivations.load();
     }
 
+    // How often deriveOutputMetadata() ran.
+    int imageMetadataDerivations() const
+    {
+        return _imageMetadataDerivations.load();
+    }
+
+    // Called by the next metadata derivation, before it reads the test variable, on the thread
+    // that asks for metadata.
+    void setDerivationHook(const std::function<void()>& hook)
+    {
+        _derivationHook = hook;
+    }
+
     // The output width under a context where the test variable is v.
     static int formatWidth(double v)
     {
         return kCountingTestSize + (int)v;
+    }
+
+protected:
+    virtual ImageMetadata deriveOutputMetadata(double /*time*/,
+                                               ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ++_imageMetadataDerivations;
+        ImageMetadata m;
+        m.setInt("test/v", (int)contextTestValue(getCurrentRenderContext()));
+
+        return m;
     }
 
 private:
@@ -725,6 +751,12 @@ private:
                                               NodeMetadata& metadata) OVERRIDE FINAL
     {
         ++_derivations;
+        // Taken whole, so the hook runs in one derivation only, and not in one it causes.
+        std::function<void()> hook;
+        hook.swap(_derivationHook);
+        if (hook) {
+            hook();
+        }
         metadata.setOutputFormat(RectI(0, 0, formatWidth(contextTestValue(getCurrentRenderContext())), kCountingTestSize));
 
         return eStatusOK;
@@ -763,6 +795,8 @@ private:
 
     KnobBoolWPtr _reads;
     std::atomic<int> _derivations;
+    std::atomic<int> _imageMetadataDerivations;
+    std::function<void()> _derivationHook;
 };
 
 /**

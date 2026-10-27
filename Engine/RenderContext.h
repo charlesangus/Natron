@@ -281,6 +281,53 @@ private:
 };
 
 /**
+ * @brief The bindings a context holds, its captured contexts' included, taken before something is
+ * derived under the context and asked about once the result is ready. A binding's identity is
+ * fixed when the context is built, but its value is read from the knob live, so a result stored
+ * under a key carrying a binding is only good if the knob still has the content the identity
+ * stands for and was not edited during the derive. Takes nothing and checks nothing for a context
+ * without bindings.
+ **/
+class RenderContextBindingsSnapshot {
+public:
+    explicit RenderContextBindingsSnapshot(const RenderContextPtr& context);
+
+    bool empty() const
+    {
+        return _bound.empty();
+    }
+
+    /**
+     * @brief Whether every binding's knob, still alive, has the content its identity stands for.
+     **/
+    bool identitiesCurrent() const;
+
+    /**
+     * @brief Whether no node owning a bound knob was marked since construction.
+     **/
+    bool marksUnmoved() const;
+
+    /**
+     * @brief identitiesCurrent(), no knob content write in flight, then marksUnmoved(): any
+     * write the derive may have read has finished and raised its marks by the last check.
+     **/
+    bool isCurrent() const;
+
+private:
+    struct Bound {
+        const RenderContextBinding* binding;
+        std::string name;
+        NodePtr node;
+        U64 marks;
+    };
+
+    void collect(const RenderContextPtr& context);
+
+    RenderContextPtr _context;
+    std::vector<Bound> _bound;
+};
+
+/**
  * @brief hash with a context key folded in. Context key 0 returns hash unchanged, so a node that
  * renders under no context keeps the hash it has without contexts.
  **/

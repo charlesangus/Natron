@@ -6959,6 +6959,12 @@ KnobContentWrite::isSettled(U64 snapshot)
     return ((snapshot & kContentWritesInFlightMask) == 0) && (contentWriteState().load() == snapshot);
 }
 
+bool
+KnobContentWrite::noneInFlight()
+{
+    return (contentWriteState().load() & kContentWritesInFlightMask) == 0;
+}
+
 namespace {
 thread_local PluginEditsDeferral* tPluginEditsDeferral = NULL;
 }
@@ -7337,9 +7343,13 @@ expressionContextReads(const KnobI* knob)
 } // anonymous namespace
 
 bool
-KnobHelper::getExpressionContextKey(U64* key) const
+KnobHelper::getExpressionContextKey(U64* key,
+                                    RenderContextPtr* context) const
 {
     *key = 0;
+    if (context) {
+        context->reset();
+    }
     const bool ownSources = _imp->hasContextReadSources.load();
     if (!ownSources && !renderContextsInUse()) {
         return false;
@@ -7362,10 +7372,13 @@ KnobHelper::getExpressionContextKey(U64* key) const
     // A knob not on a node, such as a project variable's, reads under the context rfv gives its
     // expression: one result per context, rather than the first one's for all.
     const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
-    const RenderContextPtr context = effect ? effect->getCurrentRenderContext() : PyRFV::getProjectExpressionContext();
-    if (context && !context->isEmpty()) {
-        const RenderContextPtr kept = context->restrictTo(reads);
+    const RenderContextPtr current = effect ? effect->getCurrentRenderContext() : PyRFV::getProjectExpressionContext();
+    if (current && !current->isEmpty()) {
+        const RenderContextPtr kept = current->restrictTo(reads);
         *key = kept ? kept->hash() : 0;
+        if (context && (*key != 0)) {
+            *context = kept;
+        }
     }
 
     return true;

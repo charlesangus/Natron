@@ -28,8 +28,9 @@
 
 #include "Global/Macros.h"
 
-#include <list>
 #include <bitset>
+#include <list>
+#include <mutex>
 
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
@@ -387,6 +388,18 @@ public:
      * args this thread renders the effect with carry. Null for the empty context.
      **/
     RenderContextPtr getCurrentRenderContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief This node's context key under getCurrentRenderContext(), 0 for the empty context:
+     * the key a result derived on the calling thread is stored under, folded into the node's hash.
+     **/
+    U64 getCurrentRenderContextKey() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getCurrentRenderContext() restricted to what this node reads, whose hash is
+     * getCurrentRenderContextKey(); null for the empty context.
+     **/
+    RenderContextPtr getCurrentRestrictedRenderContext() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Keeps one more hash state of this effect's action results than the fixed count for as
@@ -1225,7 +1238,10 @@ public:
      * @brief As getMetadata(), also giving in hash the node hash the answer belongs to, which a
      * caller that read the hash earlier compares to tell whether the node moved meanwhile. An
      * answer whose derivation raced an edit is derived again, a bounded number of times; if none
-     * could be told to belong to one hash, hash is 0, which no node hash is.
+     * could be told to belong to one hash, hash is 0, which no node hash is. Under an active render
+     * context the node reads, the returned hash is the node hash mixed with that context's key
+     * (see mixRenderContextKey()), so compare it to a hash mixed the same way, not to the bare
+     * node hash.
      **/
     NodeMetadataConstPtr getMetadata(double time, ViewIdx view, U64* hash) WARN_UNUSED_RETURN;
 
@@ -2027,6 +2043,16 @@ public:
     void clearActionsCache();
 
     /**
+     * @brief Whether the actions cache holds a frame range under hash. For tests.
+     **/
+    bool hasCachedFrameRange(U64 hash) const;
+
+    /**
+     * @brief Whether the actions cache holds a region of definition under hash. For tests.
+     **/
+    bool hasCachedRoD(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel) const;
+
+    /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
      * a dialog. The message can be of 4 types...
      * INFORMATION_MESSAGE : you just want to inform the user about something.
@@ -2223,12 +2249,21 @@ public:
         bool identityContextSet = false;
     };
 
+    // The cached planes a plug-in allocated on the fly during one renderRoI(), from any of its render threads.
+    struct OnTheFlyCachedPlanes {
+        std::mutex lock;
+        std::list<ImagePtr> images;
+    };
+
+    typedef std::shared_ptr<OnTheFlyCachedPlanes> OnTheFlyCachedPlanesPtr;
+
     struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
         std::map<ImageLayerDesc, LayerToRender> layers;
         ProcessChannelsPerPlaneMap processChannelsPerPlane;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
+        OnTheFlyCachedPlanesPtr onTheFlyPlanes;
 
         ImageLayersToRender()
             : rectsToRender()
@@ -2236,6 +2271,7 @@ public:
             , processChannelsPerPlane()
             , useOpenGL(false)
             , glContextData()
+            , onTheFlyPlanes(std::make_shared<OnTheFlyCachedPlanes>())
         {
         }
     };
@@ -2809,6 +2845,7 @@ public:
         double firstFrame, lastFrame;
         InputMatrixMapPtr transformRedirections;
         bool isDoingOpenGLRender;
+        OnTheFlyCachedPlanesPtr onTheFlyPlanes;
 
         RenderArgs();
 

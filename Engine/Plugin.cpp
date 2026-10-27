@@ -445,6 +445,24 @@ Plugin::getPluginOpenGLRenderSupport() const
     return _openglRenderSupport;
 }
 
+void
+Plugin::setFirstInputDataKind(bool hasInput,
+                              Natron::DataKindEnum kind)
+{
+    _firstInputDataKind = hasInput ? (int)kind : -1;
+}
+
+bool
+Plugin::getFirstInputDataKind(Natron::DataKindEnum* kind) const
+{
+    if (_firstInputDataKind < 0) {
+        return false;
+    }
+    *kind = (Natron::DataKindEnum)_firstInputDataKind;
+
+    return true;
+}
+
 bool
 Plugin::isActivated() const
 {

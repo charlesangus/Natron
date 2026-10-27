@@ -188,6 +188,10 @@ class Plugin
 
     Natron::PluginOpenGLRenderSupport _openglRenderSupport;
 
+    // -1 for a plug-in without inputs.
+    int _firstInputDataKind = (int)Natron::eDataKindImage;
+    std::string _primPathKnob;
+
     mutable std::atomic<U64> _binaryContentStamp { 0 };
 
 public:
@@ -384,6 +388,14 @@ public:
 
     void setOpenGLRenderSupport(Natron::PluginOpenGLRenderSupport support);
     Natron::PluginOpenGLRenderSupport getPluginOpenGLRenderSupport() const;
+
+    // What the first input takes; false for a plug-in without inputs. Image unless set.
+    void setFirstInputDataKind(bool hasInput, Natron::DataKindEnum kind);
+    bool getFirstInputDataKind(Natron::DataKindEnum* kind) const;
+
+    // The script name of the prim path or pattern knob the node declares, empty for none.
+    void setPrimPathKnob(const std::string& name) { _primPathKnob = name; }
+    const std::string& getPrimPathKnob() const { return _primPathKnob; }
 };
 
 struct Plugin_compare_version

@@ -85,6 +85,7 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
+        .primPathKnob = kUSDEditTransformParamPrimPattern,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

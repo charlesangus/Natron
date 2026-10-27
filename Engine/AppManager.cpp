@@ -1695,7 +1695,7 @@ AppManager::onAllPluginsLoaded()
     }
 } // AppManager::onAllPluginsLoaded
 
-void
+Plugin*
 AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
                                   void (*buildEffect)(),
                                   const QString& iconPath,
@@ -1730,6 +1730,9 @@ AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
     if (internalUseOnly) {
         p->setForInternalUseOnly(true);
     }
+    p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
+
+    return p;
 }
 
 template <typename PLUGIN>
@@ -1756,7 +1759,10 @@ AppManager::registerNativePlugin()
     }
     const NodeSpec* spec = native->nodeSpec();
 
-    registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    Plugin* plugin = registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
+    if (plugin) {
+        plugin->setPrimPathKnob(std::string(spec->primPathKnob));
+    }
 }
 
 void

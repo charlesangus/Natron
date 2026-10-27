@@ -74,6 +74,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
+#include "Gui/TabMenuBridge.h"
 #include "Gui/ThemedIcon.h"
 
 //All fixed sizes were calculated for a 96 dpi screen
@@ -1733,6 +1734,12 @@ GuiApplicationManagerPrivate::addNodesMenuPluginAction(QMenu* menu,
     action->setProperty(kNodesMenuPropPluginOwned, true);
     action->setProperty(kNodesMenuPropPluginID, leaf.getID());
     action->setProperty(kNodesMenuPropPluginMajor, leaf.getMajorVersion());
+    {
+        DataKindEnum kind = eDataKindImage;
+        const bool hasInput = plugin ? plugin->getFirstInputDataKind(&kind) : true;
+        action->setProperty(kNodesMenuPropInputKind, hasInput ? TabMenuBridge::dataKindKey(kind) : QString());
+        action->setProperty(kNodesMenuPropPrimPathKnob, plugin ? QString::fromStdString(plugin->getPrimPathKnob()) : QString());
+    }
     refreshPluginActionProperties(action, plugin);
 
     const QString pluginID = leaf.getID();

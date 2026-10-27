@@ -690,6 +690,84 @@ class NatronAdapterTests(unittest.TestCase):
         self.assertEqual(order, _DEFAULT_SPACE_MODE_ORDER)
         self.assertTrue(scroll)
 
+    # --- filtered launch --------------------------------------------------------
+
+    def _kind_menu(self, h):
+        def node(label, kind, prim_knob=""):
+            action = _plugin_action(label, label)
+            action._properties["natronInputKind"] = kind
+            action._properties["natronPrimPathKnob"] = prim_knob
+            return action
+
+        self._set_nodes_menu(h, [
+            _submenu("3D", [
+                _submenu("USD", [
+                    node("USDEditTransform", "scene", "primPattern"),
+                    node("USDPrune", "scene", "primPattern"),
+                    node("USDMerge", "scene"),
+                    node("USDMaterial", "", "primPath"),
+                    node("USDXformPrim", "scene", "primPath"),
+                ]),
+            ]),
+            _submenu("Filter", [node("Blur", "image")]),
+            _submenu("Color", [node("Grade", "image")]),
+            _submenu("Other", [node("Dot", "polymorphic")]),
+        ])
+        h.module.find_qt_menu_items = lambda menubar: [
+            {"menuobj": _FakeAction(), "menupath": "Edit/Preferences"}
+        ]
+        window = _FakeWidget(classname="Natron::Gui", menubar=object())
+        h.app_holder["instance"] = _make_qapp(active=window)
+
+    def _labels(self, items):
+        return sorted(i["menupath"].split("/")[-1] for i in items)
+
+    def test_scene_context_lists_scene_nodes_with_a_prim_knob_only(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
+        items = h.module._plugin.get_items()
+
+        # USDMaterial declares a prim path knob but takes no input, so it is not listed.
+        self.assertEqual(self._labels(items), ["USDEditTransform", "USDPrune", "USDXformPrim"])
+
+    def test_kind_context_without_knob_requirement_keeps_polymorphic_inputs(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "image", "needsPrimPathKnob": False})
+        items = h.module._plugin.get_items()
+
+        self.assertEqual(self._labels(items), ["Blur", "Dot", "Grade"])
+
+    def test_plain_launch_after_a_filtered_one_lists_everything(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+
+        h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
+        h.module.launch(_FakeApp())
+        items = h.module._plugin.get_items()
+
+        labels = self._labels(items)
+        self.assertIn("Blur", labels)
+        self.assertIn("USDMaterial", labels)
+        self.assertIn("Preferences", labels)
+
+    def test_filtered_choice_triggers_through_the_app(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        items = h.module._plugin.get_items()
+        prune = [i for i in items if i["menupath"].endswith("USDPrune")][0]
+        h.module._plugin.invoke(prune)
+        for _delay, callback in list(h.scheduled):
+            callback()
+
+        self.assertEqual(app.triggered, [prune["menuobj"]])
+
     # --- launch ---------------------------------------------------------------
 
     def test_launch_passes_preferences_to_core_launch(self):

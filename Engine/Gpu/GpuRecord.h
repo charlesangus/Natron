@@ -116,6 +116,25 @@ public:
     void releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
                            VkDeviceSize bytes);
 
+    // The device the context records for.
+    GpuDevice& device() const;
+
+    // Makes submit() and submitAndWait() also wait for `semaphore`, a binary semaphore another API signals,
+    // before any command of the context runs. The caller keeps it alive, through hold(), until the context is
+    // destroyed.
+    void waitExternalSemaphore(VkSemaphore semaphore);
+
+    // Keeps `object` alive until the context is destroyed, or for good when the device is lost with the
+    // context's work in flight.
+    void hold(std::shared_ptr<void> object);
+
+    // Records copies of `regions` from `src`, a GpuBuffer::createExportable() buffer that another API wrote and
+    // owns, into `dst`, visible to later dispatches: src's first srcBytes are acquired from the external queue
+    // family first and released back to it after, so the other API may write them again once the context's
+    // work is done.
+    GpuStatus copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, const GpuBuffer& dst,
+                               std::span<const VkBufferCopy> regions);
+
     void resetQueries(VkQueryPool pool, uint32_t first, uint32_t count);
     // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
     void writeTimestamp(VkQueryPool pool, uint32_t query);
@@ -133,6 +152,7 @@ public:
 
 private:
     void parkInFlightWork();
+    std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
 
     GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines,
@@ -153,6 +173,8 @@ private:
     std::vector<std::unique_ptr<GpuTexture>> textures_;
     std::vector<std::shared_ptr<const GpuTexture>> cachedTextures_;
     std::vector<std::shared_ptr<GpuKernel>> kernels_;
+    std::vector<std::shared_ptr<void>> heldObjects_;
+    std::vector<VkSemaphore> externalWaits_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     bool open_ = false;

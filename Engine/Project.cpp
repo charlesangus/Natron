@@ -69,6 +69,7 @@
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
 #include <ofxhXml.h> // OFX::XML::escape
@@ -98,6 +99,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RFV.h"
@@ -180,8 +182,20 @@ Project::Project(const AppInstancePtr& appInstance)
     , _imp( new ProjectPrivate(this) )
 {
     QObject::connect( _imp->autoSaveTimer.get(), SIGNAL(timeout()), this, SLOT(onAutoSaveTimerTriggered()) );
+    _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 }
 
+std::string
+Project::getProjectId() const
+{
+    return _imp->projectId;
+}
+
+bool
+Project::isProjectId(const std::string& projectId) const
+{
+    return !projectId.empty() && (projectId == _imp->projectId);
+}
 
 // make_shared enabler (because make_shared needs access to the private constructor)
 // see https://stackoverflow.com/a/20961251/2607517
@@ -3209,6 +3223,7 @@ void
 Project::doResetEnd(bool aboutToQuit)
 {
     _imp->runOnProjectCloseCallback();
+    _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
@@ -3232,7 +3247,9 @@ Project::doResetEnd(bool aboutToQuit)
     } else {
         clearNodesNonBlocking();
     }
-
+    // Idle query stages compose the closed project's layers and keep the files they read open, so
+    // a file changed on disk since is read again by the next project.
+    SceneCaches::releaseIdleQueryStages();
 
     if (!aboutToQuit) {
         {

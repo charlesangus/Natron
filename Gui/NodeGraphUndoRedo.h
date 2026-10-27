@@ -273,35 +273,33 @@ private:
     int _oldW, _oldH;
 };
 
-class DecloneMultipleNodesCommand
-    : public QUndoCommand
-{
-    Q_DECLARE_TR_FUNCTIONS(DecloneMultipleNodesCommand)
+/**
+ * @brief Unlinks every knob of each node from its link groups that are not permanent. Undo makes each knob
+ * that was unlinked rejoin the groups it left.
+ **/
+class UnlinkMultipleNodesCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(UnlinkMultipleNodesCommand)
 
 public:
+    UnlinkMultipleNodesCommand(NodeGraph* graph,
+                               const NodesGuiList& nodes,
+                               QUndoCommand* parent = 0);
 
-    DecloneMultipleNodesCommand(NodeGraph* graph,
-                                const NodesGuiList & nodes,
-                                QUndoCommand *parent = 0);
-
-
-    virtual ~DecloneMultipleNodesCommand();
+    virtual ~UnlinkMultipleNodesCommand();
 
     virtual void undo();
     virtual void redo();
 
 private:
-
-    struct NodeToDeclone
-    {
+    struct NodeToUnlink {
         NodeGuiWPtr node;
-        NodeWPtr master;
+        std::vector<KnobIWPtr> unlinkedKnobs;
     };
 
-    std::list<NodeToDeclone> _nodes;
+    std::list<NodeToUnlink> _nodes;
     NodeGraph* _graph;
 };
-
 
 class RearrangeNodesCommand
     : public QUndoCommand
@@ -360,6 +358,7 @@ private:
     std::list<NodeGuiWPtr>_nodes;
 };
 
+struct KnobLinkPartner;
 
 class LoadNodePresetsCommand
     : public QUndoCommand
@@ -386,6 +385,8 @@ private:
     std::list<NodeWPtr> _oldChildren, _newChildren; //< children if multi-instance
     std::list<Serialization::NodeSerializationPtr> _newSerializations, _oldSerialization;
     std::list<KnobIWPtr> _createdUserKnobs;
+    // The node's two-way links before the preset, which the preset removes and undo links back.
+    std::vector<KnobLinkPartner> _linkPartners;
 };
 
 class RenameNodeUndoRedoCommand

@@ -1017,7 +1017,7 @@ EffectInstance::getImage(int inputNb,
     RotoDrawableItemPtr attachedStroke = node->getAttachedRotoItem();
 
     if (attachedStroke) {
-        roto = attachedStroke->getContext();
+        roto = attachedStroke->getPaintContext();
     }
     bool useRotoInput = false;
     bool inputIsRotoBrush = roto && isInputRotoBrush(inputNb);
@@ -3700,19 +3700,13 @@ EffectInstance::unregisterPluginMemory(size_t nBytes)
 }
 
 void
-EffectInstance::onAllKnobsSlaved(bool isSlave,
-                                 KnobHolder* master)
-{
-    getNode()->onAllKnobsSlaved(isSlave, master);
-}
-
-void
 EffectInstance::onKnobSlaved(const KnobIPtr& slave,
                              const KnobIPtr& master,
                              int dimension,
-                             bool isSlave)
+                             bool isSlave,
+                             bool isExpression)
 {
-    getNode()->onKnobSlaved(slave, master, dimension, isSlave);
+    getNode()->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
 }
 
 void
@@ -3730,6 +3724,21 @@ EffectInstance::getCurrentViewportForOverlays() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->overlaysViewport;
+}
+
+void
+EffectInstance::setDrawingPassiveOverlay(bool passive)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->drawingPassiveOverlay = passive;
+}
+
+bool
+EffectInstance::isDrawingPassiveOverlay() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    return _imp->drawingPassiveOverlay;
 }
 
 void
@@ -6064,7 +6073,7 @@ EffectInstance::getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNod
         RotoDrawableItemPtr attachedStroke = node->getAttachedRotoItem();
         if (attachedStroke) {
             ///For nodes internal to the rotopaint tree, check outputs of the rotopaint node instead
-            RotoContextPtr context = attachedStroke->getContext();
+            RotoCurveContextPtr context = attachedStroke->getContext();
             assert(context);
             if (context) {
                 NodePtr rotonode = context->getNode();
@@ -6210,7 +6219,7 @@ isFrameVaryingOrAnimated_impl(const EffectInstance* node,
     }
     // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
     std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
-    bool ret = const_cast<EffectInstance*>(node)->getTimeInvariantMetadata()->getIsFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
+    bool ret = const_cast<EffectInstance*>(node)->getTimeInvariantMetadata()->getIsFrameVarying() || node->getHasAnimation() || node->getNode()->getCurveContext();
     if (!ret) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
@@ -6246,6 +6255,18 @@ bool
 EffectInstance::isPaintingOverItselfEnabled() const
 {
     return isDuringPaintStrokeCreationThreadLocal();
+}
+
+EffectInstance::CurveContextKindEnum
+EffectInstance::getCurveContextKind() const
+{
+    NodePtr node = getNode();
+
+    if (node && (node->getPluginID() == PLUGINID_OFX_ROTO)) {
+        return eCurveContextKindPaint;
+    }
+
+    return eCurveContextKindNone;
 }
 
 namespace {

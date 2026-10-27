@@ -1018,6 +1018,20 @@ Settings::initializeKnobsNodeGraphColors()
     _edgeRawColor->setSimplified(true);
     _edgeRawColor->setHintToolTip(tr("The color used to tint node graph edges carrying camera Raw data, connected or not."));
     _nodegraphColorsTab->addKnob(_edgeRawColor);
+
+    _linkLineColor = AppManager::createKnob<KnobColor>(this, tr("Link lines"), 3);
+    _linkLineColor->setName("linkLineColor");
+    _linkLineColor->setSimplified(true);
+    _linkLineColor->setHintToolTip(tr("The color of the node graph lines between nodes whose parameters are linked, "
+                                      "including the solid lines between Linked Nodes. Linked parameter names in settings panels take it too."));
+    _nodegraphColorsTab->addKnob(_linkLineColor);
+
+    _expressionLineColor = AppManager::createKnob<KnobColor>(this, tr("Expression lines"), 3);
+    _expressionLineColor->setName("expressionLineColor");
+    _expressionLineColor->setSimplified(true);
+    _expressionLineColor->setHintToolTip(tr("The color of the node graph arrows from a node to the node whose parameters "
+                                            "its expressions read."));
+    _nodegraphColorsTab->addKnob(_expressionLineColor);
 } // Settings::initializeKnobsNodeGraphColors
 
 void
@@ -1235,6 +1249,20 @@ Settings::initializeKnobsNodeGraph()
                                                       "A and B, input A is be preferred "
                                                       "for auto-connection. When the node is disabled, B is always output, whether this is checked or not.") );
     _nodegraphTab->addKnob(_useInputAForMergeAutoConnect);
+
+    _showLinkLines = AppManager::createKnob<KnobBool>(this, tr("Show link lines"));
+    _showLinkLines->setName("showLinkLines");
+    _showLinkLines->setHintToolTip(tr("When checked, the node graph draws a dashed line between nodes whose parameters are linked, "
+                                      "and a solid line between Linked Nodes. The \"Show Link Lines\" action of the node graph "
+                                      "can still hide them for the session."));
+    _nodegraphTab->addKnob(_showLinkLines);
+
+    _showExpressionLines = AppManager::createKnob<KnobBool>(this, tr("Show expression lines"));
+    _showExpressionLines->setName("showExpressionLines");
+    _showExpressionLines->setHintToolTip(tr("When checked, the node graph draws an arrow from a node to each node whose parameters "
+                                            "its expressions read. The \"Show Link Lines\" action of the node graph can still "
+                                            "hide them for the session."));
+    _nodegraphTab->addKnob(_showExpressionLines);
 
     _tabMenuSeparator = AppManager::createKnob<KnobSeparator>(this, tr("Tab menu"));
     _tabMenuSeparator->setName("tabMenuSeparator");
@@ -1624,6 +1652,8 @@ Settings::setDefaultValues()
     _maxUndoSteps->setDefaultValue(200, 0);
     _disconnectedArrowLength->setDefaultValue(30);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
+    _showLinkLines->setDefaultValue(true);
+    _showExpressionLines->setDefaultValue(true);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
 
@@ -1827,6 +1857,12 @@ Settings::setDefaultValues()
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);
+    _linkLineColor->setDefaultValue(70. / 255., 0); // also the colour of linked parameter names
+    _linkLineColor->setDefaultValue(140. / 255., 1);
+    _linkLineColor->setDefaultValue(255. / 255., 2);
+    _expressionLineColor->setDefaultValue(143. / 255., 0);
+    _expressionLineColor->setDefaultValue(201. / 255., 1);
+    _expressionLineColor->setDefaultValue(103. / 255., 2);
 
     endChanges();
 } // setDefaultValues
@@ -2340,7 +2376,7 @@ Settings::onKnobValueChanged(KnobI* k,
         appPTR->onViewerTileCacheSizeChanged();
     } else if (k == _autoProxyWhenScrubbingTimeline.get()) {
         _autoProxyLevel->setSecret( !_autoProxyWhenScrubbingTimeline->getValue() );
-    } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
+    } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _linkLineColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
         appPTR->reloadStylesheets();
     } else if (k == _qssFile.get()) {
         appPTR->reloadStylesheets();
@@ -3174,6 +3210,38 @@ Settings::getEdgeRawColor(float* r,
     *r = _edgeRawColor->getValue(0);
     *g = _edgeRawColor->getValue(1);
     *b = _edgeRawColor->getValue(2);
+}
+
+void
+Settings::getLinkLineColor(float* r,
+                           float* g,
+                           float* b) const
+{
+    *r = _linkLineColor->getValue(0);
+    *g = _linkLineColor->getValue(1);
+    *b = _linkLineColor->getValue(2);
+}
+
+void
+Settings::getExpressionLineColor(float* r,
+                                 float* g,
+                                 float* b) const
+{
+    *r = _expressionLineColor->getValue(0);
+    *g = _expressionLineColor->getValue(1);
+    *b = _expressionLineColor->getValue(2);
+}
+
+bool
+Settings::isLinkLinesVisible() const
+{
+    return _showLinkLines->getValue();
+}
+
+bool
+Settings::isExpressionLinesVisible() const
+{
+    return _showExpressionLines->getValue();
 }
 
 bool

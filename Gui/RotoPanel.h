@@ -63,7 +63,7 @@ public:
     RotoItemPtr getRotoItemForTreeItem(QTreeWidgetItem* treeItem) const;
     QTreeWidgetItem* getTreeItemForRotoItem(const RotoItemPtr & item) const;
     std::string getNodeName() const;
-    RotoContextPtr getContext() const;
+    RotoCurveContextPtr getContext() const;
 
     void clearSelection();
 
@@ -171,6 +171,9 @@ public Q_SLOTS:
     void onItemScriptNameChanged(const RotoItemPtr& item);
 
     void onItemLockChanged(int reason);
+
+    /// The host re-read the columns its RotoCurvePanelHook adds, for item or for every item if null
+    void onItemPanelColumnsChanged(const RotoItemPtr& item);
 
     void onOperatorColMinimumSizeChanged(const QSize& size);
 

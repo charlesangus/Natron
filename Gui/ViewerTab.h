@@ -47,6 +47,7 @@ NATRON_NAMESPACE_ENTER
 typedef std::map<NodePtr, NodeRenderStats > RenderStatsMap;
 
 struct ViewerTabPrivate;
+class SceneViewport;
 class ViewerTab
     : public QWidget, public PanelWidget
 {
@@ -70,6 +71,12 @@ public:
     void discardInternalNodePointer();
 
     ViewerGL* getViewer() const;
+
+    // The view of a scene input, created the first time the active input is a scene; null before.
+    SceneViewport* getSceneViewport() const;
+
+    // Whether the tab shows the scene view rather than the 2D viewer.
+    bool isShowingScene() const;
 
     void setCurrentView(ViewIdx view);
 
@@ -326,6 +333,13 @@ public:
     void setInfoBarAndViewerResolution(const RectI& rect, const RectD& canonicalRect, double par, int texIndex);
 
 public Q_SLOTS:
+
+    // Shows the scene view or the 2D viewer, whichever the active input's data kind needs, and
+    // makes wipe unavailable while either input is a scene.
+    void onActiveInputDataKindChanged();
+
+    // Hands the scene the viewer evaluated for textureIndex to the scene view.
+    void onSceneEvaluated(int textureIndex);
 
     void onPauseViewerButtonClicked(bool clicked);
 

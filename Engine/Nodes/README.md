@@ -442,8 +442,12 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   connection typing, but there is no deep payload type, no deep cache, and no
   deep render path yet. Declaring a kind does not mean a node can render that
   kind of data today.
-- `eDataKindScene` -- 3D scene data. Same caveat as deep: declaration only,
-  no scene payload or evaluation path yet.
+- `eDataKindScene` -- 3D scene data: a `ScenePayload` (`Engine/ScenePayload.h`),
+  an immutable stack of USD layers, one per scene node. A consumer pulls it
+  with `EffectInstance::evaluateScene()`; a native scene node overrides
+  `renderScene()` and authors its layer through `NativeEffectBase::emitSceneLayer()`,
+  which memoizes it. USD types stay in `Engine/Nodes/Scene/`, which includes
+  them only through `UsdIncludes.h`.
 - `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
   "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
   other `NoOps`, group boundaries, `TypedPassthrough`), and for a source whose

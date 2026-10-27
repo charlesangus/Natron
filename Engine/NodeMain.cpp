@@ -176,7 +176,7 @@ Node::load(const CreateNodeArgs& args)
     restoreSublabel();
 
     declarePythonFields();
-    if  ( getRotoContext() ) {
+    if (getCurveContext()) {
         declareRotoPythonField();
     }
     if ( getTrackerContext() ) {
@@ -338,6 +338,10 @@ removeKnobLinks(const KnobIPtr& knob)
         if (knob->isSlave(i)) {
             knob->unSlave(i, false);
         }
+        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
+        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
+            knob->leaveLinkGroups(i);
+        }
     }
 }
 
@@ -464,6 +468,7 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
     }
     // A link to a node that is gone stays unresolved rather than abort the rest of the apply.
     restoreKnobsLinks(allNodes, noRenames, false);
+    KnobHelper::restoreLinkGroups(NodesList(1, shared_from_this()));
 
     if (userKnobsChanged) {
         _imp->effect->recreateUserKnobs(true);
@@ -724,12 +729,18 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     if (_imp->effect) {
         _imp->effect->clearPluginMemoryChunks();
     }
+    // Destroying the knobs takes them out of their link groups, which can dissolve a group.
+    NodesList linkedNodes;
+    collectLinkedNodes(false, false, &linkedNodes);
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
         effect.swap(_imp->effect);
     }
     effect.reset();
+    for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+        Q_EMIT(*it)->linksChanged();
+    }
 
     ///If inside the group, remove it from the group
     ///the use_count() after the call to removeNode should be 2 and should be the shared_ptr held by the caller and the

@@ -175,9 +175,31 @@ public:
      **/
     bool copy(Param* other, int dimension = -1);
 
-    bool slaveTo(Param* other, int thisDimension, int otherDimension);
+    /**
+     * @brief Links this parameter two-way to other: an edit of either one reaches the other. This parameter
+     * takes other's value, animation and expression. thisDimension -1 links every dimension the two have in
+     * common one-to-one, or every dimension of this parameter to otherDimension when that is not -1.
+     * Returns False if the types are not compatible or nothing was linked.
+     **/
+    bool linkTo(Param* other, int thisDimension = -1, int otherDimension = -1);
 
-    void unslave(int dimension);
+    /**
+     * @brief Unlinks the parameter from the parameters it is linked to, keeping its current value, animation
+     * and expression. relink() links it back. Raises ValueError if the parameter is an alias or has aliases:
+     * those links cannot be broken. Returns False if the parameter was not linked.
+     **/
+    bool unlink();
+
+    /**
+     * @brief Links the parameter back to the parameters unlink() unlinked it from, discarding its own value,
+     * animation and expression for theirs. Returns False if there was nothing to link back to.
+     **/
+    bool relink();
+
+    /**
+     * @brief Whether the dimension is linked to another parameter, or any dimension for -1.
+     **/
+    bool isLinked(int dimension = -1) const;
 
     /**
      * @brief Returns a pseudo-random number. This will always be the same for the same time on the timeline.

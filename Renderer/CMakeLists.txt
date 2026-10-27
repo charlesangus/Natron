@@ -27,6 +27,7 @@ target_link_libraries(NatronRenderer
         Qt::Network
         Python3::Python
 )
+natron_link_embedded_python(NatronRenderer)
 target_include_directories(NatronRenderer
     PRIVATE
         ..

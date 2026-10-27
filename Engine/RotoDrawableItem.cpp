@@ -94,12 +94,12 @@ NATRON_NAMESPACE_ENTER
 
 ////////////////////////////////////RotoDrawableItem////////////////////////////////////
 
-RotoDrawableItem::RotoDrawableItem(const RotoContextPtr& context,
-                                   const std::string & name,
+RotoDrawableItem::RotoDrawableItem(const RotoCurveContextPtr& context,
+                                   const std::string& name,
                                    const RotoLayerPtr& parent,
                                    bool isStroke)
     : RotoItem(context, name, parent)
-    , _imp( new RotoDrawableItemPrivate(isStroke) )
+    , _imp(new RotoDrawableItemPrivate(isStroke))
 {
 #ifdef NATRON_ROTO_INVERTIBLE
     QObject::connect( _imp->inverted->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec,int,int)), this, SIGNAL(invertedStateChanged()) );
@@ -132,7 +132,10 @@ RotoDrawableItem::setNodesThreadSafetyForRotopainting()
     assert( std::dynamic_pointer_cast<RotoStrokeItem>( std::dynamic_pointer_cast<RotoDrawableItem>( shared_from_this() ) ) );
 
     getContext()->getNode()->setRenderThreadSafety(eRenderSafetyInstanceSafe);
-    getContext()->setWhileCreatingPaintStrokeOnMergeNodes(true);
+    RotoContextPtr paintContext = getPaintContext();
+    if (paintContext) {
+        paintContext->setWhileCreatingPaintStrokeOnMergeNodes(true);
+    }
     if (_imp->effectNode) {
         _imp->effectNode->setWhileCreatingPaintStroke(true);
         _imp->effectNode->setRenderThreadSafety(eRenderSafetyInstanceSafe);
@@ -152,15 +155,21 @@ RotoDrawableItem::setNodesThreadSafetyForRotopainting()
 }
 
 void
-RotoDrawableItem::createNodes(bool connectNodes)
+RotoDrawableItem::observeKnobChanges()
 {
     const std::list<KnobIPtr>& knobs = getKnobs();
 
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         QObject::connect( (*it)->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec,int,int)), this, SLOT(onRotoKnobChanged(ViewSpec,int,int)) );
     }
+}
 
-    RotoContextPtr context = getContext();
+void
+RotoDrawableItem::createNodes(bool connectNodes)
+{
+    observeKnobChanges();
+
+    RotoCurveContextPtr context = getContext();
     NodePtr node = context->getNode();
     AppInstancePtr app = node->getApp();
     QString fixedNamePrefix = QString::fromUtf8( node->getScriptName_mt_safe().c_str() );
@@ -498,6 +507,13 @@ void
 RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
                                   ValueChangedReasonEnum reason)
 {
+    if (!_imp->mergeNode) {
+        // No render nodes to update: the item belongs to a geometry-only context.
+        invalidateContentHash();
+
+        return;
+    }
+
     KnobChoicePtr compKnob = getOperatorKnob();
 
 #ifdef NATRON_ROTO_INVERTIBLE
@@ -514,7 +530,10 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
     }
 
     if ( (reason == eValueChangedReasonSlaveRefresh) && (knob != _imp->center) && (knob != _imp->cloneCenter) ) {
-        getContext()->s_breakMultiStroke();
+        RotoContextPtr paintContext = getPaintContext();
+        if (paintContext) {
+            paintContext->s_breakMultiStroke();
+        }
     }
 
     if (knob == compKnob) {
@@ -526,7 +545,7 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
 
         ///Since the compositing operator might have changed, we may have to change the rotopaint tree layout
         if (reason == eValueChangedReasonUserEdited) {
-            getContext()->refreshRotoPaintTree();
+            getContext()->onStructureChanged();
         }
     }
 #ifdef NATRON_ROTO_INVERTIBLE
@@ -539,7 +558,7 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
 
         ///Since the invert state might have changed, we may have to change the rotopaint tree layout
         if (reason == eValueChangedReasonUserEdited) {
-            getContext()->refreshRotoPaintTree();
+            getContext()->onStructureChanged();
         }
     }
 #endif
@@ -955,6 +974,11 @@ RotoDrawableItem::restoreSavedKnobs(const std::list<Serialization::KnobSerializa
     {
         QMutexLocker l(&itemMutex);
         std::memcpy(_imp->overlayColor, overlayColor, sizeof(double) * 4);
+    }
+
+    if (!_imp->mergeNode) {
+        // A geometry-only context gives its items no render nodes to push the values to.
+        return;
     }
 
     RotoStrokeType type;

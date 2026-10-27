@@ -1,6 +1,8 @@
 #!/bin/bash
 # Generate the glad.h and glad.c file using glad installed via pip, see:
 # https://github.com/Dav1dde/glad
+# The checked-in files were generated with glad 0.1.36 (pip install glad==0.1.36).
+# The GUI runs on a single OpenGL 4.5 compatibility context, so the loader covers gl=4.5.
 
 CWD=`pwd`
 echo "This script should be called from the root directory (Natron)"
@@ -10,6 +12,6 @@ echo "This script should be called from the root directory (Natron)"
 
 GL_EXTENSIONS="GL_ARB_vertex_buffer_object,GL_ARB_pixel_buffer_object,GL_ARB_vertex_array_object,GL_ARB_framebuffer_object,GL_ARB_texture_float,GL_EXT_framebuffer_object,GL_APPLE_vertex_array_object"
 
-python -m glad --profile=compatibility --api="gl=2.0" --generator=c-debug --spec=gl --extensions=$GL_EXTENSIONS --omit-khrplatform --out-path=$CWD/Global/gladDeb
+python -m glad --profile=compatibility --api="gl=4.5" --generator=c-debug --spec=gl --extensions=$GL_EXTENSIONS --out-path=$CWD/Global/gladDeb
 
-python -m glad --profile=compatibility --api="gl=2.0" --generator=c --spec=gl --extensions=$GL_EXTENSIONS --omit-khrplatform --out-path=$CWD/Global/gladRel
+python -m glad --profile=compatibility --api="gl=4.5" --generator=c --spec=gl --extensions=$GL_EXTENSIONS --out-path=$CWD/Global/gladRel

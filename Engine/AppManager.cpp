@@ -147,6 +147,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -360,6 +361,10 @@ AppManager::loadFromArgs(const CLArgs& cl)
     // resizing to a smaller size doesn't free/move memory, so the data pointer remains valid
     assert(_imp->nArgs <= (int)_imp->commandLineArgsUtf8.size());
     _imp->commandLineArgsUtf8.resize(_imp->nArgs); // Qt may have reduced the numlber of args
+
+    if (!checkGLContextRequirements()) {
+        return false;
+    }
 
 #ifdef QT_CUSTOM_THREADPOOL
     // Set the global thread pool (pointed is owned and deleted by QThreadPool at exit)
@@ -1336,6 +1341,16 @@ AppManager::clearPluginsLoadedCache()
 }
 
 void
+AppManager::freeGpuMemory()
+{
+    SceneCaches::releaseRenderEngines();
+    releaseSceneViewEngines();
+    if (_imp->gpuContext) {
+        _imp->gpuContext->releaseIdleMemory();
+    }
+}
+
+void
 AppManager::clearAllCaches()
 {
     AppInstanceVec copy;
@@ -1366,6 +1381,9 @@ AppManager::clearAllCaches()
     clearDiskCache();
     clearNodeCache();
     _imp->_deepImageCache->clear();
+    SceneCaches::releaseIdleQueryStages();
+    // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
+    SceneCaches::releaseRenderEngines();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {

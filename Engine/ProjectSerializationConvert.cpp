@@ -258,12 +258,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         getInputNames(serialization->inputs);
     }
 
-    NodePtr masterNode = getMasterNode();
-    if (masterNode) {
-        serialization->masterNodeName = masterNode->getFullyQualifiedName();
-    }
-
-    RotoContextPtr roto = getRotoContext();
+    RotoCurveContextPtr roto = getCurveContext();
     if (roto && !roto->isEmpty()) {
         serialization->hasRotoContext = true;
         roto->toSerialization(&serialization->rotoContext);
@@ -340,6 +335,8 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
 #endif
     savedBy.bits = isApplication32Bits() ? 32 : 64;
 
+    serialization->projectId = getProjectId();
+
     nodesToSerialization(&serialization->nodes);
 
     std::list<Format> additionalFormats;
@@ -383,7 +380,12 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
         if (knobs[i]->isUserKnob() || std::find(std::begin(savedEachTime), std::end(savedEachTime), knobs[i].get()) != std::end(savedEachTime)) {
             continue;
         }
-        if (knobs[i]->getIsPersistent() && !isGroup && !isPage && !isButton && knobs[i]->hasModificationsForSerialization()) {
+        // A knob in a link group is saved even at its default, or loading would leave it out of the group.
+        bool inLinkGroup = false;
+        for (int d = 0; !inLinkGroup && d < knobs[i]->getDimension(); ++d) {
+            inLinkGroup = (bool)knobs[i]->getLinkGroup(d);
+        }
+        if (knobs[i]->getIsPersistent() && !isGroup && !isPage && !isButton && (inLinkGroup || knobs[i]->hasModificationsForSerialization())) {
             serialization->projectKnobs.push_back(Serialization::KnobSerialization());
             knobs[i]->toSerialization(&serialization->projectKnobs.back());
         }
@@ -432,6 +434,11 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
                                          const QString& path,
                                          bool* mustSave)
 {
+    // A file without an id keeps the one the reset before loading made.
+    if (!serialization.projectId.empty()) {
+        projectId = serialization.projectId;
+    }
+
     std::list<Format> serializedAdditionalFormats;
     for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {
         serializedAdditionalFormats.push_back(Format(it->x1, it->y1, it->x2, it->y2, it->name, it->pixelAspectRatio));

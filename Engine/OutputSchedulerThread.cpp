@@ -862,8 +862,9 @@ OutputSchedulerThread::pushFramesToRender(int nThreads)
     }
 }
 
-int
+bool
 OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
+                                         int* frame,
                                          bool* enableRenderStats,
                                          std::vector<ViewIdx>* viewsToRender)
 {
@@ -878,9 +879,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
         _imp->allRenderThreadsInactiveCond.wakeOne();
     }
 
-
     bool gotFrame = false;
-    int frame = -1;
     {
         QMutexLocker l(&_imp->framesToRenderMutex);
         while ( _imp->framesToRender.empty() && !thread->mustQuit() ) {
@@ -890,11 +889,12 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
             _imp->framesToRenderNotEmptyCond.wait(l.mutex());
         }
 
-        if ( !_imp->framesToRender.empty() ) {
+        // A quitting thread leaves the queued frames to the others.
+        if (!_imp->framesToRender.empty() && !thread->mustQuit()) {
             ///Notify that we're running for good, will do nothing if flagged already running
             thread->notifyIsRunning(true);
 
-            frame = _imp->framesToRender.front();
+            *frame = _imp->framesToRender.front();
 
             _imp->framesToRender.pop_front();
 
@@ -908,7 +908,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
 
         *enableRenderStats = false;
 
-        return -1;
+        return false;
     } else {
         ///Flag the thread as active
         {
@@ -922,7 +922,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
         *enableRenderStats = args->enableRenderStats;
         *viewsToRender = args->viewsToRender;
 
-        return frame;
+        return true;
     }
 } // OutputSchedulerThread::pickFrameToRender
 
@@ -2154,9 +2154,11 @@ RenderThreadTask::run()
     for (;; ) {
         bool enableRenderStats;
         std::vector<ViewIdx> viewsToRender;
-        int time = _imp->scheduler->pickFrameToRender(this, &enableRenderStats, &viewsToRender);
+        int time = 0;
 
-        if ( mustQuit() ) {
+        // A frame picked before a concurrent scheduleForRemoval() is rendered all the same: it is off the
+        // queue, and dropping it would leave the render waiting forever for its count of frames.
+        if (!_imp->scheduler->pickFrameToRender(this, &time, &enableRenderStats, &viewsToRender)) {
             break;
         }
 
@@ -2458,6 +2460,24 @@ private:
                     _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
 
                     return;
+                }
+                if (output->writesFrameRangeAtOnce()) {
+                    // The render was narrowed to this one frame; the node writes the whole range
+                    // it was asked for here, rather than rendering an output of its own.
+                    int firstFrame = time;
+                    int lastFrame = time;
+                    output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
+                    if (output->writeFrameRange(firstFrame, lastFrame, viewsToRender[view]) == eStatusFailed) {
+                        QString message;
+                        int type = 0;
+                        activeInputNode->getPersistentMessage(&message, &type, false);
+                        _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
                 }
 
                 // The frame's region, layers and layout all come from the snapshot its args took,

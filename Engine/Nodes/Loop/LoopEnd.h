@@ -199,10 +199,9 @@ private:
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated,
-                                   double time,
-                                   ViewIdx view,
-                                   int visitsCount) const OVERRIDE FINAL;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -259,6 +258,13 @@ private:
                         const Resolved& resolved) const WARN_UNUSED_RETURN;
 
     void refreshKnobVisibility();
+
+    // The stop condition when it applies (not empty, not under Single Pass), else empty.
+    std::string activeStopCondition() const WARN_UNUSED_RETURN;
+
+    // Has the stop condition's knob depend on what the expression reads, so editing any of it
+    // moves this node's hash.
+    void refreshStopDependencies();
 
     // Folds step - 1's output out of the frame's store into acc; false when it is not there.
     bool takePreviousStep(const RenderActionArgs& args,

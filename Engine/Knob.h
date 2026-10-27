@@ -2158,6 +2158,24 @@ public:
     void refreshRFVListeners();
 
     /**
+     * @brief Has dimension depend on what the Python source reads, as if it were the dimension's
+     * expression (parameters through getValue() and the like, node metadata, project variables
+     * through rfv), without the source giving the dimension its value. For a holder that
+     * evaluates Python of its own from a knob's content: an edit of anything the source reads
+     * then moves this knob's content hash and reaches it as a listener. Replaces what the
+     * previous source registered; an empty source registers nothing. While the dimension has an
+     * expression, its dependencies are the expression's and the source only waits for it to be
+     * cleared. Setting the source it already has does nothing. Main thread only; never throws.
+     **/
+    void setReadDependencyExpression(int dimension, const std::string& source);
+
+    /**
+     * @brief Registers the read dependencies of every dimension's setReadDependencyExpression()
+     * source again, for the knobs and nodes that exist now (once a project is loaded).
+     **/
+    void refreshReadDependencies();
+
+    /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
      * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
      * the knob is shared.
@@ -2441,6 +2459,19 @@ protected:
 private:
 
     void expressionChanged(int dimension);
+
+    // Stops the dimension listening to the knobs its expression depends on and forgets them, or
+    // only to dependency when it is given; every node metadata dependency goes too when it is not.
+    void removeExpressionDependencies(int dimension, const KnobI* dependency);
+
+    // Undoes the listener a driver the dimension no longer has registered on the project
+    // variable name falls back to, unless the dimension's expression or read dependency source
+    // reads that variable too.
+    void unregisterDriverRFVListener(int dimension, const std::string& name);
+
+    // Re-registers the dependencies of the dimension's read dependency source, if it has one and
+    // no expression.
+    void registerReadDependencies(int dimension);
 
     // Recomputes getRFVReadSet() and swaps the context read source holding it.
     void refreshRFVReads();

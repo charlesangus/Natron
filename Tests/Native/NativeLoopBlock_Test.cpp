@@ -82,12 +82,13 @@ fullWindow()
 // The red value of the bottom-left pixel of node's output.
 bool
 renderedValue(const NodePtr& node,
-              float* value)
+              float* value,
+              bool byPassCache = true)
 {
     std::vector<RenderedPlane> planes;
     std::string error;
 
-    if (!renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, fullWindow(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true /*byPassCache*/)) {
+    if (!renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, fullWindow(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache)) {
         ADD_FAILURE() << error;
 
         return false;
@@ -220,6 +221,38 @@ private:
     RenderScheduler* _scheduler;
     std::size_t _saved;
 };
+
+bool
+setForceCaching(const NodePtr& node,
+                bool enabled)
+{
+    KnobBool* knob = node ? dynamic_cast<KnobBool*>(node->getKnobByName("forceCaching").get()) : NULL;
+
+    EXPECT_TRUE(knob != NULL) << "the node has no forceCaching knob";
+    if (!knob) {
+        return false;
+    }
+    knob->setValue(enabled);
+
+    return node->isForceCachingEnabled() == enabled;
+}
+
+// The frames node asks of its input 0 at kTime.
+std::set<double>
+framesNeeded(const NodePtr& node)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    FramesNeededMap frames = effect->getFramesNeeded_public(effect->getRenderHash(), kTime, ViewIdx(0), 0);
+    std::set<double> needed;
+
+    for (const RangeD& range : frames[0][ViewIdx(0)]) {
+        for (double frame = range.min; frame <= range.max; frame += 1.) {
+            needed.insert(frame);
+        }
+    }
+
+    return needed;
+}
 
 KnobDriverPtr
 linearDriver(const std::string& variable,
@@ -910,4 +943,108 @@ TEST_F(NativeLoopBlockTest, ARaisingStopConditionEndsTheLoopWithItsError)
     // A syntax error stops the loop before its first iteration.
     ASSERT_TRUE(setStopCondition(end, "loop.iteration >"));
     expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("SyntaxError"));
+}
+
+// The stop condition reads another node's parameter: editing it moves the LoopEnd's hash, so the
+// region of definition, the frames asked of the body and the cached output follow the new stop.
+TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLoop)
+{
+    NodePtr constant = createConstant(0.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr end = createLoopEnd(1, kLoopEndParamOperationSum);
+    NodePtr control = createConstant(2.);
+    ASSERT_TRUE(constant && begin && end && control);
+    KnobColorPtr color = std::dynamic_pointer_cast<KnobColor>(constant->getKnobByName(kConstantParamColor));
+    KnobChoicePtr extent = std::dynamic_pointer_cast<KnobChoice>(constant->getKnobByName(kNativeGeneratorParamExtent));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(constant->getKnobByName(kNativeGeneratorParamSize));
+    KnobColorPtr stopAt = std::dynamic_pointer_cast<KnobColor>(control->getKnobByName(kConstantParamColor));
+    ASSERT_TRUE(bool(color));
+    ASSERT_TRUE(bool(extent));
+    ASSERT_TRUE(bool(size));
+    ASSERT_TRUE(bool(stopAt));
+    // At frame f, the body is f in every channel and 10 * (f + 2) pixels wide.
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    for (int frame = -1; frame <= 3; ++frame) {
+        for (int i = 0; i < color->getDimension(); ++i) {
+            color->setValueAtTime((double)frame, (double)frame, ViewSpec::all(), i);
+        }
+        size->setValueAtTime((double)frame, 10. * (frame + 2), ViewSpec::all(), 0);
+        size->setValueAtTime((double)frame, 10., ViewSpec::all(), 1);
+    }
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(end->connectInput(begin, 0));
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStart, -2));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, 2));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 1));
+    ASSERT_TRUE(setForceCaching(end, true));
+    const std::string controlVar = getApp()->getAppIDString() + "." + control->getFullyQualifiedName();
+    ASSERT_TRUE(setStopCondition(end, "loop.iteration >= " + controlVar + ".color.getValue(0)"));
+
+    EffectInstancePtr effect = end->getEffectInstance();
+    const bool legacy = appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph;
+    appPTR->clearAllCaches();
+
+    // Stopping at iteration 2 keeps the frames -1 and 0.
+    RectD rod;
+    bool isProjectFormat = false;
+    ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    EXPECT_NEAR(20., rod.width(), 1e-6);
+    // Under the task graph and no fold step, the last step's iteration.
+    EXPECT_EQ(legacy ? std::set<double>({ -1., 0. }) : std::set<double>({ 0. }), framesNeeded(end));
+    float value = -10.f;
+    ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
+    EXPECT_NEAR(-1., value, 1e-5);
+
+    // Stopping at iteration 4 keeps the frames -1 to 2.
+    const U64 hash = effect->getRenderHash();
+    stopAt->setValue(4., ViewSpec::all(), 0);
+    EXPECT_NE(hash, effect->getRenderHash());
+    ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    EXPECT_NEAR(40., rod.width(), 1e-6);
+    EXPECT_EQ(legacy ? std::set<double>({ -1., 0., 1., 2. }) : std::set<double>({ 2. }), framesNeeded(end));
+    ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
+    EXPECT_NEAR(2., value, 1e-5);
+
+    appPTR->clearAllCaches();
+}
+
+// With a stop condition and nothing it reads edited, a second render is the cached output; editing
+// what it reads renders the loop again, to the new stop.
+TEST_F(NativeLoopBlockTest, AStopConditionsOutputIsCachedUntilWhatItReadsChanges)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createDrivenCounter();
+    NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
+    NodePtr control = createConstant(3.);
+    ASSERT_TRUE(constant && begin && body && end && control);
+    KnobColorPtr stopAt = std::dynamic_pointer_cast<KnobColor>(control->getKnobByName(kConstantParamColor));
+    ASSERT_TRUE(bool(stopAt));
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+    ASSERT_TRUE(setForceCaching(end, true));
+    const std::string controlVar = getApp()->getAppIDString() + "." + control->getFullyQualifiedName();
+    ASSERT_TRUE(setStopCondition(end, "loop.iteration >= " + controlVar + ".color.getValue(0)"));
+    appPTR->clearAllCaches();
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
+    EXPECT_EQ(3, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 1. / 9., value, 1e-5);
+
+    ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
+    EXPECT_EQ(3, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 1. / 9., value, 1e-5);
+
+    // Five iterations, t from 0 to 4/9.
+    CountingTestRegistry::reset();
+    stopAt->setValue(5., ViewSpec::all(), 0);
+    ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
+    EXPECT_EQ(5, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 2. / 9., value, 1e-5);
+
+    appPTR->clearAllCaches();
 }

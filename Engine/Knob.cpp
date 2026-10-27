@@ -455,6 +455,10 @@ struct Expr
     // node's: the expression is then refused rather than evaluated.
     std::string metadataCycle;
 
+    // Python the holder evaluates itself, whose reads are this dimension's dependencies while it
+    // has no expression (see KnobHelper::setReadDependencyExpression()).
+    std::string readDependencyExpression;
+
     //PyObject* code;
 
     Expr()
@@ -698,6 +702,11 @@ struct KnobHelperPrivate
     }
 
     void parseListenersFromExpression(int dimension);
+
+    // Registers what expression reads as dependencies of the dimension. readOnly is for a source
+    // the knob never evaluates: it is not run, a read that fails to resolve is skipped, and any
+    // failure registers less rather than throwing.
+    void parseListenersFromExpression(int dimension, const std::string& expression, bool readOnly);
 
     // Has every project variable the expression reads of rfv (see KnobHelper::getRFVExpressionReads())
     // listened to by this knob's dimension, once.
@@ -3122,7 +3131,14 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
         QMutexLocker k(&expressionMutex);
         expressionCopy = expressions[dimension].originalExpression;
     }
+    parseListenersFromExpression(dimension, expressionCopy, false);
+}
 
+void
+KnobHelperPrivate::parseListenersFromExpression(int dimension,
+                                                const std::string& expressionCopy,
+                                                bool readOnly)
+{
     registerRFVListeners(dimension, expressionCopy);
 
     std::string script;
@@ -3147,16 +3163,45 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
         return;
     }
 
+    if (readOnly) {
+        // Each read on its own, so one naming something that does not exist leaves the others.
+        std::string guarded;
+        std::size_t begin = 0;
+        while (begin < script.size()) {
+            std::size_t end = script.find('\n', begin);
+            if (end == std::string::npos) {
+                end = script.size();
+            }
+            if (end > begin) {
+                guarded += "try:\n    " + script.substr(begin, end - begin) + "\nexcept Exception:\n    pass\n";
+            }
+            begin = end + 1;
+        }
+        script.swap(guarded);
+    }
+
     const std::vector<bool> code = pythonCodeMask(expressionCopy);
     extractMetadataReads(expressionCopy, code, "metadata", dimension, &script);
     extractMetadataReads(expressionCopy, code, "metadataKeys", dimension, &script);
 
-    std::string declarations = declarePythonVariables(false, dimension);
+    std::string declarations;
+    try {
+        declarations = declarePythonVariables(false, dimension);
+    } catch (const std::exception& e) {
+        if (!readOnly) {
+            throw;
+        }
+        qDebug() << e.what();
+
+        return;
+    }
     std::stringstream ss;
     ss << "frame=0\n";
     ss << "view=0\n";
     ss << declarations << '\n';
-    ss << expressionCopy << '\n';
+    if (!readOnly) {
+        ss << expressionCopy << '\n';
+    }
     ss << script;
     script = ss.str();
     ///This will register the listeners
@@ -3168,6 +3213,9 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
     }
     if ( !error.empty() ) {
         qDebug() << error.c_str();
+    }
+    if (readOnly) {
+        return;
     }
     assert(ok);
     if (!ok) {
@@ -3457,6 +3505,16 @@ KnobHelper::setExpressionInternal(int dimension,
 
     if ( expression.empty() ) {
         return;
+    }
+
+    bool hasReadDependencies;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        hasReadDependencies = !_imp->expressions[dimension].readDependencyExpression.empty();
+    }
+    if (hasReadDependencies) {
+        // The expression's reads replace the read dependency source's until it is cleared.
+        removeExpressionDependencies(dimension, NULL);
     }
 
     std::string exprResult;
@@ -3786,29 +3844,49 @@ KnobHelper::getMetadataDependencies(int dimension,
 }
 
 void
-KnobHelper::clearExpression(int dimension,
-                            bool clearResults)
+KnobHelper::unregisterDriverRFVListener(int dimension,
+                                        const std::string& name)
 {
-    KnobContentWrite write;
-    PythonGILLocker pgl;
-    bool hadExpression;
+    std::string source;
     {
         QMutexLocker k(&_imp->expressionMutex);
-        hadExpression = !_imp->expressions[dimension].originalExpression.empty();
-        _imp->expressions[dimension].expression.clear();
-        _imp->expressions[dimension].originalExpression.clear();
-        _imp->expressions[dimension].exprInvalid.clear();
-        _imp->expressions[dimension].metadataCycle.clear();
-        //Py_XDECREF(_imp->expressions[dimension].code); //< new ref
-        //_imp->expressions[dimension].code = 0;
+        const Expr& expr = _imp->expressions[dimension];
+        source = expr.originalExpression.empty() ? expr.readDependencyExpression : expr.originalExpression;
     }
+    const RenderContextReadSet sourceReads = KnobHelper::getRFVExpressionReads(source);
+    if (sourceReads.readsAll() || sourceReads.contains(RenderContextName::plain(name))) {
+        return;
+    }
+    AppInstancePtr app = _imp->holder ? _imp->holder->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project) {
+        return;
+    }
+    for (const RFV::VariableDeclaration& variable : RFV::getDeclaredVariables(project.get())) {
+        if (variable.name == name) {
+            removeExpressionDependencies(dimension, variable.knob.get());
+        }
+    }
+}
+
+void
+KnobHelper::removeExpressionDependencies(int dimension,
+                                         const KnobI* dependency)
+{
     KnobIPtr thisShared = shared_from_this();
     {
         std::list<std::pair<KnobIWPtr, int> > dependencies;
         {
             QWriteLocker kk(&_imp->mastersMutex);
-            dependencies = _imp->expressions[dimension].dependencies;
-            _imp->expressions[dimension].dependencies.clear();
+            std::list<std::pair<KnobIWPtr, int>>& all = _imp->expressions[dimension].dependencies;
+            for (std::list<std::pair<KnobIWPtr, int>>::iterator it = all.begin(); it != all.end();) {
+                if (!dependency || (it->first.lock().get() == dependency)) {
+                    dependencies.push_back(*it);
+                    it = all.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
         for (std::list<std::pair<KnobIWPtr, int> >::iterator it = dependencies.begin();
              it != dependencies.end(); ++it) {
@@ -3858,7 +3936,7 @@ KnobHelper::clearExpression(int dimension,
             }
         }
     }
-    {
+    if (!dependency) {
         std::list<NodeWPtr> metadataDependencies;
         {
             QMutexLocker k(&_imp->expressionMutex);
@@ -3872,6 +3950,104 @@ KnobHelper::clearExpression(int dimension,
         }
         gExpressionMetadataDependencies.fetch_sub((int)metadataDependencies.size());
     }
+}
+
+void
+KnobHelper::registerReadDependencies(int dimension)
+{
+    std::string source;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        if (!_imp->expressions[dimension].originalExpression.empty()) {
+            return;
+        }
+        source = _imp->expressions[dimension].readDependencyExpression;
+    }
+    if (source.empty() || !getHolder()) {
+        return;
+    }
+    {
+        EXPR_RECURSION_LEVEL();
+        _imp->parseListenersFromExpression(dimension, source, true);
+    }
+    // The cycle check refuses a metadata read closing a cycle; a source the knob never evaluates
+    // simply does not depend on it.
+    QMutexLocker k(&_imp->expressionMutex);
+    _imp->expressions[dimension].metadataCycle.clear();
+}
+
+void
+KnobHelper::setReadDependencyExpression(int dimension,
+                                        const std::string& source)
+{
+    if ((dimension < 0) || (dimension >= getDimension())) {
+        return;
+    }
+    bool hasExpression;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        if (_imp->expressions[dimension].readDependencyExpression == source) {
+            return;
+        }
+        _imp->expressions[dimension].readDependencyExpression = source;
+        hasExpression = !_imp->expressions[dimension].originalExpression.empty();
+    }
+    if (hasExpression) {
+        return;
+    }
+    {
+        KnobContentWrite write;
+        PythonGILLocker pgl;
+        removeExpressionDependencies(dimension, NULL);
+        if (hasDrivers()) {
+            _imp->registerDriverRFVListeners(dimension);
+        }
+        registerReadDependencies(dimension);
+        invalidateContentHash();
+    }
+}
+
+void
+KnobHelper::refreshReadDependencies()
+{
+    for (int i = 0; i < getDimension(); ++i) {
+        bool refresh;
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            refresh = _imp->expressions[i].originalExpression.empty() && !_imp->expressions[i].readDependencyExpression.empty();
+        }
+        if (!refresh) {
+            continue;
+        }
+        KnobContentWrite write;
+        PythonGILLocker pgl;
+        removeExpressionDependencies(i, NULL);
+        if (hasDrivers()) {
+            _imp->registerDriverRFVListeners(i);
+        }
+        registerReadDependencies(i);
+        invalidateContentHash();
+    }
+}
+
+void
+KnobHelper::clearExpression(int dimension,
+                            bool clearResults)
+{
+    KnobContentWrite write;
+    PythonGILLocker pgl;
+    bool hadExpression;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        hadExpression = !_imp->expressions[dimension].originalExpression.empty();
+        _imp->expressions[dimension].expression.clear();
+        _imp->expressions[dimension].originalExpression.clear();
+        _imp->expressions[dimension].exprInvalid.clear();
+        _imp->expressions[dimension].metadataCycle.clear();
+        // Py_XDECREF(_imp->expressions[dimension].code); //< new ref
+        //_imp->expressions[dimension].code = 0;
+    }
+    removeExpressionDependencies(dimension, NULL);
     if (hadExpression) {
         moveHashedMetadataSourcesGeneration();
     }
@@ -3892,6 +4068,7 @@ KnobHelper::expressionChanged(int dimension)
     if (hasDrivers()) {
         _imp->registerDriverRFVListeners(dimension);
     }
+    registerReadDependencies(dimension);
     refreshRFVReads();
     invalidateContentHash();
     if (_imp->holder) {
@@ -6887,13 +7064,15 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     {
         QMutexLocker k(&_imp->expressionMutex);
         const Expr& expr = _imp->expressions[dimension];
-        // Without an expression, the dependencies are the project variables a driver falls back to.
-        if (expr.originalExpression.empty() && expr.dependencies.empty()) {
+        // Without an expression, the dependencies are the project variables a driver falls back
+        // to and the reads of a read dependency source.
+        const std::string& source = expr.originalExpression.empty() ? expr.readDependencyExpression : expr.originalExpression;
+        if (source.empty() && expr.dependencies.empty()) {
             return own;
         }
         dependencies = expr.dependencies;
         metadataDependencies = expr.metadataDependencies;
-        isVolatile = !expr.originalExpression.empty() && expressionIsVolatile(expr.originalExpression);
+        isVolatile = !source.empty() && expressionIsVolatile(source);
     }
     if (dependencies.empty() && metadataDependencies.empty() && !isVolatile) {
         return own;
@@ -7497,6 +7676,10 @@ KnobHelper::setDriver(int dimension,
         }
         if (driver) {
             addContextReadSource(std::const_pointer_cast<KnobDriver>(driver));
+        }
+        const std::string previousName = previous ? previous->getProjectVariableName() : std::string();
+        if (!previousName.empty() && (!driver || (driver->getProjectVariableName() != previousName))) {
+            unregisterDriverRFVListener(dimension, previousName);
         }
         invalidateContentHash();
     }

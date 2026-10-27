@@ -75,4 +75,8 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - verify: `grep -ln costseed .plan/PLAN/MILESTONES` lists only done milestones and struck-through text.
   - size: S
 
+## Decisions
+
+- 2026-10-26 — **Claimed despite file overlap (user):** M101 - Clean-Sheet Merge Node (cost seed, README checklist), M71 - RFV Render Context (`Engine/CMakeLists.txt`, `RenderScheduler.cpp`) and M64 - Tiled Rendering (`RenderScheduler.cpp`) have unfinished tasks on files this milestone touches. M239's edits there are small (one observe call, the seed glob block, the README item), so the user chose to run now and resolve them at rebase.
+
 **Verification gate:** the full debug and release builds and ctest pass. The GPU suites pass on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`). The bench comps' same-boot Auto vs Off table shows no case where Auto is clearly slower. PR CI is green.

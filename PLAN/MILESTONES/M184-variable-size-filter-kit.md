@@ -76,9 +76,9 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Phase 184.4: Finish
 
-- [ ] M184.P4.T1 — Register the I-variants and cost seeds
+- [ ] M184.P4.T1 — Register the I-variants ~~and cost seeds~~
   - files: `Engine/Nodes/Filter/IBlur.reg.inc`, `Engine/Nodes/Filter/IErode.reg.inc`, `Engine/Nodes/Filter/IDilate.reg.inc`, `Engine/Nodes/Filter/{IBlur,IErode,IDilate}.costseed.inc`
-  - approach: Add the `NATRON_I_VARIANT` lines (Blur → IBlur, Erode → IErode, Dilate → IDilate, with their knob maps) and cost seeds, per `Engine/Nodes/README.md`'s checklist.
+  - approach: Add the `NATRON_I_VARIANT` lines (Blur → IBlur, Erode → IErode, Dilate → IDilate, with their knob maps), per `Engine/Nodes/README.md`'s checklist. ~~Cost seeds~~ dropped: see Decisions, 2026-10-26.
   - verify: `ctest -R NativePluginList` and the registry gtest pass with the three entries.
   - size: S
 
@@ -89,6 +89,9 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
   - size: S
 
 ## Decisions
+
+- 2026-10-26 — **Cost seeds dropped (user):** GPU seed rows are not measured for IBlur, IErode or IDilate; M239 - Weight-Based GPU Placement replaces the measured cost model (`PLAN/DECISIONS/2026-10-26-weight-based-gpu-placement.md`). The CPU seeds already committed stay until M239 deletes them.
+- 2026-10-26 — **RADV run (gpu, AMD Radeon AI PRO R9700, RADV GFX1201):** NativeIErodeDilateGpuTest passes. Two failures remain: NativeIBlurGpuTest.NonFiniteSourceMatchesTheCpu hits SIGFPE (invalid) in `ConstantOp::bake` under debug float traps, on lavapipe too; MapRemapGpu.RemapMatchesTheCpu differs because RADV flushes the subnormals that the CPU smooth remap produces at exponents 3.7 and 100 to zero (lavapipe passes). Taken over from bosley-native-nodes by the user's request to finish here.
 
 - 2026-10-25 — **UAT approved (user):** the gate screenshots and the AppImage with the Map remap controls are signed off.
 - 2026-10-25 — **Map remapping control; no Map Black/White (user, UAT):** the Map input gets a simple remap: a Smooth/Linear choice and a gamma applied to the map. The Map Black and Map White knobs are removed. Size At Black comes before Size in the panel. IErode and IDilate fold into one IErodeDilate in M111 - Native Node Identity Cleanup, alongside ErodeDilate.

@@ -162,7 +162,7 @@ future core work has solid ground to build on.
 | M236 | Shared Materials And Assignment | todo | M226 |  | E9 | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
 | M238 | EdgeExtend Options | todo | M123 |  | E3 | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
-| M239 | Weight-Based GPU Placement | todo | - |  | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
+| M239 | Weight-Based GPU Placement | doing | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M52 | USD Layer-Stack Completion | todo | M226 |  | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | todo | M52, M233 |  | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M53, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
@@ -252,7 +252,7 @@ future core work has solid ground to build on.
 | M181 | Loop Drivers And UI | todo | M180, M71 |  | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
 | M182 | Loop Feedback | todo | M180 |  | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
 | M183 | Loop Map Blend | todo | M180, M179, M184 |  | E15 | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
-| M184 | Variable-Size Filter Kit | doing | M120, M137 | bosley-native-nodes | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
+| M184 | Variable-Size Filter Kit | doing | M120, M137 | gpu | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
 | M185 | Variable Warps | doing | M113, M184 | bosley-native-nodes | E15 | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
 | M186 | Exact IDefocus | todo | M131, M184 |  | E15 | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
 | M187 | Variable Sharpen And Glow | todo | M123, M184 |  | E15 | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |

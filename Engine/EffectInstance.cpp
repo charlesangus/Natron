@@ -68,6 +68,7 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
@@ -5908,6 +5909,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     }
 
     ret |= node->onEffectKnobValueChanged(k, reason);
+
+    // Variables are user knobs, which never reach knobChanged(): what RFVRead nodes list follows them.
+    if (k && (reason != eValueChangedReasonTimeChanged) && (QThread::currentThread() == qApp->thread()) && (RFV::findDeclaredVariable(this, k->getName()).get() == k)) {
+        RFV::scheduleReaderRefresh(getApp());
+    }
 
     //Don't call the python callback if the reason is time changed
     if (reason == eValueChangedReasonTimeChanged) {

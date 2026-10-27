@@ -31,6 +31,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QString>
 
 #include "BaseTest.h"
@@ -167,6 +168,12 @@ protected:
     {
         return node ? dynamic_cast<RFVRead*>(node->getEffectInstance().get()) : 0;
     }
+
+    static bool listsLine(const std::string& text,
+                          const std::string& line)
+    {
+        return ("\n" + text + "\n").find("\n" + line + "\n") != std::string::npos;
+    }
 };
 
 TEST_F(RFVReadTest, Identity)
@@ -302,4 +309,30 @@ TEST_F(RFVReadTest, FormatValueFollowsPython)
     EXPECT_EQ("\"it's\"", RFV::formatValue(RenderContextValue(std::string("it's"))));
     EXPECT_EQ("[1, 2, 3]", RFV::formatValue(RenderContextValue(std::vector<std::int64_t> { 1, 2, 3 })));
     EXPECT_EQ("['a', 'b']", RFV::formatValue(RenderContextValue(std::vector<std::string> { "a", "b" })));
+}
+
+// A Set's variables are user knobs, which never reach the effect's knobChanged(): editing one as
+// Python's setValue() does must still refresh the RFVRead nodes above it.
+TEST_F(RFVReadTest, EditingASetVariableRefreshesVariables)
+{
+    NodePtr read = createRead();
+    NodePtr set = createStringSet("var", "b");
+    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+    ASSERT_TRUE(read && set && viewer);
+    InspectorNode* inspector = dynamic_cast<InspectorNode*>(viewer.get());
+    ASSERT_TRUE(inspector != nullptr);
+    connectNodes(read, set, 0, true);
+    connectNodes(set, viewer, 0, true);
+    inspector->setInputA(0);
+    ASSERT_EQ(viewer, RFV::getActiveViewer(getApp()));
+    RFVRead* effect = readEffectOf(read);
+    ASSERT_TRUE(effect != nullptr);
+    QCoreApplication::processEvents();
+    ASSERT_TRUE(listsLine(effect->getVariablesText(), "var = 'b'")) << effect->getVariablesText();
+
+    KnobStringPtr variable = std::dynamic_pointer_cast<KnobString>(set->getKnobByName("var"));
+    ASSERT_TRUE(variable != nullptr);
+    variable->setValue(std::string("c"), ViewSpec::current(), 0);
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(listsLine(effect->getVariablesText(), "var = 'c'")) << effect->getVariablesText();
 }

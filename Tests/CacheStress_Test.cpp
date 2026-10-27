@@ -25,18 +25,28 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
+#include <QString>
+#include <QTemporaryDir>
+
+#include <ofxImageEffect.h>
+
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "Native/RawFixtures.h"
 #include "NativeParity.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Format.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
@@ -49,9 +59,13 @@
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
+#include "Engine/Nodes/Raw/RawToImage.h"
 #include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -468,6 +482,166 @@ buildErode(const AppInstancePtr& app,
     return true;
 }
 
+// Version n of a flat RGBA EXR: each version has another size and value.
+bool
+writeExrVersion(const std::string& path,
+                int version,
+                std::string* error)
+{
+    const int width = 24 + 8 * version;
+    const int height = 16 + 4 * version;
+    OIIO::ImageSpec spec(width, height, 4, OIIO::TypeDesc::FLOAT);
+
+    spec.channelnames = { "R", "G", "B", "A" };
+    spec.alpha_channel = 3;
+    std::vector<float> pixels((std::size_t)width * height * 4, 0.2f + 0.1f * (float)version);
+    for (std::size_t i = 3; i < pixels.size(); i += 4) {
+        pixels[i] = 1.f;
+    }
+    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+    if (!out || !out->open(path, spec) || !out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) || !out->close()) {
+        return fail(error, "could not write " + path);
+    }
+
+    return true;
+}
+
+// Even versions hold the Bayer fixture's bytes, odd ones the linear DNG's.
+bool
+writeRawVersion(const std::string& path,
+                int version,
+                std::string* error)
+{
+    const std::vector<char> bytes = readFixtureBytes(((version % 2) == 0 ? bayerFixture() : linearFixture()).path());
+
+    if (bytes.empty() || !writeFixtureBytes(path, bytes.data(), bytes.size())) {
+        return fail(error, "could not write " + path);
+    }
+
+    return true;
+}
+
+// Writes version 0 of a file and forgets what an earlier pass recorded about it, as a fresh
+// session would.
+bool
+startFile(const std::string& path,
+          const std::function<bool(const std::string&, int, std::string*)>& write,
+          StressGraph* g,
+          std::string* error)
+{
+    if (!write(path, 0, error)) {
+        return false;
+    }
+    FileStampRegistry::instance().invalidate(path);
+    OiioReadSupport::evictHeaders(std::vector<std::string>(1, path));
+    RawDecodeSupport::evict(std::vector<std::string>(1, path));
+    g->files.push_back([path, write](int version, std::string* err) {
+        return write(path, version, err);
+    });
+
+    return true;
+}
+
+int
+readOf(const AppInstancePtr& app,
+       const NodeCollectionPtr& parent,
+       StressGraph* g,
+       const std::string& path)
+{
+    const NodePtr read = createIn(app, parent, PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ);
+    KnobStringBase* file = read ? dynamic_cast<KnobStringBase*>(read->getKnobByName(kOfxImageEffectFileParamName).get()) : NULL;
+
+    if (!file) {
+        return -1;
+    }
+    file->setValue(path);
+
+    return addNode(g, read);
+}
+
+// A Read of a flat EXR under a Grade, so the Grade's images are cached under the Read's hash.
+bool
+buildPinnedExr(const AppInstancePtr& app,
+               const std::string& path,
+               StressGraph* g,
+               std::string* error)
+{
+    setFormat(app);
+    if (!startFile(path, writeExrVersion, g, error)) {
+        return false;
+    }
+    const NodeCollectionPtr root = app->getProject();
+    const int read = readOf(app, root, g, path);
+    const int grade = addNode(g, createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE));
+
+    if ((read < 0) || (grade < 0) || !connect(*g, read, grade, 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    g->probe = grade;
+    g->window = kWindow;
+
+    return true;
+}
+
+// A Read of a raw file under RawToImage, rendered over a corner of the Bayer fixture's active area.
+bool
+buildPinnedRaw(const AppInstancePtr& app,
+               const std::string& path,
+               StressGraph* g,
+               std::string* error)
+{
+    setFormat(app);
+    std::string headerError;
+    const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(bayerFixture().path(), &headerError);
+    if (!header) {
+        return fail(error, headerError);
+    }
+    if (!startFile(path, writeRawVersion, g, error)) {
+        return false;
+    }
+    const NodeCollectionPtr root = app->getProject();
+    const int read = readOf(app, root, g, path);
+    const int convert = addNode(g, createIn(app, root, PLUGINID_NATRON_RAWTOIMAGE));
+
+    if ((read < 0) || (convert < 0) || !connect(*g, read, convert, 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    g->probe = convert;
+    g->window = RectI(header->window.x1, header->window.y1, header->window.x1 + 48, header->window.y1 + 32);
+
+    return true;
+}
+
+// Renders the probe again with nothing changed.
+Step
+renderAgain()
+{
+    Step step;
+
+    step.kind = eOpTime;
+
+    return step;
+}
+
+// Rewrite, render the stale file twice, Reload, and again with a second rewrite. The Read is node 0.
+Options
+pinnedUntilReloadScript()
+{
+    Options options;
+
+    options.ops = opBit(eOpRewriteFile) | opBit(eOpReload);
+    options.seeded = false;
+    options.scripted.push_back(scriptedStep(eOpRewriteFile, rewriteFilePrim(0, 1)));
+    options.scripted.push_back(renderAgain());
+    options.scripted.push_back(scriptedStep(eOpReload, reloadPrim(0)));
+    options.scripted.push_back(renderAgain());
+    options.scripted.push_back(scriptedStep(eOpRewriteFile, rewriteFilePrim(0, 2)));
+    options.scripted.push_back(renderAgain());
+    options.scripted.push_back(scriptedStep(eOpReload, reloadPrim(0)));
+
+    return options;
+}
+
 Options
 defaults()
 {
@@ -561,6 +735,30 @@ TEST_F(CacheStressTest, ViewerABSwitch)
     options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(kViewerXWhite, 0, 1.)));
     options.scripted.push_back(scriptedStep(eOpViewerB, viewerBPrim(1)));
     EXPECT_EQ(0, expectClean(getApp(), buildViewer, kSeeds, options));
+}
+
+// A Read keeps rendering the file as it was loaded, or fails, until Reload; it never mixes in the
+// rewritten file, and after Reload it renders the new one.
+TEST_F(CacheStressTest, ReadPinnedUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("pinned.exr")).toStdString();
+    const GraphBuilder builder = [path](const AppInstancePtr& app, StressGraph* g, std::string* error) {
+        return buildPinnedExr(app, path, g, error);
+    };
+    EXPECT_EQ(0, expectClean(getApp(), builder, { 1u }, pinnedUntilReloadScript()));
+}
+
+TEST_F(CacheStressTest, RawReadPinnedUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("pinned.cr2")).toStdString();
+    const GraphBuilder builder = [path](const AppInstancePtr& app, StressGraph* g, std::string* error) {
+        return buildPinnedRaw(app, path, g, error);
+    };
+    EXPECT_EQ(0, expectClean(getApp(), builder, { 1u }, pinnedUntilReloadScript()));
 }
 
 // A one-pixel erode is an identity at mipmap 1 and not at mipmap 0, so the identity answer of one

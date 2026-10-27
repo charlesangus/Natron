@@ -8052,8 +8052,9 @@ Node::dequeueActions()
         return;
     }
     bool hasChanged = false;
+    bool valuesChanged = false;
     if (_imp->effect) {
-        hasChanged |= _imp->effect->dequeueValuesSet();
+        valuesChanged |= _imp->effect->dequeueValuesSet();
         NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
         if (isGroup) {
             isGroup->dequeueConnexions();
@@ -8090,6 +8091,10 @@ Node::dequeueActions()
                 QMutexLocker k(&_imp->outputsMutex);
                 _imp->outputs = _imp->guiOutputs;
             }
+            // Before a render can start, as in connectInput().
+            if (!inputChanges.empty()) {
+                markHashDirty();
+            }
         }
     }
 
@@ -8101,8 +8106,10 @@ Node::dequeueActions()
         }
         endInputEdition(true);
     }
-    if (hasChanged) {
+    if (valuesChanged) {
         computeHash();
+    }
+    if (hasChanged || valuesChanged) {
         refreshIdentityState();
     }
 

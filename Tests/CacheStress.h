@@ -75,6 +75,8 @@ enum OpKind {
     eOpRevisit, // undoes the last one to three steps
     eOpViewerB, // switches the viewer's B side
     eOpMipmap, // renders at another mipmap level
+    eOpRewriteFile, // rewrites a file a node reads, behind its back
+    eOpReload, // presses a Read's Reload
     eOpCount
 };
 
@@ -88,7 +90,8 @@ opBit(OpKind kind)
 
 // The whole-value expression op stays out of the default mask while its hole is open (see
 // DISABLED_WholeValueExpression_M72). The viewer B and mipmap ops are only exercised by their
-// scripted cases, ViewerABSwitch and IdentityAcrossScales.
+// scripted cases, ViewerABSwitch and IdentityAcrossScales; the file ops only by scripted cases on
+// graphs that list files.
 OpMask defaultOps();
 OpMask allOps();
 
@@ -126,6 +129,8 @@ struct StressGraph {
     RectI window; // at mipmap 0
     int firstTime = 1;
     int lastTime = 6;
+    // Writes version n of a file the graph reads; the builder writes version 0.
+    std::vector<std::function<bool(int version, std::string* error)>> files;
 };
 
 // Creates the graph in app's project; the same builder runs once per pass.
@@ -145,7 +150,11 @@ enum PrimitiveKind {
     ePrimFrameRange,
     ePrimSeek,
     ePrimViewerB,
-    ePrimMipmap
+    ePrimMipmap,
+    // first: the file, input: the version. Until the next Reload, a render may fail or render
+    // nothing, and one that succeeds must equal the last render before the rewrite.
+    ePrimRewriteFile,
+    ePrimReload
 };
 
 struct Primitive {
@@ -232,6 +241,8 @@ Primitive setValuePrim(int knob, int dim, double value);
 Primitive setInputPrim(int node, int input, int source);
 Primitive viewerBPrim(int viewerInput);
 Primitive mipmapPrim(int level);
+Primitive rewriteFilePrim(int file, int version);
+Primitive reloadPrim(int node);
 Primitive expressionPrim(int knob, int dim, const std::string& text);
 Primitive dimensionExpressionPrim(int knob, int dim, int sourceKnob, int sourceDim);
 

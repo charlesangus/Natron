@@ -18,7 +18,7 @@ Status values:
 | Frame args `nodeHash` (render hash) | `ParallelRenderArgsSetter::buildArgsMap` Engine/ParallelRenderArgs.cpp:1944 | Content hash mixed with the render-context key | [keys.md](cache-invalidation/keys.md) | fixed by M202 (K1, K2) |
 | Project digest | `Project::getContentDigest` Engine/Project.cpp:3460 | Project knobs, formats, layers, OCIO, concatenation generations | [keys.md](cache-invalidation/keys.md) | suspected hole (K7: Settings outside the digest) |
 | Upstream context read-set | `Node::getUpstreamContextReadSet` Engine/NodeInputs.cpp:2101 | `getRenderContextReadsGeneration()` | [keys.md](cache-invalidation/keys.md) | covered |
-| Topology edits (inputs, queued edits) | Engine/NodeInputs.cpp, `Node::dequeueActions` Engine/Node.cpp:7983 | Input slots folded into the content hash | [topology.md](cache-invalidation/topology.md) | T1 (queued edits), T2, T6 and T7 fixed in M242; T1 also gated by M202; suspected hole (T3, T4, T5, T8) |
+| Topology edits (inputs, queued edits) | Engine/NodeInputs.cpp, `Node::dequeueActions` Engine/Node.cpp:7983 | Input slots folded into the content hash | [topology.md](cache-invalidation/topology.md) | T1 (queued edits), T2, T6 and T7 fixed in M242; T1 also gated by M202; T3, T4 and T8 fixed in M260; suspected hole (T5) |
 | ActionsCache: identity | `ActionsCache` Engine/EffectInstancePrivate.h:216 | (render hash, time, view, mipmap) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | A1 fixed in M242; A2 fixed by M202 |
 | ActionsCache: RoD, frames needed, time domain, components needed | Engine/EffectInstancePrivate.h:252-268 | (render hash, time, view[, mipmap]) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | fixed by M202 (A2); A5 latent |
 | ActionsCache: metadata, pass-through, time-invariant, range summary | Engine/EffectInstancePrivate.h:274-308 | (hash with context key, time, view) plus generation | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | suspected hole (A4: non-abortable render uses newer metadata) |
@@ -39,9 +39,9 @@ Status values:
 | Expression results (`_exprRes`, `_exprCtxRes`) | Engine/Knob.h:2859 | time; (time, view, context key) | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | suspected hole (E3 minor) |
 | Expression dependencies in the content hash | `getDimensionContentHashRecursive` Engine/Knob.cpp:6755 | Dependencies, masters, metadata sources | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | suspected hole (E1, fixed by M72 not M202; metadata residual) |
 | Links (link groups, master/slave) | Engine/KnobLinkGroup.h:60 | No result cache | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | covered |
-| SceneLayerMemo | Engine/Nodes/Scene/SceneLayerMemo.h:40 | Node digest, upstream stack or facts, frame range, fps | [node-private.md](cache-invalidation/node-private.md) | suspected hole (N1) |
-| USDRead closure | Engine/Nodes/Scene/USDRead.cpp:81 | `closureDigest` | [node-private.md](cache-invalidation/node-private.md) | suspected hole (N2) |
-| OIIO header and Raw decode caches | Engine/Nodes/IO/OiioReadSupport.cpp:63, Engine/Nodes/IO/RawDecodeSupport.cpp:78 | (path, mtime, size) | [node-private.md](cache-invalidation/node-private.md) | suspected hole (N3, deferred: needs a design decision) |
+| SceneLayerMemo | Engine/Nodes/Scene/SceneLayerMemo.h:40 | Node digest, upstream stack or facts, frame range, fps | [node-private.md](cache-invalidation/node-private.md) | N1 fixed in M260 |
+| USDRead closure | Engine/Nodes/Scene/USDRead.cpp:81 | `closureDigest` | [node-private.md](cache-invalidation/node-private.md) | N2 fixed in M260 |
+| OIIO header and Raw decode caches | Engine/Nodes/IO/OiioReadSupport.cpp:63, Engine/Nodes/IO/RawDecodeSupport.cpp:78 | (path, `FileIdentity`), pinned to the stamp until Reload | [node-private.md](cache-invalidation/node-private.md) | N3 fixed in M260 |
 | StageGpuShaderGate | Engine/Nodes/Image/StagePlan.h:415 | Entry and source, no device | [node-private.md](cache-invalidation/node-private.md) | suspected hole (G2; placement only) |
 | Other node-private caches (CurveTablesCache, NativeRead listings, NativeWrite read-back, RawDemosaic memos, AddLayers signature, USDTransform matches, DeepRead layers, IErodeDilate) | Engine/Nodes | Content hash or file identity; see the doc | [node-private.md](cache-invalidation/node-private.md) | covered (CurveTablesCache inherits E1) |
 
@@ -63,6 +63,11 @@ Cases for holes fixed here run by default:
 | `CacheStressTest.ViewerABSwitch` | T2, V5 | fixed in M242 |
 | `CacheStressTest.IdentityAcrossScales` | A1 | fixed in M242 |
 | `CacheStressConcurrentTest.DequeueUnderARestartedRender` | T1, T6 | fixed in M242 |
+| `CacheStressTest.ReadPinnedUntilReload`, `CacheStressTest.RawReadPinnedUntilReload` | N3 | fixed in M260 |
+| `CacheStressConcurrentTest.SceneKnobEditDuringAuthoring` | N1 | fixed in M260 |
+| `USDReadTest.USDReadSublayerChangedWhileClosed` | N2 | fixed in M260 |
+| `CacheStressConcurrentTest.OnInputChangedUnderTheNewHash` | T4 | fixed in M260 |
+| `CacheStressConcurrentTest.ViewerABSwitchDuringRender` | T3 | fixed in M260 |
 | `CacheStressTest.DISABLED_WholeValueExpression_M72` | E1 | disabled until M72 |
 | `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender` | K1 | disabled until M202 (#131) |
 
@@ -76,13 +81,7 @@ stores and V1; M72 owns E1). Details in the family docs.
 
 | Hole | Summary | Doc |
 |---|---|---|
-| N3 | OIIO header and Raw decode caches re-read a changed file while the hash keeps its stamp | node-private.md |
-| N1 | Scene layer stored under the key taken before authoring | node-private.md |
-| N2 | USDRead sublayers changed while the application was closed | node-private.md |
-| T3 | `setActiveInputAndRefresh` marks the viewer before it changes the active inputs | topology.md |
-| T4 | `onInputChanged` runs under the pre-edit hash | topology.md |
 | T5 | Group connection changes in the queue don't count as a change | topology.md |
-| T8 | A render that starts between an input write and the hash mark sees the new inputs under the old hash | topology.md |
 | V2, V3 | Timeline cached-frames line out of date (display only) | viewer-and-timeline.md |
 | G1 | GPU host import cache keyed by host address and length | gpu.md |
 | G2 | Shader gate ignores the device | gpu.md |

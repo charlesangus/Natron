@@ -291,3 +291,51 @@ TEST_F(QueuedInputEditTest, ARenderCannotStartBetweenTheCheckAndTheApply)
     QCoreApplication::processEvents();
     EXPECT_EQ(g.b, grade->getInput(0));
 }
+
+// An input edit marks the hash before it lets render starts in: a render that was waiting to
+// start while the edit wrote the input finds the new input under the new hash, never under the
+// hash of the old one.
+TEST_F(QueuedInputEditTest, ARenderStartingAfterTheWriteReadsTheNewHash)
+{
+    TwoSources g;
+    ASSERT_TRUE(build(getApp(), &g));
+    const NodePtr grade = g.grade;
+    const U64 hashA = grade->getHashValue();
+
+    std::atomic<bool> armed(true);
+    std::atomic<bool> starting(false);
+    std::unique_ptr<RenderingFlagSetter> flag;
+    NodePtr seen;
+    U64 seenHash = 0;
+    std::thread worker;
+    Node::setInputEditHookForTesting([&](const Node* node,
+                                         bool /*queued*/) {
+        if ((node != grade.get()) || !armed.exchange(false)) {
+            return;
+        }
+        worker = std::thread([&]() {
+            starting = true;
+            flag.reset(new RenderingFlagSetter(grade));
+            seen = grade->getInput(0);
+            seenHash = grade->getHashValue();
+        });
+        while (!starting) {
+            std::this_thread::yield();
+        }
+    });
+    const bool replaced = grade->replaceInput(g.b, 0);
+    if (worker.joinable()) {
+        worker.join();
+    }
+    Node::setInputEditHookForTesting(Node::InputEditHook());
+
+    ASSERT_TRUE(replaced);
+    EXPECT_EQ(g.b, seen);
+    const U64 hashB = grade->getHashValue();
+    EXPECT_NE(hashA, hashB);
+    EXPECT_EQ(hashB, seenHash) << "the render found the new input under the old hash";
+
+    releaseOnAWorker(&flag);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(g.b, grade->getInput(0));
+}

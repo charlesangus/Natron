@@ -118,6 +118,7 @@ ScenePrimitiveNode::initializeKnobs()
     _doubleSided = doubleSided;
 
     _transform.create(this, page);
+    initializeTransformDefaults(_transform);
 
     KnobDoublePtr pivot = createKnob<KnobDouble>(tr("Pivot"), 3);
     pivot->setName(kScenePrimitiveParamPivot);

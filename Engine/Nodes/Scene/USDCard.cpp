@@ -31,7 +31,6 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/PrimitiveMeshes.h"
-#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
@@ -60,40 +59,41 @@ USDCard::getFallbackPrimName() const
 void
 USDCard::initializeShapeKnobs(const KnobPagePtr& page)
 {
-    double aspect = 1.;
-    Format format;
-    getApp()->getProject()->getProjectDefaultFormat(&format);
-    if (format.height() > 0) {
-        aspect = format.width() * format.getPixelAspectRatio() / format.height();
-    }
-    _aspect = createSizeKnob(page, tr("Aspect"), kUSDCardParamAspect,
-                             tr("The card's width over its height; it is one unit high. Defaults to the project format's "
-                                "aspect, pixel aspect included."),
-                             aspect);
     _rows = createSegmentsKnob(page, tr("Rows"), kUSDCardParamRows, tr("The number of faces from the bottom of the card to its top."),
                                8, PrimitiveMeshes::kCardMinSegments);
     _columns = createSegmentsKnob(page, tr("Columns"), kUSDCardParamColumns, tr("The number of faces from the left of the card to its right."),
                                   8, PrimitiveMeshes::kCardMinSegments);
 }
 
-bool
-USDCard::isShapeAnimated() const
+void
+USDCard::initializeTransformDefaults(const SceneTransformKnobs& transform)
 {
-    return SceneNodeAuthoring::isAnimated(_aspect.lock());
+    KnobDoublePtr scale = transform.scale.lock();
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    if (!scale || format.height() <= 0) {
+        return;
+    }
+    scale->setDefaultValue(format.width() * format.getPixelAspectRatio() / format.height(), 0);
 }
 
 bool
-USDCard::buildMesh(double frame,
+USDCard::isShapeAnimated() const
+{
+    return false;
+}
+
+bool
+USDCard::buildMesh(double /*frame*/,
                    SceneMetadata::UpAxisEnum upAxis,
                    PrimitiveMesh* mesh) const
 {
-    KnobDoublePtr aspect = _aspect.lock();
     KnobIntPtr rows = _rows.lock();
     KnobIntPtr columns = _columns.lock();
-    if (!aspect || !rows || !columns) {
+    if (!rows || !columns) {
         return false;
     }
-    *mesh = PrimitiveMeshes::buildCard(aspect->getValueAtTime(frame), 1., rows->getValue(), columns->getValue(), upAxis);
+    *mesh = PrimitiveMeshes::buildCard(1., 1., rows->getValue(), columns->getValue(), upAxis);
 
     return true;
 }

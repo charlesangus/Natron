@@ -206,13 +206,15 @@ TEST_F(USDPrimitivesTest, TheCardIsADoubleSidedMeshAtItsScriptNameWithSt)
     NodePtr card = primitive(PLUGINID_NATRON_USDCARD);
     ASSERT_TRUE(bool(card));
     EXPECT_EQ(std::string("USDCard1"), card->getScriptName());
-    KnobDouble* aspect = doubleKnob(card, kUSDCardParamAspect);
-    ASSERT_TRUE(aspect != NULL);
-    // The default follows the project format.
+    KnobDouble* scale = doubleKnob(card, kSceneParamScale);
+    ASSERT_TRUE(scale != NULL);
+    // The scale's X follows the project format.
     Format format;
     getApp()->getProject()->getProjectDefaultFormat(&format);
     ASSERT_GT(format.height(), 0);
-    EXPECT_DOUBLE_EQ(format.width() * format.getPixelAspectRatio() / format.height(), aspect->getValue());
+    EXPECT_DOUBLE_EQ(format.width() * format.getPixelAspectRatio() / format.height(), scale->getValue(0));
+    EXPECT_DOUBLE_EQ(1., scale->getValue(1));
+    EXPECT_DOUBLE_EQ(1., scale->getValue(2));
     EXPECT_EQ(8, intKnob(card, kUSDCardParamRows)->getValue());
     EXPECT_EQ(8, intKnob(card, kUSDCardParamColumns)->getValue());
     EXPECT_TRUE(boolKnob(card, kScenePrimitiveParamDoubleSided)->getValue());
@@ -220,22 +222,32 @@ TEST_F(USDPrimitivesTest, TheCardIsADoubleSidedMeshAtItsScriptNameWithSt)
     PXR_NS::UsdStageRefPtr stage = compose(card);
     ASSERT_TRUE(bool(stage));
     const PXR_NS::UsdGeomMesh mesh = meshOf(stage, card);
-    expectMeshMatches(mesh, PrimitiveMeshes::buildCard(aspect->getValue(), 1., 8, 8, SceneMetadata::eUpAxisY));
+    expectMeshMatches(mesh, PrimitiveMeshes::buildCard(1., 1., 8, 8, SceneMetadata::eUpAxisY));
     EXPECT_EQ((std::size_t)64, mesh.GetFaceCount());
     bool doubleSided = false;
     ASSERT_TRUE(mesh.GetDoubleSidedAttr().Get(&doubleSided));
     EXPECT_TRUE(doubleSided);
 }
 
-TEST_F(USDPrimitivesTest, AspectSetsTheCardWidthAtUnitHeight)
+TEST_F(USDPrimitivesTest, ANewCardInA2To1ProjectIsTwoByOneInTheWorld)
 {
+    ProjectPtr project = getApp()->getProject();
+    project->setAutoSetProjectFormatEnabled(true);
+    project->setOrAddProjectFormat(Format(0, 0, 2000, 1000, "wide2to1", 1.));
     NodePtr card = primitive(PLUGINID_NATRON_USDCARD);
     ASSERT_TRUE(bool(card));
-    doubleKnob(card, kUSDCardParamAspect)->setValue(2.);
+    EXPECT_DOUBLE_EQ(2., doubleKnob(card, kSceneParamScale)->getValue(0));
 
     PXR_NS::UsdStageRefPtr stage = compose(card);
     ASSERT_TRUE(bool(stage));
-    const PXR_NS::GfRange3d extent = extentOf(meshOf(stage, card));
+    const PXR_NS::UsdGeomMesh mesh = meshOf(stage, card);
+    const PXR_NS::GfRange3d local = extentOf(mesh);
+    EXPECT_NEAR(1., local.GetSize()[0], 1e-6);
+    EXPECT_NEAR(1., local.GetSize()[1], 1e-6);
+    EXPECT_NEAR(0., local.GetSize()[2], 1e-6);
+
+    const PXR_NS::GfMatrix4d world = mesh.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode::Default());
+    const PXR_NS::GfRange3d extent = PXR_NS::GfBBox3d(local, world).ComputeAlignedRange();
     EXPECT_NEAR(2., extent.GetSize()[0], 1e-6);
     EXPECT_NEAR(1., extent.GetSize()[1], 1e-6);
     EXPECT_NEAR(0., extent.GetSize()[2], 1e-6);
@@ -268,11 +280,11 @@ TEST_F(USDPrimitivesTest, EachPrimitiveComposesAMeshOfItsType)
     ASSERT_TRUE(meshOf(stage, sphere).GetDoubleSidedAttr().Get(&doubleSided));
     EXPECT_FALSE(doubleSided);
 
-    const int unitSegments[3] = { 1, 1, 1 };
+    const int unitSegments[3] = { 2, 2, 2 };
     stage = compose(cube);
     ASSERT_TRUE(bool(stage));
     expectMeshMatches(meshOf(stage, cube), PrimitiveMeshes::buildCube(PXR_NS::GfVec3d(1.), unitSegments, SceneMetadata::eUpAxisY));
-    EXPECT_EQ((std::size_t)6, meshOf(stage, cube).GetFaceCount());
+    EXPECT_EQ((std::size_t)24, meshOf(stage, cube).GetFaceCount());
 
     stage = compose(cylinder);
     ASSERT_TRUE(bool(stage));
@@ -418,7 +430,7 @@ TEST_F(USDPrimitivesTest, ZUpTurnsTheShapesToTheProjectAxes)
     NodePtr card = primitive(PLUGINID_NATRON_USDCARD);
     NodePtr cylinder = primitive(PLUGINID_NATRON_USDCYLINDER);
     ASSERT_TRUE(card && cylinder);
-    doubleKnob(card, kUSDCardParamAspect)->setValue(2.);
+    doubleKnob(card, kSceneParamScale)->setValue(2., ViewSpec::all(), 0);
 
     PXR_NS::UsdStageRefPtr stage = compose(card);
     ASSERT_TRUE(bool(stage));
@@ -426,7 +438,9 @@ TEST_F(USDPrimitivesTest, ZUpTurnsTheShapesToTheProjectAxes)
     EXPECT_TRUE(stage->GetMetadata(PXR_NS::UsdGeomTokens->upAxis, &upAxis));
     EXPECT_EQ(PXR_NS::UsdGeomTokens->z, upAxis);
     // Upright in X and Z, facing -Y, towards the default Z-up eye.
-    const PXR_NS::GfRange3d cardExtent = extentOf(meshOf(stage, card));
+    const PXR_NS::GfRange3d cardExtent = PXR_NS::GfBBox3d(extentOf(meshOf(stage, card)),
+                                                          meshOf(stage, card).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode::Default()))
+                                             .ComputeAlignedRange();
     EXPECT_NEAR(2., cardExtent.GetSize()[0], 1e-6);
     EXPECT_NEAR(0., cardExtent.GetSize()[1], 1e-6);
     EXPECT_NEAR(1., cardExtent.GetSize()[2], 1e-6);

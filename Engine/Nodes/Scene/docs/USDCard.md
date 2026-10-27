@@ -1,10 +1,12 @@
 # USDCard
 
 Defines a `Mesh` at Prim Path (default `/` and the node's name, such as
-`/USDCard1`, following renames until the path is edited). A card one unit high and Aspect wide, centred on the origin and
+`/USDCard1`, following renames until the path is edited). A unit card (1 by 1), centred on the origin and
 facing the forward axis (+Z with Y up, -Y with Z up), divided into Rows by
-Columns quads. Aspect defaults to the project format's width, times its pixel
-aspect, over its height, read when the node is created. `st` runs from (0, 0) at
+Columns quads. The mesh is always the unit card; the width comes from the
+transform: a new card's Scale X is the project format's width, times its pixel
+aspect, over its height, read when the node is created, so it starts at the
+format's proportions. `st` runs from (0, 0) at
 the bottom left to (1, 1) at the top right as seen from the front, so an image
 textured on it shows the right way round.
 
@@ -15,10 +17,8 @@ faceVarying, so edges stay hard where the shape has them, and texture coordinate
 as an indexed faceVarying `st` primvar. The subdivision scheme is `none`. Double
 Sided sets the mesh's `doubleSided`, on by default so the back is visible.
 
-Rows, Columns and the other segment counts are not animatable, so the topology is
-the same on every frame. A size knob that is not animated authors default
-`points` and `extent`; an animated one authors a time sample of each at every
-frame of the project range, as in USDCamera.
+Rows and Columns are not animatable, so the topology is the same on every frame,
+and the points and extent are authored as defaults.
 
 The transform is translate, rotate in the chosen order (degrees) and scale (scale
 x Uniform Scale) about Pivot, authored as one `xformOp:transform` matrix op on the

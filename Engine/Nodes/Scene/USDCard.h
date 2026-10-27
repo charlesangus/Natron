@@ -38,15 +38,15 @@
 
 #define PLUGINID_NATRON_USDCARD "USDCard"
 
-#define kUSDCardParamAspect "aspect"
 #define kUSDCardParamRows "rows"
 #define kUSDCardParamColumns "columns"
 
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief A card: a quad mesh one unit high and Aspect wide, facing the project's forward axis,
- * divided into rows and columns. Double sided by default.
+ * @brief A card: a unit quad mesh, facing the project's forward axis,
+ * divided into rows and columns. Double sided by default. The scale X of a new card is the
+ * project format's aspect, so it starts at the format's proportions.
  **/
 class USDCard
     : public ScenePrimitiveNode {
@@ -54,9 +54,9 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDCARD,
         .label = "USDCard",
-        .description = "Create a scene holding a card: a mesh one unit high and Aspect wide, facing the forward axis "
-                       "(+Z when Y is up, -Y when Z is up), with texture coordinates spanning it. Aspect defaults to "
-                       "the project format's. Texture it through a USDMaterial on its Material input. Animated knobs "
+        .description = "Create a scene holding a card: a unit mesh facing the forward axis "
+                       "(+Z when Y is up, -Y when Z is up), with texture coordinates spanning it. Scale X of a new "
+                       "card is the project format's aspect. Texture it through a USDMaterial on its Material input. Animated knobs "
                        "are written as time samples.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
@@ -80,6 +80,7 @@ private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string getFallbackPrimName() const OVERRIDE FINAL;
     virtual void initializeShapeKnobs(const KnobPagePtr& page) OVERRIDE FINAL;
+    virtual void initializeTransformDefaults(const SceneTransformKnobs& transform) OVERRIDE FINAL;
     virtual bool isShapeAnimated() const OVERRIDE FINAL;
     virtual bool buildMesh(double frame,
                            SceneMetadata::UpAxisEnum upAxis,
@@ -89,7 +90,6 @@ private:
         return true;
     }
 
-    KnobDoubleWPtr _aspect;
     KnobIntWPtr _rows;
     KnobIntWPtr _columns;
 };

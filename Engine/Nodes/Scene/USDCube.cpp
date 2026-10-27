@@ -61,7 +61,7 @@ USDCube::initializeShapeKnobs(const KnobPagePtr& page)
     _size = createSizeKnob(page, tr("Size"), kUSDCubeParamSize, tr("The cube's size along the X, Y and Z axes, in scene units."), 1., 3);
     _subdivisions = createSegmentsKnob(page, tr("Subdivisions"), kUSDCubeParamSubdivisions,
                                        tr("The number of faces along the X, Y and Z axes, on every side the axis crosses."),
-                                       1, PrimitiveMeshes::kCubeMinSegments, 3);
+                                       2, PrimitiveMeshes::kCubeMinSegments, 3);
 }
 
 bool

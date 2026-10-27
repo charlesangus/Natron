@@ -92,6 +92,11 @@ protected:
                            PrimitiveMesh* mesh) const
         = 0;
 
+    // Called once the transform knobs exist, for a type whose default scale is not 1.
+    virtual void initializeTransformDefaults(const SceneTransformKnobs& /*transform*/)
+    {
+    }
+
     virtual bool getDefaultDoubleSided() const
     {
         return false;

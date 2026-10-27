@@ -4,7 +4,7 @@ Defines a `Mesh` at Prim Path (default `/` and the node's name, such as
 `/USDCube1`, following renames until the path is edited). A box of Size along X, Y and Z (default 1 each, so -0.5 to 0.5)
 centred on the origin. Size and Subdivisions are along the scene's axes whatever
 the Up Axis. Each face is divided by the Subdivisions of the two axes it spans
-(at least 1, default 1); faces share their edge points, so the mesh is closed.
+(at least 1, default 2); faces share their edge points, so the mesh is closed.
 Every face carries the whole [0, 1] `st` square, upright as seen from outside
 (the top and bottom faces upright as seen from the front).
 

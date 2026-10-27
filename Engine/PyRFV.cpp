@@ -278,7 +278,7 @@ namespace {
         const ExpressionEntry* entry = t_expressions.empty() ? NULL : &t_expressions.back();
         const KnobHolder* holder = (entry && entry->knob) ? entry->knob->getHolder() : NULL;
         const EffectInstance* effect = dynamic_cast<const EffectInstance*>(holder);
-        if (effect && effect->getParallelRenderArgsTLS()) {
+        if (effect && effect->isRenderingTLS()) {
             return effect->getCurrentRenderContext();
         }
         if (!t_evaluatingVariables.empty()) {
@@ -457,7 +457,7 @@ getVariable(const std::string& name)
     // of a project variable read for a render reads under that render's context.
     RenderContextPtr context;
     const bool acting = ActionContextScope::current(&context);
-    const ParallelRenderArgsPtr frameArgs = effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = (effect && effect->isRenderingTLS()) ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
     if (!acting) {
         if (frameArgs) {
             context = effect->getCurrentRenderContext();

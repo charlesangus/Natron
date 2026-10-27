@@ -7856,7 +7856,7 @@ KnobHelper::getExpressionContextKey(U64* key,
     RenderContextPtr current = effect ? effect->getCurrentRenderContext() : PyRFV::getProjectExpressionContext();
     // Outside a render, loop and loops read the enclosing loops' preview iteration: one result per
     // preview, so that changing it is seen.
-    if (!current && effect && !effect->getParallelRenderArgsTLS() && readsLoopVariables(reads)) {
+    if (!current && effect && !effect->isRenderingTLS() && readsLoopVariables(reads)) {
         current = PyRFV::getLoopPreviewContext(this);
     }
     if (current && !current->isEmpty()) {

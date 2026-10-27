@@ -232,6 +232,10 @@ public:
     ///Was the render started in the instanceChangedAction (knobChanged)
     bool isAnalysis : 1;
 
+    /// Installed only for the node's own instance-changed action: no render is running, so code
+    /// that reads a render's state (its context, its time) reads as it would outside one.
+    bool isInstanceChangedAction : 1;
+
     ///If true, the attached paint stroke is being drawn currently
     bool isDuringPaintStrokeCreation : 1;
 

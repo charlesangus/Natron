@@ -3,12 +3,14 @@
 # A name that matches no registered test would make set_tests_properties() skip it silently, so
 # each one is checked against the names the registrations recorded in NATRON_GTEST_SUITE_TESTS.
 
-# Each suite below asserts wall-clock bounds of a few seconds or less. Under `ctest -j` the other
-# suites' render threads compete for the same cores and can push them past it, so they run alone.
+# Each suite below asserts wall-clock bounds of a few seconds or less, or ratios between timings.
+# Under `ctest -j` the other suites' render threads compete for the same cores and can push them
+# past it, so they run alone.
 set(_natron_serial_suites
     RenderSchedulerAbortTiming
     GraphScalingTiming
     StagedImageEffectTiming
+    BezierEditScalingTiming
 )
 
 # Suites whose cases add up to more than the default 300 s, at three times the slower of the

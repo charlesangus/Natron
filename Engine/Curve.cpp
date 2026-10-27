@@ -910,6 +910,37 @@ Curve::getPreviousKeyframeTime(double time,
     }
 }
 
+void
+Curve::getKeyFrameTimesAround(double time,
+                              int reach,
+                              double* before,
+                              double* after) const
+{
+    assert(reach > 0);
+    *before = -std::numeric_limits<double>::infinity();
+    *after = std::numeric_limits<double>::infinity();
+
+    QMutexLocker l(&_imp->_lock);
+    const KeyFrameSet& keys = _imp->keyFrames;
+    const KeyFrame probe(time, 0.);
+    KeyFrameSet::const_iterator lo = keys.lower_bound(probe);
+    int n = 0;
+    while ((n < reach) && (lo != keys.begin())) {
+        --lo;
+        ++n;
+    }
+    if (n == reach) {
+        *before = lo->getTime();
+    }
+    KeyFrameSet::const_iterator hi = keys.upper_bound(probe);
+    for (n = 1; (n < reach) && (hi != keys.end()); ++n) {
+        ++hi;
+    }
+    if (hi != keys.end()) {
+        *after = hi->getTime();
+    }
+}
+
 bool
 Curve::getNextKeyframeTime(double time,
                            KeyFrame* k) const

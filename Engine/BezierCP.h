@@ -132,10 +132,9 @@ public:
     void getKeyframeTimes(bool useGuiCurves, std::set<double>* times) const;
 
     /**
-     * @brief The times of the keyframes just before and just after time, or -infinity and
-     * +infinity where there is none.
+     * @brief See Curve::getKeyFrameTimesAround().
      **/
-    void getKeyframeTimesAround(bool useGuiCurves, double time, double* before, double* after) const;
+    void getKeyframeTimesAround(bool useGuiCurves, double time, int reach, double* before, double* after) const;
 
     void getKeyFrames(bool useGuiCurves, std::list<std::pair<double, KeyframeTypeEnum> >* keys) const;
 

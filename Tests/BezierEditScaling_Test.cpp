@@ -50,14 +50,29 @@ namespace {
 const double kTwoPi = 6.283185307179586;
 const int kScalingPoints = 24;
 const int kScalingKeyCounts[] = { 25, 50, 100, 200 };
+const int kScalingRuns = 5;
+
+// Linear keying doubles the total from 100 to 200 keys and the old quadratic one quadrupled it;
+// the margins leave room for a noisy shared runner.
+const double kMaxTotalRatio100To200 = 2.6;
+const double kMaxPerEditRatio200To25 = 2.;
 
 typedef std::chrono::steady_clock Clock;
 
+double
+median(std::vector<double> values)
+{
+    std::sort(values.begin(), values.end());
+
+    return values[values.size() / 2];
+}
+
 } // namespace
 
-// Not a pass/fail check on timing: prints how the cost of keying a shape grows with its keyframe
-// count, so a per-edit cost that grows with points x keys shows up as a slope of about 2.
-class BezierEditScalingTest
+// Times keying a shape at growing keyframe counts and checks that the cost grows linearly with
+// the count: the ratios between counts are compared, never absolute times, each the median of
+// several runs. Runs alone (see SuiteProperties.cmake) so other suites do not skew one count.
+class BezierEditScalingTiming
     : public BaseTest {
 protected:
     RotoContextPtr createRotoContext()
@@ -89,8 +104,8 @@ protected:
         return shape;
     }
 
-    // Keys every point and its feather point at frames 1..keyCount. Each setPointAtIndex() call
-    // that `perEditMs` is given is timed into it.
+    // Keys every point and its feather point at frames 1..keyCount, timing each setPointAtIndex()
+    // call into perEditMs.
     void keyShape(const BezierPtr& shape,
                   int keyCount,
                   std::vector<double>* perEditMs)
@@ -112,16 +127,14 @@ protected:
                     const double fy = cy + (y - cy) * grow;
                     const Clock::time_point start = Clock::now();
                     shape->setPointAtIndex(feather != 0, i, time, fx, fy, fx - tx, fy - ty, fx + tx, fy + ty);
-                    if (perEditMs) {
-                        perEditMs->push_back(std::chrono::duration<double, std::milli>(Clock::now() - start).count());
-                    }
+                    perEditMs->push_back(std::chrono::duration<double, std::milli>(Clock::now() - start).count());
                 }
             }
         }
     }
 };
 
-TEST_F(BezierEditScalingTest, KeyingCostAgainstKeyframeCount)
+TEST_F(BezierEditScalingTiming, KeyingCostIsLinearInKeyframeCount)
 {
     getApp()->getProject()->reset(false, true);
 
@@ -131,37 +144,43 @@ TEST_F(BezierEditScalingTest, KeyingCostAgainstKeyframeCount)
     context->setRippleEditEnabled(false);
 
     const int rows = sizeof(kScalingKeyCounts) / sizeof(kScalingKeyCounts[0]);
-    std::vector<double> totalsMs;
-    std::vector<double> lastPerEditMs;
-    for (int r = 0; r < rows; ++r) {
-        const int keyCount = kScalingKeyCounts[r];
-        BezierPtr shape = makeShape(context);
-        ASSERT_TRUE(bool(shape));
-        ASSERT_EQ(kScalingPoints, shape->getControlPointsCount());
-        ASSERT_EQ(shape->getControlPoints().size(), shape->getFeatherPoints().size());
+    // Per row, the total build time and the median edit time of each run.
+    std::vector<std::vector<double>> totalsMs(rows);
+    std::vector<std::vector<double>> perEditMedianMs(rows);
+    for (int run = 0; run < kScalingRuns; ++run) {
+        for (int r = 0; r < rows; ++r) {
+            const int keyCount = kScalingKeyCounts[r];
+            BezierPtr shape = makeShape(context);
+            ASSERT_TRUE(bool(shape));
+            ASSERT_EQ(kScalingPoints, shape->getControlPointsCount());
+            ASSERT_EQ(shape->getControlPoints().size(), shape->getFeatherPoints().size());
 
-        std::vector<double>* perEdit = (r == rows - 1) ? &lastPerEditMs : NULL;
-        const Clock::time_point start = Clock::now();
-        keyShape(shape, keyCount, perEdit);
-        const double totalMs = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
-        totalsMs.push_back(totalMs);
-        EXPECT_EQ(keyCount, shape->getKeyframesCount());
+            std::vector<double> perEdit;
+            perEdit.reserve(keyCount * kScalingPoints * 2);
+            const Clock::time_point start = Clock::now();
+            keyShape(shape, keyCount, &perEdit);
+            totalsMs[r].push_back(std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+            perEditMedianMs[r].push_back(median(perEdit));
+            EXPECT_EQ(keyCount, shape->getKeyframesCount());
 
-        std::printf("[ BezierEditScaling ] %d points x %d keys: %.3f ms\n", kScalingPoints, keyCount, totalMs);
-        context->removeItem(shape);
+            context->removeItem(shape);
+        }
     }
 
-    ASSERT_FALSE(lastPerEditMs.empty());
-    std::vector<double> sorted = lastPerEditMs;
-    std::sort(sorted.begin(), sorted.end());
-    std::printf("[ BezierEditScaling ] median setPointAtIndex at %d keys: %.4f ms over %d edits\n",
-                kScalingKeyCounts[rows - 1], sorted[sorted.size() / 2], (int)sorted.size());
+    std::vector<double> total(rows);
+    std::vector<double> perEdit(rows);
+    for (int r = 0; r < rows; ++r) {
+        total[r] = median(totalsMs[r]);
+        perEdit[r] = median(perEditMedianMs[r]);
+        std::printf("[ BezierEditScaling ] %d points x %d keys: %.3f ms, median setPointAtIndex %.4f ms (median of %d runs)\n",
+                    kScalingPoints, kScalingKeyCounts[r], total[r], perEdit[r], kScalingRuns);
+    }
 
     // Least-squares slope of log(total) against log(keys).
     double sx = 0., sy = 0., sxx = 0., sxy = 0.;
     for (int r = 0; r < rows; ++r) {
         const double lx = std::log((double)kScalingKeyCounts[r]);
-        const double ly = std::log(std::max(totalsMs[r], 1e-9));
+        const double ly = std::log(std::max(total[r], 1e-9));
         sx += lx;
         sy += ly;
         sxx += lx * lx;
@@ -169,6 +188,27 @@ TEST_F(BezierEditScalingTest, KeyingCostAgainstKeyframeCount)
     }
     const double slope = (rows * sxy - sx * sy) / (rows * sxx - sx * sx);
     std::printf("[ BezierEditScaling ] log-log slope of total time against keys: %.3f\n", slope);
+
+    int row25 = -1, row100 = -1, row200 = -1;
+    for (int r = 0; r < rows; ++r) {
+        if (kScalingKeyCounts[r] == 25) {
+            row25 = r;
+        } else if (kScalingKeyCounts[r] == 100) {
+            row100 = r;
+        } else if (kScalingKeyCounts[r] == 200) {
+            row200 = r;
+        }
+    }
+    ASSERT_TRUE(row25 >= 0 && row100 >= 0 && row200 >= 0);
+    const double totalRatio = total[row200] / std::max(total[row100], 1e-9);
+    const double perEditRatio = perEdit[row200] / std::max(perEdit[row25], 1e-9);
+    std::printf("[ BezierEditScaling ] total 200/100 keys: %.3f (max %.2f), setPointAtIndex 200/25 keys: %.3f (max %.2f)\n",
+                totalRatio, kMaxTotalRatio100To200, perEditRatio, kMaxPerEditRatio200To25);
+
+#ifdef NDEBUG
+    EXPECT_LE(totalRatio, kMaxTotalRatio100To200) << "keying no longer scales linearly with the keyframe count";
+    EXPECT_LE(perEditRatio, kMaxPerEditRatio200To25) << "a single edit's cost grows with the keyframe count";
+#endif
 
     getApp()->getProject()->reset(false, true);
 }

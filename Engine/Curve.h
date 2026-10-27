@@ -271,6 +271,12 @@ public:
      **/
     bool getNextKeyframeTime(double time, KeyFrame* k) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The time of the reach-th keyframe strictly before time and of the reach-th one
+     * strictly after it, or -infinity and +infinity where there are fewer keyframes than reach.
+     **/
+    void getKeyFrameTimesAround(double time, int reach, double* before, double* after) const;
+
     bool getKeyFrameWithTime(double time, KeyFrame* k) const WARN_UNUSED_RETURN;
 
     /*

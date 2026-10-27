@@ -399,13 +399,15 @@ struct BezierPrivate
     BezierCPs points; //< the control points of the curve
     BezierCPs featherPoints; //< the feather points, the number of feather points must equal the number of cp.
 
-    //updated whenever the Bezier is edited, this is used to determine if a point lies inside the bezier or not
-    //it has a value for each keyframe
+    // Orientation of the feather polygon, computed on first read at a time and erased by the
+    // edits that reshape the polygon there; the static value is for a shape with no keyframes.
     mutable std::map<double, bool> isClockwiseOriented;
-    mutable bool isClockwiseOrientedStatic; //< used when the bezier has no keyframes
+    mutable bool isClockwiseOrientedStatic;
+    mutable bool isClockwiseOrientedStaticDirty;
     mutable std::map<double, bool> guiIsClockwiseOriented;
-    mutable bool guiIsClockwiseOrientedStatic; //< used when the bezier has no keyframes
-    bool autoRecomputeOrientation; // when true, orientation will be computed automatically on editing
+    mutable bool guiIsClockwiseOrientedStatic;
+    mutable bool guiIsClockwiseOrientedStaticDirty;
+    bool autoRecomputeOrientation; // when false, edits leave the orientation cache alone
     bool finished; //< when finished is true, the last point of the list is connected to the first point of the list.
     bool isOpenBezier;
     mutable QMutex guiCopyMutex;
@@ -420,8 +422,10 @@ struct BezierPrivate
         , featherPoints()
         , isClockwiseOriented()
         , isClockwiseOrientedStatic(false)
+        , isClockwiseOrientedStaticDirty(true)
         , guiIsClockwiseOriented()
         , guiIsClockwiseOrientedStatic(false)
+        , guiIsClockwiseOrientedStaticDirty(true)
         , autoRecomputeOrientation(true)
         , finished(false)
         , isOpenBezier(isOpenBezier)

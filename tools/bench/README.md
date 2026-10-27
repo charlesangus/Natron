@@ -333,4 +333,5 @@ tools/ci/local/devshell.sh bash -lc "cd $PWD && BENCH_BEZIER_HEAVY=1 BENCH_LABEL
 Run both with a build from before the incremental GUI copy (`BENCH_LABEL=before`) and one from
 after (`BENCH_LABEL=after`). The record keeps nothing about the machine: note the host with the
 numbers. `Tests/BezierEditScaling_Test.cpp` prints the same single-shape figures from the engine
-directly, without the Python binding's overhead.
+directly, without the Python binding's overhead, and fails a release build when keying stops
+scaling linearly with the keyframe count.

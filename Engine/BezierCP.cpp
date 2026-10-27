@@ -495,14 +495,13 @@ BezierCP::getKeyframeTimes(bool useGuiCurves,
 void
 BezierCP::getKeyframeTimesAround(bool useGuiCurves,
                                  double time,
+                                 int reach,
                                  double* before,
                                  double* after) const
 {
     const Curve* curve = useGuiCurves ? _imp->guiCurveX.get() : _imp->curveX.get();
-    KeyFrame k;
 
-    *before = curve->getPreviousKeyframeTime(time, &k) ? k.getTime() : -std::numeric_limits<double>::infinity();
-    *after = curve->getNextKeyframeTime(time, &k) ? k.getTime() : std::numeric_limits<double>::infinity();
+    curve->getKeyFrameTimesAround(time, reach, before, after);
 }
 
 void

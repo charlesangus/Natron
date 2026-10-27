@@ -64,6 +64,7 @@
 #include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
 #include "Engine/Settings.h"
@@ -602,7 +603,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         }
         task.estimatedBytes = estimateBytes(task.renderedRoI, task.components, task.bitdepth);
 
-        if (!task.isIdentity) {
+        if (!task.isIdentity && !renderContextHasLoopVariables(nodeRequest->second->context)) {
             if (frameArgs && frameArgs->frameVaryingComputed && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
                 task.sharesCachedOutput = true;
                 task.nodeHash = nodeRequest->second->nodeHash;

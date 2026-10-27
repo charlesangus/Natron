@@ -1073,6 +1073,9 @@ visitRequestPassItem(bool useTransforms,
     }
 
     // Nodes the effect renders under a context it names, such as its own output under another one.
+    // Walked before the inputs, so a chain of a node over its own earlier outputs runs from its first
+    // link and each input is rendered just before the link that consumes it.
+    std::vector<RequestPassItem> contextItems;
     std::vector<EffectInstance::ContextNodeRequest> contextRequests;
     effect->getContextNodeRequests(time, view, item.context, canonicalRenderWindow, &contextRequests);
     for (const EffectInstance::ContextNodeRequest& contextRequest : contextRequests) {
@@ -1090,12 +1093,13 @@ visitRequestPassItem(bool useTransforms,
         if (comps.empty()) {
             comps.push_back(ImageLayerDesc::getRGBAComponents());
         }
-        inputItems.push_back(visit);
+        contextItems.push_back(visit);
         RequestPassItem consumerItem = makeConsumerItem(RequestPassItem::eKindInputEdge, fvRequest, contextRequest.node, visit.contextKey, contextRequest.time, contextRequest.view, upstreamMipmapLevel,
                                                         FrameViewRequest::TaskEdge::kContextRequestInputNb);
         consumerItem.comps = std::make_shared<std::list<ImageLayerDesc>>(std::move(comps));
-        inputItems.push_back(consumerItem);
+        contextItems.push_back(consumerItem);
     }
+    inputItems.insert(inputItems.begin(), std::make_move_iterator(contextItems.begin()), std::make_move_iterator(contextItems.end()));
 
     fvRequest->walking = true;
     stack->push_back(makeConsumerItem(RequestPassItem::eKindFinish, fvRequest, NodePtr(), item.contextKey, time, view, originalMipmapLevel, -1));

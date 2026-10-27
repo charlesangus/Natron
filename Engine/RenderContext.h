@@ -61,6 +61,8 @@ struct RenderContextName {
     static RenderContextName loop(const std::string& name);
     static RenderContextName loops(const std::string& loopName,
                                    const std::string& name);
+    // Set by a loop's end on its own output, never seen by the loop body.
+    static RenderContextName loopFold(const std::string& name);
 
     bool operator<(const RenderContextName& other) const
     {
@@ -265,6 +267,12 @@ private:
  **/
 U64 mixRenderContextKey(U64 hash,
                         U64 contextKey);
+
+/**
+ * @brief Whether context sets a loop variable (loop.*, loops.<name>.* or a loop fold's): an output
+ * rendered under one is a single iteration or fold step, which the image cache would only fill.
+ **/
+bool renderContextHasLoopVariables(const RenderContextPtr& context);
 
 NATRON_NAMESPACE_EXIT
 

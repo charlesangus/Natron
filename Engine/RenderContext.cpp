@@ -154,6 +154,28 @@ RenderContextName::loops(const std::string& loopName,
     return RenderContextName("loops." + loopName, name);
 }
 
+RenderContextName
+RenderContextName::loopFold(const std::string& name)
+{
+    return RenderContextName("loopFold", name);
+}
+
+bool
+renderContextHasLoopVariables(const RenderContextPtr& context)
+{
+    if (!context) {
+        return false;
+    }
+    for (const RenderContext::Entry& entry : context->entries()) {
+        const std::string& ns = entry.first.ns;
+        if ((ns == "loop") || (ns == "loopFold") || (ns.compare(0, 6, "loops.") == 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool
 renderContextValuesEqual(const RenderContextValue& a,
                          const RenderContextValue& b)

@@ -33,11 +33,13 @@
 
 #include <QtCore/QString>
 
+#include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -118,39 +120,53 @@ collectPairedEnds(const NodePtr& begin,
     }
 }
 
-double
-foldInit(LoopEnd::OperationEnum operation)
+RenderContextName
+foldStepName()
 {
-    switch (operation) {
-    case LoopEnd::eOperationMin:
-        return std::numeric_limits<double>::infinity();
-    case LoopEnd::eOperationMax:
-        return -std::numeric_limits<double>::infinity();
-    case LoopEnd::eOperationMean:
-    case LoopEnd::eOperationSum:
-        break;
-    }
-
-    return 0.;
+    return RenderContextName::loopFold("step");
 }
 
-inline void
-foldInto(LoopEnd::OperationEnum operation,
-         double value,
-         double* acc)
+// The fold step context renders, count - 1 (the whole fold) when it sets none.
+int
+foldStepOf(const RenderContextPtr& context,
+           int count)
 {
-    switch (operation) {
-    case LoopEnd::eOperationMin:
-        *acc = std::min(*acc, value);
-        break;
-    case LoopEnd::eOperationMax:
-        *acc = std::max(*acc, value);
-        break;
-    case LoopEnd::eOperationMean:
-    case LoopEnd::eOperationSum:
-        *acc += value;
-        break;
+    const RenderContextValue* value = context ? context->find(foldStepName()) : 0;
+    const std::int64_t* step = value ? std::get_if<std::int64_t>(value) : 0;
+
+    if (!step || (*step < 0) || (*step >= count)) {
+        return count - 1;
     }
+
+    return (int)*step;
+}
+
+RenderContextPtr
+withFoldStep(const RenderContextPtr& context,
+             int step)
+{
+    return RenderContext::Builder(context).set(foldStepName(), (std::int64_t)step).build();
+}
+
+// Only the task-graph scheduler runs the steps as tasks; elsewhere one render folds them all.
+bool
+foldsAsTasks()
+{
+    return appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
+}
+
+int
+alphaIndexOf(const ImageLayerDesc& layer)
+{
+    const std::vector<std::string>& channels = layer.getChannels();
+
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        if (channels[i] == "A") {
+            return (int)i;
+        }
+    }
+
+    return -1;
 }
 } // anonymous namespace
 
@@ -220,11 +236,21 @@ LoopEnd::initializeKnobs()
         options.push_back(ChoiceOption(kLoopEndParamOperationSum, tr("Sum").toStdString(), tr("The sum of the iterations.").toStdString()));
         options.push_back(ChoiceOption(kLoopEndParamOperationMin, tr("Min").toStdString(), tr("The smallest value any iteration has.").toStdString()));
         options.push_back(ChoiceOption(kLoopEndParamOperationMax, tr("Max").toStdString(), tr("The largest value any iteration has.").toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamOperationOver, tr("Over").toStdString(), tr("Each iteration over the ones before it.").toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamOperationUnder, tr("Under").toStdString(), tr("Each iteration under the ones before it.").toStdString()));
         operation->populateChoices(options);
     }
-    operation->setDefaultValue((int)eOperationMean);
+    operation->setDefaultValue((int)LoopFold::eOperationMean);
     page->addKnob(operation);
     _operation = operation;
+
+    KnobBoolPtr reverseOrder = createKnob<KnobBool>(tr("Reverse Order"));
+    reverseOrder->setName(kLoopEndParamReverseOrder);
+    reverseOrder->setAnimationEnabled(false);
+    reverseOrder->setHintToolTip(tr("Folds the iterations from the last to the first, so with Over the first iteration ends on top."));
+    reverseOrder->setDefaultValue(false);
+    page->addKnob(reverseOrder);
+    _reverseOrder = reverseOrder;
 
     KnobIntPtr iterations = createKnob<KnobInt>(tr("Iterations"));
     iterations->setName(kLoopEndParamIterations);
@@ -410,6 +436,16 @@ LoopEnd::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const
 }
 
 RenderContextReadSet
+LoopEnd::getExtraContextReads() const
+{
+    RenderContextReadSet reads;
+
+    reads.add(foldStepName());
+
+    return reads;
+}
+
+RenderContextReadSet
 LoopEnd::getOverriddenContextVariables(int inputNb) const
 {
     RenderContextReadSet overridden;
@@ -417,6 +453,7 @@ LoopEnd::getOverriddenContextVariables(int inputNb) const
     if (inputNb != 0) {
         return overridden;
     }
+    overridden.add(foldStepName());
     for (const char* variable : kLoopVariables) {
         overridden.add(RenderContextName::loop(variable));
     }
@@ -428,6 +465,32 @@ LoopEnd::getOverriddenContextVariables(int inputNb) const
     }
 
     return overridden;
+}
+
+std::vector<RenderContextPtr>
+LoopEnd::iterationContexts(const Resolved& resolved,
+                           const RenderContextPtr& context,
+                           double time) const
+{
+    std::vector<RenderContextPtr> contexts;
+    // The body never sees this loop's fold step, nor an enclosing loop's.
+    const RenderContextPtr base = RenderContext::Builder(context).erase(foldStepName()).build();
+
+    contexts.reserve(resolved.count);
+    for (int k = 0; k < resolved.count; ++k) {
+        contexts.push_back(iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, time));
+    }
+
+    return contexts;
+}
+
+int
+LoopEnd::iterationOfStep(int k,
+                         int count) const
+{
+    KnobBoolPtr reverseOrder = _reverseOrder.lock();
+
+    return (reverseOrder && reverseOrder->getValue()) ? count - 1 - k : k;
 }
 
 bool
@@ -444,13 +507,52 @@ LoopEnd::getInputContexts(int inputNb,
     if (!resolved.message.empty()) {
         return false;
     }
+    std::vector<RenderContextPtr> all = iterationContexts(resolved, context, time);
     contexts->clear();
-    contexts->reserve(resolved.count);
-    for (int k = 0; k < resolved.count; ++k) {
-        contexts->push_back(iterationContext(context, resolved.loopName, k, resolved.count, resolved.start, resolved.step, time));
+    if (foldsAsTasks()) {
+        // A fold step needs only the iteration it folds in.
+        contexts->push_back(all[iterationOfStep(foldStepOf(context, resolved.count), resolved.count)]);
+    } else {
+        contexts->swap(all);
     }
 
     return true;
+}
+
+void
+LoopEnd::getContextNodeRequests(double time,
+                                ViewIdx view,
+                                const RenderContextPtr& context,
+                                const RectD& roi,
+                                std::vector<ContextNodeRequest>* requests) const
+{
+    if (!foldsAsTasks()) {
+        return;
+    }
+    const Resolved resolved = resolve();
+    if (!resolved.message.empty()) {
+        return;
+    }
+    const int step = foldStepOf(context, resolved.count);
+    if (step <= 0) {
+        return;
+    }
+    ContextNodeRequest request;
+    request.node = getNode();
+    request.context = withFoldStep(context, step - 1);
+    request.time = time;
+    request.view = view;
+    request.roi = roi;
+    // The layer the step stores, which is the one the next step renders and looks up.
+    NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    if (metadata) {
+        ImageLayerDesc layer, pairedLayer;
+        getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
+        if (layer.getNumComponents() > 0) {
+            request.comps.push_back(layer);
+        }
+    }
+    requests->push_back(request);
 }
 
 StatusEnum
@@ -460,16 +562,25 @@ LoopEnd::getRegionOfDefinition(U64 hash,
                                ViewIdx view,
                                RectD* rod)
 {
-    std::vector<RenderContextPtr> contexts;
     EffectInstancePtr input = getInput(0);
+    const Resolved resolved = resolve();
 
-    if (!input || !getInputContexts(0, time, view, getCurrentRenderContext(), &contexts) || contexts.empty()) {
+    if (!input || !resolved.message.empty() || (resolved.count <= 0)) {
         return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
+    }
+    const RenderContextPtr context = getCurrentRenderContext();
+    if (context && context->find(foldStepName())) {
+        // Every step covers the whole fold's region, so a step's output holds the accumulator
+        // wherever the next one reads it. Asked once, under no step, and cached there.
+        ActionContextScope scope(true, RenderContext::Builder(context).erase(foldStepName()).build());
+        bool isProjectFormat = false;
+
+        return getRegionOfDefinition_public(getRenderHash(), time, scale, view, rod, &isProjectFormat);
     }
     // The union of the body's region over the iterations, each asked under its own context.
     bool first = true;
-    for (const RenderContextPtr& context : contexts) {
-        ActionContextScope scope(true, context);
+    for (const RenderContextPtr& iteration : iterationContexts(resolved, context, time)) {
+        ActionContextScope scope(true, iteration);
         RectD inputRod;
         bool isProjectFormat = false;
         const StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRod, &isProjectFormat);
@@ -487,16 +598,61 @@ LoopEnd::getRegionOfDefinition(U64 hash,
     return eStatusOK;
 }
 
+bool
+LoopEnd::takePreviousStep(const RenderActionArgs& args,
+                          const RenderContextPtr& context,
+                          int step,
+                          const ImageLayerDesc& layer,
+                          int nComps,
+                          float* acc)
+{
+    const EffectInstancePtr self = shared_from_this();
+    std::list<ImagePtr> images;
+    {
+        InputContextScope scope(this, withFoldStep(context, step - 1));
+        const InputContextArgs previous(this, self, -1, args.time, args.view);
+        if (!lookupFrameStore(self, args.time, args.view, args.mappedScale.toMipmapLevel(), std::list<ImageLayerDesc>(1, layer), args.roi, &images, &previous)) {
+            return false;
+        }
+    }
+    noteFrameStoreHit();
+    if ((images.size() != 1) || !frameStoreImagesMatch(images, eImageBitDepthFloat, eStorageModeRAM)) {
+        return false;
+    }
+    const ImagePtr& image = images.front();
+    if (((int)image->getComponentsCount() != nComps) || !image->getBounds().contains(args.roi)) {
+        return false;
+    }
+    const RectI& roi = args.roi;
+    const std::size_t rowSize = (std::size_t)roi.width() * nComps;
+    Image::ReadAccess access = image->getReadRights();
+    for (int y = roi.y1; y < roi.y2; ++y) {
+        const float* row = (const float*)access.pixelAt(roi.x1, y);
+        if (!row) {
+            return false;
+        }
+        std::copy(row, row + rowSize, acc + (std::size_t)(y - roi.y1) * rowSize);
+    }
+
+    return true;
+}
+
 StatusEnum
 LoopEnd::render(const RenderActionArgs& args)
 {
-    std::vector<RenderContextPtr> contexts;
+    const Resolved resolved = resolve();
 
-    if (!getInputContexts(0, args.time, args.view, getCurrentRenderContext(), &contexts) || contexts.empty()) {
+    if (!resolved.message.empty() || (resolved.count <= 0)) {
         return eStatusFailed;
     }
+    const RenderContextPtr context = getCurrentRenderContext();
+    const std::vector<RenderContextPtr> iterations = iterationContexts(resolved, context, args.time);
+    const int count = resolved.count;
+    const int step = foldStepOf(context, count);
+    // Outside a scheduler task there is no store to find the previous step in.
+    const bool chained = foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
     KnobChoicePtr operationKnob = _operation.lock();
-    const OperationEnum operation = operationKnob ? (OperationEnum)operationKnob->getValue() : eOperationMean;
+    const LoopFold::OperationEnum operation = operationKnob ? (LoopFold::OperationEnum)operationKnob->getValue() : LoopFold::eOperationMean;
     const RectI& roi = args.roi;
     const int width = roi.width();
     const int height = roi.height();
@@ -507,17 +663,24 @@ LoopEnd::render(const RenderActionArgs& args)
             return eStatusFailed;
         }
         const int nComps = (int)dst->getComponentsCount();
+        const int alphaIndex = alphaIndexOf(it->first);
         const std::size_t rowSize = (std::size_t)width * nComps;
-        std::vector<double> acc(rowSize * height, foldInit(operation));
+        std::vector<float> acc(rowSize * height, LoopFold::initialValue(operation));
 
+        // Without the previous step's output, the steps up to this one are folded here, in the
+        // same order and with the same arithmetic, so the result does not depend on which ran.
+        int first = 0;
+        if (chained && (step > 0) && takePreviousStep(args, context, step, it->first, nComps, acc.data())) {
+            first = step;
+        }
         // One iteration image at a time: each is folded in and released before the next is pulled.
-        for (const RenderContextPtr& context : contexts) {
+        for (int k = first; k <= step; ++k) {
             if (aborted()) {
                 return eStatusOK;
             }
             ImagePtr src;
             {
-                InputContextScope scope(this, context);
+                InputContextScope scope(this, iterations[iterationOfStep(k, count)]);
                 RectI inputRoI;
                 src = getImage(0, args.time, args.mappedScale, args.view, NULL, &it->first, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
             }
@@ -526,31 +689,23 @@ LoopEnd::render(const RenderActionArgs& args)
             const RectI covered = usable ? roi.intersect(src->getBounds()) : RectI();
             Image::ReadAccess access = usable ? src->getReadRights() : Image::ReadAccess(NULL);
             for (int y = roi.y1; y < roi.y2; ++y) {
-                double* accRow = &acc[(std::size_t)(y - roi.y1) * rowSize];
                 const bool rowCovered = !covered.isNull() && (y >= covered.y1) && (y < covered.y2);
-                const float* srcPix = rowCovered ? (const float*)access.pixelAt(covered.x1, y) : NULL;
-                for (int x = roi.x1; x < roi.x2; ++x) {
-                    const bool inside = srcPix && (x >= covered.x1) && (x < covered.x2);
-                    double* accPix = accRow + (std::size_t)(x - roi.x1) * nComps;
-                    for (int c = 0; c < nComps; ++c) {
-                        const double value = (inside && (c < srcComps)) ? (double)srcPix[(x - covered.x1) * srcComps + c] : 0.;
-                        foldInto(operation, value, &accPix[c]);
-                    }
-                }
+                const float* srcRow = rowCovered ? (const float*)access.pixelAt(covered.x1, y) : NULL;
+                LoopFold::foldRow(operation, srcRow, srcComps, covered.x1, covered.x2, &acc[(std::size_t)(y - roi.y1) * rowSize], nComps, alphaIndex, roi.x1, roi.x2);
             }
         }
+        if (step == count - 1) {
+            LoopFold::finishRow(operation, count, acc.data(), acc.size());
+        }
 
-        const double scale = (operation == eOperationMean) ? 1. / (double)contexts.size() : 1.;
         Image::WriteAccess out(dst.get());
         for (int y = roi.y1; y < roi.y2; ++y) {
             float* dstPix = (float*)out.pixelAt(roi.x1, y);
             if (!dstPix) {
                 return eStatusFailed;
             }
-            const double* accRow = &acc[(std::size_t)(y - roi.y1) * rowSize];
-            for (std::size_t i = 0; i < rowSize; ++i) {
-                dstPix[i] = (float)(accRow[i] * scale);
-            }
+            const float* accRow = &acc[(std::size_t)(y - roi.y1) * rowSize];
+            std::copy(accRow, accRow + rowSize, dstPix);
         }
     }
 

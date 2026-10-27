@@ -294,6 +294,7 @@ set(GuiTests_SOURCES
     SceneGizmo_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
+    StallMonitor_Test.cpp
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
@@ -354,6 +355,8 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME RenderProfileReportSelfTest
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/render-profile-report.py --self-test)
+    add_test(NAME GuiBenchCompareSelfTest
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/gui/compare.py --self-test)
     add_test(NAME TabTabTabPython
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
 endif()

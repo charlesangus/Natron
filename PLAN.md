@@ -186,6 +186,7 @@ future core work has solid ground to build on.
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
+| M259 | GPU Placement Under Render Contexts | todo | M180 |  | E15 | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | todo | M226 |  | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | todo | M52, M233 |  | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M53, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |

@@ -50,13 +50,14 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Phase 180.2: Accumulate fold chain
 
-- [ ] M180.P2.T1 — Unroll Accumulate into a fold chain of tasks
+- [x] M180.P2.T1 — Unroll Accumulate into a fold chain of tasks
   - files: `Engine/Nodes/Loop/LoopEnd.cpp`, `Engine/Nodes/Loop/LoopFold.h`, `Engine/Nodes/Loop/LoopFold.cpp`
   - approach: LoopEnd declares fold step k as depending on fold k−1 and iteration k (cross-context edges from M178.P2.T3), so iterations render ahead in parallel up to the bytes budget while the fold runs in fixed k order. Modes: mean, sum, min, max, over (iteration k over the accumulator), under (the accumulator over iteration k); `reverseOrder` folds from the last iteration down. Iteration outputs bypass the image cache. On the legacy path, iterations are pulled and folded serially.
   - verify: gtest: 64 iterations of a 4K float body hold at most budget-many iteration images (FrameStore high-water mark), and the result is bit-identical for 1 and N threads and both schedulers.
   - size: L
 
-- [ ] M180.P2.T2 — Fold kernels on the GPU
+- [ ] ~~M180.P2.T2~~ — moved 2026-10-27 to M259 - GPU Placement Under Render Contexts (GPU placement refuses context-carrying tasks; needs engine work beyond this milestone). Original:
+  M180.P2.T2 — Fold kernels on the GPU
   - files: `Engine/Gpu/Kernels/loopfold.slang`, `Engine/Gpu/Kernels/loopfold.cmake`, `Engine/Nodes/Loop/LoopFold.cpp`, `Tests/Native/NativeLoopFoldGpu_Test.cpp`
   - approach: One point kernel per mode (mean, sum, min, max, over, under; reverse order swaps the fold direction), accumulator resident across steps (M84 - GPU Placement And Residency pools).
   - verify: at the phase build, `ctest -R NativeLoopFoldGpu` passes on lavapipe, bit-exact for min/max and within 1e-6 relative for mean/sum/over.
@@ -86,6 +87,7 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Decisions
 
+- 2026-10-27 — **Fold chain on the CPU only (bosley-native-nodes):** P2.T1 unrolls Accumulate into per-step LoopEnd tasks under `loopFold.step`, shared bit-exact fold arithmetic (LoopFold) for task-graph and legacy, loop outputs bypass the image cache, and the request pass walks context requests before inputs (so iteration memory stays within budget). GPU fold kernels moved to M259, since GPU placement keeps context tasks on the CPU (M178).
 - 2026-10-27 — **Phase 1 knob choices (bosley-native-nodes):** `loop.iteration = start + k*step`; Iterations defaults to 4; LoopEnd has a `mode` choice (Accumulate now, Single Pass in Phase 3) and a separate `operation` choice for the fold (mean, sum, min, max; over and under join in Phase 2). A knob driver wins over an expression; linear easing extrapolates outside 0..1, smooth and curve clamp; `clone()` does not copy drivers.
 - 2026-10-26: `loop.*` context variables stay plain values, never RFV bindings (M71 Phase 71.5 introduced time-resolved bindings for animated Set variables).
 - 2026-10-25 — **Houdini-style loop block on render contexts (user):** chosen over hidden clones (no cache sharing, graph edits mid-render, O(N²) graph hotspots) and over knob-override args (the same core without read-sets); see M178 - Render Context Core.

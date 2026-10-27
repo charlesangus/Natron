@@ -56,6 +56,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
@@ -63,6 +64,7 @@
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
@@ -78,9 +80,10 @@ const int kWidth = 200;
 const int kHeight = 100;
 const char* const kRenderCamera = "/World/Rig/RenderCam";
 
-// Where the reference lives under the golden directories: <dir>/USDRender/StormReference.f32.
+// Where the references live under the golden directories: <dir>/USDRender/<case>.f32.
 const char* const kGoldenGroup = "USDRender";
 const char* const kGoldenCase = "StormReference";
+const char* const kGoldenCasePrimitives = "StormPrimitives";
 
 /**
  * How far the colour may drift from the reference: GL drivers rasterise and shade with their own
@@ -182,7 +185,8 @@ coverageOf(const std::string& path,
 // Records the colour plane under NATRON_GOLDEN_RECORD_DIR, or compares it with the committed one
 // within the tolerances above.
 void
-checkAgainstReference(const RenderedPlane& rgba)
+checkAgainstReference(const RenderedPlane& rgba,
+                      const char* goldenCase)
 {
     const ImageLayerDesc layer = ImageLayerDesc::getRGBAComponents();
     const std::string recordDir = goldenRecordDir();
@@ -192,20 +196,20 @@ checkAgainstReference(const RenderedPlane& rgba)
         image.height = rgba.window.height();
         image.nComps = (int)rgba.channels.size();
         image.pixels = rgba.pixels;
-        const std::string path = parityReferencePath(recordDir, kGoldenGroup, kGoldenCase, 0, layer);
+        const std::string path = parityReferencePath(recordDir, kGoldenGroup, goldenCase, 0, layer);
         std::string error;
-        EXPECT_TRUE(writeParityF32(path, image, &error)) << kGoldenCase << ": cannot record: " << error;
+        EXPECT_TRUE(writeParityF32(path, image, &error)) << goldenCase << ": cannot record: " << error;
         std::cout << "[ golden ] recorded " << path << std::endl;
 
         return;
     }
 
     const std::string refDir = goldenReferenceDir();
-    const std::string path = parityReferencePath(refDir, kGoldenGroup, kGoldenCase, 0, layer);
+    const std::string path = parityReferencePath(refDir, kGoldenGroup, goldenCase, 0, layer);
     ParityF32Image reference;
     std::string error;
     if (!readParityF32(path, &reference, &error)) {
-        ADD_FAILURE() << kGoldenCase << ": no golden reference " << path << " (" << error << "). Record it from a build that renders the scene "
+        ADD_FAILURE() << goldenCase << ": no golden reference " << path << " (" << error << "). Record it from a build that renders the scene "
                       << "correctly by running this test with NATRON_GOLDEN_RECORD_DIR=" << refDir << " and commit the file.";
 
         return;
@@ -372,6 +376,75 @@ protected:
         return render;
     } // createReferenceGraph
 
+    /**
+     * Primitives as a user lays them out: a card and a sphere, each placed by a USDXformPrim, merged
+     * with a camera and a light. The 2 x 1 card stands at (-1.5, 0, 0), the sphere of radius 1,
+     * bound to a red material through its Material input, at (1.5, 0, 0), both facing the camera
+     * at (0, 0, 10) looking down -Z; the distant light shines down -Z. Returns the USDRender,
+     * kWidth x kHeight, null after a gtest failure.
+     **/
+    NodePtr createPrimitivesGraph()
+    {
+        NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        NodePtr left = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr sphere = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSPHERE));
+        NodePtr right = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!card || !left || !material || !sphere || !right || !camera || !light || !merge || !render) {
+            ADD_FAILURE() << "a 3D node is not registered";
+
+            return NodePtr();
+        }
+
+        KnobDouble* aspect = knob<KnobDouble>(card, kUSDCardParamAspect);
+        KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
+        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
+        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+        if (!aspect || !diffuse || !renderCamera || !size || !par) {
+            return NodePtr();
+        }
+        aspect->setValue(2.);
+        diffuse->setValue(0.8, ViewSpec::all(), 0);
+        diffuse->setValue(0.1, ViewSpec::all(), 1);
+        diffuse->setValue(0.1, ViewSpec::all(), 2);
+
+        bool ok = true;
+        ok = ok && setString(card, kSceneParamPrimPath, "/Card");
+        ok = ok && setString(left, kSceneParamPrimPath, "/Left");
+        ok = ok && setTriple(left, kSceneParamTranslate, -1.5, 0., 0.);
+        ok = ok && setString(material, kSceneParamPrimPath, "/Red");
+        ok = ok && setString(sphere, kSceneParamPrimPath, "/Ball");
+        ok = ok && setString(right, kSceneParamPrimPath, "/Right");
+        ok = ok && setTriple(right, kSceneParamTranslate, 1.5, 0., 0.);
+        ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
+        ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 10.);
+        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
+        if (!ok) {
+            return NodePtr();
+        }
+
+        connectNodes(card, left, 0, true);
+        connectNodes(material, sphere, 0, true);
+        connectNodes(sphere, right, 0, true);
+        connectNodes(left, merge, 0, true);
+        connectNodes(right, merge, 1, true);
+        connectNodes(camera, merge, 2, true);
+        connectNodes(light, merge, 3, true);
+        connectNodes(merge, render, 0, true);
+
+        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+        size->setValue(kWidth, ViewSpec::all(), 0);
+        size->setValue(kHeight, ViewSpec::all(), 1);
+        par->setValue(1.);
+
+        return render;
+    } // createPrimitivesGraph
+
     static std::list<ImageLayerDesc> allPlanes()
     {
         std::list<ImageLayerDesc> layers;
@@ -404,7 +477,7 @@ TEST_F(USDRenderStormTest, TheReferenceSceneMatchesItsImageDepthAndPrimIds)
     const std::vector<float>& depth = planes[1].pixels;
     const std::vector<float>& primId = planes[2].pixels;
 
-    checkAgainstReference(planes[0]);
+    checkAgainstReference(planes[0], kGoldenCase);
 
     // The camera is at (1, 1, 12) looking down -Z: the box's front face, at z = 1, is 11 away, and
     // the lifted ball's nearest point, at (3, 1, 0.5), 11.5.
@@ -466,4 +539,77 @@ TEST_F(USDRenderStormTest, TheReferenceSceneMatchesItsImageDepthAndPrimIds)
                                                                              : false)
             << key << " names " << *path;
     }
+} // TEST_F
+
+TEST_F(USDRenderStormTest, PrimitivesRenderWhereTheirTransformsPlaceThem)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createPrimitivesGraph();
+    ASSERT_TRUE(node != nullptr);
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+    EXPECT_FALSE(node->hasPersistentMessage());
+    ASSERT_EQ(3u, planes.size());
+    const std::size_t pixels = (std::size_t)kWidth * kHeight;
+    ASSERT_EQ(pixels * 4, planes[0].pixels.size());
+    ASSERT_EQ(pixels, planes[1].pixels.size());
+    ASSERT_EQ(pixels, planes[2].pixels.size());
+    const std::vector<float>& rgba = planes[0].pixels;
+    const std::vector<float>& depth = planes[1].pixels;
+    const std::vector<float>& primId = planes[2].pixels;
+
+    checkAgainstReference(planes[0], kGoldenCasePrimitives);
+
+    // The camera is 10 from the card's plane and 9 from the sphere's nearest point, which is a
+    // vertex of the mesh.
+    const Coverage card = coverageOf("/Left/Card", rgba, depth, primId);
+    const Coverage ball = coverageOf("/Right/Ball", rgba, depth, primId);
+    ASSERT_GT(card.count, 500);
+    ASSERT_GT(ball.count, 500);
+    EXPECT_NEAR(10., card.minDepth, 0.01);
+    EXPECT_NEAR(10., card.maxDepth, 0.01);
+    EXPECT_NEAR(9., ball.minDepth, 0.05);
+    EXPECT_LT(ball.maxDepth, 10.);
+    // Mirror images about the centre: the card left, the ball right, both at the camera's height.
+    EXPECT_LT(card.x, kWidth / 2.);
+    EXPECT_GT(ball.x, kWidth / 2.);
+    EXPECT_NEAR(kWidth / 2., (card.x + ball.x) / 2., 3.);
+    EXPECT_NEAR(kHeight / 2., card.y, 3.);
+    EXPECT_NEAR(kHeight / 2., ball.y, 3.);
+    // The card is twice as wide as it is high.
+    int cardLeft = kWidth, cardRight = -1, cardBottom = kHeight, cardTop = -1;
+    const std::uint32_t cardId = bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/Left/Card")));
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            if (bitsOf(primId[(std::size_t)y * (std::size_t)kWidth + (std::size_t)x]) == cardId) {
+                cardLeft = std::min(cardLeft, x);
+                cardRight = std::max(cardRight, x);
+                cardBottom = std::min(cardBottom, y);
+                cardTop = std::max(cardTop, y);
+            }
+        }
+    }
+    ASSERT_GT(cardTop, cardBottom);
+    EXPECT_NEAR(2., (double)(cardRight - cardLeft + 1) / (double)(cardTop - cardBottom + 1), 0.15);
+    // The light faces both head on. The bound material makes the ball red; the card keeps the
+    // neutral fallback colour.
+    EXPECT_GT(ball.rgb[0], 0.2) << "ball colour " << ball.rgb[0] << ", " << ball.rgb[1] << ", " << ball.rgb[2];
+    EXPECT_GT(ball.rgb[0], 2. * ball.rgb[1]);
+    EXPECT_GT(ball.rgb[0], 2. * ball.rgb[2]);
+    EXPECT_GT(card.rgb[0], 0.1) << "card colour " << card.rgb[0] << ", " << card.rgb[1] << ", " << card.rgb[2];
+    EXPECT_NEAR(card.rgb[0], card.rgb[1], 0.05);
+    EXPECT_NEAR(card.rgb[0], card.rgb[2], 0.05);
+
+    // Only the two meshes are drawn; the material, camera and light are not.
+    std::set<std::uint32_t> ids;
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const std::uint32_t id = bitsOf(primId[i]);
+        if (id != 0) {
+            ids.insert(id);
+        }
+    }
+    EXPECT_EQ(2u, ids.size());
 } // TEST_F

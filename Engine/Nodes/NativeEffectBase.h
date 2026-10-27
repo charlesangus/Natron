@@ -264,14 +264,16 @@ public:
 
     /**
      * @brief How much the node weighs when GPU placement groups it into a region, for a render at
-     * time and view, mipmapLevel levels below full resolution. Heavy for a node placement cannot
-     * weigh, as by default.
+     * time and view, mipmapLevel levels below full resolution. By default the weight of the node's
+     * OpKind, Heavy for a node without one.
      **/
     virtual GpuWeight gpuWeight(double /*time*/,
                                 ViewIdx /*view*/,
                                 unsigned int /*mipmapLevel*/) const WARN_UNUSED_RETURN
     {
-        return GpuWeight::heavy();
+        const std::optional<OpKind> kind = opKind();
+
+        return kind ? defaultGpuWeight(*kind) : GpuWeight::heavy();
     }
 
     /**

@@ -232,6 +232,19 @@ public:
      **/
     void clearResults(U64 hash);
 
+    /**
+     * @brief Makes room for one more hash state beyond the fixed count, for as long as the
+     * reservation lasts. A render that queries the node under several contexts reserves a state
+     * per context, so their results are not evicted by one another before the render is done.
+     **/
+    void reserveState();
+
+    /**
+     * @brief Ends one reservation reserveState() made. The states above the fixed count go,
+     * the least recently used first.
+     **/
+    void releaseState();
+
     bool getIdentityResult(U64 hash, double time, ViewIdx view, int* inputNbIdentity, ViewIdx *inputView, double* identityTime);
 
     void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
@@ -331,6 +344,7 @@ private:
     InstancesList _instances;
     std::unordered_map<U64, InstancesList::iterator> _instancesByHash;
     std::size_t _maxInstances;
+    std::size_t _reservedInstances;
     U64 _metadataGeneration;
     ActionsCacheInstance* findActionCache(U64 hash);
     ActionsCacheInstance & getOrCreateActionCache(U64 newHash);

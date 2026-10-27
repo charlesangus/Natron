@@ -407,7 +407,7 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
     ASSERT_TRUE(dynamic_cast<NativeRead*>(reader->getEffectInstance().get()) != NULL);
 
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
     NodePtr write = createNativeWriter();
     NodePtr downstream = createNode(QString::fromUtf8(kOfxPointMatrixID), kOfxPointMatrixMajor);
     ASSERT_TRUE(bool(grade) && bool(merge) && bool(write));

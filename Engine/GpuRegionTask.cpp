@@ -554,17 +554,18 @@ private:
     {
         GpuImageLayout layout;
         const EffectInstancePtr effect = task.key.node->getEffectInstance();
-        const FrameViewRequest* request = _context->getRequest() ? _context->getRequest()->findFrameViewRequest(task.key.node, task.key.time, task.key.view) : 0;
+        const NodeCtxKey nodeKey(task.key.node, task.key.contextKey);
+        const FrameViewRequest* request = _context->getRequest() ? _context->getRequest()->findFrameViewRequest(nodeKey, task.key.time, task.key.view) : 0;
 
         layout.layer = layer;
         layout.rod = request ? request->globalData.rod : RectD();
         layout.bounds = bounds;
         layout.mipmapLevel = task.key.mipmapLevel;
-        const ParallelRenderArgsPtr frameArgs = _context->getArgs(task.key.node);
+        const ParallelRenderArgsPtr frameArgs = _context->getArgs(nodeKey);
         const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(frameArgs, task.key.time, task.key.view) : NodeMetadataConstPtr();
         layout.par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
         layout.fielding = metadata ? metadata->getOutputFielding() : eImageFieldingOrderNone;
-        FrameRequestMap::const_iterator nodeRequest = _context->getRequest() ? _context->getRequest()->find(task.key.node) : FrameRequestMap::const_iterator();
+        FrameRequestMap::const_iterator nodeRequest = _context->getRequest() ? _context->getRequest()->find(nodeKey) : FrameRequestMap::const_iterator();
         const U64 nodeHash = (_context->getRequest() && (nodeRequest != _context->getRequest()->end()) && nodeRequest->second) ? nodeRequest->second->nodeHash : 0;
         layout.key = ImageKey(task.key.node.get(),
                               nodeHash,
@@ -779,7 +780,7 @@ private:
 
             // Task::dependencies follows the request's edges, skipping those whose node is gone.
             std::vector<std::pair<int, int>> edges;
-            const FrameViewRequest* fvRequest = request->findFrameViewRequest(task.key.node, task.key.time, task.key.view);
+            const FrameViewRequest* fvRequest = request->findFrameViewRequest(NodeCtxKey(task.key.node, task.key.contextKey), task.key.time, task.key.view);
             if (fvRequest) {
                 std::size_t d = 0;
                 for (std::vector<FrameViewRequest::TaskEdge>::const_iterator it = fvRequest->dependencies.begin(); it != fvRequest->dependencies.end(); ++it) {

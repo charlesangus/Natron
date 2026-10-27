@@ -489,7 +489,7 @@ protected:
     {
         NodePtr black = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
         NodePtr white = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
         EXPECT_TRUE(bool(black) && bool(white) && bool(merge));
         if (!black || !white || !merge) {
@@ -501,7 +501,7 @@ protected:
         EXPECT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)box.x1, (double)box.y1 }));
         EXPECT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)box.width(), (double)box.height() }));
         EXPECT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
-        EXPECT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string("over")));
+        EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
         connectNodes(black, merge, 0, true);
         connectNodes(white, merge, 1, true);
 

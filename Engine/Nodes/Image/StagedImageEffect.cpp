@@ -60,8 +60,8 @@ isAuxInput(const NodeSpec& spec,
 StagedImageEffect::StagedImageEffect(NodePtr node)
     : NativeEffectBase(node)
     , _stageKnobs()
-    , _rawStageErrorMutex()
-    , _postedRawStageError()
+    , _stageErrorMutex()
+    , _postedStageError()
 {
 }
 
@@ -156,9 +156,11 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     if (imagePipelineSpec().op != OpKind::Composite) {
         return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
     }
-    const CompositeInputs inputs = opInputs(query.time, query.view);
+    const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
     resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.plane = query.plane;
+    resolveStageSourcesLayers(*self, &plan);
 
     return plan;
 }
@@ -166,7 +168,7 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (rawStageError(query.time, query.view)) {
+    if (rawStageError(query.time, query.view) || opError(query.time, query.view)) {
         return false;
     }
     const OpKind kind = imagePipelineSpec().op;
@@ -247,8 +249,83 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
         return opPassesInputLayer(inputNb, plane, time, view, layer);
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+    if ((kind == OpKind::Composite) && !isInputMask(inputNb)) {
+        // Resolving only reads knobs and the node's inputs' layers.
+        StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+        StagePlan plan = resolveSourcesPlan(time, view, plane);
+        resolveStageSourcesLayers(*self, &plan);
+        *layer = stageGpuSourceInputLayer(plan, inputNb, plane);
+    }
 
     return true;
+}
+
+CompositeInputs
+StagedImageEffect::opInputsForPlane(double time,
+                                    ViewIdx view,
+                                    const ImageLayerDesc& plane) const
+{
+    CompositeInputs inputs = opInputs(time, view);
+
+    adjustInputsForPlane(plane, time, view, &inputs);
+
+    return inputs;
+}
+
+StagePlan
+StagedImageEffect::resolveSourcesPlan(double time,
+                                      ViewIdx view,
+                                      const ImageLayerDesc& plane) const
+{
+    StagePlan plan;
+    const CompositeInputs inputs = opInputsForPlane(time, view, plane);
+
+    plan.time = time;
+    plan.view = view;
+    plan.sourceInput = inputs.blend();
+    plan.plane = plane;
+    resolveStageSources(nodeSpec(), inputs, &plan);
+
+    return plan;
+}
+
+bool
+StagedImageEffect::getGpuExtraInputLayers(int inputNb,
+                                          const ImageLayerDesc& plane,
+                                          double time,
+                                          ViewIdx view,
+                                          std::vector<ImageLayerDesc>* layers) const
+{
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return true;
+    }
+    // Resolving only reads knobs and the node's inputs' layers.
+    StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+
+    return stageSourcesGpuLayers(*self, resolveSourcesPlan(time, view, plane), inputNb, plane, time, view, layers);
+}
+
+void
+StagedImageEffect::addInputLayersNeeded(double time,
+                                        ViewIdx view,
+                                        const std::list<ImageLayerDesc>& producedPlanes,
+                                        EffectInstance::ComponentsNeededMap* comps)
+{
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return;
+    }
+    std::vector<StagePlan> plans;
+    plans.reserve(producedPlanes.size() + 1);
+    plans.push_back(resolveSourcesPlan(time, view, ImageLayerDesc()));
+    for (const ImageLayerDesc& plane : producedPlanes) {
+        plans.push_back(resolveSourcesPlan(time, view, plane));
+    }
+    const int nInputs = getNInputs();
+    for (const StagePlan& plan : plans) {
+        for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
+            stageSourcesNeededLayers(*this, plan, inputNb, time, view, &(*comps)[inputNb]);
+        }
+    }
 }
 
 StatusEnum
@@ -257,6 +334,9 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
     const GpuQuery& query = args.query;
     const OpKind kind = imagePipelineSpec().op;
 
+    // canRenderOnGpu() turns down every frame render() fails with an error, so one rendered here
+    // has none and withdraws the error an earlier CPU frame posted.
+    postStageError(std::nullopt);
     if (kind == OpKind::Passes) {
         return recordPassesGpu(*this, resolveGpuPlan(query), args, opPasses(query.time, query.view, query.mappedScale));
     }
@@ -727,44 +807,65 @@ StagedImageEffect::isIdentity(double time,
     return false;
 } // StagedImageEffect::isIdentity
 
+bool
+StagedImageEffect::postStageError(const std::optional<std::string>& error)
+{
+    if (error) {
+        {
+            std::lock_guard<std::mutex> lock(_stageErrorMutex);
+            _postedStageError = *error;
+        }
+        setPersistentMessage(eMessageTypeError, *error);
+
+        return false;
+    }
+    std::string posted;
+    {
+        std::lock_guard<std::mutex> lock(_stageErrorMutex);
+        posted.swap(_postedStageError);
+    }
+    NodePtr node = getNode();
+    // Only the message this check posted is cleared; another one stays the user's to read.
+    if (!posted.empty() && node) {
+        QString current;
+        int type = 0;
+        node->getPersistentMessage(&current, &type, false);
+        if (current == QString::fromUtf8(posted.c_str())) {
+            node->clearPersistentMessage(false);
+        }
+    }
+
+    return true;
+}
+
 StatusEnum
 StagedImageEffect::render(const RenderActionArgs& args)
 {
-    if (imagePipelineSpec().rawStage != RawStageRequirement::Any) {
-        const std::optional<std::string> stageError = rawStageError(args.time, args.view);
+    const bool checksRawStage = (imagePipelineSpec().rawStage != RawStageRequirement::Any);
+    const bool composite = (imagePipelineSpec().op == OpKind::Composite);
 
-        if (stageError) {
-            {
-                std::lock_guard<std::mutex> lock(_rawStageErrorMutex);
-                _postedRawStageError = *stageError;
-            }
-            setPersistentMessage(eMessageTypeError, *stageError);
-
+    if (!composite) {
+        if (checksRawStage && !postStageError(rawStageError(args.time, args.view))) {
             return eStatusFailed;
         }
-        std::string posted;
-        {
-            std::lock_guard<std::mutex> lock(_rawStageErrorMutex);
-            posted.swap(_postedRawStageError);
-        }
-        NodePtr node = getNode();
-        // Only the message this check posted is cleared; another one stays the user's to read.
-        if (!posted.empty() && node) {
-            QString current;
-            int type = 0;
-            node->getPersistentMessage(&current, &type, false);
-            if (current == QString::fromUtf8(posted.c_str())) {
-                node->clearPersistentMessage(false);
-            }
-        }
-    }
 
-    if (imagePipelineSpec().op != OpKind::Composite) {
         return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
     }
-    const CompositeInputs inputs = opInputs(args.time, args.view);
+    const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
+    const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
     resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.plane = plane;
+    std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
+    if (!error) {
+        error = opError(args.time, args.view);
+    }
+    if (!error) {
+        error = stageSourcesError(*this, plan, args.time, args.view);
+    }
+    if (!postStageError(error)) {
+        return eStatusFailed;
+    }
 
     return renderOp(args, plan);
 }

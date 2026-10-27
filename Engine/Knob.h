@@ -34,6 +34,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <QReadWriteLock>
@@ -1615,6 +1616,20 @@ public:
      * invalidate the knob's hash when they change.
      **/
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
+
+    /**
+     * @brief Registers something that makes this knob's value depend on render context
+     * variables. Adding or removing a source invalidates every memoized read-set. MT-safe.
+     **/
+    virtual void addContextReadSource(const ContextReadSourcePtr& source) = 0;
+    virtual void removeContextReadSource(const ContextReadSourcePtr& source) = 0;
+    virtual bool hasContextReadSources() const = 0;
+
+    /**
+     * @brief The union of the reads of the sources registered on this knob; empty without any.
+     * MT-safe.
+     **/
+    virtual RenderContextReadSet getContextReadSet() const = 0;
 };
 
 /**
@@ -2052,6 +2067,22 @@ public:
     virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
+    virtual void addContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
+    virtual void removeContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
+    virtual bool hasContextReadSources() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RenderContextReadSet getContextReadSet() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a knob whose value reads the render context, the key its expression results are
+     * kept under on the calling thread, and returns true. The value reads what the knob's own
+     * read sources name and, transitively, what the knobs its expressions and links read name,
+     * and the upstream read-sets (see Node::getUpstreamContextReadSet()) of the nodes whose
+     * metadata those expressions read. The key is the hash of the context the holder is queried
+     * under (see EffectInstance::getCurrentRenderContext()) restricted to those reads, 0 for the
+     * empty one. Returns false for a knob reading none, whose results are kept by time whatever
+     * else its holder node reads.
+     **/
+    bool getExpressionContextKey(U64* key) const;
 
     /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
@@ -2355,7 +2386,9 @@ public:
      */
     typedef std::map<double, T> FrameValueMap;
     typedef std::vector<FrameValueMap> ExprResults;
-
+    // The results of a knob whose value reads context variables, by (time, view, context key).
+    typedef std::map<std::tuple<double, int, U64>, T> ContextValueMap;
+    typedef std::vector<ContextValueMap> ExprContextResults;
 
     /**
      * @brief Make a knob for the given KnobHolder with the given label (the label displayed on
@@ -2658,6 +2691,14 @@ public:
         map = _exprRes[dim];
     }
 
+    void getExpressionContextResults(int dim,
+                                     ContextValueMap& map)
+    {
+        QMutexLocker k(&_valueMutex);
+
+        map = _exprCtxRes[dim];
+    }
+
     T getValueFromMasterAt(double time, ViewSpec view, int dimension, KnobI* master);
     T getValueFromMaster(ViewSpec view, int dimension, KnobI* master, bool clamp);
 
@@ -2714,6 +2755,7 @@ private:
         QMutexLocker k(&_valueMutex);
 
         _exprRes[dimension].clear();
+        _exprCtxRes[dimension].clear();
         ++_exprResGenerations[dimension];
     }
 
@@ -2815,7 +2857,8 @@ private:
     };
     std::vector<DefaultValue> _defaultValues;
     mutable ExprResults _exprRes;
-    // By dimension, moved by every clear of _exprRes: a result computed while a clear landed may
+    mutable ExprContextResults _exprCtxRes;
+    // By dimension, moved by every clear of _exprRes and _exprCtxRes: a result computed while a clear landed may
     // predate what the clear was for, and is then not stored.
     mutable std::vector<U64> _exprResGenerations;
 

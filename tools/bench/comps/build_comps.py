@@ -142,7 +142,7 @@ def blur(name, src, size, mask=None):
 
 
 def merge(name, op, a, b):
-    n = make("net.sf.openfx.MergePlugin", name)
+    n = make("Merge", name)
     n.connectInput(0, b)
     n.connectInput(1, a)
     choice(n, "operation", op)

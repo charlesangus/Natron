@@ -1092,6 +1092,8 @@ GuiApplicationManager::initGui(const CLArgs& args)
     _imp->documentation.reset(new DocumentationManager);
     _imp->documentation->startServer();
 
+    _imp->stallMonitor = StallMonitor::createFromEnvironment();
+
     return exec();
 } // GuiApplicationManager::initGui
 

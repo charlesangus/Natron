@@ -253,8 +253,6 @@ isPluginLoaded(const char* pluginID)
 const char* const kAuditedPyPlugs[] = {
     "AngleBlur",
     "DropShadow",
-    "EdgeBlur",
-    "Glow",
     "LightWrap",
     "PIKColor",
     "ZMask",

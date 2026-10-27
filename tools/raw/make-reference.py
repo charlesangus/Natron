@@ -277,7 +277,7 @@ class Job:
     """One reference: a crop of a camera file's develop, or a synthetic DNG's mosaic."""
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None, icc_type="LIN_REC709"):
+                 log_line=None, mosaic=None, icc_type="LIN_REC709", half=False):
         self.name = name
         self.source = source
         self.entries = entries
@@ -290,6 +290,9 @@ class Job:
         self.mosaic = mosaic
         # The export profile, darktable-cli's --icc-type.
         self.icc_type = icc_type
+        # Store the reference as half float: the parity references a test only compares with,
+        # kept small; a test's inputs stay float.
+        self.half = half
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -562,7 +565,8 @@ def colour_balance_rgb_jobs():
 
     Every job exports linear Rec. 2020. The "base" job is the same develop without the module:
     NativeColorBalanceRGB_Test feeds it to ColorBalanceRGB in a linear Rec. 2020 project and
-    compares the result with each graded job.
+    compares the result with each graded job. The base stays float, the test's input; the graded
+    jobs are stored as half float.
     """
     def develop(extra=()):
         return develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=list(extra))
@@ -570,7 +574,8 @@ def colour_balance_rgb_jobs():
     def graded(suffix, what, **params):
         entry = ("colorbalancergb", 1, 5, colorbalancergb_params(**params))
         return camera_job(CR2, "colorbalancergb-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
-                          "balance rgb %s" % (BASE_DEMOSAIC[CR2], what), develop([entry]), icc_type="LIN_REC2020")
+                          "balance rgb %s" % (BASE_DEMOSAIC[CR2], what), develop([entry]), icc_type="LIN_REC2020",
+                          half=True)
 
     jobs = [camera_job(CR2, "colorbalancergb-base", "demosaic %s, working space linear Rec. 2020, no color balance "
                        "rgb" % BASE_DEMOSAIC[CR2], develop(), icc_type="LIN_REC2020")]
@@ -632,9 +637,10 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
     return image[:, :, :3], result.stdout.splitlines()
 
 
-def write_reference(path, image, description):
-    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float32), photometric="rgb" if image.ndim == 3 else "minisblack",
-                     compression="zlib", description=description, metadata=None)
+def write_reference(path, image, description, half=False):
+    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float16 if half else np.float32),
+                     photometric="rgb" if image.ndim == 3 else "minisblack", compression="zlib", description=description,
+                     metadata=None)
 
 
 def probe_coefficients(fixture, scratch):
@@ -775,7 +781,7 @@ def run_job(job, out, scratch):
         os.environ.get("DARKTABLE_REF", "?"), job.source, job.workflow, job.what, where)
     if logged:
         description += "; darktable log: " + " | ".join(logged)
-    write_reference(os.path.join(out, job.name), result, description)
+    write_reference(os.path.join(out, job.name), result, description, job.half)
     print("%s: %s" % (job.name, summary))
 
 

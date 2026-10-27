@@ -3051,13 +3051,13 @@ Node::makeInfoForInput(int inputNumber) const
     }
     {
         double first = 1., last = 1.;
-        input->getFrameRange_public(getHashValue(), &first, &last);
+        input->getFrameRange_public(input->getRenderHash(), &first, &last);
         ss << "<b>" << tr("Frame range:").toStdString() << "</b> <font color=#c8c8c8>" << first << " - " << last << "</font><br />";
     }
     {
         RectD rod;
         bool isProjectFormat;
-        StatusEnum stat = input->getRegionOfDefinition_public(getHashValue(),
+        StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(),
                                                               time,
                                                               RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
         if (stat != eStatusFailed) {

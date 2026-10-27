@@ -1113,8 +1113,6 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     if (image) {
         return image;
     }
-    // The mask is cached under the merge node's hash only if the drawing could not have seen
-    // another state.
     const CleanHashSnapshot clean(mergeNode, mergeNode->getEffectInstance()->getCurrentRenderContextKey());
 
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);

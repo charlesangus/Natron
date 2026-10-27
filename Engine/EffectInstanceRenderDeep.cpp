@@ -265,7 +265,6 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
-    // The image is cached under nodeHash only if the render could not have seen another state.
     const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
     const double par = getRenderMetadata(frameArgs, args.time, args.view)->getPixelAspectRatio(-1);
 
@@ -619,8 +618,6 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
-    // The flattened images are cached under nodeHash only if the flatten could not have seen
-    // another state.
     const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);

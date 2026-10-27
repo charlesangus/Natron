@@ -122,7 +122,7 @@ DeepRecolor::initializeKnobs()
 }
 
 StatusEnum
-DeepRecolor::getRegionOfDefinition(U64 hash,
+DeepRecolor::getRegionOfDefinition(U64 /*hash*/,
                                    double time,
                                    const RenderScale& scale,
                                    ViewIdx view,
@@ -135,7 +135,7 @@ DeepRecolor::getRegionOfDefinition(U64 hash,
     }
     bool isProjectFormat = false;
 
-    return a->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    return a->getRegionOfDefinition_public(a->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 }
 
 DeepRecolor::Selection
@@ -411,7 +411,7 @@ DeepRecolor::renderDeep(const DeepRenderActionArgs& args)
         EffectInstancePtr colorInput = getInput(1);
         RectD rod;
         bool isProjectFormat = false;
-        if (colorInput && (colorInput->getRegionOfDefinition_public(colorInput->getHash(), args.time, args.scale, args.view, &rod, &isProjectFormat) != eStatusFailed)) {
+        if (colorInput && (colorInput->getRegionOfDefinition_public(colorInput->getRenderHash(), args.time, args.scale, args.view, &rod, &isProjectFormat) != eStatusFailed)) {
             colourlessCoverage = rod.toPixelEnclosing(args.mipmapLevel, colorInput->getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
         }
     }

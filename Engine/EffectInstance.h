@@ -28,8 +28,9 @@
 
 #include "Global/Macros.h"
 
-#include <list>
 #include <bitset>
+#include <list>
+#include <mutex>
 
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
@@ -2030,6 +2031,11 @@ public:
     bool hasCachedFrameRange(U64 hash) const;
 
     /**
+     * @brief Whether the actions cache holds a region of definition under hash. For tests.
+     **/
+    bool hasCachedRoD(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel) const;
+
+    /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
      * a dialog. The message can be of 4 types...
      * INFORMATION_MESSAGE : you just want to inform the user about something.
@@ -2222,12 +2228,21 @@ public:
         ViewIdx identityView;
     };
 
+    // The cached planes a plug-in allocated on the fly during one renderRoI(), from any of its render threads.
+    struct OnTheFlyCachedPlanes {
+        std::mutex lock;
+        std::list<ImagePtr> images;
+    };
+
+    typedef std::shared_ptr<OnTheFlyCachedPlanes> OnTheFlyCachedPlanesPtr;
+
     struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
         std::map<ImageLayerDesc, LayerToRender> layers;
         ProcessChannelsPerPlaneMap processChannelsPerPlane;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
+        OnTheFlyCachedPlanesPtr onTheFlyPlanes;
 
         ImageLayersToRender()
             : rectsToRender()
@@ -2235,6 +2250,7 @@ public:
             , processChannelsPerPlane()
             , useOpenGL(false)
             , glContextData()
+            , onTheFlyPlanes(std::make_shared<OnTheFlyCachedPlanes>())
         {
         }
     };
@@ -2806,6 +2822,7 @@ public:
         double firstFrame, lastFrame;
         InputMatrixMapPtr transformRedirections;
         bool isDoingOpenGLRender;
+        OnTheFlyCachedPlanesPtr onTheFlyPlanes;
 
         RenderArgs();
 

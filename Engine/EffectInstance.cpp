@@ -2675,7 +2675,8 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 rectToRender.inputRois,
                                                 firstFrame,
                                                 lastFrame,
-                                                layers->useOpenGL);
+                                                layers->useOpenGL,
+                                                layers->onTheFlyPlanes);
     ImagePtr maskImage;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
@@ -3515,6 +3516,13 @@ EffectInstance::allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDes
             p.tmpImage = p.renderMappedImage;
         }
         tls->currentRenderArgs.outputLayers.insert(std::make_pair(layer, p));
+        if (useCache && tls->currentRenderArgs.onTheFlyPlanes) {
+            std::lock_guard<std::mutex> l(tls->currentRenderArgs.onTheFlyPlanes->lock);
+            tls->currentRenderArgs.onTheFlyPlanes->images.push_back(p.fullscaleImage);
+            if (p.downscaleImage != p.fullscaleImage) {
+                tls->currentRenderArgs.onTheFlyPlanes->images.push_back(p.downscaleImage);
+            }
+        }
 
         return p.downscaleImage;
     }
@@ -4576,6 +4584,17 @@ EffectInstance::hasCachedFrameRange(U64 hash) const
     double first = 0., last = 0.;
 
     return _imp->actionsCache->getTimeDomainResult(hash, &first, &last);
+}
+
+bool
+EffectInstance::hasCachedRoD(U64 hash,
+                             double time,
+                             ViewIdx view,
+                             unsigned int mipmapLevel) const
+{
+    RectD rod;
+
+    return _imp->actionsCache->getRoDResult(hash, time, view, mipmapLevel, &rod);
 }
 
 void
@@ -7271,9 +7290,7 @@ EffectInstance::getMetadataAttempt(double time,
 
         return checking->own;
     }
-    // The derive is stored only as CleanHashSnapshot allows, which refuses a hash an input left
-    // and came back to meanwhile and a value the hash does not yet reflect. The generation
-    // catches a drop under the same hash. Under a context, the answer is keyed by the node hash
+    // The generation catches a drop under the same hash. Under a context, the answer is keyed by the node hash
     // with the key of the context restricted to what the node's output reads folded in, as the
     // node's render hash is, so each context derives and keeps its own; the inputs read during
     // the derivation see the same context.

@@ -71,8 +71,7 @@ public:
     bool userRoIEnabled;
     bool mustComputeRoDAndLookupCache;
     bool isDoingPartialUpdates;
-    // Taken before the render reads anything: the textures it makes are cached under the viewer
-    // hash only if it allows the store.
+    // Taken before the render reads anything.
     std::shared_ptr<const CleanHashSnapshot> cleanHash;
 };
 

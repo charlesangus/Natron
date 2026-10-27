@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <list>
 #include <map>
@@ -42,6 +43,7 @@
 #include <ofxImageEffect.h>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
@@ -717,9 +719,9 @@ TEST_F(PerFrameMetadataTest, PixelAspectRatioWarningFollowsTheFrame)
 
 namespace {
 
-// Renders the red channel at `at` through renderRoI on this thread, after installing the frame's
-// render args and request pass and then calling `beforeRender`. A failed or aborted render
-// returns false.
+// Renders roi through renderRoI on this thread and reads the red channel at (x, y), after
+// installing the frame's render args and request pass and then calling `beforeRender`. A failed or
+// aborted render returns false.
 bool
 renderRedAt(const NodePtr& node,
             const RectI& roi,
@@ -727,9 +729,9 @@ renderRedAt(const NodePtr& node,
             int y,
             bool byPassCache,
             float* red,
-            const std::function<void()>& beforeRender = std::function<void()>())
+            const std::function<void()>& beforeRender = std::function<void()>(),
+            double time = 1.)
 {
-    const double time = 1.;
     const ViewIdx view(0);
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
     ParallelRenderArgsSetter frameRenderArgs(time,
@@ -872,51 +874,172 @@ TEST_F(CleanHashCacheTest, RenderOverlappingAnEditCachesNothingUnderTheOldHash)
     EXPECT_NEAR(0.25f, red, 1e-5f);
 }
 
-// Renders on many threads race an upstream colour toggled on the main thread. Whatever any of them
-// cached under a hash must be the image of the state that hash stands for.
-TEST_F(CleanHashCacheTest, ConcurrentEditsCacheNoImageUnderAStaleHash)
+namespace {
+const int kWaitMs = 10000;
+
+// Polls `done` until it holds or kWaitMs pass.
+bool
+waitUntil(const std::function<bool()>& done)
 {
-    const int kThreads = 8;
-    const int kToggles = 200;
-    const float kStates[] = { 0.25f, 0.75f };
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitMs);
+
+    while (!done()) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return true;
+}
+
+KnobDoublePtr
+countingValueKnob(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("value"));
+}
+
+// Clears the render hook, which refers to the test's locals, however the test leaves.
+struct RenderHookScope {
+    RenderHookScope() = default;
+    ~RenderHookScope()
+    {
+        CountingTestRegistry::reset();
+    }
+
+    RenderHookScope(const RenderHookScope&) = delete;
+    RenderHookScope& operator=(const RenderHookScope&) = delete;
+};
+
+bool
+setCountingCacheOutput(const NodePtr& node)
+{
+    KnobBoolPtr cacheOutput = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName("cacheOutput"));
+    if (!cacheOutput) {
+        return false;
+    }
+    cacheOutput->setValue(true);
+
+    return true;
+}
+} // anon namespace
+
+// An upstream value goes A -> B -> A while a render of the node below is under way: the upstream
+// node renders B, and the node below renders over it, under the hashes of A. A second render set up
+// at A looks the node below up while the first is still publishing. Neither it nor any later lookup
+// may see B, and the clean entry another frame cached under the same hash stays.
+TEST_F(CleanHashCacheTest, EditDuringARenderLeavesNoStaleImageForAConcurrentLookup)
+{
+    const float kUpstreamA = 0.25f;
+    const float kUpstreamB = 0.75f;
+    const float kDownstream = 0.5f;
+    const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
+    const int probe = kCountingTestSize / 2;
 
     LegacyRenderScope scope;
-    CachedConstantBlur graph;
-    ASSERT_TRUE(createConstantBlur(&graph));
+    CountingTestRegistry::reset();
+    RenderHookScope hookScope;
+    NodePtr upstream = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr downstream = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(upstream && downstream);
+    connectNodes(upstream, downstream, 0, true);
+    KnobDoublePtr upstreamValue = countingValueKnob(upstream);
+    KnobDoublePtr downstreamValue = countingValueKnob(downstream);
+    ASSERT_TRUE(upstreamValue && downstreamValue);
+    ASSERT_TRUE(setCountingCacheOutput(upstream) && setCountingCacheOutput(downstream));
+    upstreamValue->setValue(kUpstreamA, ViewSpec::all(), 0);
+    downstreamValue->setValue(kDownstream, ViewSpec::all(), 0);
 
-    std::atomic<bool> stop(false);
-    std::atomic<int> rendered(0);
-    std::vector<std::thread> renderers;
-    for (int t = 0; t < kThreads; ++t) {
-        renderers.emplace_back([&]() {
-            while (!stop.load()) {
-                float red;
-                if (renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red)) {
-                    ++rendered;
-                }
+    float red = -1.f;
+    ASSERT_TRUE(renderRedAt(downstream, roi, probe, probe, false, &red, std::function<void()>(), 2.));
+    EXPECT_NEAR(kUpstreamA + kDownstream, red, 1e-5f);
+
+    // 0: none yet; 1: the upstream render asked for B; 2: B set; 3: the downstream render asked
+    // for A; 4: A set; 5: the second render released.
+    std::atomic<int> stage(0);
+    std::atomic<bool> lookupReady(false);
+    std::atomic<bool> lookupEntered(false);
+    std::atomic<bool> hookTimedOut(false);
+    const Node* upstreamNode = upstream.get();
+    const Node* downstreamNode = downstream.get();
+    CountingTestRegistry::setRenderHook([&](const Node* node) {
+        if ((node == upstreamNode) && (stage.load() < 2)) {
+            int expected = 0;
+            (void)stage.compare_exchange_strong(expected, 1);
+            if (!waitUntil([&]() { return stage.load() >= 2; })) {
+                hookTimedOut = true;
             }
-        });
-    }
-    for (int i = 0; i < kToggles; ++i) {
-        graph.color->setValue(kStates[i % 2], ViewSpec::all(), 0);
-    }
-    stop.store(true);
-    for (std::thread& renderer : renderers) {
-        renderer.join();
-    }
-    EXPECT_GT(rendered.load(), 0);
-
-    // Each state's hash finds what the renderers cached under it, if anything.
-    for (int pass = 0; pass < 2; ++pass) {
-        for (float state : kStates) {
-            graph.color->setValue(state, ViewSpec::all(), 0);
-            float red = -1.f;
-            ASSERT_TRUE(renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red));
-            EXPECT_NEAR(state, red, 1e-5f) << "blur, pass=" << pass;
-            ASSERT_TRUE(renderRedAt(graph.constant, kProbeRoI, kProbeX, kProbeY, false, &red));
-            EXPECT_NEAR(state, red, 1e-5f) << "constant, pass=" << pass;
+        } else if ((node == downstreamNode) && (stage.load() >= 2) && (stage.load() < 5)) {
+            int expected = 2;
+            if (stage.compare_exchange_strong(expected, 3)) {
+                if (!waitUntil([&]() { return stage.load() >= 4; })) {
+                    hookTimedOut = true;
+                }
+                stage = 5;
+                // Gives the lookup time to reach this render's pending regions; no hook marks that
+                // point, and a lookup arriving after publication must see no stale image either.
+                if (!waitUntil([&]() { return lookupEntered.load(); })) {
+                    hookTimedOut = true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            } else if (!waitUntil([&]() { return stage.load() >= 5; })) {
+                hookTimedOut = true;
+            }
         }
+    });
+
+    float lookupRed = -1.f;
+    bool lookupRendered = false;
+    std::thread lookup([&]() {
+        lookupRendered = renderRedAt(downstream, roi, probe, probe, false, &lookupRed, [&]() {
+            lookupReady = true;
+            if (!waitUntil([&]() { return stage.load() >= 5; })) {
+                hookTimedOut = true;
+            }
+            lookupEntered = true;
+        });
+    });
+    if (!waitUntil([&]() { return lookupReady.load(); })) {
+        stage = 5;
+        lookup.join();
+        FAIL() << "the lookup was never set up";
     }
+
+    std::thread overlapped([&]() {
+        float overlappedRed;
+        (void)renderRedAt(downstream, roi, probe, probe, false, &overlappedRed);
+    });
+    const bool editedToB = waitUntil([&]() { return stage.load() >= 1; });
+    if (editedToB) {
+        upstreamValue->setValue(kUpstreamB, ViewSpec::all(), 0);
+    }
+    stage = 2;
+    const bool revertedToA = waitUntil([&]() { return stage.load() >= 3; });
+    if (revertedToA) {
+        upstreamValue->setValue(kUpstreamA, ViewSpec::all(), 0);
+    }
+    stage = 4;
+    overlapped.join();
+    lookup.join();
+    CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    ASSERT_TRUE(editedToB && revertedToA);
+    ASSERT_FALSE(hookTimedOut.load());
+
+    ASSERT_TRUE(lookupRendered);
+    EXPECT_NEAR(kUpstreamA + kDownstream, lookupRed, 1e-5f) << "the lookup saw the image rendered from B";
+
+    // The lookup rendered A cleanly, so it serves this lookup, as frame 2's entry serves its own.
+    int downstreamRenders = CountingTestRegistry::renders(downstream);
+    ASSERT_TRUE(renderRedAt(downstream, roi, probe, probe, false, &red));
+    EXPECT_NEAR(kUpstreamA + kDownstream, red, 1e-5f);
+    EXPECT_EQ(downstreamRenders, CountingTestRegistry::renders(downstream));
+    ASSERT_TRUE(renderRedAt(upstream, roi, probe, probe, false, &red));
+    EXPECT_NEAR(kUpstreamA, red, 1e-5f);
+
+    downstreamRenders = CountingTestRegistry::renders(downstream);
+    ASSERT_TRUE(renderRedAt(downstream, roi, probe, probe, false, &red, std::function<void()>(), 2.));
+    EXPECT_NEAR(kUpstreamA + kDownstream, red, 1e-5f);
+    EXPECT_EQ(downstreamRenders, CountingTestRegistry::renders(downstream)) << "frame 2's entry was retracted with the stale one";
 }
 
 // A derive that reads a knob edited to B and back to A around the read answers for B under the

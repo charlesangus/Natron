@@ -427,8 +427,6 @@ NativeEffectBase::getOutputMetadata(double time,
     // Derived with the lock released: it asks upstream nodes, which take their own locks.
     const CleanHashSnapshot clean(node, contextKey);
     ImageMetadata derived = deriveOutputMetadata(time, view);
-    // A derive that saw an edit the hash does not reflect yet, or a state the hash left and came
-    // back to, would answer for the wrong state under it.
     const bool storable = clean.allowsStoreUnder(hash);
 
     {

@@ -64,6 +64,12 @@ Deps: M163 - Incremental Bezier Edits.
   - approach: remove the shape "Animation" track (`BezierCPCurveGui` rows) from the curve editor. Add a "Show in Curve Editor" action for selected control points (viewer right-click and/or roto panel) that adds that point's x and y over time as curves under its shape; editing a key value there moves the point at that key (with undo). Points can be removed from the curve editor again.
   - size: L
 
+- [ ] M261.P2.T3 — Frame the dope sheet over every clip range
+  - files: Gui/DopeSheetView.cpp
+  - approach: `DopeSheetView::getKeyframeRange` (around lines 2644-2657) writes each Reader/time node's range into `dimFirstKeys[0]`/`dimLastKeys[0]`, overwriting the previous one, so framing (F / centerOnSelection) fits only the last node's range. Append each range instead. Found by M124's dope-sheet GUI check (2026-10-27); predates M124.
+  - verify: framing with two Reads of different ranges shows both bars whole.
+  - size: S
+
 ## Phase 261.4: Tests
 
 - [ ] M261.P4.T1 — GUI test with screenshots of both editors

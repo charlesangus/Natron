@@ -58,6 +58,7 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
 
 ## Decisions
 
+- 2026-10-27 — PM: the block hull takes in side-branch nodes, matching what the driven-knob table and drivers count as the body. The pair colour comes from the loop's name and isn't saved; node bodies aren't tinted. On a partly driven multi-dimension knob, the undriven fields stay visible. Houdini's docs only say a hull is drawn; wedges and rings are ours.
 - 2026-10-26: `loop.*` context variables stay plain values, never RFV bindings (M71 Phase 71.5).
 - 2026-10-25 — **Inline row and LoopEnd table (user):** drivers are edited where the knob is and listed together on LoopEnd.
 - 2026-10-25 — **No preview knob:** driven values display at LoopEnd's single-pass iteration, one control instead of two.

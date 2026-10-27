@@ -200,6 +200,27 @@ void runWrapped<Op : IPixelOp>(Op op, uint3 tid)
     wrapWrite(tid.xy, p, src, o.apply(divided, p), d);
 }
 
+// An op under a Divisor stage: it sees the undivided source and the "(Un)premult by" channel (1
+// where there is none, and outside the source), and nothing is multiplied back.
+interface IDivisorPixelOp
+{
+    [mutating] void load(StructuredBuffer<uint> params);
+    float4 apply(float4 v, float d, int2 xy);
+}
+
+void runWrappedDivisor<Op : IDivisorPixelOp>(Op op, uint3 tid)
+{
+    if (wrapOutside(tid))
+        return;
+    const int2 p = wrapPixel(tid);
+    const float4 src = wrapReadSource(p);
+    const float d = wrapHasDivisor() ? wrapDivisor(p, src) : 1.0;
+    Op o = op;
+    o.load(wrapAux);
+    // Multiplying back by 1 leaves the result exactly as the op wrote it.
+    wrapWrite(tid.xy, p, src, o.apply(src, d, p), 1.0);
+}
+
 // The source over the output rect, divided where the divisor is usable, for a spatial filter to
 // read; every channel is written, processed or not.
 [shader("compute")]

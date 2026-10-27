@@ -538,7 +538,8 @@ resolveStagePlan(EffectInstance& effect,
     }
 
     NodePtr node = effect.getNode();
-    KnobChannelSelectPtr unPremultBy = (stages.has(Stage::Premult) && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+    const bool hasDivisor = stages.has(Stage::Premult) || stages.has(Stage::Divisor);
+    KnobChannelSelectPtr unPremultBy = (hasDivisor && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
     if (unPremultBy && !unPremultBy->isNone() && (sourceInput >= 0) && effect.getInput(sourceInput)) {
         std::list<ImageLayerDesc> availableLayers;
         effect.getAvailableLayers(time, view, sourceInput, &availableLayers);
@@ -634,6 +635,8 @@ runStagesCpu(EffectInstance& effect,
     const float mix = (float)plan.mix;
     const bool maskInvert = plan.maskInvert;
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
+    // A Divisor stage hands the op the divisor row and neither divides nor multiplies back.
+    const bool divisorToOp = plan.stages.has(Stage::Divisor);
     const int sourceInput = plan.sourceInput;
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
@@ -742,12 +745,13 @@ runStagesCpu(EffectInstance& effect,
         const PassExec::PlaneJob& job = jobs[band.job];
         const int nComps = job.nComps;
         const std::size_t rowSize = (std::size_t)width * nComps;
-        const bool direct = stageFinishIsCopy(doMask, mix, bool(job.divisor), nComps, job.channels);
+        const bool divides = job.divisor && !divisorToOp;
+        const bool direct = stageFinishIsCopy(doMask, mix, divides, nComps, job.channels);
         // The same image fetched twice reads the same row, so the source row serves as the base.
         const bool baseIsSource = (nFolded > 0) && job.src && (jobSources[band.job][0].image == job.src);
         const bool readsSource = (nFolded == 0) || !direct || baseIsSource;
         std::vector<float> sourceRow(readsSource ? rowSize : 0);
-        std::vector<float> dividedRow(job.divisor ? rowSize : 0);
+        std::vector<float> dividedRow(divides ? rowSize : 0);
         std::vector<float> kernelRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<float> divisorRow(job.divisor ? width : 0);
@@ -762,7 +766,7 @@ runStagesCpu(EffectInstance& effect,
         const float* resultRow = kernelRow.data();
 
         RowIO io;
-        io.src[0] = job.divisor ? dividedRow.data() : sourceRow.data();
+        io.src[0] = divides ? dividedRow.data() : sourceRow.data();
         io.nSrc = 1;
         io.mask = doMask ? &maskRow[0] : 0;
         io.divisor = job.divisor ? &divisorRow[0] : 0;
@@ -786,8 +790,10 @@ runStagesCpu(EffectInstance& effect,
                 PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, sourceRow.data());
             }
             if (job.divisor) {
-                std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
                 PassExec::readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
+            }
+            if (divides) {
+                std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
                 for (int i = 0; i < width; ++i) {
                     const float d = divisorRow[i];
                     if (!Image::unPremultDivisorIsUsable(d)) {
@@ -858,7 +864,7 @@ runStagesCpu(EffectInstance& effect,
                         continue;
                     }
                     float v = outPix[c];
-                    if (job.divisor && (c != job.skipChannel)) {
+                    if (divides && (c != job.skipChannel)) {
                         v = Image::premultiplyValue(v, divisorRow[i]);
                     }
                     if (alpha == 0.f) {

@@ -40,7 +40,8 @@
  * template registered under several IDs has one fragment per ID) and "Header.h" is the class's
  * header, relative to the fragment. Everything else the registry needs -- ID, label, grouping,
  * versions, icon and the deprecated and internal-use-only flags -- comes from the class's
- * NodeSpec.
+ * NodeSpec. An I-node's fragment also holds a NATRON_I_VARIANT line, which this registry ignores
+ * and IVariantRegistry collects.
  *
  * Engine/CMakeLists.txt globs the fragments, sorted by path, into the generated
  * NativeRegistryAll.inc. Included with NATRON_NATIVE_REGISTRY_HEADERS defined, as below, it

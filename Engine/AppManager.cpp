@@ -209,19 +209,41 @@ backTraceSigSegvHandler(int sig,
     ucontext_t *uc = (ucontext_t *)secret;
 
     /* Do something useful with siginfo_t */
-    if (sig == SIGSEGV) {
+    if ((sig == SIGSEGV) || (sig == SIGFPE)) {
         QThread* curThread = QThread::currentThread();
         std::string threadName;
         if (curThread) {
             threadName = (qApp && qApp->thread() == curThread) ? "Main" : curThread->objectName().toStdString();
         }
-        std::cerr << "Caught segmentation fault (SIGSEGV) from thread "  << threadName << "(" << curThread << "), faulty address is " <<
-             #ifndef __x86_64__
-        (void*)uc->uc_mcontext.gregs[REG_EIP]
-             #else
-            (void*) uc->uc_mcontext.gregs[REG_RIP]
-             #endif
-            << " from " << info->si_addr << std::endl;
+#ifndef __x86_64__
+        void* const faultyAddress = (void*)uc->uc_mcontext.gregs[REG_EIP];
+#else
+        void* const faultyAddress = (void*)uc->uc_mcontext.gregs[REG_RIP];
+#endif
+        if (sig == SIGSEGV) {
+            std::cerr << "Caught segmentation fault (SIGSEGV)";
+        } else {
+            // Debug builds trap floating-point exceptions on the main and render threads; the code says which one.
+            const char* what = "other";
+            switch (info->si_code) {
+            case FPE_FLTDIV:
+                what = "float division by zero";
+                break;
+            case FPE_FLTINV:
+                what = "invalid float operation";
+                break;
+            case FPE_FLTOVF:
+                what = "float overflow";
+                break;
+            case FPE_INTDIV:
+                what = "integer division by zero";
+                break;
+            default:
+                break;
+            }
+            std::cerr << "Caught floating-point exception (SIGFPE, " << what << ")";
+        }
+        std::cerr << " from thread " << threadName << "(" << curThread << "), faulty address is " << faultyAddress << " from " << info->si_addr << std::endl;
     } else {
         printf("Got signal %d#92;n", sig);
     }
@@ -263,6 +285,10 @@ setSigSegvSignal()
 
     if (sigaction(SIGSEGV, &sa, NULL) == -1) {
         std::perror("setting up sigsegv signal");
+        std::exit(1);
+    }
+    if (sigaction(SIGFPE, &sa, NULL) == -1) {
+        std::perror("setting up sigfpe signal");
         std::exit(1);
     }
 }

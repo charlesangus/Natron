@@ -335,7 +335,7 @@ public:
 
     /**
      * @brief Replaces the plane and channel choice params that openfx-supportext's
-     * ofxsMultiPlane library builds (e.g. Premult's "inputPlane", IDistort's "channelU") with
+     * ofxsMultiPlane library builds (e.g. a listed "inputPlane", IDistort's "channelU") with
      * native "host<ParamName>" twins: a KnobLayerSelect for a plane choice, a KnobChannelSelect
      * for a channel choice. The plugin choice is hidden and no longer saved; the twin's value
      * is pushed into it on every change. Twins without a page of their own go on fallbackPage.
@@ -343,11 +343,10 @@ public:
     void takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage);
 
     /**
-     * @brief Takes over \p paramName of \p pluginID as a plane choice, the way Premult's
-     * "inputPlane" is: a "hostInputLayer" twin labelled "Layer", reading the Source clip and
-     * owning the plugin's R/G/B/A quad. A plane choice's options give nothing to recognise it
-     * by, so only listed params are taken over; this lists a test plug-in's without the shipped
-     * table naming it. Only the test mains call it, before AppManager::load().
+     * @brief Takes over \p paramName of \p pluginID as a plane choice: a "hostInputLayer" twin
+     * labelled "Layer", reading the Source clip and owning the plugin's R/G/B/A quad. A plane
+     * choice's options give nothing to recognise it by, so only params listed here are taken
+     * over; no shipped plug-in is listed. Only the test mains call it, before AppManager::load().
      **/
     static void addPlaneChoiceTakeOverForTesting(const std::string& pluginID, const std::string& paramName);
 

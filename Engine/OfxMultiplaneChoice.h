@@ -39,9 +39,9 @@ NATRON_NAMESPACE_ENTER
  * @brief Translates between Natron's own layer/channel selection values (as read/written by
  * KnobLayerSelect/KnobChannelSelect: a layer ID, "<layerID>.<channelName>", or empty for None)
  * and the option IDs openfx-supportext's ofxsMultiPlane.cpp encodes
- * into an OFX plugin's own plane/channel choice params -- Premult/Unpremult's "inputPlane" and
- * Premult's own "unPremultByChannel", IDistort's/STMap's "channelU"/"channelV"/"channelA" --
- * that Natron's own layer/channel knobs are meant to replace.
+ * into an OFX plugin's own plane/channel choice params -- a plane choice such as "inputPlane",
+ * the shared "unPremultByChannel" picker, channel pickers such as "channelU" -- that Natron's own
+ * layer/channel knobs are meant to replace.
  *
  * The plugin never sees Natron's colour views: every colour view (rgba/rgb/alpha/xy) shares the
  * single colour storage plane on the plugin side, so every colour option carries the storage

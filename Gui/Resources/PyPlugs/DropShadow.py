@@ -242,7 +242,7 @@ def createInstance(app,group):
     # End of node "Transform2"
 
     # Start of node "Premult1"
-    lastNode = app.createNode("net.sf.openfx.Premult", 2, group)
+    lastNode = app.createNode("Premult", 1, group)
     lastNode.setScriptName("Premult1")
     lastNode.setLabel("Premult1")
     lastNode.setPosition(759, 341)

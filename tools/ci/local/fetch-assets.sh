@@ -157,6 +157,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # TimeBufferRead/Write accept alpha-only images too (they build only under
 # DEBUG), and the deprecated HueCorrect 1.0 is registered as
 # net.sf.openfx.HueCorrect1 so only HueCorrect 2.0 owns net.sf.openfx.HueCorrect.
+# Natron retires both through Engine/OfxRetired markers; the native HueCorrect replaces them.
 #
 # This revision excludes the OFX Grade, ColorCorrect, Saturation, Clamp,
 # Invert, Add, Multiply and Gamma plugins; the native nodes in Engine/Nodes/Color

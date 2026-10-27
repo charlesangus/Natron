@@ -41,6 +41,9 @@
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -254,9 +257,9 @@ DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
         NodePtr output = it->lock();
         std::string pluginID = output->getPluginID();
 
-        if ( (pluginID == PLUGINID_OFX_RETIME)
-             || ( pluginID == PLUGINID_OFX_TIMEOFFSET)
-             || ( pluginID == PLUGINID_OFX_FRAMERANGE) ) {
+        if ((pluginID == PLUGINID_NATRON_RETIME)
+            || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
+            || (pluginID == PLUGINID_NATRON_FRAMERANGE)) {
             return output.get();
         } else {
             Node* ret =  getNearestTimeFromOutputs_recursive(output.get(), markedNodes);
@@ -364,11 +367,11 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
         nodeType = eDopeSheetItemTypeReader;
     } else if (effectInstance->getPluginID() == PLUGINID_NATRON_GROUP) {
         nodeType = eDopeSheetItemTypeGroup;
-    } else if (pluginID == PLUGINID_OFX_RETIME) {
+    } else if (pluginID == PLUGINID_NATRON_RETIME) {
         nodeType = eDopeSheetItemTypeRetime;
-    } else if (pluginID == PLUGINID_OFX_TIMEOFFSET) {
+    } else if (pluginID == PLUGINID_NATRON_TIMEOFFSET) {
         nodeType = eDopeSheetItemTypeTimeOffset;
-    } else if (pluginID == PLUGINID_OFX_FRAMERANGE) {
+    } else if (pluginID == PLUGINID_NATRON_FRAMERANGE) {
         nodeType = eDopeSheetItemTypeFrameRange;
     }
 

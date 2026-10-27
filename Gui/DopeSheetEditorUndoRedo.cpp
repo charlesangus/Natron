@@ -25,13 +25,19 @@
 
 #include "DopeSheetEditorUndoRedo.h"
 
+#include <algorithm>
+#include <set>
 #include <stdexcept>
+#include <vector>
 
 #include <QDebug>
 
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -69,29 +75,79 @@ moveReader(const NodePtr &reader,
     Q_UNUSED(s);
 }
 
+KnobDoublePtr
+getTimeOffsetKnob(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kTimeOffsetParamTimeOffset));
+}
+
+/**
+ * @brief Move a TimeOffset by dt: everything it shows comes dt later. An animated offset has its
+ * curve moved by dt in time and in value, and the selected keys on it follow their keyframes.
+ */
 void
 moveTimeOffset(const NodePtr& node,
-               double dt)
+               double dt,
+               const DopeSheetKeyPtrList& selectedKeys)
 {
-    KnobIntBase* timeOffsetKnob = dynamic_cast<KnobIntBase*>( node->getKnobByName(kTimeOffsetParamNameTimeOffset).get() );
+    KnobDoublePtr timeOffsetKnob = getTimeOffsetKnob(node);
     assert(timeOffsetKnob);
-    KnobHelper::ValueChangedReturnCodeEnum s = timeOffsetKnob->setValue(timeOffsetKnob->getValue() + dt, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
-    Q_UNUSED(s);
+    if (!timeOffsetKnob) {
+        return;
+    }
+    if (!timeOffsetKnob->isAnimated(0, ViewIdx(0))) {
+        KnobHelper::ValueChangedReturnCodeEnum s = timeOffsetKnob->setValue(timeOffsetKnob->getValue() + dt, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+        Q_UNUSED(s);
+
+        return;
+    }
+
+    KeyFrameSet keyframes = timeOffsetKnob->getCurve(ViewIdx(0), 0)->getKeyFrames_mt_safe();
+    std::vector<KeyFrame> ordered(keyframes.begin(), keyframes.end());
+    // Move the keys in the direction of the move first, so that none lands on one not yet moved.
+    if (dt > 0) {
+        std::reverse(ordered.begin(), ordered.end());
+    }
+    for (std::vector<KeyFrame>::const_iterator it = ordered.begin(); it != ordered.end(); ++it) {
+        KeyFrame moved;
+        if (!timeOffsetKnob->moveValueAtTime(eCurveChangeReasonDopeSheet, it->getTime(), ViewSpec::all(), 0, dt, dt, &moved)) {
+            continue;
+        }
+        for (DopeSheetKeyPtrList::const_iterator keyIt = selectedKeys.begin(); keyIt != selectedKeys.end(); ++keyIt) {
+            if (((*keyIt)->knob.lock() == timeOffsetKnob) && ((*keyIt)->dimension == 0) && ((*keyIt)->key.getTime() == it->getTime())) {
+                (*keyIt)->key = moved;
+            }
+        }
+    }
 }
 
 void
 moveFrameRange(const NodePtr& node,
                double dt)
 {
-    KnobIntBase* frameRangeKnob = dynamic_cast<KnobIntBase*>( node->getKnobByName(kFrameRangeParamNameFrameRange).get() );
-    assert(frameRangeKnob);
-    frameRangeKnob->setValues(frameRangeKnob->getValue() + dt, frameRangeKnob->getValue(1)  + dt, ViewSpec::all(), eValueChangedReasonNatronGuiEdited);
+    KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamFirstFrame));
+    KnobIntPtr lastFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamLastFrame));
+    assert(firstFrameKnob && lastFrameKnob);
+    if (!firstFrameKnob || !lastFrameKnob) {
+        return;
+    }
+    const int first = firstFrameKnob->getValue();
+    const int last = lastFrameKnob->getValue();
+    // Move the end in the direction of the move first, so the range never turns inside out.
+    if (dt > 0) {
+        lastFrameKnob->setValue(static_cast<int>(last + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+        firstFrameKnob->setValue(static_cast<int>(first + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+    } else {
+        firstFrameKnob->setValue(static_cast<int>(first + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+        lastFrameKnob->setValue(static_cast<int>(last + dt), ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+    }
 }
 
 void
 moveGroupNode(DopeSheetEditor* model,
               const NodePtr& node,
-              double dt)
+              double dt,
+              const DopeSheetKeyPtrList& selectedKeys)
 {
     NodeGroup *group = node->isEffectGroup();
 
@@ -106,14 +162,16 @@ moveGroupNode(DopeSheetEditor* model,
         NodeGroup* isChildGroup = (*it)->isEffectGroup();
 
         // Move readers
+        KnobDoublePtr movedOffset;
         if (pluginID == PLUGINID_NATRON_READ) {
             moveReader(*it, dt);
-        } else if (pluginID == PLUGINID_OFX_TIMEOFFSET) {
-            moveTimeOffset(*it, dt);
-        } else if (pluginID == PLUGINID_OFX_FRAMERANGE) {
+        } else if (pluginID == PLUGINID_NATRON_TIMEOFFSET) {
+            moveTimeOffset(*it, dt, selectedKeys);
+            movedOffset = getTimeOffsetKnob(*it);
+        } else if (pluginID == PLUGINID_NATRON_FRAMERANGE) {
             moveFrameRange(*it, dt);
         } else if (isChildGroup) {
-            moveGroupNode(model, *it, dt);
+            moveGroupNode(model, *it, dt, selectedKeys);
         }
 
         // Move keyframes
@@ -121,7 +179,7 @@ moveGroupNode(DopeSheetEditor* model,
 
         for (KnobsVec::const_iterator knobIt = knobs.begin(); knobIt != knobs.end(); ++knobIt) {
             const KnobIPtr& knob = *knobIt;
-            if ( !knob->hasAnimation() ) {
+            if (!knob->hasAnimation() || (movedOffset && (knob == movedOffset))) {
                 continue;
             }
 
@@ -237,11 +295,36 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
         node->getEffectInstance()->beginChanges();
     }
 
+    // Moving a TimeOffset moves the keys of its offset itself.
+    std::set<KnobIPtr> offsetsMovedWithNodes;
+    for (std::vector<MovedNode>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+        NodePtr node = it->node.lock();
+        if (!node) {
+            continue;
+        }
+        NodesList moved;
+        if (it->type == eDopeSheetItemTypeTimeOffset) {
+            moved.push_back(node);
+        } else if (NodeGroup* group = node->isEffectGroup()) {
+            group->getNodes_recursive(moved, true);
+        }
+        for (NodesList::const_iterator movedIt = moved.begin(); movedIt != moved.end(); ++movedIt) {
+            if ((*movedIt)->getPluginID() == PLUGINID_NATRON_TIMEOFFSET) {
+                KnobDoublePtr offset = getTimeOffsetKnob(*movedIt);
+                if (offset) {
+                    offsetsMovedWithNodes.insert(offset);
+                }
+            }
+        }
+    }
 
     //////////Handle selected keyframes
     for (DopeSheetKeyPtrList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKeyPtr& selectedKey = (*it);
         KnobIPtr knob = selectedKey->knob.lock();
+        if (offsetsMovedWithNodes.count(knob)) {
+            continue;
+        }
 
         knob->moveValueAtTime(eCurveChangeReasonDopeSheet, selectedKey->key.getTime(), ViewIdx(0),
                               selectedKey->dimension,
@@ -258,9 +341,9 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
         } else if (it->type == eDopeSheetItemTypeFrameRange) {
             moveFrameRange(node, dt);
         } else if (it->type == eDopeSheetItemTypeTimeOffset) {
-            moveTimeOffset(node, dt);
+            moveTimeOffset(node, dt, _keys);
         } else if (it->type == eDopeSheetItemTypeGroup) {
-            moveGroupNode(_model, node, dt);
+            moveGroupNode(_model, node, dt, _keys);
         }
     }
 

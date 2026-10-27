@@ -319,7 +319,7 @@ future core work has solid ground to build on.
 | M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
 | M223 | Read And Write Knob Cleanup | todo | M167 |  | E3 | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
-| M224 | Fluid Roto And RotoPaint Interaction | doing | M146 | bosley-native-nodes | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
+| M224 | Fluid Roto And RotoPaint Interaction | doing | M146, M117 | bosley-native-nodes | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
 | M260 | Cache Invalidation Follow-ups | doing | M242 | bosley-native-nodes | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | doing | M163 | bosley-native-nodes | E6 | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |

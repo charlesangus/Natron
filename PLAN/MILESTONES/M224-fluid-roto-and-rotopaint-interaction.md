@@ -1,13 +1,105 @@
 # M224 - Fluid Roto And RotoPaint Interaction
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+Deps: M146 - Roto Hosting For Any Node, M117 - GUI Perf Harness And Baseline (bench tooling).
 
-Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26), pre-existing: RotoPaint interaction in the viewer is poor. Strokes don't draw cleanly and instantly under the pen; they appear after a delay. Roto and RotoPaint interactivity is central to the user experience and must be completely fluid.
+Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes appear after a delay instead of under the pen, and roto editing feels heavy. Audit on main (50ee71b60): nothing draws the stroke while painting, so what the user sees is the render itself (`Engine/RotoPaintInteract.cpp:688`, `Engine/RotoCurveContext.cpp:1581`); stroke renders run on one thread (`Engine/OutputSchedulerThread.cpp:4304`); pen-up blocks the main thread (`Engine/RotoContext.cpp:499`); shape drags render only on release (`evaluateOnPenUp`, `Engine/RotoUndoCommand.cpp:181`); each motion event clones the dragged points into a new undo command; the overlay re-evaluates every Bezier on every paint (`Engine/RotoCurveInteract.cpp:2295`). This milestone measures, then puts a GPU preview under the pen, makes pen-up asynchronous, renders drags live, cuts per-event costs and closes the Nuke gesture gaps.
 
-Investigate before designing: profile a live stroke end to end (input event → stroke sample → overlay draw → incremental render → texture upload → viewer paint), on the hardware range (a modest laptop GPU as well as a workstation), with brush sizes from small to large, at 2K and 4K, with and without a heavy upstream graph. Compare with how Nuke, Krita and Mari keep strokes under the pen (immediate overlay or preview stroke drawn on the GPU, render catching up behind). Check the existing paint-stroke path (the `setDuringPaintStrokeCreationThreadLocal` tiled path, the stroke render queue, cache behaviour during a stroke) for avoidable work and waits.
+## Scope
+**In:**
+- A pen-to-pixel latency probe, a roto GUI bench, a stroke preview overlay, an async neat render, live drag renders, gesture-scoped undo capture, a cached and culled overlay, and Nuke gesture parity per the audit.
+**Out:**
+- Removing the GUI/internal double buffer (M163 - Incremental Bezier Edits kept it).
+- Roto keys in the Dope Sheet and Curve Editor (M261 - Roto Keyframes In Dope Sheet And Curve Editor).
+- Rewriting the stroke renderer itself (cairo); M64 - Tiled Rendering.
+**Edge cases:**
+- Multi-stroke mode keeps the preview until its last neat render lands.
+- A new pen-down while the previous neat render is running must not trip the overlap assert (`Engine/ViewerInstance.cpp:833`).
+- Eraser, clone and smear previews show the brush footprint only, not the result.
+- A drag over a heavy graph must abort stale renders (latest wins).
+**Assumptions:**
+- The viewer's compatibility GL context allows the overlay to use vertex arrays.
+- The finished stroke stays bit-identical because the neat render path is unchanged.
 
-Acceptance sketch:
-- A stroke follows the pen with no visible lag: the pen-to-pixel latency is measured and held to a budget the user signs off (one display frame for the preview), with the final render converging behind it.
-- Roto shape editing (dragging points, tangents, feather) is equally fluid on large shapes and many shapes.
-- No regression in the rendered result: the finished stroke is bit-identical to today's.
-- A benchmark records stroke latency and frame times so regressions show up.
+## Phase 224.1: Measure
+
+- [ ] M224.P1.T1 — Add an opt-in pen-to-pixel latency probe
+  - files: `Gui/ViewerGL.cpp`, `Engine/RotoPaintInteract.cpp`, `Engine/OutputSchedulerThread.cpp`, `Engine/ViewerInstance.cpp`
+  - approach: when `NATRON_ROTO_LATENCY_LOG=<path>` is set, stamp `steady_clock` at the event (tablet/mouse), at `appendPoint`, at render request, start and end, at texture upload and at the `paintGL` swap. Write one JSON line per point age, on the same clock as M117's StallMonitor. When the variable is unset there is no cost beyond one branch.
+  - verify: a GuiTests gtest drives five synthetic points and checks five records with monotonically increasing stamps. With the variable unset, no file is written.
+  - size: M
+- [ ] M224.P1.T2 — Add a roto bench driver to the GUI bench
+  - files: `tools/bench/gui/roto_bench.py` (new), `tools/bench/gui/run.sh`, `tools/bench/gui/README.md`
+  - approach: built on M117's `gui_bench.py`/`guitest.run()`. Ops: `stroke` at brush sizes 5/50/300 px, at 2K and 4K, with and without a `gen_graph` comp of 300 nodes upstream; `drag_point`, `drag_tangent`, `drag_feather` and `transform_box` on 1, 30 and 100 shapes of 24 points × 200 keys; `hover` over 100 shapes; `pen_up` stall. Each op reports p50/p95 pen-to-pixel latency (from P1.T1), overlay frame time and stalls.
+  - verify: runs under `Tests/gui/run-gui-test.sh` and emits a record per op with no `timeout`. `compare.py --self-test` still passes.
+  - size: M
+- [ ] M224.P1.T3 — Record the Xvfb and host baselines and agree the budget
+  - files: `tools/bench/BASELINE.md`, `tools/bench/gui/baselines/roto-xvfb.jsonl` (new)
+  - approach: record an Xvfb baseline for regressions. Record host numbers from a stripped `release` AppImage on the user's workstation and on a modest-GPU machine. Rank the costs per stage from the probe; this ranking confirms or reorders Phases 2-4.
+  - verify: the tables are recorded. The user signs off the latency budget, recorded in `## Decisions`.
+  - size: M
+
+## Phase 224.2: Strokes under the pen
+
+- [ ] M224.P2.T1 — Draw the stroke being painted as a GPU overlay preview
+  - files: `Engine/RotoPaintInteract.cpp`, `Engine/RotoPaintInteract.h`, `Engine/RotoCurveInteract.cpp`
+  - approach: on each pen motion, append the raw sample (position, pressure) to an interact-owned buffer and request an overlay redraw only. `drawOverlay` draws pressure-scaled dabs or a quad strip in the brush colour × opacity with hardness falloff, adding only new segments each paint. The buffer clears when the neat render for that stroke age lands.
+  - verify: a new Xvfb test, `Tests/gui/m224_stroke_preview.py`, drags on ViewerGL with renders held (viewer paused) and checks preview pixels at each sample position after one paint. Bench `stroke` p95 meets the budget from P1.T3.
+  - size: L
+- [ ] M224.P2.T2 — Coalesce stroke renders and let each one use the pool
+  - files: `Engine/OutputSchedulerThread.cpp`, `Engine/RotoCurveContext.cpp`, `Engine/RotoStrokeItem.cpp`
+  - approach: allow one stroke render in flight; requests that arrive meanwhile collapse into one, which picks up every point since the last rendered age (`getMostRecentStrokeChangesSinceAge` already accumulates). Keep stroke requests serialized but let each render use the thread pool for tiles in place of `maxThreads=1`. Remove the per-point `qDebug`.
+  - verify: the stroke golden (a ≤256 px half-float crop) is bit-identical before and after. Bench `stroke` on 4K with heavy upstream shows the backlog flat (render requests ≤ points). Run `RotoSmear` and the existing roto tests.
+  - size: L
+- [ ] M224.P2.T3 — Make the pen-up neat render asynchronous
+  - files: `Engine/RotoContext.cpp`, `Engine/RotoContext.h`, `Engine/RotoPaintInteract.cpp`, `Engine/ViewerInstance.cpp`
+  - approach: replace the main-thread condition wait with a completion callback. The preview stays up until the neat render lands. A pen-down during a neat render either waits on a worker or queues behind it, never on the GUI thread, with no busy cursor.
+  - verify: the Xvfb test draws two strokes 50 ms apart; StallMonitor records no stall over 50 ms; the final crop is bit-identical to the golden.
+  - size: L
+
+## Phase 224.3: Shape editing
+
+- [ ] M224.P3.T1 — Render roto shapes live during drags
+  - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoUndoCommand.cpp`
+  - approach: point, tangent, feather and transform-box drags request a throttled, abortable `evaluateChange` (latest wins) instead of waiting for pen-up. Pen-up still triggers the final evaluate and autosave.
+  - verify: `Tests/gui/m224_shape_drag.py` drags a point and samples a mask pixel that changes before release. Bench `drag_point` frame time is within budget.
+  - size: M
+- [ ] M224.P3.T2 — Capture undo state once per gesture
+  - files: `Engine/RotoUndoCommand.cpp`, `Engine/RotoUndoCommand.h`, `Engine/RotoCurveInteract.cpp`
+  - approach: Move, Transform, Tangent and FeatherBar commands snapshot the originals at gesture start (keyed by `UndoGesture`). Each motion event then applies only a delta to the open command, with no point clones and no merge.
+  - verify: an undo/redo gtest over every drag type matches serialized roto byte for byte. Bench `drag_point` at 200 keys has flat per-event cost.
+  - size: M
+- [ ] M224.P3.T3 — Cache and cull the shape overlay
+  - files: `Engine/RotoCurveInteract.cpp`, `Engine/Bezier.cpp`, `Engine/Bezier.h`
+  - approach: cache the evaluated polygon and feather polygon per (Bezier, time) and invalidate them with the content hash. Skip shapes whose bbox lies outside the viewport, and draw from vertex arrays.
+  - verify: overlay screenshots match before and after (Xvfb). Bench `hover` on 100 shapes drops and scales sublinearly.
+  - size: M
+
+## Phase 224.4: Gestures and modes
+
+- [ ] M224.P4.T1 — Audit gesture parity against Nuke Roto/RotoPaint
+  - files: `.plan` milestone `## Decisions` only
+  - approach: build a table of every Nuke viewer gesture and shortcut in `.local/docs/nuke/.../rotopaint/` next to Natron's (`RotoCurveInteract.cpp:1210-1250`, `RotoPaintInteract.cpp:580-600`). Mark each row present, missing or conflicting.
+  - verify: the user approves the adopt list.
+  - size: M
+- [ ] M224.P4.T2 — Add ripple-edit range modes
+  - files: `Engine/RotoCurveInteract.cpp`, `Engine/Bezier.cpp`, `Engine/RotoCurveContext.cpp`, `Gui/ViewerGL.cpp`
+  - approach: add modes all, from start, to end and range, as a choice next to the ripple toggle, and draw a red viewer border while ripple is on.
+  - verify: a gtest ripples each mode on a 10-key shape. An Xvfb screenshot shows the border.
+  - size: M
+- [ ] M224.P4.T3 — Add the Bezier drawing and tangent modifiers
+  - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoUndoCommand.cpp`
+  - approach: implement the missing rows from P4.T1: Ctrl+click to sketch, Shift+click for a sharp exit point, Shift-drag to move both tangents, Ctrl-drag to break the tangent, Ctrl-drag to move the transform pivot.
+  - verify: `Tests/gui/m224_gestures.py` performs each gesture with real keys and checks the control points.
+  - size: M
+
+## Phase 224.5: Host sign-off
+
+- [ ] M224.P5.T1 — Rerun the roto bench on the host and do UAT
+  - files: `tools/bench/BASELINE.md`
+  - approach: rerun P1.T2 on the release AppImage on the workstation and the modest machine, and record the before/after table.
+  - verify: the user signs off at UAT with screenshots.
+  - size: M
+
+**Verification gate:** `tools/ci/remote/build.sh release --tests` is green for each phase. The stroke and shape goldens are bit-identical. The `m224_*` Xvfb tests pass. `roto_bench` `compare.py` against `roto-xvfb.jsonl` shows no regression. Host p95 pen-to-pixel latency is within the signed-off budget, and the user passes UAT.
+
+## Decisions

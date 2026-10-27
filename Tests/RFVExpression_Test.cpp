@@ -41,6 +41,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
@@ -263,6 +264,66 @@ TEST_F(RFVPythonObject, FollowsAnEditOfTheProjectValue)
 
     a->setValue(5.);
     EXPECT_EQ(10., doubled->getValue(0));
+}
+
+// An edit of a project variable refreshes the reading parameter's display and moves the reading
+// node's hash, so its cached renders are not reused, without a restart.
+TEST_F(RFVPythonObject, ProjectVariableEditRefreshesTheReaderAndItsNodeHash)
+{
+    KnobDoublePtr a = addProjectDouble("a", 3.);
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr doubled = node->getEffectInstance()->createDoubleKnob("rfvDoubled", "Doubled", 1);
+    ASSERT_NO_THROW(doubled->setExpression(0, "rfv.a * 2", false, true));
+    EXPECT_EQ(6., doubled->getValue(0));
+    const U64 before = node->getHashValue();
+
+    int refreshes = 0;
+    ASSERT_TRUE(bool(doubled->getSignalSlotHandler()));
+    QMetaObject::Connection counter = QObject::connect(doubled->getSignalSlotHandler().get(), &KnobSignalSlotHandler::valueChanged,
+                                                       [&refreshes](ViewSpec, int, int) {
+                                                           ++refreshes;
+                                                       });
+    a->setValue(5.);
+    QObject::disconnect(counter);
+
+    EXPECT_GE(refreshes, 1);
+    EXPECT_EQ(10., doubled->getValue(0));
+    const U64 after = node->getHashValue();
+    EXPECT_NE(before, after);
+
+    a->setValue(3.);
+    EXPECT_EQ(6., doubled->getValue(0));
+    EXPECT_EQ(before, node->getHashValue());
+}
+
+// A variable a Set node declares is not a dependency of an expression reading it: the value read
+// depends on the path a render takes, so an edit of the Set's variable leaves the reader alone.
+TEST_F(RFVPythonObject, SetNodeVariableIsNotADependencyOfItsReader)
+{
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(set));
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+    ASSERT_TRUE(bool(variables));
+    KnobDoublePtr s = set->getEffectInstance()->createDoubleKnob("s", "s", 1);
+    ASSERT_TRUE(variables->addKnob(s));
+    set->getEffectInstance()->recreateUserKnobs(false);
+    s->setValue(3.);
+
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr read = node->getEffectInstance()->createDoubleKnob("rfvRead", "Read", 1);
+    ASSERT_NO_THROW(read->setExpression(0, "rfv.s if rfv.s is not None else -1", false, true));
+    EXPECT_EQ(-1., read->getValue(0));
+    const U64 before = node->getHashValue();
+
+    KnobI::ListenerDimsMap listeners;
+    s->getListeners(listeners);
+    EXPECT_TRUE(listeners.find(read) == listeners.end());
+
+    s->setValue(5.);
+    EXPECT_EQ(-1., read->getValue(0));
+    EXPECT_EQ(before, node->getHashValue());
 }
 
 // Outside a render, an animated project variable is read at the timeline's frame.

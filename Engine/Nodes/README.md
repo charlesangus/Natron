@@ -291,6 +291,107 @@ the default pass-through. Key filters are
 characters including `/`, `?` one, an empty list matching every key.
 
 
+## Reverse-Flow Variables
+
+A Reverse-Flow Variable (RFV) is a named value that flows up the graph, from a
+node towards its inputs, for parameter expressions to read. Any parameter that
+holds a value can be a variable: a boolean, an integer, a choice, a double, a
+string, or several dimensions of one of them. A variable can be animated or
+driven by an expression.
+
+Variables are set in two places:
+
+- **The project.** Variables on the project settings' Variables page are the
+  base values, seen wherever no Set node overrides them. A project variable is
+  also `app.<name>` in Python.
+- **The `ReverseFlowVariableSet` node** (Set). It passes its input through
+  unchanged and sets its variables for everything upstream of it. Its
+  Variables tab and the Python API are documented in
+  `Engine/Nodes/RFV/docs/ReverseFlowVariableSet.md`.
+
+A variable is a child of a group flagged as an RFV group, and its name is the
+child's script name. Only the project and the Set node carry such a group, so
+an ordinary user parameter is never a variable.
+
+### Reading a variable: the `rfv` object
+
+Expressions read variables through `rfv`. These three forms are equivalent:
+`rfv.shot`, `rfv('shot')` and `rfv['shot']`. An unset variable reads as `None`,
+so an expression can test for it. Values are Python bools, ints, floats and
+strings, and a variable with several dimensions is a list of them.
+
+For example, a Grade whose gain expression is `1 if rfv.var == 'a' else 2`,
+under a Set setting `var` to `'a'` on one branch and to `'b'` on another,
+renders with gain 1 on the first branch and gain 2 on the second
+(`Tests/RFVRender_Test.cpp`).
+
+### Per-path semantics
+
+An upstream node sees the variables of the nearest Set node below it, on the
+path that requested it. A variable that no Set on the path sets keeps the
+project's value. When one node is reached through two Sets in one render (a
+diamond), it renders once for each distinct set of values it reads.
+
+The engine finds out what a node reads by scanning its expressions for
+`rfv.<name>`, `rfv('<name>')` and `rfv['<name>']`. Any other use of `rfv`, such
+as `getattr(rfv, name)`, a computed key or passing `rfv` to a function, counts
+as reading every variable. A node's context key covers only the variables that
+it and everything upstream of it read. Nodes that read no variable have one
+context, so they render and cache exactly as they would without RFVs.
+
+### Resolution time
+
+A variable is read at the time of the expression that reads it, not at the time
+the render passes the Set node:
+
+- An animated or expression-driven Set variable is stored in the context as a
+  binding to the Set's parameter. The binding is evaluated at the reading
+  expression's time. So a Transform whose translate reads an animated variable
+  motion-blurs, and a TimeOffset, FrameHold or TimeBlur above the Set
+  re-samples the variable at the times it shifts to. Any expression counts as
+  time-varying, even one that ignores the frame.
+- A constant Set variable is a plain value. Nodes reading it under equal values
+  share their cache entries.
+- A project variable is likewise evaluated at the reading expression's time.
+- A Set variable's own expression may read `rfv`. It sees the values set below
+  that Set, evaluated at its own time. Project values are the bottom layer.
+
+There is no option to hold a variable at the Set node's frame.
+
+### Outside a render
+
+In a parameter panel, `instanceChanged` or a Python script, `rfv` reads the
+project's values at the timeline's current frame. Editing a project variable
+re-evaluates every expression that reads it and changes the hash of the nodes
+holding those expressions, as editing any parameter an expression reads does.
+A Set node's variables are not dependencies of the expressions that read them,
+because which Set a node sees depends on the path a render takes. A parameter
+panel therefore shows the project's value.
+
+### For node authors
+
+- Expressions need nothing more than `rfv`: the scan above finds what they read.
+- A node that reads a variable outside an expression, by name in C++, adds a
+  `ContextReadSource` (`Engine/RenderContext.h`) to one of its knobs so the
+  engine keys the node by that variable. A source whose reads change calls
+  `invalidateRenderContextReads()`.
+- A node that sets variables for its inputs, as the Set node does, overrides
+  `EffectInstance::getInputContexts()`.
+- An input's metadata, region of definition and layers are read under the
+  context the node requests that input under. A node calling those actions
+  through `EffectInstance` gets this without extra code.
+
+### v1 limits
+
+- **Metadata follows the Set; the frame range does not.** A format, region of
+  definition or layer set that an expression drives from `rfv` follows the Set
+  below the node, in a render and in the request pass. A node's frame range is
+  its time domain, not metadata. It is read with the project's values whatever
+  Set is below the node (`Tests/RFVMetadata_Test.cpp`).
+- A Group node carries no variables of its own.
+- There is no panel that lists the variables a node sees.
+
+
 ## I/O nodes
 
 Each I/O node is documented in `Engine/Nodes/IO/docs/<Node>.md`.

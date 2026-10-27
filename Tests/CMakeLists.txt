@@ -120,6 +120,7 @@ set(Tests_SOURCES
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
+    RFVMetadata_Test.cpp
     RFVPython_Test.cpp
     RFVRender_Test.cpp
     RFVSetNode_Test.cpp

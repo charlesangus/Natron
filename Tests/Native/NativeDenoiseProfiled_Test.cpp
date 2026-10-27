@@ -508,15 +508,19 @@ protected:
         const RawReference::Tolerance tolerance = site.xtrans ? RawReference::kMarkesteijnClass : RawReference::kAMaZEClass;
         const std::string prefix = site.xtrans ? "fujifilm-x-pro2-denoiseprofile-" : "canon-eos-5d-mark-iii-denoiseprofile-";
 
+        // One chain and one node for every job, each setting all of the node's knobs it reads:
+        // the chain above the node never changes, so with the caches kept the file is decoded and
+        // developed once, not once per job.
+        const RawDevelop::Chain chain = createChain(site);
+        ASSERT_TRUE(chain.complete());
+        NodePtr denoise = createNode(QString::fromUtf8(PLUGINID_NATRON_DENOISEPROFILED));
+        ASSERT_TRUE(bool(denoise));
+        insertAbove(chain.inputColor, denoise);
+        EffectInstancePtr effect = denoise->getEffectInstance();
+
         for (const ReferenceJob& job : kReferenceJobs) {
             const std::string name = std::string(site.xtrans ? "RAF " : "CR2 ") + "denoise (profiled) " + job.suffix;
             SCOPED_TRACE(name);
-            const RawDevelop::Chain chain = createChain(site);
-            ASSERT_TRUE(chain.complete()) << name;
-            NodePtr denoise = createNode(QString::fromUtf8(PLUGINID_NATRON_DENOISEPROFILED));
-            ASSERT_TRUE(bool(denoise)) << name;
-            insertAbove(chain.inputColor, denoise);
-            EffectInstancePtr effect = denoise->getEffectInstance();
             effect->getKnobByNameAndType<KnobChoice>(kDenoiseProfiledParamMode)->setValue((int)job.mode);
             effect->getKnobByNameAndType<KnobChoice>(kDenoiseProfiledParamColorMode)->setValue((int)job.colorMode);
             effect->getKnobByNameAndType<KnobInt>(kDenoiseProfiledParamPatchSize)->setValue(job.patchSize);
@@ -526,7 +530,7 @@ protected:
             effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamStrength)->setValue(job.strength);
             effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamPreserveShadows)->setValue(job.shadows);
             effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamBiasCorrection)->setValue(job.bias);
-            compareCrop(name.c_str(), site, chain.inputColor, (prefix + job.suffix + ".tif").c_str(), tolerance);
+            compareCrop(name.c_str(), site, chain.inputColor, (prefix + job.suffix + ".tif").c_str(), tolerance, false /*byPassCache*/);
         }
     }
 };

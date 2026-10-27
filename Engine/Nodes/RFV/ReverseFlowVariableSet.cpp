@@ -35,9 +35,11 @@
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
+#include "Engine/RenderContext.h"
 #include "Engine/UndoRecorder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -121,6 +123,8 @@ void
 ReverseFlowVariableSet::onUserKnobsChanged()
 {
     refreshVariableGroups();
+    // Adding, removing or renaming a variable changes what this node overrides.
+    invalidateRenderContextReads();
 }
 
 void
@@ -208,6 +212,40 @@ ReverseFlowVariableSet::route(double time,
                               ViewIdx /*view*/)
 {
     return Route::input(0, time);
+}
+
+bool
+ReverseFlowVariableSet::getInputContexts(int inputNb,
+                                         double time,
+                                         ViewIdx view,
+                                         const RenderContextPtr& context,
+                                         std::vector<RenderContextPtr>* contexts) const
+{
+    if (inputNb != 0) {
+        return false;
+    }
+    // The variables' expressions run as actions of this node under the incoming context.
+    ActionContextScope acting(true, context);
+    contexts->push_back(RFV::overlayDeclaredVariables(this, time, view, context));
+
+    return true;
+}
+
+RenderContextReadSet
+ReverseFlowVariableSet::getOverriddenContextVariables(int inputNb) const
+{
+    RenderContextReadSet overridden;
+    if (inputNb != 0) {
+        return overridden;
+    }
+    // Asked on render threads while the main thread may edit the variables: the snapshot, not
+    // the groups' children.
+    const RFVDeclarationsConstPtr declared = RFV::getDeclarationSnapshot(this);
+    for (const RFV::VariableDeclaration& declaration : *declared) {
+        overridden.add(RenderContextName::plain(declaration.name));
+    }
+
+    return overridden;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -70,6 +70,7 @@ set(Tests_SOURCES
     Hash64_Test.cpp
     HashInvariants_Test.cpp
     HashPluginSweep_Test.cpp
+    IdentityHop_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
@@ -123,7 +124,9 @@ set(Tests_SOURCES
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
+    RFVExpression_Test.cpp
     RFVPython_Test.cpp
+    RFVRender_Test.cpp
     RFVSetNode_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp

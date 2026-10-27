@@ -752,6 +752,11 @@ Edge::dragDest(const QPointF & dst)
     prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
+
+    if (_imp->label) {
+        QPointF pos(((dst.x() + line().p2().x()) / 2.) - 5, ((dst.y() + line().p2().y()) / 2.) - 5);
+        _imp->label->setPos(pos);
+    }
 }
 
 void
@@ -894,13 +899,16 @@ Edge::paint(QPainter *painter,
 LinkArrow::LinkArrow(const NodeGuiPtr& master,
                      const NodeGuiPtr& slave,
                      QGraphicsItem* parent)
-    : QObject(), QGraphicsLineItem(parent)
+    : QObject()
+    , QGraphicsLineItem(parent)
     , _master(master)
     , _slave(slave)
     , _arrowHead()
     , _renderColor(Qt::black)
     , _headColor(Qt::white)
     , _lineWidth(1)
+    , _undirected(false)
+    , _dashed(false)
 {
     assert(master && slave);
     QObject::connect( master.get(), SIGNAL(positionChanged(int,int)), this, SLOT(refreshPosition()) );
@@ -930,6 +938,24 @@ void
 LinkArrow::setWidth(int lineWidth)
 {
     _lineWidth = lineWidth;
+}
+
+void
+LinkArrow::setUndirected(bool undirected)
+{
+    _undirected = undirected;
+    update();
+}
+
+void
+LinkArrow::setDashed(bool dashed)
+{
+    _dashed = dashed;
+    // paint() sets the style itself; the item's pen carries it too so that scripts can read it.
+    QPen itemPen = pen();
+    itemPen.setStyle(dashed ? Qt::DashLine : Qt::SolidLine);
+    setPen(itemPen);
+    update();
 }
 
 void
@@ -1027,9 +1053,14 @@ LinkArrow::paint(QPainter *painter,
 
     myPen.setColor(_renderColor);
     myPen.setWidth(_lineWidth);
+    myPen.setStyle(_dashed ? Qt::DashLine : Qt::SolidLine);
     painter->setPen(myPen);
     QLineF l = line();
     painter->drawLine(l);
+
+    if (_undirected) {
+        return;
+    }
 
     myPen.setStyle(Qt::SolidLine);
     painter->setPen(myPen);

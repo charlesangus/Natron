@@ -192,8 +192,7 @@ public:
         , renderInstancesSharedMutex()
         , contentHashMutex()
         , contentHash(0)
-        , masterNodeMutex()
-        , masterNode()
+        , nodeLinksMutex()
         , nodeLinks()
         , nodeSettingsPage()
         , nodeLabelKnob()
@@ -213,6 +212,7 @@ public:
         , layerKnob()
         , layerKnobSpec()
         , layerKnobSources()
+        , curveContext()
         , rotoContext()
         , trackContext()
         , imagesBeingRenderedMutex()
@@ -397,12 +397,6 @@ public:
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
-    // Set on the nodes downstream of an edit instead of refreshing their input-related data, which
-    // their readers then refresh. Written on the main thread, read on any by the render setups.
-    std::atomic<bool> inputRelatedDataStale { false };
-    // Set while a refresh requested off the main thread waits in the main thread's event queue.
-    std::atomic<bool> inputRelatedDataRefreshRequested { false };
-
     // The knob part of the content hash, memoized against the effect's knobs content generation.
     // Knobs that read another knob or a file are kept as live entries and hashed on every use.
     struct KnobsDigestEntry {
@@ -428,8 +422,7 @@ public:
     mutable QMutex hashedMetadataSourcesMutex; //< protects the two fields below
     mutable U64 hashedMetadataSourcesGeneration = 0; //< 0 until filled, see KnobHelper::getHashedMetadataSourcesGeneration()
     mutable std::vector<NodeWPtr> hashedMetadataSources;
-    mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
-    NodeWPtr masterNode; //< this points to the master when the node is a clone
+    mutable QMutex nodeLinksMutex; //< protects nodeLinks
     KnobLinkList nodeLinks; //< these point to the parents of the params links
 
     KnobPageWPtr nodeSettingsPage;
@@ -461,7 +454,8 @@ public:
     KnobIWPtr layerKnob;
     LayerKnobSpec layerKnobSpec;
     std::map<const KnobI*, LayerKnobSource> layerKnobSources;
-    RotoContextPtr rotoContext; //< valid when the node has a rotoscoping context (i.e: paint context)
+    RotoCurveContextPtr curveContext; //< valid when the node hosts Roto curves, see EffectInstance::getCurveContextKind()
+    RotoContextPtr rotoContext; //< the same object as curveContext when that is a paint context, NULL otherwise
     TrackerContextPtr trackContext;
     mutable QMutex imagesBeingRenderedMutex;
     QWaitCondition imagesBeingRenderedCond;

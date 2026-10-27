@@ -79,14 +79,13 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
-    Bezier(const RotoContextPtr& context,
-           const std::string & name,
+    Bezier(const RotoCurveContextPtr& context,
+           const std::string& name,
            const RotoLayerPtr& parent,
            bool isOpenBezier);
 
-    Bezier(const Bezier & other,
-           const RotoLayerPtr& parent);
+    Bezier(const Bezier& other) = delete;
+    Bezier& operator=(const Bezier& other) = delete;
 
     virtual ~Bezier();
 

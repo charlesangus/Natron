@@ -225,6 +225,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
 
     _imp->_dragGesture.begin();
     _imp->_hasMovedOnce = false;
+    _imp->_pressPos = e->pos();
     _imp->_spliceCancelled = false;
     _imp->_deltaSinceMousePress = QPointF(0, 0);
     if ( buttonDownIsMiddle(e) ) {
@@ -248,7 +249,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         return;
     }
 
-    if ((_imp->_pickedUpArrowInput >= 0) && handlePickUpPress(e)) {
+    if (hasPickedUpArrow() && handlePickUpPress(e)) {
         _imp->_evtState = eEventStateNone;
 
         return;

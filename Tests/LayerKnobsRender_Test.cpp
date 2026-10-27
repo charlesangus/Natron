@@ -256,7 +256,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         if (!QFile::exists(QString::fromStdString(path))) {
             *error = "frame was not rendered: " + path;

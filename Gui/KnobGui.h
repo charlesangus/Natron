@@ -363,13 +363,33 @@ public:
 
     virtual bool getAllDimensionsVisible() const OVERRIDE { return true; }
 
+    /**
+     * @brief Whether the knob is in a link group that is not an alias link and has another member on an
+     * active node, linked or not: its menu then offers Unlink or Re-link.
+     **/
+    bool hasLinkPartners() const;
+
+    /**
+     * @brief Whether a dimension of the knob is linked to another member of a link group that is not an
+     * alias link: its name then takes the link colour.
+     **/
+    bool isLinkedToPartners() const;
+
     void setWarningValue(KnobWarningEnum warn, const QString& value);
 
 public Q_SLOTS:
 
-    void onRemoveAliasLinkActionTriggered();
-
     void onUnlinkActionTriggered();
+
+    void onUnlinkFromGroupsActionTriggered();
+
+    void onRelinkToGroupsActionTriggered();
+
+    /**
+     * @brief Called when the knob's link groups change, or the node's links do: refreshes the link colour
+     * of the knob's name and its tool tip.
+     **/
+    void onLinkStateChanged();
 
     void onRedrawGuiCurve(int reason, ViewSpec view, int dimension);
 
@@ -438,9 +458,6 @@ public Q_SLOTS:
 
     void onPasteActionTriggered();
 
-    void onLinkToActionTriggered();
-    void linkTo(int dimension);
-
     void onResetDefaultValuesActionTriggered();
 
     ///Actually restores all dimensions, the parameter is disregarded.
@@ -475,6 +492,9 @@ public Q_SLOTS:
     void onLabelChanged();
 
     void onCreateAliasOnGroupActionTriggered();
+
+    // Copies the knob, a variable of a node, into the project's variables.
+    void onPromoteToProjectActionTriggered();
 
 Q_SIGNALS:
 

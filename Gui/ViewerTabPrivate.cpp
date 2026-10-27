@@ -33,6 +33,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
@@ -57,6 +58,9 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , viewerLayout(NULL)
     , viewerSubContainer(NULL)
     , viewerSubContainerLayout(NULL)
+    , sceneViewport(NULL)
+    , wipeDisabledByDataKind(false)
+    , compositingOperatorBeforeScene(eViewerCompositingOperatorNone)
     , mainLayout(NULL)
     , firstSettingsRow(NULL)
     , secondSettingsRow(NULL)
@@ -246,7 +250,8 @@ ViewerTabPrivate::getOverlayTransform(double time,
         return false;
     } else {
         assert(input);
-        double par = input->getAspectRatio(-1);
+        const NodeMetadataConstPtr inputMetadata = input->getMetadata(time, view);
+        double par = inputMetadata ? inputMetadata->getPixelAspectRatio(-1) : 1.;
 
         //The mat is in pixel coordinates, though
         mat = Transform::matMul(Transform::matPixelToCanonical(par, 1, 1, false), mat);
@@ -435,22 +440,33 @@ ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
     }
 }
 
-std::list<ViewerTabPrivate::PluginViewerContext>::iterator
-ViewerTabPrivate::findActiveNodeContextForPlugin(const std::string& pluginID)
+static bool
+isCurveHost(const NodePtr& node)
 {
-    // Roto and RotoPaint are 2 different plug-ins but we don't want them at the same time in the viewer
-    bool isRotoOrRotoPaint = pluginID == PLUGINID_NATRON_ROTO || pluginID == PLUGINID_NATRON_ROTOPAINT;
-    for (std::list<PluginViewerContext>::iterator it = currentNodeContext.begin(); it != currentNodeContext.end(); ++it) {
-        if (isRotoOrRotoPaint) {
-            if (it->pluginID == PLUGINID_NATRON_ROTO || it->pluginID == PLUGINID_NATRON_ROTOPAINT) {
-                return it;
-            }
-        } else {
-            if (it->pluginID == pluginID) {
-                return it;
-            }
-        }
+    EffectInstancePtr effect = node->getEffectInstance();
 
+    return effect && (effect->getCurveContextKind() != EffectInstance::eCurveContextKindNone);
+}
+
+std::string
+ViewerTabPrivate::getViewerSlot(const NodePtr& node)
+{
+    // Curve hosts (Roto, RotoPaint, and any node editing curves) are different plug-ins but we
+    // don't want two of them at the same time in the viewer. The key can't clash with a plug-in ID.
+    if (isCurveHost(node)) {
+        return std::string("<curve host>");
+    }
+
+    return node->getPluginID();
+}
+
+std::list<ViewerTabPrivate::PluginViewerContext>::iterator
+ViewerTabPrivate::findActiveNodeContextForSlot(const std::string& slot)
+{
+    for (std::list<PluginViewerContext>::iterator it = currentNodeContext.begin(); it != currentNodeContext.end(); ++it) {
+        if (it->slot == slot) {
+            return it;
+        }
     }
 
     return currentNodeContext.end();
@@ -459,7 +475,7 @@ ViewerTabPrivate::findActiveNodeContextForPlugin(const std::string& pluginID)
 bool
 ViewerTabPrivate::hasInactiveNodeViewerContext(const NodePtr& node)
 {
-    std::list<ViewerTabPrivate::PluginViewerContext>::iterator found = findActiveNodeContextForPlugin( node->getPluginID() );
+    std::list<ViewerTabPrivate::PluginViewerContext>::iterator found = findActiveNodeContextForSlot(getViewerSlot(node));
 
     if ( found == currentNodeContext.end() ) {
         return false;
@@ -470,6 +486,12 @@ ViewerTabPrivate::hasInactiveNodeViewerContext(const NodePtr& node)
     }
 
     return n->getNode() != node;
+}
+
+bool
+ViewerTabPrivate::isOverlayHiddenByViewerSlot(const NodePtr& node)
+{
+    return !isCurveHost(node) && hasInactiveNodeViewerContext(node);
 }
 
 NATRON_NAMESPACE_EXIT

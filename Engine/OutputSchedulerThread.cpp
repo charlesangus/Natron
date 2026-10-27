@@ -26,6 +26,7 @@
 #include "OutputSchedulerThread.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <iostream>
 #include <limits>
@@ -57,6 +58,7 @@
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/OpenGLViewerI.h"
@@ -254,6 +256,12 @@ struct OutputSchedulerThreadPrivate
     QMutex bufferedOutputMutex;
     int lastBufferedOutputSize;
 
+    // From startRender() to stopRender() of a render that is not a viewer's: what the render reads
+    // refuses writes from outside it. The scheduler thread is in its context for as long.
+    std::unique_ptr<IsolatedJob> isolatedJob;
+    std::unique_ptr<IsolatedJob::ThreadScope> schedulerInJob;
+    // isolatedJob, for the render's other threads.
+    std::atomic<const IsolatedJob*> runningJob { nullptr };
 
     OutputSchedulerThreadPrivate(RenderEngine* engine,
                                  const OutputEffectInstancePtr& effect,
@@ -294,6 +302,13 @@ struct OutputSchedulerThreadPrivate
         , bufferedOutputMutex()
         , lastBufferedOutputSize(0)
     {
+    }
+
+    void endIsolatedJob()
+    {
+        runningJob.store(nullptr);
+        schedulerInJob.reset();
+        isolatedJob.reset();
     }
 
     void appendBufferedFrame(double time,
@@ -593,6 +608,18 @@ OutputSchedulerThread::~OutputSchedulerThread()
 
     ///Make sure they are all gone, there will be a deadlock here if that's not the case.
     _imp->waitForRenderThreadsToQuit();
+
+    // The scope belongs to the scheduler thread, not this one, whose context it must not change.
+    if (_imp->schedulerInJob) {
+        _imp->schedulerInJob->detach();
+    }
+    _imp->endIsolatedJob();
+}
+
+const IsolatedJob*
+OutputSchedulerThread::getRunningIsolatedJob() const
+{
+    return _imp->runningJob.load();
 }
 
 bool
@@ -835,8 +862,9 @@ OutputSchedulerThread::pushFramesToRender(int nThreads)
     }
 }
 
-int
+bool
 OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
+                                         int* frame,
                                          bool* enableRenderStats,
                                          std::vector<ViewIdx>* viewsToRender)
 {
@@ -851,9 +879,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
         _imp->allRenderThreadsInactiveCond.wakeOne();
     }
 
-
     bool gotFrame = false;
-    int frame = -1;
     {
         QMutexLocker l(&_imp->framesToRenderMutex);
         while ( _imp->framesToRender.empty() && !thread->mustQuit() ) {
@@ -863,11 +889,12 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
             _imp->framesToRenderNotEmptyCond.wait(l.mutex());
         }
 
-        if ( !_imp->framesToRender.empty() ) {
+        // A quitting thread leaves the queued frames to the others.
+        if (!_imp->framesToRender.empty() && !thread->mustQuit()) {
             ///Notify that we're running for good, will do nothing if flagged already running
             thread->notifyIsRunning(true);
 
-            frame = _imp->framesToRender.front();
+            *frame = _imp->framesToRender.front();
 
             _imp->framesToRender.pop_front();
 
@@ -881,7 +908,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
 
         *enableRenderStats = false;
 
-        return -1;
+        return false;
     } else {
         ///Flag the thread as active
         {
@@ -895,7 +922,7 @@ OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
         *enableRenderStats = args->enableRenderStats;
         *viewsToRender = args->viewsToRender;
 
-        return frame;
+        return true;
     }
 } // OutputSchedulerThread::pickFrameToRender
 
@@ -1082,6 +1109,15 @@ OutputSchedulerThread::startRender()
     startingFrame = timelineGetTime();
     forward = args->pushTimelineDirection == eRenderDirectionForward;
 
+    _imp->endIsolatedJob();
+    {
+        OutputEffectInstancePtr output = _imp->outputEffect.lock();
+        if (output && !dynamic_cast<ViewerInstance*>(output.get())) {
+            _imp->isolatedJob.reset(new IsolatedJob(output->getNode(), "render"));
+            _imp->schedulerInJob.reset(new IsolatedJob::ThreadScope(_imp->isolatedJob.get()));
+            _imp->runningJob.store(_imp->isolatedJob.get());
+        }
+    }
 
     aboutToStartRender();
 
@@ -1207,6 +1243,8 @@ OutputSchedulerThread::stopRender()
 
     bool wasAborted = isBeingAborted();
 
+    // Before anything learns the render is over, so writes made once it has finished go through.
+    _imp->endIsolatedJob();
 
     ///Notify everyone that the render is finished
     _imp->engine->s_renderFinished(wasAborted ? 1 : 0);
@@ -2003,6 +2041,8 @@ void
 OutputSchedulerThread::runCallbackWithVariables(const QString& callback)
 {
     if ( !callback.isEmpty() ) {
+        // The render's own callbacks may change what it reads.
+        IsolatedJob::ThreadScope inJob(_imp->runningJob.load());
         OutputEffectInstancePtr effect = _imp->outputEffect.lock();
         QString script = callback;
         std::string appID = effect->getApp()->getAppIDString();
@@ -2114,9 +2154,11 @@ RenderThreadTask::run()
     for (;; ) {
         bool enableRenderStats;
         std::vector<ViewIdx> viewsToRender;
-        int time = _imp->scheduler->pickFrameToRender(this, &enableRenderStats, &viewsToRender);
+        int time = 0;
 
-        if ( mustQuit() ) {
+        // A frame picked before a concurrent scheduleForRemoval() is rendered all the same: it is off the
+        // queue, and dropping it would leave the render waiting forever for its count of frames.
+        if (!_imp->scheduler->pickFrameToRender(this, &time, &enableRenderStats, &viewsToRender)) {
             break;
         }
 
@@ -2327,6 +2369,7 @@ private:
         ///Even if enableRenderStats is false, we at least profile the time spent rendering the frame when rendering with a Write node.
         ///Though we don't enable render stats for sequential renders (e.g: WriteFFMPEG) since this is 1 file.
         RenderStatsPtr stats = std::make_shared<RenderStats>(enableRenderStats);
+        IsolatedJob::ThreadScope inJob(_imp->scheduler->getRunningIsolatedJob());
         NodePtr outputNode = output->getNode();
         std::string cb = outputNode->getBeforeFrameRenderCallback();
         if ( !cb.empty() ) {
@@ -2385,13 +2428,31 @@ private:
             activeInputToRender = output;
             assert(activeInputToRender);
             NodePtr activeInputNode = activeInputToRender->getNode();
-            U64 activeInputToRenderHash = activeInputToRender->getHash();
-            const double par = activeInputToRender->getAspectRatio(-1);
             const bool isRenderDueToRenderInteraction = false;
             const bool isSequentialRender = true;
             const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
 
             for (std::size_t view = 0; view < viewsToRender.size(); ++view) {
+                AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+                if (isAbortableThread) {
+                    isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
+                }
+
+                ParallelRenderArgsSetter frameRenderArgs(time,
+                                                         viewsToRender[view],
+                                                         isRenderDueToRenderInteraction, // is this render due to user interaction ?
+                                                         isSequentialRender,
+                                                         abortInfo, // abortInfo
+                                                         activeInputNode, // viewer requester
+                                                         0, // texture index
+                                                         output->getApp()->getTimeLine().get(),
+                                                         NodePtr(),
+                                                         false,
+                                                         false,
+                                                         stats);
+
+                // After the frame's snapshot is taken, so the check reads it rather than deriving
+                // the graph's metadata on its own.
                 if (output->checkFrameToWrite(time, viewsToRender[view]) == eStatusFailed) {
                     QString message;
                     int type = 0;
@@ -2400,6 +2461,30 @@ private:
 
                     return;
                 }
+                if (output->writesFrameRangeAtOnce()) {
+                    // The render was narrowed to this one frame; the node writes the whole range
+                    // it was asked for here, rather than rendering an output of its own.
+                    int firstFrame = time;
+                    int lastFrame = time;
+                    output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
+                    if (output->writeFrameRange(firstFrame, lastFrame, viewsToRender[view]) == eStatusFailed) {
+                        QString message;
+                        int type = 0;
+                        activeInputNode->getPersistentMessage(&message, &type, false);
+                        _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
+                }
+
+                // The frame's region, layers and layout all come from the snapshot its args took,
+                // so an edit made while the sequence renders cannot pair one state's region with
+                // another's layout.
+                const U64 activeInputToRenderHash = activeInputToRender->getRenderHash();
+                const NodeMetadataConstPtr renderMetadata = activeInputToRender->getRenderMetadata(time, viewsToRender[view]);
                 StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, viewsToRender[view], &rod, &isProjectFormat);
                 if (stat == eStatusFailed) {
                     _imp->scheduler->notifyRenderFailure("Error caught while rendering");
@@ -2421,7 +2506,7 @@ private:
                     activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInput);
 
                     // Retrieve bitdepth only
-                    imageDepth = activeInputToRender->getBitDepth(-1);
+                    imageDepth = renderMetadata->getBitDepth(-1);
                     components.clear();
 
                     EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
@@ -2431,25 +2516,7 @@ private:
                         }
                     }
                 }
-                const RectI renderWindow = rod.toPixelEnclosing(scale, par);
-
-                AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
-                if (isAbortableThread) {
-                    isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
-                }
-
-                ParallelRenderArgsSetter frameRenderArgs(time,
-                                                         viewsToRender[view],
-                                                         isRenderDueToRenderInteraction,  // is this render due to user interaction ?
-                                                         isSequentialRender,
-                                                         abortInfo, //abortInfo
-                                                         activeInputNode, // viewer requester
-                                                         0, //texture index
-                                                         output->getApp()->getTimeLine().get(),
-                                                         NodePtr(),
-                                                         false,
-                                                         false,
-                                                         stats);
+                const RectI renderWindow = rod.toPixelEnclosing(scale, renderMetadata->getPixelAspectRatio(-1));
 
                 std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
                 stat = EffectInstance::computeRequestPass(time, viewsToRender[view], mipmapLevel, rod, activeInputNode, *request);
@@ -2589,22 +2656,8 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
     const BufferedFrame& frame = frames.front();
 
     OutputEffectInstancePtr effect = _effect.lock();
-    U64 hash = effect->getHash();
     bool isProjectFormat;
-    std::list<ImageLayerDesc> components;
-    ImageBitDepthEnum imageDepth = eImageBitDepthNone;
     const DataKindEnum outputKind = effect->getOutputDataKind();
-
-    if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
-        ImageLayerDesc metadataLayer, metadataPairedLayer;
-        effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
-        if (metadataLayer.getNumComponents() > 0) {
-            components.push_back(metadataLayer);
-        }
-        imageDepth = effect->getBitDepth(-1);
-    }
-
-    const double par = effect->getAspectRatio(-1);
     const bool isRenderDueToRenderInteraction = false;
     const bool isSequentialRender = true;
 
@@ -2625,11 +2678,23 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
                                                  false,
                                                  false,
                                                  it->stats);
+        // Each buffered frame is written with the layout its own args snapshotted.
+        const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(it->time, it->view);
+        std::list<ImageLayerDesc> components;
+        ImageBitDepthEnum imageDepth = eImageBitDepthNone;
+        if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
+            ImageLayerDesc metadataLayer, metadataPairedLayer;
+            EffectInstance::getLayersFromMetadata(*renderMetadata, -1, &metadataLayer, &metadataPairedLayer);
+            if (metadataLayer.getNumComponents() > 0) {
+                components.push_back(metadataLayer);
+            }
+            imageDepth = renderMetadata->getBitDepth(-1);
+        }
         RectD rod;
         ///Writers render to scale 1 always
         const RenderScale scale;
-        ignore_result( effect->getRegionOfDefinition_public(hash, it->time, scale, it->view, &rod, &isProjectFormat) );
-        const RectI roi = rod.toPixelEnclosing(0, par);
+        ignore_result(effect->getRegionOfDefinition_public(effect->getRenderHash(), it->time, scale, it->view, &rod, &isProjectFormat));
+        const RectI roi = rod.toPixelEnclosing(0, renderMetadata->getPixelAspectRatio(-1));
 
         RenderingFlagSetter flagIsRendering(effect->getNode());
         try {
@@ -3210,17 +3275,6 @@ RenderEngine::getOutput() const
 }
 
 void
-RenderEngine::refreshInputRelatedDataForRender()
-{
-    OutputEffectInstancePtr output = _imp->output.lock();
-    NodePtr node = output ? output->getNode() : NodePtr();
-
-    if (node) {
-        node->refreshInputRelatedDataForRender();
-    }
-}
-
-void
 RenderEngine::renderFrameRange(bool isBlocking,
                                bool enableRenderStats,
                                int firstFrame,
@@ -3230,7 +3284,6 @@ RenderEngine::renderFrameRange(bool isBlocking,
                                RenderDirectionEnum forward)
 {
     setPlaybackAutoRestartEnabled(true);
-    refreshInputRelatedDataForRender();
 
     {
         QMutexLocker k(&_imp->schedulerCreationLock);
@@ -3248,7 +3301,6 @@ RenderEngine::renderFromCurrentFrame(bool enableRenderStats,
                                      RenderDirectionEnum forward)
 {
     setPlaybackAutoRestartEnabled(true);
-    refreshInputRelatedDataForRender();
 
     {
         QMutexLocker k(&_imp->schedulerCreationLock);
@@ -3296,7 +3348,6 @@ RenderEngine::renderCurrentFrameInternal(bool enableRenderStats,
 
         return;
     }
-    refreshInputRelatedDataForRender();
 
     ///If the scheduler is already doing playback, continue it
     if (_imp->scheduler) {

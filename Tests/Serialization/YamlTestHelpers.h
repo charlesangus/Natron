@@ -215,6 +215,7 @@ expectKnobsEqual(const NATRON_NAMESPACE::Serialization::KnobSerialization& expec
         EXPECT_TRUE(YamlTest::sameValue(e.value, a.value)) << "value: expected " << YamlTest::describeValue(e.value) << ", got " << YamlTest::describeValue(a.value);
         EXPECT_TRUE(YamlTest::sameValue(e.defaultValue, a.defaultValue)) << "default: expected " << YamlTest::describeValue(e.defaultValue) << ", got " << YamlTest::describeValue(a.defaultValue);
         EXPECT_EQ(e.master, a.master);
+        EXPECT_EQ(e.linkGroup, a.linkGroup);
         EXPECT_EQ(e.expression, a.expression);
         EXPECT_EQ(e.expressionHasReturnVariable, a.expressionHasReturnVariable);
     }
@@ -312,6 +313,7 @@ expectGroupKnobsEqual(const NATRON_NAMESPACE::Serialization::GroupKnobSerializat
     EXPECT_EQ(expected.secret, actual.secret);
     EXPECT_EQ(expected.isSetAsTab, actual.isSetAsTab);
     EXPECT_EQ(expected.isOpened, actual.isOpened);
+    EXPECT_EQ(expected.isRFVGroup, actual.isRFVGroup);
     ASSERT_EQ(expected.children.size(), actual.children.size());
     auto a = actual.children.begin();
     for (auto e = expected.children.begin(); e != expected.children.end(); ++e, ++a) {

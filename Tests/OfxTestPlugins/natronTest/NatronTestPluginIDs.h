@@ -58,13 +58,13 @@
 #define kNatronTestPointMatrix1Major 1
 
 // The Generator and PointMatrix again, with the process quad's alpha off by default as
-// Quantize's and CImgPlasma's are, so the host seeds the channel set's R, G and B from it.
+// Quantize's is, so the host seeds the channel set's R, G and B from it.
 #define kNatronTestRGBGeneratorPluginID "fr.natron.test.RGBGenerator"
 #define kNatronTestRGBGeneratorMajor 1
 #define kNatronTestRGBPointPluginID "fr.natron.test.RGBPoint"
 #define kNatronTestRGBPointMajor 1
 
-// Multiplanar, like Premult: multiplies the quad's channels of inputPlane (or of every plane, with
+// Multiplanar, like the openfx-misc Premult: multiplies the quad's channels of inputPlane (or of every plane, with
 // processAllPlanes) by the unPremultByChannel channel of Source. Other planes pass through.
 #define kNatronTestMultiPlanePluginID "fr.natron.test.MultiPlane"
 #define kNatronTestMultiPlaneMajor 1

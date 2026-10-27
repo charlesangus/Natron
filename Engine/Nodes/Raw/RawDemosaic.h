@@ -175,7 +175,7 @@ private:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
-    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     // darktable's gui_changed() for the source's sensor, read from its CFA: only that sensor's
     // method list and the knobs its method uses show. With no source, or one without a CFA, both
@@ -203,8 +203,9 @@ private:
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief PPG and RCD, without green equilibration or colour smoothing, and the pass-through of
-     * data without a CFA. AMaZE, VNG, Markesteijn, Frequency Domain Chroma and the dual methods have no GPU path yet. Full green
+     * @brief PPG, RCD, VNG and Markesteijn 1- and 3-pass, without green equilibration or colour
+     * smoothing, and the pass-through of data without a CFA. AMaZE, Frequency Domain Chroma and the
+     * dual methods have no GPU path yet. Full green
      * equilibration measures the whole source once per frame, which a region's strips cannot
      * share, and local equilibration and colour smoothing are not ported, so any of them keeps the
      * node on the CPU. LMMSE has no GPU path, as in darktable.
@@ -220,6 +221,8 @@ private:
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -230,7 +233,9 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;

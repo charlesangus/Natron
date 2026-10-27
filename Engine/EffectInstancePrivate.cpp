@@ -40,6 +40,14 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const int kActionsCacheMinStates = 64;
+// The frames whose metadata one hash state of a node keeps, least recently used replaced first.
+// Enough for a frame's working set (the frame, a temporal kernel's neighbours, identity-time
+// redirects) and for scrubbing back and forth over about a second of footage; forward playback
+// asks each frame once, so more entries would only hold memory on every node of a large graph.
+const std::size_t kMaxCachedMetadataFrames = 32;
+// The frame ranges one hash state of a node keeps a summary for: one per temporal reader below it
+// and view, which a graph rarely has more of.
+const std::size_t kMaxCachedRangeSummaries = 8;
 } // anonymous namespace
 
 ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
@@ -49,6 +57,11 @@ ActionsCache::ActionsCacheInstance::ActionsCacheInstance()
     , _identityCache()
     , _rodCache()
     , _framesNeededCache()
+    , _componentsNeededCache()
+    , _metadataCache()
+    , _passThroughIdentityCache()
+    , _timeInvariantMetadata()
+    , _rangeSummaries()
 {
 }
 
@@ -86,6 +99,7 @@ ActionsCache::ActionsCache(int maxAvailableHashes)
     , _instances()
     , _instancesByHash()
     , _maxInstances((std::size_t)maxAvailableHashes)
+    , _metadataGeneration(0)
 {
 }
 
@@ -94,6 +108,8 @@ ActionsCache::clearAll()
 {
     QMutexLocker l(&_cacheMutex);
 
+    // A derivation that began before the purge must not put its answer back.
+    ++_metadataGeneration;
     _instances.clear();
     _instancesByHash.clear();
 }
@@ -113,6 +129,9 @@ void
 ActionsCache::clearResults(U64 hash)
 {
     QMutexLocker l(&_cacheMutex);
+
+    // As clearAll(), whether or not the hash has an entry yet: the derivation may store the first.
+    ++_metadataGeneration;
     std::unordered_map<U64, InstancesList::iterator>::iterator found = _instancesByHash.find(hash);
 
     if (found != _instancesByHash.end()) {
@@ -173,16 +192,16 @@ ActionsCache::setIdentityResult(U64 hash,
     v.inputView = inputView;
 }
 
-bool
-ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels,
-                                         EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane,
-                                         std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime)
+EffectInstance::ComponentsNeededResultsPtr
+ActionsCache::getComponentsNeededResults(U64 hash,
+                                         double time,
+                                         ViewIdx view)
 {
     QMutexLocker l(&_cacheMutex);
     const ActionsCacheInstance* cache = findActionCache(hash);
 
     if (!cache) {
-        return false;
+        return EffectInstance::ComponentsNeededResultsPtr();
     }
     ActionKey key;
     key.time = time;
@@ -190,25 +209,15 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
     key.mipmapLevel = 0;
 
     ComponentsNeededCacheMap::const_iterator found = cache->_componentsNeededCache.find(key);
-    if (found == cache->_componentsNeededCache.end()) {
-        return false;
-    }
-    *passThroughInputNb = found->second.passThroughInputNb;
-    *passThroughTime = found->second.passThroughTime;
-    *passThroughView = found->second.passThroughView;
-    *neededComps = found->second.neededComps;
-    *processChannels = found->second.processChannels;
-    *processChannelsPerPlane = found->second.processChannelsPerPlane;
-    *passThroughLayers = found->second.passThroughLayers;
 
-    return true;
+    return found == cache->_componentsNeededCache.end() ? EffectInstance::ComponentsNeededResultsPtr() : found->second;
 }
 
 void
-ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps,
-                                         std::bitset<4> processChannels,
-                                         const EffectInstance::ProcessChannelsPerPlaneMap& processChannelsPerPlane,
-                                         const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime)
+ActionsCache::setComponentsNeededResults(U64 hash,
+                                         double time,
+                                         ViewIdx view,
+                                         const EffectInstance::ComponentsNeededResultsPtr& results)
 {
     QMutexLocker l(&_cacheMutex);
     ActionsCacheInstance & cache = getOrCreateActionCache(hash);
@@ -218,14 +227,7 @@ ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, co
     key.view = view;
     key.mipmapLevel = 0;
 
-    ComponentsNeededResults & v = cache._componentsNeededCache[key];
-    v.neededComps = neededComps;
-    v.passThroughTime = passThroughTime;
-    v.passThroughView = passThroughView;
-    v.passThroughInputNb = passThroughInputNb;
-    v.processChannels = processChannels;
-    v.processChannelsPerPlane = processChannelsPerPlane;
-    v.passThroughLayers = passThroughLayers;
+    cache._componentsNeededCache[key] = results;
 }
 
 void
@@ -358,6 +360,207 @@ ActionsCache::setTimeDomainResult(U64 hash,
     cache._timeDomain.max = last;
 }
 
+NodeMetadataConstPtr
+ActionsCache::getMetadataResult(U64 hash,
+                                double time,
+                                ViewIdx view)
+{
+    QMutexLocker l(&_cacheMutex);
+    ActionsCacheInstance* cache = findActionCache(hash);
+
+    if (!cache) {
+        return NodeMetadataConstPtr();
+    }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    const NodeMetadataConstPtr* found = cache->_metadataCache.find(key);
+
+    return found ? *found : NodeMetadataConstPtr();
+}
+
+void
+ActionsCache::setMetadataResult(U64 hash,
+                                double time,
+                                ViewIdx view,
+                                const NodeMetadataConstPtr& metadata,
+                                U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    // An invalidation that raced the derivation must not be undone by storing a result that may
+    // predate it.
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    ActionsCacheInstance& cache = getOrCreateActionCache(hash);
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    cache._metadataCache.insert(key, metadata, kMaxCachedMetadataFrames);
+}
+
+bool
+ActionsCache::getPassThroughIdentityResult(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           const NodeMetadataConstPtr& metadata,
+                                           bool* identity,
+                                           int* inputNbIdentity,
+                                           ViewIdx* inputView,
+                                           double* identityTime)
+{
+    QMutexLocker l(&_cacheMutex);
+    ActionsCacheInstance* cache = findActionCache(hash);
+
+    if (!cache || !metadata) {
+        return false;
+    }
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    const PassThroughIdentityResults* found = cache->_passThroughIdentityCache.find(key);
+    if (!found || !found->metadata) {
+        return false;
+    }
+    if ((found->metadata != metadata) && (*found->metadata != *metadata)) {
+        return false;
+    }
+    *identity = found->identity;
+    *inputNbIdentity = found->inputIdentityNb;
+    *identityTime = found->inputIdentityTime;
+    *inputView = found->inputView;
+
+    return true;
+}
+
+void
+ActionsCache::setPassThroughIdentityResult(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           const PassThroughIdentityResults& results,
+                                           U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    ActionsCacheInstance& cache = getOrCreateActionCache(hash);
+    ActionKey key;
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = 0;
+
+    cache._passThroughIdentityCache.insert(key, results, kMaxCachedMetadataFrames);
+}
+
+NodeMetadataConstPtr
+ActionsCache::getTimeInvariantMetadataResult(U64 hash)
+{
+    QMutexLocker l(&_cacheMutex);
+    const ActionsCacheInstance* cache = findActionCache(hash);
+
+    return cache ? cache->_timeInvariantMetadata : NodeMetadataConstPtr();
+}
+
+void
+ActionsCache::setTimeInvariantMetadataResult(U64 hash,
+                                             const NodeMetadataConstPtr& metadata,
+                                             U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    getOrCreateActionCache(hash)._timeInvariantMetadata = metadata;
+}
+
+bool
+ActionsCache::getRangeMetadataSummary(U64 hash,
+                                      ViewIdx view,
+                                      double min,
+                                      double max,
+                                      std::vector<NodeMetadataConstPtr>* answers)
+{
+    QMutexLocker l(&_cacheMutex);
+    ActionsCacheInstance* cache = findActionCache(hash);
+
+    if (!cache) {
+        return false;
+    }
+    for (std::list<RangeMetadataSummary>::iterator it = cache->_rangeSummaries.begin(); it != cache->_rangeSummaries.end(); ++it) {
+        if ((it->view == view) && (it->min == min) && (it->max == max)) {
+            *answers = it->answers;
+            cache->_rangeSummaries.splice(cache->_rangeSummaries.begin(), cache->_rangeSummaries, it);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+ActionsCache::setRangeMetadataSummary(U64 hash,
+                                      const RangeMetadataSummary& summary,
+                                      U64 generation)
+{
+    QMutexLocker l(&_cacheMutex);
+
+    if (generation != _metadataGeneration) {
+        return;
+    }
+    std::list<RangeMetadataSummary>& summaries = getOrCreateActionCache(hash)._rangeSummaries;
+    for (std::list<RangeMetadataSummary>::iterator it = summaries.begin(); it != summaries.end(); ++it) {
+        if ((it->view == summary.view) && (it->min == summary.min) && (it->max == summary.max)) {
+            summaries.erase(it);
+            break;
+        }
+    }
+    summaries.push_front(summary);
+    if (summaries.size() > kMaxCachedRangeSummaries) {
+        summaries.pop_back();
+    }
+}
+
+U64
+ActionsCache::getMetadataGeneration() const
+{
+    QMutexLocker l(&_cacheMutex);
+
+    return _metadataGeneration;
+}
+
+void
+ActionsCache::moveMetadataGeneration()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    ++_metadataGeneration;
+}
+
+void
+ActionsCache::clearMetadataResults()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    ++_metadataGeneration;
+    for (InstancesList::iterator it = _instances.begin(); it != _instances.end(); ++it) {
+        it->_metadataCache.clear();
+        it->_passThroughIdentityCache.clear();
+        it->_timeInvariantMetadata.reset();
+        it->_rangeSummaries.clear();
+    }
+}
+
 EffectInstance::RenderArgs::RenderArgs()
     : rod()
     , regionOfInterestResults()
@@ -367,6 +570,7 @@ EffectInstance::RenderArgs::RenderArgs()
     , validArgs(false)
     , isIdentity(false)
     , identityTime(0)
+    , identityView(0)
     , identityInput()
     , inputImages()
     , outputLayers()
@@ -390,6 +594,7 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     , validArgs(o.validArgs)
     , isIdentity(o.isIdentity)
     , identityTime(o.identityTime)
+    , identityView(o.identityView)
     , identityInput(o.identityInput)
     , inputImages(o.inputImages)
     , outputLayers(o.outputLayers)
@@ -416,6 +621,7 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     validArgs = o.validArgs;
     isIdentity = o.isIdentity;
     identityTime = o.identityTime;
+    identityView = o.identityView;
     identityInput = o.identityInput;
     inputImages = o.inputImages;
     outputLayers = o.outputLayers;
@@ -441,10 +647,9 @@ EffectInstance::Implementation::Implementation(EffectInstance* publicInterface)
     , supportsRenderScale(eSupportsMaybe)
     , actionsCache()
     , overlaySlaves()
-    , metadataMutex()
-    , metadata()
     , runningClipPreferences(false)
     , overlaysViewport(0)
+    , drawingPassiveOverlay(false)
     , attachedContextsMutex()
     , attachedContexts()
     , mainInstance(0)
@@ -470,10 +675,9 @@ EffectInstance::Implementation::Implementation(const Implementation& other)
     , supportsRenderScale(other.supportsRenderScale)
     , actionsCache(other.actionsCache)
     , overlaySlaves(other.overlaySlaves)
-    , metadataMutex()
-    , metadata(other.metadata)
     , runningClipPreferences(other.runningClipPreferences)
     , overlaysViewport(other.overlaysViewport)
+    , drawingPassiveOverlay(false)
     , attachedContextsMutex()
     , attachedContexts()
     , mainInstance(other._publicInterface)
@@ -766,18 +970,18 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
 #endif \
     // if NATRON_ENABLE_TRIMAP
 
-
 EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
-                                                                   const RectD & rod,
-                                                                   const RectI & renderWindow,
+                                                                   const RectD& rod,
+                                                                   const RectI& renderWindow,
                                                                    double time,
                                                                    ViewIdx view,
                                                                    bool isIdentity,
                                                                    double identityTime,
+                                                                   ViewIdx identityView,
                                                                    const EffectInstancePtr& identityInput,
                                                                    const ComponentsNeededMapPtr& compsNeeded,
                                                                    const EffectInstance::InputImagesMap& inputImages,
-                                                                   const RoIMap & roiMap,
+                                                                   const RoIMap& roiMap,
                                                                    int firstFrame,
                                                                    int lastFrame,
                                                                    bool isDoingOpenGLRender)
@@ -789,6 +993,7 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.view = view;
     tlsData->currentRenderArgs.isIdentity = isIdentity;
     tlsData->currentRenderArgs.identityTime = identityTime;
+    tlsData->currentRenderArgs.identityView = identityView;
     tlsData->currentRenderArgs.identityInput = identityInput;
     tlsData->currentRenderArgs.compsNeeded = compsNeeded;
     tlsData->currentRenderArgs.inputImages.insert( inputImages.begin(), inputImages.end() );

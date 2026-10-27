@@ -478,13 +478,13 @@ MoveKeysCommand::move(double dt,
     _widget->setUpdatesEnabled(false);
 
     std::list<KnobHolder*> differentKnobs;
-    std::list<RotoContextPtr> rotoToEvaluate;
+    std::list<RotoCurveContextPtr> rotoToEvaluate;
 
     for (std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
             if (isKnobCurve->getRotoContext()) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
+                RotoCurveContextPtr roto = isKnobCurve->getRotoContext();
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -510,7 +510,7 @@ MoveKeysCommand::move(double dt,
 
     _widget->setUpdatesEnabled(true);
 
-    for (std::list<RotoContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
+    for (std::list<RotoCurveContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
         (*it)->evaluateChange();
     }
 
@@ -603,13 +603,13 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
     }
 
     std::list<KnobI*> differentKnobs;
-    std::list<RotoContextPtr> rotoToEvaluate;
+    std::list<RotoCurveContextPtr> rotoToEvaluate;
 
     for (std::list<KeyInterpolationChange >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->key->curve.get() );
         if (isKnobCurve) {
             if (isKnobCurve->getRotoContext()) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
+                RotoCurveContextPtr roto = isKnobCurve->getRotoContext();
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -668,7 +668,7 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
     for (std::list<KnobI*>::iterator it = differentKnobs.begin(); it != differentKnobs.end(); ++it) {
         (*it)->endChanges();
     }
-    for (std::list<RotoContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
+    for (std::list<RotoCurveContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
         (*it)->evaluateChange();
     }
 
@@ -1161,13 +1161,13 @@ TransformKeysCommand::transformKeys(const Transform::Matrix3x3& matrix)
     }
 
     std::list<KnobHolder*> differentKnobs;
-    std::list<RotoContextPtr> rotoToEvaluate;
+    std::list<RotoCurveContextPtr> rotoToEvaluate;
 
     for (SelectedKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         if (isKnobCurve) {
             if (isKnobCurve->getRotoContext()) {
-                RotoContextPtr roto = isKnobCurve->getRotoContext();
+                RotoCurveContextPtr roto = isKnobCurve->getRotoContext();
                 if ( std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end() ) {
                     rotoToEvaluate.push_back(roto);
                 }
@@ -1196,7 +1196,7 @@ TransformKeysCommand::transformKeys(const Transform::Matrix3x3& matrix)
         }
     }
 
-    for (std::list<RotoContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
+    for (std::list<RotoCurveContextPtr>::iterator it = rotoToEvaluate.begin(); it != rotoToEvaluate.end(); ++it) {
         (*it)->evaluateChange();
     }
 

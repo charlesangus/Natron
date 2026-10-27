@@ -200,6 +200,11 @@ public:
                                 double transferExposedMs);
 
     /**
+     * @brief Counts members of a region the device timed that had no clean interval to calibrate the cost model from.
+     **/
+    void noteGpuCalibrationSkipped(int members);
+
+    /**
      * @brief Raises the high-water mark of bytes resident on the device.
      **/
     void notePeakDeviceBytes(unsigned long long bytes);
@@ -214,6 +219,7 @@ public:
     int getGpuStripHalvings() const;
     int getGpuStripPipelinesSerialized() const;
     int getGpuPipelinedRegions() const;
+    int getGpuCalibrationSkipped() const;
     double getGpuTransferHiddenMs() const;
     double getGpuTransferExposedMs() const;
     std::map<std::string, int> getGpuTasksPerNode() const;
@@ -245,12 +251,14 @@ private:
 /**
  * @brief One host-to-device or device-to-host copy a GPU region issued. strip is -1 for a region that ran whole.
  * deviceMs is the time between the timestamps the transfer queue wrote around the copy, negative when the copy was not
- * timestamped.
+ * timestamped. beginNs and endNs are those timestamps, from the region's earliest one, and negative likewise.
  **/
 struct GpuTransferRecord {
     unsigned long long bytes = 0;
     int strip = -1;
     double deviceMs = -1.;
+    long long beginNs = -1;
+    long long endNs = -1;
     unsigned int queueFamily = 0;
     unsigned int queueIndex = 0;
     int comps = 0;
@@ -261,6 +269,20 @@ struct GpuTransferRecord {
     // A download of another region's device image, which the frame store makes: it is never timestamped, and its
     // path is not known, so staged is false.
     bool pinned = false;
+};
+
+/**
+ * @brief The device time one member of a GPU region spent on one strip, between the timestamps around it, in ns from
+ * the region's earliest timestamp. strip is -1 for a region that ran whole; member is the member's position in the
+ * region's tasks, so a task rendering several planes has an interval for each. pixels is the area of the rect the
+ * member rendered.
+ **/
+struct GpuMemberInterval {
+    int strip = -1;
+    int member = 0;
+    long long beginNs = 0;
+    long long endNs = 0;
+    unsigned long long pixels = 0;
 };
 
 /**
@@ -295,6 +317,15 @@ struct GpuRegionTimes {
     unsigned long long downloadsStaged = 0;
     unsigned long long importsAtUpload = 0;
     unsigned long long importsAtDownload = 0;
+    unsigned long long stagedDisabled = 0;
+    unsigned long long stagedUnaligned = 0;
+    unsigned long long stagedImportFailed = 0;
+    unsigned long long stagedForgotten = 0;
+
+    // Written only when nonempty: memberIntervals. Only when nonzero: ownershipMs and calibrationSkipped.
+    std::vector<GpuMemberInterval> memberIntervals;
+    double ownershipMs = 0.;
+    int calibrationSkipped = 0;
     std::vector<GpuTransferRecord> uploads;
     std::vector<GpuTransferRecord> downloads;
 

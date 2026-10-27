@@ -1,4 +1,4 @@
-# slang_add_kernel(<target> <file.slang> ENTRY <name> [CPP])
+# slang_add_kernel(<target> <file.slang> ENTRY <name> [REGISTRY <name>] [CPP] [FLAGS <flag>...])
 #
 # Compiles one compute entry point to SPIR-V and exposes it through the header
 # INTERFACE library <target>: <target>_spirv.h defines
@@ -17,6 +17,9 @@
 # REGISTRY <name> adds the kernel to the table written by
 # slang_write_kernel_table(<name> OUTPUT <path>), which emits an X-macro style
 # GpuKernels.inc: one enum of kernel ids and one static GpuKernelDesc table.
+#
+# FLAGS are passed to slangc for both targets, e.g. `FLAGS -fp-mode precise` to
+# forbid the contractions that would part a kernel from its unfused C++ mirror.
 #
 # CPP additionally compiles the C++ target against the Slang prelude headers,
 # making <target> a static library that exports the C symbols <entry>,
@@ -100,7 +103,7 @@ endif()
 set(_SLANG_KERNELS_SELF "${CMAKE_CURRENT_LIST_FILE}")
 
 function(slang_add_kernel target source)
-  cmake_parse_arguments(ARG "CPP" "ENTRY;REGISTRY" "" ${ARGN})
+  cmake_parse_arguments(ARG "CPP" "ENTRY;REGISTRY" "FLAGS" ${ARGN})
   if(NOT ARG_ENTRY)
     message(FATAL_ERROR "slang_add_kernel(${target}): ENTRY is required")
   endif()
@@ -124,7 +127,7 @@ function(slang_add_kernel target source)
     OUTPUT "${_hdr}" "${_json}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen}"
     COMMAND "${SLANG_COMPILER}" "${_src}" -entry ${ARG_ENTRY} -stage compute
-            -target spirv -profile spirv_1_5 -o "${_spv}"
+            -target spirv -profile spirv_1_5 ${ARG_FLAGS} -o "${_spv}"
             -reflection-json "${_json}"
     COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYMBOL=${target} -DJSON=${_json}
             -DSTRICT=${_strict}
@@ -144,7 +147,7 @@ function(slang_add_kernel target source)
     OUTPUT "${_cpp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen}"
     COMMAND "${SLANG_COMPILER}" "${_src}" -entry ${ARG_ENTRY} -stage compute
-            -target cpp -o "${_cpp}"
+            -target cpp ${ARG_FLAGS} -o "${_cpp}"
     DEPENDS "${_src}" ${_modules}
     VERBATIM)
 

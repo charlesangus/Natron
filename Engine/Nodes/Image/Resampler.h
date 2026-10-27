@@ -337,6 +337,103 @@ bool supersampleLevels(double Jxx, double Jxy, double Jyx, double Jyy, int* leve
 void interpolateSuper(FilterEnum filter, bool clamp, double fx, double fy, double Jxx, double Jxy, double Jyx, double Jyy, const SourceImage& src, bool blackOutside, float* out);
 
 ///////////////////////////////////////////////////////////////////////////////
+// Per-pixel coordinates (STMap, IDistort, lens distortion)
+
+/**
+ * @brief How a coordinate-map sample folds a coordinate back into the wrap domain [lo, hi) of
+ * one axis (w = hi - lo), before sampling:
+ *  - eWrapNone leaves it alone, so outside the source blackOutside decides;
+ *  - eWrapClamp clamps it to the centres of the edge pixels, [lo + 0.5, hi - 0.5];
+ *  - eWrapRepeat tiles the domain: s - w * floor((s - lo) / w);
+ *  - eWrapMirror tiles it mirrored, period 2w: r = (s - lo) - 2w * floor((s - lo) / (2w)),
+ *    then lo + r for r <= w, lo + 2w - r otherwise.
+ * The same as openfx-misc STMap's wrap on the normalized coordinate, done in pixels so that
+ * points already inside the domain come out unchanged.
+ **/
+enum WrapMode {
+    eWrapNone = 0,
+    eWrapClamp,
+    eWrapRepeat,
+    eWrapMirror,
+};
+
+/**
+ * @brief Samples src at n per-pixel source coordinates (sx[i], sy[i]), pixel coordinates at the
+ * render scale as everywhere here, writing nComps floats per pixel to out (src.nComps of them
+ * sampled, any further ones 0). Per pixel:
+ *  1. each coordinate is wrapped (WrapMode) in wrapDomain, src.bounds when null or empty;
+ *  2. a coordinate that is not finite after wrapping (NaN, or an infinity under any mode but
+ *     eWrapClamp) is outside the source and the pixel is 0 whatever blackOutside says;
+ *     finite ones are clamped to +-2^30;
+ *  3. eFilterImpulse, or a null jacobian, samples with interpolate();
+ *  4. otherwise jacobian holds four floats per pixel, (Jxx, Jxy, Jyx, Jyy) as interpolateSuper()
+ *     takes them. Non-finite entries read 0; an axis eWrapClamp moved has its row zeroed (Jxx,
+ *     Jxy for x, Jyx, Jyy for y); then, as resampleRow() does, an axis whose coordinate s has
+ *     no pixel within half a pixel (s + 0.5 < bounds lo or s - 0.5 >= bounds hi, src.bounds)
+ *     has its row zeroed, both rows when blackOutside and either axis is out; and the pixel
+ *     goes through interpolateSuper().
+ * The Jacobian is not changed by wrapping (bar the clamp rule), as in openfx-misc.
+ **/
+void resampleRowFromCoords(const SourceImage& src,
+                           const float* sx,
+                           const float* sy,
+                           const float* jacobian,
+                           int n,
+                           FilterEnum filter,
+                           bool clamp,
+                           bool blackOutside,
+                           WrapMode wrapU,
+                           WrapMode wrapV,
+                           float* out,
+                           int nComps,
+                           const RectI* wrapDomain = 0);
+
+/**
+ * @brief The Jacobians of a coordinate map from central differences, four floats per pixel into
+ * jacobian (the layout resampleRowFromCoords() reads): Jxx = dsx/dx, Jxy = dsx/dy,
+ * Jyx = dsy/dx, Jyy = dsy/dy. sx/sy hold the n coordinates of row y, the *Prev rows those of
+ * y - 1 and the *Next rows those of y + 1. Along x the difference is (s[i+1] - s[i-1]) / 2,
+ * one-sided (s[1] - s[0], s[n-1] - s[n-2]) at the row's ends and 0 for n = 1; along y it is
+ * (next - prev) / 2, one-sided when one of the two rows is null and 0 when both are. A non-finite
+ * difference is 0. Pass the coordinates unwrapped. The row ends depend on where the row stops,
+ * so a caller that wants the result independent of its render window passes rows one pixel
+ * wider on each side and drops the first and last Jacobians.
+ **/
+void coordJacobians(const float* sxPrev,
+                    const float* sx,
+                    const float* sxNext,
+                    const float* syPrev,
+                    const float* sy,
+                    const float* syNext,
+                    int n,
+                    float* jacobian);
+
+/**
+ * @brief coordJacobians() for a coordinate map read from U and V images that end, as openfx-misc's
+ * Distortion takes it: where a pixel's U was read from inside uBounds and a neighbour's was not
+ * (it read 0), the neighbour counts as having the pixel's U, so no difference is taken across
+ * the edge of the U image; the same for V, sy and vBounds. With U and V held constant the map
+ * moves by stepX per pixel along x in sx and by stepY per pixel along y in sy: 1 for an offset
+ * map such as IDistort's, 0 for an absolute one such as STMap's. The rows hold pixels x0 to
+ * x0 + n - 1 of rows y - 1, y and y + 1. The row ends and null rows keep coordJacobians()'s
+ * one-sided rules.
+ **/
+void coordJacobiansWithinBounds(const float* sxPrev,
+                                const float* sx,
+                                const float* sxNext,
+                                const float* syPrev,
+                                const float* sy,
+                                const float* syNext,
+                                int x0,
+                                int y,
+                                int n,
+                                const RectI& uBounds,
+                                const RectI& vBounds,
+                                double stepX,
+                                double stepY,
+                                float* jacobian);
+
+///////////////////////////////////////////////////////////////////////////////
 // Motion blur
 
 /// The number of matrices sampled over the shutter (or the directional blur's amount range).
@@ -548,7 +645,7 @@ void expandRoI(const RectD& roi, double par, double sx, double sy, FilterEnum fi
  * @brief The knob state the region actions depend on. invert is the node's invert knob;
  * isIdentity what the node's own identity test says at that time (it stops the RoD from
  * growing, so an identity node keeps its source's RoD); doMasking whether a mask is connected
- * and applied; mix is only read when doMasking.
+ * and applied; mix the node's mix, read with or without a mask.
  **/
 struct RegionParams {
     bool invert;
@@ -575,7 +672,9 @@ struct RegionParams {
  * @brief The output RoD from the source RoD, as the OFX Transform3x3 computes it: infinite in,
  * infinite out; empty in, empty out; mix 0 under a mask gives srcRoD; otherwise the forward
  * transformRegion() of srcRoD, expanded by expandRoD() unless identity, and unioned with
- * srcRoD when masking. dstPar is the output's PAR, (sx, sy) the render scale.
+ * srcRoD when masking or mixing (mix != 1), whose output blends in the source under the pixel.
+ * Unlike the OFX Transform3x3, a mix without a mask also unions. dstPar is the output's PAR,
+ * (sx, sy) the render scale.
  **/
 void getRegionOfDefinition(const CanonicalTransformFn& fn,
                            const RectD& srcRoD,

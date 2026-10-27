@@ -621,7 +621,7 @@ effectRoDPixels(EffectInstance& effect,
     if (effect.getRegionOfDefinition_public(effect.getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    *out = toPixelEnclosing(rod, scale, effect.getAspectRatio(-1));
+    *out = toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return true;
 }
@@ -718,8 +718,10 @@ runRowPass(const Pass& pass,
            int nThreads,
            RenderCancellation& cancel)
 {
-    const int nLines = pass.perPlane ? scratch.nPlanes * scratch.height : scratch.height;
-    const std::size_t pixelsPerLine = (std::size_t)scratch.width * (pass.perPlane ? 1 : scratch.nPlanes);
+    const int lines = pass.columns ? scratch.width : scratch.height;
+    const int length = pass.columns ? scratch.height : scratch.width;
+    const int nLines = pass.perPlane ? scratch.nPlanes * lines : lines;
+    const std::size_t pixelsPerLine = (std::size_t)length * (pass.perPlane ? 1 : scratch.nPlanes);
     const std::function<void(int, int)> rows = [&](int first, int end) {
         const PassRowFn fn = pass.rowWorker(scratch);
         for (int line = first; line < end; ++line) {
@@ -1055,10 +1057,13 @@ runPassesCpu(EffectInstance& effect,
     // Slot 0 is written whole by fillBuffer(): the window, the halo and the boundary alike.
     // The other slots are each written whole by the first pass that touches them, before any pass
     // reads them; a pass that does not write every element must not be added without clearing the
-    // rest here. See the EdgeDetect pass list, the only one with more than one slot:
+    // rest here. See the pass lists with more than one slot, EdgeDetect's:
     //   slots 1 and 2: copyWorker() copies slot 0 over every row of every plane, or stencilWorker()
     //                  writes every element of both, and combineWorker() reads only after that;
-    //   slot 3:        suppressionWorker() writes every pixel of every plane, border included.
+    //   slot 3:        suppressionWorker() writes every pixel of every plane, border included;
+    // IBlur's, whose box passes alternate between slots 0 and 1, each writing every pixel of
+    // every plane of the slot the next one reads; and IErode's and IDilate's, whose filterWorker()
+    // writes every pixel of every plane of slot 1, copying slot 0 outside the render window.
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     // Playback overlaps two frames, and pooling both sets would keep both resident.
@@ -1180,7 +1185,7 @@ recordPassesGpu(EffectInstance& effect,
         return eStatusFailed;
     }
     RectI valid;
-    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, effect.getAspectRatio(sourceInput)), &valid);
+    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput)), &valid);
 
     int divisor = -1;
     if (!stageGpuDivisorComponent(plan, query, &divisor)) {
@@ -1241,6 +1246,25 @@ recordPassesGpu(EffectInstance& effect,
     io.haloY = rect.y1 - sourceRoI.y1;
     io.nComps = nComps;
     io.channels = plan.processChannels;
+    // The other inputs as the CPU passes read them through getImage(): over their own region of
+    // definition only.
+    io.inputs.resize(args.inputs.size());
+    for (int i = 0; i < (int)args.inputs.size(); ++i) {
+        const GpuImageView& in = args.inputs[i];
+        EffectInstancePtr other = (i == sourceInput) ? EffectInstancePtr() : effect.getInput(i);
+        if (!other || !in.buffer || (in.nComps <= 0)) {
+            continue;
+        }
+        const RenderScale otherScale = other->supportsRenderScale() ? scale : RenderScale::identity;
+        RectD otherRoD;
+        bool otherIsProjectFormat = false;
+        if (other->getRegionOfDefinition_public(other->getRenderHash(), time, otherScale, view, &otherRoD, &otherIsProjectFormat) == eStatusFailed) {
+            return eStatusFailed;
+        }
+        RectI otherValid;
+        intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(i)), &otherValid);
+        io.inputs[i] = cropGpuView(in, otherValid);
+    }
     if (list.gpu(io) != eStatusOK) {
         return eStatusFailed;
     }

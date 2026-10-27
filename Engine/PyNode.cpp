@@ -26,6 +26,7 @@
 #include "PyNode.h"
 
 #include <cassert>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -33,8 +34,10 @@
 #include <vector>
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Hash64.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -44,14 +47,17 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // checkHolderIsEditable
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/RFV.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -281,6 +287,152 @@ Effect::destroy(bool autoReconnect)
     destroyNodeFromPython(getInternalNode(), autoReconnect);
 }
 
+// Links each node of linked, and of the groups in it, to the node of source with the same script name,
+// as the node graph links the nodes inside a Linked Node of a group. Dots are copied, not linked, and
+// the nodes inside a PyPlug are the ones its script made.
+static void
+linkChildNodesByName(const NodeCollectionPtr& linked,
+                     const NodeCollectionPtr& source)
+{
+    NodesList nodes = linked->getNodes();
+
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        NodePtr sourceNode = source->getNodeByName((*it)->getScriptName());
+        if (!sourceNode) {
+            continue;
+        }
+        if ((*it)->getPluginID() != PLUGINID_NATRON_DOT) {
+            ignore_result((*it)->linkAllKnobsTo(sourceNode));
+        }
+        NodeGroupPtr linkedGroup = std::dynamic_pointer_cast<NodeGroup>((*it)->getEffectInstance());
+        NodeGroupPtr sourceGroup = std::dynamic_pointer_cast<NodeGroup>(sourceNode->getEffectInstance());
+        if (linkedGroup && sourceGroup && (*it)->getPluginPythonModule().empty()) {
+            linkChildNodesByName(linkedGroup, sourceGroup);
+        }
+    }
+}
+
+Effect*
+Effect::createLinkedNode()
+{
+    NodePtr source = getInternalNode();
+
+    if (!source || !checkHolderIsEditable(source->getEffectInstance().get())) {
+        return NULL;
+    }
+    if (!source->canBeLinkedNode()) {
+        const std::string message = "The node " + source->getScriptName_mt_safe() + " cannot be a Linked Node.";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return NULL;
+    }
+    NodeCollectionPtr collection = source->getGroup();
+    if (!collection) {
+        return NULL;
+    }
+
+    // The copy is made the way the node graph pastes one, then linked last so that it adopts this node's
+    // value, animation and expression as they are.
+    Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
+    source->toSerialization(serialization.get());
+    CreateNodeArgs args(serialization->pluginID, collection);
+    args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, serialization->pluginMajorVersion, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, serialization->pluginMinorVersion, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+    args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr copy = source->getApp()->createNode(args);
+    if (!copy) {
+        return NULL;
+    }
+    if (collection->checkIfNodeLabelExists(copy->getLabel(), copy.get())) {
+        copy->setLabel(copy->getScriptName());
+    }
+    double x, y, w, h;
+    source->getPosition(&x, &y);
+    source->getSize(&w, &h);
+    copy->setPosition(x + w * 2, y);
+
+    // The nodes inside a group are not made by createNode(), except by a PyPlug's script.
+    NodesList copies(1, copy);
+    NodeGroupPtr copyGroup = std::dynamic_pointer_cast<NodeGroup>(copy->getEffectInstance());
+    if (copyGroup && copy->getPluginPythonModule().empty() && !serialization->children.empty()) {
+        std::map<std::string, bool> moduleUpdatesProcessed;
+        ignore_result(NodeCollection::restoreFromSerialization(serialization->children, copyGroup, true, &moduleUpdatesProcessed));
+        copyGroup->getNodes_recursive(copies, false);
+    }
+    NodesList allNodes;
+    source->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
+    std::map<std::string, std::string> oldNewScriptNamesMapping;
+    if (serialization->scriptName != copy->getScriptName()) {
+        oldNewScriptNamesMapping[serialization->scriptName] = copy->getScriptName();
+    }
+    copy->storeKnobsLinks(*serialization, oldNewScriptNamesMapping);
+    for (NodesList::const_iterator it = copies.begin(); it != copies.end(); ++it) {
+        (*it)->restoreKnobsLinks(allNodes, oldNewScriptNamesMapping, false);
+    }
+    KnobHelper::restoreLinkGroups(copies);
+
+    ignore_result(copy->linkAllKnobsTo(source));
+    NodeGroupPtr sourceGroup = std::dynamic_pointer_cast<NodeGroup>(source->getEffectInstance());
+    if (copyGroup && sourceGroup && copy->getPluginPythonModule().empty()) {
+        linkChildNodesByName(copyGroup, sourceGroup);
+    }
+    recordPythonNodeCreated(copy);
+
+    return new Effect(copy);
+}
+
+bool
+Effect::unlinkAllParams()
+{
+    NodePtr node = getInternalNode();
+
+    if (!node || !checkHolderIsEditable(node->getEffectInstance().get())) {
+        return false;
+    }
+    const KnobsVec& knobs = node->getEffectInstance()->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int i = 0; i < (*it)->getDimension(); ++i) {
+            if ((*it)->isLinked(i) && !(*it)->isLinkPermanent(i)) {
+                recordPythonKnobEdit(*it);
+                break;
+            }
+        }
+    }
+
+    return node->unlinkAllKnobs();
+}
+
+bool
+Effect::isLinkedNode() const
+{
+    NodePtr node = getInternalNode();
+
+    return node && node->isLinkedNode();
+}
+
+std::list<Effect*>
+Effect::getLinkedNodes() const
+{
+    std::list<Effect*> ret;
+    NodePtr node = getInternalNode();
+
+    if (!node) {
+        return ret;
+    }
+    NodesList nodes;
+    node->getLinkedNodes(&nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        ret.push_back(new Effect(*it));
+    }
+
+    return ret;
+}
+
 int
 Effect::getMaxInputCount() const
 {
@@ -310,6 +462,9 @@ Effect::connectInput(int inputNumber,
                      const Effect* input)
 {
     if ( canConnectInput(inputNumber, input) ) {
+        if (IsolatedJob::refusesPythonEdit(getInternalNode()->getEffectInstance().get(), "the inputs")) {
+            return false;
+        }
         PythonInputUndoGuard undo(getInternalNode(), inputNumber);
 
         return getInternalNode()->connectInput(input->getInternalNode(), inputNumber);
@@ -321,6 +476,9 @@ Effect::connectInput(int inputNumber,
 void
 Effect::disconnectInput(int inputNumber)
 {
+    if (IsolatedJob::refusesPythonEdit(getInternalNode()->getEffectInstance().get(), "the inputs")) {
+        return;
+    }
     PythonInputUndoGuard undo(getInternalNode(), inputNumber);
 
     getInternalNode()->disconnectInput(inputNumber);
@@ -454,7 +612,10 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
 
             return new Int3DParam(isInt);
         default:
-            break;
+            // Wider knobs have no tuple type; getValue(dimension) and setValue(value, dimension)
+            // reach every dimension.
+
+            return new IntParam(isInt);
         }
     } else if (isDouble) {
         switch (dims) {
@@ -468,7 +629,10 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
 
             return new Double3DParam(isDouble);
         default:
-            break;
+            // Wider knobs, such as the 4-point range knobs, have no tuple type;
+            // getValue(dimension) and setValue(value, dimension) reach every dimension.
+
+            return new DoubleParam(isDouble);
         }
     } else if (isBool) {
         return new BooleanParam(isBool);
@@ -656,7 +820,7 @@ UserParamHolder::createIntParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -677,7 +841,7 @@ UserParamHolder::createInt2DParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -698,7 +862,7 @@ UserParamHolder::createInt3DParam(const QString& name,
     KnobIntPtr knob = _holder->createIntKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -720,7 +884,7 @@ UserParamHolder::createDoubleParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 1);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -741,7 +905,7 @@ UserParamHolder::createDouble2DParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 2);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -762,7 +926,7 @@ UserParamHolder::createDouble3DParam(const QString& name,
     KnobDoublePtr knob = _holder->createDoubleKnob(name.toStdString(), label.toStdString(), 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -784,7 +948,7 @@ UserParamHolder::createBooleanParam(const QString& name,
     KnobBoolPtr knob = _holder->createBoolKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -806,7 +970,7 @@ UserParamHolder::createChoiceParam(const QString& name,
     KnobChoicePtr knob = _holder->createChoiceKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -829,7 +993,7 @@ UserParamHolder::createColorParam(const QString& name,
     KnobColorPtr knob = _holder->createColorKnob(name.toStdString(), label.toStdString(), useAlpha ? 4 : 3);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -851,7 +1015,7 @@ UserParamHolder::createStringParam(const QString& name,
     KnobStringPtr knob = _holder->createStringKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -873,7 +1037,7 @@ UserParamHolder::createFileParam(const QString& name,
     KnobFilePtr knob = _holder->createFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -895,7 +1059,7 @@ UserParamHolder::createOutputFileParam(const QString& name,
     KnobOutputFilePtr knob = _holder->createOuptutFileKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -917,7 +1081,7 @@ UserParamHolder::createPathParam(const QString& name,
     KnobPathPtr knob = _holder->createPathKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -939,7 +1103,7 @@ UserParamHolder::createChannelSetParam(const QString& name,
     KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -962,7 +1126,7 @@ UserParamHolder::createLayerSelectParam(const QString& name,
     KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -984,7 +1148,7 @@ UserParamHolder::createChannelSelectParam(const QString& name,
     KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1006,7 +1170,7 @@ UserParamHolder::createButtonParam(const QString& name,
     KnobButtonPtr knob = _holder->createButtonKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1028,7 +1192,7 @@ UserParamHolder::createSeparatorParam(const QString& name,
     KnobSeparatorPtr knob = _holder->createSeparatorKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1050,7 +1214,7 @@ UserParamHolder::createGroupParam(const QString& name,
     KnobGroupPtr knob = _holder->createGroupKnob( name.toStdString(), label.toStdString() );
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1094,7 +1258,7 @@ UserParamHolder::createParametricParam(const QString& name,
     KnobParametricPtr knob = _holder->createParametricKnob(name.toStdString(), label.toStdString(), nbCurves);
 
     if (knob) {
-        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        KnobPagePtr userPage = knob->getParentKnob() ? KnobPagePtr() : _holder->getOrCreateUserPageKnob();
         if (userPage) {
             userPage->addKnob(knob);
         }
@@ -1127,6 +1291,25 @@ UserParamHolder::removeParam(Param* param)
     return true;
 }
 
+void
+UserParamHolder::addRFVKnob(Param* param)
+{
+    if (!checkHolderIsEditable(_holder)) {
+        return;
+    }
+    KnobIPtr knob = param ? param->getInternalKnob() : KnobIPtr();
+    std::string error;
+    if (!RFV::canAddAsVariable(_holder, knob, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+
+        return;
+    }
+    PythonUserKnobsUndoGuard undo(_holder);
+    if (!RFV::addAsVariable(_holder, knob, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+    }
+}
+
 PageParam*
 Effect::getUserPageParam() const
 {
@@ -1153,7 +1336,7 @@ UserParamHolder::refreshUserParamsGUI()
 Roto*
 Effect::getRotoContext() const
 {
-    RotoContextPtr roto = getInternalNode()->getRotoContext();
+    RotoCurveContextPtr roto = getInternalNode()->getCurveContext();
 
     if (roto) {
         return new Roto(roto);
@@ -1225,28 +1408,44 @@ Effect::getAvailableLayers(int inputNb) const
     return ret;
 }
 
-RectI
-Effect::getOutputFormat() const
+namespace {
+NodeMetadataConstPtr
+getEffectMetadataAt(const NodePtr& node,
+                    double time,
+                    int view)
 {
-    NodePtr node = getInternalNode();
+    if (!node || !node->getEffectInstance()) {
+        return NodeMetadataConstPtr();
+    }
 
-    if (!node) {
+    return node->getEffectInstance()->getMetadata(time, ViewIdx(view));
+}
+} // namespace
+
+RectI
+Effect::getOutputFormat(double time,
+                        int view) const
+{
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
+
+    if (!metadata) {
         return RectI();
     }
 
-    return node->getEffectInstance()->getOutputFormat();
+    return metadata->getOutputFormat();
 }
 
 double
-Effect::getFrameRate() const
+Effect::getFrameRate(double time,
+                     int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return 24.;
     }
 
-    return node->getEffectInstance()->getFrameRate();
+    return metadata->getOutputFrameRate();
 }
 
 namespace {
@@ -1364,27 +1563,29 @@ Effect::addMetadataAsDependencyOf(int fromExprDimension,
 }
 
 double
-Effect::getPixelAspectRatio() const
+Effect::getPixelAspectRatio(double time,
+                            int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return 1.;
     }
 
-    return node->getEffectInstance()->getAspectRatio(-1);
+    return metadata->getPixelAspectRatio(-1);
 }
 
 ImageBitDepthEnum
-Effect::getBitDepth() const
+Effect::getBitDepth(double time,
+                    int view) const
 {
-    NodePtr node = getInternalNode();
+    NodeMetadataConstPtr metadata = getEffectMetadataAt(getInternalNode(), time, view);
 
-    if (!node) {
+    if (!metadata) {
         return eImageBitDepthFloat;
     }
 
-    return node->getEffectInstance()->getBitDepth(-1);
+    return metadata->getBitDepth(-1);
 }
 
 void

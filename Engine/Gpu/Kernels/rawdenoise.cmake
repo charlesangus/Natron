@@ -1,0 +1,5 @@
+slang_add_kernel(rawdenoise_bayer_extract Kernels/rawdenoise.slang ENTRY rawdenoise_bayer_extract REGISTRY NatronGpu)
+slang_add_kernel(rawdenoise_xtrans_extract Kernels/rawdenoise.slang ENTRY rawdenoise_xtrans_extract REGISTRY NatronGpu)
+slang_add_kernel(rawdenoise_vert Kernels/rawdenoise.slang ENTRY rawdenoise_vert REGISTRY NatronGpu)
+slang_add_kernel(rawdenoise_horiz Kernels/rawdenoise.slang ENTRY rawdenoise_horiz REGISTRY NatronGpu)
+slang_add_kernel(rawdenoise_write Kernels/rawdenoise.slang ENTRY rawdenoise_write REGISTRY NatronGpu)

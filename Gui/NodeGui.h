@@ -36,8 +36,10 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QRectF>
+#include <QColor>
 #include <QMutex>
+#include <QPainterPath>
+#include <QRectF>
 #include <QSize>
 GCC_ONLY_DIAG_OFF(class-memaccess)
 #include <QVector>
@@ -73,6 +75,19 @@ public:
                      int height,
                      const QGradientStops & gradient,
                      const QColor & textColor,
+                     QGraphicsItem* parent);
+
+    /**
+     * @brief A badge of the given diameter filled with fill, showing icon stroked in iconColor. The icon
+     * is a vector path centred on (0,0) that fits in the badge: it scales with the graph and stays crisp
+     * at any zoom and device pixel ratio.
+     **/
+    NodeGuiIndicator(int depth,
+                     const QPainterPath& icon,
+                     const QPointF& center,
+                     double diameter,
+                     const QColor& fill,
+                     const QColor& iconColor,
                      QGraphicsItem* parent);
 
     ~NodeGuiIndicator();
@@ -346,8 +361,11 @@ public:
 
     TrackerPanel* getTrackerPanel() const;
 
-
-    void setKnobLinksVisible(bool visible);
+    /**
+     * @brief Applies the link and expression line colours and visibility: a kind of line is shown when
+     * the graph's "Show Link Lines" switch is on and that kind's preference is on.
+     **/
+    void refreshLinkLinesAppearance();
 
     /**
      * @brief Serialize this node. If this is a multi-instance node, every instance will
@@ -570,9 +588,18 @@ public Q_SLOTS:
 
     void centerGraphOnIt();
 
-    void onAllKnobsSlaved(bool b);
-
+    /**
+     * @brief Rebuilds the expression arrows, the knob link lines and the lines between Linked Nodes,
+     * and the expression and Linked Node indicators. Each set of Linked Nodes and each knob link group is
+     * drawn as the lines nearestMemberLines() picks, not a line per pair; each node read by expression
+     * gets one arrow from this node.
+     **/
     void onKnobsLinksChanged();
+
+    /**
+     * @brief Rebuilds the lines as onKnobsLinksChanged() does, once, the next time the event loop runs.
+     **/
+    void scheduleLinkLinesRefresh();
 
     void refreshOutputEdgeVisibility();
 
@@ -673,8 +700,6 @@ private:
      **/
     bool colorIsBody() const;
 
-    bool isDrawnAsClone() const;
-
     QColor getDrawnBodyColor() const;
 
     bool isUserColorBorderShown() const;
@@ -753,14 +778,9 @@ private:
     QColor _currentColor; //< accessed by the serialization thread
     bool _hasUserColor;
     QColor _userColor;
-    QColor _clonedColor;
     bool _nameItemHasUserFontColor; //< the label has a font colour the user picked, which wins over body contrast
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
-
-    ///This is the garphical red line displayed when the node is a clone
-    LinkArrow* _slaveMasterLink;
-    NodeGuiWPtr _masterNodeGui;
 
     ///For each knob that has a link to another parameter, display an arrow
     struct LinkedKnob
@@ -783,15 +803,37 @@ private:
         }
     };
 
-    struct LinkedDim
-    {
-        std::list<LinkedKnob> knobs;
-        LinkArrow* arrow;
+    enum LinkLineKindEnum {
+        // A directed arrow from a node whose knobs an expression of this node reads
+        eLinkLineKindExpression = 0,
+
+        // An undirected dashed line to a node with a knob sharing a link group with a knob of this node
+        eLinkLineKindKnobLink,
+
+        // An undirected solid line to a Linked Node of this node
+        eLinkLineKindLinkedNodes
     };
 
-    typedef std::map<NodeWPtr, LinkedDim, std::owner_less<NodeWPtr>> KnobGuiLinks;
-    KnobGuiLinks _knobsLinks;
+    // Undirected lines are drawn by the node of the pair with the lower address, so each pair gets one line.
+    struct LinkLine {
+        NodeWPtr partner;
+        LinkLineKindEnum kind;
+        std::list<LinkedKnob> knobs;
+        LinkArrow* arrow;
+
+        // An expression arrow whose expressions are all invalid is hidden
+        bool invalid;
+    };
+
+    typedef std::list<LinkLine> LinkLines;
+
+    // Recounts the invalid expressions of an expression line's knobs and returns whether all are invalid.
+    static bool refreshExpressionLineInvalid(LinkLine& line);
+
+    LinkLines _linkLines;
+    bool _linkLinesRefreshPending;
     NodeGuiIndicatorPtr _expressionIndicator;
+    NodeGuiIndicatorPtr _linkedNodeIndicator;
     QPoint _magnecEnabled; //<enabled in X or/and Y
     QPointF _magnecDistance; //for x and for  y
     QPoint _updateDistanceSinceLastMagnec; //for x and for y

@@ -34,12 +34,28 @@
 
 #include <QString>
 
+#include "Engine/AppInstance.h"
+#include "Engine/Format.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+bool
+isAuxInput(const NodeSpec& spec,
+           int inputNb)
+{
+    const NodeSpec::ResolvedInput input = spec.resolveInput(inputNb);
+
+    return input.spec && (input.spec->role == InputRole::Aux);
+}
+} // namespace
 
 StagedImageEffect::StagedImageEffect(NodePtr node)
     : NativeEffectBase(node)
@@ -74,7 +90,9 @@ StagedImageEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) co
 bool
 StagedImageEffect::wantsHostUnPremultSelector() const
 {
-    return imagePipelineSpec().stages.has(Stage::Premult);
+    const StageSet& stages = imagePipelineSpec().stages;
+
+    return stages.has(Stage::Premult) || stages.has(Stage::Divisor);
 }
 
 bool
@@ -154,7 +172,7 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
     const OpKind kind = imagePipelineSpec().op;
 
     if (kind == OpKind::Passes) {
-        return canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
+        return opPassesOnGpu() && canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
     }
     if (kind == OpKind::Resample) {
         return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));
@@ -180,6 +198,8 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 
 RectI
 StagedImageEffect::getGpuInputRoI(int inputNb,
+                                  double time,
+                                  ViewIdx view,
                                   const RectI& outputRect,
                                   const RenderScale& scale) const
 {
@@ -187,19 +207,19 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     const int source = getSourceInput();
 
     if ((inputNb == source) && (kind == OpKind::Passes)) {
-        return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+        return passListSourceRoI(outputRect, opPasses(time, view, scale));
+    }
+    if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputRoI(inputNb, outputRect, scale);
     }
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
-        const double time = getCurrentTime();
-        const ViewIdx view = getCurrentView();
-
         return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
     }
     if (kind == OpKind::Custom) {
-        return getOpGpuInputRoI(inputNb, outputRect, scale);
+        return getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
 
-    return NativeEffectBase::getGpuInputRoI(inputNb, outputRect, scale);
+    return NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
 }
 
 bool
@@ -216,6 +236,9 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
     }
     if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
+    }
+    if ((kind == OpKind::Passes) && (inputNb != getSourceInput()) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputLayer(inputNb, plane, time, view, layer);
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 
@@ -389,11 +412,13 @@ StagedImageEffect::isMaskApplied() const
 }
 
 PassContext
-StagedImageEffect::getPassContext(const RenderScale& scale) const
+StagedImageEffect::getPassContext(double time,
+                                  ViewIdx view,
+                                  const RenderScale& scale) const
 {
     PassContext context;
     const int source = getSourceInput();
-    const double par = ((source >= 0) && getInput(source)) ? getAspectRatio(source) : 0.;
+    const double par = ((source >= 0) && getInput(source)) ? getRenderMetadata(time, view)->getPixelAspectRatio(source) : 0.;
 
     context.scale = scale;
     if (par != 0.) {
@@ -450,7 +475,8 @@ StagedImageEffect::getRegionOfDefinition(U64 hash,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
         return eStatusFailed;
     }
-    const RectI srcRoDPixel = PassExec::toPixelEnclosing(srcRoD, scale, getAspectRatio(source));
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const RectI srcRoDPixel = PassExec::toPixelEnclosing(srcRoD, scale, metadata->getPixelAspectRatio(source));
 
     RectI rodPixel = srcRoDPixel;
     bool changed = false;
@@ -468,7 +494,7 @@ StagedImageEffect::getRegionOfDefinition(U64 hash,
     if (!changed) {
         return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
     }
-    *rod = PassExec::toCanonical(rodPixel, scale, getAspectRatio(-1));
+    *rod = PassExec::toCanonical(rodPixel, scale, metadata->getPixelAspectRatio(-1));
 
     return eStatusOK;
 } // StagedImageEffect::getRegionOfDefinition
@@ -502,7 +528,7 @@ StagedImageEffect::getRegionsOfInterest(double time,
         }
     }
 
-    const double par = getAspectRatio(source);
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(source);
     const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
     RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
     if (doMasking && (mix != 1.)) {
@@ -568,7 +594,7 @@ StagedImageEffect::getTransform(double time,
         return NativeEffectBase::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
     }
 
-    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, renderScale, draftRender, inputToTransform, transform);
+    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
 }
 
 FramesNeededMap
@@ -616,6 +642,26 @@ StagedImageEffect::deriveOutputMetadata(double time,
     return NativeEffectBase::deriveOutputMetadata(time, view);
 }
 
+StatusEnum
+StagedImageEffect::getPreferredMetadataAt(double time,
+                                          ViewIdx view,
+                                          NodeMetadata& metadata)
+{
+    if (route(time, view).kind != Route::Kind::Black) {
+        return eStatusOK;
+    }
+    // The defaults come from whichever inputs are connected, which a Black answer reads none of.
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+    metadata.setNComps(-1, 4);
+    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setBitDepth(-1, eImageBitDepthFloat);
+    metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
+    metadata.setOutputFormat(projectFormat);
+
+    return eStatusOK;
+}
+
 bool
 StagedImageEffect::presentsOnlyPassThroughLayers(double time,
                                                  ViewIdx view)
@@ -647,6 +693,14 @@ StagedImageEffect::isIdentity(double time,
     const bool maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
     if (maskMix && (getMixValue(time, view) == 0.)) {
         return true;
+    }
+    // A Divisor stage's op multiplies or divides by its divisor, which is 1 when none is picked.
+    if (imagePipelineSpec().stages.has(Stage::Divisor)) {
+        NodePtr node = getNode();
+        KnobChannelSelectPtr divisor = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+        if (!divisor || divisor->isNone()) {
+            return true;
+        }
     }
     if (isOpIdentity(time, scale, roi, view)) {
         return true;

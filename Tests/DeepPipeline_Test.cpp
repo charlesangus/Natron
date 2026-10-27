@@ -332,7 +332,7 @@ protected:
 
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
         const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
@@ -426,7 +426,7 @@ TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposi
     const int frame = 1;
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-    getApp()->startWritersRendering(true, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
     const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);

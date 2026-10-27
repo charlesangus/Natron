@@ -61,7 +61,7 @@ TEST(LayerRegistry, BuiltinOrder)
     LayerRegistry registry;
     std::shared_ptr<const std::vector<LayerRegistryEntry>> snap = registry.snapshot();
 
-    ASSERT_EQ(9u, snap->size());
+    ASSERT_EQ(10u, snap->size());
     EXPECT_EQ(std::string(kNatronColorViewRGBA), (*snap)[0].desc.getLayerID());
     EXPECT_EQ(LayerRegistryEntry::eOriginBuiltin, (*snap)[0].origin);
     EXPECT_EQ(std::string(kNatronColorViewRGB), (*snap)[1].desc.getLayerID());
@@ -73,6 +73,8 @@ TEST(LayerRegistry, BuiltinOrder)
     EXPECT_EQ(std::string(kNatronForwardMotionVectorsLayerID), (*snap)[7].desc.getLayerID());
     EXPECT_EQ("depth", (*snap)[8].desc.getLayerID());
     EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[8].origin);
+    EXPECT_EQ("primId", (*snap)[9].desc.getLayerID());
+    EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[9].origin);
 }
 
 TEST(LayerRegistry, ColorViewExactReaddIsUnchangedNoOp)
@@ -274,8 +276,8 @@ TEST(LayerRegistry, ToStoragePlanesFoldsColorViewsToOneRGBAEntry)
     EXPECT_EQ(1, colorCount);
     EXPECT_TRUE(colorIsRgba);
 
-    // Non-colour entries survive untouched: DisparityLeft, DisparityRight, Backward, Forward, depth.
-    EXPECT_EQ(std::size_t(9 - 4 + 1), storagePlanes.size());
+    // Non-colour entries survive untouched: DisparityLeft, DisparityRight, Backward, Forward, depth, primId.
+    EXPECT_EQ(std::size_t(10 - 4 + 1), storagePlanes.size());
 }
 
 TEST(LayerRegistry, RemoveDepthSucceeds)

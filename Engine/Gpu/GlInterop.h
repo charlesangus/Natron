@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -25,6 +26,16 @@ enum class GlHandoffPath {
 };
 
 const char* toString(GlHandoffPath path);
+
+// The value a hand-off override variable gives `path` by: "zerocopy", "hostsync" or "readback".
+const char* overrideName(GlHandoffPath path);
+
+// The path `value` names as overrideName() does, ignoring case; empty for null or any other value.
+std::optional<GlHandoffPath> parseOverride(const char* value);
+
+// Whether `s` reports the device lost: a hand-off then stops trying paths and falls back until the
+// device is recovered.
+bool isDeviceLost(const GpuStatus& s);
 
 struct GlInteropCaps {
     bool vkExternalMemoryFd = false;
@@ -50,6 +61,68 @@ struct GlInteropCaps {
     std::string missing;
 
     bool supports(GlHandoffPath path) const;
+};
+
+// What chooseHandoffPath() settled on.
+struct GlHandoffChoice {
+    // The first path that built; empty when none did or the device was lost.
+    std::optional<GlHandoffPath> path;
+    // The device was lost while a path was being built.
+    bool lost = false;
+    // For every path stepped over, "<overrideName> unavailable: missing ..." or "<overrideName> failed: ...",
+    // separated by "; ".
+    std::string reasons;
+};
+
+// The hand-off ladder: steps from `first` down to Readback, quietly passing over each path `caps` does not
+// support or `build` fails to make, and stops at the first that builds or at a device loss.
+GlHandoffChoice chooseHandoffPath(const GlInteropCaps& caps,
+                                  GlHandoffPath first,
+                                  const std::function<GpuStatus(GlHandoffPath)>& build);
+
+// Vulkan semaphores that another API can import, as both GL hand-off directions order their work with.
+GpuStatus createExportableSemaphore(GpuDevice& device, VkSemaphore* out);
+
+// The GL half of sharing Vulkan memory and semaphores, in either direction: what GlInterop does to see
+// Vulkan's buffers, for any producer or consumer on the GL side. Every call needs the GL context
+// current that the entry points were loaded from; the GL names it hands out belong to that context.
+class GlExternal {
+public:
+    // Fails when the context lacks GL_EXT_memory_object_fd's entry points.
+    static GpuStatus load(const GlProcLoader& loader, std::unique_ptr<GlExternal>& out);
+
+    ~GlExternal();
+    GlExternal(const GlExternal&) = delete;
+    GlExternal& operator=(const GlExternal&) = delete;
+
+    // Imports the first `bytes` of `buffer`, made by GpuBuffer::createExportable() at least `bytes` plus
+    // kImportSlackBytes long, as a new GL buffer object, which the new memory object *glMemory backs.
+    GpuStatus importBuffer(GpuDevice& device, const GpuBuffer& buffer, VkDeviceSize bytes, unsigned int* glMemory,
+                           unsigned int* glBuffer);
+    // Imports `semaphore`, made by createExportableSemaphore(), as a new GL semaphore object.
+    GpuStatus importSemaphore(GpuDevice& device, VkSemaphore semaphore, unsigned int* glSemaphore);
+    // Deletes what importBuffer() and importSemaphore() made; zero names are skipped and the names zeroed.
+    void deleteBuffer(unsigned int* glMemory, unsigned int* glBuffer);
+    void deleteSemaphore(unsigned int* glSemaphore);
+
+    // Signals glSemaphore once every GL command issued so far is done, handing glBuffer over to the
+    // waiting API, and flushes so that the signal is submitted.
+    GpuStatus signal(unsigned int glSemaphore, unsigned int glBuffer);
+    // Blocks until every GL command issued so far is done.
+    GpuStatus finish();
+
+    // The GL error raised since the last check, as a failed status naming `what`, or success.
+    GpuStatus error(const char* what);
+
+    // The margin llvmpipe needs between a buffer and the memory imported for it.
+    static constexpr VkDeviceSize kImportSlackBytes = 256;
+
+    struct Api;
+
+private:
+    GlExternal() = default;
+
+    std::unique_ptr<Api> api_;
 };
 
 enum class GlPixelFormat {

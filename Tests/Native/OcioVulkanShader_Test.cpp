@@ -355,8 +355,9 @@ linearFilterError(gpu::GpuRuntime& runtime,
             continue;
         }
         const std::size_t channels = t.desc.channels;
-        for (std::size_t i = channels; i < t.texels.size(); ++i) {
-            largestStep = std::max(largestStep, std::fabs(double(t.texels[i]) - double(t.texels[i - channels])));
+        const std::vector<float>& texels = *t.texels;
+        for (std::size_t i = channels; i < texels.size(); ++i) {
+            largestStep = std::max(largestStep, std::fabs(double(texels[i]) - double(texels[i - channels])));
         }
     }
 
@@ -437,6 +438,8 @@ TEST(OcioVulkanShader, ShaperAnd3DLutLook)
     ASSERT_TRUE(bool(processor)) << error;
 
     OcioVulkanShader::Resources resources(holder->runtime());
+    // Another user of the same runtime: the uploads below are not its own.
+    OcioVulkanShader::Resources bystander(holder->runtime());
     Prepared prepared;
     runCase(holder->runtime(), "luts", processor, resources, &prepared, true);
     if (::testing::Test::HasFatalFailure()) {
@@ -453,7 +456,7 @@ TEST(OcioVulkanShader, ShaperAnd3DLutLook)
     EXPECT_TRUE(has3D);
     EXPECT_TRUE(has1D);
 
-    // The same processor's cacheID finds the textures already made.
+    // The same tables find the textures the runtime's cache already made.
     const std::size_t created = resources.texturesCreated();
     EXPECT_EQ(prepared.shader.textures().size(), created);
     Prepared again;
@@ -462,7 +465,19 @@ TEST(OcioVulkanShader, ShaperAnd3DLutLook)
         return;
     }
     EXPECT_EQ(created, resources.texturesCreated());
-    EXPECT_EQ(prepared.textures.get(), again.textures.get());
+    EXPECT_EQ(0u, bystander.texturesCreated());
+    // Taken from the cache the first object filled, the same tables upload nothing for the bystander.
+    Prepared shared;
+    prepare(holder->runtime(), bystander, processor->getDefaultGPUProcessor(), &shared);
+    if (::testing::Test::HasFatalFailure()) {
+        return;
+    }
+    EXPECT_EQ(0u, bystander.texturesCreated());
+    EXPECT_EQ(created, resources.texturesCreated());
+    ASSERT_EQ(prepared.textures->size(), again.textures->size());
+    for (std::size_t i = 0; i < prepared.textures->size(); ++i) {
+        EXPECT_EQ((*prepared.textures)[i].get(), (*again.textures)[i].get());
+    }
     EXPECT_EQ(prepared.shader.cacheID(), again.shader.cacheID());
 #endif
 }

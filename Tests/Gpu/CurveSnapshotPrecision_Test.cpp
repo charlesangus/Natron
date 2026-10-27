@@ -33,6 +33,7 @@ struct Operands {
 constexpr uint32_t kGroup = 64;
 constexpr float kSplitLimit = 8.0e34f;
 constexpr double kFloatMin = 1.17549435e-38;
+constexpr double kExactFloor = kFloatMin * 281474976710656.0;
 
 // Operand pairs whose float product has a nonzero error: random 24-bit mantissas, at the scales of
 // a curve's coefficients, of a table position, of the largest splittable value (with partners that
@@ -120,7 +121,6 @@ GPU_TEST_F(CurveSnapshotPrecisionTest, CurveMulKeepsTheProductError)
                                        probe_mul_storage_buffers, probe_mul_push_bytes);
     size_t exactChecked = 0;
     size_t tested[6] = {};
-    size_t belowTinyExact = 0;
     for (size_t i = 0; i < pairs.size(); ++i) {
         const float a = pairs[i].a;
         const float b = pairs[i].b;
@@ -138,9 +138,10 @@ GPU_TEST_F(CurveSnapshotPrecisionTest, CurveMulKeepsTheProductError)
         }
         ++tested[size_t(pairs[i].category)];
         const double exactError = exact - double(p);
-        // A device that flushes denormals may lose a residual below FLT_MIN, and only that.
-        const bool representable = std::fabs(exactError) >= kFloatMin || exactError == 0.0;
-        if (representable) {
+        // Dekker's partial products (al*bl and the cross terms) are at least about 2^-48 of |p| when
+        // nonzero, so below this floor a device that flushes denormals can drop some of them. Each
+        // dropped term is under FLT_MIN, so the result is then only bounded, not exact.
+        if (std::fabs(double(p)) >= kExactFloor) {
             EXPECT_EQ(double(err), exactError) << i << ": " << a << " * " << b;
             if (hi == p) {
                 EXPECT_EQ(double(lo), exactError) << i << ": " << a << " * " << b;
@@ -148,17 +149,15 @@ GPU_TEST_F(CurveSnapshotPrecisionTest, CurveMulKeepsTheProductError)
             EXPECT_LE(std::fabs((double(hi) + double(lo)) - exact), std::fabs(exact) * std::ldexp(1.0, -44))
                 << i << ": " << a << " * " << b;
             exactChecked += exactError != 0.0;
-            if (pairs[i].category == Category::BelowTiny && exactError != 0.0) {
-                ++belowTinyExact;
-            }
         } else {
-            EXPECT_TRUE(double(err) == exactError || err == 0.0f) << i << ": " << a << " * " << b;
+            ASSERT_TRUE(std::isfinite(err)) << i;
+            EXPECT_LE(std::fabs(double(err) - exactError), 4.0 * kFloatMin) << i << ": " << a << " * " << b;
+            EXPECT_LE(std::fabs((double(hi) + double(lo)) - exact), 4.0 * kFloatMin) << i << ": " << a << " * " << b;
         }
     }
     for (Category category : { Category::Unit, Category::Million, Category::NearSplitLimit, Category::BelowTiny }) {
         EXPECT_GT(tested[size_t(category)], 0u) << int(category);
     }
-    EXPECT_GT(belowTinyExact, 0u);
     EXPECT_GT(exactChecked, pairs.size() / 2);
 }
 

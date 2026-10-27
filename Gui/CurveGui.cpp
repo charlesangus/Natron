@@ -648,13 +648,13 @@ KnobCurveGui::KnobCurveGui(CurveWidget* curveWidget,
     }
 }
 
-KnobCurveGui::KnobCurveGui(CurveWidget *curveWidget,
-                           CurvePtr  curve,
+KnobCurveGui::KnobCurveGui(CurveWidget* curveWidget,
+                           CurvePtr curve,
                            const KnobIPtr& knob,
-                           const RotoContextPtr& roto,
+                           const RotoCurveContextPtr& roto,
                            int dimension,
-                           const QString & name,
-                           const QColor & color,
+                           const QString& name,
+                           const QColor& color,
                            int thickness)
     : CurveGui(curveWidget, curve, name, color, thickness)
     , _roto(roto)
@@ -736,11 +736,11 @@ KnobCurveGui::setKeyFrameInterpolation(KeyframeTypeEnum interp,
     return getInternalCurve()->setKeyFrameInterpolation(interp, index);
 }
 
-BezierCPCurveGui::BezierCPCurveGui(CurveWidget *curveWidget,
+BezierCPCurveGui::BezierCPCurveGui(CurveWidget* curveWidget,
                                    const BezierPtr& bezier,
-                                   const RotoContextPtr& roto,
-                                   const QString & name,
-                                   const QColor & color,
+                                   const RotoCurveContextPtr& roto,
+                                   const QString& name,
+                                   const QColor& color,
                                    int thickness)
     : CurveGui(curveWidget, CurvePtr(), name, color, thickness)
     , _bezier(bezier)

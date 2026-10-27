@@ -65,6 +65,7 @@
         <file alias="LICENSE-zlib.txt">../tools/license/components/LICENSE-zlib.txt</file>
         <file alias="LICENSE-hoedown.txt">../tools/license/components/LICENSE-hoedown.txt</file>
         <file alias="LICENSE-yaml-cpp.txt">../tools/license/components/LICENSE-yaml-cpp.txt</file>
+        <file alias="LICENSE-FastNoise2.txt">../tools/license/components/LICENSE-FastNoise2.txt</file>
         <file>Resources/Fonts/DroidSans-Bold.ttf</file>
         <file>Resources/Fonts/DroidSans.ttf</file>
         <file>Resources/Icons/lucide/aperture.svg</file>
@@ -228,6 +229,7 @@
         <file>Resources/Icons/natron/select-curves.svg</file>
         <file>Resources/Icons/natron/select-feather.svg</file>
         <file>Resources/Icons/natron/select-points.svg</file>
+        <file>Resources/Icons/natron/smooth-s.svg</file>
         <file>Resources/Icons/natron/track-all-keys.svg</file>
         <file>Resources/Icons/natron/track-current-key.svg</file>
         <file>Resources/Icons/natron/track-range.svg</file>

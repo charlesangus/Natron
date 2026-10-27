@@ -159,7 +159,7 @@ NodeGraph::mouseDoubleClickEvent(QMouseEvent* e)
 {
     // The second press of a double click arrives here instead of in mousePressEvent, so a held
     // arrow must get it too.
-    if ((_imp->_pickedUpArrowInput >= 0) && handlePickUpPress(e)) {
+    if (hasPickedUpArrow() && handlePickUpPress(e)) {
         _imp->_evtState = eEventStateNone;
 
         return;
@@ -239,13 +239,13 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         cutSelectedNodes();
     } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDuplicate, modifiers, key) ) {
         duplicateSelectedNodes();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphClone, modifiers, key) ) {
-        cloneSelectedNodes();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDeclone, modifiers, key) ) {
-        decloneSelectedNodes();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFrameNodes, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateLinkedNode, modifiers, key)) {
+        createLinkedNodes();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphUnlinkNode, modifiers, key)) {
+        unlinkSelectedNodes();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFrameNodes, modifiers, key)) {
         centerOnAllNodes();
-    } else if ( isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSwitchInputs, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSwitchInputs, modifiers, key)) {
         ///No need to make an undo command for this, the user just have to do it a second time to reverse the effect
         switchInputs1and2ForSelectedNodes();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphConnectSelectedToLast, modifiers, key)) {
@@ -350,7 +350,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         }
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, modifiers, key)) {
         toggleSelectedNodesEnabled();
-    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowExpressions, modifiers, key)) {
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines, modifiers, key)) {
         toggleKnobLinksVisible();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, modifiers, key)) {
         toggleAutoPreview();

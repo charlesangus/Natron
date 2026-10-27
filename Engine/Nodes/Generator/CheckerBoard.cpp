@@ -165,7 +165,7 @@ readColor(const KnobReader& reader,
           float out[4])
 {
     for (int i = 0; i < 4; ++i) {
-        out[i] = (float)reader.valueOr(knob, 0., i);
+        out[i] = knobValueAsFloat(reader.valueOr(knob, 0., i));
     }
 }
 } // anonymous namespace
@@ -340,7 +340,7 @@ CheckerBoardOp::bake(const KnobReader& reader) const
     params.rodY1 = rod.y1;
     params.rodX2 = rod.x2;
     params.rodY2 = rod.y2;
-    params.par = generator ? generator->getPixelAspectRatio() : 1.;
+    params.par = generator ? generator->getPixelAspectRatio(reader.time(), reader.view()) : 1.;
     readColor(reader, color0, params.colors[eCheckerBoardColor0]);
     readColor(reader, color1, params.colors[eCheckerBoardColor1]);
     readColor(reader, color2, params.colors[eCheckerBoardColor2]);

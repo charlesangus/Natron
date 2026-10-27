@@ -44,24 +44,42 @@
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
+#include "Engine/Nodes/Color/ColorMatrix.h"
+#include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/HSVTool.h"
+#include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Posterize.h"
+#include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Color/Threshold.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Despill.h"
+#include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
+#include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/IDistort.h"
+#include "Engine/Nodes/Transform/LensDistortion.h"
+#include "Engine/Nodes/Transform/Mirror.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
@@ -83,6 +101,7 @@ gpuCapableIds()
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,
+        PLUGINID_NATRON_NOISE,
         PLUGINID_NATRON_SATURATION,
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
@@ -94,16 +113,35 @@ gpuCapableIds()
         PLUGINID_NATRON_REFORMAT,
         PLUGINID_NATRON_POSITION,
         PLUGINID_NATRON_CROP,
+        PLUGINID_NATRON_CORNERPIN,
+        PLUGINID_NATRON_MIRROR,
+        PLUGINID_NATRON_STMAP,
+        PLUGINID_NATRON_IDISTORT,
+        PLUGINID_NATRON_LENSDISTORTION,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
+        PLUGINID_NATRON_RAWHOTPIXELS,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_EDGEDETECT,
+        PLUGINID_NATRON_IBLUR,
+        PLUGINID_NATRON_IERODE,
+        PLUGINID_NATRON_IDILATE,
         PLUGINID_NATRON_SHUFFLE,
         PLUGINID_NATRON_SHUFFLECOPY,
         PLUGINID_NATRON_ADDLAYERS,
         PLUGINID_NATRON_REMOVELAYERS,
+        PLUGINID_NATRON_PREMULT,
+        PLUGINID_NATRON_UNPREMULT,
+        PLUGINID_NATRON_COLORMATRIX,
+        PLUGINID_NATRON_THRESHOLD,
+        PLUGINID_NATRON_COLORSPACE,
+        PLUGINID_NATRON_HSVTOOL,
+        PLUGINID_NATRON_HUECORRECT,
+        PLUGINID_NATRON_HSVKEYER,
+        PLUGINID_NATRON_DESPILL,
+        PLUGINID_NATRON_POSTERIZE,
     };
 
     return ids;
@@ -154,5 +192,5 @@ TEST_F(NativeGpuCapabilityTest, DefaultsDeclineAndPassTheRegionThrough)
     ASSERT_TRUE(effect != nullptr);
 
     const RectI roi(10, 20, 110, 220);
-    EXPECT_EQ(roi, effect->getGpuInputRoI(0, roi, RenderScale()));
+    EXPECT_EQ(roi, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale()));
 }

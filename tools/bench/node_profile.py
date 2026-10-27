@@ -8,8 +8,17 @@
 #   NP_NODE    key of a node in NODES (below)
 #   NP_CHAIN   copies of the node in series (default 8). A generator is never chained. A chain
 #              lets the placement see a region worth its transfers; kernel time is then per chain.
+#              With the GPU on it must be 2 or more: a node with no GPU cost row is unpriced, and
+#              the placement keeps a lone unpriced candidate on the CPU, so a chain of 1 profiles
+#              the CPU while claiming to profile the GPU.
 #   NP_FRAMES  frames rendered one at a time (default 6); the first is cold and is dropped later
 #   NP_WORK    directory the frames are written to
+#   NP_OCIO_CONFIG  path of a config.ocio the project uses (as its Custom config) before any node is
+#              created. Unset, the project keeps its default, the built-in ACES studio config
+#              (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5), which the ocio_* nodes below are
+#              written for. Only builds with the OCIO nodes have the project knobs.
+#
+# A key whose plugin the running binary lacks fails at creation, so select only keys it has.
 
 import os
 
@@ -72,25 +81,100 @@ NODES = {
     "blur_gauss100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 1}, False),
     "blur_box100": ("net.sf.cimg.CImgBlur", {"size": (240.0, 240.0), "filter": 2}, False),
     "blur": ("net.sf.cimg.CImgBlur", {"size": (12.0, 12.0)}, False),
+    "iblur": ("IBlur", {"size": (60.0, 60.0)}, False),
+    "ierode": ("IErode", {"size": (6.0, 6.0)}, False),
+    "idilate": ("IDilate", {"size": (6.0, 6.0)}, False),
     "dissolve": ("net.sf.openfx.DissolvePlugin", {"which": 0.5}, False),
     "crop": ("net.sf.openfx.CropPlugin",
              {"bottomLeft": (200.0, 150.0), "size": (3400.0, 1900.0), "softness": 20.0}, False),
     "reformat": ("net.sf.openfx.Reformat", {"reformatType": 1, "boxFixed": True, "boxSize": (1920, 1080)}, False),
     "position": ("net.sf.openfx.Position", {"translate": (12.6, 7.4)}, False),
+    "premult": ("Premult", {}, False),
+    "unpremult": ("Unpremult", {}, False),
+    "colorspace": ("Colorspace", {"colorspace_in": 0, "colorspace_out": 1}, False),
+    "colormatrix": ("ColorMatrix", {"matrix": (0.8, 0.15, 0.05, 0.0, 0.1, 0.8, 0.1, 0.0,
+                                               0.05, 0.15, 0.8, 0.0, 0.0, 0.0, 0.0, 1.0)}, False),
+    "hsvtool": ("HSVTool", {"hueRotation": 30.0, "saturationAdjustment": 0.1, "brightnessAdjustment": 0.05}, False),
+    "huecorrect": ("HueCorrect", {}, False),
+    "hsvkeyer": ("HSVKeyer", {}, False),
+    "despill": ("Despill", {"screenColor": (0.1, 0.9, 0.1, 1.0), "strength": 1.0}, False),
+    "threshold": ("Threshold", {"level": (0.5, 0.5, 0.5, 0.5), "softness": (0.1, 0.1, 0.1, 0.1)}, False),
+    "posterize": ("Posterize", {"levels": 6}, False),
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
     "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
+    "noise": ("Noise", {"type": "simplex", "fractal": "fbm", "octaves": 6, "lacunarity": 2.0, "gain": 0.5,
+                        "noiseSize": (64.0, 64.0), "warpType": "perlin", "warpAmount": 0.5}, True),
+    "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
+    "merge": ("Merge", {"operation": "over"}, False),
+    "merge_plus": ("Merge", {"operation": "plus"}, False),
+    "ocio_colorspace": ("OCIOColorSpace", {"in_colorspace": "ACES2065-1", "out_colorspace": "ACEScg"}, False),
+    "ocio_display": ("OCIODisplay", {"in_colorspace": "ACEScg", "display": "sRGB - Display",
+                                     "view": "ACES 2.0 - SDR 100 nits (Rec.709)", "gain": 1.1}, False),
+    "ocio_cdl": ("OCIOCDLTransform", {"slope": (1.1, 0.9, 1.0), "offset": (0.01, 0.0, -0.01),
+                                      "power": (1.1, 1.0, 0.9), "saturation": 1.2}, False),
+    "ocio_file": ("OCIOFileTransform", {"file": "@LUT@"}, False),
+    "ocio_look": ("OCIOLookTransform", {"in_colorspace": "ACEScg", "out_colorspace": "ACEScg",
+                                        "single_look": True, "look": "@LOOK@"}, False),
 }
 
 
 # Nodes whose input 1 is fed a second source.
-TWO_INPUTS = ("dissolve",)
+# Merge: input 0 is B, fed the chain; input 1 is A, fed the second source.
+TWO_INPUTS = ("dissolve", "merge", "merge_plus")
+
+# Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
+# runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
+
+
+def use_ocio_config():
+    path = os.environ.get("NP_OCIO_CONFIG")
+    if not path:
+        return
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise RuntimeError("NP_OCIO_CONFIG is not a file: " + path)
+    app.getProjectParam("ocioConfigFile").set(path)
+    app.getProjectParam("ocioConfig").set("Custom config")
+
+
+def write_cube():
+    # A 17^3 LUT, red fastest, that bends every channel and mixes in the others: never an identity.
+    path = os.path.join(WORK, "np_lut17.cube")
+    os.makedirs(WORK, exist_ok=True)
+    n = 17
+    with open(path, "w") as f:
+        f.write("LUT_3D_SIZE %d\n" % n)
+        for b in range(n):
+            for g in range(n):
+                for r in range(n):
+                    x, y, z = r / (n - 1.0), g / (n - 1.0), b / (n - 1.0)
+                    f.write("%.6f %.6f %.6f\n" % (min(1.0, x ** 0.8 * 0.9 + y * 0.1),
+                                                   min(1.0, y ** 0.9 * 0.9 + z * 0.1),
+                                                   min(1.0, z ** 1.1 * 0.9 + x * 0.1)))
+    return path
+
+
+def first_look(node):
+    for option in param(node, "look").getOptions():
+        if option and option.lower() != "none":
+            return option
+    raise RuntimeError("the OCIO config has no looks")
+
+# Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
+# runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
 
 
 def configure(name, index):
     plugin_id, values, generator = NODES[name]
     node = make(plugin_id, "np_%s_%d" % (name, index))
     for key, value in values.items():
+        if value == "@LUT@":
+            value = write_cube()
+        elif value == "@LOOK@":
+            value = first_look(node)
         if isinstance(value, tuple):
             param(node, key).set(*value)
         else:
@@ -98,16 +182,23 @@ def configure(name, index):
     if plugin_id == "net.sf.openfx.TransformPlugin" and "translate" not in values:
         animate(param(node, "translate"), (0.0, 0.0), (14.0, 6.0))
         animate(param(node, "rotate"), (0.0,), (0.8,))
+    if name == "huecorrect":
+        # Bend the sat curve (dimension 1) and shift the hue curve (dimension 0); the defaults are identity.
+        curves = param(node, "hue")
+        for n in range(6):
+            curves.setNthControlPoint(1, n, float(n), 1.0 + 0.3 * (n % 2), 0.0, 0.0)
+            curves.setNthControlPoint(0, n, float(n), 0.1 * (n % 3), 0.0, 0.0)
     if name == "reformat":
         # Alternating the target size keeps every copy in a chain resampling.
         param(node, "boxSize").set(*((1920, 1080) if index % 2 == 0 else (3840, 2160)))
     if generator:
-        color = "color0" if plugin_id.endswith("CheckerBoardPlugin") else "color"
+        color = "color0" if plugin_id.endswith("CheckerBoardPlugin") or plugin_id == "Noise" else "color"
         animate(param(node, color), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
     return node
 
 
 def main():
+    use_ocio_config()
     app.getProjectParam("outputFormat").set("UHD_4K")
     app.getProjectParam("frameRange").set(1, LAST_FRAME)
     plugin_id, _, generator = NODES[NODE]
@@ -127,6 +218,16 @@ def main():
             param(other, "point1").set(0.0, 2160.0)
             param(other, "color0").set(0.8, 0.1, 0.2, 1.0)
             param(other, "color1").set(0.1, 0.7, 0.9, 1.0)
+        size_map = None
+        if NODE in MAP_INPUTS:
+            size_map = make("net.sf.openfx.Ramp", "np_map")
+            param(size_map, "point0").set(0.0, 0.0)
+            param(size_map, "point1").set(3840.0, 0.0)
+            param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
+            param(size_map, "color1").set(1.0, 1.0, 1.0, 1.0)
+        if (os.environ.get("NATRON_GPU", "off") != "off") and (CHAIN < 2):
+            # Two or more unpriced candidates form a GPU region without a cost judgement; one stays on the CPU.
+            raise RuntimeError("NP_CHAIN must be 2 or more with the GPU on, or the node renders on the CPU")
         last = source
         count = CHAIN
         for i in range(count):
@@ -134,6 +235,8 @@ def main():
             node.connectInput(0, last)
             if other is not None:
                 node.connectInput(1, other)
+            if size_map is not None:
+                node.connectInput(MAP_INPUTS[NODE], size_map)
             last = node
     os.makedirs(WORK, exist_ok=True)
     path = os.path.join(WORK, "np_%s_####.exr" % NODE)

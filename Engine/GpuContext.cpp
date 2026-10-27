@@ -66,6 +66,8 @@ struct GpuContext::Shared {
     std::mutex holdMutex;
     int holders = 0;
     std::chrono::steady_clock::time_point nextRecoveryAttempt;
+    // Set once a device was abandoned over a timeout; every recreation leaks the abandoned device, so none follows.
+    bool timedOutForSession = false;
 
 #ifdef NATRON_HAVE_GPU
     // Written before state becomes Ready and only reset by the destructor.
@@ -228,6 +230,19 @@ GpuContext::holdRuntime()
     });
 }
 
+void
+GpuContext::releaseIdleMemory()
+{
+#ifdef NATRON_HAVE_GPU
+    // The token keeps recoverIfLost() from recreating the runtime, and with it the pool, meanwhile.
+    std::shared_ptr<void> hold = holdRuntime();
+    gpu::GpuRuntime* rt = hold ? runtime() : nullptr;
+    if (rt) {
+        rt->pool().trim();
+    }
+#endif
+}
+
 bool
 GpuContext::recoverIfLost()
 {
@@ -240,6 +255,20 @@ GpuContext::recoverIfLost()
         return true;
     }
     std::lock_guard<std::mutex> k(_shared->holdMutex);
+    if (_shared->timedOutForSession) {
+        return false;
+    }
+    if (rt->device().hasAbandonedWork()) {
+        _shared->timedOutForSession = true;
+        const std::string message
+            = "GPU compute is turned off for this session because a GPU operation did not finish in time";
+        if (_options.infoLog) {
+            _options.infoLog(message);
+        } else {
+            qInfo().noquote() << QString::fromStdString(message);
+        }
+        return false;
+    }
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     if ((_shared->holders > 0) || (now < _shared->nextRecoveryAttempt)) {
         return false;

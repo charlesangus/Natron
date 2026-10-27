@@ -102,7 +102,7 @@ protected:
     {
         EffectInstancePtr effect = input->getEffectInstance();
         ImageLayerDesc components, paired;
-        effect->getMetadataComponents(-1, &components, &paired);
+        EffectInstance::getLayersFromMetadata(*effect->getTimeInvariantMetadata(), -1, &components, &paired);
         std::vector<RenderedPlane> planes;
         if (!renderNodePlanesDirect(input, 0., ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, components), &planes, error) || (planes.size() != 1)) {
             return ImagePtr();
@@ -187,7 +187,7 @@ TEST_F(ViewerRawTest, MosaicDisplaysAsGreyWithTheMosaicValues)
 
         NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(read->getEffectInstance().get());
         ASSERT_TRUE(effect != NULL);
-        const RawDisplay::ModeEnum mode = RawDisplay::modeOf(effect->getOutputMetadata(0., ViewIdx(0)), effect->getMetadataNComps(-1));
+        const RawDisplay::ModeEnum mode = RawDisplay::modeOf(effect->getOutputMetadata(0., ViewIdx(0)), EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
         EXPECT_EQ(RawDisplay::eModeMosaic, mode);
         EXPECT_EQ(std::string("RAW mosaic"), RawDisplay::label(mode));
 
@@ -230,7 +230,7 @@ TEST_F(ViewerRawTest, LinearDngDisplaysItsThreeChannels)
 
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(read->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
-    EXPECT_EQ(3, effect->getMetadataNComps(-1));
+    EXPECT_EQ(3, EffectInstance::getNCompsFromMetadata(*effect->getTimeInvariantMetadata(), -1));
     const RawDisplay::ModeEnum mode = RawDisplay::modeOf(effect->getOutputMetadata(0., ViewIdx(0)), 3);
     EXPECT_EQ(RawDisplay::eModeLinear, mode);
     EXPECT_EQ(std::string("RAW linear"), RawDisplay::label(mode));

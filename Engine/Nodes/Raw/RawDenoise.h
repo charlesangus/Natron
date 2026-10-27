@@ -60,7 +60,7 @@ NATRON_NAMESPACE_ENTER
  * with a warning, as darktable only denoises mosaics.
  *
  * Each render reads its window grown by what the five bands reach, so a tile is bit for bit the
- * pixels of the full frame. Renders at full resolution only.
+ * pixels of the full frame, on the CPU and on the GPU. Renders at full resolution only.
  **/
 class RawDenoise
     : public StagedImageEffect {
@@ -103,6 +103,26 @@ private:
 
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Bayer and X-Trans mosaics, and the pass-through and zero threshold as copies of the
+     * source. Other CFA periods stay on the CPU.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,

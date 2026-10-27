@@ -61,13 +61,13 @@ namespace YamlDetail {
         bool
         isDimensionEmpty(const KnobDimensionSerialization& dimension)
         {
-            return !dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && dimension.enabled;
+            return !dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && dimension.enabled;
         }
 
         bool
         isDimensionPlainValue(const KnobDimensionSerialization& dimension)
         {
-            return dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && dimension.enabled;
+            return dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && dimension.enabled;
         }
 
         void
@@ -342,6 +342,22 @@ namespace YamlDetail {
                     emitKey(em, "nodeName");
                     em << YAML::Value;
                     emitString(em, master.masterNodeName);
+                }
+            }
+            if (dimension.linkGroup) {
+                const KnobLinkGroupSerialization& group = *dimension.linkGroup;
+                emitKey(em, "linkGroup");
+                em << YAML::Value;
+                emitString(em, group.id);
+                if (!group.linked) {
+                    emitKey(em, "unlinked");
+                    em << YAML::Value;
+                    emitBool(em, true);
+                }
+                if (group.nodeLink) {
+                    emitKey(em, "nodeLink");
+                    em << YAML::Value;
+                    emitBool(em, true);
                 }
             }
             if (dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master) {
@@ -620,6 +636,16 @@ namespace YamlDetail {
                     dimension.master->masterNodeName = readString(nodeName, context + ".nodeName");
                 }
             }
+            if (YAML::Node linkGroup = reader.get("linkGroup")) {
+                dimension.linkGroup.emplace();
+                dimension.linkGroup->id = readString(linkGroup, context + ".linkGroup");
+                if (YAML::Node unlinked = reader.get("unlinked")) {
+                    dimension.linkGroup->linked = !readBool(unlinked, context + ".unlinked");
+                }
+                if (YAML::Node nodeLink = reader.get("nodeLink")) {
+                    dimension.linkGroup->nodeLink = readBool(nodeLink, context + ".nodeLink");
+                }
+            }
             if (YAML::Node value = reader.get("value")) {
                 if (!value.IsNull()) {
                     dimension.value = readValue(value, context + ".value");
@@ -875,6 +901,11 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitBool(em, true);
             }
+            if (group.isRFVGroup) {
+                emitKey(em, "rfv");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
             em << YAML::EndMap;
             if (!group.children.empty()) {
                 emitKey(em, "children");
@@ -931,6 +962,9 @@ namespace YamlDetail {
             }
             if (YAML::Node opened = definition.get("opened")) {
                 group.isOpened = readBool(opened, context + ".group.opened");
+            }
+            if (YAML::Node rfv = definition.get("rfv")) {
+                group.isRFVGroup = readBool(rfv, context + ".group.rfv");
             }
             definition.finish();
             if (YAML::Node children = reader.get("children")) {

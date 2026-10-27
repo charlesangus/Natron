@@ -159,7 +159,9 @@ private:
     {
     }
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         metadata.setNComps(-1, 1);
         metadata.setBitDepth(-1, eImageBitDepthFloat);

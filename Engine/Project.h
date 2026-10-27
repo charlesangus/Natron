@@ -54,6 +54,14 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Serialization/SerializationFwd.h"
 
+// The project settings page and RFV group holding the project's Reverse-Flow Variables, see RFV.h.
+#define kProjectParamRFVPage "rfvPage"
+#define kProjectParamRFVPageLabel "Variables"
+#define kProjectParamRFVVariables "rfvVariables"
+#define kProjectParamRFVVariablesLabel "Variables"
+#define kProjectParamRFVEdit "editVariables"
+#define kProjectParamRFVEditLabel "Edit variables..."
+
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate;
@@ -191,9 +199,9 @@ public:
     /**
      * @brief Saves the project to a new file in autoSavesDir() for a render process to load,
      * named after this process, this app instance and a per-process counter so that no other
-     * render or instance writes the same file. The render process removes it once loaded, and
-     * the app removes it when the render ends or is taken off the queue; removeStaleRenderSaves()
-     * removes those whose Natron process is gone.
+     * render or instance writes the same file. The app removes it once no task can restart the
+     * render from it, or when it quits; removeStaleRenderSaves() removes those whose Natron
+     * process is gone.
      **/
     bool saveForRenderProcess(QString* filePath);
 
@@ -253,6 +261,20 @@ public:
     bool isLoadingProject() const;
 
     bool isLoadingProjectInternal() const;
+
+    /**
+     * @brief A random id made with a new project and saved in its file, so copied nodes can tell whether
+     * they are pasted into the project they came from, even after it is closed and opened again. Loading
+     * a file restores its id; File > New and a reset make a new one; Save As keeps it, the copy being the
+     * same project under another name.
+     **/
+    std::string getProjectId() const;
+
+    /**
+     * @brief Whether projectId, as a clipboard records it, is this project's id: whether nodes copied
+     * under it are pasted into the project they came from.
+     **/
+    bool isProjectId(const std::string& projectId) const;
 
     QString getProjectFilename() const WARN_UNUSED_RETURN;
 
@@ -486,6 +508,24 @@ public:
     double getProjectFrameRate() const;
 
     KnobPathPtr getEnvVarKnob() const;
+
+    /**
+     * @brief The RFV group whose user knobs are the project's Reverse-Flow Variables. They are
+     * saved with their definitions, recreated on load and deleted when the project is reset.
+     **/
+    KnobGroupPtr getRFVGroup() const;
+
+    /**
+     * @brief Has the variables, the only project knobs that can animate or hold an expression, tell
+     * their interfaces that their value at the new time may differ (see KnobI::onTimeChanged()).
+     **/
+    void refreshVariablesAfterTimeChange(bool isPlayback, double time);
+
+    /**
+     * @brief The project's variables may have changed: every ReverseFlowVariableSet node re-sorts
+     * its variables by the names the project declares (see RFV::refreshNodeVariableGroups()).
+     **/
+    virtual void onUserKnobsChanged() OVERRIDE FINAL;
     std::string getOnProjectLoadCB() const;
     std::string getOnProjectSaveCB() const;
     std::string getOnProjectCloseCB() const;
@@ -588,6 +628,9 @@ Q_SIGNALS:
 
     void mustCreateFormat();
 
+    // The user pressed the variables page's edit button.
+    void mustEditVariables();
+
     void formatChanged(Format);
 
     void frameRangeChanged(int, int);
@@ -642,9 +685,11 @@ private:
     /**
      * @brief Loads getRequestedOCIOConfigSource(), repopulates the Color page menus with fallbacks for
      * names the config lacks, re-derives the config knobs' enabled state and fires configChanged.
-     * Enabled is serialized, so this must run after every restore.
+     * Enabled is serialized, so this must run after every restore. A menu still at the outgoing
+     * config's default moves to the new config's default, except when \p restoring, where the
+     * names are the saved project's choices.
      **/
-    void refreshColorManagement(bool warnOnFallback);
+    void refreshColorManagement(bool warnOnFallback, bool restoring = false);
 
     void applyColorManagementDefaults(bool asKnobDefaults);
 

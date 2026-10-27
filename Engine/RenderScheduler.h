@@ -294,6 +294,21 @@ public:
         unsigned long long importsAtUpload = 0;
         unsigned long long importsAtDownload = 0;
 
+        // Deltas of the runtime-wide transfer counts, so regions running concurrently can share them.
+        unsigned long long stagedDisabled = 0;
+        unsigned long long stagedUnaligned = 0;
+        unsigned long long stagedImportFailed = 0;
+        unsigned long long stagedForgotten = 0;
+
+        // Each member's device interval on each strip, when the device timestamps it, and, for pipelined strips,
+        // the device time each strip's queue-ownership barriers took outside its members: whole regions and serial
+        // strips run theirs outside the timed span.
+        std::vector<GpuMemberInterval> memberIntervals;
+        double ownershipMs = 0.;
+
+        // Members the device timed that had no clean interval to calibrate the cost model from.
+        int calibrationSkipped = 0;
+
         // Set by the scheduler when the profile is on; the region then lists each upload and download it issued, and
         // timestamps them on the device when it can.
         bool recordTransfers = false;

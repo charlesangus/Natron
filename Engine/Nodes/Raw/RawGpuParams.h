@@ -75,6 +75,24 @@ toRawLayoutGpu(const RawLayout& layout)
     return g;
 }
 
+/**
+ * @brief A RawLayoutGpu at origin (0, 0) of the period x period colours, colours[row * period +
+ * col] being that of photosite (col, row). A colour may be any 8-bit value, as VNG4's colour 3.
+ **/
+inline RawLayoutGpu
+toRawLayoutGpu(int period,
+               const std::uint8_t* colours)
+{
+    RawLayoutGpu g = {};
+
+    g.period = period;
+    for (int i = 0; i < period * period; ++i) {
+        g.cells[i >> 2] |= (std::uint32_t)colours[i] << ((i & 3) * 8);
+    }
+
+    return g;
+}
+
 // Mirrors PrepareOp in rawprepare.slang.
 struct RawPrepareGpuParams {
     RawLayoutGpu layout;
@@ -141,6 +159,33 @@ struct RawColorCalibrationGpuParams {
 };
 static_assert(sizeof(RawColorCalibrationGpuParams) == 304);
 
+/**
+ * @brief The push constants of both kernels of rawhotpixels.slang, which mirrors it as
+ * HotPixelsParams. domX1 to domY2 are the CPU's buffer, the photosites the passes run over.
+ * rectX1 to rectY2 are, for the fill, the source pixels that exist (empty when there are none)
+ * with offset and stride the float index of the first and the row length, and for the detection
+ * the rect written with the same two members for the result.
+ **/
+struct RawHotPixelsGpuParams {
+    RawLayoutGpu layout;
+    float threshold;
+    float multiplier;
+    std::uint32_t minNeighbours;
+    std::uint32_t channels;
+    std::int32_t domX1;
+    std::int32_t domY1;
+    std::int32_t domX2;
+    std::int32_t domY2;
+    std::int32_t rectX1;
+    std::int32_t rectY1;
+    std::int32_t rectX2;
+    std::int32_t rectY2;
+    std::uint32_t offset;
+    std::uint32_t stride;
+    std::uint32_t padding[2];
+};
+static_assert(sizeof(RawHotPixelsGpuParams) == 128);
+
 inline constexpr std::uint32_t kRawDemosaicGpuModePpg = 0;
 inline constexpr std::uint32_t kRawDemosaicGpuModeRcd = 1;
 inline constexpr std::uint32_t kRawDemosaicGpuModePassThrough = 2;
@@ -179,6 +224,141 @@ struct RawDemosaicGpuPush {
     std::uint32_t outHeight;
 };
 static_assert(sizeof(RawDemosaicGpuPush) == 96);
+
+/**
+ * @brief The push constants of every kernel of demosaic_vng.slang, which mirrors it as VngParams.
+ * The kernels work over a top-down buffer of width x height photosites whose pattern, as the
+ * buffer sees it from its top-left photosite, is layout, VNG4's second green being colour 3.
+ * Buffer rows [srcRow1, srcRow2) and columns [srcCol1, srcCol2) are the source's pixels: the
+ * source stores its rows bottom-up from srcOffset, so photosite (col, row) is at srcOffset +
+ * (srcRow2 - 1 - row) * srcStride + (col - srcCol1) * srcComps. Every other photosite reads
+ * zero. The destination holds the outWidth x outHeight RGBA pixels from buffer column outCol,
+ * its first row of dstStride floats being buffer row outRow and each next one the row above.
+ **/
+struct RawVngGpuPush {
+    RawLayoutGpu layout;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding;
+};
+static_assert(sizeof(RawVngGpuPush) == 128);
+
+/**
+ * @brief The push constants of every kernel of demosaic_markesteijn.slang, which mirrors it as
+ * MarkesteijnParams. The buffer, source and output are as RawVngGpuPush's. pattern holds the
+ * buffer's 6x6 X-Trans colours from its top-left photosite, 2 bits each, photosite row * 6 + col
+ * in bits (i % 16) * 2 of word i / 16. A dispatch works on tileCount of the buffer's tiles from
+ * firstTile, numbered as RawKernels::markesteijn() numbers them over nLefts columns of tiles;
+ * pass is the pass the per-pass kernels work on.
+ **/
+struct RawMarkesteijnGpuPush {
+    std::uint32_t pattern[3];
+    std::uint32_t passes;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t firstTile;
+    std::uint32_t nLefts;
+    std::uint32_t tileCount;
+    std::uint32_t pass;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding[5];
+};
+static_assert(sizeof(RawMarkesteijnGpuPush) == 112);
+
+/**
+ * @brief The push constants of every kernel of demosaic_amaze.slang, which mirrors it as
+ * AmazeParams. The buffer, source and output are as RawVngGpuPush's. filters is the buffer's Bayer
+ * pattern from its top-left photosite, as RawKernels::amaze() takes it, and clipPt its clip
+ * point. A dispatch works on tileCount of the buffer's tiles from firstTile, numbered as
+ * RawKernels::amaze() numbers them over nLefts columns of tiles.
+ **/
+struct RawAmazeGpuPush {
+    std::uint32_t filters;
+    float clipPt;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t firstTile;
+    std::uint32_t nLefts;
+    std::uint32_t tileCount;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding[4];
+};
+static_assert(sizeof(RawAmazeGpuPush) == 96);
+
+inline constexpr std::uint32_t kRawDenoiseGpuModeBayer = 0;
+inline constexpr std::uint32_t kRawDenoiseGpuModeXTrans = 1;
+inline constexpr std::uint32_t kRawDenoiseGpuModeMosaic = 2;
+inline constexpr std::uint32_t kRawDenoiseGpuModeIdentity = 3;
+
+// Mirrors DenoiseParams in rawdenoise.slang.
+struct RawDenoiseGpuPush {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t planeWidth;
+    std::uint32_t planeHeight;
+    std::uint32_t planeFloats;
+    std::uint32_t channel;
+    std::uint32_t rowParity;
+    std::uint32_t colParity;
+    std::uint32_t pattern[3];
+    std::uint32_t level;
+    float thold;
+    std::uint32_t last;
+    std::uint32_t mode;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcCol1;
+    std::int32_t srcRow1;
+    std::int32_t srcCol2;
+    std::int32_t srcRow2;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::uint32_t dstComps;
+    std::int32_t outCol;
+    std::int32_t outRow;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::uint32_t padding[3];
+};
+static_assert(sizeof(RawDenoiseGpuPush) == 128);
 
 NATRON_NAMESPACE_EXIT
 

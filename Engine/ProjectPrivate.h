@@ -123,11 +123,14 @@ public:
     KnobStringPtr onProjectCloseCB;
     KnobStringPtr onNodeCreated;
     KnobStringPtr onNodeDeleted;
+    KnobButtonPtr rfvEditKnob;
+    KnobGroupPtr rfvGroup;
     TimeLinePtr timeline; // global timeline
     bool autoSetProjectFormat;
     mutable QMutex isLoadingProjectMutex;
     bool isLoadingProject; //< true when the project is loading
     bool isLoadingProjectInternal; //< true when loading the internal project (not gui)
+    std::string projectId;
     mutable QMutex isSavingProjectMutex;
     bool isSavingProject; //< true when the project is saving
     QThread* savingThread; //< the thread running the save while isSavingProject
@@ -181,6 +184,27 @@ public:
                                    const QString& name,
                                    const QString& path,
                                    bool* mustSave);
+
+    /**
+     * @brief Recreates in rfvGroup, in their saved order, the user knobs among the serialized
+     * project knobs. One whose name a built-in project knob has, or that the group refuses, is
+     * dropped with a load warning.
+     **/
+    void restoreRFVVariables(const std::list<Serialization::KnobSerialization>& projectSerializedValues);
+
+    /**
+     * @brief Restores the expressions and links saved with the project's variables, the way a
+     * node's user knobs get theirs. Called once every node exists, since either may refer to one,
+     * and before KnobHelper::restoreLinkGroups(), which rebuilds the link groups stored here. A link
+     * whose target is missing is left out with a load warning.
+     **/
+    void restoreRFVVariableLinksAndExpressions(const std::list<Serialization::KnobSerialization>& projectSerializedValues,
+                                               const NodesList& allNodes);
+
+    /**
+     * @brief Deletes the project's Reverse-Flow Variables, leaving rfvGroup empty.
+     **/
+    void clearRFVVariables();
 
     bool findFormat(int index, Format* format) const;
     bool findFormat(const std::string& formatSpec, Format* format) const;

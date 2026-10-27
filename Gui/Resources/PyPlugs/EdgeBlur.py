@@ -416,8 +416,8 @@ def createInstance(app,group):
     group.getParam("Blur1channels").setAsAlias(param)
     del param
     param = groupBlur1.getParam("size")
-    param.slaveTo(groupEdgeDetect1.getParam("blurSize"), 0, 0)
-    param.slaveTo(groupEdgeDetect1.getParam("blurSize"), 1, 0)
+    param.linkTo(groupEdgeDetect1.getParam("blurSize"), 0, 0)
+    param.linkTo(groupEdgeDetect1.getParam("blurSize"), 1, 0)
     del param
     param = groupBlur1.getParam("cropToFormat")
     group.getParam("cropToFormat").setAsAlias(param)

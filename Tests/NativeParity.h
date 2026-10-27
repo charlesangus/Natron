@@ -51,6 +51,7 @@
 #define kParitySourceParamExtraLayer "extraLayer"
 #define kParitySourceParamOrigin "origin"
 #define kParitySourceParamNoise "noise"
+#define kParitySourceParamNonFinite "nonFinite"
 #define kParitySourceWidth 64
 #define kParitySourceHeight 48
 #define kParitySourceExtraLayerID "spec"
@@ -82,6 +83,9 @@ float paritySourceNoise(int channel, int cx, int cy);
  * the `origin` knob, a colour plane chosen by `components` ("rgba", "rgb" or "alpha"), and, with
  * `extraLayer`, an RGB plane named "spec". It renders at any render scale by point-sampling the
  * full-resolution picture at each pixel's centre, so mipmap levels show the same image.
+ * `nonFinite` is a canonical rectangle (x1, y1, x2, y2), counted from the origin, where the colour
+ * plane's R, G and B are NaN, +Inf and -Inf. No node can compute those on a render thread of a
+ * debug build, which traps the invalid and overflow exceptions.
  **/
 class ParitySourceTestEffect
     : public NativeEffectBase {
@@ -129,7 +133,9 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void getComponentsNeededAndProduced(double time,
                                                 ViewIdx view,
@@ -144,11 +150,13 @@ private:
     bool hasExtraLayer() const;
     bool hasNoise() const;
     void getOrigin(int* x, int* y) const;
+    RectI getNonFinite() const;
 
     KnobChoiceWPtr _components;
     KnobBoolWPtr _extraLayer;
     KnobIntWPtr _origin;
     KnobBoolWPtr _noise;
+    KnobIntWPtr _nonFinite;
 };
 
 ImageLayerDesc paritySourceExtraLayer();
@@ -247,6 +255,7 @@ void setParitySourceComponents(const NodePtr& source, const std::string& compone
 void setParitySourceExtraLayer(const NodePtr& source, bool extraLayer);
 void setParitySourceOrigin(const NodePtr& source, int x, int y);
 void setParitySourceNoise(const NodePtr& source, bool noise);
+void setParitySourceNonFinite(const NodePtr& source, const RectI& rect);
 
 /**
  * @brief The source's region of definition in pixel coordinates at `mipmapLevel`.

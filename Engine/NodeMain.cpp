@@ -27,6 +27,7 @@
 
 #include <set>
 
+#include <QCoreApplication>
 #include <QThread>
 
 #include <ofxImageEffect.h>
@@ -123,8 +124,6 @@ Node::load(const CreateNodeArgs& args)
 
         refreshAcceptedBitDepths();
 
-        _imp->effect->setDefaultMetadata();
-
         if (serialization) {
 
             _imp->effect->onKnobsAboutToBeLoaded(serialization);
@@ -177,7 +176,7 @@ Node::load(const CreateNodeArgs& args)
     restoreSublabel();
 
     declarePythonFields();
-    if  ( getRotoContext() ) {
+    if (getCurveContext()) {
         declareRotoPythonField();
     }
     if ( getTrackerContext() ) {
@@ -294,6 +293,7 @@ Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
         }
     }
     setPagesOrder(serialization.pagesOrder);
+    _imp->effect->onUserKnobsChanged();
 }
 
 namespace {
@@ -337,6 +337,10 @@ removeKnobLinks(const KnobIPtr& knob)
     for (int i = 0; i < knob->getDimension(); ++i) {
         if (knob->isSlave(i)) {
             knob->unSlave(i, false);
+        }
+        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
+        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
+            knob->leaveLinkGroups(i);
         }
     }
 }
@@ -464,6 +468,7 @@ Node::applyPresetSerialization(const Serialization::NodeSerialization& serializa
     }
     // A link to a node that is gone stays unresolved rather than abort the rest of the apply.
     restoreKnobsLinks(allNodes, noRenames, false);
+    KnobHelper::restoreLinkGroups(NodesList(1, shared_from_this()));
 
     if (userKnobsChanged) {
         _imp->effect->recreateUserKnobs(true);
@@ -493,6 +498,18 @@ Node::deleteUserKnobs(const std::list<KnobIWPtr>& knobs)
     }
 }
 
+static void
+refusedUserKnobLog(Node* node,
+                   const std::string& knobName)
+{
+    LogEntry::LogEntryColor c;
+    if (node->getColor(&c.r, &c.g, &c.b)) {
+        c.colorSet = true;
+    }
+    const QString err = QCoreApplication::translate("Node", "The parameter %1 cannot be a child of its group and was dropped").arg(QString::fromUtf8(knobName.c_str()));
+    appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(node->getScriptName_mt_safe().c_str()), QDateTime::currentDateTime(), err, false, c);
+}
+
 void
 Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::GroupKnobChildSerialization>& knobs,
                                                 const KnobGroupPtr& group,
@@ -516,9 +533,18 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::G
             if (groupSerialization.isSetAsTab) {
                 grp->setAsTab();
             }
+            if (groupSerialization.isRFVGroup) {
+                grp->setAsRFVGroup(true);
+            }
             page->addKnob(grp);
             if (group) {
-                group->addKnob(grp);
+                if (!group->addKnob(grp)) {
+                    refusedUserKnobLog(_publicInterface, grp->getName());
+                    if (!found) {
+                        effect->deleteKnob(grp.get(), false);
+                    }
+                    continue;
+                }
             }
             grp->setValue(groupSerialization.isOpened);
             restoreUserKnobsRecursive(groupSerialization.children, grp, page);
@@ -532,7 +558,13 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::G
                 continue;
             }
             if (group) {
-                group->addKnob(knob);
+                if (!group->addKnob(knob)) {
+                    refusedUserKnobLog(_publicInterface, knob->getName());
+                    if (!found) {
+                        effect->deleteKnob(knob.get(), false);
+                    }
+                    continue;
+                }
             } else if (page) {
                 page->addKnob(knob);
             }
@@ -697,12 +729,18 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     if (_imp->effect) {
         _imp->effect->clearPluginMemoryChunks();
     }
+    // Destroying the knobs takes them out of their link groups, which can dissolve a group.
+    NodesList linkedNodes;
+    collectLinkedNodes(false, false, &linkedNodes);
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
         effect.swap(_imp->effect);
     }
     effect.reset();
+    for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+        Q_EMIT(*it)->linksChanged();
+    }
 
     ///If inside the group, remove it from the group
     ///the use_count() after the call to removeNode should be 2 and should be the shared_ptr held by the caller and the

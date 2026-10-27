@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -36,6 +36,7 @@ set(Tests_SOURCES
     ColorWheelMath_Test.cpp
     ContentHasher_Test.cpp
     Curve_Test.cpp
+    CurveHost_Test.cpp
     DataKind_Test.cpp
     DataKindGroup_Test.cpp
     DataKindProjectLoad_Test.cpp
@@ -58,6 +59,7 @@ set(Tests_SOURCES
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
     GpuContext_Test.cpp
+    GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
     GpuRegionFallback_Test.cpp
     GpuResidency_Test.cpp
@@ -74,7 +76,10 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobLinkGroup_Test.cpp
+    KnobNoOpWrite_Test.cpp
     LazyHash_Test.cpp
+    LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
@@ -91,6 +96,7 @@ set(Tests_SOURCES
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
+    Gpu/RawAmazeGpu_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -112,14 +118,19 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
     PyKeyTangents_Test.cpp
+    PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp
+    RFV_Test.cpp
+    RFVPython_Test.cpp
+    RFVSetNode_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp
     RenderBothWays.cpp
     RenderBothWaysSelf_Test.cpp
+    RenderIsolation_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp
@@ -142,6 +153,9 @@ set(Tests_SOURCES
     ImageMetadata_Test.cpp
     NativeMetadata_Test.cpp
     NativeMetadataPolicy_Test.cpp
+    PerFrameMetadata_Test.cpp
+    OfxClipPreferencesThread_Test.cpp
+    OfxPerFrameMetadata_Test.cpp
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp
@@ -154,6 +168,13 @@ list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
 file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the scene (USD) transport tests.
+file(GLOB Tests_SCENE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Scene/*_Test.cpp)
+# Authors the layers of SceneTestEffect.h's stubs, which wmain.cpp registers.
+list(APPEND Tests_SCENE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Scene/SceneTestAuthoring.cpp)
+list(APPEND Tests_SOURCES ${Tests_SCENE_SOURCES})
+# They include OpenUSD's headers, which need the full Python API (see Engine/CMakeLists.txt).
+set_source_files_properties(${Tests_SCENE_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})
 target_link_libraries(Tests
     PRIVATE
@@ -163,7 +184,10 @@ target_link_libraries(Tests
         Python3::Python
         openMVG
         rawspeed::rawspeed
+        # The scene tests inspect payloads through USD directly; NatronEngine links it privately.
+        ${NATRON_USD_ENGINE_LIBRARIES}
 )
+natron_link_embedded_python(Tests)
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
@@ -174,6 +198,10 @@ if(NATRON_GPU)
     # Gpu/RawRegionGpu_Test registers this at run time to read a raw layout back from the device.
     slang_add_kernel(raw_test_layout_probe ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/rawprepare.slang ENTRY rawlayout_probe)
     target_link_libraries(Tests PRIVATE raw_test_layout_probe)
+    # Native/NativeRawDemosaicXTransGpu_Test registers this at run time as the serial walk the GPU
+    # Markesteijn green minima and maxima are held to.
+    slang_add_kernel(raw_test_markesteijn_minmax_serial ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/demosaic_markesteijn.slang ENTRY markesteijn_minmax_serial)
+    target_link_libraries(Tests PRIVATE raw_test_markesteijn_minmax_serial)
 endif()
 # Compiler, build type and the flags that set optimisation and FMA contraction, so fast
 # (Release at -O1), release (RelWithDebInfo) and debug builds stamp distinct goldens.
@@ -186,6 +214,7 @@ target_compile_definitions(Tests
         NATRON_GOLDEN_CONFIG="${NATRON_GOLDEN_CONFIG}"
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
+        NATRON_TESTS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Engine"
         NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"
         NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
 )
@@ -224,16 +253,21 @@ set(GuiTests_SOURCES
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
     KnobGuiString_Test.cpp
+    KnobGuiTrapezoid_Test.cpp
     KnobUndoHash_Test.cpp
     LayerChannelRow_Test.cpp
+    NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp
+    SceneGizmo_Test.cpp
+    SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
@@ -243,6 +277,8 @@ set(GuiTests_SOURCES
     guimain.cpp
 )
 add_executable(GuiTests ${GuiTests_SOURCES})
+# Build their scenes with OpenUSD, whose headers need the full Python API.
+set_source_files_properties(SceneGizmo_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui
@@ -250,7 +286,9 @@ target_link_libraries(GuiTests
         Qt::Core
         Qt::Widgets
         Python3::Python
+        ${NATRON_USD_ENGINE_LIBRARIES}
 )
+natron_link_embedded_python(GuiTests)
 target_compile_definitions(GuiTests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"

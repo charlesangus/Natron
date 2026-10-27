@@ -58,6 +58,8 @@ public:
 
     virtual bool isRotoPaintNode() const OVERRIDE FINAL WARN_UNUSED_RETURN  { return true; }
 
+    virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN { return eCurveContextKindPaint; }
+
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return 1;
@@ -115,7 +117,9 @@ public:
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
-    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual bool isHostMaskingEnabled() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
@@ -137,13 +141,6 @@ public:
     RotoPaintInteractPtr getInteract() const;
 
 public Q_SLOTS:
-
-
-    void onRefreshAsked();
-
-    void onCurveLockedChanged(int);
-
-    void onSelectionChanged(int reason);
 
     void onBreakMultiStrokeTriggered();
 

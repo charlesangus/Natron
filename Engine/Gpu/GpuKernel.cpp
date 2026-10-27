@@ -4,6 +4,7 @@
 #include "GpuTexture.h"
 
 #include <algorithm>
+#include <cfenv>
 #include <string>
 #include <utility>
 
@@ -213,8 +214,16 @@ GpuKernel::create(GpuDevice& device, const GpuKernelDesc& desc,
             k->bindings_[i].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
     }
-    if (GpuStatus s = k->createPipeline(pipelineCache); !s) {
-        return s;
+    // Kernels are created lazily, on whichever render thread first needs one, and debug builds trap
+    // floating-point exceptions there. The driver compiles the pipeline in this call, and Mesa's
+    // compilers raise invalid and divide-by-zero exceptions of their own doing, so the call runs with
+    // traps held and the flags it raises are dropped, leaving the thread's environment as it was.
+    std::fenv_t env;
+    std::feholdexcept(&env);
+    const GpuStatus created = k->createPipeline(pipelineCache);
+    std::fesetenv(&env);
+    if (!created) {
+        return created;
     }
     out = std::move(k);
     return {};
@@ -476,6 +485,10 @@ GpuKernel::findBinding(std::string_view name) const
 
 GpuKernel::~GpuKernel()
 {
+    // Work that never finished may still use the pipeline and the descriptor sets allocated from the pool.
+    if (device_.hasAbandonedWork()) {
+        return;
+    }
     const VkDevice dev = device_.device();
     if (pool_) {
         vkDestroyDescriptorPool(dev, pool_, nullptr);
@@ -672,7 +685,8 @@ void
 GpuKernel::releaseDescriptors()
 {
     std::lock_guard<std::mutex> lock(poolMutex_);
-    if (pool_) {
+    // Resetting frees the sets that work which never finished may still read, so the pool is kept as it is.
+    if (pool_ && !device_.hasAbandonedWork()) {
         vkResetDescriptorPool(device_.device(), pool_, 0);
     }
 }

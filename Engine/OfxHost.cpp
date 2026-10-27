@@ -96,6 +96,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
@@ -1218,6 +1219,7 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
                       unsigned int threadMax,
                       QThread* spawnerThread,
                       const FrameRenderContext* frameContext,
+                      const IsolatedJob* job,
                       void* customArg)
 {
 #ifdef DEBUG
@@ -1227,7 +1229,7 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
 #endif
     assert(threadIndex < threadMax);
     // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(spawnerThread, frameContext);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(spawnerThread, frameContext, job);
     OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
     tls->threadIndexes.push_back( (int)threadIndex );
 
@@ -1260,6 +1262,7 @@ public:
               unsigned int threadMax,
               QThread* spawnerThread,
               const FrameRenderContext* frameContext,
+              const IsolatedJob* job,
               void* customArg,
               OfxStatus* stat)
         : QThread()
@@ -1269,6 +1272,7 @@ public:
         , _threadMax(threadMax)
         , _spawnerThread(spawnerThread)
         , _frameContext(frameContext)
+        , _job(job)
         , _customArg(customArg)
         , _stat(stat)
     {
@@ -1284,7 +1288,7 @@ public:
 #endif
        assert(_threadIndex < _threadMax);
        // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
-       AppTLS::SpawnedThreadScope spawnedThreadTLS(_spawnerThread, _frameContext);
+       AppTLS::SpawnedThreadScope spawnedThreadTLS(_spawnerThread, _frameContext, _job);
        OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
        tls->threadIndexes.push_back((int)_threadIndex);
 
@@ -1307,6 +1311,7 @@ private:
     unsigned int _threadMax;
     QThread* _spawnerThread;
     const FrameRenderContext* _frameContext;
+    const IsolatedJob* _job;
     void *_customArg;
     OfxStatus *_stat;
 };
@@ -1355,13 +1360,14 @@ OfxHost::multiThread(OfxThreadFunctionV1 func,
 
     QThread* spawnerThread = QThread::currentThread();
     const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
+    const IsolatedJob* job = IsolatedJob::current();
     bool useThreadPool = appPTR->getUseThreadPool();
 
     if (useThreadPool) {
         std::vector<OfxStatus> status(nThreads, kOfxStatFailed);
         // The calling thread runs thread functions too, which is what the +1 of multiThreadNumCPUS counts it for.
         const std::function<void(int)> process = [&](int tid) {
-            status[tid] = threadFunctionWrapper(func, (unsigned int)tid, nThreads, spawnerThread, frameContext, customArg);
+            status[tid] = threadFunctionWrapper(func, (unsigned int)tid, nThreads, spawnerThread, frameContext, job, customArg);
         };
         parallelForOnGlobalPool((int)nThreads, (int)maxConcurrentThread, process);
 
@@ -1377,7 +1383,7 @@ OfxHost::multiThread(OfxThreadFunctionV1 func,
             // at most maxConcurrentThread should be running at the same time
             QVector<OfxThread*> threads(nThreads);
             for (unsigned int i = 0; i < nThreads; ++i) {
-                threads[i] = new OfxThread(func, i, nThreads, spawnerThread, frameContext, customArg, &status[i]);
+                threads[i] = new OfxThread(func, i, nThreads, spawnerThread, frameContext, job, customArg, &status[i]);
             }
             unsigned int i = 0; // index of next thread to launch
             unsigned int running = 0; // number of running threads

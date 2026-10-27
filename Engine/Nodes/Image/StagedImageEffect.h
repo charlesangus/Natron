@@ -135,12 +135,14 @@ public:
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief When inputNb is the source, at the current time and view: for a Passes op, outputRect
+     * @brief When inputNb is the source, at time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
-     * resampleGpuSourceRoI(). For a Custom op, getOpGpuInputRoI() for any input. outputRect
-     * otherwise.
+     * resampleGpuSourceRoI(). For an Aux input of a Passes op, opPassesInputRoI(). For a Custom
+     * op, getOpGpuInputRoI() for any input. outputRect otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
+                                 double time,
+                                 ViewIdx view,
                                  const RectI& outputRect,
                                  const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -163,7 +165,8 @@ public:
     /**
      * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
      * its plane is read in, except for the mask input, which is read in the layer its mask channel
-     * resolves in. For a Custom op, getOpGpuInputLayer(). False for every other op.
+     * resolves in, and for an Aux input of a Passes op, which opPassesInputLayer() chooses. For a
+     * Custom op, getOpGpuInputLayer(). False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -259,7 +262,7 @@ protected:
      * @brief What a Passes op's passes, or a scaled Point op's members, are built for at scale: the
      * scale, and the pixel aspect ratio of the source input when it is connected and has one.
      **/
-    PassContext getPassContext(const RenderScale& scale) const WARN_UNUSED_RETURN;
+    PassContext getPassContext(double time, ViewIdx view, const RenderScale& scale) const WARN_UNUSED_RETURN;
 
     /**
      * @brief For a Passes op, the default regions of interest, with the source's replaced by the
@@ -293,6 +296,15 @@ protected:
      **/
     virtual bool presentsOnlyPassThroughLayers(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Where route() answers Black, RGBA float at the project format and PAR, as a node
+     * with no input answers; the identity rule covers an Input answer, and None keeps the
+     * default derivation. A node that overrides this has no Black answer.
+     **/
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE;
 
     virtual bool isIdentity(double time,
                             const RenderScale& scale,
@@ -355,6 +367,42 @@ protected:
         return false;
     }
 
+    /**
+     * @brief False for a Passes op that has no GPU path, which then stays on the CPU even when its
+     * pass list is empty.
+     **/
+    virtual bool opPassesOnGpu() const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
+     * @brief For a Passes op, the layer its GPU recorder reads Aux input inputNb in, which
+     * PassGpuIO::inputs then holds. False when the recorder cannot read it, which keeps the node on
+     * the CPU; plane by default.
+     **/
+    virtual bool opPassesInputLayer(int /*inputNb*/,
+                                    const ImageLayerDesc& plane,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    ImageLayerDesc* layer) const WARN_UNUSED_RETURN
+    {
+        *layer = plane;
+
+        return true;
+    }
+
+    /**
+     * @brief For a Passes op, the pixels of Aux input inputNb its GPU recorder reads to fill
+     * outputRect, at the current time and view. outputRect by default.
+     **/
+    virtual RectI opPassesInputRoI(int /*inputNb*/,
+                                   const RectI& outputRect,
+                                   const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
+    }
+
     virtual bool opCanConcatenate() const WARN_UNUSED_RETURN
     {
         return false;
@@ -389,15 +437,22 @@ protected:
 
     /**
      * @brief For a Custom op, the pixels of input inputNb that renderOpGpu() reads to fill
-     * outputRect, at the current time and view. A region hands each strip of the node at least
-     * this much of the input. outputRect by default.
+     * outputRect, at time and view. A region hands each strip of the node at least this much of
+     * the input. outputRect by default.
      **/
     virtual RectI getOpGpuInputRoI(int /*inputNb*/,
+                                   double /*time*/,
+                                   ViewIdx /*view*/,
                                    const RectI& outputRect,
                                    const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
     {
         return outputRect;
     }
+
+    /**
+     * @brief The StagePlan the GPU executor runs for query.
+     **/
+    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
@@ -420,8 +475,6 @@ private:
      * nullopt when the pipeline needs none or the source is at the one it needs.
      **/
     std::optional<std::string> rawStageError(double time, ViewIdx view) const WARN_UNUSED_RETURN;
-
-    StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     ResampleRegionStages getResampleRegionStages(double time,
                                                  ViewIdx view) const WARN_UNUSED_RETURN;
@@ -497,7 +550,7 @@ public:
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
             const typename OP::Params params = bake(time, view);
-            const PassContext context = getPassContext(RenderScale::fromMipmapLevel(mipmapLevel));
+            const PassContext context = getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel));
 
             if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
                               { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
@@ -510,7 +563,7 @@ public:
             if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
                               { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
                           }) {
-                return _op.costHint(bake(time, view), getPassContext(RenderScale::fromMipmapLevel(mipmapLevel)));
+                return _op.costHint(bake(time, view), getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
             } else {
                 return std::nullopt;
             }
@@ -561,11 +614,11 @@ private:
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr ((PIPELINE.op == OpKind::Passes) || (PIPELINE.op == OpKind::Resample)) {
-            return _op.isIdentity(bake(time, view), getPassContext(scale));
+            return _op.isIdentity(bake(time, view), getPassContext(time, view, scale));
         } else if constexpr (PIPELINE.op == OpKind::Route) {
             return false;
         } else if constexpr (ScaledPointOp<OP>) {
-            return _op.isIdentity(bake(time, view), getPassContext(scale));
+            return _op.isIdentity(bake(time, view), getPassContext(time, view, scale));
         } else {
             return _op.isIdentity(bake(time, view));
         }
@@ -582,7 +635,7 @@ private:
         } else if constexpr (PIPELINE.op == OpKind::Passes) {
             const typename OP::Params params = bake(args.time, args.view);
 
-            return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.mappedScale)));
+            return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.time, args.view, args.mappedScale)));
         } else if constexpr (PIPELINE.op == OpKind::Resample) {
             return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Composite) {
@@ -595,7 +648,7 @@ private:
             return runStagesCpu(*this, plan, args, StageRowFn(step));
         } else if constexpr (ScaledPointOp<OP>) {
             const typename OP::Params params = bake(args.time, args.view);
-            const PassContext context = getPassContext(args.mappedScale);
+            const PassContext context = getPassContext(args.time, args.view, args.mappedScale);
             const OP& rowOp = _op;
             const auto row = [&rowOp, &params, &context](const RowIO& io) {
                 rowOp.row(params, context, io);
@@ -622,7 +675,7 @@ private:
         } else if constexpr (PIPELINE.op != OpKind::Point) {
             return GpuOpRef::none();
         } else if constexpr (ScaledPointOp<OP>) {
-            return _op.gpu(bake(time, view), getPassContext(scale));
+            return _op.gpu(bake(time, view), getPassContext(time, view, scale));
         } else {
             return _op.gpu(bake(time, view));
         }
@@ -633,7 +686,7 @@ private:
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
-            return _op.passes(bake(time, view), getPassContext(scale));
+            return _op.passes(bake(time, view), getPassContext(time, view, scale));
         } else {
             return PassList();
         }
@@ -650,7 +703,7 @@ private:
 
             return ResampleRequest();
         } else {
-            const PassContext context = getPassContext(scale);
+            const PassContext context = getPassContext(time, view, scale);
             const typename OP::Params params = bake(time, view);
             ResampleRequest request;
 

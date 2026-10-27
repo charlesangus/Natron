@@ -287,7 +287,9 @@ jobs:
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
           NATRON_CTEST_JOBS: 4
-        run: tools/ci/local/test.sh ctest debug
+        run: |
+          grep -m1 'model name' /proc/cpuinfo; nproc; grep -o -w 'avx512f' /proc/cpuinfo | head -1 || true
+          tools/ci/local/test.sh ctest debug
 
       - name: Python bindings smoke test (debug)
         if: success() || failure()

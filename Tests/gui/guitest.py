@@ -8,6 +8,8 @@ Steps run as a generator on the Qt event loop (see run()), so Natron keeps rende
     yield ("sleep", ms)
     ok = yield ("until", predicate, timeout_seconds)
 """
+import ctypes
+import ctypes.util
 import os
 import time
 import traceback
@@ -161,9 +163,163 @@ def shot(name):
     return path
 
 
+HOST_DISPLAY = bool(os.environ.get("GUI_TEST_HOST_DISPLAY"))
+HOST_WINDOW_SIZE = tuple(int(n) for n in os.environ.get("GUI_TEST_SCREEN_SIZE", "1920x1080").split("x"))
+HOST_ON_SCREEN_TIMEOUT_S = 60.0
+_host_window = []
+
+
+def pin_host_window():
+    """On a shared desktop, pins the main window above others at the primary screen's top left:
+    screen grabs read the root window, so a covering window or another monitor would be grabbed
+    instead of the viewer.
+
+    Returns True the first time, when the caller must wait for host_window_on_screen(). The
+    keep-above request is repeated on every step: the window manager drops it for a window it has
+    not mapped yet, and other windows get raised over ours later."""
+    if not HOST_DISPLAY:
+        return False
+    if _host_window:
+        w = _host_window[0]
+    else:
+        w = _find_main_window()
+        if w is None:
+            return False
+        w.showNormal()
+        area = QGuiApplication.primaryScreen().availableGeometry()
+        w.setGeometry(area.x(), area.y(), min(HOST_WINDOW_SIZE[0], area.width()), min(HOST_WINDOW_SIZE[1], area.height()))
+        w.activateWindow()
+    w.raise_()
+    above = _ask_window_manager_keep_above(int(w.winId()))
+    QApplication.processEvents()
+    if _host_window:
+        return False
+    _host_window.append(w)
+    report("NOTE host display: main window pinned, kept above: %s" % above)
+    return True
+
+
+def _find_main_window():
+    for w in QApplication.topLevelWidgets():
+        if class_name(w) == "Gui" and w.isVisible() and w.windowHandle() is not None and w.windowHandle().isExposed():
+            return w
+    return None
+
+
+def host_window_on_screen():
+    """Whether a root-window grab shows the main window's panes painted. A compositor can take
+    seconds to show a newly mapped window, and the panes can stay unpainted after the menu bar is
+    drawn."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QImage
+    QApplication.processEvents()
+    w = _host_window[0]
+    area = QRect(w.width() // 20, w.height() // 10, w.width() * 9 // 10, w.height() * 17 // 20)
+    own = w.grab(area).toImage().convertToFormat(QImage.Format_RGBX8888)
+    origin = w.mapToGlobal(area.topLeft())
+    seen = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), area.width(), area.height())
+    seen = seen.toImage().convertToFormat(QImage.Format_RGBX8888)
+    if own.size() != seen.size():
+        return False
+    a = bytes(own.constBits())[:own.sizeInBytes()]
+    b = bytes(seen.constBits())[:seen.sizeInBytes()]
+    samples = range(0, len(a) - 3, 4 * 97)
+    if len(set(a[i:i + 3] for i in samples)) < 16:
+        return False
+    same = sum(1 for i in samples if a[i:i + 3] == b[i:i + 3])
+    return same >= 0.9 * len(samples)
+
+
+class _ClientMessage(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                ("format", ctypes.c_int), ("data", ctypes.c_long * 5), ("pad", ctypes.c_long * 12)]
+
+
+_x11 = []
+_x11_error = []
+_x11_display = []
+
+
+def _load_x11():
+    if _x11:
+        return _x11[0]
+    if _x11_error:
+        return None
+    try:
+        x11 = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+    except OSError as e:
+        _x11_error.append("no libX11 (%s)" % e)
+        return None
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    _x11.append(x11)
+    return x11
+
+
+def _ask_window_manager_keep_above(window_id):
+    """Sends the EWMH _NET_WM_STATE_ABOVE request for window_id. Qt's WindowStaysOnTopHint would
+    recreate the native window, and the viewer's GL context with it."""
+    x11 = _load_x11()
+    if x11 is None:
+        return _x11_error[0]
+    if not _x11_display:
+        dpy = x11.XOpenDisplay(None)
+        if not dpy:
+            return "cannot open the display"
+        _x11_display.append(dpy)
+    dpy = _x11_display[0]
+    ev = _ClientMessage()
+    ev.type = 33
+    ev.send_event = 1
+    ev.display = dpy
+    ev.window = window_id
+    ev.message_type = x11.XInternAtom(dpy, b"_NET_WM_STATE", 0)
+    ev.format = 32
+    ev.data[0] = 1
+    ev.data[1] = x11.XInternAtom(dpy, b"_NET_WM_STATE_ABOVE", 0)
+    ev.data[3] = 1
+    substructure_notify_and_redirect = (1 << 19) | (1 << 20)
+    sent = x11.XSendEvent(dpy, x11.XDefaultRootWindow(dpy), 0, substructure_notify_and_redirect, ctypes.byref(ev))
+    x11.XFlush(dpy)
+    return "requested" if sent else "XSendEvent failed"
+
+
 def run(gen):
     """Drives gen on the Qt event loop and calls finish() when it ends or raises."""
+    window_deadline = time.time() + HOST_ON_SCREEN_TIMEOUT_S
+
     def advance(value):
+        if HOST_DISPLAY and not _host_window and _find_main_window() is None:
+            if time.time() > window_deadline:
+                check(False, "host display: the main window is exposed within %ds" % HOST_ON_SCREEN_TIMEOUT_S)
+            else:
+                QTimer.singleShot(200, lambda: advance(value))
+                return
+        if pin_host_window():
+            started = time.time()
+            deadline = started + HOST_ON_SCREEN_TIMEOUT_S
+
+            def wait_on_screen():
+                if host_window_on_screen():
+                    g = _host_window[0].geometry()
+                    report("NOTE host display: main window on screen at %d,%d %dx%d after %.1fs" %
+                           (g.x(), g.y(), g.width(), g.height(), time.time() - started))
+                    advance(value)
+                elif time.time() > deadline:
+                    check(False, "host display: the main window appears on screen within %ds" % HOST_ON_SCREEN_TIMEOUT_S)
+                    advance(value)
+                else:
+                    QTimer.singleShot(200, wait_on_screen)
+
+            QTimer.singleShot(200, wait_on_screen)
+            return
         try:
             cmd = gen.send(value)
         except StopIteration:

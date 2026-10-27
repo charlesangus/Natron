@@ -1099,7 +1099,7 @@ RawHighlights::getRegionsOfInterest(double time,
     if (!input || !settings) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const bool lchOnCfa = (settings->mode == eRawHighlightsModeLCh) && settings->layout.hasCfa();
     RectI need;
     if ((settings->mode == eRawHighlightsModeOpposed) || (settings->mode == eRawHighlightsModeInpaint) || (settings->mode == eRawHighlightsModeSegments) || (settings->mode == eRawHighlightsModeLaplacian) || ((settings->mode == eRawHighlightsModeLCh) && !lchOnCfa)) {
@@ -1431,10 +1431,12 @@ RawHighlights::getOpGpuInputLayer(int inputNb,
 
 RectI
 RawHighlights::getOpGpuInputRoI(int inputNb,
+                                double time,
+                                ViewIdx view,
                                 const RectI& outputRect,
                                 const RenderScale& /*scale*/) const
 {
-    const std::optional<Settings> settings = const_cast<RawHighlights*>(this)->resolveSettings(getCurrentTime(), getCurrentView());
+    const std::optional<Settings> settings = const_cast<RawHighlights*>(this)->resolveSettings(time, view);
 
     if ((inputNb != getSourceInput()) || !settings || (settings->mode != eRawHighlightsModeLCh) || !settings->layout.hasCfa()) {
         return outputRect;

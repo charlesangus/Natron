@@ -199,6 +199,18 @@ public:
     bool removeParam(Param* param);
 
     /**
+     * @brief Makes a parameter created with one of the functions above a Reverse-Flow Variable:
+     * moves it into the variables group of this node, which must have one (a
+     * ReverseFlowVariableSet node), or of the project when called on the app, where it is then
+     * declared as app.<name>. The variable's name is the parameter's script name. Raises
+     * ValueError, moving nothing, when the parameter belongs elsewhere, is not a user parameter,
+     * holds no value (a group, page, button or separator), is already a variable, or its name is
+     * not a valid Python identifier, is shared by another parameter or, for the project, is an
+     * attribute of the app object.
+     **/
+    void addRFVKnob(Param* param);
+
+    /**
      * @brief To be called once you have added or removed any user parameter to update the GUI with the changes.
      * This may be expensive so try to minimize the number of calls to this function.
      **/
@@ -244,6 +256,30 @@ public:
      * @param autoReconnect If set to true, outputs connected to this node will try to connect to the input of this node automatically.
      **/
     void destroy(bool autoReconnect = true);
+
+    /**
+     * @brief Creates a Linked Node of this node next to it: a copy whose parameters are linked two-way to
+     * the ones of this node, and for a group the nodes inside it to the ones of this group. Raises ValueError
+     * for a viewer, a multi-instance node or a node that stands in for a missing plug-in.
+     **/
+    Effect* createLinkedNode();
+
+    /**
+     * @brief Unlinks every parameter of the node from the parameters it is linked to, except alias links.
+     * Each one keeps its value, animation and expression and can be linked back with Param.relink().
+     * Returns False if no parameter was linked.
+     **/
+    bool unlinkAllParams();
+
+    /**
+     * @brief True if the node is a Linked Node of another node, or another node is a Linked Node of it.
+     **/
+    bool isLinkedNode() const;
+
+    /**
+     * @brief The nodes this node is a Linked Node of.
+     **/
+    std::list<Effect*> getLinkedNodes() const;
 
     /**
      * @brief Returns the maximum number of inputs that can be connected to the node.
@@ -406,9 +442,13 @@ public:
 
     std::list<ImageLayer> getAvailableLayers(int inputNb) const;
 
-    RectI getOutputFormat() const;
+    /**
+     * @brief The format, frame rate, pixel aspect ratio and bit depth this node puts out at the
+     * given frame and view. They can differ from one frame to the next.
+     **/
+    RectI getOutputFormat(double time, int /* Python API: do not use ViewIdx */ view) const;
 
-    double getFrameRate() const;
+    double getFrameRate(double time, int /* Python API: do not use ViewIdx */ view) const;
 
     /**
      * @brief The value of the metadata key this node puts out at the given frame and view, as an
@@ -430,9 +470,9 @@ public:
      **/
     void addMetadataAsDependencyOf(int fromExprDimension, Param* param);
 
-    double getPixelAspectRatio() const;
+    double getPixelAspectRatio(double time, int /* Python API: do not use ViewIdx */ view) const;
 
-    Natron::ImageBitDepthEnum getBitDepth() const;
+    Natron::ImageBitDepthEnum getBitDepth(double time, int /* Python API: do not use ViewIdx */ view) const;
 
     void setPagesOrder(const QStringList& pages);
 };

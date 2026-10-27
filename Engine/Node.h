@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -148,8 +149,7 @@ public:
     ///this is so the child of a multi-instance can retrieve the pointer to it's main instance
     void fetchParentMultiInstancePointer();
 
-
-    ///If the node can have a roto context, create it
+    /// Creates the curve context EffectInstance::getCurveContextKind() asks for, if any
     void createRotoContextConditionnally();
 
     void createTrackerContextConditionnally();
@@ -288,11 +288,28 @@ public:
     U64 getStoredContentHash() const;
 
     /**
+     * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
+     * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
+     * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it
+     * does not move when an input changes.
+     **/
+    U64 getKnobsContentDigest(bool* hasExpression) const;
+
+    /**
      * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
      * if it is dirty: unlike getHashValue(), it never recomputes, so a caller that only looks at a
      * node does not make an edit rehash it.
      **/
     bool getHashValueIfUpToDate(U64* hash) const;
+
+    /**
+     * @brief A count that moves whenever the hash is marked dirty, by an edit of this node or of
+     * anything it folds in, after applying the marks queued so far. A result derived from what
+     * the hash covers may be stored under the hash only if this count, read before the hash,
+     * is the same afterwards: a hash read once cannot tell that an input changed and changed back
+     * during the derivation. MT-safe.
+     **/
+    U64 getHashMarkCount() const;
 
     /**
      * @brief Marks the hash for a recompute on its next read, and with it the hashes of every
@@ -305,7 +322,18 @@ public:
      * @brief Marks every node's hash dirty, for changes to state all of them fold in, such as
      * the project's render settings. Lock-free.
      **/
-    static void invalidateAllHashes();
+    static void invalidateAllHashes(const char* reason = "invalidateAllHashes",
+                                    const KnobI* knob = 0);
+
+    /**
+     * @brief Called with every move of a hash mark count: a node's own mark (`node` the node
+     * marked), a mark reaching it from upstream, or a move of the count all nodes share (`node`
+     * null). `knob` is the knob whose change marked, when known, and is only valid during the
+     * call. Calls are serialized, from whichever thread marks; the trace must not mark. An empty
+     * function removes it. For tests.
+     **/
+    typedef std::function<void(const Node* node, const char* reason, const KnobI* knob)> HashMarkTrace;
+    static void setHashMarkTraceForTesting(const HashMarkTrace& trace);
 
     /**
      * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
@@ -456,6 +484,11 @@ public:
      * @brief Returns a pointer to the rotoscoping context if the node is in the paint context, otherwise NULL.
      **/
     RotoContextPtr getRotoContext() const;
+
+    /**
+     * @brief Returns the context holding the node's Roto curves, paint or geometry-only, otherwise NULL.
+     **/
+    RotoCurveContextPtr getCurveContext() const;
     TrackerContextPtr getTrackerContext() const;
 
     U64 getRotoAge() const;
@@ -1230,12 +1263,63 @@ public:
     void refreshPreviewsRecursivelyUpstream(double time);
 
 public:
-    void onAllKnobsSlaved(bool isSlave, KnobHolder* master);
+    void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave, bool isExpression);
 
-    void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master, int dimension, bool isSlave);
+    /**
+     * @brief Makes this node a Linked Node of other, which must be of the same plug-in: each knob declared
+     * by the plug-in or by the user, except buttons, pages, groups and separators, is linked two-way to the
+     * knob of the same name on other. Knobs of other that are already linked keep their groups, which
+     * this node joins. Refused for viewers and multi-instance nodes.
+     **/
+    bool linkAllKnobsTo(const NodePtr& other);
 
-    NodePtr getMasterNode() const;
+    /**
+     * @brief False for the plug-ins whose nodes cannot be Linked Nodes (viewers).
+     **/
+    static bool canPluginBeLinkedNode(const std::string& pluginID);
 
+    /**
+     * @brief False for the nodes linkAllKnobsTo() refuses: viewers, multi-instance nodes and their instances.
+     **/
+    bool canBeLinkedNode() const;
+
+    /**
+     * @brief Unlinks every knob of this node from its link groups that are not permanent. If unlinkedKnobs is
+     * given, the knobs that were unlinked are appended to it, for relinkKnobs() to undo.
+     **/
+    bool unlinkAllKnobs(KnobsVec* unlinkedKnobs = 0);
+
+    /**
+     * @brief Makes each of the given knobs of this node rejoin the link groups it left, discarding its own
+     * value, animation and expression for theirs.
+     **/
+    bool relinkKnobs(const KnobsVec& knobs);
+
+    /**
+     * @brief True if a knob of this node is linked to an active node through linkAllKnobsTo().
+     **/
+    bool isLinkedNode() const;
+
+    /**
+     * @brief The active nodes with a knob linked to a knob of this node through linkAllKnobsTo().
+     **/
+    void getLinkedNodes(NodesList* nodes) const;
+
+    /**
+     * @brief The active nodes with a knob linked to a knob of this node, however the link was made.
+     **/
+    void getKnobLinkedNodes(NodesList* nodes) const;
+
+    /**
+     * @brief Emits linksChanged() on this node, on every node it shares a link group with and on the
+     * nodes in alsoNotify, such as the ones it shared a group with before a change.
+     **/
+    void emitLinksChanged(const NodesList& alsoNotify);
+
+private:
+    void collectLinkedNodes(bool nodeLinksOnly, bool activeOnly, NodesList* nodes) const;
+
+public:
     /**
      * @brief Attempts to lock an image for render. If it successfully obtained the lock,
      * the thread can continue and render normally. If another thread is currently
@@ -1343,6 +1427,17 @@ public:
      **/
     void clearLastRenderedImage();
 
+    enum KnobLinkKindEnum {
+        // A dimension of slave reads master in its expression.
+        eKnobLinkKindExpression = 0,
+
+        // A dimension of slave is slaved one-way to master by slaveTo(), which only a node's own internals do.
+        eKnobLinkKindSlave,
+
+        // A dimension of slave shares a link group with a dimension of master.
+        eKnobLinkKindLinkGroup
+    };
+
     struct KnobLink
     {
         ///The knob being slaved
@@ -1354,8 +1449,14 @@ public:
 
         ///The dimension being slaved, -1 if irrelevant
         int dimension;
+
+        KnobLinkKindEnum kind;
     };
 
+    /**
+     * @brief The expression and slaveTo() links of this node's knobs, followed by a link of kind
+     * eKnobLinkKindLinkGroup for each dimension of a knob of this node linked to a knob of an active node.
+     **/
     void getKnobsLinks(std::list<KnobLink> & links) const;
 
     /*Initialises inputs*/
@@ -1429,9 +1530,7 @@ public:
     bool hasAnyPersistentMessage() const;
 
     /**
-     * @brief The persistent message. A missing-channel message is first rechecked by
-     * refreshInputRelatedDataIfStale(), which may recompute dirty hashes, so the caller must not
-     * hold a lock it takes.
+     * @brief The persistent message.
      **/
     void getPersistentMessage(QString* message, int* type, bool prefixLabelAndType = true) const;
 
@@ -1681,46 +1780,55 @@ public:
 
     /**
      * @brief What an edit of this node's inputs refreshes: this node's input-related data now,
-     * after that of its dirty inputs, while the nodes downstream are only marked stale (see
-     * markDownstreamInputRelatedDataStale()). Main thread only.
+     * after that of its dirty inputs, then refreshShownDownstreamInputRelatedData(). Main thread
+     * only.
      **/
     void refreshInputRelatedDataAfterInputChange();
 
     /**
-     * @brief Marks the input-related data (metadata, produced layers, channel selectors) of every
-     * node downstream of this one stale, reading no hash, so that a branch nothing reads is never
-     * rehashed for it. Each node is refreshed by refreshInputRelatedDataIfStale() once it is read;
-     * the nodes whose settings panel is visible are shown, and are refreshed now. Main thread only.
+     * @brief Marks the input-related data (produced layers, channel selectors, identity state,
+     * the current-frame metadata hook) of every node downstream of this one dirty, reading no
+     * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
+     * the draft flag, which is settled here for every node reached. The nodes whose settings panel
+     * is visible, or that show a missing-channel message, are refreshed now; the others when their
+     * panel is shown. Main thread only.
      **/
-    void markDownstreamInputRelatedDataStale();
+    void refreshShownDownstreamInputRelatedData();
 
     /**
-     * @brief Refreshes this node's input-related data, after that of its dirty inputs, if an edit
-     * upstream left it stale. A viewer refreshes only the inputs it shows. Reads the hashes of the
-     * nodes it refreshes. Callable from any thread, but does nothing off the main thread, inside a
-     * hash recompute or another refresh, while the project loads or closes, or while a node tree
-     * is being created: those read the data as it stands, and the refresh that follows them
-     * covers it.
+     * @brief The UI hook of a settings panel being shown: refreshes this node's input-related
+     * data, after that of its dirty inputs, if an edit upstream left it dirty, and otherwise only
+     * fires EffectInstance::refreshCurrentFrameMetadata() at the current frame. A viewer
+     * refreshes only the inputs it shows. Does nothing unless canRunMainThreadMetadataRefresh(),
+     * or inside another refresh.
      **/
-    void refreshInputRelatedDataIfStale();
+    void refreshPanelInputRelatedData();
 
     /**
-     * @brief What a render of this node refreshes before it reads metadata and layers:
-     * refreshInputRelatedDataIfStale() on every node upstream of it, the paint trees of RotoPaint
-     * nodes and the nodes inside groups included, and through a viewer only the inputs it shows. Each node is looked at, not
-     * only the stale ones' inputs: a viewer refreshed while it showed other inputs, and a RotoPaint
-     * node whose paint tree was edited, are clean above stale nodes. Does nothing off the main
-     * thread.
+     * @brief Whether a main-thread refresh of this node's metadata side effects (and an OpenFX
+     * node's time-invariant derivation, which runs plug-in actions and may set parameters) may run
+     * here: on the main thread, outside a hash recompute and an InputRelatedDataRefreshDeferral,
+     * on a created, activated node not being destroyed, while the project is not closing, and,
+     * while it loads or a node tree is being created, only inside the refresh that follows those.
      **/
-    void refreshInputRelatedDataForRender();
-
-    bool isInputRelatedDataStale() const;
+    bool canRunMainThreadMetadataRefresh() const;
 
     /**
-     * @brief Has the main thread run refreshInputRelatedDataIfStale() on this node soon, for a
-     * reader off the main thread that found it stale. Callable from any thread.
+     * @brief While one lives on the calling thread, canRunMainThreadMetadataRefresh() is false
+     * there. Held by a caller that may sit under a lock a refresh takes in the other order: an
+     * OpenFX clip fetching its input's metadata runs under the host's metadata mutex, while a
+     * refresh takes an effect's clip preferences lock for writing, which a render holds for
+     * reading while it waits on that same metadata mutex.
      **/
-    void requestInputRelatedDataRefresh();
+    class InputRelatedDataRefreshDeferral {
+    public:
+        InputRelatedDataRefreshDeferral();
+        ~InputRelatedDataRefreshDeferral();
+
+    private:
+        InputRelatedDataRefreshDeferral(const InputRelatedDataRefreshDeferral&);
+        InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
+    };
 
     void markAllInputRelatedDataDirty();
 
@@ -1825,7 +1933,8 @@ public:
     /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
-     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().
+     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData() and when
+     * the timeline moves to another frame.
      **/
     void registerProducedLayers();
 
@@ -1845,6 +1954,12 @@ public:
     bool handleFormatKnob(KnobI* knob);
 
     QString makeDocumentation(bool genHTML) const;
+
+    /**
+     * @brief Whether the documentation of \p pluginID lists menus built from the project's
+     * OpenColorIO config, so that it must be generated live rather than read from a static page.
+     **/
+    static bool documentationDependsOnOcioConfig(const std::string& pluginID);
 
     void refreshPreviewsAfterProjectLoad();
 
@@ -1940,7 +2055,9 @@ private:
      * @brief Marks this node, and if includeGroupContents every node inside it when it is a
      * group. Its dependents are marked by the next flushHashDirtyMarks().
      **/
-    void markHashDirtyInternal(bool includeGroupContents);
+    void markHashDirtyInternal(bool includeGroupContents,
+                               const char* reason,
+                               const KnobI* knob);
 
     /**
      * @brief Marks the dependents of every node marked since the last flush. Any hash read
@@ -1966,6 +2083,7 @@ private:
     /**
      * @brief Recomputes the hashes if they are dirty. With requireCleanInputs, gives up and
      * returns false if a hash it folds in is dirty, which only a concurrent mark or a cycle causes.
+     * Without it, folds the dirty hash in but leaves this node dirty.
      **/
     bool recomputeHashIfDirty(bool requireCleanInputs, HashWalk* walk);
 
@@ -1978,12 +2096,6 @@ private:
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
     U64 computeContentHash(U64 projectDigest, const HashInputs& inputs) const;
-
-    /**
-     * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
-     * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
-     **/
-    U64 getKnobsContentDigest(bool* hasExpression) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 
@@ -2038,8 +2150,6 @@ public Q_SLOTS:
     {
         Q_EMIT previewImageChanged(time);
     }
-
-    void onMasterNodeDeactivated();
 
     void onInputLabelChanged(const QString & name);
 
@@ -2130,10 +2240,12 @@ Q_SIGNALS:
     ///and the old value
     void pluginMemoryUsageChanged(qint64 mem);
 
-    void allKnobsSlaved(bool b);
-
     ///Called when a knob is either slaved or unslaved
     void knobsLinksChanged();
+
+    /// Emitted when a knob of this node joins or leaves a link group, or a node it is linked to is
+    /// deactivated, activated or destroyed.
+    void linksChanged();
 
     void knobSlaved();
 

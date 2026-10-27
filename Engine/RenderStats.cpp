@@ -319,6 +319,7 @@ struct RenderStatsPrivate
     std::atomic<int> gpuStripHalvings;
     std::atomic<int> gpuStripPipelinesSerialized;
     std::atomic<int> gpuPipelinedRegions;
+    std::atomic<int> gpuCalibrationSkipped;
     std::atomic<unsigned long long> peakDeviceBytes;
 
     // All guarded by lock.
@@ -351,6 +352,7 @@ struct RenderStatsPrivate
         , gpuStripHalvings(0)
         , gpuStripPipelinesSerialized(0)
         , gpuPipelinedRegions(0)
+        , gpuCalibrationSkipped(0)
         , peakDeviceBytes(0)
         , gpuTasksPerNode()
         , cpuFallbackReasons()
@@ -636,6 +638,12 @@ RenderStats::noteGpuPipelinedRegion(double transferHiddenMs,
 }
 
 void
+RenderStats::noteGpuCalibrationSkipped(int members)
+{
+    _imp->gpuCalibrationSkipped += members;
+}
+
+void
 RenderStats::noteCpuFallback(const std::string& reason)
 {
     QMutexLocker k(&_imp->lock);
@@ -709,6 +717,12 @@ int
 RenderStats::getGpuPipelinedRegions() const
 {
     return _imp->gpuPipelinedRegions.load();
+}
+
+int
+RenderStats::getGpuCalibrationSkipped() const
+{
+    return _imp->gpuCalibrationSkipped.load();
 }
 
 double
@@ -805,6 +819,10 @@ appendTransferRecords(std::string* line,
                       "\"comps\":%d,\"format\":\"f32\",\"staged\":%d",
                       (i > 0) ? "," : "", r.strip, r.bytes, ms, r.queueFamily, r.queueIndex, r.comps, r.staged ? 1 : 0);
         line->append(num);
+        if ((r.deviceMs >= 0.) && (r.beginNs >= 0) && (r.endNs >= 0)) {
+            std::snprintf(num, sizeof(num), ",\"beginNs\":%lld,\"endNs\":%lld", r.beginNs, r.endNs);
+            line->append(num);
+        }
         if (withPinned) {
             line->append(r.pinned ? ",\"pinned\":1" : ",\"pinned\":0");
         }
@@ -854,6 +872,30 @@ formatRegionRecord(unsigned long long frameSequence,
                   times.prepareWaitMs, times.uploadsImported, times.uploadsStaged, times.downloadsImported,
                   times.downloadsStaged, times.importsAtUpload, times.importsAtDownload);
     line.append(num);
+    if ((times.stagedDisabled | times.stagedUnaligned | times.stagedImportFailed | times.stagedForgotten) != 0) {
+        std::snprintf(num, sizeof(num),
+                      ",\"stagedReasons\":{\"disabled\":%llu,\"unaligned\":%llu,\"importFailed\":%llu,\"forgotten\":%llu}",
+                      times.stagedDisabled, times.stagedUnaligned, times.stagedImportFailed, times.stagedForgotten);
+        line.append(num);
+    }
+    if (times.ownershipMs > 0.) {
+        std::snprintf(num, sizeof(num), ",\"ownershipMs\":%.6f", times.ownershipMs);
+        line.append(num);
+    }
+    if (times.calibrationSkipped != 0) {
+        std::snprintf(num, sizeof(num), ",\"calibrationSkipped\":%d", times.calibrationSkipped);
+        line.append(num);
+    }
+    if (!times.memberIntervals.empty()) {
+        line.append(",\"memberIntervals\":[");
+        for (std::size_t i = 0; i < times.memberIntervals.size(); ++i) {
+            const GpuMemberInterval& interval = times.memberIntervals[i];
+            std::snprintf(num, sizeof(num), "%s{\"strip\":%d,\"member\":%d,\"beginNs\":%lld,\"endNs\":%lld,\"pixels\":%llu}",
+                          (i > 0) ? "," : "", interval.strip, interval.member, interval.beginNs, interval.endNs, interval.pixels);
+            line.append(num);
+        }
+        line.push_back(']');
+    }
     appendTransferRecords(&line, "uploads", times.uploads, false);
     appendTransferRecords(&line, "downloads", times.downloads, true);
     line.append(",\"fallback\":\"");

@@ -39,12 +39,16 @@
 #include <QThread>
 #include <QThreadPool>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/DeepImage.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/PoolParallelFor.h"
+#include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -180,6 +184,7 @@ NativeEffectBase::NativeEffectBase(NodePtr node)
     , _metadataCache()
     , _metadataGeneration(0)
     , _metadataCacheHash(0)
+    , _sceneLayerMemo()
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -383,8 +388,6 @@ NativeEffectBase::getOutputMetadata(double time,
                                     ViewIdx view)
 {
     const MetadataKey key(time, view.value());
-    // Before the hash is read, since a refresh can move it.
-    refreshInputRelatedDataIfStale();
     // The hash covers this node's knobs and everything upstream of it, and an edit only marks it
     // dirty: reading it recomputes it, so a cache filled under another hash is stale.
     const NodePtr node = getNode();
@@ -469,9 +472,9 @@ NativeEffectBase::onNodeHashChanged(U64 hash)
 }
 
 void
-NativeEffectBase::onMetadataRefreshed(const NodeMetadata& metadata)
+NativeEffectBase::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    OutputEffectInstance::onMetadataRefreshed(metadata);
+    OutputEffectInstance::onCurrentFrameMetadataChanged(metadata);
 
     // Project-level changes (format, frame rate) reach a node here. They move the node's hash too,
     // through the project digest, so a revision move would only keep a restored state from
@@ -544,11 +547,12 @@ NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
 {
     QThread* const callingThread = QThread::currentThread();
     const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
+    const IsolatedJob* const job = IsolatedJob::current();
     RenderCancellation cancel(this);
     std::atomic<int> chunksRun(0);
 
     const std::function<void(int)> runChunk = [&](int i) {
-        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, AppTLS::eSpawnKindHostFrameThreading);
+        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, job, AppTLS::eSpawnKindHostFrameThreading);
 
         if (!aborted()) {
             body(chunks[i]);
@@ -851,6 +855,72 @@ NativeEffectBase::renderDeepReshapingChannels(const DeepRenderActionArgs& args,
     }
 
     return eStatusOK;
+}
+
+bool
+NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
+                                 const SceneLayerMemo::AuthorFunc& author,
+                                 ScenePayload* output,
+                                 std::string* errorMessage)
+{
+    return emitSceneLayer(upstream, SceneLayerReads(), author, output, errorMessage);
+}
+
+bool
+NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
+                                 const SceneLayerReads& reads,
+                                 const SceneLayerMemo::AuthorFunc& author,
+                                 ScenePayload* output,
+                                 std::string* errorMessage)
+{
+    NodePtr node = getNode();
+    AppInstancePtr app = getApp();
+
+    if (!node || !app || !app->getProject()) {
+        if (errorMessage) {
+            *errorMessage = "The node is being destroyed";
+        }
+
+        return false;
+    }
+
+    // The node's content hash would serve, but it also folds in the inputs' hashes, so an edit
+    // upstream would re-author every layer below it instead of only where the stack changed.
+    ContentHasher h;
+    h.appendString(getPluginID());
+    h.appendI64(getMajorVersion());
+    h.appendI64(getMinorVersion());
+    bool hasExpression = false;
+    h.appendU64(node->getKnobsContentDigest(&hasExpression));
+    appendNodeContentHash(h);
+    // Same reason as Node::computeContentHash(): an expression resolves names relative to the
+    // node, so the same expression under another name can author something else.
+    h.appendBool(hasExpression);
+    if (hasExpression) {
+        h.appendString(node->getFullyQualifiedName());
+    }
+
+    SceneLayerMemo::Key key;
+    key.nodeDigest = h.finalize();
+    app->getProject()->getFrameRange(&key.firstFrame, &key.lastFrame);
+    key.framesPerSecond = app->getProject()->getProjectFrameRate();
+    key.upstreamRead = reads.upstream;
+    key.factsDigest = reads.factsDigest;
+    key.readsFrameRange = reads.frameRange;
+
+    return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage);
+} // NativeEffectBase::emitSceneLayer
+
+void
+NativeEffectBase::invalidateSceneLayer()
+{
+    _sceneLayerMemo.invalidate();
+}
+
+U64
+NativeEffectBase::getSceneLayerAuthorCount() const
+{
+    return _sceneLayerMemo.getAuthorCount();
 }
 
 NATRON_NAMESPACE_EXIT

@@ -141,9 +141,10 @@ public:
 
     /**
      * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
-     * frameContext as the current thread's frame, a thread budget of 1 and an OpenMP nthreads ICV of 1 on
-     * construction, then restores the previous frame, budget and ICV and calls cleanupTLSForThread() on destruction. frameContext must be the spawner's
-     * currentFrameContext(), read on the spawner before it hands the work out, since another thread cannot read the
+     * frameContext as the current thread's frame, job as its IsolatedJob context, a thread budget of 1 and an OpenMP
+     * nthreads ICV of 1 on construction, then restores the previous frame, job context, budget and ICV and calls
+     * cleanupTLSForThread() on destruction. frameContext and job must be the spawner's currentFrameContext() and
+     * IsolatedJob::current(), read on the spawner before it hands the work out, since another thread cannot read the
      * spawner's.
      *
      * The OpenMP workers a plug-in spawns on its own get neither scope, so they run without a frame or a budget. That
@@ -154,6 +155,7 @@ public:
     public:
         SpawnedThreadScope(QThread* fromThread,
                            const FrameRenderContext* frameContext,
+                           const IsolatedJob* job,
                            SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
 
         ~SpawnedThreadScope();
@@ -164,13 +166,16 @@ public:
     private:
         bool _spawned;
         const FrameRenderContext* _previousFrameContext;
+        const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousOpenMPThreads;
     };
 
     /**
      * @brief Installs a frame, the task's thread budget and its pool priority on the current thread for the time of
-     * a task. The outermost scope cleans up the thread's TLS on destruction.
+     * a task, and puts the thread in the context of the frame's IsolatedJob, or in none if the frame has none. A
+     * null context leaves the thread's job context as it is. The outermost scope cleans up the thread's TLS on
+     * destruction.
      **/
     class FrameContextScope {
     public:
@@ -185,6 +190,7 @@ public:
 
     private:
         const FrameRenderContext* _previous;
+        const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousPriority;
     };

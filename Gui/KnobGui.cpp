@@ -27,20 +27,29 @@
 #include "KnobGui.h"
 
 #include <cassert>
+#include <memory>
 #include <stdexcept>
 
+#include <QCoreApplication>
+#include <QUndoCommand>
+
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/UndoKnobRef.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGuiPrivate.h"
-#include "Gui/GuiDefines.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/ClickableLabel.h"
-
+#include "Gui/Gui.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiDefines.h"
+#include "Gui/KnobGuiPrivate.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -99,6 +108,13 @@ KnobGui::initialize()
         QObject::connect( handler, SIGNAL(labelChanged()), this, SLOT(onLabelChanged()) );
         QObject::connect( handler, SIGNAL(dimensionNameChanged(int)), this, SLOT(onDimensionNameChanged(int)) );
         QObject::connect( handler, SIGNAL(viewerContextSecretChanged()), this, SLOT(onViewerContextSecretChanged()) );
+        QObject::connect(handler, SIGNAL(linkChanged()), this, SLOT(onLinkStateChanged()));
+    }
+    // A linked node being deactivated or reactivated changes whether the knob reads as linked.
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (node && !_imp->isInViewerUIKnob) {
+        QObject::connect(node.get(), SIGNAL(linksChanged()), this, SLOT(onLinkStateChanged()));
     }
     if (!_imp->isInViewerUIKnob) {
         _imp->guiCurves.resize( knob->getDimension() );
@@ -259,6 +275,10 @@ KnobGui::createGUI(QWidget* fieldContainer,
         updateToolTip();
     }
 
+    // A linked knob's name takes the link colour, and its tool tip says what it is linked to.
+    if (!_imp->isInViewerUIKnob) {
+        onLinkStateChanged();
+    }
 
     _imp->widgetCreated = true;
 
@@ -627,9 +647,9 @@ KnobGui::createAnimationMenu(QMenu* menu,
     int cbDim;
     appPTR->getKnobClipBoard(&type, &fromKnob, &cbDim);
 
-
+    // Knobs of different dimensions paste per component: see KnobI::getPasteSourceDimension().
     if (fromKnob && (fromKnob != knob) && isAppKnob) {
-        if ( fromKnob->typeName() == knob->typeName() ) {
+        if (KnobI::areTypesCompatibleForSlave(fromKnob.get(), knob.get())) {
             QString titlebase;
             if (type == eKnobClipBoardTypeCopyValue) {
                 titlebase = tr("Paste Value");
@@ -639,21 +659,24 @@ KnobGui::createAnimationMenu(QMenu* menu,
                 titlebase = tr("Paste Link");
             }
 
-            bool ignorePaste = (!knob->isAnimationEnabled() && type == eKnobClipBoardTypeCopyAnim) ||
-                               ( (dimension == -1 || cbDim == -1) && knob->getDimension() != fromKnob->getDimension() );
+            const bool linkRefused = (type == eKnobClipBoardTypeCopyLink) && KnobI::isAliasKnob(fromKnob.get());
+            const QString linkRefusedTip = tr("Cannot paste a link from an alias parameter: the target would join its permanent link group and could never be unlinked.");
+            bool ignorePaste = (!knob->isAnimationEnabled() && type == eKnobClipBoardTypeCopyAnim);
             if (!ignorePaste) {
-                if ( (cbDim == -1) && ( fromKnob->getDimension() == knob->getDimension() ) && !hasDimensionSlaved ) {
+                if ((knob->getDimension() > 1) && !hasDimensionSlaved) {
                     QString title = titlebase;
-                    if (knob->getDimension() > 1) {
-                        title += QLatin1Char(' ');
-                        title += tr("(all dimensions)");
-                    }
+                    title += QLatin1Char(' ');
+                    title += tr("(all dimensions)");
                     QAction* pasteAction = new QAction(title, menu);
                     pasteAction->setData(-1);
                     QObject::connect( pasteAction, SIGNAL(triggered()), this, SLOT(onPasteActionTriggered()) );
                     menu->addAction(pasteAction);
                     if (!isEnabled) {
                         pasteAction->setEnabled(false);
+                    }
+                    if (linkRefused) {
+                        pasteAction->setEnabled(false);
+                        pasteAction->setToolTip(linkRefusedTip);
                     }
                 }
 
@@ -664,6 +687,10 @@ KnobGui::createAnimationMenu(QMenu* menu,
                     menu->addAction(pasteAction);
                     if (!isEnabled) {
                         pasteAction->setEnabled(false);
+                    }
+                    if (linkRefused) {
+                        pasteAction->setEnabled(false);
+                        pasteAction->setToolTip(linkRefusedTip);
                     }
                 }
             }
@@ -754,22 +781,34 @@ KnobGui::createAnimationMenu(QMenu* menu,
         isCollecGroup = dynamic_cast<NodeGroup*>( collec.get() );
     }
 
+    // Link groups: the knob unlinks or re-links as a whole. Alias links are permanent and offer neither.
+    if (isAppKnob && hasLinkPartners()) {
+        menu->addSeparator();
+        bool isLinked = false;
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            isLinked |= knob->isLinked(i) && !knob->isLinkPermanent(i);
+        }
+        if (isLinked) {
+            QAction* unlinkAction = new QAction(tr("Unlink"), menu);
+            QObject::connect(unlinkAction, SIGNAL(triggered()), this, SLOT(onUnlinkFromGroupsActionTriggered()));
+            menu->addAction(unlinkAction);
+        }
+        if (knob->hasRelinkableGroups()) {
+            QAction* relinkAction = new QAction(tr("Re-link (discards local values)"), menu);
+            QObject::connect(relinkAction, SIGNAL(triggered()), this, SLOT(onRelinkToGroupsActionTriggered()));
+            menu->addAction(relinkAction);
+        }
+    }
 
+    // Internal slave links are not link groups: the Tracker's linked CornerPin/Transform export and track markers
+    // still slave knobs, and keep this "Unlink from" item.
     if ( isAppKnob && ( ( hasDimensionSlaved && (dimension == -1) ) || dimensionIsSlaved ) ) {
         menu->addSeparator();
 
-        KnobIPtr aliasMaster = knob->getAliasMaster();
         std::string knobName;
-        if ( aliasMaster || ((dimension != -1 || knob->getDimension() == 1) && dimensionIsSlaved) ) {
-
-            KnobIPtr masterKnob;
-            std::pair<int, KnobIPtr> master;
-            if (aliasMaster) {
-                masterKnob = aliasMaster;
-            } else {
-                master = knob->getMaster(dimension);
-                masterKnob = master.second;
-            }
+        if ((dimension != -1 || knob->getDimension() == 1) && dimensionIsSlaved) {
+            std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+            KnobIPtr masterKnob = master.second;
 
             KnobHolder* masterHolder = masterKnob->getHolder();
             if (masterHolder) {
@@ -788,17 +827,12 @@ KnobGui::createAnimationMenu(QMenu* menu,
 
             knobName.append(".");
             knobName.append( masterKnob->getName() );
-            if ( !aliasMaster && (masterKnob->getDimension() > 1) ) {
+            if (masterKnob->getDimension() > 1) {
                 knobName.append(".");
                 knobName.append( masterKnob->getDimensionName(master.first) );
             }
         }
-        QString actionText;
-        if (aliasMaster) {
-            actionText.append( tr("Remove Alias link") );
-        } else {
-            actionText.append( tr("Unlink") );
-        }
+        QString actionText = tr("Unlink");
         if ( !knobName.empty() ) {
             actionText.append( QString::fromUtf8(" from ") );
             actionText.append( QString::fromUtf8( knobName.c_str() ) );
@@ -808,22 +842,95 @@ KnobGui::createAnimationMenu(QMenu* menu,
         QObject::connect( unlinkAction, SIGNAL(triggered()), this, SLOT(onUnlinkActionTriggered()) );
         menu->addAction(unlinkAction);
     }
-    KnobI::ListenerDimsMap listeners;
-    knob->getListeners(listeners);
-    if ( !listeners.empty() ) {
-        KnobIPtr listener = listeners.begin()->first.lock();
-        if ( listener && (listener->getAliasMaster() == knob) ) {
-            QAction* removeAliasLink = new QAction(tr("Remove alias link"), menu);
-            QObject::connect( removeAliasLink, SIGNAL(triggered()), this, SLOT(onRemoveAliasLinkActionTriggered()) );
-            menu->addAction(removeAliasLink);
-        }
-    }
     if ( isCollecGroup && !knob->getAliasMaster() ) {
         QAction* createMasterOnGroup = new QAction(tr("Create alias on group"), menu);
         QObject::connect( createMasterOnGroup, SIGNAL(triggered()), this, SLOT(onCreateAliasOnGroupActionTriggered()) );
         menu->addAction(createMasterOnGroup);
     }
+    if (isAppKnob && RFV::isNodeVariable(knob)) {
+        menu->addSeparator();
+        QAction* promoteAction = new QAction(tr("Add to project variables"), menu);
+        std::string reason;
+        if (!RFV::canPromoteToProject(knob, &reason)) {
+            promoteAction->setEnabled(false);
+            promoteAction->setToolTip(QString::fromUtf8(reason.c_str()));
+            menu->setToolTipsVisible(true);
+        }
+        QObject::connect(promoteAction, SIGNAL(triggered()), this, SLOT(onPromoteToProjectActionTriggered()));
+        menu->addAction(promoteAction);
+    }
 } // createAnimationMenu
+
+namespace {
+
+// The history's entry for a promote. A promote that made no copy leaves no entry.
+class PromoteToProjectUndoCommand
+    : public QUndoCommand {
+public:
+    explicit PromoteToProjectUndoCommand(const std::shared_ptr<RFV::PromoteToProjectCommand>& command)
+        : QUndoCommand()
+        , _command(command)
+    {
+        setText(QString::fromUtf8(command->getText().c_str()));
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        _command->undo();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        _command->redo();
+        if (!_command->getProjectVariable()) {
+            setObsolete(true);
+        }
+    }
+
+private:
+    std::shared_ptr<RFV::PromoteToProjectCommand> _command;
+};
+
+// Runs once the right-click menu and the slot that queued it have returned: promoting rebuilds
+// the node's user knobs, and with them the GUI of the knob whose menu asked for it.
+void
+promoteToProjectNow(const KnobIPtr& knob,
+                    Gui* gui)
+{
+    std::string error;
+    if (!RFV::canPromoteToProject(knob, &error)) {
+        Dialogs::errorDialog(KnobGui::tr("Add to project variables").toStdString(), error);
+
+        return;
+    }
+    std::shared_ptr<RFV::PromoteToProjectCommand> command = std::make_shared<RFV::PromoteToProjectCommand>(knob);
+    UndoHistory* history = gui ? gui->getUndoHistory() : 0;
+    ProjectPtr project = knob->getHolder()->getApp()->getProject();
+    if (history) {
+        history->push(new PromoteToProjectUndoCommand(command), UndoScope(project.get()));
+    } else {
+        command->redo();
+    }
+    if (!command->getProjectVariable()) {
+        Dialogs::errorDialog(KnobGui::tr("Add to project variables").toStdString(), command->getError());
+    }
+}
+
+} // namespace
+
+void
+KnobGui::onPromoteToProjectActionTriggered()
+{
+    KnobIWPtr knob = getKnob();
+    Gui* gui = _imp->container ? _imp->container->getGui() : 0;
+    // The window outlives the panels; were it to go first, the queued call would go with it.
+    QObject* context = gui ? static_cast<QObject*>(gui) : QCoreApplication::instance();
+    QMetaObject::invokeMethod(context, [knob, gui]() {
+        KnobIPtr variable = lockUndoKnob(knob);
+        if (variable) {
+            promoteToProjectNow(variable, gui);
+        } }, Qt::QueuedConnection);
+}
 
 KnobIPtr
 KnobGui::createDuplicateOnNode(EffectInstance* effect,

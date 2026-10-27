@@ -33,12 +33,18 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Nodes/Raw/RawGpuParams.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -180,6 +186,97 @@ hotPixelsWorker(const RawHotPixelsOp::Params& params)
         };
     };
 } // hotPixelsWorker
+
+#ifdef NATRON_HAVE_GPU
+// The float index of pixel (x, y) of image, or false when the image exceeds the kernels' 32-bit
+// indices.
+bool
+gpuFloatIndex(const gpu::GpuBlurImage& image,
+              int x,
+              int y,
+              int nComps,
+              std::uint32_t* out)
+{
+    const std::uint64_t index = image.offsetFloats + (std::uint64_t)(y - image.bounds.y1) * image.strideFloats + (std::uint64_t)(x - image.bounds.x1) * nComps;
+    const std::uint64_t end = image.offsetFloats + (std::uint64_t)(image.bounds.y2 - image.bounds.y1) * image.strideFloats;
+    if ((index > UINT32_MAX) || (end > UINT32_MAX)) {
+        return false;
+    }
+    *out = (std::uint32_t)index;
+
+    return true;
+}
+
+/// The pass on the GPU over the CPU's buffer, io.domain: the source is copied into a scratch
+/// buffer of that extent, zero outside the pixels that exist, and the detection reads it and
+/// writes io.output of io.filtered, zero outside the buffer as the CPU writes it.
+PassGpuRecorder
+hotPixelsGpuRecorder(const RawHotPixelsOp::Params& params)
+{
+    RawHotPixelsGpuParams base = {};
+
+    base.layout = toRawLayoutGpu(params.layout);
+    base.threshold = params.threshold;
+    base.multiplier = params.multiplier;
+    base.minNeighbours = (std::uint32_t)params.minNeighbours;
+
+    return [base](const PassGpuIO& io) -> StatusEnum {
+        gpu::GpuRecordContext& ctx = io.context;
+        const int nComps = io.nComps;
+        const RectI& domain = io.domain;
+        const bool hasDomain = !PassExec::isEmptyRect(domain);
+        const std::uint64_t floats = hasDomain ? (std::uint64_t)domain.width() * domain.height() * nComps : 0;
+        if (floats > UINT32_MAX) {
+            return eStatusFailed;
+        }
+        gpu::GpuBuffer* buffer = nullptr;
+        gpu::GpuBuffer* unread = nullptr;
+        if (!ctx.scratch((VkDeviceSize)std::max<std::uint64_t>(floats, 4) * sizeof(float), buffer) || !buffer || !ctx.scratch(4 * sizeof(float), unread) || !unread) {
+            return eStatusFailed;
+        }
+        RawHotPixelsGpuParams p = base;
+        p.channels = (std::uint32_t)nComps;
+        if (hasDomain) {
+            p.domX1 = domain.x1;
+            p.domY1 = domain.y1;
+            p.domX2 = domain.x2;
+            p.domY2 = domain.y2;
+
+            RawHotPixelsGpuParams fill = p;
+            const gpu::GpuBuffer* sourceBuffer = unread;
+            if (io.source.buffer && !PassExec::isEmptyRect(io.sourceValid)) {
+                const gpu::GpuBlurImage source = PassExec::toGpuBlurImage(io.source);
+                sourceBuffer = io.source.buffer;
+                fill.rectX1 = io.sourceValid.x1;
+                fill.rectY1 = io.sourceValid.y1;
+                fill.rectX2 = io.sourceValid.x2;
+                fill.rectY2 = io.sourceValid.y2;
+                fill.stride = source.strideFloats;
+                if (!gpuFloatIndex(source, io.sourceValid.x1, io.sourceValid.y1, nComps, &fill.offset)) {
+                    return eStatusFailed;
+                }
+            }
+            if (!ctx.dispatch(gpu::GpuKernelId::rawhotpixels_fill, { sourceBuffer, buffer }, fill, { (std::uint32_t)domain.width(), (std::uint32_t)domain.height(), 1 })) {
+                return eStatusFailed;
+            }
+            ctx.computeBarrier();
+        }
+
+        const RectI& output = io.output;
+        const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
+        p.rectX1 = output.x1;
+        p.rectY1 = output.y1;
+        p.rectX2 = output.x2;
+        p.rectY2 = output.y2;
+        p.stride = filtered.strideFloats;
+        if (!gpuFloatIndex(filtered, output.x1, output.y1, nComps, &p.offset)) {
+            return eStatusFailed;
+        }
+
+        return ctx.dispatch(gpu::GpuKernelId::rawhotpixels_detect, { buffer, filtered.buffer }, p, { (std::uint32_t)output.width(), (std::uint32_t)output.height(), 1 }) ? eStatusOK : eStatusFailed;
+    };
+}
+#endif // NATRON_HAVE_GPU
 } // namespace
 
 void
@@ -260,6 +357,9 @@ RawHotPixelsOp::passes(const Params& params,
     pass.growY = 0;
     pass.tapsPerSample = 5;
     list.passes.push_back(pass);
+#ifdef NATRON_HAVE_GPU
+    list.gpu = hotPixelsGpuRecorder(params);
+#endif
 
     return list;
 }

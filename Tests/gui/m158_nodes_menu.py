@@ -68,7 +68,6 @@ KNOWN_GROUPINGS = {MERGE_ID: [MERGE_GROUPING], BLUR_ID: ["Filter"], TWO_MAJORS_I
 KNOWN_DEPRECATED = {
     ("fr.inria.openfx.OIIOResize", 1), ("fr.inria.openfx.OIIOText", 1), ("net.fxarena.openfx.MagickText", 5),
     ("net.sf.cimg.CImgBloom", 3), ("net.sf.cimg.CImgChromaBlur", 3), ("net.sf.cimg.CImgLaplacian", 3),
-    ("net.sf.openfx.HueCorrect1", 1), ("net.sf.openfx.LensDistortion", 2), ("net.sf.openfx.LensDistortion", 3),
     ("net.sf.openfx.TrackerPM", 1), ("net.sf.openfx.joinViewsPlugin", 1), ("net.sf.openfx.oneViewPlugin", 2),
 }
 

@@ -382,6 +382,21 @@ under "Flat image nodes", and `Grade` is the example to read.
    the node once (with a null `NodePtr`) purely to read that metadata back off
    it and register a `Plugin*` -- it is not a live node instance.
 
+   An I-node -- a variable-size variant of a base node, whose Map input scales
+   the effect per pixel -- adds a second line to its fragment pairing it with
+   its base node:
+
+   ```cpp
+   NATRON_I_VARIANT(PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR)
+   ```
+
+   The base ID, the I-node's ID, then any number of `{ baseKnob, iKnob }`
+   pairs for knobs whose names differ (`Filter/IBlur.reg.inc` needs none);
+   every other knob converts to the knob of the same name. `IVariantRegistry::builtin()` (`IVariantRegistry.h`) collects
+   these lines, and the Make I-Node action reads it to convert a node either
+   way. The I-node's Map input and knobs come from `MapInput`
+   (`Filter/MapInput.h`).
+
 5. **Test it**: see "Testing" below.
 
 ### Adding a native node: checklist
@@ -393,7 +408,8 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       above. One per registered ID; a template argument list containing a comma
       goes through an alias. Icon, `deprecated` and `internal` are `NodeSpec`
       fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
-      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`.
+      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`. An I-node's fragment also
+      holds its `NATRON_I_VARIANT` line, see step 4.
 - [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
       from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
       and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
@@ -442,8 +458,12 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   connection typing, but there is no deep payload type, no deep cache, and no
   deep render path yet. Declaring a kind does not mean a node can render that
   kind of data today.
-- `eDataKindScene` -- 3D scene data. Same caveat as deep: declaration only,
-  no scene payload or evaluation path yet.
+- `eDataKindScene` -- 3D scene data: a `ScenePayload` (`Engine/ScenePayload.h`),
+  an immutable stack of USD layers, one per scene node. A consumer pulls it
+  with `EffectInstance::evaluateScene()`; a native scene node overrides
+  `renderScene()` and authors its layer through `NativeEffectBase::emitSceneLayer()`,
+  which memoizes it. USD types stay in `Engine/Nodes/Scene/`, which includes
+  them only through `UsdIncludes.h`.
 - `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
   "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
   other `NoOps`, group boundaries, `TypedPassthrough`), and for a source whose
@@ -871,6 +891,12 @@ them:
   a Source input, and a Composite or Resample op cannot have it (no one divisor
   applies to several inputs, and a resampler reads the source as stored); both
   are compile errors.
+- **`Divisor`** gives the op the same selector, starting on `rgba.A` and
+  labelled `ImagePipelineSpec::divisorLabel`, but divides and multiplies
+  nothing: the op reads `RowIO::divisor` itself (on the GPU,
+  `runWrappedDivisor<>` hands it to an `IDivisorPixelOp`). With None picked the
+  node is an identity. It excludes `Premult` and needs a Point op; Premult and
+  Unpremult use it.
 - **`MaskMix`** blends each processed channel of the op's result with the
   *undivided* source by mask x `mix`, with the `ofxsMaskMixPix()` arithmetic. It
   needs a Mask input.
@@ -944,8 +970,8 @@ an integer `which`).
   concatenates into its source. Transform, TransformMasked and Reformat are this
   form. It runs on the GPU only if the op says
   `static constexpr bool kResamplesOnGpu = true`; then the GPU renders it
-  whenever its sampling matrices are affine and nothing is concatenated into the
-  source. The Resample kind runs its own loop (`runResampleCpu()`), not a row
+  whenever its sampling matrices, affine or projective, are finite and nothing is
+  concatenated into the source. The Resample kind runs its own loop (`runResampleCpu()`), not a row
   function under `runStagesCpu()`, since it fetches through the concatenated
   transform and samples the whole source.
 - *Offset form*: `offset(params, ctx)` returns the whole-pixel translation at
@@ -1030,7 +1056,7 @@ colour of each photosite in whatever window it renders.
 
 A raw-to-image node that changes the channel count -- a one-channel mosaic in,
 RGB out, as a demosaic does -- declares its own output components by
-overriding `getPreferredMetadata()`, and overrides `deriveOutputMetadata()` to
+overriding `getPreferredMetadataAt(time, view, md)`, and overrides `deriveOutputMetadata()` to
 drop the `raw/` keys that no longer describe its output (the CFA pattern and
 origin, and `raw/stage` once the output is an image). Neither is `FINAL` in
 `StagedImageEffect` or `ImageNode`, so a subclass of either can; a demosaic
@@ -1059,7 +1085,10 @@ dependencies, form a run, and a run with a task that has no GPU path (neither
 cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
 between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
 at full scale only, and a region refuses such a node at a proxy level, so its task there is never
-a GPU candidate (`makeGpuQueryForTask()`).
+a GPU candidate (`makeGpuQueryForTask()`). The raw nodes have no cost seed rows, so the cost
+model does not price them: a region of two or more connected GPU candidates with no priced member
+goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
+(`PlacementInputs::isPriced`).
 
 ### The GPU side of an op
 
@@ -1069,6 +1098,15 @@ copyable parameter block, `GpuOpRef::packed(kernelId, words)` for words the op
 lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
+
+A runtime shader finds its source and destination by name, not by binding: its
+only storage buffers are the blocks named `Src` and `Dst`
+(`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set
+0, so generated code that puts its own uniform block at binding 0, as
+OpenColorIO's does, is wrapped as it is. Every other binding is a uniform block
+or a texture matched by name to `GpuShaderInputs`. A texture with a `cacheKey`
+is kept by the GPU context's `GpuTextureCache`, shared with the viewer, and
+uploaded once rather than for each render.
 
 The kernel is an `IPixelOp` in the style of `Engine/Gpu/Kernels/pixelwrap.slang`:
 `load()` reads the block, `apply(float4, int2)` does the maths on a pixel in

@@ -123,6 +123,12 @@ public:
     ExtentEnum getExtent() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The extent at (time, view), for what is derived at a frame: the choice can be keyed.
+     **/
+    ExtentEnum getExtent(double time,
+                         ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Shows the knobs the current extent uses and hides the others.
      **/
     void updateVisibility();

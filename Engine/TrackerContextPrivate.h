@@ -30,7 +30,9 @@
 
 #include "TrackerContext.h"
 
+#include <atomic>
 #include <list>
+#include <memory>
 
 // clang-format off
 GCC_DIAG_OFF(unused-function)
@@ -58,6 +60,8 @@ GCC_DIAG_ON(maybe-uninitialized)
 
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/IsolatedJob.h"
+#include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/RectD.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerFrameAccessor.h"
@@ -157,8 +161,6 @@ GCC_DIAG_ON(maybe-uninitialized)
 #define kTrackerParamExportButtonLabel "Export"
 #define kTrackerParamExportButtonHint "Creates a node referencing the tracked data. The node type depends on the node selected by the Transform Type parameter. " \
     "The type of transformation applied by the created node depends on the Motion Type parameter. To activate this button you must select set the Motion Type to something other than None"
-
-#define kCornerPinInvertParamName "invert"
 
 #define kTrackerParamTransformType "transformType"
 #define kTrackerParamTransformTypeLabel "Transform Type"
@@ -277,32 +279,9 @@ GCC_DIAG_ON(maybe-uninitialized)
 #define kTransformParamShutterOffset "shutterOffset"
 #define kTransformParamCustomShutterOffset "shutterCustomOffset"
 
-#define kCornerPinParamFrom "from"
-#define kCornerPinParamTo "to"
-
-#define kCornerPinParamFrom1 "from1"
-#define kCornerPinParamFrom2 "from2"
-#define kCornerPinParamFrom3 "from3"
-#define kCornerPinParamFrom4 "from4"
-
-#define kCornerPinParamSetToInputRoD "setToInputRod"
-#define kCornerPinParamSetToInputRoDLabel "Set to Input Rod"
-#define kCornerPinParamSetToInputRoDHint "Set the 4 from points to the image rectangle in input of the tracker node"
-
-#define kCornerPinParamTo1 "to1"
-#define kCornerPinParamTo2 "to2"
-#define kCornerPinParamTo3 "to3"
-#define kCornerPinParamTo4 "to4"
-
-#define kCornerPinParamEnable1 "enable1"
-#define kCornerPinParamEnable2 "enable2"
-#define kCornerPinParamEnable3 "enable3"
-#define kCornerPinParamEnable4 "enable4"
-
-#define kCornerPinParamOverlayPoints "overlayPoints"
-
-#define kCornerPinParamMatrix "transform"
-
+#define kTrackerParamSetToInputRoD "setToInputRod"
+#define kTrackerParamSetToInputRoDLabel "Set to Input Rod"
+#define kTrackerParamSetToInputRoDHint "Set the 4 from points to the image rectangle in input of the tracker node"
 
 NATRON_NAMESPACE_ENTER
 
@@ -469,6 +448,29 @@ public:
 
     SolveRequest lastSolveRequest;
 
+    // The id of the tracking run whose solve is in flight, 0 when none is: the solve that ends
+    // while it is set ends that run's job.
+    quint64 solvingRunId = 0;
+
+    // The id of the latest tracking run started (TrackerContext::startTrackingJob()), 0 before
+    // the first.
+    quint64 trackingRunId = 0;
+
+    // From the start of tracking run trackingRunId until it reports trackingJobFinished: what the
+    // tracker reads refuses writes from outside the run.
+    std::unique_ptr<IsolatedJob> trackingJob;
+    // trackingJob, for the tracking threads.
+    std::atomic<const IsolatedJob*> runningTrackingJob { nullptr };
+
+    // Ends the job of run runId, if it is the latest run started.
+    void endTrackingJob(quint64 runId)
+    {
+        if (runId != trackingRunId) {
+            return;
+        }
+        runningTrackingJob.store(nullptr);
+        trackingJob.reset();
+    }
 
     TrackerContextPrivate(TrackerContext* publicInterface,
                           const NodePtr &node);

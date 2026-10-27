@@ -87,6 +87,18 @@ public:
                 const ChoiceMade& choiceMade = ChoiceMade());
 
     /**
+     * @brief As create(), for a further space of a node whose knobs \p first created: these take
+     * first's hidden ocioConfigFile and ocioWorkingSpace and its Context group instead of
+     * creating their own, and go on \p page before that group.
+     **/
+    void createSharing(const OcioSpaceKnobs& first,
+                       KnobHolder* holder,
+                       const KnobPagePtr& page,
+                       const Description& description,
+                       const AutomaticSpace& automaticSpace,
+                       const ChoiceMade& choiceMade = ChoiceMade());
+
+    /**
      * @brief Handles a change of one of these knobs. Returns true when \p k is one of them,
      * false otherwise and for time changes.
      **/
@@ -129,8 +141,22 @@ public:
      **/
     std::vector<std::pair<std::string, std::string>> contextVariables(double time) const;
 
+    /**
+     * @brief The Context group these knobs read their variables from.
+     **/
+    KnobGroupPtr contextGroup() const;
+
 private:
     ProjectPtr project() const;
+
+    /**
+     * @brief Creates the string knob, the menu and the flag on \p page, inserted from \p index
+     * on, or appended when \p index is negative.
+     **/
+    void createSpaceKnobs(KnobHolder* holder,
+                          const KnobPagePtr& page,
+                          const Description& description,
+                          int index);
 
     KnobHolder* _holder;
     AutomaticSpace _automaticSpace;

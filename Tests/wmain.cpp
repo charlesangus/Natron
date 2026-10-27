@@ -15,6 +15,7 @@
 #include "Engine/ViewerInstance.h"
 
 #include "CountingTestEffect.h"
+#include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
@@ -24,6 +25,7 @@
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
+#include "SceneTestEffect.h"
 #include "TestBuiltInPlugins.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
@@ -122,6 +124,15 @@ registerGraphScalingTestPlugins()
 }
 
 void
+registerSceneTestPlugins()
+{
+    // A scene source and a scene op, so Scene/SceneAction_Test.cpp can pull scenes through the
+    // engine's action before any shipped scene node exists.
+    registerTestBuiltInPlugin<SceneTestSource>();
+    registerTestBuiltInPlugin<SceneTestOp>();
+}
+
+void
 registerRenderSchedulerTestPlugins()
 {
     // Registered to count the render calls of every task, which no shipped plugin exposes.
@@ -138,11 +149,20 @@ registerFrameGraphBuildTestPlugins()
 }
 
 void
+registerCurveHostTestPlugins()
+{
+    // Registered so CurveHost_Test.cpp can edit curves on a geometry curve host, which no shipped
+    // node is yet.
+    registerTestBuiltInPlugin<CurveHostTestEffect>();
+}
+
+void
 registerNativeMetadataTestPlugins()
 {
     // Registered so NativeMetadata_Test.cpp can inject metadata at the head of a native chain,
     // which no shipped node does.
     registerTestBuiltInPlugin<MetadataSourceTestEffect>();
+    registerTestBuiltInPlugin<MetadataFilterTestEffect>();
 }
 
 void
@@ -195,12 +215,14 @@ GTEST_API_ int main(int argc, char **argv)
     }
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
+    registerSceneTestPlugins();
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
+    registerCurveHostTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

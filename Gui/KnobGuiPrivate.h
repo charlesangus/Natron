@@ -35,13 +35,14 @@
 #include <stdexcept>
 #include <map>
 
-#include <QString>
-#include <QHBoxLayout>
-#include <QPushButton>
-#include <QFormLayout>
 #include <QFileDialog>
-#include <QTextEdit>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QPointer>
+#include <QPushButton>
+#include <QString>
 #include <QStyle> // in QtGui on Qt4, in QtWidgets on Qt5
+#include <QTextEdit>
 #include <QTimer>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -71,6 +72,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Variant.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CompleterLineEdit.h"
@@ -84,7 +86,6 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiGroup.h"
 #include "Gui/LineEdit.h"
-#include "Gui/LinkToKnobDialog.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"

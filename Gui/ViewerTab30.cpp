@@ -41,11 +41,13 @@
 #include <QCheckBox>
 #include <QToolBar>
 
-#include "Engine/Settings.h"
-#include "Engine/Node.h"
 #include "Engine/Format.h"
-#include "Engine/Project.h"
+#include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/Project.h"
+#include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/Button.h"
@@ -663,8 +665,8 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         return;
     }
 
-    std::string pluginID = n->getNode()->getPluginID();
-    std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForPlugin(pluginID);
+    std::string slot = ViewerTabPrivate::getViewerSlot(n->getNode());
+    std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForSlot(slot);
     NodeGuiPtr activeNodeForPlugin;
     if ( foundActive != _imp->currentNodeContext.end() ) {
         activeNodeForPlugin = foundActive->currentNode.lock();
@@ -717,7 +719,7 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         for (std::list<ViewerTabPrivate::PluginViewerContext>::const_iterator it = _imp->currentNodeContext.begin();
              it != _imp->currentNodeContext.end();
              ++it) {
-            qDebug() << QString::fromUtf8(it->pluginID.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
+            qDebug() << QString::fromUtf8(it->slot.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
         }
 #       endif
         while ( (int)_imp->currentNodeContext.size() >= maxNodeContextOpened ) {
@@ -728,7 +730,7 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
             for (std::list<ViewerTabPrivate::PluginViewerContext>::const_iterator it = _imp->currentNodeContext.begin();
                  it != _imp->currentNodeContext.end();
                  ++it) {
-                qDebug() << QString::fromUtf8(it->pluginID.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
+                qDebug() << QString::fromUtf8(it->slot.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
             }
 #           endif
         }
@@ -761,7 +763,7 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         }
     }
     ViewerTabPrivate::PluginViewerContext p;
-    p.pluginID = pluginID;
+    p.slot = slot;
     p.currentNode = n;
     p.currentContext = it->second;
     _imp->currentNodeContext.push_back(p);
@@ -786,14 +788,14 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
         return;
     }
 
-    std::string pluginID = n->getNode()->getPluginID();
+    std::string slot = ViewerTabPrivate::getViewerSlot(n->getNode());
     NodeGuiPtr activeNodeForPlugin;
     QToolBar* activeItemToolBar = 0;
     QWidget* activeItemContainer = 0;
 
     {
         // Keep the iterator under this scope since we erase it
-        std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForPlugin(pluginID);
+        std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForSlot(slot);
         if ( foundActive != _imp->currentNodeContext.end() ) {
             activeNodeForPlugin = foundActive->currentNode.lock();
 
@@ -827,7 +829,7 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
     }
 
     if (setAnotherFromSamePlugin && activeNodeForPlugin == n) {
-        ///If there's another roto node, set it as the current roto interface
+        /// If there's another node in the same slot (e.g another curve host), set it as the current interface
         ViewerTabPrivate::NodeViewerContextsMap::iterator newInterface = _imp->nodesContext.end();
         for (ViewerTabPrivate::NodeViewerContextsMap::iterator it2 = _imp->nodesContext.begin(); it2 != _imp->nodesContext.end(); ++it2) {
             NodeGuiPtr otherNode = it2->first.lock();
@@ -837,7 +839,7 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
             if (otherNode == n) {
                 continue;
             }
-            if (otherNode->getNode()->getPluginID() != pluginID) {
+            if (ViewerTabPrivate::getViewerSlot(otherNode->getNode()) != slot) {
                 continue;
             }
             if ( (it2->second != found->second) && it2->first.lock()->isSettingsPanelVisible() ) {
@@ -984,6 +986,11 @@ ViewerTab::onCompositingOperatorIndexChanged(int index)
 void
 ViewerTab::setCompositingOperator(ViewerCompositingOperatorEnum op)
 {
+    if (_imp->wipeDisabledByDataKind && (op != eViewerCompositingOperatorNone)) {
+        // No wipe while an input is a scene; the operator comes back once none is.
+        _imp->compositingOperatorBeforeScene = op;
+        op = eViewerCompositingOperatorNone;
+    }
     int comboIndex;
 
     switch (op) {
@@ -1269,17 +1276,15 @@ ViewerTab::refreshFPSBoxFromClipPreferences()
     int activeInputs[2];
 
     _imp->viewerNode->getActiveInputs(activeInputs[0], activeInputs[1]);
-    EffectInstancePtr input0 = activeInputs[0] != -1 ? _imp->viewerNode->getInput(activeInputs[0]) : EffectInstancePtr();
-    if (input0) {
-        _imp->fpsBox->setValue( input0->getFrameRate() );
-    } else {
-        EffectInstancePtr input1 = activeInputs[1] != -1 ? _imp->viewerNode->getInput(activeInputs[1]) : EffectInstancePtr();
-        if (input1) {
-            _imp->fpsBox->setValue( input1->getFrameRate() );
-        } else {
-            _imp->fpsBox->setValue( getGui()->getApp()->getProjectFrameRate() );
-        }
+    EffectInstancePtr input = activeInputs[0] != -1 ? _imp->viewerNode->getInput(activeInputs[0]) : EffectInstancePtr();
+    if (!input && activeInputs[1] != -1) {
+        input = _imp->viewerNode->getInput(activeInputs[1]);
     }
+    NodeMetadataConstPtr metadata;
+    if (input) {
+        metadata = input->getMetadata(getTimeLine()->currentFrame(), getCurrentView());
+    }
+    _imp->fpsBox->setValue(metadata ? metadata->getOutputFrameRate() : getGui()->getApp()->getProjectFrameRate());
     onSpinboxFpsChangedInternal( _imp->fpsBox->value() );
 }
 
@@ -1330,6 +1335,9 @@ ViewerTab::onClipPreferencesChanged()
     getGui()->getApp()->getProject()->getProjectDefaultFormat(&format);
     RectD canonicalFormat = format.toCanonicalFormat();
 
+    // The inputs' format and PAR can change from one frame to the next: show the current frame's.
+    const double time = getTimeLine()->currentFrame();
+    const ViewIdx view = getCurrentView();
     int activeInputs[2];
     _imp->viewerNode->getActiveInputs(activeInputs[0], activeInputs[1]);
     for (int i = 0; i < 2; ++i) {
@@ -1337,17 +1345,19 @@ ViewerTab::onClipPreferencesChanged()
         if (activeInputs[i] != -1) {
             input = _imp->viewerNode->getInput(activeInputs[i]);
         }
-        if (!input) {
+        NodeMetadataConstPtr metadata;
+        if (input) {
+            metadata = input->getMetadata(time, view);
+        }
+        if (!metadata) {
             setInfoBarAndViewerResolution(format, canonicalFormat, format.getPixelAspectRatio(), i);
         } else {
-            RectI inputFormat = input->getOutputFormat();
-            double inputPar = input->getAspectRatio(-1);
+            RectI inputFormat = metadata->getOutputFormat();
+            double inputPar = metadata->getPixelAspectRatio(-1);
             RectD inputCanonicalFormat = inputFormat.toCanonical_noClipping(0, inputPar);
 
             setInfoBarAndViewerResolution(inputFormat, inputCanonicalFormat, inputPar, i);
-
         }
-
     }
 
 }

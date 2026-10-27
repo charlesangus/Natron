@@ -50,6 +50,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Raw/RawAmazeGpu.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
 
@@ -514,7 +515,7 @@ RawDemosaic::refreshMethodKnobsVisibility()
         colorSmoothing->setSecret(false);
         dualThreshold->setSecret(!bayerDual && !xtransDual);
         lmmseRefine->setSecret(bayer != (int)eRawDemosaicBayerLMMSE);
-        captureSupport = !input || (input->getMetadataNComps(-1) == 1);
+        captureSupport = !input || (EffectInstance::getNCompsFromMetadata(*input->getMetadata(getCurrentTime(), ViewIdx(0)), -1) == 1);
     }
     refreshCaptureKnobsVisibility(captureSupport);
 }
@@ -636,9 +637,9 @@ RawDemosaic::onInputChanged(int /*inputNo*/)
 }
 
 void
-RawDemosaic::onMetadataRefreshed(const NodeMetadata& metadata)
+RawDemosaic::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
 {
-    StagedImageEffect::onMetadataRefreshed(metadata);
+    StagedImageEffect::onCurrentFrameMetadataChanged(metadata);
     refreshMethodKnobsVisibility();
 }
 
@@ -781,7 +782,7 @@ RawDemosaic::resolveSettings(double time,
     if (reader.value(_captureSharpen)) {
         if (s.algorithm == Algorithm::PassThrough) {
             const EffectInstancePtr input = getInput(getSourceInput());
-            s.mono = (s.layout.period() == 0) && input && (input->getMetadataNComps(-1) == 1);
+            s.mono = (s.layout.period() == 0) && input && (EffectInstance::getNCompsFromMetadata(*input->getRenderMetadata(time, view), -1) == 1);
             s.capture = s.mono;
         } else {
             s.capture = (s.algorithm != Algorithm::PhotositeMonochrome) && (s.algorithm != Algorithm::PhotositeColor);
@@ -891,7 +892,7 @@ RawDemosaic::getRegionsOfInterest(double time,
     if (!input || !settings) {
         return;
     }
-    const double par = getAspectRatio(getSourceInput());
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const bool full = (settings->greenEq == eRawDemosaicGreenEqFull) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     RectI need = full ? settings->sourceRoD : sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), time, view);
     if (settings->capture && (settings->captureSettings.radius <= 0.f)) {
@@ -906,7 +907,9 @@ RawDemosaic::getRegionsOfInterest(double time,
 }
 
 StatusEnum
-RawDemosaic::getPreferredMetadata(NodeMetadata& metadata)
+RawDemosaic::getPreferredMetadataAt(double /*time*/,
+                                    ViewIdx /*view*/,
+                                    NodeMetadata& metadata)
 {
     metadata.setNComps(-1, 4);
 
@@ -1187,7 +1190,12 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
         return false;
     }
 
-    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD)) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
+    const bool vng = (settings->algorithm == Algorithm::VNG) && ((settings->layout.period() == 2) || (settings->layout.period() == 6));
+    const bool markesteijn = ((settings->algorithm == Algorithm::Markesteijn1) || (settings->algorithm == Algorithm::Markesteijn3)) && (settings->layout.period() == 6);
+
+    const bool amaze = (settings->algorithm == Algorithm::AMaZE) && (settings->layout.period() == 2);
+
+    return ((settings->algorithm == Algorithm::PPG) || (settings->algorithm == Algorithm::RCD) || vng || markesteijn || amaze) && (settings->greenEq == eRawDemosaicGreenEqNone) && (settings->smoothing == 0);
 #else
     Q_UNUSED(query);
 
@@ -1214,6 +1222,8 @@ RawDemosaic::getOpGpuInputLayer(int inputNb,
 
 RectI
 RawDemosaic::getOpGpuInputRoI(int inputNb,
+                              double time,
+                              ViewIdx view,
                               const RectI& outputRect,
                               const RenderScale& /*scale*/) const
 {
@@ -1221,8 +1231,60 @@ RawDemosaic::getOpGpuInputRoI(int inputNb,
         return outputRect;
     }
 
-    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, getCurrentTime(), getCurrentView());
+    return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, time, view);
 }
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+// The pattern RawKernels::vng() runs with over a buffer of rect, from its top-left photosite: the
+// X-Trans one, or VNG4's, the Bayer one with the green on the buffer's even rows as colour 3.
+RawLayoutGpu
+vngLayoutGpu(const RawLayout& layout,
+             const RectI& rect)
+{
+    std::uint8_t colours[36] = {};
+
+    if (layout.period() == 6) {
+        std::uint8_t xtrans[6][6] = {};
+        RawNodeSupport::xtransAt(layout, rect, xtrans);
+        for (int row = 0; row < 6; ++row) {
+            for (int col = 0; col < 6; ++col) {
+                colours[row * 6 + col] = xtrans[row][col];
+            }
+        }
+
+        return toRawLayoutGpu(6, colours);
+    }
+    const std::uint32_t filters = RawNodeSupport::bayerFiltersAt(layout, rect);
+    const std::uint32_t filters4 = filters | (((filters & 3) == 1) ? 0x03030303u : 0x0c0c0c0cu);
+    for (int row = 0; row < 2; ++row) {
+        for (int col = 0; col < 2; ++col) {
+            colours[row * 2 + col] = (std::uint8_t)RawKernels::fcBayer((std::size_t)row, (std::size_t)col, filters4);
+        }
+    }
+
+    return toRawLayoutGpu(2, colours);
+}
+
+// The X-Trans pattern of a buffer of rect from its top-left photosite, as
+// RawMarkesteijnGpuPush::pattern packs it.
+void
+markesteijnPatternGpu(const RawLayout& layout,
+                      const RectI& rect,
+                      std::uint32_t (&pattern)[3])
+{
+    std::uint8_t xtrans[6][6] = {};
+    RawNodeSupport::xtransAt(layout, rect, xtrans);
+    pattern[0] = pattern[1] = pattern[2] = 0;
+    for (int i = 0; i < 36; ++i) {
+        pattern[i / 16] |= (std::uint32_t)(xtrans[i / 6][i % 6] & 3) << ((i % 16) * 2);
+    }
+}
+
+// RawKernels::markesteijn()'s tile size, as demosaic_markesteijn.slang's TS.
+const int kMarkesteijnTile = 122;
+} // namespace
+#endif // NATRON_HAVE_GPU
 
 StatusEnum
 RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
@@ -1265,6 +1327,9 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     }
     base.dstStride = (std::uint32_t)out.rowStrideFloats;
     const bool rcd = (s.algorithm == Algorithm::RCD);
+    const bool vng = (s.algorithm == Algorithm::VNG);
+    const bool markesteijn = (s.algorithm == Algorithm::Markesteijn1) || (s.algorithm == Algorithm::Markesteijn3);
+    const bool amaze = (s.algorithm == Algorithm::AMaZE);
     base.mode = (s.algorithm == Algorithm::PassThrough) ? kRawDemosaicGpuModePassThrough : (rcd ? kRawDemosaicGpuModeRcd : kRawDemosaicGpuModePpg);
     base.threshold = rcd ? 0.0f : s.edgeThreshold;
     base.scaler = s.processedMaximum;
@@ -1273,18 +1338,48 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
 
     // Bands of the window are demosaiced one after the other through one work buffer, each over
     // the source region the CPU would read for it, which a tile's result does not depend on.
-    const std::uint64_t kMaxWorkFloats = std::uint64_t(1) << 25;
+    // PPG and RCD need under 16 floats a photosite, VNG its two RGBA planes. Markesteijn's one
+    // RGBA plane is held to half the budget, its batches of tiles taking the other half. No
+    // scratch is over what the device binds.
+    gpu::GpuRecordContext& ctx = args.context;
+    const std::uint64_t maxScratchFloats = ctx.maxScratchBytes() / sizeof(float);
+    const std::uint64_t maxWorkFloats = std::min<std::uint64_t>(std::uint64_t(1) << 25, maxScratchFloats);
+    const std::uint64_t floatsPerPhotosite = (vng || markesteijn) ? 8 : 16;
     std::vector<RectI> bands;
     std::vector<RectI> needs;
     std::uint64_t workFloats = 4;
     if (base.mode == kRawDemosaicGpuModePassThrough) {
         bands.push_back(rect);
         needs.push_back(RectI());
+    } else if (amaze) {
+        // A band's buffer starts on AMaZE's 128-row grid counted from the image's top row, so its
+        // tiles are the CPU's whatever the band, and a band ends on that grid so that the next
+        // one does not recompute its tiles. The buffer spans a band's rows plus one block before
+        // and the tile's end after.
+        const RectI& rod = s.sourceRoD;
+        const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
+        const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
+        const std::int64_t maxRows = (std::int64_t)(maxWorkFloats / (4 * needWidth));
+        const int blocks = (int)std::max<std::int64_t>(1, (maxRows - kAmazeGrid - kAmazeTileEnd) / kAmazeGrid);
+        const auto gridFloor = [](int row) {
+            return row >= 0 ? row / kAmazeGrid : -((kAmazeGrid - 1 - row) / kAmazeGrid);
+        };
+        const int top = rod.y2 - rect.y2;
+        const int bottom = rod.y2 - rect.y1;
+        for (int row = top; row < bottom;) {
+            const int end = std::min(bottom, (gridFloor(row) + blocks) * kAmazeGrid);
+            const RectI band(rect.x1, rod.y2 - end, rect.x2, rod.y2 - row);
+            const RectI need = sourceRegionFor(band, query.time, query.view);
+            bands.push_back(band);
+            needs.push_back(need);
+            workFloats = std::max(workFloats, 4 * (std::uint64_t)std::max(0, need.width()) * (std::uint64_t)std::max(0, need.height()));
+            row = end;
+        }
     } else {
         const RectI firstRow = sourceRegionFor(RectI(rect.x1, rect.y1, rect.x2, rect.y1 + 1), query.time, query.view);
         const std::uint64_t needWidth = (std::uint64_t)std::max(1, firstRow.width());
         const int overhead = std::max(0, firstRow.height() - 1);
-        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(kMaxWorkFloats / (16 * needWidth)) - overhead);
+        const int bandRows = (int)std::max<std::int64_t>(16, (std::int64_t)(maxWorkFloats / (floatsPerPhotosite * needWidth)) - overhead);
         for (int y = rect.y1; y < rect.y2; y += bandRows) {
             const RectI band(rect.x1, y, rect.x2, std::min(rect.y2, y + bandRows));
             const RectI need = sourceRegionFor(band, query.time, query.view);
@@ -1293,14 +1388,13 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
             const std::uint64_t w = (std::uint64_t)std::max(0, need.width());
             const std::uint64_t h = (std::uint64_t)std::max(0, need.height());
             const std::uint64_t stride = (w + 1) & ~std::uint64_t(1);
-            workFloats = std::max(workFloats, 9 * w * h + (13 * stride * h) / 2);
+            workFloats = std::max(workFloats, vng ? 8 * w * h : (markesteijn ? 4 * w * h : 9 * w * h + (13 * stride * h) / 2));
         }
     }
-    if (workFloats > UINT32_MAX) {
+    if ((workFloats > UINT32_MAX) || (workFloats > maxScratchFloats)) {
         return eStatusFailed;
     }
 
-    gpu::GpuRecordContext& ctx = args.context;
     gpu::GpuBuffer* work = nullptr;
     if (!ctx.scratch(workFloats * sizeof(float), work) || !work) {
         return eStatusFailed;
@@ -1309,13 +1403,121 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     const auto groups = [](std::uint32_t n) {
         return std::max<std::uint32_t>(n, 1);
     };
-    const auto run = [&](gpu::GpuKernelId kernel, const RawDemosaicGpuPush& push, std::uint32_t x, std::uint32_t y) {
+    const auto run = [&](gpu::GpuKernelId kernel, const auto& push, std::uint32_t x, std::uint32_t y) {
         if (!ctx.dispatch(kernel, { src, work, out.buffer }, push, { groups(x), groups(y), 1 })) {
             return false;
         }
         ctx.computeBarrier();
 
         return true;
+    };
+
+    // RawKernels::markesteijn()'s tiles of a band's buffer, in batches through one scratch buffer
+    // after vng_linear has interpolated the whole buffer, whose border Markesteijn leaves to it.
+    const int mkPasses = (s.algorithm == Algorithm::Markesteijn1) ? 1 : 3;
+    const int mkPad = (mkPasses == 1) ? 12 : 17;
+    const int mkStep = kMarkesteijnTile - 2 * mkPad;
+    const std::uint64_t mkTileFloats = (std::uint64_t)kMarkesteijnTile * kMarkesteijnTile * (5 * (mkPasses > 1 ? 8 : 4) + 2);
+    const auto markesteijnTiles = [&](const RectI& need, int& nLefts) {
+        const int w = std::max(0, need.width());
+        const int h = std::max(0, need.height());
+        nLefts = 0;
+        if ((w < mkPad + 2) || (h < mkPad + 2)) {
+            return 0;
+        }
+        nLefts = (w + mkStep - 1) / mkStep;
+
+        return ((h + mkStep - 1) / mkStep) * nLefts;
+    };
+    gpu::GpuBuffer* tiles = nullptr;
+    std::uint32_t mkBatch = 1;
+    if (markesteijn) {
+        int maxTiles = 1;
+        for (const RectI& need : needs) {
+            int nLefts = 0;
+            maxTiles = std::max(maxTiles, markesteijnTiles(need, nLefts));
+        }
+        // Each batch costs its kernels' dispatches, so the batch is as large as fits in 256 MB and
+        // the storage buffer range: the record context offers no device budget to size it by.
+        const std::uint64_t maxTileFloats = std::min<std::uint64_t>(std::uint64_t(1) << 26, maxScratchFloats);
+        if (mkTileFloats > maxTileFloats) {
+            return eStatusFailed;
+        }
+        mkBatch = (std::uint32_t)std::min<std::uint64_t>(maxTileFloats / mkTileFloats, (std::uint64_t)maxTiles);
+        if (!ctx.scratch(mkBatch * mkTileFloats * sizeof(float), tiles) || !tiles) {
+            return eStatusFailed;
+        }
+    }
+    gpu::GpuBuffer* amazeTiles = nullptr;
+    std::uint32_t amazeBatch = 1;
+    if (amaze) {
+        int maxTiles = 1;
+        for (const RectI& need : needs) {
+            int nLefts = 0;
+            maxTiles = std::max(maxTiles, amazeGpuTiles(need.width(), need.height(), nLefts));
+        }
+        amazeBatch = amazeGpuBatch(maxTiles, ctx.maxScratchBytes());
+        if ((amazeBatch == 0) || !ctx.scratch(amazeBatch * kAmazeGpuTileFloats * sizeof(float), amazeTiles) || !amazeTiles) {
+            return eStatusFailed;
+        }
+    }
+    const auto renderMarkesteijnGpu = [&](const RawVngGpuPush& vngPush, const RectI& need) {
+        RawMarkesteijnGpuPush mk = {};
+        markesteijnPatternGpu(s.layout, need, mk.pattern);
+        mk.passes = (std::uint32_t)mkPasses;
+        mk.width = vngPush.width;
+        mk.height = vngPush.height;
+        mk.srcOffset = vngPush.srcOffset;
+        mk.srcStride = vngPush.srcStride;
+        mk.srcComps = vngPush.srcComps;
+        mk.srcCol1 = vngPush.srcCol1;
+        mk.srcRow1 = vngPush.srcRow1;
+        mk.srcCol2 = vngPush.srcCol2;
+        mk.srcRow2 = vngPush.srcRow2;
+        mk.dstOffset = vngPush.dstOffset;
+        mk.dstStride = vngPush.dstStride;
+        mk.outCol = vngPush.outCol;
+        mk.outRow = vngPush.outRow;
+        mk.outWidth = vngPush.outWidth;
+        mk.outHeight = vngPush.outHeight;
+        int nLefts = 0;
+        const int nTiles = markesteijnTiles(need, nLefts);
+        mk.nLefts = (std::uint32_t)std::max(1, nLefts);
+        const auto mkRun = [&](gpu::GpuKernelId kernel, std::uint32_t x, std::uint32_t y, std::uint32_t z) {
+            if (!ctx.dispatch(kernel, { src, work, tiles, out.buffer }, mk, { groups(x), groups(y), groups(z) })) {
+                return false;
+            }
+            ctx.computeBarrier();
+
+            return true;
+        };
+        const std::uint32_t ts = (std::uint32_t)kMarkesteijnTile;
+        for (int first = 0; first < nTiles; first += (int)mkBatch) {
+            mk.firstTile = (std::uint32_t)first;
+            mk.tileCount = std::min<std::uint32_t>(mkBatch, (std::uint32_t)(nTiles - first));
+            mk.pass = 0;
+            const std::uint32_t n = mk.tileCount;
+            if (!mkRun(gpu::GpuKernelId::markesteijn_fill, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_minmax, ts, 1, n) || !mkRun(gpu::GpuKernelId::markesteijn_green, ts, ts, n)) {
+                return false;
+            }
+            for (int pass = 0; pass < mkPasses; ++pass) {
+                mk.pass = (std::uint32_t)pass;
+                if ((pass == 1) && !mkRun(gpu::GpuKernelId::markesteijn_copy, ts, ts, n)) {
+                    return false;
+                }
+                if ((pass > 0) && !mkRun(gpu::GpuKernelId::markesteijn_recalc, ts, ts, n)) {
+                    return false;
+                }
+                if (!mkRun(gpu::GpuKernelId::markesteijn_solitary, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_rb, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_twoxtwo, ts, ts, n)) {
+                    return false;
+                }
+            }
+            if (!mkRun(gpu::GpuKernelId::markesteijn_derivatives, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_homo, ts, ts, n) || !mkRun(gpu::GpuKernelId::markesteijn_final, ts, ts, n)) {
+                return false;
+            }
+        }
+
+        return mkRun(gpu::GpuKernelId::markesteijn_write, mk.outWidth, mk.outHeight, 1);
     };
 
     for (std::size_t b = 0; b < bands.size(); ++b) {
@@ -1335,6 +1537,76 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
         push.outY = band.y1;
         push.outWidth = (std::uint32_t)band.width();
         push.outHeight = (std::uint32_t)band.height();
+
+        if (amaze) {
+            RawAmazeGpuPush amazePush = {};
+            amazePush.filters = push.filters;
+            amazePush.clipPt = s.processedMinimum;
+            amazePush.width = width;
+            amazePush.height = height;
+            amazePush.srcOffset = base.srcOffset;
+            amazePush.srcStride = base.srcStride;
+            amazePush.srcComps = base.srcComps;
+            if (hasSource) {
+                amazePush.srcCol1 = source.bounds.x1 - need.x1;
+                amazePush.srcCol2 = source.bounds.x2 - need.x1;
+                amazePush.srcRow1 = need.y2 - source.bounds.y2;
+                amazePush.srcRow2 = need.y2 - source.bounds.y1;
+            }
+            amazePush.dstOffset = push.dstOffset;
+            amazePush.dstStride = push.dstStride;
+            amazePush.outCol = band.x1 - need.x1;
+            amazePush.outRow = need.y2 - 1 - band.y1;
+            amazePush.outWidth = push.outWidth;
+            amazePush.outHeight = push.outHeight;
+            if (!recordAmazeGpu(ctx, amazePush, src, work, amazeTiles, amazeBatch, out.buffer)) {
+                return eStatusFailed;
+            }
+            continue;
+        }
+
+        if (vng || markesteijn) {
+            RawVngGpuPush vngPush = {};
+            vngPush.width = width;
+            vngPush.height = height;
+            vngPush.srcOffset = base.srcOffset;
+            vngPush.srcStride = base.srcStride;
+            vngPush.srcComps = base.srcComps;
+            if (hasSource) {
+                vngPush.srcCol1 = source.bounds.x1 - need.x1;
+                vngPush.srcCol2 = source.bounds.x2 - need.x1;
+                vngPush.srcRow1 = need.y2 - source.bounds.y2;
+                vngPush.srcRow2 = need.y2 - source.bounds.y1;
+            }
+            vngPush.dstOffset = push.dstOffset;
+            vngPush.dstStride = push.dstStride;
+            vngPush.outCol = band.x1 - need.x1;
+            vngPush.outRow = need.y2 - 1 - band.y1;
+            vngPush.outWidth = push.outWidth;
+            vngPush.outHeight = push.outHeight;
+            if (markesteijn) {
+                if ((width > 0) && (height > 0)) {
+                    vngPush.layout = vngLayoutGpu(s.layout, need);
+                    if (!run(gpu::GpuKernelId::vng_linear, vngPush, width, height)) {
+                        return eStatusFailed;
+                    }
+                }
+                if (!renderMarkesteijnGpu(vngPush, need)) {
+                    return eStatusFailed;
+                }
+                continue;
+            }
+            if ((width > 0) && (height > 0)) {
+                vngPush.layout = vngLayoutGpu(s.layout, need);
+                if (!run(gpu::GpuKernelId::vng_linear, vngPush, width, height) || !run(gpu::GpuKernelId::vng_gradient, vngPush, width, height)) {
+                    return eStatusFailed;
+                }
+            }
+            if (!run(gpu::GpuKernelId::vng_write, vngPush, vngPush.outWidth, vngPush.outHeight)) {
+                return eStatusFailed;
+            }
+            continue;
+        }
 
         if ((base.mode != kRawDemosaicGpuModePassThrough) && (width > 0) && (height > 0)) {
             if ((push.threshold > 0.0f) && !run(gpu::GpuKernelId::demosaic_median, push, width, height)) {

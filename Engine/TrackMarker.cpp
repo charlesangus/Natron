@@ -354,6 +354,9 @@ TrackMarker::fromSerialization(const Serialization::TrackSerialization& serializ
                 (*it2)->blockValueChanges();
                 (*it2)->clone(serializedKnob);
                 (*it2)->unblockValueChanges();
+                // Paste Links between tracks are rebuilt by KnobHelper::restoreLinkGroups() with the rest of
+                // what loads with this track.
+                (*it2)->storeLinkGroupsFromSerialization(*it);
                 break;
             }
         }
@@ -1164,7 +1167,7 @@ TrackMarker::getMarkerImageRoI(int time) const
     if (!input) {
         return RectI();
     }
-    return roiCanonical.toPixelEnclosing(mipmapLevel, input ? input->getEffectInstance()->getAspectRatio(-1) : 1.);
+    return roiCanonical.toPixelEnclosing(mipmapLevel, input->getEffectInstance()->getMetadata(time, ViewIdx(0))->getPixelAspectRatio(-1));
 }
 
 std::pair<ImagePtr, RectI>
@@ -1233,12 +1236,13 @@ void
 TrackMarker::onKnobSlaved(const KnobIPtr& slave,
                           const KnobIPtr& master,
                           int dimension,
-                          bool isSlave)
+                          bool isSlave,
+                          bool isExpression)
 {
     EffectInstancePtr effect = getContext()->getNode()->getEffectInstance();
 
     if (effect) {
-        effect->onKnobSlaved(slave, master, dimension, isSlave);
+        effect->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
     }
 }
 
@@ -1352,7 +1356,7 @@ TrackMarkerPM::trackMarker(bool forward,
                 NodePtr trackerInput = trackerNode->getInput(0);
                 if (trackerInput) {
                     ImageLayerDesc comps, paireComps;
-                    trackerInput->getEffectInstance()->getMetadataComponents(-1, &comps, &paireComps);
+                    EffectInstance::getLayersFromMetadata(*trackerInput->getEffectInstance()->getMetadata(frame, ViewIdx(0)), -1, &comps, &paireComps);
                     areaPixels *= comps.getNumComponents();
                 }
 

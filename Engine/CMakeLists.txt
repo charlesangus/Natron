@@ -44,11 +44,16 @@ file(GLOB_RECURSE NatronEngineNodes_HEADERS Nodes/*.h)
 file(GLOB_RECURSE NatronEngineNodes_SOURCES Nodes/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineNodes_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineNodes_SOURCES})
+# OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
+# the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
+file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
 # Each fragment is a configure dependency because the header it names is copied into the
-# aggregate.
+# aggregate. Fragments may also hold NATRON_I_VARIANT lines (Engine/Nodes/IVariantRegistry.h);
+# the aggregate defines either macro its includer leaves undefined as empty.
 file(GLOB_RECURSE NatronEngineNodes_REGISTRATIONS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/*.reg.inc)
 list(SORT NatronEngineNodes_REGISTRATIONS)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NatronEngineNodes_REGISTRATIONS})
@@ -83,7 +88,23 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/NativeRegistryAll.inc.tmp
     "#ifdef NATRON_NATIVE_REGISTRY_HEADERS\n"
     "${nativeRegistryHeaders}"
     "#else\n"
+    "#ifndef NATRON_NATIVE_NODE\n"
+    "#define NATRON_NATIVE_NODE(...)\n"
+    "#define NATRON_NATIVE_REGISTRY_DEFAULT_NODE\n"
+    "#endif\n"
+    "#ifndef NATRON_I_VARIANT\n"
+    "#define NATRON_I_VARIANT(...)\n"
+    "#define NATRON_NATIVE_REGISTRY_DEFAULT_I_VARIANT\n"
+    "#endif\n"
     "${nativeRegistryNodes}"
+    "#ifdef NATRON_NATIVE_REGISTRY_DEFAULT_NODE\n"
+    "#undef NATRON_NATIVE_NODE\n"
+    "#undef NATRON_NATIVE_REGISTRY_DEFAULT_NODE\n"
+    "#endif\n"
+    "#ifdef NATRON_NATIVE_REGISTRY_DEFAULT_I_VARIANT\n"
+    "#undef NATRON_I_VARIANT\n"
+    "#undef NATRON_NATIVE_REGISTRY_DEFAULT_I_VARIANT\n"
+    "#endif\n"
     "#endif\n")
 configure_file(${CMAKE_CURRENT_BINARY_DIR}/NativeRegistryAll.inc.tmp ${CMAKE_CURRENT_BINARY_DIR}/NativeRegistryAll.inc COPYONLY)
 
@@ -127,17 +148,18 @@ file(GLOB NatronEngine_OFX_RETIRED LIST_DIRECTORIES false CONFIGURE_DEPENDS ${CM
 list(FILTER NatronEngine_OFX_RETIRED EXCLUDE REGEX "/README\\.md$")
 list(SORT NatronEngine_OFX_RETIRED)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NatronEngine_OFX_RETIRED})
-set(pluginIdRegex "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$")
+set(ofxPluginIdRegex "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$")
+set(nativePluginIdRegex "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$")
 set(ofxRetiredRows "")
 list(LENGTH NatronEngine_OFX_RETIRED ofxRetiredCount)
 foreach(marker IN LISTS NatronEngine_OFX_RETIRED)
     get_filename_component(retiredId ${marker} NAME)
-    if(NOT retiredId MATCHES "${pluginIdRegex}")
+    if(NOT retiredId MATCHES "${ofxPluginIdRegex}")
         message(FATAL_ERROR "${marker}: a retired OFX marker is named after the plug-in ID it retires, e.g. net.sf.openfx.SharpenPlugin")
     endif()
     file(READ ${marker} replacement)
     string(STRIP "${replacement}" replacement)
-    if(NOT replacement STREQUAL "" AND NOT replacement MATCHES "${pluginIdRegex}")
+    if(NOT replacement STREQUAL "" AND NOT replacement MATCHES "${nativePluginIdRegex}")
         message(FATAL_ERROR "${marker}: a retired OFX marker holds at most one line, the ID of the native plug-in that replaces it")
     endif()
     string(APPEND ofxRetiredRows "    { \"${retiredId}\", \"${replacement}\" },\n")
@@ -221,6 +243,7 @@ target_link_libraries(NatronEngine
         openMVG
         tess
         rawspeed::rawspeed
+        ${NATRON_USD_ENGINE_LIBRARIES}
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every

@@ -53,6 +53,7 @@ namespace {
 const char* const kExampleProjectYaml = R"yaml(format: natron-project
 formatVersion: 1
 savedBy: {version: [2, 6, 0], branch: "main", commit: "5acedc397", os: "Linux", bits: 64}
+id: "6f1c2d3e-7a8b-4c5d-9e0f-123456789abc"
 knobs:
   frameRange: [1, 240]
   frameRate: 23.976
@@ -202,6 +203,7 @@ exampleProject()
     project.savedByVersion.gitCommit = "5acedc397";
     project.savedByVersion.operatingSystem = "Linux";
     project.savedByVersion.bits = 64;
+    project.projectId = "6f1c2d3e-7a8b-4c5d-9e0f-123456789abc";
     project.creationDate = 0;
 
     project.projectKnobs.push_back(valueKnob("frameRange", "Int", { i(1), i(240) }));
@@ -345,7 +347,6 @@ expectNodesEqual(const NodeSerialization& expected,
     EXPECT_EQ(expected.hasRotoContext, actual.hasRotoContext);
     EXPECT_EQ(expected.hasTrackerContext, actual.hasTrackerContext);
     EXPECT_EQ(0u, actual.knobsAge);
-    EXPECT_TRUE(actual.masterNodeName.empty());
     EXPECT_TRUE(actual.multiInstanceParentName.empty());
     EXPECT_TRUE(actual.cacheID.empty());
     expectNodeListsEqual(expected.children, actual.children);
@@ -396,6 +397,7 @@ expectProjectsEqual(const ProjectSerialization& expected,
         EXPECT_EQ(e.origin, layer->origin);
         ++layer;
     }
+    EXPECT_EQ(expected.projectId, actual.projectId);
     EXPECT_EQ(expected.timelineCurrentTime, actual.timelineCurrentTime);
     EXPECT_EQ(0, actual.creationDate);
     expectNodeListsEqual(expected.nodes.nodes, actual.nodes.nodes);
@@ -473,6 +475,39 @@ TEST(ProjectYaml, BackdropSizeAndColoursRoundTrip)
     Serialization::MemoryBlobStore blobs;
     const std::string text = Serialization::encodeProjectYaml(project, blobs);
     EXPECT_NE(std::string::npos, text.find("    pos: [-300.25, 12]\n    size: [640, 480.5]\n    color: [0.25, 0.5, 0.125]\n    overlay: [1, 0, 0.75]\n"));
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    expectProjectsEqual(project, decoded);
+    EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
+}
+
+TEST(ProjectYaml, RFVGroupFlagRoundTrips)
+{
+    NodeSerializationPtr setNode = makeNode("Set1", "fr.inria.built-in.Dot", 1, 0);
+    Serialization::GroupKnobSerialization page;
+    page.name = "Variables";
+    page.label = "Variables";
+    Serialization::GroupKnobChildSerialization variables;
+    variables.isGroup = true;
+    variables.group.name = "variables";
+    variables.group.label = "Variables";
+    variables.group.isRFVGroup = true;
+    Serialization::GroupKnobChildSerialization gain;
+    gain.knob = valueKnob("gain", "Double", { d(0.25) });
+    gain.knob.isUserKnob = true;
+    gain.knob.label = "Gain";
+    gain.knob.isPersistent = true;
+    variables.group.children.push_back(gain);
+    page.children.push_back(variables);
+    setNode->userPages.push_back(page);
+    ProjectSerialization project;
+    project.nodes.nodes = { setNode };
+
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+    EXPECT_NE(std::string::npos, text.find("group: {label: \"Variables\", rfv: true}")) << text;
 
     YamlWarnings warnings;
     const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);

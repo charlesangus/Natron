@@ -50,6 +50,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RotoContext.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
@@ -190,9 +191,8 @@ KnobBool::typeName() const
 
 /******************************KnobDouble**************************************/
 
-
 KnobDouble::KnobDouble(KnobHolder* holder,
-                       const std::string &label,
+                       const std::string& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobDoubleBase(holder, label, dimension, declaredByPlugin)
@@ -202,6 +202,17 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _decimals(dimension, 2)
     , _disableSlider(false)
     , _autoFoldEnabled(false)
+    , _matrixRows(0)
+    , _matrixColumns(0)
+    , _matrixRowLabels()
+    , _matrixColumnLabels()
+    , _matrixVisibleRows(0)
+    , _matrixVisibleColumns(0)
+    , _rangeWidgetRole(eRangeWidgetRoleNone)
+    , _rangeWidgetSourceColour()
+    , _rangeWidgetModel()
+    , _rangeWidgetEnable()
+    , _rangeWidgetSmooth()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -209,7 +220,7 @@ KnobDouble::KnobDouble(KnobHolder* holder,
 }
 
 KnobDouble::KnobDouble(KnobHolder* holder,
-                       const QString &label,
+                       const QString& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobDoubleBase(holder, label.toStdString(), dimension, declaredByPlugin)
@@ -219,6 +230,17 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _decimals(dimension, 2)
     , _disableSlider(false)
     , _autoFoldEnabled(false)
+    , _matrixRows(0)
+    , _matrixColumns(0)
+    , _matrixRowLabels()
+    , _matrixColumnLabels()
+    , _matrixVisibleRows(0)
+    , _matrixVisibleColumns(0)
+    , _rangeWidgetRole(eRangeWidgetRoleNone)
+    , _rangeWidgetSourceColour()
+    , _rangeWidgetModel()
+    , _rangeWidgetEnable()
+    , _rangeWidgetSmooth()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -269,6 +291,79 @@ bool
 KnobDouble::isSliderDisabled() const
 {
     return _disableSlider;
+}
+
+void
+KnobDouble::setMatrixDisplay(int rows,
+                             int columns,
+                             const std::vector<std::string>& rowLabels,
+                             const std::vector<std::string>& columnLabels)
+{
+    if ((rows <= 0) || (columns <= 0) || (rows * columns != getDimension()) || ((int)rowLabels.size() != rows) || ((int)columnLabels.size() != columns)) {
+        return;
+    }
+    _matrixRows = rows;
+    _matrixColumns = columns;
+    _matrixRowLabels = rowLabels;
+    _matrixColumnLabels = columnLabels;
+    _matrixVisibleRows = rows;
+    _matrixVisibleColumns = columns;
+    // A slider would drive every field of the matrix at once.
+    disableSlider();
+}
+
+void
+KnobDouble::setMatrixVisibleExtent(int rows,
+                                   int columns)
+{
+    if (!isMatrixDisplay()) {
+        return;
+    }
+    rows = std::max(1, std::min(rows, _matrixRows));
+    columns = std::max(1, std::min(columns, _matrixColumns));
+    const int oldRows = _matrixVisibleRows.exchange(rows);
+    const int oldColumns = _matrixVisibleColumns.exchange(columns);
+    if ((oldRows != rows) || (oldColumns != columns)) {
+        Q_EMIT matrixVisibleExtentChanged();
+    }
+}
+
+void
+KnobDouble::sanitizeRangeOffsets(double* offsets)
+{
+    for (int i = 0; i < 4; ++i) {
+        offsets[i] = (std::max)(0., offsets[i]);
+    }
+}
+
+void
+KnobDouble::rangeOffsetsOf(const double* values,
+                           double* offsets)
+{
+    offsets[0] = values[eRangeWidgetDimensionOuterLow];
+    offsets[1] = values[eRangeWidgetDimensionInnerLow];
+    offsets[2] = values[eRangeWidgetDimensionInnerHigh];
+    offsets[3] = values[eRangeWidgetDimensionOuterHigh];
+    sanitizeRangeOffsets(offsets);
+}
+
+void
+KnobDouble::setRangeWidget(RangeWidgetRoleEnum role,
+                           const KnobColorPtr& sourceColourKnob,
+                           const KnobChoicePtr& modelKnob,
+                           const KnobBoolPtr& enableKnob,
+                           const KnobBoolPtr& smoothKnob)
+{
+    if ((role == eRangeWidgetRoleNone) || (getDimension() != (int)eRangeWidgetDimensionCount)) {
+        return;
+    }
+    _rangeWidgetRole = role;
+    _rangeWidgetSourceColour = sourceColourKnob;
+    _rangeWidgetModel = modelKnob;
+    _rangeWidgetEnable = enableKnob;
+    _rangeWidgetSmooth = smoothKnob;
+    // A slider would drive every dimension at once, collapsing the trapezoid.
+    disableSlider();
 }
 
 bool
@@ -524,6 +619,7 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _currentEntry()
     , _addNewChoice(false)
     , _isCascading(false)
+    , _menuOnlySelection(false)
     , _notifiesOnReselect(false)
 {
 }
@@ -537,6 +633,7 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _currentEntry()
     , _addNewChoice(false)
     , _isCascading(false)
+    , _menuOnlySelection(false)
     , _notifiesOnReselect(false)
 {
 }
@@ -639,6 +736,12 @@ KnobChoice::cloneExtraData(KnobI* other,
     invalidateContentHash();
 }
 
+static bool
+sameChoiceOption(const ChoiceOption& a,
+                 const ChoiceOption& b)
+{
+    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip);
+}
 
 void
 KnobChoice::onInternalValueChanged(int dimension,
@@ -650,7 +753,7 @@ KnobChoice::onInternalValueChanged(int dimension,
     {
         QMutexLocker k(&_entriesMutex);
 
-        if ((index < 0) || (index >= (int)_entries.size())) {
+        if ((index < 0) || (index >= (int)_entries.size()) || sameChoiceOption(_currentEntry, _entries[index])) {
             return;
         }
         _currentEntry = _entries[index];
@@ -736,42 +839,65 @@ KnobChoice::findAndSetOldChoice()
     }
 }
 
+static bool
+sameChoiceOptions(const std::vector<ChoiceOption>& a,
+                  const std::vector<ChoiceOption>& b)
+{
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (!sameChoiceOption(a[i], b[i])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool
 KnobChoice::populateChoices(const std::vector<ChoiceOption> &entries)
 {
+    std::vector<ChoiceOption> newEntries(entries);
+    for (std::size_t i = 0; i < newEntries.size(); ++i) {
+
+        // The ID cannot be empty, this is the only way to uniquely identify the choice.
+        assert(!newEntries[i].id.empty());
+
+        // If the label is not set, use the ID
+        if (newEntries[i].label.empty()) {
+            newEntries[i].label = newEntries[i].id;
+        }
+    }
+
+    // Plug-ins set the same options again from their clip preferences. Restoring the choice then
+    // writes the knob and marks the node's hash, so no metadata derived around it could be cached.
+    const int index = getValue();
     bool hasChanged = false;
     {
         QMutexLocker l(&_entriesMutex);
-        _entries = entries;
-        for (std::size_t i = 0; i < _entries.size(); ++i) {
-
-            // The ID cannot be empty, this is the only way to uniquely identify the choice.
-            assert(!_entries[i].id.empty());
-
-            // If the label is not set, use the ID
-            if (_entries[i].label.empty()) {
-                _entries[i].label = _entries[i].id;
-            }
+        const bool choiceInSync = _currentEntry.id.empty() || ((index >= 0) && (index < (int)_entries.size()) && (_entries[index].id == _currentEntry.id));
+        if (!choiceInSync || !sameChoiceOptions(_entries, newEntries)) {
+            _entries.swap(newEntries);
+            hasChanged = true;
         }
-        hasChanged = true;
-
+    }
+    if (!hasChanged) {
+        return false;
     }
     invalidateContentHash();
 
     /*
        Try to restore the last choice.
      */
-    if (hasChanged) {
-        findAndSetOldChoice();
+    findAndSetOldChoice();
 
-
-        if (_signalSlotHandler) {
-            _signalSlotHandler->s_helpChanged();
-        }
-        Q_EMIT populated();
+    if (_signalSlotHandler) {
+        _signalSlotHandler->s_helpChanged();
     }
+    Q_EMIT populated();
 
-    return hasChanged;
+    return true;
 } // KnobChoice::populateChoices
 
 void
@@ -859,6 +985,9 @@ KnobChoice::setActiveEntry(const ChoiceOption& opt)
 {
     {
         QMutexLocker l(&_entriesMutex);
+        if (sameChoiceOption(_currentEntry, opt)) {
+            return;
+        }
         _currentEntry = opt;
     }
     invalidateContentHash();
@@ -986,11 +1115,16 @@ KnobChoice::setValueFromID(const std::string & value,
                               bool turnOffAutoKeying)
 {
     int i;
+    bool entryChanged;
     {
         QMutexLocker k(&_entriesMutex);
+        const ChoiceOption previous = _currentEntry;
         i = choiceMatch(value, _entries, &_currentEntry);
+        entryChanged = !sameChoiceOption(previous, _currentEntry);
     }
-    invalidateContentHash();
+    if (entryChanged) {
+        invalidateContentHash();
+    }
     if (i >= 0) {
         return setValue(i, ViewIdx(0), dimension, turnOffAutoKeying);
     }
@@ -1534,24 +1668,26 @@ KnobString::setAsLabel()
 /******************************KnobGroup**************************************/
 
 KnobGroup::KnobGroup(KnobHolder* holder,
-                     const std::string &label,
+                     const std::string& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobBoolBase(holder, label, dimension, declaredByPlugin)
     , _isTab(false)
     , _isToolButton(false)
     , _isDialog(false)
+    , _isRFVGroup(false)
 {
 }
 
 KnobGroup::KnobGroup(KnobHolder* holder,
-                     const QString &label,
+                     const QString& label,
                      int dimension,
                      bool declaredByPlugin)
     : KnobBoolBase(holder, label.toStdString(), dimension, declaredByPlugin)
     , _isTab(false)
     , _isToolButton(false)
     , _isDialog(false)
+    , _isRFVGroup(false)
 {
 }
 
@@ -1565,6 +1701,28 @@ bool
 KnobGroup::isTab() const
 {
     return _isTab;
+}
+
+bool
+KnobGroup::setAsRFVGroup(bool rfv)
+{
+    if (rfv) {
+        const std::vector<KnobIPtr> children = getChildren();
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            if (!RFV::isAdmittedInRFVGroup(*this, children[i])) {
+                return false;
+            }
+        }
+    }
+    _isRFVGroup = rfv;
+
+    return true;
+}
+
+bool
+KnobGroup::isRFVGroup() const
+{
+    return _isRFVGroup;
 }
 
 void
@@ -1610,23 +1768,29 @@ KnobGroup::typeName() const
     return typeNameStatic();
 }
 
-void
+bool
 KnobGroup::addKnob(const KnobIPtr& k)
 {
     if ( !isUserKnob() && k->isUserKnob() ) {
-        return;
+        return false;
     }
 
     for (std::size_t i = 0; i < _children.size(); ++i) {
         if (_children[i].lock() == k) {
-            return;
+            return true;
         }
+    }
+
+    if (_isRFVGroup && !RFV::isAdmittedInRFVGroup(*this, k)) {
+        return false;
     }
 
     k->resetParent();
 
     _children.push_back(k);
     k->setParentKnob( shared_from_this() );
+
+    return true;
 }
 
 void
@@ -1677,18 +1841,22 @@ KnobGroup::moveOneStepDown(KnobI* k)
     throw std::invalid_argument("Given knob does not belong to this group");
 }
 
-void
+bool
 KnobGroup::insertKnob(int index,
                       const KnobIPtr& k)
 {
     if ( !isUserKnob() && k->isUserKnob() ) {
-        return;
+        return false;
     }
 
     for (std::size_t i = 0; i < _children.size(); ++i) {
         if (_children[i].lock() == k) {
-            return;
+            return true;
         }
+    }
+
+    if (_isRFVGroup && !RFV::isAdmittedInRFVGroup(*this, k)) {
+        return false;
     }
 
     k->resetParent();
@@ -1701,6 +1869,8 @@ KnobGroup::insertKnob(int index,
         _children.insert(it, k);
     }
     k->setParentKnob( shared_from_this() );
+
+    return true;
 }
 
 std::vector<KnobIPtr>

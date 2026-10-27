@@ -47,10 +47,13 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
-
+    /**
+     * @brief With rfvScope set, the dialog edits only the variables of that RFV group: it lists the
+     * group alone and every parameter it adds becomes one of its variables.
+     **/
     ManageUserParamsDialog(DockablePanel* panel,
-                           QWidget* parent);
+                           QWidget* parent,
+                           const KnobGroupPtr& rfvScope = KnobGroupPtr());
 
     virtual ~ManageUserParamsDialog();
 

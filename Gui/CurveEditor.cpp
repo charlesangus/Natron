@@ -344,7 +344,7 @@ CurveEditor::addNode(NodeGuiPtr node)
         return;
     }
 
-    RotoContextPtr roto = node->getNode()->getRotoContext();
+    RotoCurveContextPtr roto = node->getNode()->getCurveContext();
     if (!roto) {
         NodeCurveEditorContext* nodeContext = new NodeCurveEditorContext(_imp->tree, this, node);
         _imp->nodes.push_back(nodeContext);
@@ -357,7 +357,7 @@ CurveEditor::addNode(NodeGuiPtr node)
 void
 CurveEditor::removeNode(NodeGui* node)
 {
-    RotoContextPtr roto = node->getNode()->getRotoContext();
+    RotoCurveContextPtr roto = node->getNode()->getCurveContext();
 
     if (!roto) {
         for (std::list<NodeCurveEditorContext*>::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
@@ -436,7 +436,7 @@ createElementsForKnob(QTreeWidgetItem* parent,
                       KnobIPtr k,
                       CurveEditor* curveEditor,
                       QTreeWidget* tree,
-                      const RotoContextPtr& rotoctx,
+                      const RotoCurveContextPtr& rotoctx,
                       std::list<NodeCurveEditorElement*>& elements,
                       bool* hasCurveVisible)
 {
@@ -550,7 +550,7 @@ NodeCurveEditorContext::NodeCurveEditorContext(QTreeWidget* tree,
 
     for (std::list<std::pair<KnobIWPtr, KnobGuiPtr> >::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         createElementsForKnob(nameItem, it->second, KnobIPtr(),
-                              curveWidget, tree, RotoContextPtr(), _nodeElements, &hasAtLeast1KnobWithACurveShown);
+                              curveWidget, tree, RotoCurveContextPtr(), _nodeElements, &hasAtLeast1KnobWithACurveShown);
     }
 
     if (_nodeElements.size() > 0) {
@@ -1067,18 +1067,26 @@ std::list<CurveGuiPtr>
 CurveEditor::findCurve(const KnobGuiPtr& knob,
                        int dimension) const
 {
-    KnobHolder* holder = knob->getKnob()->getHolder();
+    KnobIPtr internalKnob = knob->getKnob();
+    KnobHolder* holder = internalKnob->getHolder();
 
     assert(holder);
     EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
-    assert(effect);
 
     std::list<CurveGuiPtr> ret;
-    if (effect) {
-        RotoContextPtr roto = effect->getNode()->getRotoContext();
+    if (!effect) {
+        // The editor lists only nodes' curves. The knob of another holder, such as a project
+        // variable, gets a curve that is not shown, through which commands edit its animation.
+        CurvePtr curve = knob->getCurve(ViewIdx(0), dimension);
+        if (curve) {
+            QString curveName = QString::fromUtf8(internalKnob->getLabel().c_str()) + QLatin1Char('.') + QString::fromUtf8(internalKnob->getDimensionName(dimension).c_str());
+            ret.push_back(std::make_shared<KnobCurveGui>(getCurveWidget(), curve, knob, dimension, curveName, QColor(255, 255, 255), 1.));
+        }
+    } else {
+        RotoCurveContextPtr roto = effect->getNode()->getCurveContext();
         if (roto) {
             for (std::list<RotoCurveEditorContext*>::const_iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
-                if ( roto == (*it)->getNode()->getNode()->getRotoContext() ) {
+                if (roto == (*it)->getNode()->getNode()->getCurveContext()) {
                     std::list<NodeCurveEditorElement*> elems = (*it)->findElement(knob, dimension);
                     if ( !elems.empty() ) {
                         for (std::list<NodeCurveEditorElement*>::iterator it2 = elems.begin(); it2 != elems.end(); ++it2) {
@@ -1236,8 +1244,7 @@ RotoItemEditorContext::RotoItemEditorContext(QTreeWidget* tree,
     _imp->nameItem->setExpanded(true);
     _imp->nameItem->setText(0, name);
 
-
-    RotoContextPtr roto = context->getNode()->getNode()->getRotoContext();
+    RotoCurveContextPtr roto = context->getNode()->getNode()->getCurveContext();
     bool hasAtLeast1KnobWithACurveShown = false;
 
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
@@ -1279,10 +1286,10 @@ RotoItemEditorContext::getItem() const
     return _imp->nameItem;
 }
 
-RotoContextPtr
+RotoCurveContextPtr
 RotoItemEditorContext::getContext() const
 {
-    return _imp->context->getNode()->getNode()->getRotoContext();
+    return _imp->context->getNode()->getNode()->getCurveContext();
 }
 
 CurveEditor*
@@ -1408,7 +1415,7 @@ BezierEditorContext::BezierEditorContext(QTreeWidget* tree,
     QObject::connect( curve.get(), SIGNAL(keyframeSet(double)), this, SLOT(onKeyframeAdded()) );
     QObject::connect( curve.get(), SIGNAL(keyframeRemoved(double)), this, SLOT(onKeyframeRemoved()) );
     QObject::connect( curve.get(), SIGNAL(cloned()), this, SLOT(onShapeCloned()) );
-    RotoContextPtr roto = context->getNode()->getNode()->getRotoContext();
+    RotoCurveContextPtr roto = context->getNode()->getNode()->getCurveContext();
     _imp->animCurve.reset( new BezierCPCurveGui(cw, curve, roto, getName(), QColor(255, 255, 255), 1.) );
     _imp->animCurve->setVisible(false);
     cw->addCurveAndSetColor(_imp->animCurve);
@@ -1477,7 +1484,7 @@ RotoCurveEditorContext::RotoCurveEditorContext(CurveEditor* widget,
                                                const NodeGuiPtr& node)
     : _imp( new RotoCurveEditorContextPrivate(widget, tree, node) )
 {
-    RotoContextPtr rotoCtx = node->getNode()->getRotoContext();
+    RotoCurveContextPtr rotoCtx = node->getNode()->getCurveContext();
 
     assert(rotoCtx);
 
@@ -1588,7 +1595,7 @@ void
 RotoCurveEditorContext::itemInserted(int,
                                      int)
 {
-    RotoContextPtr roto = _imp->node->getNode()->getRotoContext();
+    RotoCurveContextPtr roto = _imp->node->getNode()->getCurveContext();
 
     assert(roto);
     RotoItemPtr item = roto->getLastInsertedItem();
@@ -1641,7 +1648,7 @@ RotoCurveEditorContext::findElement(const KnobGuiPtr& knob,
         return ret;
     }
 
-    RotoContextPtr roto = effect->getNode()->getRotoContext();
+    RotoCurveContextPtr roto = effect->getNode()->getCurveContext();
     if (!roto) {
         return ret;
     }

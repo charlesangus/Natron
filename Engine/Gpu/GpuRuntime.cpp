@@ -464,6 +464,7 @@ GpuRuntime::build()
     }
     pool_ = std::make_unique<GpuBufferPool>(*device_, options_.pool);
     pipelines_ = std::make_unique<GpuPipelineCache>(*device_, options_.pipelines);
+    textures_ = std::make_unique<GpuTextureCache>(*device_);
     preparer_ = std::make_unique<GpuImportPreparer>(*transfer_);
     if (keepAliveWanted(device_->info())) {
         keepAlive_ = std::make_shared<GpuKeepAlive>(*device_);
@@ -486,6 +487,21 @@ GpuRuntime::teardown()
     stopKeepAlive();
     keepAlive_.reset();
     preparer_.reset();
+    if (device_ && device_->hasAbandonedWork()) {
+        // The abandoned work may still use the pipelines, the pool's buffers, the command pools and the device, and
+        // the buffers its callers destroy later still point at the device, so all of it is parked instead.
+        VmaTotalStatistics stats {};
+        vmaCalculateStatistics(device_->allocator(), &stats);
+        leaked_ = stats.total.statistics.allocationCount;
+        GpuDevice::parkForever(std::shared_ptr<GpuTextureCache>(std::move(textures_)));
+        GpuDevice::parkForever(std::shared_ptr<GpuPipelineCache>(std::move(pipelines_)));
+        GpuDevice::parkForever(std::shared_ptr<GpuBufferPool>(std::move(pool_)));
+        GpuDevice::parkForever(std::shared_ptr<GpuKernelRegistry>(std::move(registry_)));
+        GpuDevice::parkForever(std::shared_ptr<GpuTransfer>(std::move(transfer_)));
+        GpuDevice::parkForever(std::shared_ptr<GpuDevice>(std::move(device_)));
+        return;
+    }
+    textures_.reset();
     pipelines_.reset();
     pool_.reset();
     if (registry_) {
@@ -579,7 +595,7 @@ GpuRuntime::newRecordContext(std::unique_ptr<GpuRecordContext>& out)
     if (isLost()) {
         return lostStatus();
     }
-    return note(GpuRecordContext::create(*registry_, out, pool_.get(), pipelines_.get()));
+    return note(GpuRecordContext::create(*registry_, out, pool_.get(), pipelines_.get(), textures_.get()));
 }
 
 GpuStatus
@@ -648,6 +664,10 @@ GpuStatus
 GpuRuntime::recreate()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (device_ && device_->hasAbandonedWork()) {
+        // Each recreation would park another device that may never finish its work.
+        return { VK_ERROR_DEVICE_LOST, "GPU work did not finish in time; the device is not recreated" };
+    }
     // Stopped first, so that it imports nothing after the imports are released.
     preparer_.reset();
     stopKeepAlive();

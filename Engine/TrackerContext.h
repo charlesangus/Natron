@@ -371,8 +371,26 @@ public Q_SLOTS:
 
     void onSchedulerTrackingStarted(int frameStep);
     void onSchedulerTrackingFinished();
+    void onSchedulerRunEnded(quint64 runId);
+    // Ends the job of a run that never started, if it is the latest.
+    void onSchedulerRunDropped(quint64 runId);
 
     void onSchedulerTrackingProgress(double progress);
+
+public:
+    /**
+     * @brief From the start of a tracking run until it reports trackingJobFinished: the
+     * IsolatedJob refusing writes to what the tracker reads. Null otherwise.
+     **/
+    const IsolatedJob* getRunningTrackingJob() const;
+
+    /**
+     * @brief Starts the IsolatedJob of a new tracking run, in place of any earlier run's, and
+     * returns the run's id. The job ends when the run with that id ends
+     * (onSchedulerRunEnded()) and the solve that follows it has written its result; the end of
+     * an earlier run leaves it running.
+     **/
+    quint64 startTrackingJob();
 
 Q_SIGNALS:
 
@@ -413,7 +431,14 @@ Q_SIGNALS:
     void searchTopRightKnobValueChanged(TrackMarkerPtr marker, int, int);
 
     void trackingStarted(int);
+
+    // The frame loop of a tracking run has stopped and written its last marker key. The transform
+    // solve that follows each run may still be writing the tracker's transform and CornerPin knobs.
     void trackingFinished();
+
+    // Emitted on the main thread once a tracking run and the transform solve that follows it have
+    // both ended: nothing the run started writes to the tracker afterwards.
+    void trackingJobFinished();
 
     void onNodeInputChanged(int inputNb);
 
@@ -472,6 +497,10 @@ public:
 
     void getRedrawAreasNeeded(int time, std::list<RectD>* canonicalRects) const;
 
+    // The tracking run these arguments start (TrackerContext::startTrackingJob()).
+    quint64 getRunId() const;
+    void setRunId(quint64 runId);
+
 private:
 
     std::unique_ptr<TrackArgsPrivate> _imp;
@@ -499,9 +528,9 @@ public:
      * @param start the first frame to track, if forward is true then start < end otherwise start > end
      * @param end the next frame after the last frame to track (a la STL iterators), if forward is true then end > start
      **/
-    void track(const TrackArgsPtr& args)
+    bool track(const TrackArgsPtr& args) WARN_UNUSED_RETURN
     {
-        startTask(args);
+        return startTask(args);
     }
 
     void emit_trackingStarted(int step)
@@ -512,6 +541,11 @@ public:
     void emit_trackingFinished( )
     {
         Q_EMIT trackingFinished();
+    }
+
+    void emit_runEnded(quint64 runId)
+    {
+        Q_EMIT runEnded(runId);
     }
 
 private Q_SLOTS:
@@ -525,6 +559,13 @@ Q_SIGNALS:
 
     void trackingFinished();
 
+    // Every run ends with this, after trackingFinished when that is emitted, including runs too
+    // short to report progress.
+    void runEnded(quint64 runId);
+
+    // A run that quitting the thread removed before it started, so that never ends.
+    void runDropped(quint64 runId);
+
     void trackingProgress(double progress);
 
     void renderCurrentFrameForViewer(ViewerInstance* viewer);
@@ -537,6 +578,8 @@ private:
     }
 
     virtual ThreadStateEnum threadLoopOnce(const GenericThreadStartArgsPtr& inArgs) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void onQueuedTasksDropped(const std::list<GenericThreadStartArgsPtr>& tasks) OVERRIDE FINAL;
     std::unique_ptr<TrackSchedulerPrivate> _imp;
 };
 

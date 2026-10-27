@@ -204,6 +204,33 @@ namespace {
         return (std::max)(lo, (std::min)(v, hiExclusive - 1));
     }
 
+    /*
+     * floor(v), saturated at +-2^30, far outside any source, NaN on the low side: converting a
+     * double outside int's range is undefined. The GPU's toPos (resamplecore.slang) saturates alike.
+     */
+    inline int
+    floorToInt(double v)
+    {
+        const double limit = 1073741824.;
+        if (v > limit) {
+            return (int)limit;
+        }
+        if (!(v >= -limit)) {
+            return -(int)limit;
+        }
+        return (int)std::floor(v);
+    }
+
+    /*
+     * The samples a variance-to-error quotient asks for: none more when it is negative, not
+     * finite, or at or past 2^31, as x86's INT_MIN for those always gave.
+     */
+    inline int
+    samplesForVariance(double q)
+    {
+        return (q >= 0. && q < 2147483648.) ? (int)q : 0;
+    }
+
     template <int N, FilterEnum filter, bool clamp>
     bool
     interpolateT(double fx,
@@ -224,8 +251,8 @@ namespace {
         switch (filter) {
         case eFilterImpulse:
         case eFilterBox: {
-            int mx = (int)std::floor(fx);
-            int my = (int)std::floor(fy);
+            int mx = floorToInt(fx);
+            int my = floorToInt(fy);
             if (!blackOutside) {
                 mx = clampCoord(mx, b.x1, b.x2);
                 my = clampCoord(my, b.y1, b.y2);
@@ -245,8 +272,8 @@ namespace {
         }
         case eFilterBilinear:
         case eFilterCubic: {
-            int cx = (int)std::floor(fx - 0.5);
-            int cy = (int)std::floor(fy - 0.5);
+            int cx = floorToInt(fx - 0.5);
+            int cy = floorToInt(fy - 0.5);
             int nx = cx + 1;
             int ny = cy + 1;
             if (!blackOutside) {
@@ -287,8 +314,8 @@ namespace {
             break;
         }
         default: {
-            int cx = (int)std::floor(fx - 0.5);
-            int cy = (int)std::floor(fy - 0.5);
+            int cx = floorToInt(fx - 0.5);
+            int cy = floorToInt(fy - 0.5);
             int px = cx - 1;
             int py = cy - 1;
             int nx = cx + 1;
@@ -604,7 +631,8 @@ namespace {
             y1 = (std::min)(y1, y);
             x2 = (std::max)(x2, x);
             y2 = (std::max)(y2, y);
-            if ((x2 <= x1) || (y2 <= y1)) {
+            // NaN corners fall back to the centre too, before integrate2d floors them.
+            if (!(x1 < x2) || !(y1 < y2)) {
                 interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
                 return;
             }
@@ -799,7 +827,7 @@ namespace {
                     } else {
                         var[c] = (accPix2[c] - mean[c] * mean[c] * sample) / (sample - 1);
                         if (maxsamples < maxIt) {
-                            maxsamples = (std::max)(maxsamples, (std::min)((int)(var[c] / maxErr2), maxIt));
+                            maxsamples = (std::max)(maxsamples, (std::min)(samplesForVariance(var[c] / maxErr2), maxIt));
                         }
                     }
                 }
@@ -811,7 +839,7 @@ namespace {
                     } else {
                         var[c] = accPix2[c] / acc - mean[c] * mean[c];
                         if (maxsamples < maxIt) {
-                            maxsamples = (std::max)(maxsamples, (std::min)((int)(var[c] / maxErr2), maxIt));
+                            maxsamples = (std::max)(maxsamples, (std::min)(samplesForVariance(var[c] / maxErr2), maxIt));
                         }
                     }
                 }
@@ -857,16 +885,142 @@ namespace {
         }
     }
 
+    const double kCoordLimit = 1073741824.;
+
+    /*
+     * Wraps one coordinate into [lo, hi) per WrapMode, setting *moved when eWrapClamp changed
+     * it. Returns false when the result is not finite (the pixel is outside); otherwise the
+     * coordinate is also clamped to +-kCoordLimit so the samplers' int conversions stay defined.
+     */
+    inline bool
+    wrapCoord(double* s,
+              WrapMode mode,
+              double lo,
+              double hi,
+              bool* moved)
+    {
+        double v = *s;
+        const double w = hi - lo;
+
+        *moved = false;
+        if (w > 0.) {
+            switch (mode) {
+            case eWrapClamp:
+                if (v < lo + 0.5) {
+                    v = lo + 0.5;
+                    *moved = true;
+                } else if (v > hi - 0.5) {
+                    v = hi - 0.5;
+                    *moved = true;
+                }
+                break;
+            case eWrapRepeat:
+                if (std::isfinite(v)) {
+                    v -= w * std::floor((v - lo) / w);
+                }
+                break;
+            case eWrapMirror:
+                if (std::isfinite(v)) {
+                    const double r = (v - lo) - 2. * w * std::floor((v - lo) / (2. * w));
+                    v = lo + ((r <= w) ? r : (2. * w - r));
+                }
+                break;
+            case eWrapNone:
+                break;
+            }
+        }
+        if (!std::isfinite(v)) {
+            return false;
+        }
+        *s = (std::max)(-kCoordLimit, (std::min)(v, kCoordLimit));
+        return true;
+    }
+
+    inline double
+    finiteOrZero(double v)
+    {
+        return std::isfinite(v) ? v : 0.;
+    }
+
+    inline float
+    finiteFloatOrZero(double v)
+    {
+        const float f = (float)v;
+
+        return std::isfinite(f) ? f : 0.f;
+    }
+
+    template <int N, FilterEnum filter, bool clamp>
+    void
+    resampleCoordsT(const SourceImage& src,
+                    const float* sx,
+                    const float* sy,
+                    const float* jacobian,
+                    int n,
+                    bool blackOutside,
+                    WrapMode wrapU,
+                    WrapMode wrapV,
+                    const RectI& domain,
+                    float* out,
+                    int nComps)
+    {
+        const RectI& b = src.bounds;
+        float tmpPix[N];
+
+        for (int i = 0; i < n; ++i, out += nComps) {
+            double fx = sx[i];
+            double fy = sy[i];
+            bool movedX = false;
+            bool movedY = false;
+            if (!wrapCoord(&fx, wrapU, domain.x1, domain.x2, &movedX) || !wrapCoord(&fy, wrapV, domain.y1, domain.y2, &movedY)) {
+                for (int c = 0; c < nComps; ++c) {
+                    out[c] = 0.f;
+                }
+                continue;
+            }
+            if ((filter == eFilterImpulse) || !jacobian) {
+                interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+            } else {
+                const float* J = jacobian + (std::size_t)i * 4;
+                double Jxx = finiteOrZero(J[0]);
+                double Jxy = finiteOrZero(J[1]);
+                double Jyx = finiteOrZero(J[2]);
+                double Jyy = finiteOrZero(J[3]);
+                bool xinside = (b.x1 <= fx + 0.5 && fx - 0.5 < b.x2);
+                bool yinside = (b.y1 <= fy + 0.5 && fy - 0.5 < b.y2);
+                if (blackOutside && !(xinside && yinside)) {
+                    xinside = yinside = false;
+                }
+                if (!xinside || movedX) {
+                    Jxx = Jxy = 0.;
+                }
+                if (!yinside || movedY) {
+                    Jyx = Jyy = 0.;
+                }
+                interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+            }
+            const int nc = (std::min)(N, nComps);
+            for (int c = 0; c < nc; ++c) {
+                out[c] = tmpPix[c];
+            }
+            for (int c = nc; c < nComps; ++c) {
+                out[c] = 0.f;
+            }
+        }
+    }
+
     typedef bool (*InterpolateFn)(double, double, const SourceImage&, bool, float*);
     typedef void (*InterpolateSuperFn)(double, double, double, double, double, double, const SourceImage&, bool, float*);
     typedef void (*RowFn)(const ResampleParams&, const SourceImage&, int, int, int, float*);
     typedef void (*MotionBlurPixelFn)(const ResampleParams&, const SourceImage&, int, int, float*, int*);
+    typedef void (*CoordsFn)(const SourceImage&, const float*, const float*, const float*, int, bool, WrapMode, WrapMode, const RectI&, float*, int);
 
     struct KernelTable {
         InterpolateFn interpolate;
         InterpolateSuperFn interpolateSuper;
         RowFn row;
         MotionBlurPixelFn motionBlurPixel;
+        CoordsFn coords;
     };
 
     template <int N, FilterEnum filter, bool clamp>
@@ -879,6 +1033,7 @@ namespace {
         t.interpolateSuper = &interpolateSuperT<N, filter, clamp>;
         t.row = &resampleRowT<N, filter, clamp>;
         t.motionBlurPixel = &motionBlurPixelT<N, filter, clamp>;
+        t.coords = &resampleCoordsT<N, filter, clamp>;
 
         return t;
     }
@@ -972,8 +1127,9 @@ supersampleLevels(double Jxx,
     if ((dx <= 1.) && (dy <= 1.)) {
         return false;
     }
-    double sx = (dx <= 1.) ? 0. : (std::min)(std::log(dx) / (2 * std::log(3.)), 4.);
-    double sy = (dy <= 1.) ? 0. : (std::min)(std::log(dy) / (2 * std::log(3.)), 4.);
+    // A NaN norm takes level 0 rather than reaching the int conversion below.
+    double sx = (dx > 1.) ? (std::min)(std::log(dx) / (2 * std::log(3.)), 4.) : 0.;
+    double sy = (dy > 1.) ? (std::min)(std::log(dy) / (2 * std::log(3.)), 4.) : 0.;
     // Rounding rather than ceil puts the jump to the next level at a scale of sqrt(3), so a
     // scale just above 1 is not supersampled.
     *levelX = (int)std::ceil(sx - 0.5);
@@ -1202,6 +1358,161 @@ resampleRow(const ResampleParams& params,
         return;
     }
     selectKernels(src.nComps, params.filter, params.clamp).row(params, src, y, x1, x2, dst);
+}
+
+void
+resampleRowFromCoords(const SourceImage& src,
+                      const float* sx,
+                      const float* sy,
+                      const float* jacobian,
+                      int n,
+                      FilterEnum filter,
+                      bool clamp,
+                      bool blackOutside,
+                      WrapMode wrapU,
+                      WrapMode wrapV,
+                      float* out,
+                      int nComps,
+                      const RectI* wrapDomain)
+{
+    if ((n <= 0) || (nComps <= 0)) {
+        return;
+    }
+    if (!src.isValid()) {
+        zeroPixels(out, n * nComps);
+        return;
+    }
+    const RectI& domain = (wrapDomain && (wrapDomain->x2 > wrapDomain->x1) && (wrapDomain->y2 > wrapDomain->y1)) ? *wrapDomain : src.bounds;
+    selectKernels(src.nComps, filter, clamp).coords(src, sx, sy, jacobian, n, blackOutside, wrapU, wrapV, domain, out, nComps);
+}
+
+namespace {
+    inline double
+    rowDerivative(const float* s,
+                  int i,
+                  int n)
+    {
+        if (n < 2) {
+            return 0.;
+        }
+        if (i == 0) {
+            return (double)s[1] - (double)s[0];
+        }
+        if (i == n - 1) {
+            return (double)s[n - 1] - (double)s[n - 2];
+        }
+        return ((double)s[i + 1] - (double)s[i - 1]) / 2.;
+    }
+
+    inline double
+    columnDerivative(const float* prev,
+                     const float* row,
+                     const float* next,
+                     int i)
+    {
+        if (prev && next) {
+            return ((double)next[i] - (double)prev[i]) / 2.;
+        }
+        if (next) {
+            return (double)next[i] - (double)row[i];
+        }
+        if (prev) {
+            return (double)row[i] - (double)prev[i];
+        }
+        return 0.;
+    }
+} // anon namespace
+
+void
+coordJacobians(const float* sxPrev,
+               const float* sx,
+               const float* sxNext,
+               const float* syPrev,
+               const float* sy,
+               const float* syNext,
+               int n,
+               float* jacobian)
+{
+    for (int i = 0; i < n; ++i, jacobian += 4) {
+        jacobian[0] = finiteFloatOrZero(rowDerivative(sx, i, n));
+        jacobian[1] = finiteFloatOrZero(columnDerivative(sxPrev, sx, sxNext, i));
+        jacobian[2] = finiteFloatOrZero(rowDerivative(sy, i, n));
+        jacobian[3] = finiteFloatOrZero(columnDerivative(syPrev, sy, syNext, i));
+    }
+}
+
+namespace {
+    inline bool
+    pixelInside(const RectI& bounds,
+                int x,
+                int y)
+    {
+        return (x >= bounds.x1) && (x < bounds.x2) && (y >= bounds.y1) && (y < bounds.y2);
+    }
+
+    // Redoes the central differences of one coordinate at pixel i of a row (0 < i < n - 1) when
+    // the pixel is inside bounds and a neighbour is not, standing the pixel's own value, moved by
+    // the constant-UV step, in for that neighbour.
+    void
+    differencesWithinBounds(const float* prev,
+                            const float* row,
+                            const float* next,
+                            int i,
+                            int x,
+                            int y,
+                            const RectI& bounds,
+                            double stepX,
+                            double stepY,
+                            float* dx,
+                            float* dy)
+    {
+        if (!pixelInside(bounds, x, y)) {
+            return;
+        }
+        const double centre = (double)row[i];
+        const bool left = pixelInside(bounds, x - 1, y);
+        const bool right = pixelInside(bounds, x + 1, y);
+        if (!left || !right) {
+            const double before = left ? (double)row[i - 1] : centre - stepX;
+            const double after = right ? (double)row[i + 1] : centre + stepX;
+            *dx = finiteFloatOrZero((after - before) / 2.);
+        }
+        if (!prev || !next) {
+            return;
+        }
+        const bool below = pixelInside(bounds, x, y - 1);
+        const bool above = pixelInside(bounds, x, y + 1);
+        if (!below || !above) {
+            const double before = below ? (double)prev[i] : centre - stepY;
+            const double after = above ? (double)next[i] : centre + stepY;
+            *dy = finiteFloatOrZero((after - before) / 2.);
+        }
+    }
+} // namespace
+
+void
+coordJacobiansWithinBounds(const float* sxPrev,
+                           const float* sx,
+                           const float* sxNext,
+                           const float* syPrev,
+                           const float* sy,
+                           const float* syNext,
+                           int x0,
+                           int y,
+                           int n,
+                           const RectI& uBounds,
+                           const RectI& vBounds,
+                           double stepX,
+                           double stepY,
+                           float* jacobian)
+{
+    coordJacobians(sxPrev, sx, sxNext, syPrev, sy, syNext, n, jacobian);
+    for (int i = 1; i < n - 1; ++i) {
+        float* J = jacobian + (std::size_t)4 * i;
+        const int x = x0 + i;
+        differencesWithinBounds(sxPrev, sx, sxNext, i, x, y, uBounds, stepX, 0., &J[0], &J[1]);
+        differencesWithinBounds(syPrev, sy, syNext, i, x, y, vBounds, 0., stepY, &J[2], &J[3]);
+    }
 }
 
 void
@@ -1563,7 +1874,7 @@ getRegionOfDefinition(const CanonicalTransformFn& fn,
     if (!params.isIdentity) {
         expandRoD(dstPar, sx, sy, params.blackOutside, rod);
     }
-    if (params.doMasking) {
+    if (params.doMasking || (params.mix != 1.)) {
         rectBoundingBox(*rod, srcRoD, rod);
     }
 }
@@ -1580,15 +1891,13 @@ getRegionOfInterest(const CanonicalTransformFn& fn,
                     const RegionParams& params,
                     RectD* srcRoI)
 {
-    const double mix = params.doMasking ? params.mix : 1.;
-
-    if (params.doMasking && (mix == 0.)) {
+    if (params.doMasking && (params.mix == 0.)) {
         *srcRoI = roi;
         return;
     }
 
     transformRegion(fn, roi, time, params.invert, params.blur, params.isIdentity, srcRoI);
-    expandRoI(roi, srcPar, sx, sy, params.filter, params.doMasking, mix, srcRoI);
+    expandRoI(roi, srcPar, sx, sy, params.filter, params.doMasking, params.mix, srcRoI);
 
     if (rectIsInfinite(*srcRoI)) {
         // An RoI cannot be infinite: fall back to what the source and the project can show.

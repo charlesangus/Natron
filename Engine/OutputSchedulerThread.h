@@ -273,7 +273,6 @@ public:
      **/
     void notifyRenderFailure(const std::string& errorMessage);
 
-
     /**
      * @brief Returns the thread render arguments as set in the livingRunArgs
      * This can only be called on the scheduler thread (this)
@@ -294,9 +293,10 @@ public:
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     /**
-     * @brief Called by render-threads to pick some work to do or to get asleep if there's nothing to do
+     * @brief Called by render-threads to pick some work to do or to get asleep if there's nothing to do.
+     * Returns false, leaving the queue untouched, once the thread must quit. A frame it returns must be rendered.
      **/
-    int pickFrameToRender(RenderThreadTask* thread, bool* enableRenderStats, std::vector<ViewIdx>* viewsToRender);
+    bool pickFrameToRender(RenderThreadTask* thread, int* frame, bool* enableRenderStats, std::vector<ViewIdx>* viewsToRender);
 #endif
 
     /**
@@ -316,6 +316,13 @@ public:
     double getDesiredFPS() const;
 
     void runCallbackWithVariables(const QString& callback);
+
+    /**
+     * @brief While a render that is not a viewer's runs, from startRender() until just before
+     * the engine reports it finished: the IsolatedJob refusing writes to what it reads. Null
+     * otherwise.
+     **/
+    const IsolatedJob* getRunningIsolatedJob() const;
 
 private Q_SLOTS:
 
@@ -849,10 +856,6 @@ protected:
 private:
 
     void renderCurrentFrameInternal(bool enableRenderStats, bool canAbort);
-
-    // Called where a render is requested, which may be the main thread: the scheduler and render
-    // threads it starts cannot refresh what an edit left stale.
-    void refreshInputRelatedDataForRender();
 
     /**
      * The following functions are called by the OutputThreadScheduler to Q_EMIT the corresponding signals

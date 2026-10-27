@@ -26,6 +26,7 @@
 #include "ProcessHandler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <stdexcept>
 
@@ -63,6 +64,7 @@ ProcessHandler::ProcessHandler(const QString& projectPath,
     , _earlyCancel(false)
     , _processLog()
     , _processArgs()
+    , _projectPath(projectPath)
 {
     ///setup the server used to listen the output of the background process
     _ipcServer = new QLocalServer();
@@ -139,9 +141,22 @@ ProcessHandler::~ProcessHandler()
     }
 }
 
+namespace {
+std::atomic<bool> launchDisabledForTesting(false);
+}
+
+void
+ProcessHandler::setLaunchDisabledForTesting(bool disabled)
+{
+    launchDisabledForTesting = disabled;
+}
+
 void
 ProcessHandler::startProcess()
 {
+    if (launchDisabledForTesting) {
+        return;
+    }
     _process->start(QCoreApplication::applicationFilePath(), _processArgs);
 }
 

@@ -1,21 +1,29 @@
 #include "GpuRecord.h"
 
 #include "GpuPipelineCache.h"
+#include "GpuSizeClass.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 namespace gpu {
 
+namespace {
+    std::atomic<uint64_t> gMaxStorageBufferBytesForTests { 0 };
+} // namespace
+
 GpuStatus
 GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool,
-                         GpuPipelineCache* pipelines)
+                         GpuPipelineCache* pipelines, GpuTextureCache* textures)
 {
     GpuDevice& device = registry.device();
     if (device.isLost()) {
         return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::create: device lost" };
     }
-    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool, pipelines));
+    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool, pipelines, textures));
     registry.recordingBegan();
     // From here the destructor balances recordingBegan(), including on the error paths.
     if (GpuStatus s = registry.commandPoolForThisThread(ctx->pool_); !s) {
@@ -66,6 +74,9 @@ GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const>
         if (!buffers[i] || !*buffers[i]) {
             return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatch: empty buffer at binding " + std::to_string(i) };
         }
+        if (GpuStatus s = checkBindable("GpuRecordContext::dispatch", (uint32_t)i, buffers[i]->size()); !s) {
+            return s;
+        }
         handles[i] = buffers[i]->buffer();
     }
     return k->record(cmd_, handles, push, threads);
@@ -77,6 +88,14 @@ GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBindin
 {
     if (!open_) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    }
+    for (const GpuBinding& b : bindings) {
+        if (b.kind != GpuBinding::Kind::StorageBuffer) {
+            continue;
+        }
+        if (GpuStatus s = checkBindable("GpuRecordContext::dispatchBindings", b.binding, b.bufferSize); !s) {
+            return s;
+        }
     }
     GpuKernel* k = nullptr;
     if (GpuStatus s = registry_.get(kernel, k); !s) {
@@ -106,6 +125,14 @@ GpuRecordContext::dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std
     if (!kernel) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: no kernel" };
     }
+    for (const GpuBinding& b : bindings) {
+        if (b.kind != GpuBinding::Kind::StorageBuffer) {
+            continue;
+        }
+        if (GpuStatus s = checkBindable("GpuRecordContext::dispatchBindings", b.binding, b.bufferSize); !s) {
+            return s;
+        }
+    }
     if (std::find(kernels_.begin(), kernels_.end(), kernel) == kernels_.end()) {
         kernels_.push_back(kernel);
         registry_.noteExternalKernel(kernel);
@@ -129,6 +156,29 @@ GpuRecordContext::texture(const GpuTextureDesc& desc, std::span<const float> tex
     }
     textures_.push_back(std::move(created));
     out = textures_.back().get();
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::cachedTexture(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
+                                const GpuTexture*& out)
+{
+    out = nullptr;
+    if (!textureCache_) {
+        return texture(desc, texels, out);
+    }
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::cachedTexture: context already submitted" };
+    }
+    std::shared_ptr<const GpuTexture> held;
+    if (GpuStatus s = textureCache_->acquire(key, desc, texels, held); !s) {
+        if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            outOfMemory_ = true;
+        }
+        return s;
+    }
+    cachedTextures_.push_back(held);
+    out = held.get();
     return {};
 }
 
@@ -166,6 +216,37 @@ GpuRecordContext::computeBarrier()
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cmd_, &dep);
+}
+
+uint64_t
+GpuRecordContext::maxStorageBufferBytes() const
+{
+    const uint64_t device = registry_.device().info().maxStorageBufferRange;
+    const uint64_t cap = gMaxStorageBufferBytesForTests.load(std::memory_order_relaxed);
+    return (cap != 0) ? std::min(device, cap) : device;
+}
+
+uint64_t
+GpuRecordContext::maxScratchBytes() const
+{
+    return largestSizeWithin(maxStorageBufferBytes());
+}
+
+void
+GpuRecordContext::setMaxStorageBufferBytesForTests(uint64_t bytes)
+{
+    gMaxStorageBufferBytesForTests.store(bytes, std::memory_order_relaxed);
+}
+
+// The descriptors bind whole buffers, and one over the range is invalid however little of it the kernel reads.
+GpuStatus
+GpuRecordContext::checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const
+{
+    const uint64_t range = maxStorageBufferBytes();
+    if (bytes > range) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, std::string(where) + ": the " + std::to_string(bytes) + "-byte buffer at binding " + std::to_string(binding) + " is over the " + std::to_string(range) + "-byte storage buffer range" };
+    }
+    return {};
 }
 
 GpuStatus
@@ -231,6 +312,97 @@ GpuRecordContext::releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer
     }
 }
 
+GpuDevice&
+GpuRecordContext::device() const
+{
+    return registry_.device();
+}
+
+void
+GpuRecordContext::waitExternalSemaphore(VkSemaphore semaphore)
+{
+    if (open_ && semaphore != VK_NULL_HANDLE) {
+        externalWaits_.push_back(semaphore);
+    }
+}
+
+void
+GpuRecordContext::hold(std::shared_ptr<void> object)
+{
+    if (object) {
+        heldObjects_.push_back(std::move(object));
+    }
+}
+
+GpuStatus
+GpuRecordContext::copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, const GpuBuffer& dst,
+                                   std::span<const VkBufferCopy> regions)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyFromExternal: context already submitted" };
+    }
+    if (!src || !dst || srcBytes == 0 || srcBytes > src.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyFromExternal: invalid buffers" };
+    }
+    for (const VkBufferCopy& r : regions) {
+        if (r.size == 0 || r.srcOffset + r.size > srcBytes || r.dstOffset + r.size > dst.size()) {
+            return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyFromExternal: a region is out of range" };
+        }
+    }
+    const uint32_t family = registry_.device().queueFamily(QueueKind::Compute);
+
+    VkBufferMemoryBarrier2 acquire { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+    acquire.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    acquire.srcAccessMask = VK_ACCESS_2_NONE;
+    acquire.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    acquire.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    acquire.dstQueueFamilyIndex = family;
+    acquire.buffer = src.buffer();
+    acquire.offset = 0;
+    acquire.size = srcBytes;
+    // Earlier dispatches may still read or write what the copies overwrite.
+    VkMemoryBarrier2 before { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    before.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    before.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    before.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    before.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &before;
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &acquire;
+    vkCmdPipelineBarrier2(cmd_, &dep);
+
+    if (!regions.empty()) {
+        vkCmdCopyBuffer(cmd_, src.buffer(), dst.buffer(), static_cast<uint32_t>(regions.size()), regions.data());
+    }
+
+    VkBufferMemoryBarrier2 release { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+    release.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    release.srcAccessMask = VK_ACCESS_2_NONE;
+    release.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    release.dstAccessMask = VK_ACCESS_2_NONE;
+    release.srcQueueFamilyIndex = family;
+    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    release.buffer = src.buffer();
+    release.offset = 0;
+    release.size = srcBytes;
+    VkMemoryBarrier2 after { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    after.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    after.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    after.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    after.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+        | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo dep2 { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep2.memoryBarrierCount = 1;
+    dep2.pMemoryBarriers = &after;
+    dep2.bufferMemoryBarrierCount = 1;
+    dep2.pBufferMemoryBarriers = &release;
+    vkCmdPipelineBarrier2(cmd_, &dep2);
+    return {};
+}
+
 void
 GpuRecordContext::resetQueries(VkQueryPool pool, uint32_t first, uint32_t count)
 {
@@ -261,7 +433,7 @@ GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue sig
     if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
         return s;
     }
-    std::vector<VkSemaphoreSubmitInfo> waitInfos;
+    std::vector<VkSemaphoreSubmitInfo> waitInfos = externalWaitInfos();
     for (const TimelineValue& w : waits) {
         if (w) {
             waitInfos.push_back(w.waitInfo());
@@ -300,7 +472,10 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     }
     VkCommandBufferSubmitInfo ci { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
     ci.commandBuffer = cmd_;
+    const std::vector<VkSemaphoreSubmitInfo> waitInfos = externalWaitInfos();
     VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+    submit.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
+    submit.pWaitSemaphoreInfos = waitInfos.data();
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &ci;
     GpuStatus s = device.submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&submit, 1), fence);
@@ -308,12 +483,13 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     if (s) {
         VkResult waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, timeoutNs);
         if (waited == VK_TIMEOUT) {
-            // The work still runs, and the fence, the command buffer, the scratch buffers and the caller's buffers it
-            // uses must all outlive it, so it is waited for without a bound. Latching a loss first stops new work
-            // from queueing behind it and sends the caller down its device-loss path.
-            device.check(VK_ERROR_DEVICE_LOST, "vkWaitForFences");
-            waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, UINT64_MAX);
-            s = { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
+            std::fprintf(stderr, "GpuRecordContext::submitAndWait: the device work did not finish within %llu ms; the GPU device is treated as lost\n",
+                         static_cast<unsigned long long>(timeoutNs / 1000000));
+            device.abandonInFlightWork("vkWaitForFences");
+            parkInFlightWork();
+            // The fence is leaked with the rest, and the command buffer goes with its pool.
+            cmd_ = VK_NULL_HANDLE;
+            return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::submitAndWait: the device work timed out" };
         }
         if (waited != VK_SUCCESS) {
             s = device.check(waited, "vkWaitForFences");
@@ -326,6 +502,42 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
         cmd_ = VK_NULL_HANDLE;
     }
     return s;
+}
+
+std::vector<VkSemaphoreSubmitInfo>
+GpuRecordContext::externalWaitInfos() const
+{
+    std::vector<VkSemaphoreSubmitInfo> infos;
+    for (VkSemaphore semaphore : externalWaits_) {
+        VkSemaphoreSubmitInfo info { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+        info.semaphore = semaphore;
+        // A binary semaphore: the value is ignored.
+        info.value = 0;
+        info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        infos.push_back(info);
+    }
+    return infos;
+}
+
+void
+GpuRecordContext::parkInFlightWork()
+{
+    struct InFlight {
+        std::vector<GpuBufferHandle> held;
+        std::deque<GpuUniformBuffer> uniforms;
+        std::vector<std::unique_ptr<GpuTexture>> textures;
+        std::vector<std::shared_ptr<const GpuTexture>> cachedTextures;
+        std::vector<std::shared_ptr<GpuKernel>> kernels;
+        std::vector<std::shared_ptr<void>> objects;
+    };
+    auto parked = std::make_shared<InFlight>();
+    parked->held = std::move(held_);
+    parked->uniforms = std::move(uniforms_);
+    parked->textures = std::move(textures_);
+    parked->cachedTextures = std::move(cachedTextures_);
+    parked->kernels = std::move(kernels_);
+    parked->objects = std::move(heldObjects_);
+    GpuDevice::parkForever(std::move(parked));
 }
 
 } // namespace gpu

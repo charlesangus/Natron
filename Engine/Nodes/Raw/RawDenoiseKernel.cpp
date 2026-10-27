@@ -67,39 +67,6 @@ namespace {
     const int kBlue = 3;
 
     void
-    computeChannelNoise(float* noise,
-                        int color,
-                        float threshold,
-                        const float force[4][kRawDenoiseBands])
-    {
-        // Proportional to the image detail in each band, so the same for Bayer and X-Trans.
-        static const float noise_all[] = { 0.8002f, 0.2735f, 0.1202f, 0.0585f, 0.0291f, 0.0152f, 0.0080f, 0.0044f };
-
-        for (int i = 0; i < kRawDenoiseBands; i++) {
-            float chan_threshold_exp_4;
-            switch (color) {
-            case 0:
-                chan_threshold_exp_4 = force[kRed][kRawDenoiseBands - i - 1];
-                break;
-            case 2:
-                chan_threshold_exp_4 = force[kBlue][kRawDenoiseBands - i - 1];
-                break;
-            default:
-                chan_threshold_exp_4 = force[kGreen][kRawDenoiseBands - i - 1];
-                break;
-            }
-            chan_threshold_exp_4 *= chan_threshold_exp_4;
-            chan_threshold_exp_4 *= chan_threshold_exp_4;
-            float all_threshold_exp_4 = force[kAll][kRawDenoiseBands - i - 1];
-            all_threshold_exp_4 *= all_threshold_exp_4;
-            all_threshold_exp_4 *= all_threshold_exp_4;
-            noise[i] = noise_all[i] * all_threshold_exp_4 * chan_threshold_exp_4 * 16.0f * 16.0f;
-            // Kept apart from the line above: darktable's integration test depends on the rounding.
-            noise[i] *= threshold;
-        }
-    }
-
-    void
     dwtDenoiseVert(float* out,
                    const float* in,
                    int height,
@@ -203,6 +170,39 @@ namespace {
 } // namespace
 
 void
+rawDenoiseChannelNoise(float noise[kRawDenoiseBands],
+                       int color,
+                       float threshold,
+                       const float force[4][kRawDenoiseBands])
+{
+    // Proportional to the image detail in each band, so the same for Bayer and X-Trans.
+    static const float noise_all[] = { 0.8002f, 0.2735f, 0.1202f, 0.0585f, 0.0291f, 0.0152f, 0.0080f, 0.0044f };
+
+    for (int i = 0; i < kRawDenoiseBands; i++) {
+        float chan_threshold_exp_4;
+        switch (color) {
+        case 0:
+            chan_threshold_exp_4 = force[kRed][kRawDenoiseBands - i - 1];
+            break;
+        case 2:
+            chan_threshold_exp_4 = force[kBlue][kRawDenoiseBands - i - 1];
+            break;
+        default:
+            chan_threshold_exp_4 = force[kGreen][kRawDenoiseBands - i - 1];
+            break;
+        }
+        chan_threshold_exp_4 *= chan_threshold_exp_4;
+        chan_threshold_exp_4 *= chan_threshold_exp_4;
+        float all_threshold_exp_4 = force[kAll][kRawDenoiseBands - i - 1];
+        all_threshold_exp_4 *= all_threshold_exp_4;
+        all_threshold_exp_4 *= all_threshold_exp_4;
+        noise[i] = noise_all[i] * all_threshold_exp_4 * chan_threshold_exp_4 * 16.0f * 16.0f;
+        // Kept apart from the line above: darktable's integration test depends on the rounding.
+        noise[i] *= threshold;
+    }
+}
+
+void
 rawDenoiseBayer(const float* in,
                 float* out,
                 int width,
@@ -217,7 +217,7 @@ rawDenoiseBayer(const float* in,
     for (int c = 0; c < 4; c++) {
         const int color = fcBayer((std::size_t)(c % 2), (std::size_t)(c / 2), filters);
         float noise[kRawDenoiseBands];
-        computeChannelNoise(noise, color, threshold, force);
+        rawDenoiseChannelNoise(noise, color, threshold, force);
 
         const int halfwidth = width / 2 + (width & (~(c >> 1)) & 1);
         const int halfheight = height / 2 + (height & (~c) & 1);
@@ -269,7 +269,7 @@ rawDenoiseXTrans(const float* in,
 
     for (int c = 0; c < 3; c++) {
         float noise[kRawDenoiseBands];
-        computeChannelNoise(noise, c, threshold, force);
+        rawDenoiseChannelNoise(noise, c, threshold, force);
 
         for (int col = 0; col < width; col++) {
             fimg[col] = 0.5f;

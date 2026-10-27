@@ -448,10 +448,17 @@ TEST_F(RFVSwitchTest, NoMatchFailsTheRenderAndPostsWhy)
         EXPECT_TRUE(message.contains(QString::fromUtf8("sh999"))) << message.toStdString();
     }
 
-    // Line 2 chooses input 1, which is not connected.
+    // Line 2 chooses input 1, which is not connected: black with an empty region of definition,
+    // so the render succeeds and has no pixels to read (or reads zero).
     shot->setValue("sh020");
     for (RenderSchedulerModeEnum mode : kModes) {
-        EXPECT_EQ(0.f, renderFirstPixel(rfvSwitch, mode));
+        float pixel = -1.f;
+        std::string error;
+        if (renderPixel(rfvSwitch, mode, 1., true, &pixel, &error)) {
+            EXPECT_EQ(0.f, pixel);
+        } else {
+            EXPECT_EQ(std::string("no plane rendered"), error);
+        }
     }
 }
 

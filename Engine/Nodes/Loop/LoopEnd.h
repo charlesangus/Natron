@@ -139,6 +139,8 @@ private:
     struct StopResult {
         AbortableRenderInfoWPtr render;
         double time = 0.;
+        // The render context, restricted to what the stop condition reads.
+        U64 contextKey = 0;
         std::string expression;
         int count = 0;
         int stopAt = 0;

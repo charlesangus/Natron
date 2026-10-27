@@ -29,7 +29,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
 
 ## Phase 239.1: Weights and the rule
 
-- [ ] M239.P1.T1 — Declare node weights
+- [x] M239.P1.T1 — Declare node weights
   - files: `Engine/GpuWeight.h` (new), `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/Image/StagedImageEffect.h`, `Engine/Nodes/Image/PassExecutor.h`, `Engine/Nodes/Filter/EdgeDetect.cpp`
   - approach: Add `GpuWeight` (a class Point/Filter/Heavy plus an optional numeric weight for knob-aware nodes) and a virtual `gpuWeight(time, view, mipmapLevel)` on `NativeEffectBase`. The default comes from the op's `OpKind` as in Scope; runtime-shader nodes return Heavy. Replace `gpuCostHint`/`GpuCostHint` and every override of them (grep `gpuCostHint`). Nodes whose cost grows with size (Erode/Dilate, FIR Blur) return a weight that grows with their size at render scale, capped.
   - verify: the build passes, and a gtest checks the default for each `OpKind` plus the size-scaled weight of Erode at two sizes.

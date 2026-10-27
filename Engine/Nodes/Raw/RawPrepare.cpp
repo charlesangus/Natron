@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -464,8 +465,9 @@ RawPrepare::resolveSettings(double time,
         white = *fromFile;
     }
     for (int i = 0; i < 4; ++i) {
-        s.sub[i] = (float)black[(std::size_t)i % black.size()];
-        const float div = (float)white - s.sub[i];
+        s.sub[i] = knobValueAsFloat(black[(std::size_t)i % black.size()]);
+        const float whiteF = knobValueAsFloat(white);
+        const float div = (std::isinf(whiteF) && whiteF == s.sub[i]) ? 0.f : whiteF - s.sub[i];
         s.div[i] = (div != 0.f) ? div : 1.f;
     }
 

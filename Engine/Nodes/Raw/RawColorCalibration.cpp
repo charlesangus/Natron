@@ -43,6 +43,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
@@ -637,8 +638,8 @@ RawColorCalibrationOp::settings(const KnobReader& reader) const
     s.fluorescent = enumAt(reader.valueOr(fluorescent, static_cast<int>(s.fluorescent)), Fluorescent::Last, s.fluorescent);
     s.led = enumAt(reader.valueOr(led, static_cast<int>(s.led)), Led::Last, s.led);
     s.adaptation = enumAt(reader.valueOr(adaptation, static_cast<int>(s.adaptation)), Adaptation::Last, s.adaptation);
-    s.x = (float)reader.valueOr(x, (double)s.x);
-    s.y = (float)reader.valueOr(y, (double)s.y);
+    s.x = knobValueAsFloat(reader.valueOr(x, (double)s.x));
+    s.y = knobValueAsFloat(reader.valueOr(y, (double)s.y));
     s.temperature = (float)reader.valueOr(temperature, (double)s.temperature);
     s.gamut = (float)reader.valueOr(gamut, (double)s.gamut);
     s.clip = reader.valueOr(clip, s.clip);
@@ -878,8 +879,8 @@ RawColorCalibration::showIlluminant(bool keepHueChroma)
     }
     const bool wasSyncing = _syncing;
     _syncing = true;
-    const float px = (float)xKnob->getValue();
-    const float py = (float)yKnob->getValue();
+    const float px = knobValueAsFloat(xKnob->getValue());
+    const float py = knobValueAsFloat(yKnob->getValue());
     if (!keepHueChroma) {
         const Vec3 lch = illuminantLch(px, py);
         // A grey illuminant has no hue: the slider stays where it was, for when the chroma comes back.
@@ -921,8 +922,8 @@ RawColorCalibration::syncIlluminant(bool illuminantChanged,
     const KnobChoicePtr adaptationKnob = o.adaptation.lock();
     const Illuminant illuminant = rawColorCalibrationIlluminantAt(illuminantKnob->getValue());
     float temperature = (float)temperatureKnob->getValue();
-    float px = (float)xKnob->getValue();
-    float py = (float)yKnob->getValue();
+    float px = knobValueAsFloat(xKnob->getValue());
+    float py = knobValueAsFloat(yKnob->getValue());
     std::optional<Adaptation> adaptation;
 
     // Leaving the camera illuminant starts from the camera's white balance, and so does choosing
@@ -967,10 +968,10 @@ RawColorCalibration::syncIlluminant(bool illuminantChanged,
 
     const bool wasSyncing = _syncing;
     _syncing = true;
-    if ((float)xKnob->getValue() != px) {
+    if (knobValueAsFloat(xKnob->getValue()) != px) {
         xKnob->setValue(px);
     }
-    if ((float)yKnob->getValue() != py) {
+    if (knobValueAsFloat(yKnob->getValue()) != py) {
         yKnob->setValue(py);
     }
     if ((float)temperatureKnob->getValue() != temperature) {
@@ -1111,10 +1112,10 @@ RawColorCalibration::showSourceDefaults()
     if ((float)temperatureKnob->getValue() != d.temperature) {
         temperatureKnob->setValue(d.temperature);
     }
-    if ((float)xKnob->getValue() != d.x) {
+    if (knobValueAsFloat(xKnob->getValue()) != d.x) {
         xKnob->setValue(d.x);
     }
-    if ((float)yKnob->getValue() != d.y) {
+    if (knobValueAsFloat(yKnob->getValue()) != d.y) {
         yKnob->setValue(d.y);
     }
     _syncing = wasSyncing;

@@ -27,8 +27,10 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -55,6 +57,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
 // The UV rows one band keeps: the coordinates of rows y - 1, y and y + 1 over the window grown
 // by one pixel on each side, rolled down as the band moves up.
 struct CoordRows {
@@ -433,8 +436,8 @@ IDistort::renderOp(const RenderActionArgs& args,
     }
     const bool impulse = settings.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
-    const double uScale = settings.uScale * s.x;
-    const double vScale = settings.vScale * s.y;
+    const double uScale = productOrInfinity(settings.uScale, s.x);
+    const double vScale = productOrInfinity(settings.vScale, s.y);
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on. The Map is
@@ -609,8 +612,8 @@ IDistort::renderOp(const RenderActionArgs& args,
         const double cy = (double)y + 0.5;
         if (!mapped) {
             for (int i = 0; i < gridWidth; ++i) {
-                sx[i] = (float)((double)(gridX0 + i) + 0.5 + ((double)uRow[i] - settings.uOffset) * uScale);
-                sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale);
+                sx[i] = knobValueAsFloat((double)(gridX0 + i) + 0.5 + productOrInfinity((double)uRow[i] - settings.uOffset, uScale));
+                sy[i] = knobValueAsFloat(cy + productOrInfinity((double)vRow[i] - settings.vOffset, vScale));
             }
 
             return;
@@ -624,8 +627,8 @@ IDistort::renderOp(const RenderActionArgs& args,
                 sy[i] = (float)cy;
                 continue;
             }
-            sx[i] = (float)(cx + ((double)uRow[i] - settings.uOffset) * uScale * (double)m);
-            sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale * (double)m);
+            sx[i] = knobValueAsFloat(cx + productOrInfinity(productOrInfinity((double)uRow[i] - settings.uOffset, uScale), (double)m));
+            sy[i] = knobValueAsFloat(cy + productOrInfinity(productOrInfinity((double)vRow[i] - settings.vOffset, vScale), (double)m));
         }
     };
 
@@ -872,8 +875,8 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     params.flags = (settings.clamp ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
     setWarpGpuDouble(settings.uOffset, params.uOffset);
     setWarpGpuDouble(settings.vOffset, params.vOffset);
-    setWarpGpuDouble(settings.uScale * s.x, params.uScale);
-    setWarpGpuDouble(settings.vScale * s.y, params.vScale);
+    setWarpGpuDouble(productOrInfinity(settings.uScale, s.x), params.uScale);
+    setWarpGpuDouble(productOrInfinity(settings.vScale, s.y), params.vScale);
 
     WarpGpuMap map;
     map.input = kIDistortInputMap;

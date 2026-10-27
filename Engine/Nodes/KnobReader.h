@@ -28,6 +28,7 @@
 #include <memory>
 #include <type_traits>
 
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER

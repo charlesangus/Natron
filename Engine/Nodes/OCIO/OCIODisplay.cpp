@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -38,6 +39,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/ProjectColorManagement.h"
 
 NATRON_NAMESPACE_ENTER
@@ -235,7 +237,7 @@ OCIODisplayOp::bake(const KnobReader& reader) const
 {
     Params p;
 
-    p.gain = (float)reader.value(gain);
+    p.gain = knobValueAsFloat(reader.value(gain));
     p.gamma = reader.value(gamma);
     int channelIndex = reader.value(channel);
     if ((channelIndex < (int)eChannelRGB) || (channelIndex > (int)eChannelLuminance)) {
@@ -287,7 +289,8 @@ OCIODisplayOp::row(const Params& params,
     if ((io.width <= 0) || ((nComps != 3) && (nComps != 4))) {
         return;
     }
-    const float invGamma = (params.gamma > 0.) ? (float)(1. / params.gamma) : 0.f;
+    // 1 / gamma reaches 2^1024 once gamma is at most 2^-1024.
+    const float invGamma = (params.gamma > 0.) ? knobValueAsFloat(reciprocalOrInfinity(params.gamma)) : 0.f;
     try {
         const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         float* p = io.dst;

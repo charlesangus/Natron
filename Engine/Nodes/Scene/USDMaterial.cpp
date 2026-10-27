@@ -30,6 +30,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -231,12 +232,12 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
     using SceneNodeAuthoring::isAnimated;
     auto colorAt = [](const KnobColorPtr& knob) {
         return [knob](double frame) {
-            return PXR_NS::GfVec3f((float)knob->getValueAtTime(frame, 0), (float)knob->getValueAtTime(frame, 1), (float)knob->getValueAtTime(frame, 2));
+            return PXR_NS::GfVec3f(knobValueAsFloat(knob->getValueAtTime(frame, 0)), knobValueAsFloat(knob->getValueAtTime(frame, 1)), knobValueAsFloat(knob->getValueAtTime(frame, 2)));
         };
     };
     auto floatAt = [](const KnobDoublePtr& knob) {
         return [knob](double frame) {
-            return (float)knob->getValueAtTime(frame, 0);
+            return knobValueAsFloat(knob->getValueAtTime(frame, 0));
         };
     };
     PXR_NS::UsdShadeInput diffuseInput = surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f);

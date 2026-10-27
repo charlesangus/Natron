@@ -46,6 +46,14 @@ NATRON_NAMESPACE_ENTER
  * its edge value; the subsampling clamps to the last row and column.
  **/
 namespace EdgeAware {
+/// The coefficients of the order-0 Deriche recursion recursiveGaussianBlur() runs.
+struct DericheCoefficients {
+    float a0, a1, a2, a3, b1, b2, coefp, coefn;
+};
+
+/// _compute_gauss_params() of order 0 for sigma.
+DericheCoefficients dericheCoefficients(float sigma);
+
 /**
  * @brief dt_gaussian_blur() of order 0: the Deriche recursive gaussian of sigma, in out, over a
  * width x height image of channels interleaved floats (1 to 4). Every input sample is clamped

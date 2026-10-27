@@ -60,31 +60,6 @@ namespace {
     const int kMaxGaussianChannels = 4;
     const float kMinFloat = 1.52587890625e-05f; // exp2f(-16.0f)
 
-    struct GaussianCoefficients {
-        float a0, a1, a2, a3, b1, b2, coefp, coefn;
-    };
-
-    // _compute_gauss_params(), order 0.
-    GaussianCoefficients
-    gaussianCoefficients(float sigma)
-    {
-        GaussianCoefficients g;
-        const float alpha = 1.695f / sigma;
-        const float ema = std::exp(-alpha);
-        const float ema2 = std::exp(-2.0f * alpha);
-        g.b1 = -2.0f * ema;
-        g.b2 = ema2;
-        const float k = (1.0f - ema) * (1.0f - ema) / (1.0f + (2.0f * alpha * ema) - ema2);
-        g.a0 = k;
-        g.a1 = k * (alpha - 1.0f) * ema;
-        g.a2 = k * (alpha + 1.0f) * ema;
-        g.a3 = -k * ema2;
-        g.coefp = (g.a0 + g.a1) / (1.0f + g.b1 + g.b2);
-        g.coefn = (g.a2 + g.a3) / (1.0f + g.b1 + g.b2);
-
-        return g;
-    }
-
     inline float
     clampf(float a,
            float mn,
@@ -101,7 +76,7 @@ namespace {
                  int count,
                  std::size_t step,
                  int ch,
-                 const GaussianCoefficients& g,
+                 const DericheCoefficients& g,
                  const float* min,
                  const float* max)
     {
@@ -316,6 +291,27 @@ namespace {
     }
 } // namespace
 
+DericheCoefficients
+dericheCoefficients(float sigma)
+{
+    DericheCoefficients g;
+    const float alpha = 1.695f / sigma;
+    const float ema = std::exp(-alpha);
+    const float ema2 = std::exp(-2.0f * alpha);
+
+    g.b1 = -2.0f * ema;
+    g.b2 = ema2;
+    const float k = (1.0f - ema) * (1.0f - ema) / (1.0f + (2.0f * alpha * ema) - ema2);
+    g.a0 = k;
+    g.a1 = k * (alpha - 1.0f) * ema;
+    g.a2 = k * (alpha + 1.0f) * ema;
+    g.a3 = -k * ema2;
+    g.coefp = (g.a0 + g.a1) / (1.0f + g.b1 + g.b2);
+    g.coefn = (g.a2 + g.a3) / (1.0f + g.b1 + g.b2);
+
+    return g;
+}
+
 void
 recursiveGaussianBlur(const float* in,
                       float* out,
@@ -330,7 +326,7 @@ recursiveGaussianBlur(const float* in,
     if ((width <= 0) || (height <= 0) || (channels <= 0) || (channels > kMaxGaussianChannels)) {
         return;
     }
-    const GaussianCoefficients g = gaussianCoefficients(sigma);
+    const DericheCoefficients g = dericheCoefficients(sigma);
     const std::size_t ch = (std::size_t)channels;
     const std::size_t rowStride = (std::size_t)width * ch;
     std::vector<float> temp(rowStride * (std::size_t)height);

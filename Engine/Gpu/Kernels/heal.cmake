@@ -1,0 +1,5 @@
+slang_add_kernel(heal_setup Kernels/heal.slang ENTRY heal_setup REGISTRY NatronGpu)
+slang_add_kernel(heal_params Kernels/heal.slang ENTRY heal_params REGISTRY NatronGpu)
+slang_add_kernel(heal_sweep Kernels/heal.slang ENTRY heal_sweep REGISTRY NatronGpu)
+slang_add_kernel(heal_reduce Kernels/heal.slang ENTRY heal_reduce REGISTRY NatronGpu)
+slang_add_kernel(heal_finish Kernels/heal.slang ENTRY heal_finish REGISTRY NatronGpu)

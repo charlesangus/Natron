@@ -615,13 +615,25 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
     for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
         FrameGraph::Task& task = graph.tasks[i];
-        task.startsBranch = true;
+        bool allLeaves = true;
+        bool releasesAnInput = false;
         for (std::vector<int>::const_iterator it = task.dependencies.begin(); it != task.dependencies.end(); ++it) {
-            if (!graph.tasks[*it].dependencies.empty()) {
-                task.startsBranch = false;
-                break;
+            const FrameGraph::Task& input = graph.tasks[*it];
+            if (!input.dependencies.empty()) {
+                allLeaves = false;
             }
+            bool onlyConsumer = true;
+            for (std::vector<int>::const_iterator c = input.consumerTasks.begin(); c != input.consumerTasks.end(); ++c) {
+                if (*c != (int)i) {
+                    onlyConsumer = false;
+                    break;
+                }
+            }
+            releasesAnInput = releasesAnInput || onlyConsumer;
         }
+        // A task that frees none of its inputs, such as one of many consumers of a shared input, adds its output
+        // to what is held as a branch start does: the many iterations of a loop body read the same image.
+        task.startsBranch = allLeaves || !releasesAnInput;
     }
 
     return graph;

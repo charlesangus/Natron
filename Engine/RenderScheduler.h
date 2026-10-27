@@ -87,7 +87,8 @@ struct FrameGraph {
         // Its renderRoI goes through the identity path, which takes its single dependency's images from the store.
         bool isIdentity = false;
 
-        // Every dependency is a leaf (vacuously so for a leaf): running it starts holding a new branch in memory.
+        // Running it starts holding a new branch in memory: every dependency is a leaf (vacuously so for a leaf), or
+        // it is the only consumer of none of them, so it frees no input when it finishes.
         bool startsBranch = false;
 
         // The host memory of its output; for a task standing for a region, of the outputs it downloads.

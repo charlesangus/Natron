@@ -571,7 +571,6 @@ RGBGeneratorPluginFactory::createInstance(OfxImageEffectHandle handle,
 
 #define kParamUnPremultBy "unPremultBy"
 #define kParamUnPremultByChannel "unPremultByChannel"
-#define kParamPremultChanged "premultChanged"
 
 class PointMatrixPlugin
     : public ImageEffect {
@@ -760,15 +759,6 @@ describePointMatrixInContext(ImageEffectDescriptor& desc,
         param->setDisplayRange(0., 1.);
         page->addChild(*param);
     }
-    {
-        // ColorMatrix keeps this hidden flag; the host hides it by name, as it does ColorMatrix's.
-        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamPremultChanged);
-        param->setDefault(false);
-        param->setIsSecretAndDisabled(true);
-        param->setAnimates(false);
-        param->setEvaluateOnChange(false);
-        page->addChild(*param);
-    }
 }
 
 template <unsigned int majorVersion>
@@ -814,6 +804,93 @@ RGBPointPluginFactory::createInstance(OfxImageEffectHandle handle,
     return new PointMatrixPlugin(handle);
 }
 
+// --- Premult probe -----------------------------------------------------------------------------
+
+class PremultProbePlugin
+    : public ImageEffect {
+public:
+    explicit PremultProbePlugin(OfxImageEffectHandle handle)
+        : ImageEffect(handle)
+        , _dstClip(fetchClip(kOfxImageEffectOutputClipName))
+        , _srcClip(fetchClip(kOfxImageEffectSimpleSourceClipName))
+        , _reportedPremult(fetchChoiceParam(kNatronTestPremultProbeParamReported))
+    {
+    }
+
+private:
+    virtual void render(const RenderArguments& args) override
+    {
+        auto_ptr<Image> dst(fetchDstImage(_dstClip, args.time));
+        auto_ptr<const Image> src(fetchSrcImage(_srcClip, args.time));
+        const float rgba[4] = {
+            (float)_srcClip->getPreMultiplication(),
+            src.get() ? (float)src->getPreMultiplication() : -1.f,
+            0.f,
+            1.f,
+        };
+
+        for (int y = args.renderWindow.y1; y < args.renderWindow.y2; ++y) {
+            for (int x = args.renderWindow.x1; x < args.renderWindow.x2; ++x) {
+                writeRGBA(dst.get(), x, y, rgba);
+            }
+        }
+    }
+
+    virtual void getClipPreferences(ClipPreferencesSetter& clipPreferences) override
+    {
+        const bool opaque = _reportedPremult->getValue() == kNatronTestPremultProbeReportedOpaque;
+
+        clipPreferences.setOutputPremultiplication(opaque ? eImageOpaque : eImagePreMultiplied);
+    }
+
+    Clip* _dstClip;
+    Clip* _srcClip;
+    ChoiceParam* _reportedPremult;
+};
+
+mDeclarePluginFactory(PremultProbePluginFactory, {}, {});
+
+void
+PremultProbePluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    desc.setLabel("PremultProbe");
+    desc.setPluginGrouping("Filter");
+    desc.setPluginDescription("Test fixture: renders the premultiplication its Source clip and fetched image report.");
+    desc.addSupportedContext(eContextFilter);
+    desc.addSupportedContext(eContextGeneral);
+    describeCommon(desc);
+    desc.setChannelSelector(ePixelComponentNone);
+}
+
+void
+PremultProbePluginFactory::describeInContext(ImageEffectDescriptor& desc,
+                                             ContextEnum /*context*/)
+{
+    ClipDescriptor* src = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
+    addColorComponents(src);
+    src->setTemporalClipAccess(false);
+    src->setIsMask(false);
+    addColorComponents(desc.defineClip(kOfxImageEffectOutputClipName));
+
+    PageParamDescriptor* page = desc.definePageParam("Controls");
+    ChoiceParamDescriptor* param = desc.defineChoiceParam(kNatronTestPremultProbeParamReported);
+    param->setLabel("Reported Premult");
+    param->setHint("The premultiplication the plug-in reports on its output clip.");
+    param->appendOption("PreMultiplied", "Report kOfxImagePreMultiplied.", kNatronTestPremultProbeReportedPreMultipliedID);
+    param->appendOption("Opaque", "Report kOfxImageOpaque.", kNatronTestPremultProbeReportedOpaqueID);
+    param->setDefault(kNatronTestPremultProbeReportedPreMultiplied);
+    param->setAnimates(false);
+    desc.addClipPreferencesSlaveParam(*param);
+    page->addChild(*param);
+}
+
+ImageEffect*
+PremultProbePluginFactory::createInstance(OfxImageEffectHandle handle,
+                                          ContextEnum /*context*/)
+{
+    return new PremultProbePlugin(handle);
+}
+
 } // anonymous namespace
 
 namespace NatronTestOfx {
@@ -826,6 +903,7 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
     static PointMatrixPluginFactory<kNatronTestPointMatrix1Major> pointMatrix1(kNatronTestPointMatrix1PluginID, 0);
     static RGBGeneratorPluginFactory rgbGenerator(kNatronTestRGBGeneratorPluginID, kNatronTestRGBGeneratorMajor, 0);
     static RGBPointPluginFactory rgbPoint(kNatronTestRGBPointPluginID, kNatronTestRGBPointMajor, 0);
+    static PremultProbePluginFactory premultProbe(kNatronTestPremultProbePluginID, kNatronTestPremultProbeMajor, 0);
 
     ids.push_back(&twoInputCopy);
     ids.push_back(&generator);
@@ -833,5 +911,6 @@ getRoutingPluginIDs(OFX::PluginFactoryArray& ids)
     ids.push_back(&pointMatrix1);
     ids.push_back(&rgbGenerator);
     ids.push_back(&rgbPoint);
+    ids.push_back(&premultProbe);
 }
 } // namespace NatronTestOfx

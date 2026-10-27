@@ -56,6 +56,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OfxEffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
@@ -695,12 +696,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, AMissingDivisorChannelFailsTheRender)
     EXPECT_NE(std::string::npos, message.find("depth.Z")) << message;
 }
 
-// premult/premultChannel are not merely hidden here, they no longer exist on this node at
-// all: SupportExt/ofxsMaskMix.h's ofxsPremultDescribeParams() declares unPremultBy/
-// unPremultByChannel outright, it does not declare the old identifiers alongside them, so
-// getKnobByName finds nothing under the old names to assert secret on. premultChanged is
-// the one param of the three declared under its original name, and stays on the host's hide list.
-TEST_F(ChannelSetRenderTest, OfxUnPremultByIsHostOwnedAndOldPremultFamilyGoneOrSecret)
+TEST_F(ChannelSetRenderTest, OfxUnPremultByIsHostOwnedAndOldPremultFamilyGone)
 {
     KnobChannelSetPtr channels;
     NodePtr pointMatrix = createEffectOnReader(QString::fromUtf8(kOfxPointMatrixID), &channels, "flat-three-layers.exr", kOfxPointMatrixMajor);
@@ -730,10 +726,16 @@ TEST_F(ChannelSetRenderTest, OfxUnPremultByIsHostOwnedAndOldPremultFamilyGoneOrS
 
     EXPECT_TRUE(pointMatrix->getKnobByName("premult").get() == NULL);
     EXPECT_TRUE(pointMatrix->getKnobByName("premultChannel").get() == NULL);
+    EXPECT_TRUE(pointMatrix->getKnobByName("premultChanged").get() == NULL);
+}
 
-    KnobBool* premultChanged = dynamic_cast<KnobBool*>(pointMatrix->getKnobByName("premultChanged").get());
-    ASSERT_TRUE(premultChanged != NULL);
-    EXPECT_TRUE(premultChanged->getIsSecret());
+TEST_F(ChannelSetRenderTest, LastingOfxPluginHasNoPremultChanged)
+{
+    KnobChannelSetPtr channels;
+    NodePtr denoise = createEffectOnReader(QString::fromUtf8("net.sf.cimg.CImgDenoise"), &channels);
+    ASSERT_TRUE(bool(denoise));
+    ASSERT_TRUE(std::dynamic_pointer_cast<OfxEffectInstance>(denoise->getEffectInstance()) != NULL);
+    EXPECT_TRUE(denoise->getKnobByName("premultChanged").get() == NULL);
 }
 
 // --- Invert (net.sf.openfx.Invert) -------------------------------------------------------

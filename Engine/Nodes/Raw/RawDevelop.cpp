@@ -31,10 +31,15 @@
 #include <vector>
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QString>
 #include <QTimer>
 
 #include <ofxNatron.h>
 
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelKnob.h"
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
@@ -44,10 +49,13 @@
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
+#include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Raw/RawNeuralDenoise.h"
 #include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Nodes/Raw/RawTemperature.h"
 #include "Engine/Project.h"
@@ -89,6 +97,39 @@ namespace {
         KnobStringBase* file = dynamic_cast<KnobStringBase*>(knob.get());
 
         return file ? file->getValue() : std::string();
+    }
+
+    // The demosaic the chain gets: RawNeuralDenoise when the preference asks for it and it can run
+    // on read's raw file, else RawDemosaic, with the reason logged.
+    const char*
+    demosaicPluginID(const NodePtr& read)
+    {
+        if (!appPTR->getCurrentSettings()->isDevelopRawNeuralDemosaic()) {
+            return PLUGINID_NATRON_RAWDEMOSAIC;
+        }
+        std::string reason;
+        ModelDownloader* downloader = RawNeuralDenoise::modelDownloader();
+        const AiModelEntry* model = downloader ? ModelKnob::defaultModel(*downloader->registry(), AiModelTask::eDenoiseRawBayer) : nullptr;
+        if (!appPTR->getCurrentSettings()->isAiEnabled()) {
+            reason = "AI is disabled in Preferences";
+        } else if (!model) {
+            reason = "no neural raw denoise model is listed";
+        } else if (downloader->registry()->resolve(model->id).status != AiModelStatus::eInstalled) {
+            reason = "the model " + model->name + " is not installed (Preferences > AI Models)";
+        } else {
+            EffectInstancePtr effect = read->getEffectInstance();
+            const std::optional<RawLayout> layout = effect ? RawLayout::fromMetadata(getEffectOutputMetadata(effect, effect->getCurrentTime(), ViewIdx(0))) : std::nullopt;
+            if (!layout || !layout->hasCfa() || (layout->period() != 2)) {
+                reason = "the raw file has no Bayer mosaic";
+            }
+        }
+        if (reason.empty()) {
+            return PLUGINID_NATRON_RAWNEURALDENOISE;
+        }
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("Develop RAW"), QDateTime::currentDateTime(),
+                                        QString::fromStdString("RawDemosaic instead of RawNeuralDenoise: " + reason + "."));
+
+        return PLUGINID_NATRON_RAWDEMOSAIC;
     }
 } // namespace
 
@@ -142,7 +183,7 @@ buildChain(const NodePtr& read)
     read->getPosition(&readX, &readY);
     read->getSize(&readW, &readH);
 
-    const char* const ids[] = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, PLUGINID_NATRON_RAWDEMOSAIC, PLUGINID_NATRON_RAWINPUTCOLOR, PLUGINID_NATRON_RAWCOLORCALIBRATION };
+    const char* const ids[] = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, demosaicPluginID(read), PLUGINID_NATRON_RAWINPUTCOLOR, PLUGINID_NATRON_RAWCOLORCALIBRATION };
     NodePtr* const slots[] = { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor, &chain.colorCalibration };
     static_assert(sizeof(ids) / sizeof(ids[0]) == sizeof(slots) / sizeof(slots[0]), "one slot per node");
     const int count = (int)(sizeof(ids) / sizeof(ids[0]));

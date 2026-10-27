@@ -66,7 +66,8 @@ std::vector<float>
 axisWeights(const std::vector<int>& starts,
             std::size_t index,
             int size,
-            int scale)
+            int scale,
+            bool linear)
 {
     const int left = index > 0 ? std::max(0, starts[index - 1] + size - starts[index]) * scale : 0;
     const int right = index + 1 < starts.size() ? std::max(0, starts[index] + size - starts[index + 1]) * scale : 0;
@@ -75,10 +76,12 @@ axisWeights(const std::vector<int>& starts,
 
     for (int j = 0; j < length; ++j) {
         if (j < left) {
-            weights[j] *= raisedCosine((j + 0.5) / left);
+            const double t = (j + 0.5) / left;
+            weights[j] *= linear ? (float)t : raisedCosine(t);
         }
         if (j >= length - right) {
-            weights[j] *= raisedCosine((length - j - 0.5) / right);
+            const double t = (length - j - 0.5) / right;
+            weights[j] *= linear ? (float)t : raisedCosine(t);
         }
     }
 
@@ -113,6 +116,7 @@ runPass(const InferenceSession& session,
         int tileEdge,
         const AiTilePack& pack,
         const AiAbortPredicate& abort,
+        const AiTileFinish& finish,
         int* tilesRun)
 {
     int fixedHeight = 0;
@@ -142,7 +146,7 @@ runPass(const InferenceSession& session,
 
     *tilesRun = 0;
     for (std::size_t yi = 0; yi < ys.size(); ++yi) {
-        const std::vector<float> weightY = axisWeights(ys, yi, tileHeight, scale);
+        const std::vector<float> weightY = axisWeights(ys, yi, tileHeight, scale, spec.linearBlend);
         for (std::size_t xi = 0; xi < xs.size(); ++xi) {
             if (abort && abort()) {
                 throw AiAborted();
@@ -164,13 +168,17 @@ runPass(const InferenceSession& session,
                 }
             }
 
-            const Tensor out = session.run(padding ? padded : tile, abort);
+            const Tensor& input = padding ? padded : tile;
+            Tensor out = session.run(input, abort);
+            if (finish && (out.shape() == expected)) {
+                finish(input, out);
+            }
             if (out.shape() != expected) {
                 throw AiError(session.modelPath() + ": a tile came back " + Tensor::shapeString(out.shape()) + ", not " + Tensor::shapeString(expected));
             }
 
             // A running weighted mean: a pixel every tile agrees on keeps its exact value.
-            const std::vector<float> weightX = axisWeights(xs, xi, tileWidth, scale);
+            const std::vector<float> weightX = axisWeights(xs, xi, tileWidth, scale, spec.linearBlend);
             const int outTileWidth = tileWidth * scale;
             const int outPaddedWidth = paddedWidth * scale;
             for (int y = 0; y < tileHeight * scale; ++y) {
@@ -222,7 +230,8 @@ runTiled(const std::shared_ptr<InferenceSession>& session,
          const AiTileSpec& spec,
          const AiTilePack& pack,
          const AiTileUnpack& unpack,
-         const AiAbortPredicate& abort)
+         const AiAbortPredicate& abort,
+         const AiTileFinish& finish)
 {
     if (!session) {
         throw AiError("tiled inference was given no session");
@@ -240,7 +249,7 @@ runTiled(const std::shared_ptr<InferenceSession>& session,
     std::shared_ptr<InferenceSession> current = session;
     for (;;) {
         try {
-            Tensor result = runPass(*current, roi, spec, info.tile, pack, abort, &info.tiles);
+            Tensor result = runPass(*current, roi, spec, info.tile, pack, abort, finish, &info.tiles);
             if (abort && abort()) {
                 throw AiAborted();
             }

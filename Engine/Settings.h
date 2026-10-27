@@ -285,6 +285,9 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain demosaics with RawNeuralDenoise instead of RawDemosaic.
+    bool isDevelopRawNeuralDemosaic() const;
+
     ///////////////////////////////////////////////////////
     // "AI" pane
     bool isAiEnabled() const;
@@ -555,6 +558,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobChoicePtr _developRawDemosaic;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
 

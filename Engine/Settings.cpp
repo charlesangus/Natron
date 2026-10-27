@@ -658,9 +658,28 @@ Settings::initializeKnobsProjectSetup()
     _developRawOnRead->setName("developRawOnRead");
     _developRawOnRead->setHintToolTip(tr("If checked, creating a Read of a camera raw file in the interface (from the node menu, by "
                                          "dropping a file or opening one) also creates RawPrepare, RawTemperature, RawHighlights, "
-                                         "RawDemosaic, RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
+                                         "RawDemosaic (or RawNeuralDenoise, see Develop RAW Demosaic), RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
                                          "or creating a Read from Python never does."));
     _projectsPage->addKnob(_developRawOnRead);
+
+    _developRawDemosaic = AppManager::createKnob<KnobChoice>(this, tr("Develop RAW Demosaic"));
+    _developRawDemosaic->setName("developRawDemosaic");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("classic",
+                                       tr("Classic (RawDemosaic)").toStdString(),
+                                       tr("RawDemosaic, with its default method.").toStdString()));
+        entries.push_back(ChoiceOption("neural",
+                                       tr("Neural (RawNIND)").toStdString(),
+                                       tr("RawNeuralDenoise, which denoises and demosaics in one pass, when the raw file has a Bayer "
+                                          "sensor and its default model is installed. Otherwise RawDemosaic.")
+                                           .toStdString()));
+        _developRawDemosaic->populateChoices(entries);
+    }
+    _developRawDemosaic->setHintToolTip(tr("Which node demosaics in the Develop RAW chain created on reading a camera raw file. Neural "
+                                           "needs AI enabled and the RawNIND Bayer model installed (Preferences > AI Models), and a "
+                                           "Bayer sensor; X-Trans files always get RawDemosaic."));
+    _projectsPage->addKnob(_developRawDemosaic);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
     _autoPreviewEnabledForNewProjects->setName("enableAutoPreviewNewProjects");
@@ -1705,6 +1724,7 @@ Settings::setDefaultValues()
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
     _developRawOnRead->setDefaultValue(true);
+    _developRawDemosaic->setDefaultValue(0);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
 
@@ -3473,6 +3493,12 @@ bool
 Settings::isDevelopRawOnReadEnabled() const
 {
     return _developRawOnRead->getValue();
+}
+
+bool
+Settings::isDevelopRawNeuralDemosaic() const
+{
+    return _developRawDemosaic->getValue() == 1;
 }
 
 bool

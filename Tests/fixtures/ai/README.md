@@ -18,3 +18,4 @@ shaped `[1, 3, height, width]`, and return one output, `output`.
 | `upscale2-nearest.onnx` | 2x nearest-neighbour `Resize`: output pixel (x, y) is input pixel (x/2, y/2) |
 | `slow-loop.onnx` | a `Loop` of 2^50 identity steps over a float vector `input` of any length. Only an abort ends it |
 | `identity.dtmodel` | `identity.onnx` packed as a darktable-ai package, `test-identity`, by `tools/ai/make-test-dtmodel.py` |
+| `rawdenoise.dtmodel` | `test-rawdenoise`, by `tools/ai/make-test-rawdenoise.py`: two Bayer stand-ins with a static `[1, 4, 128, 128]` input that set each output 2x2 block to its block's (R, mean G, B), `model_bayer.onnx` times 1000 under `match_gain` and `model_bayer_absolute.onnx` as is under `absolute` |

@@ -122,7 +122,7 @@ their reservation until they finish.
 
 ## Tiled inference
 
-`runTiled(session, roi, spec, pack, unpack, abort)` runs a one-input, one-output image model over a
+`runTiled(session, roi, spec, pack, unpack, abort, finish)` runs a one-input, one-output image model over a
 region of any size. The `AiTileSpec` gives the tile edge, the overlap, the multiple the model's input
 must be padded to, the output scale and the channel counts.
 
@@ -130,13 +130,16 @@ must be padded to, the output scale and the channel counts.
   edge, and neighbouring tiles share at least `overlap` pixels.
 - **Padding.** Each tile is padded up to `multipleOf` by reflection (numpy's `reflect`, which does
   not repeat the edge pixel). The padding is cropped off the result.
-- **Blending.** Tiles are blended at output resolution with raised-cosine weights. Across a shared
-  span, the weights sum to one.
+- **Blending.** Tiles are blended at output resolution with raised-cosine weights, or linear ones
+  when `linearBlend` is set. Across a shared span, the weights sum to one.
 - **Fixed-size models.** If the model's input has a fixed height or width, tiles are clamped to that
   size, and smaller tiles are padded up to it.
 - **pack and unpack.** These callbacks belong to the caller. `pack` fills each tile's tensor from
   the image, and `unpack` receives the whole blended result once, after every tile has run.
   Colour conversion into and out of the model's space happens there, so each node owns it.
+- **finish.** An optional callback that gets each tile's input tensor and its output before the
+  output is blended, and may change the output. It is for a correction that needs the whole tile,
+  such as RawNeuralDenoise matching each tile's output level to its input's, as darktable does.
 - **Row order.** Tensor row 0 is the top row of the image, `y2 - 1` in Natron's bottom-up
   coordinates.
 

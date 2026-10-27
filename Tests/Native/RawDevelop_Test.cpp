@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,8 @@
 #include <ofxNatron.h>
 
 #include "BaseTest.h"
+#include "RawFixtures.h"
+#include "RawNeuralDenoiseModels.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -48,9 +51,11 @@
 #include "Engine/Nodes/Raw/RawDevelop.h"
 #include "Engine/Nodes/Raw/RawHighlights.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Raw/RawNeuralDenoise.h"
 #include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Nodes/Raw/RawTemperature.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
@@ -226,4 +231,92 @@ TEST_F(RawDevelopTest, TheLayoutKeepsTheSixNodesInOrderInsideTheBackdrop)
             EXPECT_GT(n.y, above.y + above.height) << i;
         }
     }
+}
+
+class RawDevelopDemosaicTest
+    : public BaseTest {
+protected:
+    void SetUp() override
+    {
+        BaseTest::SetUp();
+        _models.reset(new RawNeuralDenoiseModels);
+        ASSERT_TRUE(_models->valid());
+    }
+
+    void TearDown() override
+    {
+        // The nodes refer to the model manager, so they go first.
+        if (getApp()) {
+            getApp()->getProject()->reset(false, true);
+        }
+        _models.reset();
+        setNeural(false);
+        BaseTest::TearDown();
+    }
+
+    static void setNeural(bool neural)
+    {
+        appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("developRawDemosaic")->setValue(neural ? 1 : 0);
+    }
+
+    // The plug-in in the demosaic slot of the chain built under a Read of fixture.
+    std::string demosaicOf(const RawFixture& fixture)
+    {
+        NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_READ));
+        EXPECT_TRUE(bool(read));
+        if (!read) {
+            return std::string();
+        }
+        KnobFilePtr file = read->getEffectInstance()->getKnobByNameAndType<KnobFile>(kOfxImageEffectFileParamName);
+        EXPECT_TRUE(bool(file));
+        if (!file) {
+            return std::string();
+        }
+        file->setValue(fixture.path());
+        const RawDevelop::Chain chain = RawDevelop::buildChain(read);
+        EXPECT_TRUE(chain.complete()) << fixture.file;
+        if (!chain.complete()) {
+            return std::string();
+        }
+        EXPECT_EQ(chain.highlights, chain.demosaic->getInput(0)) << fixture.file;
+        EXPECT_EQ(chain.demosaic, chain.inputColor->getInput(0)) << fixture.file;
+
+        return chain.demosaic->getPluginID();
+    }
+
+    std::unique_ptr<RawNeuralDenoiseModels> _models;
+};
+
+TEST_F(RawDevelopDemosaicTest, ThePreferenceIsClassicByDefault)
+{
+    KnobChoicePtr preference = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("developRawDemosaic");
+    ASSERT_TRUE(bool(preference));
+    EXPECT_EQ("Develop RAW Demosaic", preference->getLabel());
+    EXPECT_EQ(0, preference->getDefaultValue(0));
+    EXPECT_FALSE(appPTR->getCurrentSettings()->isDevelopRawNeuralDemosaic());
+}
+
+TEST_F(RawDevelopDemosaicTest, ClassicBuildsRawDemosaicForBothMosaics)
+{
+    std::string error;
+    ASSERT_TRUE(_models->install(&error)) << error;
+    setNeural(false);
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), demosaicOf(bayerFixture()));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), demosaicOf(xtransFixture()));
+}
+
+TEST_F(RawDevelopDemosaicTest, NeuralBuildsRawNeuralDenoiseForBayerOnly)
+{
+    std::string error;
+    ASSERT_TRUE(_models->install(&error)) << error;
+    setNeural(true);
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWNEURALDENOISE), demosaicOf(bayerFixture()));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), demosaicOf(xtransFixture()));
+}
+
+TEST_F(RawDevelopDemosaicTest, NeuralWithoutTheModelBuildsRawDemosaic)
+{
+    setNeural(true);
+    ASSERT_FALSE(_models->installed(RawNeuralDenoiseModels::kMatchGain));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAWDEMOSAIC), demosaicOf(bayerFixture()));
 }

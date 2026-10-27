@@ -46,6 +46,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -619,6 +620,15 @@ bool
 SceneViewportRenderer::syncScene(const ScenePayload& payload,
                                  std::string* error)
 {
+    return syncScene(payload, -1., 0., error);
+}
+
+bool
+SceneViewportRenderer::syncScene(const ScenePayload& payload,
+                                 double frame,
+                                 double framesPerSecond,
+                                 std::string* error)
+{
     std::string runtimeError;
 
     if (!SceneOps::checkUsdRuntime(&runtimeError)) {
@@ -645,6 +655,10 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         return false;
     }
     _imp->sceneStage->sync(payload);
+    if (framesPerSecond > 0.) {
+        _imp->frame = frame;
+        _imp->framesPerSecond = framesPerSecond;
+    }
     const SceneMetadata& metadata = payload.getMetadata();
     _imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
     _imp->metersPerUnit = metadata.metersPerUnit;
@@ -1120,8 +1134,9 @@ struct SceneViewport::Implementation {
     QPoint lastPos;
     bool dragging = false;
 
-    // The project frame shown.
+    // The project frame shown, and its rate once a scene or frame was set.
     double frame = 0.;
+    double framesPerSecond = 0.;
 
     std::function<NodePtr()> transformNodeProvider;
     // The drag of a transform handle under way: its knob, the handle, the value the knob had at
@@ -1158,13 +1173,21 @@ struct SceneViewport::Implementation {
     bool quit = false;
     bool hasPending = false;
     ScenePayload pending;
+    // The live textures the pending payload shows at pendingFrame, which the worker renders
+    // before it syncs: Hydra only reads them.
+    LiveTextureSourceList pendingLiveTextures;
+    double pendingFrame = 0.;
+    double pendingFramesPerSecond = 0.;
     U64 pendingSerial = 0;
 
     // Main thread: the last request made, the last one synced, and the error the last request
-    // shows once synced.
+    // shows once synced. A request whose payload shows live textures leaves the renderer at the
+    // frame it had until the worker has rendered them, so Hydra never asks for one not stored.
     U64 requestedSerial = 0;
     U64 syncedSerial = 0;
     QString requestedError;
+    ScenePayload requestedPayload;
+    bool requestedLiveTextures = false;
 };
 
 SceneViewport::SceneViewport(QWidget* parent)
@@ -1185,6 +1208,9 @@ SceneViewport::SceneViewport(QWidget* parent)
         for (;;) {
             ScenePayload payload;
             U64 serial = 0;
+            LiveTextureSourceList liveTextures;
+            double frame = 0.;
+            double framesPerSecond = 0.;
             {
                 std::unique_lock<std::mutex> lock(imp->queueMutex);
                 imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending; });
@@ -1195,9 +1221,19 @@ SceneViewport::SceneViewport(QWidget* parent)
                 imp->pending = ScenePayload();
                 imp->hasPending = false;
                 serial = imp->pendingSerial;
+                liveTextures.swap(imp->pendingLiveTextures);
+                frame = imp->pendingFrame;
+                framesPerSecond = imp->pendingFramesPerSecond;
             }
             std::string error;
-            const bool ok = imp->renderer.syncScene(payload, &error);
+            bool ok;
+            if (liveTextures.empty()) {
+                ok = imp->renderer.syncScene(payload, &error);
+            } else {
+                LiveTextureStore::instance().prepare(liveTextures, frame, ViewIdx(0));
+                liveTextures.clear();
+                ok = imp->renderer.syncScene(payload, frame, framesPerSecond, &error);
+            }
             const QString qerror = QString::fromStdString(error);
             // Dropped by Qt if the widget is gone by then.
             QMetaObject::invokeMethod(this, [this, serial, ok, qerror]() { onSynced(serial, ok, qerror); }, Qt::QueuedConnection);
@@ -1224,10 +1260,19 @@ SceneViewport::requestSync(const ScenePayload& payload,
                            const QString& error)
 {
     _imp->requestedError = error;
+    _imp->requestedPayload = payload;
+    LiveTextureSourceList liveTextures = SceneOps::getLiveTextures(payload);
+    _imp->requestedLiveTextures = !liveTextures.empty();
+    if (!_imp->requestedLiveTextures && (_imp->framesPerSecond > 0.)) {
+        _imp->renderer.setFrame(_imp->frame, _imp->framesPerSecond);
+    }
     {
         std::lock_guard<std::mutex> lock(_imp->queueMutex);
         _imp->pending = payload;
         _imp->hasPending = true;
+        _imp->pendingLiveTextures.swap(liveTextures);
+        _imp->pendingFrame = _imp->frame;
+        _imp->pendingFramesPerSecond = _imp->framesPerSecond;
         _imp->pendingSerial = ++_imp->requestedSerial;
     }
     _imp->queueChanged.notify_one();
@@ -1268,7 +1313,7 @@ SceneViewport::setScene(const ScenePayload& payload,
                         double framesPerSecond)
 {
     _imp->frame = frame;
-    _imp->renderer.setFrame(frame, framesPerSecond);
+    _imp->framesPerSecond = framesPerSecond;
     requestSync(payload, QString());
 }
 
@@ -1277,6 +1322,13 @@ SceneViewport::setFrame(double frame,
                         double framesPerSecond)
 {
     _imp->frame = frame;
+    _imp->framesPerSecond = framesPerSecond;
+    if (_imp->requestedLiveTextures) {
+        // The same scene, through the worker, which renders the frame's textures first.
+        requestSync(_imp->requestedPayload, _imp->requestedError);
+
+        return;
+    }
     _imp->renderer.setFrame(frame, framesPerSecond);
     update();
 }

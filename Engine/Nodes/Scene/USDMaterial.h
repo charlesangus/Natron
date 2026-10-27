@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -47,9 +48,19 @@
 #define kUSDMaterialParamEmissiveColor "emissiveColor"
 #define kUSDMaterialParamEmissiveTexture "emissiveTexture"
 
+// The optional image inputs, each driving the surface input of the same name through a live texture.
+#define kUSDMaterialInputDiffuseColor 0
+#define kUSDMaterialInputRoughness 1
+#define kUSDMaterialInputMetallic 2
+#define kUSDMaterialInputNormal 3
+#define kUSDMaterialInputEmissiveColor 4
+#define kUSDMaterialInputCount 5
+
 NATRON_NAMESPACE_ENTER
 
 struct SceneLayerEdit;
+struct LiveTextureSource;
+typedef std::vector<LiveTextureSource> LiveTextureSourceList;
 
 /**
  * @brief Authors a UsdPreviewSurface material at its prim path (the node's name under the root by
@@ -59,23 +70,40 @@ struct SceneLayerEdit;
  * when set, drives the input from a UsdUVTexture read through the "st" primvar instead. Colours
  * are in the project working space and written unchanged. A texture path that does not resolve
  * is authored anyway, with a node warning naming it.
+ *
+ * Optional image inputs (Diffuse Color, Roughness, Metallic, Normal, Emissive Color) drive the
+ * same surface inputs, and Normal the surface's normal, from the image of the node connected,
+ * live: the texture file is a natron:// URI (LiveTextureStore) per frame, or one for an image
+ * that does not change over time, which consumers render before Hydra reads it. A connected
+ * input wins over the texture file.
  **/
 class USDMaterial
     : public NativeEffectBase {
 public:
+    static constexpr InputSpec kInputs[kUSDMaterialInputCount] = {
+        InputSpec { .label = "Diffuse Color", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
+        InputSpec { .label = "Roughness", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
+        InputSpec { .label = "Metallic", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
+        InputSpec { .label = "Normal", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
+        InputSpec { .label = "Emissive Color", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
+    };
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDMATERIAL,
         .label = "USDMaterial",
         .description = "Author a UsdPreviewSurface material (diffuse colour, metallic, roughness and emissive colour, each "
                        "optionally from a texture file). Connect it to the Material input of a geometry node, which "
                        "places the material under its own prim and binds itself to it. Colours are in the project "
-                       "working space and written unchanged.",
+                       "working space and written unchanged. An image connected to an input of the same name drives "
+                       "it instead, live and animated with no file on disk; the Normal input takes a tangent-space "
+                       "normal map encoded in 0..1.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDMaterial.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
+        .inputs = kInputs,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -98,8 +126,10 @@ private:
     // The path a texture file knob holds, anchored (SceneNodeAuthoring::getAnchoredFilePath), empty for none.
     static std::string getTexturePath(const KnobFilePtr& knob);
 
-    // Authors the material into edit's layer.
+    // Authors the material into edit's layer, the image inputs from liveTextures (one per input,
+    // a null node for one not connected).
     bool authorLayer(const SceneLayerEdit& edit,
+                     const LiveTextureSourceList& liveTextures,
                      std::string* errorMessage) const;
 
     KnobStringWPtr _primPath;

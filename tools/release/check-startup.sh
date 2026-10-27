@@ -298,6 +298,9 @@ if outside:
 for plugin_name in ("usd", "sdf", "sdr", "usdGeom", "usdLux", "usdShade", "usdAbc"):
     if not Plug.Registry().GetPluginWithName(plugin_name):
         fail("OpenUSD has no %s plug-in registered; lib/usd or plugin/usd is missing" % plugin_name)
+# Natron registers the natron:// live-texture resolver and image reader itself at startup.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture"):
+    fail("OpenUSD has no natronLiveTexture plug-in registered; Resources/usd/natronLiveTexture is missing")
 for extension in ("usda", "usdc", "abc"):
     if not Sdf.FileFormat.FindByExtension(extension):
         fail("OpenUSD has no file format for .%s" % extension)

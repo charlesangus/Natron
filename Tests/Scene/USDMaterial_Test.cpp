@@ -27,6 +27,8 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -44,12 +46,15 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -105,6 +110,24 @@ protected:
         return SceneOps::compose(payload);
     }
 
+    // The UsdUVTexture feeding the surface input inputName of the material at materialPath.
+    static PXR_NS::UsdShadeShader textureOf(const PXR_NS::UsdStageRefPtr& stage,
+                                            const char* materialPath,
+                                            const char* inputName)
+    {
+        const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource();
+        PXR_NS::UsdShadeConnectableAPI source;
+        PXR_NS::TfToken sourceName;
+        PXR_NS::UsdShadeAttributeType sourceType;
+
+        EXPECT_TRUE(bool(surface)) << materialPath;
+        if (!surface || !surface.GetInput(PXR_NS::TfToken(inputName)).GetConnectedSource(&source, &sourceName, &sourceType)) {
+            return PXR_NS::UsdShadeShader();
+        }
+
+        return PXR_NS::UsdShadeShader(source.GetPrim());
+    }
+
     // A node of pluginID named name, its inputs connected in order.
     NodePtr node(const char* pluginID,
                  const char* name,
@@ -139,7 +162,7 @@ TEST_F(USDMaterialTest, TheMaterialIsASourceAtItsOwnPath)
 {
     NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
     ASSERT_TRUE(bool(material));
-    EXPECT_EQ(0, material->getNInputs());
+    EXPECT_EQ(kUSDMaterialInputCount, material->getNInputs());
     EXPECT_EQ(std::string("/Material1"), dynamic_cast<KnobString*>(material->getKnobByName(kSceneParamPrimPath).get())->getValue());
     KnobColor* diffuse = dynamic_cast<KnobColor*>(material->getKnobByName(kUSDMaterialParamDiffuseColor).get());
     KnobDouble* roughness = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDMaterialParamRoughness).get());
@@ -304,4 +327,131 @@ TEST_F(USDMaterialTest, ThePathFollowsARename)
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Chrome")))));
+}
+
+TEST_F(USDMaterialTest, AConstantIntoDiffuseAuthorsOneLiveTexture)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(material));
+    // The connected input wins over the file.
+    setString(material, kUSDMaterialParamDiffuseTexture, std::string("/nonexistent/albedo.exr"));
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader texture = textureOf(stage, "/Material1", "diffuseColor");
+    ASSERT_TRUE(bool(texture));
+    const PXR_NS::UsdAttribute file = texture.GetInput(PXR_NS::TfToken("file")).GetAttr();
+    EXPECT_EQ((std::size_t)0, file.GetNumTimeSamples());
+    PXR_NS::SdfAssetPath path;
+    ASSERT_TRUE(file.Get(&path));
+    const std::string prefix = std::string(kLiveTextureScheme) + "://" + constant->getFullyQualifiedName() + "/rgba?v=";
+    EXPECT_EQ(0u, path.GetAssetPath().rfind(prefix, 0)) << path.GetAssetPath();
+    // The file's warning is not raised: the file is not authored.
+    EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
+
+    // The layer records the texture for consumers to render.
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              material->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    EXPECT_FALSE(sources[0].varying);
+    EXPECT_EQ(path.GetAssetPath(), sources[0].getUri(1.));
+    EXPECT_EQ(path.GetAssetPath(), sources[0].getUri(7.));
+
+    // A geometry the material is grafted under still names it.
+    NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
+    ASSERT_TRUE(bool(card));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              card->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    const LiveTextureSourceList grafted = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, grafted.size());
+    EXPECT_EQ(path.GetAssetPath(), grafted[0].getUri(1.));
+}
+
+TEST_F(USDMaterialTest, AnAnimatedInputAuthorsOneLiveTexturePerFrame)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(material));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    color->setValueAtTime(10., 1., ViewSpec::all(), 0);
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputRoughness));
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader texture = textureOf(stage, "/Material1", "roughness");
+    ASSERT_TRUE(bool(texture));
+    const PXR_NS::UsdAttribute file = texture.GetInput(PXR_NS::TfToken("file")).GetAttr();
+    double first = 0.;
+    double last = 0.;
+    getApp()->getProject()->getFrameRange(&first, &last);
+    std::vector<double> times;
+    ASSERT_TRUE(file.GetTimeSamples(&times));
+    EXPECT_EQ((std::size_t)(std::floor(last) - std::ceil(first) + 1), times.size());
+    std::set<std::string> versions;
+    for (double time : times) {
+        PXR_NS::SdfAssetPath path;
+        ASSERT_TRUE(file.Get(&path, PXR_NS::UsdTimeCode(time)));
+        const std::string uri = path.GetAssetPath();
+        ASSERT_NE(std::string::npos, uri.find("?v=")) << uri;
+        versions.insert(uri.substr(uri.find("?v=")));
+    }
+    EXPECT_EQ(times.size(), versions.size());
+}
+
+TEST_F(USDMaterialTest, AnUpstreamImageEditReauthorsOnlyTheMaterialLayer)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(material));
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputEmissiveColor));
+    NodePtr op = node(kTestPluginIDSceneOp, "Op1", std::vector<NodePtr>(1, material));
+    ASSERT_TRUE(bool(op));
+    KnobInt* upstreamRead = dynamic_cast<KnobInt*>(op->getKnobByName("upstreamRead").get());
+    ASSERT_TRUE(upstreamRead != NULL);
+    upstreamRead->setValue(1);
+    SceneTestOp* opEffect = dynamic_cast<SceneTestOp*>(op->getEffectInstance().get());
+    ASSERT_TRUE(opEffect != NULL);
+
+    auto evaluate = [](const NodePtr& n, ScenePayload* payload) {
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  n->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), payload, &error))
+            << error;
+    };
+    ScenePayload before;
+    evaluate(op, &before);
+    const LiveTextureSourceList sourcesBefore = SceneOps::getLiveTextures(before);
+    ASSERT_EQ((std::size_t)1, sourcesBefore.size());
+    const U64 opAuthored = opEffect->getLayerAuthorCount();
+    const std::vector<SceneLayerEntry> layersBefore = SceneOps::getLayers(before);
+
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValue(0.25, ViewSpec::all(), 1);
+
+    ScenePayload after;
+    evaluate(op, &after);
+    const LiveTextureSourceList sourcesAfter = SceneOps::getLiveTextures(after);
+    ASSERT_EQ((std::size_t)1, sourcesAfter.size());
+    EXPECT_NE(sourcesBefore[0].contentHash, sourcesAfter[0].contentHash);
+    EXPECT_NE(sourcesBefore[0].getUri(1.), sourcesAfter[0].getUri(1.));
+    // The material's layer is new; the op's is the one it had, re-stacked.
+    EXPECT_EQ(opAuthored, opEffect->getLayerAuthorCount());
+    const std::vector<SceneLayerEntry> layersAfter = SceneOps::getLayers(after);
+    ASSERT_EQ(layersBefore.size(), layersAfter.size());
+    ASSERT_LE((std::size_t)2, layersAfter.size());
+    EXPECT_NE(layersBefore[layersBefore.size() - 2].layer, layersAfter[layersAfter.size() - 2].layer);
+    EXPECT_EQ(layersBefore.back().layer, layersAfter.back().layer);
 }

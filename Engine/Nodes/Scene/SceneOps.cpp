@@ -31,6 +31,7 @@
 #include <set>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -157,6 +158,8 @@ bool
 checkUsdRuntime(std::string* errorMessage)
 {
     static const std::string missing = []() {
+        // A no-op once AppManager has registered them; reached first only by code running without it.
+        SceneCaches::registerLiveTextures(nullptr);
         std::string names;
         PXR_NS::PlugRegistry& registry = PXR_NS::PlugRegistry::GetInstance();
         for (const char* name : { "ar", "sdf", "sdr", "usd", "usdGeom", "usdLux", "usdShade" }) {
@@ -302,6 +305,40 @@ getLayers(const ScenePayload& payload)
     std::reverse(layers.begin(), layers.end());
 
     return layers;
+}
+
+namespace {
+    void
+    collectLiveTextures(const ScenePayloadImpl* link,
+                        std::set<const ScenePayloadImpl*>* visited,
+                        std::set<const LiveTextureSourceList*>* seen,
+                        LiveTextureSourceList* sources)
+    {
+        // A link already visited was reached with everything below it.
+        for (; link && visited->insert(link).second; link = link->base.get()) {
+            const SceneLayerEntry& entry = link->top;
+            if (entry.liveTextures && seen->insert(entry.liveTextures.get()).second) {
+                sources->insert(sources->end(), entry.liveTextures->begin(), entry.liveTextures->end());
+            }
+            if (entry.dependencies) {
+                for (const ScenePayload& stack : entry.dependencies->stacks) {
+                    collectLiveTextures(stack.getImpl().get(), visited, seen, sources);
+                }
+            }
+        }
+    }
+} // anonymous namespace
+
+LiveTextureSourceList
+getLiveTextures(const ScenePayload& payload)
+{
+    LiveTextureSourceList sources;
+    std::set<const ScenePayloadImpl*> visited;
+    std::set<const LiveTextureSourceList*> seen;
+
+    collectLiveTextures(payload.getImpl().get(), &visited, &seen, &sources);
+
+    return sources;
 }
 
 SceneMetadata
@@ -1102,6 +1139,8 @@ SceneLayerMemo::produce(const Key& key,
     edit.metersPerUnit = key.metersPerUnit;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
+    LiveTextureSourceList liveTextures;
+    edit.liveTextures = &liveTextures;
     if (!edit.layer) {
         if (errorMessage) {
             *errorMessage = "Could not create a layer for " + layerTag;
@@ -1127,6 +1166,9 @@ SceneLayerMemo::produce(const Key& key,
     SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
     links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
     entry.links = shareLinks(std::move(links));
+    if (!liveTextures.empty()) {
+        entry.liveTextures = std::make_shared<const LiveTextureSourceList>(std::move(liveTextures));
+    }
     _imp->output = SceneOps::appendEntry(upstream, entry);
     _imp->layerHash = layerHash;
     _imp->valid = true;

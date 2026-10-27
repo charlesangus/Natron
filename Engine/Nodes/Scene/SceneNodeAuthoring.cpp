@@ -30,13 +30,16 @@
 #include <cstdint>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Project.h"
 
 #include <pxr/usd/usd/primRange.h>
 
@@ -625,6 +628,57 @@ getTransformMatrixAt(const SceneTransformKnobs& knobs,
                                   PXR_NS::GfVec3d(scale->getValueAtTime(frame, 0) * uniform, scale->getValueAtTime(frame, 1) * uniform, scale->getValueAtTime(frame, 2) * uniform),
                                   PXR_NS::GfVec3d(pivot->getValueAtTime(frame, 0), pivot->getValueAtTime(frame, 1), pivot->getValueAtTime(frame, 2)),
                                   (SceneRotateOrderEnum)rotateOrder->getValue());
+}
+
+bool
+getLiveTextureSource(const EffectInstance& consumer,
+                     int inputNb,
+                     const std::string& layer,
+                     LiveTextureSource* source)
+{
+    const EffectInstancePtr input = consumer.getInput(inputNb);
+    const NodePtr node = input ? input->getNode() : NodePtr();
+
+    if (!node) {
+        return false;
+    }
+    source->node = node;
+    source->consumer = consumer.getNode();
+    source->nodeName = node->getFullyQualifiedName();
+    source->layer = layer;
+    source->contentHash = input->getHash();
+    source->varying = input->isFrameVaryingOrAnimated_Recursive();
+    const AppInstancePtr app = consumer.getApp();
+    if (app && app->getProject()) {
+        app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
+    }
+
+    return true;
+}
+
+void
+appendLiveTextureSource(const LiveTextureSource& source,
+                        ContentHasher* h)
+{
+    h->appendString(source.nodeName);
+    h->appendString(source.layer);
+    h->appendU64(source.contentHash);
+    h->appendBool(source.varying);
+}
+
+LiveTextureSource
+recordLiveTexture(const SceneLayerEdit& edit,
+                  const LiveTextureSource& source)
+{
+    LiveTextureSource recorded = source;
+
+    recorded.firstFrame = edit.firstFrame;
+    recorded.lastFrame = edit.lastFrame;
+    if (edit.liveTextures) {
+        edit.liveTextures->push_back(recorded);
+    }
+
+    return recorded;
 }
 
 } // namespace SceneNodeAuthoring

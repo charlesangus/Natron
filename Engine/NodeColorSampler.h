@@ -50,6 +50,16 @@ ImagePtr renderNodeImage(const NodePtr& node,
                          RectI* renderedRect);
 
 /**
+ * @brief As renderNodeImage(), over the whole region of definition at full scale, with an infinite
+ * side clipped to the project format.
+ **/
+ImagePtr renderNodeImageOverDefinition(const NodePtr& node,
+                                       double time,
+                                       ViewIdx view,
+                                       const ImageLayerDesc& layer,
+                                       RectI* renderedRect);
+
+/**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on
  * the calling thread, and writes the mean of every rendered pixel of layer to rgba. Asking for the
  * time, view, scale and layer the viewer last rendered makes this a cache lookup in the usual case.

@@ -21,3 +21,4 @@ Acceptance sketch:
 - Multi-statement `ret` bodies and anything that calls Python objects other than knob reads: always Python.
 **Assumptions:**
 - Knob reads need the owning value locks only, so a native resolver can run without the GIL.
+- Name resolution reuses the group-owned native resolver if M263 - Expression Interpreter Overhead built one (the shim path chosen by M266 - Expression Namespace Spike); otherwise this milestone builds it.

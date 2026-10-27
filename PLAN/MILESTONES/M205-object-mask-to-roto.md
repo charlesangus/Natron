@@ -52,7 +52,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
 
 ## Phase 205.1: Segmentation core
 
-- [ ] M205.P1.T1 — Segmentation API: encoder, embedding cache and decoder
+- [x] M205.P1.T1 — Segmentation API: encoder, embedding cache and decoder
   - files: new `Engine/Ai/Segmentation.h`, `Engine/Ai/Segmentation.cpp`, `Engine/CMakeLists.txt`
   - approach:
     - Port darktable `src/common/ai/segmentation.c` at the `DARKTABLE_REF` in `tools/ci/local/fetch-assets.sh`. If the 5.6.2 pin lacks #21492's generalised form, take the file from the darktable master SHA recorded in `## Decisions`.
@@ -62,7 +62,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
   - verify: P1.T3's tests pass.
   - size: L
 
-- [ ] M205.P1.T2 — Mask tracing to Bezier curves
+- [x] M205.P1.T2 — Mask tracing to Bezier curves
   - files: new `Engine/Ai/MaskTrace.h`, `Engine/Ai/MaskTrace.cpp`
   - approach:
     - Marching squares on the thresholded mask gives closed contours with an outer/hole classification by signed area. Drop contours under `minArea`.
@@ -71,7 +71,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
   - verify: P1.T3's tests pass.
   - size: L
 
-- [ ] M205.P1.T3 — Test segmentation and tracing
+- [x] M205.P1.T3 — Test segmentation and tracing
   - files: new `Tests/Ai/Segmentation_Test.cpp`, new `Tests/Ai/MaskTrace_Test.cpp`, `Tests/fixtures/ai/` (README)
   - approach:
     - **MaskTrace** uses synthetic masks: a disc traces to one Bezier within 0.5 px Hausdorff, a ring gives one outer and one hole, and a blob below `minArea` is dropped.
@@ -82,7 +82,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
 
 ## Phase 205.2: Roto tool
 
-- [ ] M205.P2.T1 — "Object select" tool and its knobs
+- [x] M205.P2.T1 — "Object select" tool and its knobs
   - files: `Engine/RotoCurveInteract.h`, `Engine/RotoCurveInteract.cpp` (from M146), `Engine/RotoPaint.cpp`, new `Engine/RotoObjectSelect.h`, `Engine/RotoObjectSelect.cpp`
   - approach:
     - Register the tool through M146's toolbar builder, with the Scope's knobs.
@@ -91,7 +91,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
   - verify: P2.T3's GUI script passes.
   - size: L
 
-- [ ] M205.P2.T2 — Preview overlay and commit to Beziers
+- [x] M205.P2.T2 — Preview overlay and commit to Beziers
   - files: `Engine/RotoObjectSelect.cpp`, `Engine/RotoUndoCommand.h`, `Engine/RotoUndoCommand.cpp`
   - approach:
     - Draw the preview contours as line loops and the prompts as handles: green for positive, red for negative.
@@ -100,7 +100,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
   - verify: P2.T3's GUI script passes, and undo removes the shapes.
   - size: M
 
-- [ ] M205.P2.T3 — GUI test and docs
+- [x] M205.P2.T3 — GUI test and docs
   - files: new `Tests/gui/test_roto_object_select.py` (follow the existing Xvfb GUI test layout), `Engine/Nodes/README.md` or the Roto doc page, `Engine/Ai/README.md`
   - approach:
     - Under Xvfb (recipe in `build/deeprepro/run-gui.sh`), the script builds a Read of a fixture still and a Roto node, picks Object select, and synthesises a click.
@@ -114,3 +114,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
 - The Xvfb object-select script passes with SegNext installed.
 - Screenshots of the prompt preview and the committed Beziers on a real plate are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — PM: Segmentation.cpp is a GPL-3.0-or-later darktable port, consistent with the other E16/E17 ports (the binary is effectively GPLv3). SAM 2.1 stays in the manifest with M204's research-only training-data warning before download; SegNext is the default. Knobs carry an `object` prefix (Roto already has `feather`). Box prompts are SAM-only.

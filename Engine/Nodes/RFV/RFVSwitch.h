@@ -182,6 +182,14 @@ private:
     Outcome evaluate(double time, ViewIdx view) const;
 
     /**
+     * @brief For an integer object read from the project variable name when that is a Choice: the
+     * label of the option it indexes. False, leaving label alone, otherwise.
+     **/
+    bool choiceLabel(const std::string& name,
+                     PyObject* object,
+                     std::string* label) const;
+
+    /**
      * @brief The variable as rfv gives it to an expression of this node at time and view, as the
      * text patterns are matched against (see kRFVSwitchParamPatternHint). False when it is unset;
      * error then receives why, if the read failed.

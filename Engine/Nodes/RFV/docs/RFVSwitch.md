@@ -28,7 +28,7 @@ Every variable is matched as text, and the error message shows the same text:
 | String | `sh010` | `sh010` |
 | Boolean | on | `True` |
 | Integer | `12` | `12` |
-| Choice | second option | `1` (its index) |
+| Choice | second option | its label, the text the menu shows |
 | Floating point | `5.0` | `5` |
 | Floating point | `0.1` | `0.1` (the shortest text that reads back as the same number) |
 | 2D/3D/Color | `1920, 1080` | `1920, 1080` (the items' text joined by `, `, without brackets, since `[` opens a glob class) |

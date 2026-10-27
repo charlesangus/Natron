@@ -593,8 +593,14 @@ TEST_F(RFVSwitchTest, AddAndRemoveRowsMoveTheInputsWithThem)
     setPatterns(rfvSwitch, std::string(kRFVSwitchInputCount - 1, '\n'));
     EXPECT_EQ(kRFVSwitchInputCount, patternCountOf(rfvSwitch)->getValue());
     EXPECT_TRUE(buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, 0)->getIsSecret());
+    connectNodes(b, rfvSwitch, kRFVSwitchInputCount - 1, true);
+    const std::string full = patternsOf(rfvSwitch);
     buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, 0)->trigger();
+    buttonOf(rfvSwitch, kRFVSwitchParamAddAfter, kRFVSwitchInputCount - 1)->trigger();
     EXPECT_EQ(kRFVSwitchInputCount, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(full, patternsOf(rfvSwitch));
+    EXPECT_EQ(a, rfvSwitch->getRealInput(0));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(kRFVSwitchInputCount - 1));
 }
 
 // Every variable type is matched as its text: the second row, choosing input 1, is the
@@ -615,8 +621,8 @@ TEST_F(RFVSwitchTest, EveryVariableTypeIsMatchedAsItsText)
     KnobChoicePtr mode = project->createChoiceKnob("mode", "mode");
     ASSERT_TRUE(RFV::addAsVariable(project.get(), mode, &error)) << error;
     std::vector<ChoiceOption> options;
-    options.push_back(ChoiceOption("low", "", ""));
-    options.push_back(ChoiceOption("high", "", ""));
+    options.push_back(ChoiceOption("low", "Low Quality", ""));
+    options.push_back(ChoiceOption("high", "High Quality", ""));
     mode->populateChoices(options);
     mode->setValue(1);
 
@@ -656,7 +662,7 @@ TEST_F(RFVSwitchTest, EveryVariableTypeIsMatchedAsItsText)
     const Case cases[] = {
         { "flag", "True", "true" },
         { "take", "12", "12.0" },
-        { "mode", "1", "high" },
+        { "mode", "High Quality", "Low Quality" },
         { "whole", "5", "5.0" },
         { "fraction", "0.1", "0.10000000000000001" },
         { "size", "1920, 1080", "[1920, 1080]" },
@@ -691,6 +697,12 @@ TEST_F(RFVSwitchTest, EveryVariableTypeIsMatchedAsItsText)
     float pixel = 0.f;
     EXPECT_FALSE(renderPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., true, &pixel, &error));
     EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("scale = \"1, 2.5, -3\""))) << messageOf(rfvSwitch).toStdString();
+
+    // A choice shows, and matches, the label of its option rather than its index.
+    variable->setValue("mode");
+    setPatterns(rfvSwitch, "nothing");
+    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., true, &pixel, &error));
+    EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("mode = \"High Quality\""))) << messageOf(rfvSwitch).toStdString();
 } // EveryVariableTypeIsMatchedAsItsText
 
 // The message is what the latest render decided under the context it reached the switch with:

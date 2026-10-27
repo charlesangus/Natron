@@ -442,6 +442,37 @@ RFVSwitch::refreshInputsVisibility()
     }
 }
 
+// A Choice variable is its option's label, the text its menu shows: rfv gives only the index.
+bool
+RFVSwitch::choiceLabel(const std::string& name,
+                       PyObject* object,
+                       std::string* label) const
+{
+    if (!PyLong_Check(object) || PyBool_Check(object)) {
+        return false;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    KnobChoicePtr choice = project ? std::dynamic_pointer_cast<KnobChoice>(RFV::findDeclaredVariable(project.get(), name)) : KnobChoicePtr();
+    if (!choice) {
+        return false;
+    }
+    const long index = PyLong_AsLong(object);
+    if (PyErr_Occurred()) {
+        PyErr_Clear();
+
+        return false;
+    }
+    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+    if ((index < 0) || (index >= (long)entries.size())) {
+        return false;
+    }
+    const ChoiceOption& entry = entries[index];
+    *label = entry.label.empty() ? entry.id : entry.label;
+
+    return true;
+}
+
 bool
 RFVSwitch::readVariable(const std::string& name,
                         double time,
@@ -465,7 +496,9 @@ RFVSwitch::readVariable(const std::string& name,
     }
     bool found = false;
     if (object != Py_None) {
-        if (canonicalText(object, value)) {
+        if (choiceLabel(name, object, value)) {
+            found = true;
+        } else if (canonicalText(object, value)) {
             found = true;
         } else {
             *error = takePythonError();

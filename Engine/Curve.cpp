@@ -29,6 +29,7 @@
 #include <cassert>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
@@ -490,6 +491,48 @@ Curve::cloneAndCheckIfChanged(const Curve& other)
     }
 
     return hasChanged;
+}
+
+void
+Curve::copyKeyFrameFrom(const Curve& other,
+                        double time)
+{
+    if (&other == this) {
+        return;
+    }
+    // The first and last keys of a periodic curve are each other's neighbours.
+    if (other.isCurvePeriodic() || isCurvePeriodic()) {
+        clone(other);
+
+        return;
+    }
+
+    KnobContentWrite write;
+    std::vector<KeyFrame> span;
+    {
+        QMutexLocker l(&other._imp->_lock);
+        const KeyFrameSet& keys = other._imp->keyFrames;
+        const KeyFrame probe(time, 0.);
+        KeyFrameSet::const_iterator first = keys.lower_bound(probe);
+        if (first != keys.begin()) {
+            --first;
+        }
+        KeyFrameSet::const_iterator last = keys.upper_bound(probe);
+        if (last != keys.end()) {
+            ++last;
+        }
+        span.assign(first, last);
+    }
+
+    const double spanStart = span.empty() ? time : std::min(time, span.front().getTime());
+    const double spanEnd = span.empty() ? time : std::max(time, span.back().getTime());
+
+    QMutexLocker l(&_imp->_lock);
+    KeyFrameSet::iterator eraseStart = _imp->keyFrames.lower_bound(KeyFrame(spanStart, 0.));
+    KeyFrameSet::iterator eraseEnd = _imp->keyFrames.upper_bound(KeyFrame(spanEnd, 0.));
+    _imp->keyFrames.erase(eraseStart, eraseEnd);
+    _imp->keyFrames.insert(span.begin(), span.end());
+    onCurveChanged();
 }
 
 void

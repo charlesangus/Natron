@@ -32,6 +32,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
@@ -408,7 +409,11 @@ struct BezierPrivate
     bool finished; //< when finished is true, the last point of the list is connected to the first point of the list.
     bool isOpenBezier;
     mutable QMutex guiCopyMutex;
-    bool mustCopyGui;
+    // What edits made during a render left in the GUI copy only, for dequeueGuiActions() to write
+    // back: everything, every point at some times, or some points at every time.
+    bool guiDirtyAll;
+    std::set<double> guiDirtyTimes;
+    std::set<BezierCPPtr> guiDirtyPoints;
 
     BezierPrivate(bool isOpenBezier)
         : points()
@@ -421,15 +426,52 @@ struct BezierPrivate
         , finished(false)
         , isOpenBezier(isOpenBezier)
         , guiCopyMutex()
-        , mustCopyGui(false)
+        , guiDirtyAll(false)
+        , guiDirtyTimes()
+        , guiDirtyPoints()
     {
     }
 
-    void setMustCopyGuiBezier(bool copy)
+    void markGuiDirtyAll()
     {
         QMutexLocker k(&guiCopyMutex);
 
-        mustCopyGui = copy;
+        guiDirtyAll = true;
+    }
+
+    void markGuiDirtyAtTime(double time)
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        if (!guiDirtyAll) {
+            guiDirtyTimes.insert(time);
+        }
+    }
+
+    void markGuiDirtyPoint(const BezierCPPtr& point)
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        if (!guiDirtyAll && point) {
+            guiDirtyPoints.insert(point);
+        }
+    }
+
+    // Moves the pending write-back into the arguments; false when there is none.
+    bool takeGuiDirty(bool* all,
+                      std::set<double>* times,
+                      std::set<BezierCPPtr>* dirtyPoints)
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        *all = guiDirtyAll;
+        times->swap(guiDirtyTimes);
+        dirtyPoints->swap(guiDirtyPoints);
+        guiDirtyAll = false;
+        guiDirtyTimes.clear();
+        guiDirtyPoints.clear();
+
+        return *all || !times->empty() || !dirtyPoints->empty();
     }
 
     bool hasKeyframeAtTime(bool useGuiCurves,
@@ -455,6 +497,28 @@ struct BezierPrivate
             return;
         }
         points.front()->getKeyframeTimes(useGuiCurves, times);
+    }
+
+    // The shared pointer the shape holds to a control or feather point, or null.
+    BezierCPPtr findOwnedPoint(const BezierCP* point) const
+    {
+        // PRIVATE - should not lock
+
+        if (!point) {
+            return BezierCPPtr();
+        }
+        for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
+            if (it->get() == point) {
+                return *it;
+            }
+        }
+        for (BezierCPs::const_iterator it = featherPoints.begin(); it != featherPoints.end(); ++it) {
+            if (it->get() == point) {
+                return *it;
+            }
+        }
+
+        return BezierCPPtr();
     }
 
     BezierCPs::const_iterator atIndex(int index) const

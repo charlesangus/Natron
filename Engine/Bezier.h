@@ -613,6 +613,38 @@ private:
 
     void copyInternalPointsToGuiPoints();
 
+    /**
+     * @brief Copies every control and feather point at time, and the orientation around time,
+     * to the GUI copy. The GUI copy must hold the internal state everywhere else.
+     **/
+    void copyInternalPointsToGuiAtTime(double time);
+
+    /**
+     * @brief Copies one control point and its feather point, either of which may be null, at
+     * every time to the GUI copy.
+     **/
+    void copyInternalPointToGui(BezierCP* cp, BezierCP* fp);
+
+    /**
+     * @brief Copies one control point and its feather point, either of which may be null, at
+     * time only to the GUI copy.
+     **/
+    void copyInternalPointToGuiAtTime(BezierCP* cp, BezierCP* fp, double time);
+
+    /**
+     * @brief Copies the orientation cached between the keyframes either side of time, and the
+     * orientation of an unkeyed shape, from one side of the GUI copy to the other.
+     **/
+    void copyOrientationAroundTime(bool toGui, double time);
+
+    /**
+     * @brief After an edit at time of a control point and its feather point, either of which may
+     * be null, brings the GUI copy up to date, or during a render records what dequeueGuiActions()
+     * must write back. allTimes tells that the edit changed the points at every keyframe, and
+     * keyedAllPoints that its auto-key keyed every point at time. Takes itemMutex.
+     **/
+    void syncGuiAfterEdit(bool useGuiCurve, const BezierCPPtr& cp, const BezierCPPtr& fp, double time, bool allTimes, bool keyedAllPoints);
+
 public:
     void toSerialization(Serialization::BezierSerialization* serialization) const;
     void fromSerialization(const Serialization::BezierSerialization& serialization);

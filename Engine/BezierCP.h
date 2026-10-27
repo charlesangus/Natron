@@ -131,6 +131,12 @@ public:
 
     void getKeyframeTimes(bool useGuiCurves, std::set<double>* times) const;
 
+    /**
+     * @brief The times of the keyframes just before and just after time, or -infinity and
+     * +infinity where there is none.
+     **/
+    void getKeyframeTimesAround(bool useGuiCurves, double time, double* before, double* after) const;
+
     void getKeyFrames(bool useGuiCurves, std::list<std::pair<double, KeyframeTypeEnum> >* keys) const;
 
     int getKeyFrameIndex(bool useGuiCurves, double time) const;
@@ -164,6 +170,18 @@ public:
     void cloneInternalCurvesToGuiCurves();
 
     void cloneGuiCurvesToInternalCurves();
+
+    /**
+     * @brief Mirrors the internal keyframe at time, or its absence, and its neighbours onto the
+     * GUI curves (see Curve::copyKeyFrameFrom()), along with the static positions. The GUI
+     * curves must otherwise equal the internal ones.
+     **/
+    void cloneInternalCurvesToGuiCurvesAtTime(double time);
+
+    /**
+     * @brief The reverse of cloneInternalCurvesToGuiCurvesAtTime().
+     **/
+    void cloneGuiCurvesToInternalCurvesAtTime(double time);
 
     /**
      * @brief Appends the state renders read: the internal curves and static positions of the

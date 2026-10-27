@@ -86,6 +86,7 @@ set(Tests_SOURCES
     RotoContentHash_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
+    BezierIncrementalCopy_Test.cpp
     RotoUndoGesture_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp

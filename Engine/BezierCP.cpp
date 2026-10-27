@@ -493,6 +493,19 @@ BezierCP::getKeyframeTimes(bool useGuiCurves,
 }
 
 void
+BezierCP::getKeyframeTimesAround(bool useGuiCurves,
+                                 double time,
+                                 double* before,
+                                 double* after) const
+{
+    const Curve* curve = useGuiCurves ? _imp->guiCurveX.get() : _imp->curveX.get();
+    KeyFrame k;
+
+    *before = curve->getPreviousKeyframeTime(time, &k) ? k.getTime() : -std::numeric_limits<double>::infinity();
+    *after = curve->getNextKeyframeTime(time, &k) ? k.getTime() : std::numeric_limits<double>::infinity();
+}
+
+void
 BezierCP::getKeyFrames(bool useGuiCurves,
                        std::list<std::pair<double, KeyframeTypeEnum> >* keys) const
 {
@@ -1010,6 +1023,44 @@ BezierCP::cloneGuiCurvesToInternalCurves()
     _imp->curveLeftBezierY->clone(*_imp->guiCurveLeftBezierY);
     _imp->curveRightBezierX->clone(*_imp->guiCurveRightBezierX);
     _imp->curveRightBezierY->clone(*_imp->guiCurveRightBezierY);
+
+    QMutexLocker k(&_imp->staticPositionMutex);
+    _imp->x = _imp->guiX;
+    _imp->y = _imp->guiY;
+    _imp->leftX = _imp->guiLeftX;
+    _imp->leftY = _imp->guiLeftY;
+    _imp->rightX = _imp->guiRightX;
+    _imp->rightY = _imp->guiRightY;
+}
+
+void
+BezierCP::cloneInternalCurvesToGuiCurvesAtTime(double time)
+{
+    _imp->guiCurveX->copyKeyFrameFrom(*_imp->curveX, time);
+    _imp->guiCurveY->copyKeyFrameFrom(*_imp->curveY, time);
+    _imp->guiCurveLeftBezierX->copyKeyFrameFrom(*_imp->curveLeftBezierX, time);
+    _imp->guiCurveLeftBezierY->copyKeyFrameFrom(*_imp->curveLeftBezierY, time);
+    _imp->guiCurveRightBezierX->copyKeyFrameFrom(*_imp->curveRightBezierX, time);
+    _imp->guiCurveRightBezierY->copyKeyFrameFrom(*_imp->curveRightBezierY, time);
+
+    QMutexLocker k(&_imp->staticPositionMutex);
+    _imp->guiX = _imp->x;
+    _imp->guiY = _imp->y;
+    _imp->guiLeftX = _imp->leftX;
+    _imp->guiLeftY = _imp->leftY;
+    _imp->guiRightX = _imp->rightX;
+    _imp->guiRightY = _imp->rightY;
+}
+
+void
+BezierCP::cloneGuiCurvesToInternalCurvesAtTime(double time)
+{
+    _imp->curveX->copyKeyFrameFrom(*_imp->guiCurveX, time);
+    _imp->curveY->copyKeyFrameFrom(*_imp->guiCurveY, time);
+    _imp->curveLeftBezierX->copyKeyFrameFrom(*_imp->guiCurveLeftBezierX, time);
+    _imp->curveLeftBezierY->copyKeyFrameFrom(*_imp->guiCurveLeftBezierY, time);
+    _imp->curveRightBezierX->copyKeyFrameFrom(*_imp->guiCurveRightBezierX, time);
+    _imp->curveRightBezierY->copyKeyFrameFrom(*_imp->guiCurveRightBezierY, time);
 
     QMutexLocker k(&_imp->staticPositionMutex);
     _imp->x = _imp->guiX;

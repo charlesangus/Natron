@@ -209,6 +209,14 @@ public:
     bool cloneAndCheckIfChanged(const Curve& other);
 
     /**
+     * @brief Makes the keyframes from the one before time to the one after time those of other:
+     * its keyframe at time, or the lack of one, and the neighbours whose derivatives adding,
+     * moving or removing it refreshed. Derivatives are copied, not recomputed. The keyframes
+     * outside that span must already equal other's; a periodic curve is cloned whole.
+     **/
+    void copyKeyFrameFrom(const Curve& other, double time);
+
+    /**
      * @brief Same as the other version clone except that keyframes will be offset by the given offset
      * and only the keyframes lying in the given range will be copied.
      **/

@@ -156,53 +156,9 @@ const char* const kBannedKnobNames[] = {
     "inputAlpha",
 };
 
-// OFX plug-ins that still declare a banned knob at the pinned openfx-misc or openfx-io and that
-// M145 - OFX Fork Plugin Purge deletes once their port lands. Remove each entry with that deletion.
+// OFX plug-ins that still load and declare a banned knob at the pinned openfx-misc.
 const char* const kExemptOfxPluginIDs[] = {
-    // M122 - Native Colour Utilities
-    "net.sf.openfx.ColorMatrixPlugin",
-    "net.sf.openfx.ColorSuppress",
-    "net.sf.openfx.HSVToolPlugin",
-    "net.sf.openfx.HueCorrect",
-    "net.sf.openfx.HueCorrect1",
-    "net.sf.openfx.HueKeyer",
-    "net.sf.openfx.Premult",
-    "net.sf.openfx.Unpremult",
-    "net.sf.openfx.RGBToHSV",
-    "net.sf.openfx.HSVToRGB",
-    "net.sf.openfx.RGBToHSL",
-    "net.sf.openfx.HSLToRGB",
-    "net.sf.openfx.RGBToHSI",
-    "net.sf.openfx.HSIToRGB",
-    "net.sf.openfx.RGBToYCbCr601",
-    "net.sf.openfx.YCbCrToRGB601",
-    "net.sf.openfx.RGBToYCbCr709",
-    "net.sf.openfx.YCbCrToRGB709",
-    "net.sf.openfx.RGBToYPbPr601",
-    "net.sf.openfx.YPbPrToRGB601",
-    "net.sf.openfx.RGBToYPbPr709",
-    "net.sf.openfx.YPbPrToRGB709",
-    "net.sf.openfx.RGBToYUV601",
-    "net.sf.openfx.YUVToRGB601",
-    "net.sf.openfx.RGBToYUV709",
-    "net.sf.openfx.YUVToRGB709",
-    "net.sf.openfx.RGB709ToXYZ",
-    "net.sf.openfx.XYZToRGB709",
-    "net.sf.openfx.RGB709ToLab",
-    "net.sf.openfx.LabToRGB709",
-    "net.sf.openfx.XYZToLab",
-    "net.sf.openfx.LabToXYZ",
-    "net.sf.openfx.XYZToxyY",
-    "net.sf.openfx.xyYToXYZ",
-    // M130 - Native Edge-Preserving And Directional Filters
     "net.sf.openfx.GodRays",
-    // M127 - Native OCIO Nodes
-    "fr.inria.openfx.OCIOCDLTransform",
-    "fr.inria.openfx.OCIOColorSpace",
-    "fr.inria.openfx.OCIODisplay",
-    "fr.inria.openfx.OCIOFileTransform",
-    "fr.inria.openfx.OCIOLogConvert",
-    "fr.inria.openfx.OCIOLookTransform",
 };
 
 } // anonymous namespace

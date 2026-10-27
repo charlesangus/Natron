@@ -56,6 +56,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OfxEffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
@@ -728,14 +729,13 @@ TEST_F(ChannelSetRenderTest, OfxUnPremultByIsHostOwnedAndOldPremultFamilyGone)
     EXPECT_TRUE(pointMatrix->getKnobByName("premultChanged").get() == NULL);
 }
 
-// CImgBlur stays OFX after M145 and gets premultChanged from the shared CImgFilter helper, so
-// it stands for every CImg filter: the host no longer hides the param, the fork no longer has it.
 TEST_F(ChannelSetRenderTest, LastingOfxPluginHasNoPremultChanged)
 {
     KnobChannelSetPtr channels;
-    NodePtr blur = createEffectOnReader(QString::fromUtf8("net.sf.cimg.CImgBlur"), &channels);
-    ASSERT_TRUE(bool(blur));
-    EXPECT_TRUE(blur->getKnobByName("premultChanged").get() == NULL);
+    NodePtr denoise = createEffectOnReader(QString::fromUtf8("net.sf.cimg.CImgDenoise"), &channels);
+    ASSERT_TRUE(bool(denoise));
+    ASSERT_TRUE(std::dynamic_pointer_cast<OfxEffectInstance>(denoise->getEffectInstance()) != NULL);
+    EXPECT_TRUE(denoise->getKnobByName("premultChanged").get() == NULL);
 }
 
 // --- Invert (net.sf.openfx.Invert) -------------------------------------------------------

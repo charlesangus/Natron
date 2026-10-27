@@ -367,7 +367,7 @@ deviceGate(AiDeviceEnum device,
     static std::mutex mutex;
     static std::map<std::string, std::unique_ptr<DeviceGate>>* gates = new std::map<std::string, std::unique_ptr<DeviceGate>>();
     const bool cpu = (device == eAiDeviceCpu);
-    const std::string key = cpu ? std::string("cpu") : std::string(InferenceSession::providerName(device)) + ":" + std::to_string(gpuIndex);
+    const std::string key = InferenceSession::deviceGateKey(device, gpuIndex);
     std::lock_guard<std::mutex> lock(mutex);
     std::unique_ptr<DeviceGate>& gate = (*gates)[key];
 
@@ -542,6 +542,28 @@ InferenceSession::providerName(AiDeviceEnum device)
     }
 
     return "CPUExecutionProvider";
+}
+
+std::string
+InferenceSession::deviceGateKey(AiDeviceEnum device,
+                                int gpuIndex)
+{
+    const std::string index = std::to_string(gpuIndex);
+
+    switch (device) {
+    case eAiDeviceCuda:
+        return "nvidia:" + index;
+    case eAiDeviceMigraphx:
+    case eAiDeviceRocm:
+        return "amd:" + index;
+    case eAiDeviceOpenvino:
+        return "intel:" + index;
+    case eAiDeviceAuto:
+    case eAiDeviceCpu:
+        break;
+    }
+
+    return "cpu";
 }
 
 std::vector<AiDeviceEnum>
@@ -893,7 +915,9 @@ InferenceSession::runNamed(const std::map<std::string, const Tensor*>& inputs,
         }
     }
 
-    if (terminated) {
+    // A run that finishes between the abort firing and the watcher's next poll still returns
+    // outputs, which must not reach a caller that has given up on them.
+    if (terminated || (abort && abort())) {
         if (status) {
             api->ReleaseStatus(status);
         }

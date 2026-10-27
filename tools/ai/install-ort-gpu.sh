@@ -10,13 +10,17 @@
 # --cuda   downloads Microsoft's official CUDA release of the ONNX Runtime
 #          version Natron bundles (ONNXRUNTIME_VERSION in
 #          tools/ci/local/fetch-assets.sh), for CUDA 12 or 13, and checks its
-#          sha256 before unpacking it.
+#          sha256 before unpacking it. Without a version it picks the newest
+#          installed CUDA runtime (libcudart, nvcc) the driver supports.
 # --rocm   builds ONNX Runtime from source with the MIGraphX execution
 #          provider against the installed ROCm, as Microsoft publishes no
 #          AMD build. The source is the release tag matching the installed
 #          ROCm (the pinned version for ROCm newer than its table here),
 #          checked against the tag's pinned commit. ONNX Runtime dropped its
 #          separate ROCm execution provider in 1.23; MIGraphX is the AMD path.
+#
+# Each install goes into its own onnxruntime-<version>-<provider>.* folder
+# beside onnxruntime/, which becomes a symlink switched to it once complete.
 #
 # usage: install-ort-gpu.sh (--cuda [12|13] | --rocm) [--prefix <dir>]
 #                           [--dry-run] [--force] [-y]
@@ -47,7 +51,7 @@ ORT_VERSION_COMMIT="6af1a932e2286d5c58166085d24c68783033edee"
 STAMP_NAME=".natron-onnxruntime-gpu"
 
 usage() {
-    sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -118,17 +122,78 @@ confirm() {
     }
 }
 
-# Moves a finished install into TARGET, replacing any earlier one only once
-# the new one is complete.
-install_staged() {
-    local staged="$1" want="$2"
-    echo "${want}" >"${staged}/${STAMP_NAME}"
-    rm -rf "${TARGET}.old"
-    if [ -e "${TARGET}" ]; then
-        mv "${TARGET}" "${TARGET}.old"
+# Installs live in uniquely named directories next to TARGET, and TARGET is a
+# symlink to the current one, swapped with a rename so Natron never sees a
+# half-written install. The one it replaces is kept, as a running Natron may
+# still load provider libraries from it; any older ones are removed.
+STAGED=""
+DOWNLOAD=""
+BUILD_DIR=""
+LINK_TMP=""
+
+cleanup() {
+    if [ -n "${STAGED}" ]; then
+        rm -rf "${STAGED:?}"
     fi
-    mv "${staged}" "${TARGET}"
-    rm -rf "${TARGET}.old"
+    if [ -n "${DOWNLOAD}" ]; then
+        rm -f "${DOWNLOAD:?}"
+    fi
+    if [ -n "${LINK_TMP}" ]; then
+        rm -f "${LINK_TMP:?}"
+    fi
+    if [ -n "${BUILD_DIR}" ]; then
+        rm -rf "${BUILD_DIR:?}"
+    fi
+}
+trap cleanup EXIT
+
+# Serialises installs into one prefix, for the life of the script.
+lock_prefix() {
+    mkdir -p "${PREFIX}"
+    exec 9>"${PREFIX}/.onnxruntime.lock"
+    flock -n 9 || die "another install into ${PREFIX} is running"
+}
+
+# Creates the empty directory a new install is staged in, named for what it
+# holds, and records it for cleanup until it is installed.
+make_staging_dir() {
+    local name="$1"
+    STAGED=$(mktemp -d "${PREFIX}/onnxruntime-${name}.XXXXXX")
+}
+
+install_staged() {
+    local want="$1"
+    local previous=""
+    echo "${want}" >"${STAGED}/${STAMP_NAME}"
+    chmod 755 "${STAGED}"
+
+    if [ -L "${TARGET}" ]; then
+        previous=$(readlink "${TARGET}")
+    elif [ -e "${TARGET}" ]; then
+        # A plain directory from an older install: moved aside, never deleted
+        # here, and pruned like any superseded install next time.
+        previous=$(basename "$(mktemp -d "${PREFIX}/onnxruntime-previous.XXXXXX")")
+        mv -T "${TARGET}" "${PREFIX}/${previous}"
+    fi
+
+    LINK_TMP="${PREFIX}/.onnxruntime.link.$$"
+    ln -sfn "$(basename "${STAGED}")" "${LINK_TMP}"
+    mv -T "${LINK_TMP}" "${TARGET}"
+    LINK_TMP=""
+    local current
+    current=$(basename "${STAGED}")
+    STAGED=""
+
+    local dir name
+    for dir in "${PREFIX:?}"/onnxruntime-*.??????; do
+        if [ ! -d "${dir}" ] || [ -L "${dir}" ]; then
+            continue
+        fi
+        name=$(basename "${dir}")
+        if [ "${name}" != "${current}" ] && [ "${name}" != "${previous}" ]; then
+            rm -rf "${PREFIX:?}/${name:?}"
+        fi
+    done
 }
 
 already_installed() {
@@ -136,29 +201,94 @@ already_installed() {
     [ "${FORCE}" -eq 0 ] && [ -f "${TARGET}/${STAMP_NAME}" ] && [ "$(cat "${TARGET}/${STAMP_NAME}")" = "${want}" ]
 }
 
-detect_cuda_major() {
-    local v=""
+# The CUDA majors whose runtime (libcudart) the dynamic loader can find, or
+# whose toolkit nvcc reports, one per line.
+installed_cuda_runtimes() {
+    local dir
+    {
+        ldconfig -p 2>/dev/null | grep -oP 'libcudart\.so\.\K[0-9]+' || true
+        local dirs=()
+        IFS=: read -ra dirs <<<"${LD_LIBRARY_PATH:-}"
+        dirs+=("${CUDA_HOME:-/usr/local/cuda}/lib64" /usr/local/cuda/lib64 /usr/local/cuda-*/lib64 /usr/lib/x86_64-linux-gnu /usr/lib64)
+        for dir in "${dirs[@]}"; do
+            [ -n "${dir}" ] && [ -d "${dir}" ] || continue
+            find "${dir}" -maxdepth 1 -name 'libcudart.so.*' -printf '%f\n' 2>/dev/null \
+                | grep -oP '^libcudart\.so\.\K[0-9]+' || true
+        done
+        local nvcc
+        for nvcc in "$(command -v nvcc 2>/dev/null || true)" "${CUDA_HOME:-/usr/local/cuda}/bin/nvcc"; do
+            [ -n "${nvcc}" ] && [ -x "${nvcc}" ] || continue
+            "${nvcc}" --version 2>/dev/null | grep -oP 'release \K[0-9]+' || true
+        done
+    } | sort -nu
+}
+
+# The newest CUDA major the NVIDIA driver supports, empty when nvidia-smi is
+# missing or says nothing.
+driver_cuda_major() {
     if command -v nvidia-smi >/dev/null 2>&1; then
-        # The highest CUDA version the driver supports, from the banner.
-        v=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version:\s*\K[0-9]+' | head -1 || true)
+        nvidia-smi 2>/dev/null | grep -oP 'CUDA Version:\s*\K[0-9]+' | head -1 || true
     fi
-    if [ -z "${v}" ] && command -v nvcc >/dev/null 2>&1; then
-        v=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+' | head -1 || true)
+}
+
+have_cudnn9() {
+    local cache
+    cache=$(ldconfig -p 2>/dev/null || true)
+    [[ "${cache}" == *"libcudnn.so.9 "* ]] && return 0
+    local dir dirs=()
+    IFS=: read -ra dirs <<<"${LD_LIBRARY_PATH:-}"
+    dirs+=("${CUDA_HOME:-/usr/local/cuda}/lib64" /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu /usr/lib64)
+    for dir in "${dirs[@]}"; do
+        [ -n "${dir}" ] && [ -e "${dir}/libcudnn.so.9" ] && return 0
+    done
+    return 1
+}
+
+# Picks the CUDA build from the installed runtime: the newest of 12 and 13
+# that is installed and that the driver supports.
+select_cuda_major() {
+    local driver runtimes major chosen=""
+    driver=$(driver_cuda_major)
+    runtimes=$(installed_cuda_runtimes)
+    for major in ${runtimes}; do
+        if [ "${major}" != 12 ] && [ "${major}" != 13 ]; then
+            continue
+        fi
+        if [ -n "${driver}" ] && [ "${major}" -gt "${driver}" ]; then
+            echo "  note:   the CUDA ${major} runtime is installed but the driver only supports CUDA ${driver}" >&2
+            continue
+        fi
+        chosen="${major}"
+    done
+    if [ -z "${chosen}" ]; then
+        if [ -n "${runtimes}" ]; then
+            die "no installed CUDA runtime is one ONNX Runtime ${ORT_VERSION} is built for (12 or 13) and the driver supports (found: $(echo "${runtimes}" | tr '\n' ' ')); name one with --cuda 12 or --cuda 13"
+        fi
+        die "no CUDA runtime (libcudart or nvcc) found; install the CUDA 12 or 13 runtime, or name the build with --cuda 12 or --cuda 13"
     fi
-    if [ -z "${v}" ]; then
-        v=$(ldconfig -p 2>/dev/null | grep -oP 'libcudart\.so\.\K[0-9]+' | sort -n | tail -1 || true)
-    fi
-    echo "${v}"
+    echo "${chosen}"
 }
 
 install_cuda() {
     if [ -z "${CUDA_MAJOR}" ]; then
-        CUDA_MAJOR=$(detect_cuda_major)
-        [ -n "${CUDA_MAJOR}" ] || die "could not detect the CUDA version; name it: --cuda 12 or --cuda 13"
-        # A driver newer than 13 still runs CUDA 13 builds.
-        if [ "${CUDA_MAJOR}" -gt 13 ]; then
-            CUDA_MAJOR=13
+        CUDA_MAJOR=$(select_cuda_major)
+    else
+        local driver
+        driver=$(driver_cuda_major)
+        if [ -n "${driver}" ] && [ "${CUDA_MAJOR}" -gt "${driver}" ]; then
+            echo "warning: the NVIDIA driver supports CUDA ${driver}, older than the CUDA ${CUDA_MAJOR} build asked for" >&2
         fi
+        local runtimes
+        runtimes=$(installed_cuda_runtimes)
+        if ! grep -qx "${CUDA_MAJOR}" <<<"${runtimes}"; then
+            echo "warning: no CUDA ${CUDA_MAJOR} runtime (libcudart.so.${CUDA_MAJOR}) was found" >&2
+        fi
+    fi
+    if [ -z "$(driver_cuda_major)" ]; then
+        echo "warning: nvidia-smi reports no driver, so driver support for CUDA ${CUDA_MAJOR} is unchecked" >&2
+    fi
+    if ! have_cudnn9; then
+        echo "warning: cuDNN 9 (libcudnn.so.9) was not found; the CUDA provider needs it at run time" >&2
     fi
     local sha256
     case "${CUDA_MAJOR}" in
@@ -187,21 +317,15 @@ install_cuda() {
     confirm
 
     command -v curl >/dev/null 2>&1 || die "curl is required"
-    mkdir -p "${PREFIX}"
-    local staged="${TARGET}.partial"
-    local download="${PREFIX}/${archive}"
-    rm -rf "${staged}"
-    curl -fL --retry 3 --progress-bar -o "${download}" "${url}"
-    if ! echo "${sha256}  ${download}" | sha256sum -c --quiet -; then
-        rm -f "${download}"
-        die "${url} does not match the pinned sha256"
-    fi
-    mkdir -p "${staged}"
-    tar -xzf "${download}" -C "${staged}" --strip-components=1
-    rm -f "${download}"
-    [ -e "${staged}/lib/libonnxruntime.so.1" ] || die "the archive has no lib/libonnxruntime.so.1"
-    [ -f "${staged}/lib/libonnxruntime_providers_cuda.so" ] || die "the archive has no CUDA execution provider"
-    install_staged "${staged}" "${want}"
+    lock_prefix
+    make_staging_dir "${ORT_VERSION}-cuda${CUDA_MAJOR}"
+    DOWNLOAD="${STAGED}.tgz"
+    curl -fL --retry 3 --progress-bar -o "${DOWNLOAD}" "${url}"
+    echo "${sha256}  ${DOWNLOAD}" | sha256sum -c --quiet - || die "${url} does not match the pinned sha256"
+    tar -xzf "${DOWNLOAD}" -C "${STAGED}" --strip-components=1
+    [ -e "${STAGED}/lib/libonnxruntime.so.1" ] || die "the archive has no lib/libonnxruntime.so.1"
+    [ -f "${STAGED}/lib/libonnxruntime_providers_cuda.so" ] || die "the archive has no CUDA execution provider"
+    install_staged "${want}"
     echo "Installed to ${TARGET}."
 }
 
@@ -249,8 +373,8 @@ install_rocm() {
     [ -z "${missing}" ] || die "missing build tools:${missing}"
     confirm
 
+    lock_prefix
     BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/natron-ort-migraphx.XXXXXX")
-    trap 'rm -rf "${BUILD_DIR:?}"' EXIT
     git clone --depth 1 --branch "v${version}" "${ORT_REPO}" "${BUILD_DIR}/onnxruntime"
     local head
     head=$(git -C "${BUILD_DIR}/onnxruntime" rev-parse HEAD)
@@ -264,12 +388,11 @@ install_rocm() {
     [ -e "${built}/libonnxruntime.so.1" ] || [ -e "${built}/libonnxruntime.so.${version}" ] \
         || die "the build produced no libonnxruntime.so"
 
-    local staged="${TARGET}.partial"
-    rm -rf "${staged}"
-    mkdir -p "${staged}/lib"
-    cp -P "${built}"/libonnxruntime*.so* "${staged}/lib/"
-    cp "${BUILD_DIR}/onnxruntime/LICENSE" "${BUILD_DIR}/onnxruntime/ThirdPartyNotices.txt" "${staged}/"
-    install_staged "${staged}" "${want}"
+    make_staging_dir "${version}-migraphx"
+    mkdir -p "${STAGED}/lib"
+    cp -P "${built}"/libonnxruntime*.so* "${STAGED}/lib/"
+    cp "${BUILD_DIR}/onnxruntime/LICENSE" "${BUILD_DIR}/onnxruntime/ThirdPartyNotices.txt" "${STAGED}/"
+    install_staged "${want}"
     echo "Installed to ${TARGET}."
 }
 

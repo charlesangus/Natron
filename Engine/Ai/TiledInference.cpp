@@ -241,6 +241,9 @@ runTiled(const std::shared_ptr<InferenceSession>& session,
     for (;;) {
         try {
             Tensor result = runPass(*current, roi, spec, info.tile, pack, abort, &info.tiles);
+            if (abort && abort()) {
+                throw AiAborted();
+            }
             const RectI outRoI(roi.x1 * spec.scale, roi.y1 * spec.scale, roi.x2 * spec.scale, roi.y2 * spec.scale);
             unpack(outRoI, result);
 

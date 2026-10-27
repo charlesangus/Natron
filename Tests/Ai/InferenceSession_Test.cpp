@@ -420,6 +420,33 @@ TEST_F(AiAbortTiming, AnAbortBeforeTheRunThrowsAiAborted)
     EXPECT_THROW(session->run(Tensor::image(1, 3, 2, 2), []() { return true; }), AiAborted);
 }
 
+TEST_F(AiAbortTiming, AnAbortDuringAFastRunDiscardsItsOutputs)
+{
+    std::shared_ptr<InferenceSession> session = openCpu("identity.onnx");
+    std::atomic<bool> abort(false);
+    // The hook runs after the pre-run abort check, so the abort fires as the run starts, and the
+    // run ends long before the abort watcher first polls.
+    AiTest::InjectorGuard guard([&abort](const InferenceSession&, const std::vector<std::vector<int64_t>>&) {
+        abort = true;
+
+        return std::string();
+    });
+
+    EXPECT_THROW(session->run(Tensor::image(1, 3, 2, 2), [&abort]() { return abort.load(); }), AiAborted);
+}
+
+TEST_F(AiInferenceSession, ProvidersOnOnePhysicalDeviceShareAGateKey)
+{
+    EXPECT_EQ(InferenceSession::deviceGateKey(eAiDeviceMigraphx, 0), InferenceSession::deviceGateKey(eAiDeviceRocm, 0));
+    EXPECT_EQ(InferenceSession::deviceGateKey(eAiDeviceMigraphx, 1), InferenceSession::deviceGateKey(eAiDeviceRocm, 1));
+    EXPECT_NE(InferenceSession::deviceGateKey(eAiDeviceRocm, 0), InferenceSession::deviceGateKey(eAiDeviceRocm, 1));
+    EXPECT_NE(InferenceSession::deviceGateKey(eAiDeviceCuda, 0), InferenceSession::deviceGateKey(eAiDeviceRocm, 0));
+    EXPECT_NE(InferenceSession::deviceGateKey(eAiDeviceOpenvino, 0), InferenceSession::deviceGateKey(eAiDeviceRocm, 0));
+    EXPECT_NE(InferenceSession::deviceGateKey(eAiDeviceOpenvino, 0), InferenceSession::deviceGateKey(eAiDeviceCuda, 0));
+    EXPECT_NE(InferenceSession::deviceGateKey(eAiDeviceCpu, 0), InferenceSession::deviceGateKey(eAiDeviceCuda, 0));
+    EXPECT_EQ(InferenceSession::deviceGateKey(eAiDeviceCpu, 0), InferenceSession::deviceGateKey(eAiDeviceCpu, 3));
+}
+
 TEST_F(AiAbortTiming, AnAbortStopsARunningModelWithin200Milliseconds)
 {
     typedef std::chrono::steady_clock Clock;

@@ -328,6 +328,30 @@ TEST_F(AiTiledInference, AnAbortMidwayNeverUnpacks)
     EXPECT_EQ(0, unpacked.calls);
 }
 
+TEST_F(AiTiledInference, AnAbortDuringTheFinalFastRunNeverUnpacks)
+{
+    const RectI roi(0, 0, 1000, 700);
+    AiTileSpec spec;
+    spec.tile = 256;
+    spec.overlap = 32;
+    const int tiles = (int)(tileStarts(roi.width(), spec.tile, spec.overlap).size() * tileStarts(roi.height(), spec.tile, spec.overlap).size());
+    std::atomic<int> runs(0);
+    std::atomic<bool> abort(false);
+    // The abort fires as the last tile's run starts, after every earlier abort check has passed.
+    AiTest::InjectorGuard guard([&](const InferenceSession&, const Shapes&) {
+        if (++runs == tiles) {
+            abort = true;
+        }
+
+        return std::string();
+    });
+    Unpacked unpacked;
+
+    EXPECT_THROW(runTiled(openCpu("identity.onnx"), roi, spec, packSource(3), keep(&unpacked), [&abort]() { return abort.load(); }), AiAborted);
+    EXPECT_EQ(tiles, runs.load());
+    EXPECT_EQ(0, unpacked.calls);
+}
+
 TEST_F(AiTiledInference, AnEmptyRoIRunsNothing)
 {
     Unpacked unpacked;

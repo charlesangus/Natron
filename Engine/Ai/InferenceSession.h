@@ -152,6 +152,13 @@ public:
     static const char* providerName(AiDeviceEnum device);
 
     /**
+     * @brief The physical device a run on this provider and GPU index occupies, for example
+     * "amd:0" for both MIGraphX and ROCm on the first AMD GPU. Runs whose keys match share one
+     * device gate.
+     **/
+    static std::string deviceGateKey(AiDeviceEnum device, int gpuIndex);
+
+    /**
      * @brief A test hook called at the start of every run with the shapes of the model's inputs, in
      * the model's order. A non-empty return value is treated as the message of a failed ONNX
      * Runtime run, so error classification and the tiler's recovery can be exercised without a

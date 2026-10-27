@@ -43,7 +43,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
 
 ## Phase 239.2: Remove the measured model
 
-- [ ] M239.P2.T1 — Shrink GpuCostModel to transfer rates
+- [x] M239.P2.T1 — Shrink GpuCostModel to transfer rates
   - files: `Engine/GpuCostModel.h`, `Engine/GpuCostModel.cpp`, `Engine/RenderScheduler.cpp`, `Engine/GpuRegionTask.cpp`
   - approach: Delete the seed tables, CPU/GPU rows, EMA and `observeCpu`/`observeGpu`, `cpuMs`/`gpuMs`/`isPriced`/`traitsOf` and the traits hint. Keep `setTransferRates`/`transferMs`/`observeTransfer` for the region reports. Make `pipelinesTransfers` decide without a kernel-time estimate: pipeline when the region moves at least `kGpuStripOverlapMinBytes` and the rates allow it. Rename the class (for example `GpuTransferModel`) if it reads better, updating its includes.
   - verify: the build passes, and `ctest -R "GpuResidency|GpuRegion|RenderScheduler"` passes.
@@ -84,5 +84,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - Placeholder constants until P3.T1 tunes them: z = `kGpuRegionMinWeight` = 3, `kGpuRegionMinPixels` = 256², Filter weight = 4 with size scaling capped at 32.
   - Free transfers means every external input is already on the device and no output is consumed on the CPU.
   - When placement accepts a region, the GPU-init wait now waits up to `kGpuInitWaitLimit` (10 s) instead of only the estimated gain. Init normally takes under 100 ms; P3.T1 checks the first-frame behaviour.
+
+- 2026-10-27 — **P2.T1: the strip pipelining rule changed, so the bench must check it:** without a kernel-time estimate, a cheap point op over a large frame (for example a lone UHD Grade) now runs as pipelined strips. The old model kept it whole because strips measured slower (15–18 ms against about 10 ms whole). P3.T1's bench includes that case, and if it regresses, gate strips on summed region weight.
 
 **Verification gate:** the full debug and release builds and ctest pass. The GPU suites pass on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`). The bench comps' same-boot Auto vs Off table shows no case where Auto is clearly slower. PR CI is green.

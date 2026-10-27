@@ -133,7 +133,8 @@ try:
         actions[0].trigger()
 
     def settle():
-        """Waits until two grabs RENDER_MS apart agree, and returns the last one."""
+        """Waits until two grabs RENDER_MS apart agree, and returns the last one, or None when the
+        viewer never stabilises."""
         previous = None
         for _ in range(int(POLL_TIMEOUT_S * 1000 / RENDER_MS)):
             yield ("sleep", RENDER_MS)
@@ -141,7 +142,7 @@ try:
             if now is not None and same(now, previous):
                 return now
             previous = now
-        return previous
+        return None
 
     def expect_shown(label, reference, name):
         ok = yield ("until", lambda: same(viewer_samples(), reference), POLL_TIMEOUT_S)
@@ -207,12 +208,12 @@ try:
         py_viewer.seek(1)
         clear_all_caches(win)
         with_map = yield from settle()
-        require(with_map is not None, "read the viewer with the Map")
+        require(with_map is not None, "the viewer settles with the Map")
         gt.shot("cache-invalidation-reference-with-map.png")
         yield from disconnect_map()
         clear_all_caches(win)
         without_map = yield from settle()
-        require(without_map is not None, "read the viewer without the Map")
+        require(without_map is not None, "the viewer settles without the Map")
         gt.shot("cache-invalidation-reference-without-map.png")
         require(not same(with_map, without_map), "the Map changes what the viewer shows, so a stale frame is visible")
         yield from connect_map()

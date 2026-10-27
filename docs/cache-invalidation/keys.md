@@ -220,7 +220,7 @@ session; and that a precomp's hash follows its pre-rendered output.
   post-render store guard. **Fixed by M202**: `CleanHashSnapshot::allowsStoreUnder` gates the
   stores in renderRoI, deep, viewer, roto mask and ActionsCache, and retracts what was stored when
   the graph moved mid-render. Phase 242.3 should still stress it.
-  Stress case: `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender_M202`; in a background app `canSetValue` is true during a render, so the edit lands mid-render.
+  Stress case: `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender`; in a background app `canSetValue` is true during a render, so the edit lands mid-render.
 - **K2. No-TLS fallback to the live hash.** `getRenderHash()` (EffectInstance.cpp:539-541) and the
   input hash in renderRoI (EffectInstanceRenderRoI.cpp:1139) fall back to the live `getHash()`.
   Several callers pass this node's hash, or an input's live hash, where the input's render hash is

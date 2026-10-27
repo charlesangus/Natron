@@ -336,6 +336,15 @@ public:
     static void setHashMarkTraceForTesting(const HashMarkTrace& trace);
 
     /**
+     * @brief Called by every input edit, and by the dequeue that applies queued ones, once it has
+     * decided whether to queue (`queued`: a render holds the node) and before it applies, with
+     * render starts on `node` locked out: the hook must not start a render on that node or wait
+     * for one to start. An empty function removes it. For tests.
+     **/
+    typedef std::function<void(const Node* node, bool queued)> InputEditHook;
+    static void setInputEditHookForTesting(const InputEditHook& hook);
+
+    /**
      * @brief Marks the hash dirty and recomputes it now. Returns true if it changed.
      **/
     bool refreshHashNow();
@@ -905,11 +914,10 @@ public:
     void onOpenGLEnabledKnobChangedOnProject(bool activated);
 
 private:
+    // queueWhileRendering false applies the edit to the real inputs even while a render holds the node.
+    bool replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhileRendering);
 
-    bool replaceInputInternal(const NodePtr& input, int inputNumber, bool useGuiValues);
-
-    int disconnectInputInternal(Node* input, bool useGuiInputs);
-
+    int disconnectInputInternal(Node* input, bool queueWhileRendering);
 
     bool isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const;
 

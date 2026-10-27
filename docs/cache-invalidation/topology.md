@@ -29,60 +29,65 @@ while they are dirty.
 
 ## Invalidated by
 
-Every edit path follows the same shape. It decides real-or-queued from `isNodeRendering()`, aborts
-the viewers below, writes the inputs, calls `onInputChanged` (real path only), then `computeHash()`
-(Node.cpp:1917, which just calls `markHashDirty()`), then `endInputEdition(true)`.
+Every edit path follows the same shape. It aborts the viewers below
+(`abortViewerRendersForEdit`, EffectInstance.cpp:6297), then takes the node's render-start lock
+(`Node::Implementation::lockRenderStarts`, Node.cpp:1484: `nodeIsDequeuingMutex`, the lock under
+which `setNodeIsRenderingInternal` raises the render count). Under that lock it reads whether a
+render holds the node, and either writes the real inputs (and the GUI copies) or writes only the
+GUI copies and sets `actionsQueued`. No render can start between that check and the write. Outside
+the lock it updates the input's outputs, calls `onInputChanged` (real path only), then
+`computeHash()` (Node.cpp:1963, which just calls `markHashDirty()`), then `endInputEdition(true)`.
+Nothing is emitted or called back while the lock is held.
 
 | Function | Real or queued | `onInputChanged` | `computeHash()` | Notes |
 | --- | --- | --- | --- | --- |
-| `Node::connectInput` NodeInputs.cpp:801 | Queued if `isNodeRendering()` (:829). The real path writes both `inputs` and `guiInputs` (:845-847). | :865, before the hash mark | :868, after `onInputChanged` | `abortViewerRendersForEdit` (:830). `recheckInvalidExpressions` (:852). |
-| `Node::replaceInputInternal` NodeInputs.cpp:883 | Caller's `useGuiInputs`; `replaceInput` (:970) uses `isNodeRendering()` (:977). | :951, plus `invalidateDetachedInputDataKind` (:952) | :955 | Viewer abort is in `replaceInput` (:978), not in the internal function. |
-| `Node::switchInput0And1` NodeInputs.cpp:983 | `isNodeRendering()` (:1028) | :1054-1055 | :1057 | Swaps the first non-mask input with the next one. |
-| `Node::disconnectInput(int)` NodeInputs.cpp:1117 | `isNodeRendering()` (:1122) | :1172, plus detached data kind (:1173) | :1175 | No viewer abort while the node is being destroyed (:1124-1133). |
-| `Node::disconnectInputInternal` NodeInputs.cpp:1189 | Caller's `useGuiValues`; `disconnectInput(Node*)` (:1257) uses `isNodeRendering()` (:1262). | :1236-1237 | :1239 | |
-| `Node::onInputChanged` NodeInputs.cpp:1615 | Real inputs only (main thread) | — | Not called | Order: data-kind cache cleared (:1625), mask enabledness (:1632), Inspector active inputs (:1636), frame args installed (:1656), `effect->onInputChanged` (:1671), render clones cleared (:1675). Then it forwards to a group's GroupInput outputs (:1696-1701), a GroupOutput's container outputs (:1716) and a precomp's outputs (:1729). |
-| `Node::endInputEdition` NodeInputs.cpp:1584 | — | — | — | At recursion depth 0, if anything changed: `refreshInputRelatedDataAfterInputChange` (:1597, unless a node tree is being created), `refreshDynamicProperties`, then `renderCurrentFrame` on the viewers below (:1608). |
-| `Node::dequeueActions` Node.cpp:7931 | Applies the queue | Per changed slot, inside begin/end edition | Only if something changed or values were dequeued | Copies `guiInputs` over `inputs` and `guiOutputs` over `outputs`. `NodeGroup::dequeueConnexions` doesn't set `hasChanged` (NodeGroup.cpp:1397). Calls `refreshIdentityState()` after the hash mark. |
-| `Node::setNodeIsRenderingInternal` Node.cpp:7836 | — | — | — | Off the main thread it waits while the node is dequeuing, then increments `nodeIsRendering` and recurses through `getInput` (real inputs). Set by `RenderingFlagSetter` (ViewerInstance.cpp:1248, OutputSchedulerThread.cpp:2531, :2699, Node.cpp:4819, RotoPaint.cpp:854). |
-| `Node::unsetNodeIsRendering` Node.cpp:7899 | — | — | — | When the count reaches 0, and not in background mode, emits `mustDequeueActions`. That is connected to `dequeueActions` with the default connection type (Node.cpp:227), so from a render thread it is queued to the main thread. |
+| `Node::connectInput` NodeInputs.cpp:801 | Decided under the render-start lock (:833). The real path writes both `inputs` and `guiInputs`; the queued path writes `guiInputs` and sets `actionsQueued` (:849). | :867, before the hash mark | :870, after `onInputChanged` | `abortViewerRendersForEdit` (:829). `recheckInvalidExpressions` after the write. |
+| `Node::replaceInputInternal` NodeInputs.cpp:885 | Decided under the render-start lock (:921) when the caller passes `queueWhileRendering`; `replaceInput` (:977) does. The destroy path passes false and always writes the real inputs. | :958, plus `invalidateDetachedInputDataKind` | :962 | Viewer abort is in `replaceInput` (:984). |
+| `Node::switchInput0And1` NodeInputs.cpp:989 | Decided under the render-start lock (:1038) | :1062-1063 | :1065 | Swaps the first non-mask input with the next one. |
+| `Node::disconnectInput(int)` NodeInputs.cpp:1125 | Decided under the render-start lock (:1144) | :1177, plus detached data kind | :1180 | No viewer abort while the node is being destroyed (:1132-1140). |
+| `Node::disconnectInputInternal` NodeInputs.cpp:1194 | Decided under the render-start lock (:1206) when the caller passes `queueWhileRendering`; `disconnectInput(Node*)` (:1266) does. | :1245 | :1248 | |
+| `Node::onInputChanged` NodeInputs.cpp:1623 | Real inputs only (main thread) | — | Not called | Order: data-kind cache cleared, mask enabledness, Inspector active inputs, frame args installed, `effect->onInputChanged` (:1679), render clones cleared. Then it forwards to a group's GroupInput outputs (:1709), a GroupOutput's container outputs (:1724) and a precomp's outputs (:1737). |
+| `Node::endInputEdition` NodeInputs.cpp:1592 | — | — | — | At recursion depth 0, if anything changed: `refreshInputRelatedDataAfterInputChange` (unless a node tree is being created), `refreshDynamicProperties`, then `renderCurrentFrame` on the viewers below. |
+| `Node::dequeueActions` Node.cpp:7983 | Applies the queue | Per changed slot, inside begin/end edition | Only if something changed or values were dequeued | Returns at once while a render holds the node, aborting the viewer renders below when something is queued. Otherwise sets `nodeIsDequeuing`, dequeues knob values and group connections, then copies `guiInputs` over `inputs` and `guiOutputs` over `outputs` under the render-start lock, unless a render started meanwhile on the main thread; see step 6 below. Calls `refreshIdentityState()` after the hash mark. |
+| `Node::setNodeIsRenderingInternal` Node.cpp:7882 | — | — | — | Raises `nodeIsRendering` under `nodeIsDequeuingMutex`, waiting first, off the main thread, while the node is dequeuing; then recurses through `getInput` (real inputs). Set by `RenderingFlagSetter` (ViewerInstance.cpp:1248, OutputSchedulerThread.cpp:2531, :2699, RotoPaint.cpp:854). |
+| `Node::unsetNodeIsRendering` Node.cpp:7943 | — | — | — | When the count reaches 0 emits `mustDequeueActions`, in every mode. That is connected to `dequeueActions` with the default connection type (Node.cpp:227), so from a render thread it is queued to the main thread. |
 
-`InspectorNode::connectInput` (NodeInputs.cpp:1789) and `InspectorNode::setActiveInputAndRefresh`
-(:1837) add their own `computeHash()` calls (:1830, :1847).
+`InspectorNode::connectInput` (NodeInputs.cpp:1797) and `InspectorNode::setActiveInputAndRefresh`
+(:1845) add their own `computeHash()` calls (:1838, :1855). `InspectorNode::setInputA`/`setInputB`
+(:1985, :2002) call `computeHash()` when the selection changes (:1996, :2013); the viewer's
+`setInputA`/`setInputB` (ViewerInstance.cpp:4305, :4320) go through them.
 
 ### The queued path, step by step
 
-1. A render sets `nodeIsRendering` on the nodes it reaches (Node.cpp:7836). Its frame args hold
-   each node's hash, computed from the real inputs (ParallelRenderArgs.cpp:2004).
-2. The user connects input `i` on node N. `isNodeRendering()` is true, so only `guiInputs[i]` and
-   the new input's `guiOutputs` change (NodeInputs.cpp:847, `connectOutput` :1099). Viewer renders
-   below are aborted with auto-restart (`abortViewerRendersForEdit` EffectInstance.cpp:6239), which
-   keeps the oldest render (keys.md K1). Other renders, such as writers, continue.
+1. A render sets `nodeIsRendering` on the nodes it reaches (Node.cpp:7882). Its frame args hold
+   each node's hash, computed from the real inputs.
+2. The user connects input `i` on node N. Under the render-start lock the edit sees the render, so
+   only `guiInputs[i]` changes and `actionsQueued` is set; the new input's `guiOutputs` follow
+   (`connectOutput` NodeInputs.cpp:1107). Viewer renders below are aborted with auto-restart
+   (`abortViewerRendersForEdit`), which keeps the oldest render (keys.md K1). Other renders, such
+   as writers, continue.
 3. `computeHash()` marks N. The recompute reads the real inputs, which haven't changed, so the hash
-   value is the same. `recomputeHashIfDirty` calls `onNodeHashChanged` only on a change
-   (Node.cpp:1592), so the ActionsCache isn't touched. Renders still running are consistent: old
-   inputs under the old hash.
-4. The last render below N finishes. `unsetNodeIsRendering` emits `mustDequeueActions`
-   (Node.cpp:7918). That is queued to the main thread.
-5. **Window.** Between the emit and the slot running, a new render may start. `nodeIsDequeuing` is
-   still false, so `setNodeIsRenderingInternal` doesn't wait. The render captures N's hash from the
-   old real inputs.
-6. `dequeueActions` runs on the main thread. It doesn't check `isNodeRendering()`
-   (Node.cpp:7931-7975). It swaps `inputs`, calls `onInputChanged` for each changed slot, then
-   `computeHash()` and `refreshIdentityState()`.
-7. A render from step 5 is still running. Its `getInput(i)` now returns the new input, which has no
-   frame args in that render's map (renderRoI then logs "[BUG]" and uses the live hash,
-   EffectInstanceRenderRoI.cpp:349-358). Its own outputs are stored under N's old hash with the new
-   topology. See T1.
+   value is the same. `recomputeHashIfDirty` calls `onNodeHashChanged` only on a change, so the
+   ActionsCache isn't touched. Renders still running are consistent: old inputs under the old hash.
+4. The last render below N finishes. `unsetNodeIsRendering` emits `mustDequeueActions`, queued to
+   the main thread.
+5. A render may start before the slot runs. It sees the old real inputs and N's old hash.
+6. `dequeueActions` runs on the main thread. If a render holds N it returns, aborting the viewer
+   renders below because `actionsQueued` is set; that render's `unsetNodeIsRendering` emits again.
+   Otherwise it sets `nodeIsDequeuing`, so render threads wait, and dequeues knob values; the
+   holder stops dequeuing values as soon as `canSetValue()` turns false. A value callback can
+   start a render on the main thread itself (a nested event loop), which does not wait. So the
+   input swap re-checks under the render-start lock and, if such a render holds N, leaves the
+   inputs queued with `actionsQueued` set until it ends. Otherwise it swaps `inputs`, calls
+   `onInputChanged` for each changed slot, then `computeHash()` and `refreshIdentityState()`, and
+   clears `nodeIsDequeuing`.
+7. A render that starts after the swap sees the new inputs. Between the swap and the hash mark it
+   can still read N's old hash with the new inputs; see T8.
 
 ## Not invalidated by
 
 - **An edit that is only queued** (step 3). By design the hash keeps the real topology until the
   dequeue.
-- **Viewer A/B selection.** `ViewerInstance::setInputA`/`setInputB` (ViewerInstance.cpp:4305,
-  :4320) call `InspectorNode::setInputA`/`setInputB` (NodeInputs.cpp:1977, :1988). Those write
-  `_activeInputs` and mark nothing. The callers are `Gui/ViewerTab30.cpp:1072`, `:1091`,
-  `:1122-1123`, `:1141`, `:1159` and `Gui/PyGuiApp.cpp:786`, `:811`; they then call
-  `abortViewersAndRefresh` (`Gui/ViewerTab10.cpp:368`), which marks nothing either. See T2.
 - **An empty slot.** Optional inputs (Map, Mask) and other unconnected slots aren't hashed
   (Node.cpp:1158-1161). A mask's enabled knob is set from connectedness by
   `refreshMaskEnabledNess` (Node.cpp:8222, from NodeInputs.cpp:1632). That is a knob write, so
@@ -109,7 +114,8 @@ the viewers below, writes the inputs, calls `onInputChanged` (real path only), t
 
 ## Covered by tests
 
-- Seeded stress (`Tests/CacheStress.h`): `CacheStressTest.STMapWithAToggledMap`, `MergeSwitchAndDissolveWithGrowingInputs` and `GradeBlurTransformInsideAGroup` connect, disconnect, replace and swap inputs and compare every cached step with a render from empty caches; `CacheStressConcurrentTest.InputEditsDuringARender` edits inputs while a gated render holds the node, then dequeues and revisits.
+- Seeded stress (`Tests/CacheStress.h`): `CacheStressTest.STMapWithAToggledMap`, `MergeSwitchAndDissolveWithGrowingInputs` and `GradeBlurTransformInsideAGroup` connect, disconnect, replace and swap inputs and compare every cached step with a render from empty caches; `CacheStressConcurrentTest.InputEditsDuringARender` edits inputs while a gated render holds the node, then dequeues and revisits; `CacheStressConcurrentTest.DequeueUnderARestartedRender` starts a render between the dequeue request and the dequeue; `CacheStressTest.ViewerABSwitch` runs the A/B sequence of T2.
+
 | Test | What it pins |
 | --- | --- |
 | `Tests/HashInvariants_Test.cpp:504` | Connect and disconnect change the hash and restore it. |
@@ -118,70 +124,78 @@ the viewers below, writes the inputs, calls `onInputChanged` (real path only), t
 | `Tests/LazyHash_Test.cpp:364` | Reconnection above a split rehashes only the branch that is read. |
 | `Tests/LazyHash_Test.cpp:659` | GroupInput rewire reaches downstream. |
 | `Tests/LazyHash_Test.cpp:612` | Group disable reaches inner nodes. |
+| `QueuedInputEditTest.NotAppliedUnderARenderThatStartedAfterTheRequest`, `AppliedWhenTheLastRenderEnds` (Tests/QueuedInputEdit_Test.cpp) | A queued edit waits for every render holding the node, then applies. |
+| `QueuedInputEditTest.InputsStayQueuedUnderARenderStartedByAValueCallback` | A render started on the main thread by a value callback during the dequeue keeps the inputs it found; the knob value already dequeued stands. |
+| `QueuedInputEditTest.ARenderCannotStartBetweenTheCheckAndTheApply` | A render that tries to start while a direct edit is between its check and its write (held there by `Node::setInputEditHookForTesting`) waits, then sees the new input. |
 
-Not found: a test of the queued path (`dequeueActions`, `RenderingFlagSetter`), viewer A/B
-switching, precomp Pre-Render toggling, or `onInputChanged` work stored under the pre-edit hash.
+Not found: a test of precomp Pre-Render toggling, or of `onInputChanged` work stored under the
+pre-edit hash.
 
 ## Suspected holes
 
-- **T1. A dequeue can swap inputs under a render.** Steps 5–7 above. `dequeueActions`
-  (Node.cpp:7931) doesn't re-check `isNodeRendering()`, and the wait in `setNodeIsRenderingInternal`
-  (Node.cpp:7848) covers only a dequeue that has already started. A render started in the window
-  stores new-topology pixels under the old hash. **Fixed by M202** for its gated stores: the
-  dequeue's `computeHash()` moves the mark count and the recomputed hash, so
-  `CleanHashSnapshot::allowsStoreUnder` refuses or retracts. **Fixed in M242** for queued edits:
-  `dequeueActions` returns without applying while the node is rendering, and the render's
-  `unsetNodeIsRendering` emits the dequeue again when the count reaches 0. A render waits for a
-  dequeue in progress, and the count goes up under the dequeuing lock, so a dequeue either sees the
-  render or finishes before it starts. Stress case:
-  `CacheStressConcurrentTest.DequeueUnderARestartedRender`; unit test:
-  `Tests/QueuedInputEdit_Test.cpp`. So that an edit during playback doesn't wait for playback to
-  stop, the queued input edits and knob values flag the node (`Node::notifyActionQueued`), and a
-  dequeue deferred while that flag is set aborts the viewer renders below the node
-  (`abortViewerRendersForEdit`); the last aborted render emits the dequeue again, and the edit's own
-  render restarts playback. Renders that aren't viewer renders still run to their end first. Keyframe
-  and curve edits written to the GUI curves (`shouldUseGuiCurve`) set it too, through
-  `KnobHelper::setGuiCurveHasChanged`. The direct path (T7) is not covered.
-- **T2. Viewer A/B selection doesn't mark the viewer.** The viewer's content hash folds its
-  active inputs (Node.cpp:976-980), but `InspectorNode::setInputA`/`setInputB`
-  (NodeInputs.cpp:1977-1995) leave the hash as it was. The viewer's `FrameKey` also names the input
-  rendered (`inputToRenderName`, ViewerInstance.cpp:1378), so a plain switch looks up under another
-  name and is safe. A stale hit needs a sequence. Example:
-  1. A=B=X. Switch B to Y: no mark. Y's v1 is cached under (Y, H(X,X)).
-  2. Edit Y, so the viewer rehashes to H(X,Y'). Switch B back to X: no mark.
-  3. Edit and revert X, so the viewer rehashes to H(X,X).
-  4. Switch B to Y: no mark. The lookup (Y, H(X,X)) serves Y's v1, which is stale.
-  **Fixed in M242:** `setInputA`/`setInputB` recompute the hash when the selection changes.
-  Stress case: `CacheStressTest.ViewerABSwitch`, the four-step sequence above; `eOpViewerB` runs
-  only there.
 - **T3. `setActiveInputAndRefresh` marks before it changes.** `InspectorNode::setActiveInputAndRefresh`
-  (NodeInputs.cpp:1837) calls `computeHash()` (:1847) before `onInputChanged` updates
-  `_activeInputs` (:1850 → :1636 → `refreshActiveInputs` :1865). A render thread that reads the
-  viewer hash in between recomputes it from the old active inputs and clears the mark, and nothing
-  marks it again. Narrow window (main thread to render thread). Not fixed by M202, for the same
-  reason as T2.
-- **T4. `onInputChanged` runs under the pre-edit hash.** On the real path, `connectInput` (:865 then
-  :868), `replaceInputInternal` (:951/:955), `switchInput0And1` (:1054/:1057), the disconnects
-  (:1172/:1175, :1236/:1239) and `dequeueActions` all call `onInputChanged` before `computeHash()`.
-  `Node::onInputChanged` installs frame args (NodeInputs.cpp:1656). `buildArgsMap` reads N's hash,
-  which isn't marked yet, so it is the pre-edit value, while `getInput` already returns the new
-  input. Whatever `effect->onInputChanged` (:1671) stores in N's own ActionsCache or metadata cache
-  is keyed under N's old hash with the new topology. `onNodeHashChanged` keeps entries of earlier
-  hashes (keys.md), so reverting the edit could serve them.
+  (NodeInputs.cpp:1845) calls `computeHash()` (:1855) before `onInputChanged` updates
+  `_activeInputs` (:1858). A render thread that reads the viewer hash in between recomputes it from
+  the old active inputs and clears the mark, and nothing marks it again. Narrow window (main thread
+  to render thread). Not fixed by M202, for the same reason as T2.
+- **T4. `onInputChanged` runs under the pre-edit hash.** On the real path, `connectInput` (:867 then
+  :870), `replaceInputInternal` (:958/:962), `switchInput0And1` (:1062/:1065), the disconnects
+  (:1177/:1180, :1245/:1248) and `dequeueActions` all call `onInputChanged` before `computeHash()`.
+  `Node::onInputChanged` installs frame args. `buildArgsMap` reads N's hash, which isn't marked yet,
+  so it is the pre-edit value, while `getInput` already returns the new input. Whatever
+  `effect->onInputChanged` (:1679) stores in N's own ActionsCache or metadata cache is keyed under
+  N's old hash with the new topology. `onNodeHashChanged` keeps entries of earlier hashes
+  (keys.md), so reverting the edit could serve them.
 
   Native overrides query only the input's own answers (`input->getRenderHash()`, e.g.
   Transform.cpp:674, CornerPin.cpp:805). An input is keyed on its own hash, so those are correct.
   The exposure is OFX `clipInstanceChangedAction` (OfxEffectInstance.cpp:1798) and anything that
   asks N itself. Not fixed by M202: N isn't dirty, so the snapshot agrees.
 - **T5. Group connection changes in the queue don't count as a change.**
-  `NodeGroup::dequeueConnexions` (NodeGroup.cpp:1397) swaps the group's GroupInput/Output lists
-  without setting `hasChanged` in `dequeueActions`. Whether a GroupInput or GroupOutput added
-  during a render marks the group some other way (node creation) is not verified here.
-- **T6. Background renders never dequeue.** `unsetNodeIsRendering` didn't emit in background mode,
+  `NodeGroup::dequeueConnexions` swaps the group's GroupInput/Output lists without setting
+  `hasChanged` in `dequeueActions`. Whether a GroupInput or GroupOutput added during a render marks
+  the group some other way (node creation) is not verified here.
+- **T8. A render can start between an input write and the hash mark.** The render-start lock covers
+  the check and the write, not the `computeHash()` that follows outside it. A render that starts in
+  between reaches the new inputs while N's hash may still be clean at its pre-edit value, the same
+  window T4 describes for `onInputChanged`. Narrow (main thread to render thread); M202's snapshot
+  closes it for gated stores, because the mark moves the count before the store.
+
+## Fixed (historical)
+
+The analysis below describes the code before each fix.
+
+- **T1. A dequeue could swap inputs under a render.** Before the fix, between the emit of
+  `mustDequeueActions` and the slot running, `nodeIsDequeuing` was still false, so a new render
+  didn't wait and captured N's hash from the old real inputs. `dequeueActions` then swapped `inputs`
+  without checking `isNodeRendering()`; the render's `getInput(i)` returned the new input, which had
+  no frame args in that render's map (renderRoI logged "[BUG]" and used the live hash), and its
+  outputs were stored under N's old hash with the new topology. **Fixed by M202** for its gated
+  stores (the dequeue's `computeHash()` moves the mark count and the recomputed hash, so
+  `CleanHashSnapshot::allowsStoreUnder` refuses or retracts). **Fixed in M242** for queued edits:
+  `dequeueActions` returns without applying while the node is rendering, the count goes up under the
+  dequeuing lock, and the last render to end emits the dequeue again. So that an edit during
+  playback doesn't wait for playback to stop, a deferred dequeue with something queued aborts the
+  viewer renders below the node. A render started on the main thread from a value callback inside
+  the dequeue did not wait for it either and could see the inputs swapped under it; the swap now
+  re-checks under the render-start lock and leaves the inputs queued.
+- **T2. Viewer A/B selection didn't mark the viewer.** The viewer's content hash folds its active
+  inputs, but `InspectorNode::setInputA`/`setInputB` left the hash as it was, and the callers
+  (`Gui/ViewerTab30.cpp`, `Gui/PyGuiApp.cpp`, then `abortViewersAndRefresh`) marked nothing either.
+  The `FrameKey` names the input rendered, so a plain switch was safe; a stale hit needed a
+  sequence:
+  1. A=B=X. Switch B to Y: no mark. Y's v1 is cached under (Y, H(X,X)).
+  2. Edit Y, so the viewer rehashes to H(X,Y'). Switch B back to X: no mark.
+  3. Edit and revert X, so the viewer rehashes to H(X,X).
+  4. Switch B to Y: no mark. The lookup (Y, H(X,X)) serves Y's v1, which is stale.
+  **Fixed in M242:** `setInputA`/`setInputB` recompute the hash when the selection changes.
+- **T6. Background renders never dequeued.** `unsetNodeIsRendering` didn't emit in background mode,
   so an input edit queued during a background render (from Python) was never applied. **Fixed in
   M242:** the last render to end emits in every mode. The stress tests still call
   `Node::dequeueActions` themselves, so they don't wait on the event loop.
-- **T7. A direct edit races a render that starts after the check.** An input edit applies at once
-  when `isNodeRendering()` is false, and nothing stops a render from starting between that check
-  and the write of the inputs. The render then reads the new inputs under the old hash. Narrow
-  window; on the follow-up list.
+- **T7. A direct edit raced a render that started after the check.** An input edit applied at once
+  when `isNodeRendering()` was false, and nothing stopped a render from starting between that check
+  and the write of the inputs; the render then read the new inputs under the old hash. **Fixed in
+  M242:** every edit decides and writes under the render-start lock, the lock under which a render
+  raises the count, so a render either holds the node before the check (the edit queues) or starts
+  after the write.

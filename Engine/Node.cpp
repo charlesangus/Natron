@@ -1453,6 +1453,52 @@ Node::setHashMarkTraceForTesting(const HashMarkTrace& trace)
     hashMarkTraceOn.store(bool(trace));
 }
 
+namespace {
+std::atomic<bool> inputEditHookOn(false);
+
+struct InputEditHookSlot {
+    std::mutex mutex;
+    Node::InputEditHook hook;
+};
+
+InputEditHookSlot&
+inputEditHookSlot()
+{
+    static InputEditHookSlot* slot = new InputEditHookSlot;
+
+    return *slot;
+}
+} // anonymous namespace
+
+void
+Node::setInputEditHookForTesting(const InputEditHook& hook)
+{
+    InputEditHookSlot& slot = inputEditHookSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+
+    slot.hook = hook;
+    inputEditHookOn.store(bool(hook));
+}
+
+std::unique_lock<QMutex>
+Node::Implementation::lockRenderStarts(bool* rendering)
+{
+    std::unique_lock<QMutex> renderStarts(nodeIsDequeuingMutex);
+    {
+        QMutexLocker k(&nodeIsRenderingMutex);
+        *rendering = nodeIsRendering > 0;
+    }
+    if (inputEditHookOn.load(std::memory_order_relaxed)) {
+        InputEditHookSlot& slot = inputEditHookSlot();
+        std::lock_guard<std::mutex> l(slot.mutex);
+        if (slot.hook) {
+            slot.hook(_publicInterface, *rendering);
+        }
+    }
+
+    return renderStarts;
+}
+
 void
 Node::flushHashDirtyMarksBeforeRead(const Node* reader)
 {
@@ -7979,23 +8025,34 @@ Node::dequeueActions()
         _imp->curveContext->dequeueGuiActions();
     }
 
+    // The value changes above run callbacks on this thread, and a render started from one (a
+    // nested event loop can start a viewer render here) did not wait for the dequeue. It found the
+    // current inputs, so they stay queued until it ends; its unsetNodeIsRendering emits again.
     std::set<int> inputChanges;
     {
-        QMutexLocker k(&_imp->inputsMutex);
-        assert( _imp->guiInputs.size() == _imp->inputs.size() );
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        if (rendering) {
+            _imp->actionsQueued = true;
+        } else {
+            {
+                QMutexLocker k(&_imp->inputsMutex);
+                assert(_imp->guiInputs.size() == _imp->inputs.size());
 
-        for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
-            NodePtr inp = _imp->inputs[i].lock();
-            NodePtr guiInp = _imp->guiInputs[i].lock();
-            if (inp != guiInp) {
-                inputChanges.insert(i);
-                _imp->inputs[i] = guiInp;
+                for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
+                    NodePtr inp = _imp->inputs[i].lock();
+                    NodePtr guiInp = _imp->guiInputs[i].lock();
+                    if (inp != guiInp) {
+                        inputChanges.insert(i);
+                        _imp->inputs[i] = guiInp;
+                    }
+                }
+            }
+            {
+                QMutexLocker k(&_imp->outputsMutex);
+                _imp->outputs = _imp->guiOutputs;
             }
         }
-    }
-    {
-        QMutexLocker k(&_imp->outputsMutex);
-        _imp->outputs = _imp->guiOutputs;
     }
 
     if ( !inputChanges.empty() ) {

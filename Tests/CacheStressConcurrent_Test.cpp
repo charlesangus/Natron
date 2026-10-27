@@ -500,8 +500,8 @@ TEST_F(CacheStressConcurrentTest, InputEditsDuringARender)
 
 // A background app applies knob edits at once, so the held render reads the new values while its
 // hash was taken from the old ones, and stores the new state's pixels under the old key.
-// Fixed by the render-time hash snapshot of M202 (PR #131); enable it there.
-TEST_F(CacheStressConcurrentTest, DISABLED_KnobEditsDuringRender_M202)
+// Disabled until renders key their stores by a hash snapshot taken when they start.
+TEST_F(CacheStressConcurrentTest, DISABLED_KnobEditsDuringRender)
 {
     EXPECT_EQ(0, runRaces(getApp(), eRaceKnobs));
 }

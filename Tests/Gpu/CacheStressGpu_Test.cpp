@@ -241,7 +241,8 @@ renderOnGpu(const NodePtr& root,
     return true;
 } // renderOnGpu
 
-// "" when every channel both planes have is within tolerance.
+// "" when both planes have the same window, layer and channels, and every sample is within
+// tolerance.
 std::string
 compareWithin(const RenderedPlane& reference,
               const RenderedPlane& got)
@@ -251,19 +252,31 @@ compareWithin(const RenderedPlane& reference,
     const std::size_t gotComps = got.channels.size();
     const std::size_t pixels = (std::size_t)reference.window.area();
 
-    if ((refComps == 0) || (gotComps == 0) || (reference.pixels.size() != pixels * refComps) || (got.pixels.size() != pixels * gotComps)) {
-        return "plane sizes differ";
+    if ((reference.window.x1 != got.window.x1) || (reference.window.y1 != got.window.y1) || (reference.window.x2 != got.window.x2) || (reference.window.y2 != got.window.y2)) {
+        return "windows differ";
+    }
+    if (!(reference.layer == got.layer)) {
+        return "layers differ (" + reference.layer.getLayerID() + " vs " + got.layer.getLayerID() + ")";
+    }
+    if ((refComps == 0) || (refComps != gotComps) || (reference.pixels.size() != pixels * refComps) || (got.pixels.size() != pixels * gotComps)) {
+        return "plane sizes differ (" + std::to_string(refComps) + " vs " + std::to_string(gotComps) + " channels)";
+    }
+    std::vector<std::size_t> matching(refComps, gotComps);
+    for (std::size_t c = 0; c < refComps; ++c) {
+        for (std::size_t d = 0; d < gotComps; ++d) {
+            if (got.channels[d] == reference.channels[c]) {
+                matching[c] = d;
+                break;
+            }
+        }
+        if (matching[c] == gotComps) {
+            return "channel " + reference.channels[c] + " is missing from the GPU plane";
+        }
     }
     std::size_t differing = 0;
     std::ostringstream first;
     for (std::size_t c = 0; c < refComps; ++c) {
-        std::size_t d = 0;
-        while ((d < gotComps) && (got.channels[d] != reference.channels[c])) {
-            ++d;
-        }
-        if (d == gotComps) {
-            continue;
-        }
+        const std::size_t d = matching[c];
         for (std::size_t p = 0; p < pixels; ++p) {
             const float r = reference.pixels[p * refComps + c];
             const float g = got.pixels[p * gotComps + d];
@@ -395,6 +408,7 @@ gpuOptions(GpuTaskCounts* counts)
         return renderOnGpu(node, time, mipmapLevel, window, counts, out, error);
     };
     options.compare = compareWithin;
+    options.cachedRenderReference = true;
     options.cachedRenderName = "GPU";
 
     return options;
@@ -402,8 +416,10 @@ gpuOptions(GpuTaskCounts* counts)
 
 typedef std::function<bool(const StressGraph& g, std::string* error)> Edit;
 
-// Applies the edits in order to a fresh graph twice: once rendering each state on the CPU from
-// empty caches, once on the GPU through caches nothing clears. Returns the failure, or "".
+// Applies the edits in order to a fresh graph twice: once rendering each state from empty
+// caches on the CPU and on the GPU, once on the GPU through caches nothing clears. The cached GPU
+// frame must equal the cache-off one exactly and the CPU one within tolerance. Returns the
+// failure, or "".
 std::string
 runScripted(const AppInstancePtr& app,
             const GraphBuilder& builder,
@@ -411,6 +427,7 @@ runScripted(const AppInstancePtr& app,
             GpuTaskCounts* counts)
 {
     std::vector<RenderedPlane> references;
+    std::vector<RenderedPlane> gpuReferences;
     for (int pass = 0; pass < 2; ++pass) {
         app->getProject()->reset(false, true);
         clearEverything(app);
@@ -433,13 +450,27 @@ runScripted(const AppInstancePtr& app,
                     return "the CPU reference of step " + std::to_string(i) + " (" + what + ") failed: " + error;
                 }
                 references.push_back(reference);
+                clearEverything(app);
+                RenderedPlane gpuReference;
+                if (!renderOnGpu(probe, 1., 0, g.window, counts, &gpuReference, &error)) {
+                    return "the cache-off GPU render of step " + std::to_string(i) + " (" + what + ") failed: " + error;
+                }
+                gpuReferences.push_back(gpuReference);
                 continue;
             }
             RenderedPlane got;
             if (!renderOnGpu(probe, 1., 0, g.window, counts, &got, &error)) {
                 return "the GPU render of step " + std::to_string(i) + " (" + what + ") failed: " + error;
             }
-            const std::string diff = compareWithin(references[i], got);
+            std::string diff = compareExact(gpuReferences[i], got);
+            if (!diff.empty()) {
+                diff = "against the cache-off GPU frame: " + diff;
+            } else {
+                diff = compareWithin(references[i], got);
+                if (!diff.empty()) {
+                    diff = "against the CPU reference: " + diff;
+                }
+            }
             if (!diff.empty()) {
                 std::ostringstream os;
                 os << "cache stress GPU mismatch at step " << i << " (" << what << "): " << diff << "\nedits:";

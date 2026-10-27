@@ -335,6 +335,14 @@ public:
 
     void notifyLayerReferencesChanged();
 
+    /**
+     * @brief Takes the lock render starts on this node take and reports whether a render already
+     * holds it. An input edit decided and applied under the returned lock therefore either lands
+     * before any render that could see it, or goes to the gui inputs for the renders to end. Hold
+     * it only while writing the input arrays: nothing called under it may emit or call out.
+     **/
+    std::unique_lock<QMutex> lockRenderStarts(bool* rendering);
+
     Node* _publicInterface;
     NodeCollectionWPtr group;
     PrecompNodeWPtr precomp;

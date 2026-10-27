@@ -208,6 +208,8 @@ registerCacheStressTestPlugins()
     // A source whose render remembers a knob value outside every engine cache, so the cache
     // stress self-test can plant a hole the harness must catch.
     registerTestBuiltInPlugin<StaleMemoTestEffect>();
+    // A filter whose knob edits queue under a render, for the queued-edit tests.
+    registerTestBuiltInPlugin<QueuedEditTestEffect>();
 }
 }
 

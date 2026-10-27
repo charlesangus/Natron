@@ -18,7 +18,7 @@ Status values:
 | Frame args `nodeHash` (render hash) | `ParallelRenderArgsSetter::buildArgsMap` Engine/ParallelRenderArgs.cpp:1944 | Content hash mixed with the render-context key | [keys.md](cache-invalidation/keys.md) | fixed by M202 (K1, K2) |
 | Project digest | `Project::getContentDigest` Engine/Project.cpp:3460 | Project knobs, formats, layers, OCIO, concatenation generations | [keys.md](cache-invalidation/keys.md) | suspected hole (K7: Settings outside the digest) |
 | Upstream context read-set | `Node::getUpstreamContextReadSet` Engine/NodeInputs.cpp:2101 | `getRenderContextReadsGeneration()` | [keys.md](cache-invalidation/keys.md) | covered |
-| Topology edits (inputs, queued edits) | Engine/NodeInputs.cpp, `Node::dequeueActions` Engine/Node.cpp:7931 | Input slots folded into the content hash | [topology.md](cache-invalidation/topology.md) | T1 (queued edits), T2 and T6 fixed in M242; T1 also gated by M202; suspected hole (T3, T4, T5, T7) |
+| Topology edits (inputs, queued edits) | Engine/NodeInputs.cpp, `Node::dequeueActions` Engine/Node.cpp:7983 | Input slots folded into the content hash | [topology.md](cache-invalidation/topology.md) | T1 (queued edits), T2, T6 and T7 fixed in M242; T1 also gated by M202; suspected hole (T3, T4, T5, T8) |
 | ActionsCache: identity | `ActionsCache` Engine/EffectInstancePrivate.h:216 | (render hash, time, view, mipmap) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | A1 fixed in M242; A2 fixed by M202 |
 | ActionsCache: RoD, frames needed, time domain, components needed | Engine/EffectInstancePrivate.h:252-268 | (render hash, time, view[, mipmap]) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | fixed by M202 (A2); A5 latent |
 | ActionsCache: metadata, pass-through, time-invariant, range summary | Engine/EffectInstancePrivate.h:274-308 | (hash with context key, time, view) plus generation | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | suspected hole (A4: non-abortable render uses newer metadata) |
@@ -53,8 +53,8 @@ failure prints the seed, the step and the op log; `NATRON_CACHE_STRESS_SEED=<n>`
 `NATRON_CACHE_STRESS_STEPS=<n>` changes the step budget and `NATRON_CACHE_STRESS_SEEDS=<n>` adds
 seeds (the heavy mode). Suites: `CacheStressSelfTest`, `CacheStressTest`,
 `CacheStressConcurrentTest` and `CacheStressGpuTest`, plus the GUI script
-`Tests/gui/cache_invalidation_viewer.py`. Holes known open here have a `DISABLED_` case named after
-the milestone that fixes them; run one with `--gtest_also_run_disabled_tests --gtest_filter=<name>`.
+`Tests/gui/cache_invalidation_viewer.py`. Holes known open here have a `DISABLED_` case, listed below
+with the milestone that fixes them; run one with `--gtest_also_run_disabled_tests --gtest_filter=<name>`.
 Cases for holes fixed here run by default:
 
 | Case | Hole | State |
@@ -64,10 +64,10 @@ Cases for holes fixed here run by default:
 | `CacheStressTest.IdentityAcrossScales` | A1 | fixed in M242 |
 | `CacheStressConcurrentTest.DequeueUnderARestartedRender` | T1, T6 | fixed in M242 |
 | `CacheStressTest.DISABLED_WholeValueExpression_M72` | E1 | disabled until M72 |
-| `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender_M202` | K1 | disabled until M202 (#131) |
+| `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender` | K1 | disabled until M202 (#131) |
 
 Unit tests for the M242 fixes: `Tests/ExpressionFrameVarying_Test.cpp` (I1, E2) and
-`Tests/QueuedInputEdit_Test.cpp` (T1, T6). V4 has no automated test.
+`Tests/QueuedInputEdit_Test.cpp` (T1, T6, T7). V4 has no automated test.
 
 ## Follow-up list
 
@@ -82,7 +82,7 @@ stores and V1; M72 owns E1). Details in the family docs.
 | T3 | `setActiveInputAndRefresh` marks the viewer before it changes the active inputs | topology.md |
 | T4 | `onInputChanged` runs under the pre-edit hash | topology.md |
 | T5 | Group connection changes in the queue don't count as a change | topology.md |
-| T7 | A direct input edit races a render that starts after the rendering check | topology.md |
+| T8 | A render that starts between an input write and the hash mark sees the new inputs under the old hash | topology.md |
 | V2, V3 | Timeline cached-frames line out of date (display only) | viewer-and-timeline.md |
 | G1 | GPU host import cache keyed by host address and length | gpu.md |
 | G2 | Shader gate ignores the device | gpu.md |

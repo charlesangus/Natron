@@ -94,9 +94,14 @@ sync via `beginSync`/`endSync` KnobLinkGroup.cpp:288-326), and a slave's follows
 
 ### frame and time expressions
 
-An expression that reads `frame` stores one result per time, which is right. Whether the node's
-images are keyed per time is a separate question: see I1 in [image-caches.md](image-caches.md)
-(a frame expression does not make the node frame-varying). Dynamic names are K4 and K6 in
+An expression that reads `frame` stores one result per time, which is right. Its node is
+frame-varying, so its images are keyed per time: `KnobHolder::getHasAnimation` (Knob.cpp:9168),
+one of the frame-varying tests (EffectInstance.cpp:6437), walks the knobs on every call, and a
+dimension varies with time when it, or a master it is slaved to (followed through
+`getMaster`), has an expression or keyframes. Any expression counts, whether or not it reads the
+time, because its dependencies are not known well enough to rule time out. Each (knob, dimension)
+is visited once per call, so chains several knobs share cost one walk and a master cycle ends. See
+[image-caches.md](image-caches.md) for the other tests. Dynamic names are K4 and K6 in
 [keys.md](keys.md) (keys.md:248).
 
 ## Not invalidated by
@@ -113,6 +118,9 @@ images are keyed per time is a separate question: see I1 in [image-caches.md](im
   invalidation (:375, :395), cycles (:435-575), renames (:677-731).
 - `Tests/Native/NativeReadReload_Test.cpp`, `Tests/Metadata_Test.cpp:536`.
 - `Tests/NodeContentHash_Test.cpp:246`, `:262` (rename re-keys only expression nodes).
+- Frame-varying: `CacheStressTest.FrameExpression` (a `frame*0.1` expression, then two seeks) and
+  `Tests/ExpressionFrameVarying_Test.cpp` (expression, slave of an expression, static again once
+  the expression and keys are gone).
 - `Tests/KnobLinkGroup_Test.cpp:166-749` (29 cases; :373, :446), `Tests/LinkedNode_Test.cpp:110-708`
   (19 cases), `Tests/PyLinks_Test.cpp`.
 - On M72, `Tests/RFVExpression_Test.cpp:277` (`ProjectVariableEditRefreshesTheReaderAndItsNodeHash`)
@@ -143,12 +151,23 @@ images are keyed per time is a separate question: see I1 in [image-caches.md](im
   wrongly; the new expression string then moves the hash, so no cache serves stale content, but
   the value is wrong. `NodeName.cpp` does not call `recheckInvalidExpressions` (callers are
   Node.cpp:4581, Knob.cpp:860, ProjectPrivate.cpp:263, NodeMain.cpp:716, NodeInputs.cpp:852,
-  AppInstance.cpp:2777). Correctness notes, not cache holes. The early return for an empty
-  expression that left `beginChanges()` unmatched, blocking every later evaluation of the node, is
-  **fixed in M242** (the check now comes first); test:
-  `ExpressionFrameVaryingTest.RenameWithoutAnExpressionLeavesNoBracketOpen`. The plain string
-  replace stays on the follow-up list.
+  AppInstance.cpp:2777). Correctness notes, not cache holes; on the follow-up list.
 - **E3 Clamped and unclamped results share entries.** The stored result is clamped or not by the
   caller's `clamp` (KnobImpl.h:538-539); the pod path passes `false` (KnobImpl.h:957). A value
   outside min and max read both ways returns whichever was stored first. Minor. **Not fixed by
   M202.**
+
+## Fixed (historical)
+
+The analysis below describes the code before each fix.
+
+- **I1 A frame expression did not make the node frame-varying.** `getHasAnimation` read a stored
+  flag. Setting an expression updated it (`expressionChanged` called `updateHasAnimation`), but a
+  slave whose master gained keys or an expression never did, and link-group and key copies set it
+  from the copied knob only. Such a node dropped time from its `ImageKey` and was served the same
+  image at every frame, though its `_exprRes` held one correct result per time. **Fixed in M242:**
+  the answer is computed live from the knobs, as described under "frame and time expressions".
+- **E2, bracket leak on rename.** `replaceNodeNameInExpression` returned early for an empty
+  expression after `beginChanges()`, leaving the bracket open and blocking every later evaluation
+  of the node. **Fixed in M242:** the check comes first. Test:
+  `ExpressionFrameVaryingTest.RenameWithoutAnExpressionLeavesNoBracketOpen`.

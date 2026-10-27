@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <thread>
@@ -35,10 +37,12 @@
 
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "CacheStressTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Project.h"
@@ -182,4 +186,106 @@ TEST_F(QueuedInputEditTest, AppliedWhenTheLastRenderEnds)
     QCoreApplication::processEvents();
     EXPECT_EQ(g.b, g.grade->getInput(0));
     EXPECT_EQ(g.b, g.grade->getGuiInput(0));
+}
+
+// A value callback in the dequeue can start a render on the main thread, which does not wait for
+// the dequeue it runs in: the values already dequeued stand, and the inputs stay queued until
+// that render ends.
+TEST_F(QueuedInputEditTest, InputsStayQueuedUnderARenderStartedByAValueCallback)
+{
+    const AppInstancePtr app = getApp();
+    app->getProject()->setOrAddProjectFormat(Format(0, 0, kWindow.width(), kWindow.height(), "queuedInputEdit", 1.));
+    const NodePtr a = createConstantIn(app, app->getProject(), kWindow, { 0.5, 0.25, 0.125, 1. });
+    const NodePtr b = createConstantIn(app, app->getProject(), kWindow, { 0.125, 0.75, 0.5, 1. });
+    const NodePtr node = createIn(app, app->getProject(), kTestPluginIDQueuedEdit);
+    ASSERT_TRUE(bool(a) && bool(b) && bool(node));
+    ASSERT_TRUE(node->connectInput(a, 0));
+    std::shared_ptr<QueuedEditTestEffect> effect = std::dynamic_pointer_cast<QueuedEditTestEffect>(node->getEffectInstance());
+    ASSERT_TRUE(bool(effect));
+    KnobDoublePtr value = effect->valueKnob();
+    ASSERT_TRUE(bool(value));
+
+    std::unique_ptr<RenderingFlagSetter> first(new RenderingFlagSetter(node));
+    value->setValue(2.);
+    EXPECT_EQ(1., value->getValue());
+    ASSERT_EQ(0, node->disconnectInput(0));
+    ASSERT_TRUE(node->connectInput(b, 0));
+    EXPECT_EQ(a, node->getInput(0));
+    EXPECT_EQ(b, node->getGuiInput(0));
+
+    std::unique_ptr<RenderingFlagSetter> second;
+    effect->valueChanged = [&second, node]() {
+        if (!second) {
+            second.reset(new RenderingFlagSetter(node));
+        }
+    };
+    releaseOnAWorker(&first);
+    QCoreApplication::processEvents();
+    effect->valueChanged = std::function<void()>();
+    ASSERT_TRUE(bool(second)) << "the dequeue did not run the value callback";
+    EXPECT_EQ(2., value->getValue());
+    EXPECT_EQ(a, node->getInput(0));
+    EXPECT_EQ(b, node->getGuiInput(0));
+
+    releaseOnAWorker(&second);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(b, node->getInput(0));
+    EXPECT_EQ(b, node->getGuiInput(0));
+    EXPECT_EQ(2., value->getValue());
+}
+
+// An input edit that found no render holds the node keeps render starts out until it has
+// applied: a render that tries to start in between waits, then sees the new input.
+TEST_F(QueuedInputEditTest, ARenderCannotStartBetweenTheCheckAndTheApply)
+{
+    TwoSources g;
+    ASSERT_TRUE(build(getApp(), &g));
+
+    std::atomic<bool> armed(true);
+    std::atomic<bool> starting(false);
+    std::atomic<bool> acquired(false);
+    bool hookRan = false;
+    bool hookSawRender = false;
+    bool heldOff = false;
+    std::unique_ptr<RenderingFlagSetter> flag;
+    NodePtr seen;
+    std::thread worker;
+    const NodePtr grade = g.grade;
+    Node::setInputEditHookForTesting([&](const Node* node,
+                                         bool queued) {
+        if ((node != grade.get()) || !armed.exchange(false)) {
+            return;
+        }
+        hookRan = true;
+        hookSawRender = queued;
+        worker = std::thread([&]() {
+            starting = true;
+            flag.reset(new RenderingFlagSetter(grade));
+            acquired = true;
+            seen = grade->getInput(0);
+        });
+        while (!starting) {
+            std::this_thread::yield();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        heldOff = !acquired;
+    });
+    const bool replaced = grade->replaceInput(g.b, 0);
+    if (worker.joinable()) {
+        worker.join();
+    }
+    Node::setInputEditHookForTesting(Node::InputEditHook());
+
+    EXPECT_TRUE(replaced);
+    EXPECT_TRUE(hookRan);
+    EXPECT_FALSE(hookSawRender);
+    EXPECT_TRUE(heldOff) << "the render started while the edit was between its check and its apply";
+    EXPECT_TRUE(acquired);
+    EXPECT_EQ(g.b, seen);
+    EXPECT_EQ(g.b, grade->getInput(0));
+    EXPECT_EQ(g.b, grade->getGuiInput(0));
+
+    releaseOnAWorker(&flag);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(g.b, grade->getInput(0));
 }

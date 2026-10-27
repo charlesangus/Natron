@@ -37,8 +37,8 @@ The cache holds one state (`ActionsCacheInstance`) per hash. States are kept in 
 
 | Result | get (h) | set (h) | Key within the state | Generation-checked store | Store gated by M202 |
 | --- | --- | --- | --- | --- | --- |
-| Identity | 248 | 250 | (time, view); mipmap forced to 0 (EffectInstancePrivate.cpp:210) | no | yes (isIdentity_public) |
-| Components needed | 252 | 254 | (time, view), mipmap 0 (EffectInstancePrivate.cpp:232) | no | yes |
+| Identity | 250 | 252 | (time, view, mipmap) (EffectInstancePrivate.cpp:167, 198) | no | yes (isIdentity_public) |
+| Components needed | 254 | 256 | (time, view), mipmap 0 (EffectInstancePrivate.cpp:234) | no | yes |
 | RoD | 258 | 260 | (time, view, mipmap) | no | yes |
 | Frames needed | 262 | 264 | (time, view, mipmap) | no | yes |
 | Time domain (frame range) | 266 | 268 | one per state (EffectInstancePrivate.cpp:357, 374) | no | yes |
@@ -132,7 +132,7 @@ summaries in every state, generation++). Metadata frames per state are capped at
   Downstream RoD, identity and frames-needed states stay. The two callers today also move the hash
   (file stamps through `KnobFile::invalidateFileStamp` → `invalidateContentHash`, KnobFile.cpp:164-171),
   so this is a latent gap rather than a live one.
-- Mipmap level for identity and components (key forced to mipmap 0).
+- Mipmap level for components needed (key forced to mipmap 0, EffectInstancePrivate.cpp:234, 253).
 
 ## Metadata during a render
 
@@ -154,7 +154,9 @@ summaries in every state, generation++). Metadata frames per state are capped at
 - Context sizing: `Tests/RenderContextRequest_Test.cpp:476` (`ActionsCacheKeepsEveryContextOfTheFrame`).
 - Clearing: `Tests/Native/ClearAllCaches_Test.cpp:55`.
 - Data kind: `Tests/DataKindGroup_Test.cpp` (13 cases, including the swap cases at :468, :500, :666, :692).
-- No test covers identity, RoD, frames-needed or time-domain cache staleness.
+- Identity across scales: `CacheStressTest.IdentityAcrossScales` asks at mipmap 1, then renders at
+  mipmap 0.
+- No test covers RoD, frames-needed or time-domain cache staleness.
 
 ## M202 and M71
 
@@ -169,16 +171,6 @@ summaries in every state, generation++). Metadata frames per state are capped at
 
 ## Suspected holes
 
-- **A1 Identity ignores scale.** The identity key has no mipmap level (EffectInstancePrivate.cpp:210),
-  but native identity depends on scale. ErodeDilate is identity when `floor(size * scale) == 0`
-  (ErodeDilate.cpp:300-306, 413-417). Blur uses pixel sizes at the context scale (Blur.cpp:114,
-  377-381). StagedImageEffect passes the scale through (StagedImageEffect.cpp:797). Cached callers
-  use different scales: the render path (EffectInstanceRenderRoI.cpp:544, `renderMappedScale`), the
-  frame graph (ParallelRenderArgs.cpp:903, `mappedScale`) and Node.cpp:6861 (identity scale). An
-  ErodeDilate of size 1 asked at mipmap 1 first caches "identity", and a later full-scale render
-  then skips the node. **Fixed in M242:** the identity key now includes the mipmap level
-  (`getIdentityResult`/`setIdentityResult`). Stress case:
-  `CacheStressTest.IdentityAcrossScales` (mipmap 1, then 0); `eOpMipmap` runs only there.
 - **A2 Unchecked stores.** RoD, identity, frames-needed, time-domain and components stores have no
   generation check or snapshot on this branch, and the live-state readers above can store a newer
   graph's answer under an old hash. **Fixed by M202.**
@@ -188,3 +180,19 @@ summaries in every state, generation++). Metadata frames per state are capped at
 - **A4 Newer metadata in non-abortable renders.** See "Metadata during a render" (EffectInstance.cpp:7398-7403).
   Not fixed by M202.
 - **A5 Same-hash drops skip geometry results.** Latent: see "Not invalidated by".
+
+## Fixed (historical)
+
+The analysis below describes the code before the fix.
+
+- **A1 Identity ignored scale.** The identity key had no mipmap level (forced to 0 like components
+  needed), but native identity depends on scale. ErodeDilate is identity when
+  `floor(size * scale) == 0` (ErodeDilate.cpp:300-306, 413-417). Blur uses pixel sizes at the
+  context scale (Blur.cpp:114, 377-381). StagedImageEffect passes the scale through
+  (StagedImageEffect.cpp:797). Cached callers use different scales: the render path
+  (EffectInstanceRenderRoI.cpp:544, `renderMappedScale`), the frame graph
+  (ParallelRenderArgs.cpp:903, `mappedScale`) and Node.cpp:6861 (identity scale). An ErodeDilate of
+  size 1 asked at mipmap 1 first cached "identity", and a later full-scale render then skipped the
+  node. **Fixed in M242:** `getIdentityResult`/`setIdentityResult` take the mipmap level and key on
+  (time, view, mipmap). Stress case: `CacheStressTest.IdentityAcrossScales` (mipmap 1, then 0);
+  `eOpMipmap` runs only there.

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <mutex>
 #include <utility>
@@ -43,6 +44,7 @@
 #include "Engine/ViewIdx.h"
 
 #define kTestPluginIDStaleMemo "test.natron.built-in.StaleMemo"
+#define kTestPluginIDQueuedEdit "test.natron.built-in.QueuedEdit"
 
 NATRON_NAMESPACE_ENTER
 
@@ -180,6 +182,93 @@ private:
     std::mutex _memoMutex;
     bool _hasMemo;
     float _memo;
+};
+
+/**
+ * @brief A one-input filter whose knob values queue while a render holds its node, as in an
+ * interactive app (a background app applies them at once), and whose value knob runs a test hook
+ * from its change callback.
+ **/
+class QueuedEditTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new QueuedEditTestEffect(n);
+    }
+
+    explicit QueuedEditTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+        , valueChanged()
+        , _value()
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool canSetValue() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NodePtr node = getNode();
+
+        return !node || !node->isNodeRendering();
+    }
+
+    KnobDoublePtr valueKnob() const
+    {
+        return _value.lock();
+    }
+
+    // Main thread only.
+    std::function<void()> valueChanged;
+
+protected:
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum /*reason*/,
+                             ViewSpec /*view*/,
+                             double /*time*/,
+                             bool /*originatedFromMainThread*/) OVERRIDE FINAL
+    {
+        KnobDoublePtr value = _value.lock();
+
+        if (value && (k == value.get()) && valueChanged) {
+            valueChanged();
+        }
+
+        return false;
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDQueuedEdit,
+        .label = "Test Queued Edit",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobDoublePtr value = createKnob<KnobDouble>(std::string("Value"));
+
+        value->setName("value");
+        value->setDefaultValue(1.);
+        page->addKnob(value);
+        _value = value;
+    }
+
+    KnobDoubleWPtr _value;
 };
 
 NATRON_NAMESPACE_EXIT

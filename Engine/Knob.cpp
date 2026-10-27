@@ -9089,6 +9089,11 @@ KnobHolder::dequeueValuesSet()
     }
     bool ret = false;
     for (U32 i = 0; i < _imp->knobs.size(); ++i) {
+        // A value callback can start a render on this thread without waiting for the dequeue: the
+        // knobs not reached yet keep their queues until it ends, as they would for any other render.
+        if (!canSetValue()) {
+            break;
+        }
         ret |= _imp->knobs[i]->dequeueValuesSet(false);
     }
     {
@@ -9127,25 +9132,35 @@ KnobHolder::getPageIndex(const KnobPage* page) const
 }
 
 namespace {
-bool
-knobDimensionVariesWithTime(const KnobIPtr& knob,
-                            int dimension,
-                            int depth)
-{
-    // The depth bound only guards against a master cycle.
-    if (!knob || (depth > 64)) {
-        return false;
-    }
-    if (!knob->getExpression(dimension).empty()) {
-        return true;
-    }
-    // Follows the master's curve when the dimension is slaved.
-    if (knob->canAnimate() && (knob->getKeyFramesCount(ViewIdx(0), dimension) > 0)) {
-        return true;
-    }
-    const std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+typedef std::set<std::pair<const KnobI*, int>> VisitedDimensions;
 
-    return master.second && knobDimensionVariesWithTime(master.second, master.first, depth + 1);
+// Walks the dimension and its masters, each (knob, dimension) once per getHasAnimation() call: a
+// chain several knobs share is walked once, and a master cycle ends.
+bool
+knobDimensionVariesWithTime(KnobIPtr knob,
+                            int dimension,
+                            VisitedDimensions* visited)
+{
+    while (knob) {
+        if (!visited->insert(std::make_pair(knob.get(), dimension)).second) {
+            return false;
+        }
+        if (!knob->getExpression(dimension).empty()) {
+            return true;
+        }
+        const std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+        // A slaved dimension reads its master's curve, which the next step inspects.
+        if (!master.second && knob->canAnimate()) {
+            const CurvePtr curve = knob->getCurve(ViewIdx(0), dimension, true);
+            if (curve && (curve->getKeyFramesCount() > 0)) {
+                return true;
+            }
+        }
+        knob = master.second;
+        dimension = master.first;
+    }
+
+    return false;
 }
 } // namespace
 
@@ -9153,10 +9168,11 @@ bool
 KnobHolder::getHasAnimation() const
 {
     const KnobsVec knobs = getKnobs_mt_safe();
+    VisitedDimensions visited;
 
     for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         for (int d = 0; d < (*it)->getDimension(); ++d) {
-            if (knobDimensionVariesWithTime(*it, d, 0)) {
+            if (knobDimensionVariesWithTime(*it, d, &visited)) {
                 return true;
             }
         }

@@ -183,6 +183,10 @@ struct Options {
     // against the Legacy reference with compare (compareExact when unset).
     std::function<bool(const NodePtr& node, double time, unsigned mipmapLevel, const RectI& window, RenderedPlane* out, std::string* error)> cachedRender;
     std::function<std::string(const RenderedPlane& reference, const RenderedPlane& got)> compare;
+    // When set with cachedRender, the reference pass also renders every step through
+    // cachedRender from empty caches, and the cached pass must match that render exactly before
+    // compare checks it against the Legacy reference.
+    bool cachedRenderReference = false;
     std::string cachedRenderName = "custom";
 };
 
@@ -219,7 +223,8 @@ bool renderProbe(const NodePtr& node,
                  RenderedPlane* out,
                  std::string* error);
 
-// "" when the channels both planes have are bit-exact; otherwise the first difference.
+// "" when both planes have the same window, layer and channels, and every sample is bit-exact;
+// otherwise the first difference.
 std::string compareExact(const RenderedPlane& reference, const RenderedPlane& got);
 
 Primitive setValuePrim(int knob, int dim, double value);

@@ -1022,6 +1022,7 @@ namespace {
         int probe = -1;
         Probe legacy;
         Probe taskGraph;
+        Probe custom;
     };
 
     int
@@ -1075,11 +1076,11 @@ namespace {
         if (!reference.rendered) {
             return std::string();
         }
-        if (reference.ok != got.ok) {
-            return reference.ok ? ("the cached render failed: " + got.error) : ("the reference failed (" + reference.error + ") but the cached render succeeded");
-        }
         if (!reference.ok) {
-            return std::string();
+            return "the reference failed: " + reference.error;
+        }
+        if (!got.ok) {
+            return "the cached render failed: " + got.error;
         }
 
         return compare ? compare(reference.plane, got.plane) : compareExact(reference.plane, got.plane);
@@ -1494,27 +1495,35 @@ compareExact(const RenderedPlane& reference,
 
         return os.str();
     }
+    if (!(reference.layer == got.layer)) {
+        os << "layers differ (" << reference.layer.getLayerID() << " vs " << got.layer.getLayerID() << ")";
+
+        return os.str();
+    }
     const std::size_t refComps = reference.channels.size();
     const std::size_t gotComps = got.channels.size();
     const std::size_t pixels = (std::size_t)reference.window.width() * (std::size_t)reference.window.height();
-    if ((refComps == 0) || (gotComps == 0) || (reference.pixels.size() != pixels * refComps) || (got.pixels.size() != pixels * gotComps)) {
+    if ((refComps == 0) || (refComps != gotComps) || (reference.pixels.size() != pixels * refComps) || (got.pixels.size() != pixels * gotComps)) {
         os << "plane sizes differ (" << refComps << " vs " << gotComps << " channels)";
 
         return os.str();
     }
+    // Every channel of each plane must have its counterpart in the other, in whatever order.
     std::vector<std::pair<std::size_t, std::size_t>> common;
     for (std::size_t c = 0; c < refComps; ++c) {
+        std::size_t match = gotComps;
         for (std::size_t d = 0; d < gotComps; ++d) {
             if (reference.channels[c] == got.channels[d]) {
-                common.push_back(std::make_pair(c, d));
+                match = d;
                 break;
             }
         }
-    }
-    if (common.empty()) {
-        os << "the planes share no channel";
+        if (match == gotComps) {
+            os << "channel " << reference.channels[c] << " is missing from the cached plane";
 
-        return os.str();
+            return os.str();
+        }
+        common.push_back(std::make_pair(c, match));
     }
     std::size_t differing = 0;
     std::string first;
@@ -1619,25 +1628,39 @@ run(const AppInstancePtr& app,
                 clearEverything(app);
                 record.taskGraph = renderOnce(rt, record.probe, eRenderSchedulerModeTaskGraph, true);
             }
+            if (options.cachedRender && options.cachedRenderReference && (record.probe >= 0)) {
+                clearEverything(app);
+                record.custom.rendered = true;
+                record.custom.ok = options.cachedRender(rt.graph.nodes[record.probe], record.time, record.mipmap, windowAt(rt), &record.custom.plane, &record.custom.error);
+            }
             records.push_back(record);
-        }
-    }
+            // A step whose reference fails proves nothing about the cache, even if the cached
+            // render fails the same way.
+            const Probe* failed = 0;
+            const char* failedMode = "";
+            if (record.legacy.rendered && !record.legacy.ok) {
+                failed = &record.legacy;
+                failedMode = "legacy";
+            } else if (record.taskGraph.rendered && !record.taskGraph.ok) {
+                failed = &record.taskGraph;
+                failedMode = "task graph";
+            } else if (record.custom.rendered && !record.custom.ok) {
+                failed = &record.custom;
+                failedMode = options.cachedRenderName.c_str();
+            }
+            if (failed) {
+                std::ostringstream os;
+                os << "NATRON_CACHE_STRESS_SEED=" << seed << ": step " << i << " (" << failedMode << "): the cache-off reference render failed: "
+                   << failed->error << "\n"
+                   << "op log:\n"
+                   << formatLog(records, i);
+                result.ok = false;
+                result.failedStep = i;
+                result.report = os.str();
 
-    int referenceRenders = 0;
-    for (std::size_t i = 0; i < records.size(); ++i) {
-        if (records[i].legacy.ok || records[i].taskGraph.ok) {
-            ++referenceRenders;
+                return result;
+            }
         }
-    }
-    if (!records.empty() && (referenceRenders == 0)) {
-        std::ostringstream os;
-        os << "NATRON_CACHE_STRESS_SEED=" << seed << ": no reference render succeeded (first error: "
-           << (records[0].legacy.error.empty() ? records[0].taskGraph.error : records[0].legacy.error) << ")\n"
-           << formatLog(records, records.size());
-        result.ok = false;
-        result.report = os.str();
-
-        return result;
     }
 
     // Pass B: the same ops on a fresh graph, every render through caches nothing clears.
@@ -1679,7 +1702,15 @@ run(const AppInstancePtr& app,
                 got.rendered = true;
                 got.ok = options.cachedRender(rt.graph.nodes[probe], currentTime(rt), rt.mipmap, windowAt(rt), &got.plane, &got.error);
             }
-            mismatch = compareProbes(record.legacy, got, options.compare);
+            if (options.cachedRenderReference) {
+                mismatch = compareProbes(record.custom, got);
+                if (!mismatch.empty()) {
+                    mismatch = "against its own cache-off render: " + mismatch;
+                }
+            }
+            if (mismatch.empty()) {
+                mismatch = compareProbes(record.legacy, got, options.compare);
+            }
             mode = options.cachedRenderName;
         }
         for (int pass = 0; (pass < 2) && mismatch.empty() && !options.cachedRender; ++pass) {

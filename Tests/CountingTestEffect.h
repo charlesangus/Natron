@@ -45,6 +45,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -231,7 +232,8 @@ private:
  * @brief Fills its output with a constant: its "value" knob plus the sum of what its connected inputs hold at the
  * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
  * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
- * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap.
+ * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap. Its images are keyed by
+ * frame only when its "frameVarying" knob is set.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -243,6 +245,7 @@ public:
         , _delayMs()
         , _cacheOutput()
         , _throwInRender()
+        , _frameVarying()
     {
     }
 
@@ -337,6 +340,26 @@ private:
         throwInRender->setDefaultValue(false);
         page->addKnob(throwInRender);
         _throwInRender = throwInRender;
+
+        KnobBoolPtr frameVarying = createKnob<KnobBool>(std::string("Frame Varying"));
+        frameVarying->setName("frameVarying");
+        frameVarying->setAnimationEnabled(false);
+        frameVarying->setDefaultValue(false);
+        page->addKnob(frameVarying);
+        _frameVarying = frameVarying;
+    }
+
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        KnobBoolPtr frameVaryingKnob = _frameVarying.lock();
+
+        if (frameVaryingKnob && frameVaryingKnob->getValue()) {
+            metadata.setIsFrameVarying(true);
+        }
+
+        return eStatusOK;
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -407,6 +430,7 @@ private:
     KnobIntWPtr _delayMs;
     KnobBoolWPtr _cacheOutput;
     KnobBoolWPtr _throwInRender;
+    KnobBoolWPtr _frameVarying;
 };
 
 class CountingTestEffect

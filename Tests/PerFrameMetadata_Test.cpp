@@ -912,13 +912,14 @@ struct RenderHookScope {
 };
 
 bool
-setCountingCacheOutput(const NodePtr& node)
+setCountingBool(const NodePtr& node,
+                const char* knobName)
 {
-    KnobBoolPtr cacheOutput = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName("cacheOutput"));
-    if (!cacheOutput) {
+    KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(knobName));
+    if (!knob) {
         return false;
     }
-    cacheOutput->setValue(true);
+    knob->setValue(true);
 
     return true;
 }
@@ -927,7 +928,9 @@ setCountingCacheOutput(const NodePtr& node)
 // An upstream value goes A -> B -> A while a render of the node below is under way: the upstream
 // node renders B, and the node below renders over it, under the hashes of A. A second render set up
 // at A looks the node below up while the first is still publishing. Neither it nor any later lookup
-// may see B, and the clean entry another frame cached under the same hash stays.
+// may see B, and the clean entry the node cached at another frame under the same node hash stays.
+// The nodes vary with the frame so that frame's entry is not the one frame 1 looks up: a hit there
+// would skip the renders the edits must overlap.
 TEST_F(CleanHashCacheTest, EditDuringARenderLeavesNoStaleImageForAConcurrentLookup)
 {
     const float kUpstreamA = 0.25f;
@@ -946,7 +949,9 @@ TEST_F(CleanHashCacheTest, EditDuringARenderLeavesNoStaleImageForAConcurrentLook
     KnobDoublePtr upstreamValue = countingValueKnob(upstream);
     KnobDoublePtr downstreamValue = countingValueKnob(downstream);
     ASSERT_TRUE(upstreamValue && downstreamValue);
-    ASSERT_TRUE(setCountingCacheOutput(upstream) && setCountingCacheOutput(downstream));
+    ASSERT_TRUE(setCountingBool(upstream, "cacheOutput") && setCountingBool(downstream, "cacheOutput"));
+    ASSERT_TRUE(setCountingBool(upstream, "frameVarying") && setCountingBool(downstream, "frameVarying"));
+    ASSERT_TRUE(downstream->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
     upstreamValue->setValue(kUpstreamA, ViewSpec::all(), 0);
     downstreamValue->setValue(kDownstream, ViewSpec::all(), 0);
 

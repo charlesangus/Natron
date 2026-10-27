@@ -636,6 +636,13 @@ private:
      */
     bool canSetInternalPoints() const;
 
+    /**
+     * @brief setKeyframe() on the internal curves. copyToGui also copies the new key and its
+     * neighbours' re-derived tangents to the GUI copy; edit paths pass false and sync the GUI
+     * copy themselves, so pending GUI edits made during a render are not overwritten.
+     **/
+    void setKeyframeInternal(double time, bool copyToGui);
+
     void copyInternalPointsToGuiPoints();
 
     /**

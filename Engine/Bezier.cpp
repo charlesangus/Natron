@@ -1510,7 +1510,7 @@ Bezier::addControlPointAfterIndex(int index,
         if ( !_imp->hasKeyframeAtTime(useGuiCurve, currentTime) && getContext()->isAutoKeyingEnabled() ) {
             keyedAllPoints = !_imp->hasKeyframeAtTime(true, currentTime);
             l.unlock();
-            setKeyframe(currentTime);
+            setKeyframeInternal(currentTime, false);
             l.relock();
         }
 
@@ -1865,7 +1865,7 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
     invalidateContentHash();
     invalidatePolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
     syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
@@ -2166,7 +2166,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
     invalidateContentHash();
     invalidatePolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
     syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
@@ -2311,7 +2311,7 @@ Bezier::setPointAtIndexInternal(bool setLeft,
     invalidatePolygonOrientation(useGuiCurve, time);
     // After the auto-key, which keys the other points' internal curves only.
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
     syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
@@ -2482,7 +2482,7 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
     invalidateContentHash();
     invalidatePolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
     syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
@@ -2508,6 +2508,13 @@ Bezier::cuspPointAtIndex(int index,
 
 void
 Bezier::setKeyframe(double time)
+{
+    setKeyframeInternal(time, true);
+}
+
+void
+Bezier::setKeyframeInternal(double time,
+                            bool copyToGui)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
@@ -2550,6 +2557,9 @@ Bezier::setKeyframe(double time)
             }
         }
         eraseOrientationAroundTime(false, time);
+        if (copyToGui) {
+            copyInternalPointsToGuiAtTime(time);
+        }
     }
     invalidateContentHash();
     Q_EMIT keyframeSet(time);

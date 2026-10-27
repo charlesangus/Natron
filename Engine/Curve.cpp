@@ -57,23 +57,6 @@ struct KeyFrameCloner
     }
 };
 
-class KeyFrameTimePredicate
-{
-public:
-    KeyFrameTimePredicate(double t)
-        : _t(t)
-    {
-    };
-
-    bool operator()(const KeyFrame & f)
-    {
-        return f.getTime() == _t;
-    }
-
-private:
-    double _t;
-};
-
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
@@ -1999,7 +1982,7 @@ KeyFrameSet::const_iterator
 Curve::findWithTime(const KeyFrameSet& keys,
                     double time)
 {
-    return std::find_if( keys.begin(), keys.end(), KeyFrameTimePredicate(time) );
+    return keys.find(KeyFrame(time, 0.));
 }
 
 KeyFrameSet::const_iterator

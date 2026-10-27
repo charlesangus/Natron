@@ -35,6 +35,7 @@
 #include <QActionGroup>
 #include <QCheckBox>
 #include <QContextMenuEvent>
+#include <QCursor>
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFocusEvent>
@@ -47,6 +48,7 @@
 #include <QPainter>
 #include <QPointer>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
 #include <QWidgetAction>
@@ -271,6 +273,9 @@ struct SceneViewportRenderer::Implementation {
     ClipPlanes clipPlanes;
     bool framedOnce = false;
     std::string lookThrough;
+    // The transform the camera at lookThroughOverridePath is drawn with instead of its prim's.
+    std::string lookThroughOverridePath;
+    GfMatrix4d lookThroughOverride = GfMatrix4d(1.);
     // The selected prims, the current one last.
     std::vector<std::string> selected;
     std::unique_ptr<UsdImagingGLEngine> engine;
@@ -421,6 +426,24 @@ struct SceneViewportRenderer::Implementation {
         return camera;
     }
 
+    bool hasLookThroughOverride() const
+    {
+        return !lookThrough.empty() && (lookThroughOverridePath == lookThrough);
+    }
+
+    // The camera looked through at the shown time, drawn from the override when there is one.
+    // Needs stageMutex.
+    GfCamera lookThroughGfCamera(const UsdGeomCamera& camera) const
+    {
+        GfCamera gfCamera = camera.GetCamera(UsdTimeCode(timeCode()));
+
+        if (hasLookThroughOverride()) {
+            gfCamera.SetTransform(lookThroughOverride);
+        }
+
+        return gfCamera;
+    }
+
     // Needs stageMutex.
     GfFrustum computeFrustum(int width,
                              int height) const
@@ -428,7 +451,7 @@ struct SceneViewportRenderer::Implementation {
         const double aspect = double(std::max(width, 1)) / double(std::max(height, 1));
 
         if (UsdGeomCamera camera = lookThroughCamera()) {
-            GfCamera gfCamera = camera.GetCamera(UsdTimeCode(timeCode()));
+            GfCamera gfCamera = lookThroughGfCamera(camera);
             // Keeps the camera's vertical aperture, as usdview does without a camera mask.
             CameraUtilConformWindow(&gfCamera, CameraUtilMatchVertically, aspect);
 
@@ -989,10 +1012,10 @@ SceneViewportRenderer::getViewPose(int width,
             return false;
         }
         const UsdTimeCode time(_imp->timeCode());
-        GfCamera gfCamera = camera.GetCamera(time);
+        GfCamera gfCamera = _imp->lookThroughGfCamera(camera);
         CameraUtilConformWindow(&gfCamera, CameraUtilMatchVertically, aspect);
         UsdGeomXformCache xforms(time);
-        storeMatrix(xforms.GetLocalToWorldTransform(camera.GetPrim()), pose->cameraToWorld);
+        storeMatrix(_imp->hasLookThroughOverride() ? _imp->lookThroughOverride : xforms.GetLocalToWorldTransform(camera.GetPrim()), pose->cameraToWorld);
         storeMatrix(xforms.GetParentToWorldTransform(camera.GetPrim()), pose->parentToWorld);
         pose->orthographic = (gfCamera.GetProjection() == GfCamera::Orthographic);
         // Apertures are in tenths of a scene unit, as GfCamera::APERTURE_UNIT says.
@@ -1175,12 +1198,32 @@ void
 SceneViewportRenderer::setLookThroughCamera(const std::string& path)
 {
     _imp->lookThrough = path;
+    _imp->lookThroughOverridePath.clear();
 }
 
 const std::string&
 SceneViewportRenderer::getLookThroughCamera() const
 {
     return _imp->lookThrough;
+}
+
+void
+SceneViewportRenderer::setLookThroughTransform(const double cameraToWorld[16])
+{
+    _imp->lookThroughOverridePath = _imp->lookThrough;
+    std::copy(cameraToWorld, cameraToWorld + 16, _imp->lookThroughOverride.data());
+}
+
+void
+SceneViewportRenderer::clearLookThroughTransform()
+{
+    _imp->lookThroughOverridePath.clear();
+}
+
+bool
+SceneViewportRenderer::hasLookThroughTransform() const
+{
+    return _imp->hasLookThroughOverride();
 }
 
 void
@@ -1697,7 +1740,7 @@ setCameraKnobValue(const KnobDoublePtr& knob,
 
 /**
  * @brief A move of a locked camera: the translate and rotate values its node had before and after
- * it, at a frame. The move edited the knobs as the mouse went, so the first redo does nothing.
+ * it, at a frame. The end of the move wrote the knobs before pushing it, so the first redo does nothing.
  * Undoing a dimension that was animated without a key at the frame removes the key it added.
  **/
 class LockedCameraMoveCommand
@@ -1822,8 +1865,10 @@ struct SceneViewport::Implementation {
 
     // A move of the locked camera under way. Its node's ops are taken to be the outermost of the
     // prim's, with the camera at world = inner * local * parentToWorld (row vectors), local being
-    // the ops the knobs make; world is moved and local solved back from it. The knobs are edited
-    // as the mouse moves; the end of the move pushes one undo step.
+    // the ops the knobs make; world is moved and local solved back from it. As the mouse moves,
+    // the renderer draws the camera at world; the end of the move writes the knobs once, as one
+    // undo step. Editing the knobs on every event would evaluate the graph and resync the stage
+    // each time, and the view would only move as fast as that round trip.
     struct CameraLock {
         bool active = false;
         // The move found no node to edit: the rest of the gesture does nothing.
@@ -1848,6 +1893,14 @@ struct SceneViewport::Implementation {
         bool orthographic = false;
     };
     CameraLock cameraLock;
+
+    // After a move is written, the renderer keeps drawing the camera where the move left it until
+    // a scene requested after the write is synced: the last request made before it.
+    bool lockedMoveAwaitsSync = false;
+    U64 lockedMoveSerial = 0;
+
+    // Ends a run of wheel steps on the locked camera, once the wheel rests, as one move.
+    QTimer* wheelMoveTimer = nullptr;
 
     USDEditTransform* getTransformNode(NodePtr* node) const
     {
@@ -1899,6 +1952,15 @@ SceneViewport::SceneViewport(QWidget* parent)
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
     // framebuffer's content between paints; not checked against Qt's source.
     setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+
+    _imp->wheelMoveTimer = new QTimer(this);
+    _imp->wheelMoveTimer->setSingleShot(true);
+    _imp->wheelMoveTimer->setInterval(300);
+    QObject::connect(_imp->wheelMoveTimer, &QTimer::timeout, this, [this]() {
+        if (_imp->button == Qt::NoButton) {
+            endCameraLock();
+        }
+    });
 
     Implementation* imp = _imp.get();
     _imp->worker = std::thread([this, imp]() {
@@ -1967,6 +2029,11 @@ SceneViewport::onSynced(U64 serial,
         return;
     }
     _imp->error = ok ? _imp->requestedError : error;
+    if (_imp->lockedMoveAwaitsSync && !_imp->cameraLock.active && (serial > _imp->lockedMoveSerial)) {
+        // The stage has the written move: the camera's prim is where the view shows it.
+        _imp->lockedMoveAwaitsSync = false;
+        _imp->renderer.clearLookThroughTransform();
+    }
     if (ok && _imp->renderer.hasScene() && !_imp->renderer.isFramed()) {
         _imp->renderer.frameScene();
     }
@@ -1996,6 +2063,11 @@ void
 SceneViewport::setFrame(double frame,
                         double framesPerSecond)
 {
+    if ((frame != _imp->frame) && !_imp->cameraLock.active) {
+        // A written move holds at its own frame only; an animated camera is elsewhere at others.
+        _imp->lockedMoveAwaitsSync = false;
+        _imp->renderer.clearLookThroughTransform();
+    }
     _imp->frame = frame;
     _imp->renderer.setFrame(frame, framesPerSecond);
     update();
@@ -2026,6 +2098,9 @@ SceneViewport::publishState()
     setProperty("natronSceneError", _imp->error);
     setProperty("natronSceneShown", _imp->renderer.hasScene());
     setProperty("natronSceneSynced", isSceneSynced());
+    // How many scenes were handed to the worker: navigation alone must not add to it.
+    setProperty("natronSceneSyncRequests", QVariant::fromValue<qulonglong>(_imp->requestedSerial));
+    setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
     // The free camera's view (perspective, front, back, right, left, top or bottom), its clip
@@ -2060,7 +2135,15 @@ SceneViewport::setDrawMode(SceneViewportRenderer::DrawModeEnum mode)
 void
 SceneViewport::setLookThroughCamera(const QString& path)
 {
+    if (_imp->cameraLock.active) {
+        endCameraLock();
+    }
+    _imp->lockedMoveAwaitsSync = false;
     _imp->renderer.setLookThroughCamera(path.toStdString());
+    if (path.isEmpty()) {
+        // The free camera has nothing to lock to.
+        _imp->lockView = false;
+    }
     _imp->lockMessage.clear();
     publishState();
     update();
@@ -2230,6 +2313,62 @@ SceneViewport::isLockView() const
     return _imp->lockView;
 }
 
+void
+SceneViewport::lockViewToCamera()
+{
+    const std::string current = _imp->renderer.getLookThroughCamera();
+
+    if (!current.empty()) {
+        setLockView(true);
+
+        return;
+    }
+    const std::vector<std::string> paths = _imp->renderer.getStageCameraPaths();
+    if (paths.empty()) {
+        _imp->lockView = false;
+        _imp->lockMessage = tr("The scene has no camera to lock the view to");
+        publishState();
+        update();
+
+        return;
+    }
+    if (paths.size() == 1) {
+        lockViewToCamera(QString::fromStdString(paths.front()));
+
+        return;
+    }
+    // Later: a key press or the context menu that asked may still be under way.
+    QMetaObject::invokeMethod(this, [this, paths]() { showLockCameraMenu(paths); }, Qt::QueuedConnection);
+}
+
+void
+SceneViewport::lockViewToCamera(const QString& path)
+{
+    setLookThroughCamera(path);
+    setLockView(!path.isEmpty());
+}
+
+void
+SceneViewport::showLockCameraMenu(const std::vector<std::string>& paths)
+{
+    clearGesture();
+    Menu menu(this);
+    menu.setObjectName(QString::fromUtf8("SceneLockCameraMenu"));
+    for (const std::string& path : paths) {
+        const QString qpath = QString::fromStdString(path);
+        QAction* action = menu.addAction(qpath);
+        QObject::connect(action, &QAction::triggered, this, [this, qpath]() {
+            lockViewToCamera(qpath);
+        });
+    }
+    QPoint pos = mapFromGlobal(QCursor::pos());
+    if (!rect().contains(pos)) {
+        pos = rect().center();
+    }
+    menu.exec(mapToGlobal(pos));
+    clearGesture();
+}
+
 bool
 SceneViewport::navigatesLockedCamera() const
 {
@@ -2369,20 +2508,12 @@ SceneViewport::moveLockedCamera(int navigation,
     }
     const GfVec3d t = local.ExtractTranslation();
     const GfVec3d r = SceneNodeAuthoring::decomposeRotationMatrix(rotation, lock.rotateOrder, GfVec3d(lock.newValues[3], lock.newValues[4], lock.newValues[5]));
-    EffectInstancePtr effect = node->getEffectInstance();
-    if (effect) {
-        effect->beginChanges();
-    }
     for (int i = 0; i < 6; ++i) {
-        const double value = (i < 3) ? t[i] : r[i - 3];
-        if (value != lock.newValues[i]) {
-            lock.newValues[i] = value;
-            setCameraKnobValue((i < 3) ? translate : rotate, i % 3, lock.frame, lock.animated[i], value);
-        }
+        lock.newValues[i] = (i < 3) ? t[i] : r[i - 3];
     }
-    if (effect) {
-        effect->endChanges();
-    }
+    double cameraToWorld[16];
+    std::copy(lock.world.data(), lock.world.data() + 16, cameraToWorld);
+    _imp->renderer.setLookThroughTransform(cameraToWorld);
 } // SceneViewport::moveLockedCamera
 
 void
@@ -2391,8 +2522,16 @@ SceneViewport::endCameraLock()
     Implementation::CameraLock lock = _imp->cameraLock;
 
     _imp->cameraLock = Implementation::CameraLock();
+    _imp->wheelMoveTimer->stop();
     NodePtr node = lock.node.lock();
-    if (!lock.active || !node) {
+    if (!lock.active) {
+        return;
+    }
+    if (!node) {
+        if (!_imp->lockedMoveAwaitsSync) {
+            _imp->renderer.clearLookThroughTransform();
+        }
+
         return;
     }
     std::vector<LockedCameraMoveCommand::Dimension> dimensions;
@@ -2410,7 +2549,27 @@ SceneViewport::endCameraLock()
         dimensions.push_back(d);
     }
     if (dimensions.empty()) {
+        // Unless an earlier move still waits for its scene, the prim is where the view shows it.
+        if (!_imp->lockedMoveAwaitsSync) {
+            _imp->renderer.clearLookThroughTransform();
+        }
+
         return;
+    }
+    // Before the write, which may request the scene that has it before returning.
+    _imp->lockedMoveSerial = _imp->requestedSerial;
+    _imp->lockedMoveAwaitsSync = true;
+    EffectInstancePtr effect = node->getEffectInstance();
+    if (effect) {
+        effect->beginChanges();
+    }
+    for (const LockedCameraMoveCommand::Dimension& d : dimensions) {
+        if (KnobDoublePtr knob = d.knob.lock()) {
+            setCameraKnobValue(knob, d.dimension, lock.frame, d.animated, d.newValue);
+        }
+    }
+    if (effect) {
+        effect->endChanges();
     }
     LockedCameraMoveCommand* command = new LockedCameraMoveCommand(node, lock.frame, dimensions, tr("Move %1").arg(QString::fromUtf8(node->getLabel().c_str())));
     if (_imp->undoHistory) {
@@ -2557,6 +2716,8 @@ SceneViewport::paintGL()
         setProperty("natronSceneFreeCamera", QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY });
         // A tumble turns an orthographic view to perspective.
         setProperty("natronSceneViewMode", QString::fromUtf8(viewModeName(camera.viewMode)));
+        // Free navigation stops looking through a camera.
+        setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     }
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
@@ -2597,7 +2758,7 @@ SceneViewport::paintGL()
                 }
             }
         }
-        if (_imp->lockView) {
+        if (navigatesLockedCamera()) {
             view += tr(" (locked)");
         }
         QString hud = tr("%1 | %2 | time %3")
@@ -2674,12 +2835,10 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
         return;
     }
     const QPoint pos = e->position().toPoint();
-    if (clickSelects || (role == Implementation::eDragRoleMarquee)) {
+    // A marquee may start on a prim, as in Nuke: a drag selects by rectangle wherever it starts,
+    // and a release without a drag selects what is under the press.
+    if (clickSelects) {
         _imp->pressPrim = pickPrimAt(pos);
-        // A marquee starts on empty space; a drag from a prim is a click on it.
-        if (!_imp->pressPrim.isEmpty() && (role == Implementation::eDragRoleMarquee)) {
-            role = Implementation::eDragRoleNone;
-        }
     }
     _imp->button = button;
     _imp->pressPos = pos;
@@ -2781,7 +2940,7 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
     } else if (!dragged && clickSelects) {
         select(pressPrim.isEmpty() ? QStringList() : QStringList(pressPrim), mode);
     } else if (dragged && clickSelects && (role == Implementation::eDragRoleNone) && !pressPrim.isEmpty()) {
-        // A drag from a prim, where a drag from empty space would be a marquee.
+        // A drag that no binding gives a role is a click on the prim it started from.
         select(QStringList(pressPrim), mode);
     } else if (!dragged && menu) {
         showContextMenu(e->globalPosition().toPoint());
@@ -2911,10 +3070,13 @@ SceneViewport::wheelEvent(QWheelEvent* e)
         return;
     }
     if (navigatesLockedCamera()) {
-        // One undo step per wheel event.
-        if (beginCameraLock()) {
+        // A run of wheel steps is one move, written once the wheel rests; a drag under way owns
+        // the move and ends it itself.
+        if (_imp->cameraLock.active || beginCameraLock()) {
             moveLockedCamera(Implementation::eDragRoleDolly, QPoint(), std::pow(0.85, steps));
-            endCameraLock();
+            if (_imp->button == Qt::NoButton) {
+                _imp->wheelMoveTimer->start();
+            }
         }
         update();
         e->accept();
@@ -2973,7 +3135,11 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DLockView, e->modifiers(), e->key())) {
-        setLockView(!_imp->lockView);
+        if (navigatesLockedCamera()) {
+            setLockView(false);
+        } else {
+            lockViewToCamera();
+        }
         e->accept();
 
         return;
@@ -3064,6 +3230,19 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
             setLookThroughCamera(qpath);
         });
     }
+    // Looking through a camera and locking to it in one pick.
+    if (paths.size() > 1) {
+        lookThrough->addSeparator();
+    }
+    for (std::size_t i = 1; i < paths.size(); ++i) {
+        const QString qpath = QString::fromStdString(paths[i]);
+        QAction* action = lookThrough->addAction(tr("Lock to %1").arg(qpath));
+        action->setCheckable(true);
+        action->setChecked(navigatesLockedCamera() && (_imp->renderer.getLookThroughCamera() == paths[i]));
+        QObject::connect(action, &QAction::triggered, this, [this, qpath]() {
+            lockViewToCamera(qpath);
+        });
+    }
 
     QMenu* views = menu.addMenu(tr("View"));
     QActionGroup* viewModes = new QActionGroup(views);
@@ -3081,10 +3260,14 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
 
     QAction* lockView = menu.addAction(tr(kShortcutDescActionViewer3DLockView));
     lockView->setCheckable(true);
-    lockView->setChecked(_imp->lockView);
+    lockView->setChecked(navigatesLockedCamera());
     lockView->setShortcut(keySequenceOf(kShortcutIDActionViewer3DLockView));
     QObject::connect(lockView, &QAction::toggled, this, [this](bool locked) {
-        setLockView(locked);
+        if (locked) {
+            lockViewToCamera();
+        } else {
+            setLockView(false);
+        }
     });
     QAction* createCamera = menu.addAction(tr("Create Camera from View"));
     createCamera->setEnabled(bool(_imp->viewedNodeProvider) && _imp->renderer.hasScene());

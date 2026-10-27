@@ -243,6 +243,18 @@ public:
 
     const std::string& getLookThroughCamera() const;
 
+    /**
+     * @brief Draws the camera looked through from cameraToWorld (a Gf row-major matrix) in place of
+     * its prim's transform, until clearLookThroughTransform() or another camera is looked through.
+     * Lets a move of the camera show at once, before its edit reaches the stage.
+     **/
+    void setLookThroughTransform(const double cameraToWorld[16]);
+
+    void clearLookThroughTransform();
+
+    // Whether the camera looked through is drawn from setLookThroughTransform().
+    bool hasLookThroughTransform() const;
+
     // The highlighted prims, in selection order: the last is the current one.
     void setSelectedPrims(const std::vector<std::string>& paths);
 
@@ -423,10 +435,21 @@ public:
 
     void setClipPlanes(const SceneViewportRenderer::ClipPlanes& planes);
 
-    // While locked, navigating through a stage camera moves it by editing its node's knobs.
+    // While locked, navigating through a stage camera moves it, and the end of each move writes
+    // its node's knobs.
     void setLockView(bool locked);
 
     bool isLockView() const;
+
+    /**
+     * @brief Locks the view to the camera looked through. From the free camera, it looks through
+     * the stage's only camera and locks to it, or offers a menu of the stage's cameras to pick
+     * from; with none, the HUD says so and the view stays unlocked.
+     **/
+    void lockViewToCamera();
+
+    // Looks through the camera at path and locks the view to it.
+    void lockViewToCamera(const QString& path);
 
     // Makes an unconnected Camera node, near the viewed node, that sees what the view shows.
     NodePtr createCameraFromView();
@@ -487,10 +510,13 @@ private:
     // Applies a tumble or pan drag of delta pixels, or a dolly by dollyFactor, to the locked camera.
     void moveLockedCamera(int navigation, const QPoint& delta, double dollyFactor);
 
-    // Ends the move as one undo step.
+    // Writes the move to the camera's node as one undo step.
     void endCameraLock();
 
     void showContextMenu(const QPoint& globalPos);
+
+    // A menu of the cameras at paths, under the pointer: the one picked is looked through, locked.
+    void showLockCameraMenu(const std::vector<std::string>& paths);
 
     // Queues payload for the worker; the error shown once it is synced.
     void requestSync(const ScenePayload& payload, const QString& error);

@@ -11,8 +11,14 @@ at x 3, and a camera /World/Cam read from the file.
 - Clipping: the context menu's Near Clip box set beyond the scene hides it; Automatic Clipping
   brings it back. natronSceneClip follows.
 - Lock: looking through LockCam with Ctrl+L locked, a Ctrl+left drag (Nuke's tumble) turns the
-  camera by editing its Rotate and Translate; Edit > Undo puts both back in one step. Locked to
+  camera by editing its Rotate and Translate; Edit > Undo puts both back in one step. While the
+  button is held the view moves but the knobs are not written and no scene is handed to the
+  view's sync (natronSceneSyncRequests stays put); the release writes them once. Locked to
   /World/Cam, which no Camera node made, a drag leaves the view alone and the HUD says why.
+- One-step lock: from the free camera, Ctrl+L with two cameras in the scene opens a menu of them
+  and picking LockCam locks to it; the Look Through menu's "Lock to /World/Cam" looks through and
+  locks in one pick; with the USDRead alone in view (one camera) Ctrl+L locks to /World/Cam
+  without asking.
 - Create Camera from View: from a tumbled free view, the menu entry makes a USDCamera; merged in
   and looked through, it shows what the free view showed.
 
@@ -234,6 +240,16 @@ try:
                             return True
         return False
 
+    def sync_requests(v):
+        return int(v.property("natronSceneSyncRequests") or 0)
+
+    def look_through(v):
+        return str(v.property("natronSceneLookThrough") or "")
+
+    def lock_menu():
+        popup = QApplication.activePopupWidget()
+        return popup if popup is not None and popup.objectName() == "SceneLockCameraMenu" else None
+
     def values(node, name):
         p = node.getParam(name)
         return [p.getValue(i) for i in range(3)]
@@ -316,10 +332,33 @@ try:
         check(v.property("natronSceneLockView") is False, "the view starts unlocked")
         key(v, Qt.Key_L, CTRL)
         check(bool(v.property("natronSceneLockView")), "Ctrl+L locks the view to the camera")
-        save_view("scene-views-locked-before")
+        before = save_view("scene-views-locked-before")
         t0, r0 = values(lock_cam, "translate"), values(lock_cam, "rotate")
-        drag(v, L, CTRL)
+        requests0 = sync_requests(v)
+        # The drag in two halves: the view during it, then the release.
+        start, delta, moves = v.rect().center(), QPoint(60, 30), 10
+        mouse(v, QEvent.MouseButtonPress, start, L, L, CTRL)
+        for i in range(1, moves + 1):
+            mouse(v, QEvent.MouseMove, start + delta * (float(i) / moves), Qt.NoButton, L, CTRL)
+            QApplication.processEvents()
         yield settle()
+        during = save_view("scene-views-locked-during")
+        check(sync_requests(v) == requests0, "a locked drag hands no scene to the view while the button is held (%r -> %r)" %
+              (requests0, sync_requests(v)))
+        check(near(t0, values(lock_cam, "translate")) and near(r0, values(lock_cam, "rotate")),
+              "a locked drag writes LockCam's knobs only on release")
+        diff = mean_difference(before, during)
+        check(diff is not None and diff > 1.0, "the view follows a locked drag while the button is held (mean difference %r)" % (diff,))
+        mouse(v, QEvent.MouseButtonRelease, start + delta, L, Qt.NoButton, CTRL)
+        QApplication.processEvents()
+        ok = yield ("until", lambda: sync_requests(v) > requests0 and bool(v.property("natronSceneSynced")), POLL_TIMEOUT_S)
+        check(ok, "the release hands the written move to the view")
+        report("NOTE scenes handed to the view by the locked drag: %d" % (sync_requests(v) - requests0,))
+        check(sync_requests(v) - requests0 < moves, "the locked drag syncs the scene fewer times than it moved (%d)" %
+              (sync_requests(v) - requests0,))
+        yield settle()
+        diff = mean_difference(during, crop())
+        check(diff is not None and diff < 2.0, "the view stays where the drag left it once the move is written (mean difference %r)" % (diff,))
         t1, r1 = values(lock_cam, "translate"), values(lock_cam, "rotate")
         report("NOTE LockCam translate %r -> %r, rotate %r -> %r" % (t0, t1, r0, r1))
         check(not near(r0, r1), "a locked tumble turns LockCam's Rotate")
@@ -342,6 +381,54 @@ try:
         check(diff is not None and diff < 1.0, "a drag locked to /World/Cam leaves the view alone (mean difference %r)" % (diff,))
         key(v, Qt.Key_L, CTRL)
         check(v.property("natronSceneLockView") is False, "Ctrl+L unlocks the view")
+
+        section("one-step lock")
+        ok = yield from with_menu(v, "Free Camera")
+        yield settle()
+        check(look_through(v) == "" and v.property("natronSceneLockView") is False, "back on the free camera, unlocked")
+        key(v, Qt.Key_L, CTRL)
+        ok = yield ("until", lambda: lock_menu() is not None, POLL_TIMEOUT_S)
+        menu = lock_menu()
+        if check(ok and menu is not None, "with two cameras and none looked through, Ctrl+L offers a menu of them"):
+            shot("scene-views-lock-menu.png")
+            texts = sorted(a.text().replace("&", "") for a in menu.actions() if a.text())
+            check(texts == sorted([lock_cam_path, "/World/Cam"]), "the menu lists the scene's cameras (%r)" % (texts,))
+            action = find_action(menu, lock_cam_path)
+            if check(action is not None, "the menu has LockCam"):
+                action.trigger()
+                QApplication.processEvents()
+            close_menus()
+        yield settle()
+        check(look_through(v) == lock_cam_path and bool(v.property("natronSceneLockView")),
+              "picking LockCam looks through it and locks (%r)" % (look_through(v),))
+        key(v, Qt.Key_L, CTRL)
+        check(v.property("natronSceneLockView") is False and look_through(v) == lock_cam_path,
+              "Ctrl+L unlocks and keeps looking through LockCam")
+
+        ok = yield from with_menu(v, "Lock to /World/Cam")
+        yield settle()
+        check(look_through(v) == "/World/Cam" and bool(v.property("natronSceneLockView")),
+              "Look Through > Lock to /World/Cam looks through it and locks in one pick (%r)" % (look_through(v),))
+        ok = yield from with_menu(v, "Free Camera")
+        yield settle()
+        check(v.property("natronSceneLockView") is False, "the free camera has no lock")
+
+        requests0 = sync_requests(v)
+        require(viewer.connectInput(0, usd), "view the USDRead alone")
+        ok = yield ("until", lambda: sync_requests(v) > requests0 and scene_drawn(), STARTUP_TIMEOUT_S)
+        require(ok, "the view shows the USDRead alone")
+        key(v, Qt.Key_L, CTRL)
+        yield ("sleep", SETTLE_MS)
+        check(QApplication.activePopupWidget() is None, "with one camera Ctrl+L asks nothing")
+        close_menus()
+        check(look_through(v) == "/World/Cam" and bool(v.property("natronSceneLockView")),
+              "with one camera Ctrl+L locks to it (%r)" % (look_through(v),))
+        key(v, Qt.Key_L, CTRL)
+        ok = yield from with_menu(v, "Free Camera")
+        requests0 = sync_requests(v)
+        require(viewer.connectInput(0, merge), "view the merge again")
+        ok = yield ("until", lambda: sync_requests(v) > requests0 and scene_drawn(), STARTUP_TIMEOUT_S)
+        require(ok, "the view shows the merge again")
 
         section("create camera")
         ok = yield from with_menu(v, "Free Camera")

@@ -11,6 +11,8 @@ Checks:
     space clears;
   - a marquee from empty space selects what it encloses, an empty marquee clears, and a Shift
     marquee adds to the selection;
+  - a plain left drag that starts on the box is a marquee too (as in Nuke, where Ctrl+drag
+    tumbles): dragged past the ball it selects both, and the camera stays;
   - F with the ball selected frames it: the pivot moves and a click at the centre picks the ball;
   - F with nothing selected frames everything, the same camera as A;
   - the context menu lists Frame Selection and Frame All.
@@ -188,6 +190,17 @@ try:
         shot("scene-select-marquee-result.png")
         check(same_camera(framed_all, camera()), "a plain left drag is a marquee and leaves the camera alone")
         check(marquee(v, corner, corner + QPoint(10, 10)) == [], "an empty marquee clears the selection (got %r)" % (selection(),))
+
+        # A drag from the box past the ball: a click on the box would select the box alone.
+        def clamp(value, low, high):
+            return max(low, min(high, value))
+        beyond = QPoint(clamp(ball.x() + (sx if ball.x() >= box.x() else -sx), 2, v.width() - 3),
+                        clamp(ball.y() + (sy if ball.y() >= box.y() else -sy), 2, v.height() - 3))
+        from_box = marquee(v, box, beyond)
+        report("NOTE marquee from the box %r -> %r selects %r" % ((box.x(), box.y()), (beyond.x(), beyond.y()), from_box))
+        check(from_box == sorted([BOX, BALL]), "a plain drag starting on the box is a marquee: past the ball it selects both (got %r)" % (from_box,))
+        check(same_camera(framed_all, camera()), "a plain drag from a prim leaves the camera alone")
+        click(v, empty)
 
         # A marquee around the ball alone: its corners are grid points one step out, known to be empty.
         xs = [p.x() for p in hits[BALL]]

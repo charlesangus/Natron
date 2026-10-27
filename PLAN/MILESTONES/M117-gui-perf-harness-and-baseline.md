@@ -35,27 +35,27 @@ Two kinds of numbers, never mixed:
 
 ## Phase 117.1: Instrumentation
 
-- [ ] M117.P1.T1 — Add a main-thread stall monitor, off by default
+- [x] M117.P1.T1 — Add a main-thread stall monitor, off by default
   - files: `Gui/StallMonitor.h` (new), `Gui/StallMonitor.cpp` (new), `Gui/GuiApplicationManager.cpp`, `Gui/CMakeLists.txt` (or the Gui sources list), `Tests/StallMonitor_Test.cpp` (new) + `Tests/CMakeLists.txt` GuiTests sources
   - approach: when `NATRON_STALL_LOG=<path>` is set at startup (`NATRON_STALL_THRESHOLD_MS` overrides the 50 ms default), start a watcher thread and a 10 ms main-thread `QTimer` that stamps an atomic heartbeat. When the heartbeat is older than the threshold, the watcher opens a stall. When it advances again, it appends one JSON line: `{start_ms, duration_ms}`. `start_ms` is on `CLOCK_MONOTONIC` (`std::chrono::steady_clock` on Linux), the same clock as Python's `time.monotonic()`, so the bench attributes stalls to ops by its own timestamps and needs no Python binding. When the variable is unset, nothing is created.
   - verify: a GuiTests gtest starts the monitor with a temp path, blocks the main thread for 200 ms, spins the event loop, and checks that exactly one stall of 180 ms or more was written, with `start_ms` within the blocked window. With the variable unset, no thread exists.
   - size: M
-- [ ] M117.P1.T2 — Seeded large-graph generator that runs inside the app
+- [x] M117.P1.T2 — Seeded large-graph generator that runs inside the app
   - files: `tools/bench/gui/gen_graph.py` (new), `tools/bench/gui/test_gen_graph.py` (new)
   - approach: `build(app, topology, n, seed, expr_frac=0.2, labels=True, backdrops=True, groups=True)` creates N native processing nodes (Grade, Blur, Merge, Transform, ColorCorrect) through `app.createNode` with explicit names. Topologies: `chain`; `wide` (one source fanning into N); `comp` (diamond merges, the shape that went exponential in M62); `mixed` (comp plus wide branches). It places nodes on a grid sized like a real comp. About `expr_frac` of the numeric knobs get expressions that reference another node's knob (`Blur12.size.get() * 0.5`) or `frame`. Every tenth node gets a 3–5 line HTML label. A backdrop wraps every 50 nodes, and about 5% of nodes sit inside 3–4 groups. It is deterministic: the same seed gives the same names, connections and expressions. It returns a summary dict (node count, edge count, expression count).
   - verify: `test_gen_graph.py` runs under NatronRenderer (`NatronRenderer -t`) for each topology at N=300. It checks node/edge/expression counts and that two runs with one seed produce identical summaries plus a hash of (name, inputs, expressions).
   - size: M
-- [ ] M117.P1.T3 — Bench driver: interaction ops
+- [x] M117.P1.T3 — Bench driver: interaction ops
   - files: `tools/bench/gui/gui_bench.py` (new)
   - approach: built on `Tests/gui/guitest.py`'s generator `run()`. For each (topology, N) it generates the graph, saves it to a temp `.ntp`, reloads it, and times `load`. It then times `fit_all`, `zoom_step` (10 wheel steps in and out), `pan` (a 40-event middle-drag), `hover` (200 idle mouse moves), `click_select`, `select_all`, `rubber_band` (a 40-event drag over about 10% of the nodes), and `drag_move` with 1 and 50 nodes selected. Interaction ops force a synchronous `viewport().repaint()` per event, so paint cost lands inside the timing. Each op records its `time.monotonic()` start and end, runs R reps (default 5), and reports median, p95 and per-event max. The stalls in the stall log that fall inside the op's window are attributed to it (count, max, total). Output is one JSON line per op, headed by a host record: CPU model, cores, Qt platform, git SHA, build type, and AppImage or not. A per-op timeout (default 120 s) records `timeout` and moves on.
   - verify: runs under `Tests/gui/run-gui-test.sh` at N=300 `mixed` in the container. Every op emits a record with no `timeout`. A deliberately injected `time.sleep(0.3)` op, behind a `--self-check` flag, is attributed one stall.
   - size: M
-- [ ] M117.P1.T4 — Bench driver: edit ops
+- [x] M117.P1.T4 — Bench driver: edit ops
   - files: `tools/bench/gui/gui_bench.py`
   - approach: add ops to the same driver. `create_one` (default name, so naming is timed), `paste_100` and `paste_1000` (copy and paste a selection), `duplicate_100`, `delete_1000`, `undo` and `redo` of the delete, `set_expression` (on a knob in the middle of the graph), `edit_label` (rewrite a 5-line HTML label), `knob_change_fanout` (change a knob that 50 expressions reference), `connect` (rewire one input mid-graph, which triggers the invalid-expression recheck), `frame_step` (10 timeline steps), and `idle` (process CPU time over 5 s with no input, which catches the 300 ms whole-graph timer). Each op restores the graph state for the next rep, by undo or regeneration.
   - verify: as P1.T3, at N=300 `mixed`. Every edit op emits a record, the node count after the run equals the count before it, and `idle` reports a non-zero CPU time.
   - size: M
-- [ ] M117.P1.T5 — Runner, compare script and README
+- [x] M117.P1.T5 — Runner, compare script and README
   - files: `tools/bench/gui/run.sh` (new), `tools/bench/gui/compare.py` (new), `tools/bench/gui/README.md` (new), `Tests/CMakeLists.txt` (self-test registration)
   - approach: `run.sh --xvfb|--host [--sizes 300,1000,3000] [--topologies ...] [--reps R] [--out DIR]`:
     - `--xvfb` reuses `run-gui-test.sh`'s Xvfb/GL setup against `build/release`, in the container, launched detached with a done marker, one run at a time.

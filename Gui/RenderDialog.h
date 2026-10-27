@@ -112,6 +112,7 @@ public Q_SLOTS:
 
     void onPresetChanged(int index);
     void onRangeValueChanged(double value);
+    void onBackgroundToggled(bool checked);
     void onOkClicked();
 
 private:

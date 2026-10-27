@@ -154,10 +154,12 @@ KnobGuiFile::open_file()
     std::vector<std::string> filters;
     KnobFilePtr knob = _knob.lock();
 
-    if ( !knob->isInputImageFile() ) {
-        filters.push_back("*");
-    } else {
+    if (knob->isInputImageFile()) {
         appPTR->getSupportedReaderFileFormats(&filters);
+    } else if (!knob->getFileExtensions().empty()) {
+        filters = knob->getFileExtensions();
+    } else {
+        filters.push_back("*");
     }
     std::string oldPattern = knob->getValue();
     std::string currentPattern = oldPattern;

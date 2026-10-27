@@ -948,20 +948,21 @@ try:
 
         # ---- labels
         gt.section("labels")
-        for plugin_id, short_name, expected in (("net.sf.openfx.Premult", "Premult", "Premult by"),
-                                                ("net.sf.openfx.Unpremult", "Unpremult", "Unpremult by")):
+        for plugin_id, short_name, expected in (("Premult", "Premult", "Premult by"),
+                                                ("Unpremult", "Unpremult", "Unpremult by")):
             gt.close_all_panels()
             node = create(plugin_id, 0, 0)
             yield ("sleep", PANEL_MS)
             panel = panel_for(node)
             if check(panel is not None, "%s: settings panel is open" % short_name):
-                _labels, pick_fields = check_picker_label(panel, short_name, "hostUnPremultByChannel", expected)
-                _l, layer_fields = knob_widgets(panel, "hostInputLayer")
+                _labels, pick_fields = check_picker_label(panel, short_name, "hostUnPremultBy", expected)
+                _l, layer_fields = knob_widgets(panel, "channels")
                 if pick_fields and layer_fields:
                     check(abs(top_in(panel, pick_fields[0]) - top_in(panel, layer_fields[0])) > 2,
                           "%s: the picker sits on its own row, not the layer row" % short_name)
                     pick_combo = first_of_class(pick_fields, "ComboBox")
-                    layer_combo = first_of_class(layer_fields, "ComboBox")
+                    layer_combo = first_of_class(layer_fields, "ComboBox") or \
+                        first_of_class([w for f in layer_fields for w in descendants(f)], "ComboBox")
                     if check(pick_combo is not None and layer_combo is not None,
                              "%s: found the layer and picker combos" % short_name):
                         a, b = left_in(panel, layer_combo), left_in(panel, pick_combo)

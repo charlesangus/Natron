@@ -425,6 +425,7 @@ ParitySourceTestEffect::ParitySourceTestEffect(NodePtr n)
     , _extraLayer()
     , _origin()
     , _noise()
+    , _nonFinite()
 {
     setSupportsRenderScaleMaybe(eSupportsYes);
 }
@@ -477,6 +478,15 @@ ParitySourceTestEffect::initializeKnobs()
     noise->setDefaultValue(false);
     page->addKnob(noise);
     _noise = noise;
+
+    KnobIntPtr nonFinite = createKnob<KnobInt>(std::string("Non-Finite"), 4);
+    nonFinite->setName(kParitySourceParamNonFinite);
+    nonFinite->setAnimationEnabled(false);
+    for (int i = 0; i < 4; ++i) {
+        nonFinite->setDefaultValue(0, i);
+    }
+    page->addKnob(nonFinite);
+    _nonFinite = nonFinite;
 }
 
 int
@@ -519,6 +529,18 @@ ParitySourceTestEffect::getOrigin(int* x,
 
     *x = origin ? origin->getValue(0) : 0;
     *y = origin ? origin->getValue(1) : 0;
+}
+
+RectI
+ParitySourceTestEffect::getNonFinite() const
+{
+    KnobIntPtr nonFinite = _nonFinite.lock();
+
+    if (!nonFinite) {
+        return RectI();
+    }
+
+    return RectI(nonFinite->getValue(0), nonFinite->getValue(1), nonFinite->getValue(2), nonFinite->getValue(3));
 }
 
 StatusEnum
@@ -575,6 +597,8 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
     const unsigned mipmapLevel = args.mappedScale.toMipmapLevel();
     const int step = 1 << mipmapLevel;
     const bool noise = hasNoise();
+    const RectI nonFinite = getNonFinite();
+    const float nonFiniteValues[3] = { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() };
     int ox, oy;
     getOrigin(&ox, &oy);
 
@@ -617,6 +641,9 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
                         } else if ((v != 0.f) && (v != 1.f)) {
                             v = std::min(1.f, std::max(0.f, v + n));
                         }
+                    }
+                    if (isColor && (channel < 3) && nonFinite.contains(cx, cy)) {
+                        v = nonFiniteValues[channel];
                     }
                     pixel[c] = v;
                 }
@@ -857,6 +884,13 @@ setParitySourceNoise(const NodePtr& source,
                      bool noise)
 {
     setKnobValues(source, kParitySourceParamNoise, std::vector<double>(1, noise ? 1. : 0.));
+}
+
+void
+setParitySourceNonFinite(const NodePtr& source,
+                         const RectI& rect)
+{
+    setKnobValues(source, kParitySourceParamNonFinite, { (double)rect.x1, (double)rect.y1, (double)rect.x2, (double)rect.y2 });
 }
 
 void

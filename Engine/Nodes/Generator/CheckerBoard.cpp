@@ -165,7 +165,7 @@ readColor(const KnobReader& reader,
           float out[4])
 {
     for (int i = 0; i < 4; ++i) {
-        out[i] = (float)reader.valueOr(knob, 0., i);
+        out[i] = knobValueAsFloat(reader.valueOr(knob, 0., i));
     }
 }
 } // anonymous namespace

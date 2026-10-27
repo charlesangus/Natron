@@ -45,11 +45,12 @@
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/Variant.h"
 #include "Engine/AppManager.h" // for AppManager::createKnob
-#include "Engine/OverlaySupport.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/KnobLinkGroup.h"
+#include "Engine/OverlaySupport.h"
+#include "Engine/Variant.h"
+#include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -271,6 +272,11 @@ public:
         Q_EMIT dimensionNameChanged(dimension);
     }
 
+    void s_linkChanged()
+    {
+        Q_EMIT linkChanged();
+    }
+
 public Q_SLOTS:
 
     /**
@@ -371,6 +377,10 @@ Q_SIGNALS:
     void inViewerContextLabelChanged();
 
     void dimensionNameChanged(int dimension);
+
+    /// Emitted when a dimension of the knob joins or leaves a link group, is unlinked or re-linked,
+    /// or when another member of one of its link groups does.
+    void linkChanged();
 };
 
 struct KnobChange
@@ -387,6 +397,10 @@ struct KnobChange
 
 typedef std::list<KnobChange> KnobChanges;
 
+/**
+ * @brief IsolatedJob::refusesWrite(knob), for code that sees only this header.
+ **/
+bool isWriteRefusedByIsolatedJob(const KnobI* knob);
 
 class KnobI
     : public OverlaySupport
@@ -723,6 +737,9 @@ public:
                        bool hasRetVariable,
                        bool failIfInvalid)
     {
+        if (isWriteRefusedByIsolatedJob(this)) {
+            return;
+        }
         setExpressionInternal(dimension, expression, hasRetVariable, true, failIfInvalid);
     }
 
@@ -1108,6 +1125,14 @@ public:
     virtual void setIsPersistent(bool b) = 0;
 
     /**
+     * @brief Whether a render can read this knob's value. A knob that is not read by renders keeps
+     * accepting writes while a render or track reads its holder (the project's save bookkeeping,
+     * for instance). True by default; set when the knob is created, never changed afterwards.
+     **/
+    virtual bool isReadByRenders() const = 0;
+    virtual void setReadByRenders(bool b) = 0;
+
+    /**
      * @brief If set to false, the knob will not be able to use undo/redo actions.
      * By default this is set to true.
      **/
@@ -1243,7 +1268,14 @@ public:
                              const int listenerDimension,
                              const int listenedToDimension,
                              const KnobIPtr& listener) = 0;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const = 0;
+    /**
+     * @brief Adds to nodes the nodes whose parameters this knob's expressions and links read,
+     * directly or through theirs, the nodes whose metadata they read, and the tracker nodes whose
+     * tracks they read. With metadataSources, also adds to it the nodes whose metadata they read.
+     **/
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const
+        = 0;
 
 private:
     virtual void removeListener(KnobI* listener, int listenerDimension) = 0;
@@ -1303,9 +1335,21 @@ public:
                       std::vector<std::string>* missingTargets = NULL);
 
     /**
+     * @brief Whether a one-way link to master is one a file holds: only those are saved, and only
+     * those are made again by restoreLinks().
+     **/
+    static bool isSavedOneWayLinkMaster(const KnobIPtr& master);
+
+    /**
      * @brief Stores the links serialization saved, for restoreLinks() to resolve once every node exists.
      **/
     void storeLinksFromSerialization(const Serialization::KnobSerialization& serialization);
+
+    /**
+     * @brief Stores only the link groups serialization saved, for KnobHelper::restoreLinkGroups(). Used by
+     * holders such as track markers whose one-way links belong to their subsystem and are not restored.
+     **/
+    void storeLinkGroupsFromSerialization(const Serialization::KnobSerialization& serialization);
 
     /**
      * @brief Restores the expressions serialization saved, with each old node script name of
@@ -1314,6 +1358,28 @@ public:
      **/
     void restoreExpressionsFromSerialization(const Serialization::KnobSerialization& serialization,
                                              const std::map<std::string, std::string>& oldNewScriptNamesMapping);
+
+    /**
+     * @brief The link group a dimension was saved in, kept by storeLinksFromSerialization() until
+     * KnobHelper::restoreLinkGroups() rebuilds the groups of everything that was saved with it.
+     **/
+    struct StoredLinkGroup {
+        int dimension;
+        std::string id;
+        bool linked;
+        bool nodeLink;
+    };
+
+    /**
+     * @brief Returns the link groups storeLinksFromSerialization() kept and forgets them.
+     **/
+    std::vector<StoredLinkGroup> takeStoredLinkGroups()
+    {
+        std::vector<StoredLinkGroup> ret;
+        ret.swap(_storedLinkGroups);
+
+        return ret;
+    }
 
 private:
     struct Link {
@@ -1340,6 +1406,7 @@ private:
     };
 
     std::vector<Link> _links;
+    std::vector<StoredLinkGroup> _storedLinkGroups;
 
 public:
 
@@ -1359,7 +1426,89 @@ public:
      * @brief If a knob was created using createDuplicateOnHolder(effect,true), this function will return true
      **/
     virtual KnobIPtr getAliasMaster() const = 0;
+
+    /**
+     * @brief Makes this knob an alias of master, a permanent two-way link on every dimension (see
+     * linkAsAlias()), or with doAlias false ends that alias, each knob keeping its current state.
+     **/
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) = 0;
+
+    /**
+     * @brief The knobs whose alias master is this knob.
+     **/
+    virtual KnobsVec getAliasesOfThis() const = 0;
+
+    /**
+     * @brief Links a dimension of this knob two-way to a dimension of other: this dimension joins the
+     * link group of other's dimension, or a new one, and takes the group's value, animation and
+     * expression. An edit through any linked member then reaches every other linked member.
+     * A thisDimension of -1 links every dimension the two knobs have in common one-to-one, or every
+     * dimension of this knob to otherDimension when that is not -1.
+     * Returns false if the types are not compatible or nothing was linked.
+     **/
+    virtual bool linkTo(int thisDimension, const KnobIPtr& other, int otherDimension) = 0;
+
+    /**
+     * @brief Like linkTo() on every dimension, with groups that cannot be unlinked.
+     **/
+    virtual bool linkAsAlias(const KnobIPtr& other) = 0;
+
+    /**
+     * @brief Leaves every link group that is not permanent, keeping the current value, animation and
+     * expression. The knob stays known to those groups so that relinkToGroups() can rejoin them.
+     * Returns false if there was nothing to unlink.
+     **/
+    virtual bool unlinkFromGroups() = 0;
+
+    /**
+     * @brief Rejoins the groups left by unlinkFromGroups(), discarding this knob's own state for theirs.
+     **/
+    virtual bool relinkToGroups() = 0;
+
+    /**
+     * @brief Leaves the link group of the dimension, or of every dimension for -1, permanent groups
+     * included, without remembering it: the knob keeps its current state and cannot rejoin the group.
+     **/
+    virtual void leaveLinkGroups(int dimension) = 0;
+
+    /**
+     * @brief Pastes what Copy Value, Copy Animation or Copy Link put on the clipboard from other.
+     * fromDimension is the dimension that was copied, or -1 for all of them, and targetDimension the
+     * dimension of this knob pasted onto, or -1 for all of them. Each target dimension takes the
+     * source dimension given by getPasteSourceDimension(). A link paste links each of them two-way to
+     * its source dimension, starting from the source's state, and skips dimensions in a permanent group.
+     * Returns false if the types are not compatible or nothing was pasted.
+     **/
+    virtual bool pasteFrom(const KnobIPtr& other, Natron::KnobClipBoardType type, int fromDimension, int targetDimension) = 0;
+
+    /**
+     * @brief The dimension of the copied knob, which has fromDimensionCount dimensions, that a paste
+     * gives to dimension of the target, or -1 if that dimension is left as it is: one copied
+     * dimension, or a knob with a single one, fills every target dimension; otherwise each target
+     * dimension takes the same one, and a single target dimension the source has not takes the first.
+     **/
+    static int getPasteSourceDimension(int dimension, int targetDimension, int fromDimension, int fromDimensionCount);
+
+    /**
+     * @brief Whether knob is an alias or has aliases, i.e. any of its dimensions is in a permanent link group.
+     * Pasting a link from such a knob is refused: the target would join the permanent group and
+     * could never be unlinked.
+     **/
+    static bool isAliasKnob(const KnobI* knob);
+
+    virtual bool isLinked(int dimension) const = 0;
+    virtual bool isLinkPermanent(int dimension) const = 0;
+    virtual bool hasRelinkableGroups() const = 0;
+
+    /**
+     * @brief The group the dimension is in, linked or not, or a null pointer.
+     **/
+    virtual KnobLinkGroupPtr getLinkGroup(int dimension) const = 0;
+
+    /**
+     * @brief For each linked dimension of this knob, the other dimensions currently linked to it.
+     **/
+    virtual std::vector<KnobLinkedDimension> getLinkedKnobs() const = 0;
 
     /**
      * @brief Calls slaveTo with a value changed reason of eValueChangedReasonUserEdited.
@@ -1818,6 +1967,8 @@ public:
     virtual bool getEvaluateOnChange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getIsPersistent() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsPersistent(bool b) OVERRIDE FINAL;
+    virtual bool isReadByRenders() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setReadByRenders(bool b) OVERRIDE FINAL;
     virtual void setCanUndo(bool val) OVERRIDE FINAL;
     virtual bool getCanUndo() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsMetadataSlave(bool slave) OVERRIDE FINAL;
@@ -1888,6 +2039,35 @@ public:
                                             bool isUserKnob) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual KnobIPtr getAliasMaster() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool setKnobAsAliasOfThis(const KnobIPtr& master, bool doAlias) OVERRIDE FINAL;
+    virtual bool linkTo(int thisDimension, const KnobIPtr& other, int otherDimension) OVERRIDE FINAL;
+    virtual bool linkAsAlias(const KnobIPtr& other) OVERRIDE FINAL;
+    virtual bool unlinkFromGroups() OVERRIDE FINAL;
+    virtual bool relinkToGroups() OVERRIDE FINAL;
+    virtual void leaveLinkGroups(int dimension) OVERRIDE FINAL;
+    virtual bool pasteFrom(const KnobIPtr& other, Natron::KnobClipBoardType type, int fromDimension, int targetDimension) OVERRIDE FINAL;
+    virtual KnobsVec getAliasesOfThis() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isLinked(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isLinkPermanent(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool hasRelinkableGroups() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobLinkGroupPtr getLinkGroup(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<KnobLinkedDimension> getLinkedKnobs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Rebuilds the link groups that storeLinksFromSerialization() kept on the knobs of nodes,
+     * and of the nodes inside them, once all of them exist: the dimensions saved with the same group
+     * id are linked to each other only, never to a knob that was not saved with them. A group id saved
+     * for a single dimension, or for dimensions already in one group together, changes nothing.
+     *
+     * With joinExistingGroups, as for pasted or duplicated copies, the dimensions saved with a group id
+     * instead join the group the knob that id names is still in, when that group has a member on an
+     * active node other than the given ones: copies join the groups of the knobs they were copied
+     * from, and link only to each other when those are gone.
+     *
+     * otherKnobs are knobs held outside the nodes, such as the project's, whose stored groups are
+     * rebuilt together with those of the nodes' knobs.
+     **/
+    static void restoreLinkGroups(const NodesList& nodes, bool joinExistingGroups = false, const KnobsVec& otherKnobs = KnobsVec());
+
     virtual U64 getContentHash() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual U64 getDimensionContentHash(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void invalidateContentHash() OVERRIDE FINAL;
@@ -2012,6 +2192,54 @@ private:
     U64 getOwnDimensionContentHash(int dimension) const;
     U64 getDimensionContentHashRecursive(int dimension, ContentHashPath& path) const;
 
+    void setLinkGroupInternal(int dimension, const KnobLinkGroupPtr& group);
+    bool linkDimensionTo(int dimension, const KnobIPtr& other, int otherDimension);
+    void leaveLinkGroup(int dimension);
+    void leaveAllLinkGroups();
+
+    /**
+     * @brief Detaches every remaining member of a group left with a single live member.
+     **/
+    static void dissolveLinkGroupIfAlone(const KnobLinkGroupPtr& group);
+
+    /**
+     * @brief Emits linkChanged() for every live member of the group.
+     **/
+    static void notifyLinkGroupMembers(const KnobLinkGroupPtr& group);
+    static void notifyLinkMembers(const std::vector<KnobLinkGroup::Member>& members);
+
+    /**
+     * @brief Makes the given dimension match the group's state through this knob's own setters, with the
+     * given reason. Returns true if anything changed or was queued.
+     **/
+    bool adoptLinkGroupState(const KnobLinkGroupPtr& group, int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Makes the keyframes of the given dimension match those of dimension 0 of state, through
+     * deleteValueAtTime(), setKeyFrame() and removeAnimationWithReason(). Returns true if anything changed.
+     **/
+    bool writeLinkCurveFrom(KnobI* state, int dimension, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Copies the state of the linked dimensions among dimension (or all of them if -1) to their
+     * groups and to every other linked member, re-evaluating each member that changed.
+     **/
+    void pushStateToLinkGroups(int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Copies the state of the given linked dimension to its group and to every other linked member.
+     * The calling thread must be the one copying the group's state.
+     **/
+    void copyStateToLinkGroup(const KnobLinkGroupPtr& group, int dimension, double time, ViewSpec view, Natron::ValueChangedReasonEnum reason);
+
+    /**
+     * @brief Ends the calling thread's copy of the group's state, after making the copies other threads
+     * requested meanwhile.
+     **/
+    static void finishLinkGroupSync(const KnobLinkGroupPtr& group);
+
+    friend class KnobLinkGroupSyncLocker;
+
     virtual bool slaveToInternal(int dimension, const KnobIPtr &  other, int otherDimension, Natron::ValueChangedReasonEnum reason
                                  , bool ignoreMasterPersistence) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -2047,7 +2275,8 @@ public:
      **/
     virtual void addListener(bool isFromExpr, int fromExprDimension, int thisDimension, const KnobIPtr& knob) OVERRIDE FINAL;
     virtual void removeListener(KnobI* listener, int listenerDimension) OVERRIDE FINAL;
-    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const OVERRIDE FINAL;
+    virtual void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                       std::set<NodePtr>* metadataSources = NULL) const OVERRIDE FINAL;
     virtual void getListeners(KnobI::ListenerDimsMap& listeners) const OVERRIDE FINAL;
     virtual void clearExpressionsResults(int /*dimension*/) OVERRIDE {}
 
@@ -2079,6 +2308,18 @@ protected:
 
     virtual void copyValuesFromCurve(int /*dim*/) {}
 
+    /**
+     * @brief Copies the value, animation and type-specific data of one dimension of other, but not its
+     * expression. Returns true if anything changed.
+     **/
+    virtual bool copyLinkStateFrom(KnobI* other, int dimension, int otherDimension, bool updateGui) = 0;
+
+    /**
+     * @brief Writes the static value of dimension 0 of state to the given dimension through this knob's
+     * setValue(), converted to this knob's type, so that a write while the holder renders is queued.
+     * Returns true if the value changed or was queued.
+     **/
+    virtual bool writeLinkValueFrom(KnobI* state, int dimension, Natron::ValueChangedReasonEnum reason) = 0;
 
     virtual void handleSignalSlotsForAliasLink(const KnobIPtr& /*alias*/,
                                                bool /*connect*/)
@@ -2526,6 +2767,10 @@ private:
 
     virtual void copyValuesFromCurve(int dim) OVERRIDE FINAL;
 
+    virtual bool copyLinkStateFrom(KnobI* other, int dimension, int otherDimension, bool updateGui) OVERRIDE FINAL;
+
+    virtual bool writeLinkValueFrom(KnobI* state, int dimension, Natron::ValueChangedReasonEnum reason) OVERRIDE FINAL;
+
     virtual bool hasDefaultValueChanged(int dimension) const OVERRIDE FINAL;
 
     void initMinMax();
@@ -2764,10 +3009,22 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class RecursionLevelRAII;
+    friend class IsolatedJob;
     struct KnobHolderPrivate;
     std::unique_ptr<KnobHolderPrivate> _imp;
 
+    // How many running IsolatedJobs read this holder.
+    std::atomic<int> _isolatedJobReaders { 0 };
+
 public:
+    /**
+     * @brief True while a running IsolatedJob reads this holder: content writes to its knobs are
+     * then refused outside that job.
+     **/
+    bool isReadByIsolatedJob() const
+    {
+        return _isolatedJobReaders.load(std::memory_order_acquire) > 0;
+    }
 
     enum MultipleParamsEditEnum
     {
@@ -2916,17 +3173,23 @@ public:
     bool areKnobsFrozen() const;
 
     /**
-     * @brief Makes all output nodes connected downstream to this node abort any rendering.
-     * Should be called prior to changing the state of the user interface that could impact the
-     * final image.
+     * @brief Called before an edit that could change the final image: aborts the viewer renders
+     * downstream of this holder and lets them restart. Other renders never see an edit made while
+     * they run, so they are left alone.
      **/
-    virtual void abortAnyEvaluation(bool keepOldestRender = true) { Q_UNUSED(keepOldestRender); }
+    virtual void abortViewerRendersForEdit() { }
 
     /**
-     * @brief abortAnyEvaluation() for a change being made, deferred to the end of the outermost
-     * begin/endChanges bracket when the change is made inside a nested one.
+     * @brief Aborts every render downstream of this holder without restarting it, for a change
+     * that leaves nothing to render, such as deactivation.
      **/
-    void abortAnyEvaluationForChange();
+    virtual void abortAllRendersReadingThis() { }
+
+    /**
+     * @brief abortViewerRendersForEdit() for a change being made, deferred to the end of the
+     * outermost begin/endChanges bracket when the change is made inside a nested one.
+     **/
+    void abortViewerRendersForChange();
 
     /**
      * @brief Dequeues all values set in the queues for all knobs
@@ -3006,9 +3269,12 @@ public:
 
     bool isSetValueCurrentlyPossible() const;
 
-    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const;
+    /**
+     * @brief KnobI::getAllExpressionDependenciesRecursive() for every knob of this holder.
+     **/
+    void getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                               std::set<NodePtr>* metadataSources = NULL) const;
 
-    
 protected:
 
     //////////////////////////////////////////////////////////////////////////////////////////
@@ -3148,13 +3414,6 @@ public:
 
     void initializeKnobsPublic();
 
-    bool isSlave() const;
-
-    ///Slave all the knobs of this holder to the other holder.
-    void slaveAllKnobs(KnobHolder* other, bool restore);
-
-    void unslaveAllKnobs();
-
     /**
      * @brief Returns the local current time of the timeline
      **/
@@ -3228,26 +3487,16 @@ protected:
 
     virtual void onSignificantEvaluateAboutToBeCalled(KnobI* /*knob*/) {}
 
-    /**
-     * @brief Called when the knobHolder is made slave or unslaved.
-     * @param master The master knobHolder.
-     * @param isSlave Whether this KnobHolder is now slaved or not.
-     * If false, master will be NULL.
-     **/
-    virtual void onAllKnobsSlaved(bool /*isSlave*/,
-                                  KnobHolder* /*master*/)
-    {
-    }
-
 public:
-
     /**
-     * @brief Same as onAllKnobsSlaved but called when only 1 knob is slaved
+     * @brief Called when a dimension of slave is slaved to or unslaved from master, or when it
+     * starts or stops reading master in its expression (isExpression).
      **/
     virtual void onKnobSlaved(const KnobIPtr& /*slave*/,
                               const KnobIPtr& /*master*/,
                               int /*dimension*/,
-                              bool /*isSlave*/)
+                              bool /*isSlave*/,
+                              bool /*isExpression*/)
     {
     }
 

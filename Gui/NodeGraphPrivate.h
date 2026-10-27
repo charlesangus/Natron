@@ -49,8 +49,9 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeGraphPickUp.h"
+#include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
 
 #include "Serialization/SerializationFwd.h"
 
@@ -157,6 +158,9 @@ public:
     NodeGraph* _publicInterface;
     NodeCollectionWPtr group;
     QPoint _lastMousePos;
+    // Where the last press landed, in view pixels, so that a release can tell a click with a
+    // little jitter from a drag.
+    QPoint _pressPos;
     QPointF _lastSelectionStartPointScene;
     EventStateEnum _evtState;
     NodeGuiPtr _magnifiedNode;
@@ -195,12 +199,14 @@ public:
     // does not rebuild the plan that was just dismissed.
     bool _spliceCancelled = false;
 
-    // An input arrow picked up by a click and following the cursor. It is kept apart from
-    // _evtState so that panning and zooming still run while it is held, and it is held by node
-    // and input number rather than as an Edge*, so deleting the node meanwhile leaves nothing
-    // dangling.
-    NodeGuiWPtr _pickedUpArrowDest;
+    // An arrow picked up by a click and following the cursor: an input arrow, or a node's output
+    // stub. It is kept apart from _evtState so that panning and zooming still run while it is
+    // held, and it is held by node and input number, or by node alone for an output stub, rather
+    // than as an Edge*, so deleting the node meanwhile leaves nothing dangling.
+    NodeGuiWPtr _pickedUpArrowNode;
     int _pickedUpArrowInput = -1;
+    bool _pickedUpArrowIsOutput = false;
+    PickUpEndEnum _pickedUpArrowEnd = ePickUpEndSource;
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
@@ -241,16 +247,19 @@ public:
 
     /**
      * @brief Create a new node given the serialization of another one
-     * @param sourceNode[in] The node internalSerialization was made from, if known. A clone is slaved to it.
+     * @param sourceNode[in] The node internalSerialization was made from, if known.
      * @param offset[in] The offset applied to the new node position relative to the serialized node's position.
      * A serialization without a position is placed automatically and not offset.
+     * @param linkedNodes[out] If not null, each new node that is to become a Linked Node of its source node,
+     * children of a group included, is appended to it with that source node, for the caller to link once
+     * every node is created. Dots are copied but not linked.
      **/
     NodeGuiPtr pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
                          const NodePtr& sourceNode,
                          const QPointF& offset,
                          const NodeCollectionPtr& group,
                          const std::string& parentName,
-                         bool clone,
+                         std::list<std::pair<NodePtr, NodePtr>>* linkedNodes,
                          std::map<std::string, std::string>* oldNewScriptNamesMapping);
 
     /**

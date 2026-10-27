@@ -310,6 +310,15 @@ public:
         return _store;
     }
 
+    /**
+     * @brief The IsolatedJob whose context the thread that created this frame was in, or null. A
+     * thread running one of the frame's tasks is in its context.
+     **/
+    const IsolatedJob* getIsolatedJob() const
+    {
+        return _isolatedJob;
+    }
+
 #ifdef NATRON_HAVE_GPU
     /**
      * @brief Whether the consumer of the frame can take its root planes in device memory. Thread safe.
@@ -344,6 +353,7 @@ private:
     double _time;
     ViewIdx _view;
     mutable FrameStore _store;
+    const IsolatedJob* _isolatedJob;
 #ifdef NATRON_HAVE_GPU
     std::atomic<bool> _wantsRootOnDevice;
     std::mutex _rootDeviceMutex;

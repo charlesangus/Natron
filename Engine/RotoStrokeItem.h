@@ -60,10 +60,9 @@ class RotoStrokeItem
     : public RotoDrawableItem
 {
 public:
-
     RotoStrokeItem(RotoStrokeType type,
-                   const RotoContextPtr& context,
-                   const std::string & name,
+                   const RotoCurveContextPtr& context,
+                   const std::string& name,
                    const RotoLayerPtr& parent);
 
     virtual ~RotoStrokeItem();

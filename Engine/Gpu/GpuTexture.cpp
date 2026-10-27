@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gpu {
@@ -320,6 +321,86 @@ GpuTexture::~GpuTexture()
     if (allocation_) {
         vmaDestroyImage(device_.allocator(), image_, allocation_);
     }
+}
+
+GpuTextureCache::GpuTextureCache(GpuDevice& device, uint64_t budgetBytes)
+    : device_(device)
+    , budget_(budgetBytes)
+{
+}
+
+GpuStatus
+GpuTextureCache::acquire(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
+                         std::shared_ptr<const GpuTexture>& out, bool* uploaded)
+{
+    out.reset();
+    if (uploaded) {
+        *uploaded = false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = entries_.find(key);
+    if (found != entries_.end()) {
+        found->second.lastUse = ++clock_;
+        out = found->second.texture;
+        return {};
+    }
+    // Created under the lock, so that callers asking for the same key at once upload it once.
+    std::unique_ptr<GpuTexture> created;
+    if (GpuStatus s = GpuTexture::create(device_, desc, texels, created); !s) {
+        return s;
+    }
+    Entry entry;
+    entry.texture = std::shared_ptr<const GpuTexture>(std::move(created));
+    entry.bytes = uint64_t(desc.width) * desc.height * desc.depth * storedChannels(desc.channels) * sizeof(float);
+    entry.lastUse = ++clock_;
+    out = entry.texture;
+    bytes_ += entry.bytes;
+    ++created_;
+    if (uploaded) {
+        *uploaded = true;
+    }
+    entries_.emplace(key, std::move(entry));
+    trimLocked();
+    return {};
+}
+
+void
+GpuTextureCache::trimLocked()
+{
+    while (bytes_ > budget_) {
+        auto oldest = entries_.end();
+        for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+            if ((it->second.texture.use_count() == 1) && ((oldest == entries_.end()) || (it->second.lastUse < oldest->second.lastUse))) {
+                oldest = it;
+            }
+        }
+        if (oldest == entries_.end()) {
+            return;
+        }
+        bytes_ -= oldest->second.bytes;
+        entries_.erase(oldest);
+    }
+}
+
+size_t
+GpuTextureCache::created() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return created_;
+}
+
+uint64_t
+GpuTextureCache::bytes() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bytes_;
+}
+
+size_t
+GpuTextureCache::size() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return entries_.size();
 }
 
 } // namespace gpu

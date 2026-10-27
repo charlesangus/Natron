@@ -389,7 +389,8 @@ TEST_F(BundleLoadTest, NodeOrderDoesNotChangeTheLoadedProject)
         EXPECT_EQ("Constant1", entry("node Grade1 input 0 Source"));
         EXPECT_EQ("Blur1", entry("node Group1 input 0 1"));
         EXPECT_EQ("Group1.Blur2", entry("node Group1.Output1 input 0 Source"));
-        EXPECT_EQ("Blur1.size.1", entry("node Group1.Blur2 knob size[0] link"));
+        EXPECT_EQ("Blur1.size.1", entry("node Group1.Blur2 knob size[0] link group"));
+        EXPECT_EQ("Group1.Blur2.size.0", entry("node Blur1 knob size[1] link group"));
         EXPECT_EQ("Grade1.multiply.getValue(1) * 2", entry("node Blur1 knob size[0] expression"));
         EXPECT_EQ(0u, entry("node Grade1 knob multiply[0] curve").rfind("3 keys", 0)) << entry("node Grade1 knob multiply[0] curve");
         EXPECT_EQ(0u, entry("format 0").rfind("BundleSquare [0 0 64 64]", 0)) << entry("format 0");
@@ -485,7 +486,7 @@ TEST_F(BundleLoadTest, UnknownKeysWarnAndAreIgnored)
     std::string withUnknownKeys = replacedOnce(graph, "formatVersion: 1\n", "formatVersion: 1\nfutureTopLevelKey: {a: 1}\n");
     withUnknownKeys = replacedOnce(withUnknownKeys, "timeline: {current: 7}", "timeline: {current: 7, futureTimelineKey: true}");
     withUnknownKeys = replacedOnce(withUnknownKeys, "    plugin: \"net.sf.openfx.ConstantPlugin\"\n", "    plugin: \"net.sf.openfx.ConstantPlugin\"\n    futureNodeKey: 3\n");
-    withUnknownKeys = replacedOnce(withUnknownKeys, "{link: \"Blur1.size.1\"}", "{link: \"Blur1.size.1\", futureLinkKey: 0}");
+    withUnknownKeys = replacedOnce(withUnknownKeys, "{value: 4, linkGroup: \"Blur1.size.1\"}", "{value: 4, linkGroup: \"Blur1.size.1\", futureLinkKey: 0}");
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());

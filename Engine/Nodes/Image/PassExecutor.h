@@ -322,7 +322,8 @@ using PassLineFn = std::function<void(float* line, int length, std::ptrdiff_t st
 
 /**
  * @brief Computes one line of a Gather or Point pass: a row of one plane (line = plane x height
- * + row) for a per-plane pass, a row of every plane otherwise.
+ * + row) for a per-plane pass, a row of every plane otherwise. For a pass over columns, a column
+ * instead: line = plane x width + column, or the column of every plane.
  **/
 using PassRowFn = std::function<void(int line)>;
 
@@ -350,6 +351,9 @@ struct Pass {
     // by row; 1 filters each column alone.
     int columnBlock = 1;
     bool perPlane = true;
+    // For Gather and Point, whether the lines are columns rather than rows, for a pass that runs
+    // down the columns, such as the column sums of a summed-area table.
+    bool columns = false;
     // What gpuCostHint() reports for a list holding this pass: sigma as GpuCostHint defines it.
     double sigma = 0.;
     bool recursive = false;
@@ -373,6 +377,9 @@ struct Pass {
  * stage has one. The recorder writes filtered over output, the passes running over domain: output
  * grown by the halo and clipped to rod, this effect's region of definition. Dispatches the
  * recorder makes in sequence must be separated by compute barriers; the executor orders its own.
+ * inputs holds the effect's other inputs by input number, each cropped to that input's region of
+ * definition, outside which it reads zero; an input that is disconnected, not read on the GPU or
+ * empty there, and the source's own entry, are views without a buffer.
  **/
 struct PassGpuIO {
     gpu::GpuRecordContext& context;
@@ -388,6 +395,7 @@ struct PassGpuIO {
     // The processed channels, in the bit space of pixelKernelChannelBit(); the finish restores the
     // others from the source, but a recorder that combines channels must leave them out.
     std::bitset<4> channels;
+    std::vector<GpuImageView> inputs;
 
     explicit PassGpuIO(gpu::GpuRecordContext& ctx)
         : context(ctx)

@@ -109,7 +109,7 @@ void
 Gui::loadStyleSheet()
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
-    QColor selCol, sunkCol, baseCol, raisedCol, txtCol, intCol, kfCol, disCol, eCol, altCol, lightSelCol, disabledTxtCol;
+    QColor selCol, sunkCol, baseCol, raisedCol, txtCol, intCol, kfCol, disCol, eCol, altCol, lightSelCol, disabledTxtCol, linkCol;
 
     //settings->
     selCol = ThemedIcon::themeSelectionColor();
@@ -161,6 +161,11 @@ Gui::loadStyleSheet()
         double r, g, b;
         settings->getAltTextColor(&r, &g, &b);
         altCol = to_qcolor(r, g, b);
+    }
+    {
+        float r, g, b;
+        settings->getLinkLineColor(&r, &g, &b);
+        linkCol = to_qcolor(r, g, b);
     }
 
     // First, set the global palette colors
@@ -217,7 +222,8 @@ Gui::loadStyleSheet()
                       .arg(qcolor_to_qstring(eCol)) // %9: expression background color
                       .arg(qcolor_to_qstring(altCol)) // %10 = altered text color
                       .arg(qcolor_to_qstring(lightSelCol)) // %11 = mouse over selection color
-                      .arg(qcolor_to_qstring(disabledTxtCol)); // %12 = disabled text colour
+                      .arg(qcolor_to_qstring(disabledTxtCol)) // %12 = disabled text colour
+                      .arg(qcolor_to_qstring(linkCol)); // %13 = link colour, for linked parameter names
         // Every GUI instance reloads on a theme change, and applying a stylesheet repolishes
         // every widget even when nothing in it changed.
         if (qApp->styleSheet() != content) {

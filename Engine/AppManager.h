@@ -706,6 +706,13 @@ public Q_SLOTS:
 
     void clearAllCaches();
 
+    // Frees the GPU memory Natron keeps between renders: the stages and Storm engines of USDRender
+    // nodes, which each node makes again when it next renders, the Storm engines of the viewers'
+    // scene views, which each makes again as it redraws, and the device buffers the GPU runtime's
+    // pool keeps free for reuse. Memory a running render or a frame waiting to be shown uses
+    // stays. Does not wait for the USDRender engines to go. Main thread.
+    void freeGpuMemory();
+
     void wipeAndCreateDiskCacheStructure();
 
     void onNodeMemoryRegistered(qint64 mem);
@@ -748,6 +755,15 @@ protected:
     }
 
     virtual void initializeQApp(int &argc, char** argv);
+
+    /**
+     * @brief Runs right after initializeQApp(); returning false stops the application from loading.
+     **/
+    virtual bool checkGLContextRequirements()
+    {
+        return true;
+    }
+
     virtual void onLoadCompleted()
     {
     }
@@ -760,6 +776,9 @@ protected:
 
     virtual void onAllPluginsLoaded();
     virtual void clearLastRenderedTextures() {}
+
+    // Has every viewer's scene view destroy its Storm engine and redraw; the GUI does it.
+    virtual void releaseSceneViewEngines() { }
 
     virtual void initBuiltinPythonModules();
 

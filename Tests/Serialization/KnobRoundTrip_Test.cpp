@@ -380,7 +380,7 @@ TEST_F(BaseTest, KnobYamlRoundTripThroughALiveKnobIsByteIdentical)
                 ASSERT_TRUE(bool(master));
                 defineKnob(master);
                 setDistinctiveValues(master);
-                EXPECT_TRUE(source->slaveTo(0, master, 0));
+                EXPECT_TRUE(source->linkTo(0, master, 0));
             }
 
             const std::string savedYaml = saveKnobToYaml(source);
@@ -409,6 +409,8 @@ TEST_F(BaseTest, KnobYamlRoundTripThroughALiveKnobIsByteIdentical)
             restored->restoreExpressionsFromSerialization(loaded, noRenamedScriptNames);
             restored->storeLinksFromSerialization(loaded);
             EXPECT_NO_THROW(restored->restoreLinks(getApp()->getProject()->getNodes(), noRenamedScriptNames, true));
+            // The restored knob joins the link group it was saved in, as a knob copied within the project does.
+            KnobHelper::restoreLinkGroups(NodesList(1, targetNode), true);
 
             EXPECT_EQ(savedYaml, saveKnobToYaml(restored));
         }

@@ -191,9 +191,8 @@ KnobBool::typeName() const
 
 /******************************KnobDouble**************************************/
 
-
 KnobDouble::KnobDouble(KnobHolder* holder,
-                       const std::string &label,
+                       const std::string& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobDoubleBase(holder, label, dimension, declaredByPlugin)
@@ -203,6 +202,17 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _decimals(dimension, 2)
     , _disableSlider(false)
     , _autoFoldEnabled(false)
+    , _matrixRows(0)
+    , _matrixColumns(0)
+    , _matrixRowLabels()
+    , _matrixColumnLabels()
+    , _matrixVisibleRows(0)
+    , _matrixVisibleColumns(0)
+    , _rangeWidgetRole(eRangeWidgetRoleNone)
+    , _rangeWidgetSourceColour()
+    , _rangeWidgetModel()
+    , _rangeWidgetEnable()
+    , _rangeWidgetSmooth()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -210,7 +220,7 @@ KnobDouble::KnobDouble(KnobHolder* holder,
 }
 
 KnobDouble::KnobDouble(KnobHolder* holder,
-                       const QString &label,
+                       const QString& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobDoubleBase(holder, label.toStdString(), dimension, declaredByPlugin)
@@ -220,6 +230,17 @@ KnobDouble::KnobDouble(KnobHolder* holder,
     , _decimals(dimension, 2)
     , _disableSlider(false)
     , _autoFoldEnabled(false)
+    , _matrixRows(0)
+    , _matrixColumns(0)
+    , _matrixRowLabels()
+    , _matrixColumnLabels()
+    , _matrixVisibleRows(0)
+    , _matrixVisibleColumns(0)
+    , _rangeWidgetRole(eRangeWidgetRoleNone)
+    , _rangeWidgetSourceColour()
+    , _rangeWidgetModel()
+    , _rangeWidgetEnable()
+    , _rangeWidgetSmooth()
     , _valueIsNormalized(dimension, eValueIsNormalizedNone)
     , _defaultValuesAreNormalized(false)
     , _hasHostOverlayHandle(false)
@@ -270,6 +291,79 @@ bool
 KnobDouble::isSliderDisabled() const
 {
     return _disableSlider;
+}
+
+void
+KnobDouble::setMatrixDisplay(int rows,
+                             int columns,
+                             const std::vector<std::string>& rowLabels,
+                             const std::vector<std::string>& columnLabels)
+{
+    if ((rows <= 0) || (columns <= 0) || (rows * columns != getDimension()) || ((int)rowLabels.size() != rows) || ((int)columnLabels.size() != columns)) {
+        return;
+    }
+    _matrixRows = rows;
+    _matrixColumns = columns;
+    _matrixRowLabels = rowLabels;
+    _matrixColumnLabels = columnLabels;
+    _matrixVisibleRows = rows;
+    _matrixVisibleColumns = columns;
+    // A slider would drive every field of the matrix at once.
+    disableSlider();
+}
+
+void
+KnobDouble::setMatrixVisibleExtent(int rows,
+                                   int columns)
+{
+    if (!isMatrixDisplay()) {
+        return;
+    }
+    rows = std::max(1, std::min(rows, _matrixRows));
+    columns = std::max(1, std::min(columns, _matrixColumns));
+    const int oldRows = _matrixVisibleRows.exchange(rows);
+    const int oldColumns = _matrixVisibleColumns.exchange(columns);
+    if ((oldRows != rows) || (oldColumns != columns)) {
+        Q_EMIT matrixVisibleExtentChanged();
+    }
+}
+
+void
+KnobDouble::sanitizeRangeOffsets(double* offsets)
+{
+    for (int i = 0; i < 4; ++i) {
+        offsets[i] = (std::max)(0., offsets[i]);
+    }
+}
+
+void
+KnobDouble::rangeOffsetsOf(const double* values,
+                           double* offsets)
+{
+    offsets[0] = values[eRangeWidgetDimensionOuterLow];
+    offsets[1] = values[eRangeWidgetDimensionInnerLow];
+    offsets[2] = values[eRangeWidgetDimensionInnerHigh];
+    offsets[3] = values[eRangeWidgetDimensionOuterHigh];
+    sanitizeRangeOffsets(offsets);
+}
+
+void
+KnobDouble::setRangeWidget(RangeWidgetRoleEnum role,
+                           const KnobColorPtr& sourceColourKnob,
+                           const KnobChoicePtr& modelKnob,
+                           const KnobBoolPtr& enableKnob,
+                           const KnobBoolPtr& smoothKnob)
+{
+    if ((role == eRangeWidgetRoleNone) || (getDimension() != (int)eRangeWidgetDimensionCount)) {
+        return;
+    }
+    _rangeWidgetRole = role;
+    _rangeWidgetSourceColour = sourceColourKnob;
+    _rangeWidgetModel = modelKnob;
+    _rangeWidgetEnable = enableKnob;
+    _rangeWidgetSmooth = smoothKnob;
+    // A slider would drive every dimension at once, collapsing the trapezoid.
+    disableSlider();
 }
 
 bool

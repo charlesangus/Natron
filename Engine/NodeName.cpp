@@ -477,6 +477,15 @@ Node::setNameInternal(const std::string& name,
         }
     }
 
+    // A rename, not the node's first name: the effect may keep state derived from its name.
+    if (!oldName.empty() && _imp->effect) {
+        try {
+            _imp->effect->onScriptNameChanged(fullySpecifiedName);
+        } catch (const std::exception& e) {
+            qDebug() << e.what();
+        }
+    }
+
     QString qnewName = QString::fromUtf8( newName.c_str() );
     Q_EMIT scriptNameChanged(qnewName);
     Q_EMIT labelChanged(qnewName);

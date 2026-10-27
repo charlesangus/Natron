@@ -67,14 +67,17 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
-
-    RotoDrawableItem(const RotoContextPtr& context,
-                     const std::string & name,
+    RotoDrawableItem(const RotoCurveContextPtr& context,
+                     const std::string& name,
                      const RotoLayerPtr& parent,
                      bool isStroke);
 
     virtual ~RotoDrawableItem();
+
+    /**
+     * @brief Routes the item's knob changes to rotoKnobChanged(). createNodes() does it too.
+     **/
+    void observeKnobChanges();
 
     void createNodes(bool connectNodes = true);
 

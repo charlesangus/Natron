@@ -44,6 +44,7 @@
 NATRON_NAMESPACE_ENTER
 
 class UpdateViewerParams; // ViewerInstancePrivate
+class ScenePayload;
 
 typedef std::map<NodePtr, NodeRenderStats > RenderStatsMap;
 
@@ -53,6 +54,9 @@ public:
     EffectInstancePtr activeInputToRender;
     bool deepUpstream;
     bool rawUpstream = false;
+    // The input is a scene: renderViewer_internal() evaluates it through the scene action and
+    // renders no texture for it.
+    bool sceneUpstream = false;
     std::optional<RawDisplay::Normalisation> rawNormalisation;
     bool forceRender;
     int activeInputIndex;
@@ -343,6 +347,32 @@ public:
     void getActiveInputs(int & a, int &b) const;
 
     /**
+     * @brief The data kind the A input delivers, as the graph resolves it, which decides whether
+     * the viewer shows a 2D image or a scene. eDataKindImage when A has nothing connected, and
+     * eDataKindPolymorphic when the input is ambiguous. MT-safe.
+     **/
+    DataKindEnum getActiveInputDataKind() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The data kind the input of the given texture (0 = A, 1 = B) delivers, with the same
+     * conventions as getActiveInputDataKind().
+     **/
+    DataKindEnum getInputDataKindForTexture(int textureIndex) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether wipe/compare is unavailable because of the kinds on A and B: true as soon as
+     * either active input is a scene, since only A is shown then, in the 3D view.
+     **/
+    bool isWipeDisabledByDataKind() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief What the last evaluation of a scene on the given texture's input produced. Returns
+     * false when that input is not a scene or has not been evaluated yet, or when the evaluation
+     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     **/
+    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+
+    /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
      * first (see Node::getNodesWithPersistentMessageUpstream()).
      **/
@@ -411,6 +441,12 @@ public Q_SLOTS:
 
     void executeDisconnectTextureRequestOnMainThread(int index, bool clearRoD);
 
+    /**
+     * @brief Re-reads the active input's data kind and whether wipe is disabled, and emits
+     * activeInputDataKindChanged() when either changed. Callable from any thread; the work runs
+     * on the main thread.
+     **/
+    void refreshActiveInputDataKind();
 
 Q_SIGNALS:
 
@@ -428,6 +464,13 @@ Q_SIGNALS:
 
     void viewerRenderingStarted();
     void viewerRenderingEnded();
+
+    // getActiveInputDataKind() or isWipeDisabledByDataKind() changed. Emitted on the main thread.
+    void activeInputDataKindChanged();
+
+    // A scene was evaluated for the input of textureIndex; getLastEvaluatedScene() has the
+    // result. Emitted from the render thread.
+    void sceneEvaluated(int textureIndex);
 
 private:
     /*******************************************
@@ -481,17 +524,18 @@ private:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    // The Viewer is the one place a deep or raw edge may land on an image input: it flattens
-    // deep and shows raw values as they are (RawDisplay) for display only. Declaring
-    // eDataKindPolymorphic instead would be shorter and also work, but it would accept a scene
-    // edge too and make a real scene-to-Viewer mistake silent.
+    // The Viewer is the one place a deep, raw or scene edge may land on an image input: it
+    // flattens deep, shows raw values as they are (RawDisplay), and shows a scene in its 3D view.
+    // Listing the kinds rather than declaring eDataKindPolymorphic keeps a kind the Viewer cannot
+    // show (a future one) an error instead of a silent connection.
     virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
                                                 DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return (kind == eDataKindDeep) || (kind == eDataKindRaw);
+        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene);
     }
     /*******************************************/
 
+    ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
 
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,

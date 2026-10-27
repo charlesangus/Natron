@@ -196,7 +196,8 @@ public:
 
     virtual void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master,
                               int dimension,
-                              bool isSlave) OVERRIDE FINAL;
+                              bool isSlave,
+                              bool isExpression) OVERRIDE FINAL;
 
     void notifyTrackingStarted();
     void notifyTrackingEnded();

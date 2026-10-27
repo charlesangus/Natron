@@ -189,22 +189,35 @@ toWrapView(const GpuImageView& view,
     return true;
 }
 
-// Binding 0 and 1 are the source and destination buffers, and the push constants, if any, a prefix
-// of GpuShaderRegion.
+// Whether b is the storage buffer named name, the source or destination of a runtime shader.
+bool
+isRuntimeShaderBuffer(const gpu::GpuKernelBinding& b,
+                      const char* name)
+{
+    return (b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) && (b.name == name);
+}
+
+// The source and destination buffers, at whatever binding, are its only storage buffers, and the
+// push constants, if any, a prefix of GpuShaderRegion.
 bool
 followsRuntimeShaderLayout(const gpu::GpuKernel& kernel)
 {
     if (kernel.desc().pushConstantBytes > sizeof(GpuShaderRegion)) {
         return false;
     }
-    int buffers = 0;
+    int sources = 0;
+    int destinations = 0;
     for (const gpu::GpuKernelBinding& b : kernel.bindings()) {
-        if ((b.binding <= 1) && (b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
-            ++buffers;
+        if (isRuntimeShaderBuffer(b, kGpuShaderSourceBuffer)) {
+            ++sources;
+        } else if (isRuntimeShaderBuffer(b, kGpuShaderDestinationBuffer)) {
+            ++destinations;
+        } else if (b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            return false;
         }
     }
 
-    return buffers == 2;
+    return (sources == 1) && (destinations == 1);
 }
 
 // Failures another request may not meet.
@@ -381,8 +394,8 @@ recordRuntimeShaderOp(const StagePlan& plan,
     std::map<std::string, const gpu::GpuTexture*> textures;
     std::vector<gpu::GpuBinding> bindings;
     for (const gpu::GpuKernelBinding& b : kernel->bindings()) {
-        if (b.binding <= 1) {
-            bindings.push_back(gpu::GpuBinding::storage(b.binding, (b.binding == 0) ? *divided : *filtered));
+        if (b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            bindings.push_back(gpu::GpuBinding::storage(b.binding, isRuntimeShaderBuffer(b, kGpuShaderSourceBuffer) ? *divided : *filtered));
             continue;
         }
         if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
@@ -415,7 +428,7 @@ recordRuntimeShaderOp(const StagePlan& plan,
                     texture = &t;
                 }
             }
-            if (!texture || (texture->dimensions < 1) || (texture->width < 1) || (texture->height < 1) || (texture->depth < 1) || (texture->channels < 1)) {
+            if (!texture || !texture->texels || (texture->dimensions < 1) || (texture->width < 1) || (texture->height < 1) || (texture->depth < 1) || (texture->channels < 1)) {
                 return eStatusFailed;
             }
             gpu::GpuTextureDesc desc;
@@ -425,8 +438,10 @@ recordRuntimeShaderOp(const StagePlan& plan,
             desc.depth = (uint32_t)texture->depth;
             desc.channels = (uint32_t)texture->channels;
             desc.filter = texture->linear ? gpu::GpuTextureFilter::Linear : gpu::GpuTextureFilter::Nearest;
+            const std::span<const float> texels(texture->texels->data(), texture->texels->size());
             const gpu::GpuTexture* created = nullptr;
-            if (!ctx.texture(desc, std::span<const float>(texture->texels.data(), texture->texels.size()), created) || !created) {
+            const gpu::GpuStatus status = texture->cacheKey.empty() ? ctx.texture(desc, texels, created) : ctx.cachedTexture(texture->cacheKey, desc, texels, created);
+            if (!status || !created) {
                 return eStatusFailed;
             }
             found = textures.insert(std::make_pair(b.name, created)).first;
@@ -523,7 +538,8 @@ resolveStagePlan(EffectInstance& effect,
     }
 
     NodePtr node = effect.getNode();
-    KnobChannelSelectPtr unPremultBy = (stages.has(Stage::Premult) && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+    const bool hasDivisor = stages.has(Stage::Premult) || stages.has(Stage::Divisor);
+    KnobChannelSelectPtr unPremultBy = (hasDivisor && node) ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
     if (unPremultBy && !unPremultBy->isNone() && (sourceInput >= 0) && effect.getInput(sourceInput)) {
         std::list<ImageLayerDesc> availableLayers;
         effect.getAvailableLayers(time, view, sourceInput, &availableLayers);
@@ -619,6 +635,8 @@ runStagesCpu(EffectInstance& effect,
     const float mix = (float)plan.mix;
     const bool maskInvert = plan.maskInvert;
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
+    // A Divisor stage hands the op the divisor row and neither divides nor multiplies back.
+    const bool divisorToOp = plan.stages.has(Stage::Divisor);
     const int sourceInput = plan.sourceInput;
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
@@ -727,12 +745,13 @@ runStagesCpu(EffectInstance& effect,
         const PassExec::PlaneJob& job = jobs[band.job];
         const int nComps = job.nComps;
         const std::size_t rowSize = (std::size_t)width * nComps;
-        const bool direct = stageFinishIsCopy(doMask, mix, bool(job.divisor), nComps, job.channels);
+        const bool divides = job.divisor && !divisorToOp;
+        const bool direct = stageFinishIsCopy(doMask, mix, divides, nComps, job.channels);
         // The same image fetched twice reads the same row, so the source row serves as the base.
         const bool baseIsSource = (nFolded > 0) && job.src && (jobSources[band.job][0].image == job.src);
         const bool readsSource = (nFolded == 0) || !direct || baseIsSource;
         std::vector<float> sourceRow(readsSource ? rowSize : 0);
-        std::vector<float> dividedRow(job.divisor ? rowSize : 0);
+        std::vector<float> dividedRow(divides ? rowSize : 0);
         std::vector<float> kernelRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<float> divisorRow(job.divisor ? width : 0);
@@ -747,7 +766,7 @@ runStagesCpu(EffectInstance& effect,
         const float* resultRow = kernelRow.data();
 
         RowIO io;
-        io.src[0] = job.divisor ? dividedRow.data() : sourceRow.data();
+        io.src[0] = divides ? dividedRow.data() : sourceRow.data();
         io.nSrc = 1;
         io.mask = doMask ? &maskRow[0] : 0;
         io.divisor = job.divisor ? &divisorRow[0] : 0;
@@ -771,8 +790,10 @@ runStagesCpu(EffectInstance& effect,
                 PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, sourceRow.data());
             }
             if (job.divisor) {
-                std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
                 PassExec::readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
+            }
+            if (divides) {
+                std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
                 for (int i = 0; i < width; ++i) {
                     const float d = divisorRow[i];
                     if (!Image::unPremultDivisorIsUsable(d)) {
@@ -843,7 +864,7 @@ runStagesCpu(EffectInstance& effect,
                         continue;
                     }
                     float v = outPix[c];
-                    if (job.divisor && (c != job.skipChannel)) {
+                    if (divides && (c != job.skipChannel)) {
                         v = Image::premultiplyValue(v, divisorRow[i]);
                     }
                     if (alpha == 0.f) {
@@ -998,7 +1019,7 @@ StageGpuShaderGate::accept(const GpuRuntimeShader& shader,
     std::shared_ptr<gpu::GpuKernel> kernel;
     gpu::GpuStatus status = runtime->pipelines().get(shader.source, gpu::ShaderStage::Compute, shader.entry, kernel);
     if (status && (!kernel || !followsRuntimeShaderLayout(*kernel))) {
-        status = gpu::GpuStatus { VK_ERROR_INITIALIZATION_FAILED, "bindings 0 and 1 must be storage buffers and the push constants at most a GpuShaderRegion" };
+        status = gpu::GpuStatus { VK_ERROR_INITIALIZATION_FAILED, "the storage buffers must be exactly one named Src and one named Dst, and the push constants at most a GpuShaderRegion" };
     }
     if (status) {
         std::string posted;

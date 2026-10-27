@@ -194,8 +194,7 @@ public:
         , renderInstancesSharedMutex()
         , contentHashMutex()
         , contentHash(0)
-        , masterNodeMutex()
-        , masterNode()
+        , nodeLinksMutex()
         , nodeLinks()
         , nodeSettingsPage()
         , nodeLabelKnob()
@@ -215,6 +214,7 @@ public:
         , layerKnob()
         , layerKnobSpec()
         , layerKnobSources()
+        , curveContext()
         , rotoContext()
         , trackContext()
         , imagesBeingRenderedMutex()
@@ -430,8 +430,7 @@ public:
     mutable QMutex hashedMetadataSourcesMutex; //< protects the two fields below
     mutable U64 hashedMetadataSourcesGeneration = 0; //< 0 until filled, see KnobHelper::getHashedMetadataSourcesGeneration()
     mutable std::vector<NodeWPtr> hashedMetadataSources;
-    mutable QMutex masterNodeMutex; //< protects masterNode and nodeLinks
-    NodeWPtr masterNode; //< this points to the master when the node is a clone
+    mutable QMutex nodeLinksMutex; //< protects nodeLinks
     KnobLinkList nodeLinks; //< these point to the parents of the params links
 
     KnobPageWPtr nodeSettingsPage;
@@ -463,7 +462,8 @@ public:
     KnobIWPtr layerKnob;
     LayerKnobSpec layerKnobSpec;
     std::map<const KnobI*, LayerKnobSource> layerKnobSources;
-    RotoContextPtr rotoContext; //< valid when the node has a rotoscoping context (i.e: paint context)
+    RotoCurveContextPtr curveContext; //< valid when the node hosts Roto curves, see EffectInstance::getCurveContextKind()
+    RotoContextPtr rotoContext; //< the same object as curveContext when that is a paint context, NULL otherwise
     TrackerContextPtr trackContext;
     mutable QMutex imagesBeingRenderedMutex;
     QWaitCondition imagesBeingRenderedCond;

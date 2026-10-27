@@ -36,6 +36,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Format.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -44,6 +45,17 @@
 #include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+bool
+isAuxInput(const NodeSpec& spec,
+           int inputNb)
+{
+    const NodeSpec::ResolvedInput input = spec.resolveInput(inputNb);
+
+    return input.spec && (input.spec->role == InputRole::Aux);
+}
+} // namespace
 
 StagedImageEffect::StagedImageEffect(NodePtr node)
     : NativeEffectBase(node)
@@ -78,7 +90,9 @@ StagedImageEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) co
 bool
 StagedImageEffect::wantsHostUnPremultSelector() const
 {
-    return imagePipelineSpec().stages.has(Stage::Premult);
+    const StageSet& stages = imagePipelineSpec().stages;
+
+    return stages.has(Stage::Premult) || stages.has(Stage::Divisor);
 }
 
 bool
@@ -158,7 +172,7 @@ StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
     const OpKind kind = imagePipelineSpec().op;
 
     if (kind == OpKind::Passes) {
-        return canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
+        return opPassesOnGpu() && canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
     }
     if (kind == OpKind::Resample) {
         return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));
@@ -195,6 +209,9 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     if ((inputNb == source) && (kind == OpKind::Passes)) {
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
+    if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputRoI(inputNb, outputRect, scale);
+    }
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
         return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
     }
@@ -219,6 +236,9 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
     }
     if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
+    }
+    if ((kind == OpKind::Passes) && (inputNb != getSourceInput()) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputLayer(inputNb, plane, time, view, layer);
     }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 
@@ -673,6 +693,14 @@ StagedImageEffect::isIdentity(double time,
     const bool maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
     if (maskMix && (getMixValue(time, view) == 0.)) {
         return true;
+    }
+    // A Divisor stage's op multiplies or divides by its divisor, which is 1 when none is picked.
+    if (imagePipelineSpec().stages.has(Stage::Divisor)) {
+        NodePtr node = getNode();
+        KnobChannelSelectPtr divisor = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+        if (!divisor || divisor->isNone()) {
+            return true;
+        }
     }
     if (isOpIdentity(time, scale, roi, view)) {
         return true;

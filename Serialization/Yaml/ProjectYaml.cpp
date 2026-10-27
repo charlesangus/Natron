@@ -217,6 +217,11 @@ encodeProjectYaml(const ProjectSerialization& project,
     emitKey(em, "savedBy");
     em << YAML::Value;
     emitSavedBy(em, project.savedByVersion);
+    if (!project.projectId.empty()) {
+        emitKey(em, "id");
+        em << YAML::Value;
+        emitString(em, project.projectId);
+    }
     if (!project.projectKnobs.empty()) {
         emitKey(em, "knobs");
         em << YAML::Value;
@@ -272,6 +277,9 @@ decodeProjectYaml(std::string_view text,
     ProjectSerialization project;
     if (YAML::Node savedBy = reader.get("savedBy")) {
         project.savedByVersion = readSavedBy(savedBy, warnings);
+    }
+    if (YAML::Node id = reader.get("id")) {
+        project.projectId = readString(id, "project.id");
     }
     if (YAML::Node knobs = reader.get("knobs")) {
         project.projectKnobs = readKnobMap(knobs, "project.knobs", warnings);

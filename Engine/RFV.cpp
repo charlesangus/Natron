@@ -39,6 +39,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/UndoKnobRef.h"
 
 #include "Serialization/KnobSerialization.h"
@@ -197,6 +198,35 @@ getDeclaredVariables(const KnobHolder* holder,
 
     return declarations;
 } // getDeclaredVariables
+
+void
+refreshDeclarationSnapshot(KnobHolder* holder)
+{
+    if (!holder) {
+        return;
+    }
+    std::shared_ptr<std::vector<VariableDeclaration>> declarations = std::make_shared<std::vector<VariableDeclaration>>(getDeclaredVariables(holder));
+    const RFVDeclarationsConstPtr previous = holder->getRFVDeclarationSnapshot();
+    holder->setRFVDeclarationSnapshot(declarations);
+
+    bool changed = !previous || (previous->size() != declarations->size());
+    for (std::size_t i = 0; !changed && (i < declarations->size()); ++i) {
+        changed = ((*previous)[i].name != (*declarations)[i].name) || ((*previous)[i].knob != (*declarations)[i].knob);
+    }
+    if (changed) {
+        // What a Set overrides and what a project variable's readers read follow the declarations.
+        invalidateRenderContextReads();
+    }
+}
+
+RFVDeclarationsConstPtr
+getDeclarationSnapshot(const KnobHolder* holder)
+{
+    static const RFVDeclarationsConstPtr none = std::make_shared<const std::vector<VariableDeclaration>>();
+    RFVDeclarationsConstPtr declarations = holder ? holder->getRFVDeclarationSnapshot() : RFVDeclarationsConstPtr();
+
+    return declarations ? declarations : none;
+}
 
 std::vector<VariableDeclaration>
 getExistingVariables(const KnobHolder* holder)
@@ -416,6 +446,52 @@ refreshNodeVariableGroups(const Project& project)
     }
 }
 
+namespace {
+
+    void
+    refreshHolderExpressionListeners(const KnobHolder& holder,
+                                     const std::vector<VariableDeclaration>& declared)
+    {
+        const KnobsVec& knobs = holder.getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            KnobHelper* helper = dynamic_cast<KnobHelper*>(it->get());
+            if (!helper) {
+                continue;
+            }
+            const RenderContextReadSet reads = helper->getRFVReadSet();
+            if (reads.empty()) {
+                continue;
+            }
+            bool readsDeclared = reads.readsAll();
+            for (std::size_t i = 0; !readsDeclared && (i < declared.size()); ++i) {
+                readsDeclared = reads.contains(RenderContextName::plain(declared[i].name));
+            }
+            if (readsDeclared) {
+                helper->refreshRFVListeners();
+            }
+        }
+    }
+
+} // namespace
+
+void
+refreshExpressionListeners(const Project& project)
+{
+    const std::vector<VariableDeclaration> declared = getDeclaredVariables(&project);
+    if (declared.empty()) {
+        return;
+    }
+    refreshHolderExpressionListeners(project, declared);
+    NodesList nodes;
+    project.getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (effect) {
+            refreshHolderExpressionListeners(*effect, declared);
+        }
+    }
+}
+
 bool
 canPromoteToProject(const KnobIPtr& knob,
                     std::string* reason)
@@ -581,6 +657,137 @@ KnobIPtr
 PromoteToProjectCommand::getProjectVariable() const
 {
     return _copy.lock();
+}
+
+KnobIPtr
+findDeclaredVariable(const KnobHolder* holder,
+                     const std::string& name)
+{
+    if (!holder) {
+        return KnobIPtr();
+    }
+    const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(holder);
+    for (const VariableDeclaration& declaration : *declared) {
+        if (declaration.name == name) {
+            return declaration.knob;
+        }
+    }
+
+    return KnobIPtr();
+}
+
+namespace {
+
+    template <typename T, typename V>
+    RenderContextValue
+    knobValue(Knob<T>* knob,
+              double time,
+              ViewIdx view)
+    {
+        const int dimensions = knob->getDimension();
+        if (dimensions == 1) {
+            return RenderContextValue((V)knob->getValueAtTime(time, 0, ViewSpec(view)));
+        }
+        std::vector<V> values(dimensions);
+        for (int i = 0; i < dimensions; ++i) {
+            values[i] = (V)knob->getValueAtTime(time, i, ViewSpec(view));
+        }
+
+        return RenderContextValue(values);
+    }
+} // anonymous namespace
+
+bool
+getVariableValue(const KnobIPtr& knob,
+                 double time,
+                 ViewIdx view,
+                 RenderContextValue* value)
+{
+    if (!knob) {
+        return false;
+    }
+    if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
+        *value = RenderContextValue(isBool->getValueAtTime(time, 0, ViewSpec(view)));
+
+        return true;
+    }
+    if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
+        *value = knobValue<int, std::int64_t>(isInt, time, view);
+
+        return true;
+    }
+    if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
+        *value = knobValue<double, double>(isDouble, time, view);
+
+        return true;
+    }
+    if (KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get())) {
+        *value = RenderContextValue(isString->getValueAtTime(time, 0, ViewSpec(view)));
+
+        return true;
+    }
+
+    return false;
+}
+
+bool
+isTimeVarying(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return false;
+    }
+    // Keyframes or an expression.
+    if (knob->hasAnimation()) {
+        return true;
+    }
+    // A linked knob takes its master's value.
+    bool linked = false;
+    for (int i = 0, n = knob->getDimension(); i < n; ++i) {
+        const std::pair<int, KnobIPtr> master = knob->getMaster(i);
+        if (master.second) {
+            if (isTimeVarying(master.second)) {
+                return true;
+            }
+            linked = true;
+        }
+    }
+    if (linked) {
+        return false;
+    }
+    bool hasExpression = false;
+    bool readsOutsideKnob = false;
+    knob->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
+
+    return readsOutsideKnob;
+}
+
+RenderContextPtr
+overlayDeclaredVariables(const KnobHolder* holder,
+                         double time,
+                         ViewIdx view,
+                         const RenderContextPtr& base)
+{
+    RenderContext::Builder builder(base);
+    const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(holder);
+    for (const VariableDeclaration& declaration : *declared) {
+        if (isTimeVarying(declaration.knob)) {
+            const KnobHelper* helper = dynamic_cast<const KnobHelper*>(declaration.knob.get());
+            const RenderContextPtr incoming = base ? base : RenderContext::empty();
+            RenderContextReadSetConstPtr reads;
+            if (helper) {
+                helper->getMemoizedValueContext(&reads, 0);
+            }
+            const RenderContextPtr captured = reads ? incoming->restrictTo(*reads) : incoming;
+            builder.set(RenderContextName::plain(declaration.name), RenderContextBinding::create(declaration.knob, declaration.name, captured));
+            continue;
+        }
+        RenderContextValue value;
+        if (getVariableValue(declaration.knob, time, view, &value)) {
+            builder.set(RenderContextName::plain(declaration.name), value);
+        }
+    }
+
+    return builder.build();
 }
 
 } // namespace RFV

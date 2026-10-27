@@ -1287,6 +1287,7 @@ PreferencesPanel::showEvent(QShowEvent* /*e*/)
 {
     placeOnUserScreen(this, parentWidget());
 
+    appPTR->getCurrentSettings()->refreshAiDetectedProviders();
     _imp->changedKnobs.clear();
     _imp->pluginSettingsChanged = false;
 }

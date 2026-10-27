@@ -94,7 +94,7 @@ DeepFromImage::initializeKnobs()
 }
 
 StatusEnum
-DeepFromImage::getRegionOfDefinition(U64 hash,
+DeepFromImage::getRegionOfDefinition(U64 /*hash*/,
                                      double time,
                                      const RenderScale& scale,
                                      ViewIdx view,
@@ -107,7 +107,7 @@ DeepFromImage::getRegionOfDefinition(U64 hash,
     }
     bool isProjectFormat = false;
 
-    return source->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    return source->getRegionOfDefinition_public(source->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 }
 
 DeepFromImage::Selection

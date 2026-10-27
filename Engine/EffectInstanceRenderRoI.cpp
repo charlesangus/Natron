@@ -26,14 +26,15 @@
 #include "EffectInstance.h"
 #include "EffectInstancePrivate.h"
 
-#include <map>
-#include <sstream>
 #include <algorithm> // min, max
-#include <limits>
-#include <fstream>
 #include <cassert>
-#include <stdexcept>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <set>
+#include <sstream>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QThreadPool>
 #include <QReadWriteLock>
@@ -80,6 +81,26 @@
 NATRON_NAMESPACE_ENTER
 
 /*
+ * @brief Moves context one identity hop upstream: to the single context effect requests input
+ * inputNb under when it renders under context, setting contextSet; context is left alone when
+ * effect requests that input under its own context, or under several.
+ */
+static void
+applyIdentityHopContext(const EffectInstance* effect,
+                        int inputNb,
+                        double time,
+                        ViewIdx view,
+                        RenderContextPtr* context,
+                        bool* contextSet)
+{
+    std::vector<RenderContextPtr> inputContexts;
+    if (effect->getInputContexts(inputNb, time, view, *context, &inputContexts) && (inputContexts.size() == 1)) {
+        *context = inputContexts.front();
+        *contextSet = true;
+    }
+}
+
+/*
  * @brief Split all rects to render in smaller rects and check if each one of them is identity.
  * For identity rectangles, we just call renderRoI again on the identity input in the tiledRenderingFunctor.
  * For non-identity rectangles, compute the bounding box of them and render it
@@ -93,6 +114,8 @@ optimizeRectsToRender(EffectInstance* self,
                       const RenderScale & renderMappedScale,
                       std::list<EffectInstance::RectToRender>* finalRectsToRender)
 {
+    const ParallelRenderArgsPtr selfArgs = self->getParallelRenderArgsTLS();
+    const RenderContextPtr consumerContext = selfArgs ? selfArgs->context : RenderContextPtr();
     for (std::list<RectI>::const_iterator it = rectsToRender.begin(); it != rectsToRender.end(); ++it) {
         std::vector<RectI> splits = it->splitIntoSmallerRects(0);
         EffectInstance::RectToRender nonIdentityRect;
@@ -121,28 +144,54 @@ optimizeRectsToRender(EffectInstance* self,
                 r.isIdentity = true;
 
                 // Walk along the identity branch until we find the non identity input, or NULL in we case we will
-                // just render black and transparent
+                // just render black and transparent. Each node on the way is asked at the time and view
+                // the previous hop pulls it at, so a node shifting time or view before another
+                // pass-through is followed to the doubly shifted source. Each hop is taken under the
+                // context the node it leaves requests that input under, so a node on the way setting
+                // context variables over its input is walked through with its variables applied, as
+                // the main identity path pulls it.
+                RenderContextPtr walkContext = consumerContext;
+                bool walkContextSet = false;
+                applyIdentityHopContext(self, identityInputNb, time, view, &walkContext, &walkContextSet);
+                double hopTime = identityInputTime;
+                ViewIdx hopView = inputIdentityView;
                 EffectInstancePtr identityInput = self->getInput(identityInputNb);
                 if (identityInput) {
                     for (;; ) {
-                        identity = identityInput->isIdentity_public(false, 0, time, renderMappedScale, splits[i], view, &identityInputTime, &inputIdentityView,  &identityInputNb);
-                        if ( !identity || (identityInputNb == -2) ) {
+                        double nextTime = hopTime;
+                        ViewIdx nextView = hopView;
+                        int nextInputNb = -1;
+                        {
+                            ActionContextScope acting(walkContextSet, walkContext);
+                            identity = identityInput->isIdentity_public(false, 0, hopTime, renderMappedScale, splits[i], hopView, &nextTime, &nextView, &nextInputNb);
+                        }
+                        // A node identity of itself at another time or view is left for its own
+                        // renderRoI to resolve, at the time and view it is pulled at.
+                        if (!identity || (nextInputNb == -2)) {
                             break;
                         }
-                        EffectInstancePtr subIdentityInput = identityInput->getInput(identityInputNb);
+                        EffectInstancePtr subIdentityInput = identityInput->getInput(nextInputNb);
                         if (subIdentityInput == identityInput) {
                             break;
                         }
+                        if (subIdentityInput) {
+                            ActionContextScope acting(walkContextSet, walkContext);
+                            applyIdentityHopContext(identityInput.get(), nextInputNb, hopTime, hopView, &walkContext, &walkContextSet);
+                        }
 
                         identityInput = subIdentityInput;
+                        hopTime = nextTime;
+                        hopView = nextView;
                         if (!subIdentityInput) {
                             break;
                         }
                     }
                 }
                 r.identityInput = identityInput;
-                r.identityTime = identityInputTime;
-                r.identityView = inputIdentityView;
+                r.identityContext = walkContext;
+                r.identityContextSet = walkContextSet;
+                r.identityTime = hopTime;
+                r.identityView = hopView;
                 r.rect = splits[i];
                 finalRectsToRender->push_back(r);
             } else {
@@ -220,6 +269,8 @@ class ImageBitMapMarker_RAII
     bool _isBeingRenderedElseWhere;
     bool _isValid;
     bool _committed;
+    bool _retracted;
+    bool _pendingRegionsRetracted;
     bool _renderFullScale;
 
 public:
@@ -234,6 +285,8 @@ public:
         , _isBeingRenderedElseWhere(false)
         , _isValid(true)
         , _committed(false)
+        , _retracted(false)
+        , _pendingRegionsRetracted(false)
         , _renderFullScale(renderFullScale)
     {
         std::vector<ImagePtr> cacheImages;
@@ -269,6 +322,19 @@ public:
         _committed = true;
     }
 
+    // The rendered pixels may belong to another state: the rectangles are cleared as for a failed
+    // render, and whoever waits on them learns the image left the cache and renders again.
+    void retract()
+    {
+        _retracted = true;
+    }
+
+    // Whether a rectangle this render waited on was retracted by its renderer.
+    bool pendingRegionsRetracted() const
+    {
+        return _pendingRegionsRetracted;
+    }
+
     void waitForPendingRegions()
     {
         if (!_isBeingRenderedElseWhere || !_isValid) {
@@ -282,8 +348,10 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                if (!_effect->_imp->waitForImageBeingRenderedElsewhere(_roi, cacheImage)) {
+                bool retracted = false;
+                if (!_effect->_imp->waitForImageBeingRenderedElsewhere(_roi, cacheImage, &retracted)) {
                     _isValid = false;
+                    _pendingRegionsRetracted = _pendingRegionsRetracted || retracted;
                 }
             }
         }
@@ -299,7 +367,7 @@ public:
                 cacheImage = it->second.fullscaleImage;
             }
             if (cacheImage && cacheImage->usesBitMap()) {
-                _effect->_imp->unmarkImageAsBeingRendered(cacheImage, _rectsToRender, !_isValid || !_committed);
+                _effect->_imp->unmarkImageAsBeingRendered(cacheImage, _rectsToRender, !_isValid || !_committed || _retracted, _retracted);
             }
         }
     }
@@ -377,6 +445,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ///Use the hash at this time, and then copy it to the clips in the thread-local storage to use the same value
     ///through all the rendering of this frame.
     U64 nodeHash = frameArgs->nodeHash;
+    const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
     const ImageFieldingOrderEnum fieldingOrder = renderMetadata->getOutputFielding();
@@ -498,7 +567,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         }
 
                         std::map<ImageLayerDesc, ImagePtr> inputLayers;
-                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers, this);
+                        // A pass-through plane is pulled under the context this node requests the
+                        // input under, as the identity input is.
+                        InputContextArgs passThroughContext(this, passThroughInput, ptInputNb, args.time, args.view);
+                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers, this, &passThroughContext);
                         assert(inputLayers.size() == 1 || inputLayers.empty());
                         if ((inputRetCode == eRenderRoIRetCodeAborted) || (inputRetCode == eRenderRoIRetCodeFailed) || inputLayers.empty()) {
                             return inputRetCode;
@@ -560,20 +632,15 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             if (inputNbIdentity == -1) {
                 return eRenderRoIRetCodeOk;
             } else if (inputNbIdentity == -2) {
-                // there was at least one crash if you set the first frame to a negative value
-                assert(inputTimeIdentity != args.time || viewInvariance == eViewInvarianceAllViewsInvariant);
+                // This special value of -2 indicates that the plugin is identity of itself at another
+                // time or view: either differing is a valid hop, both equal would recurse forever.
+                const ViewIdx selfIdentityView = (viewInvariance == eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : inputIdentityView;
+                assert(inputTimeIdentity != args.time || selfIdentityView != args.view);
 
-                // be safe in release mode otherwise we hit an infinite recursion
-                if ( (inputTimeIdentity != args.time) || (viewInvariance == eViewInvarianceAllViewsInvariant) ) {
-                    ///This special value of -2 indicates that the plugin is identity of itself at another time
+                if ((inputTimeIdentity != args.time) || (selfIdentityView != args.view)) {
                     std::unique_ptr<RenderRoIArgs> argCpy ( new RenderRoIArgs(args) );
                     argCpy->time = inputTimeIdentity;
-
-                    if (viewInvariance == eViewInvarianceAllViewsInvariant) {
-                        argCpy->view = ViewIdx(0);
-                    } else {
-                        argCpy->view = inputIdentityView;
-                    }
+                    argCpy->view = selfIdentityView;
 
                     argCpy->preComputedRoD.clear(); //< clear as the RoD of the identity input might not be the same (reproducible with Blur)
 
@@ -602,8 +669,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 // exactly the planes the caller asked for, whatever its own layer knob selects.
                 inputArgs->components = requestedComponents;
 
+                // The identity input is pulled under the context this node requests it under, as
+                // the request pass planned it: a node setting context variables may pass its
+                // input through.
+                InputContextArgs identityContext(this, inputEffectIdentity, inputNbIdentity, args.time, args.view);
                 std::map<ImageLayerDesc, ImagePtr> identityLayers;
-                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers, this);
+                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers, this, &identityContext);
                 if (ret != eRenderRoIRetCodeOk) {
                     return ret;
                 }
@@ -832,6 +903,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                           renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
 
     bool isDuringPaintStroke = isDuringPaintStrokeCreationThreadLocal();
+    // A frame hash the node has already left would key the new image to a state the graph is
+    // no longer in. A paint stroke keeps its image cached while its own knobs move: each stroke
+    // render paints over the last one.
+    if (createInCache && !isDuringPaintStroke && !clean.allowsStoreUnder(nodeHash)) {
+        createInCache = false;
+    }
 
     /*
      * Get the bitdepth and output components that the plug-in expects to render. The cached image does not necesserarily has the bitdepth
@@ -1519,16 +1596,50 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     } // if (!hasSomethingToRender) {
 
+    const bool renderSucceeded = (renderRetCode == EffectInstance::eRenderRoIStatusImageRendered) || (renderRetCode == EffectInstance::eRenderRoIStatusImageAlreadyRendered);
 #if NATRON_ENABLE_TRIMAP
     assert(guard);
-    if ((renderRetCode == EffectInstance::eRenderRoIStatusImageRendered) || (renderRetCode == EffectInstance::eRenderRoIStatusImageAlreadyRendered)) {
+    if (renderSucceeded) {
         guard->waitForPendingRegions();
-        guard->commit();
     }
 #endif // NATRON_ENABLE_TRIMAP
 
+    // An edit or a mark during the render means these images may hold another state's pixels.
+    // They leave the cache before their rectangles are published, so no waiter reads them.
+    const bool keepRenderedInCache = !renderSucceeded || !hasSomethingToRender || isDuringPaintStroke || clean.allowsStoreUnder(nodeHash);
+    if (!keepRenderedInCache) {
+        std::set<ImagePtr> rendered;
+        for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
+            rendered.insert(it->second.fullscaleImage);
+            rendered.insert(it->second.downscaleImage);
+        }
+        {
+            std::lock_guard<std::mutex> l(layersToRender->onTheFlyPlanes->lock);
+            rendered.insert(layersToRender->onTheFlyPlanes->images.begin(), layersToRender->onTheFlyPlanes->images.end());
+        }
+        for (std::set<ImagePtr>::const_iterator it = rendered.begin(); it != rendered.end(); ++it) {
+            if (*it) {
+                appPTR->removeFromNodeCache(*it);
+            }
+        }
+    }
+
 #if NATRON_ENABLE_TRIMAP
+    if (renderSucceeded) {
+        if (keepRenderedInCache) {
+            guard->commit();
+        } else {
+            guard->retract();
+        }
+    }
+    const bool pendingRegionsRetracted = guard->pendingRegionsRetracted();
     guard.reset();
+
+    // The render this one waited on was retracted, so the image this one returns has holes where
+    // that render's rectangles were.
+    if (pendingRegionsRetracted && !aborted()) {
+        return renderRoI(args, outputLayers);
+    }
 #endif
 
     if ( renderAborted && (renderRetCode != eRenderRoIStatusImageAlreadyRendered) ) {
@@ -1610,7 +1721,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     //bool multiplanar = isMultiPlanar();
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
         //If we have worked on a local swapped image, swap it in the cache
-        if (it->second.cacheSwapImage) {
+        if (it->second.cacheSwapImage && keepRenderedInCache) {
             const CacheAPI* cache = it->second.cacheSwapImage->getCacheAPI();
             const Cache<Image>* imgCache = dynamic_cast<const Cache<Image>*>(cache);
             if (imgCache) {

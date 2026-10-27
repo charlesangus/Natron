@@ -56,7 +56,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace EdgeAware {
 namespace {
-    // darktable's MAX_VECT: the vertical pass runs this many float columns at once.
     const int kColumnBlock = 16;
     const int kRowBlock = 16;
 
@@ -119,8 +118,7 @@ namespace {
         }
     }
 
-    // _blur_horizontal(): n interleaved channels, the original values kept in scratch so the
-    // window can drop them after buf is overwritten.
+    // scratch keeps the original values so the window can drop them after buf is overwritten.
     void
     blurHorizontal(float* buf,
                    std::size_t width,
@@ -174,8 +172,16 @@ namespace {
         return mask;
     }
 
-    // _blur_vertical(): n adjacent float columns of an image whose rows are stride floats apart,
-    // the window's original values kept in a circular scratch of (mask + 1) * n floats.
+    // Any radius of extent - 1 or more averages the whole line, so clamping changes nothing in the
+    // result and keeps the vertical pass's ring scratch proportional to the image.
+    inline std::size_t
+    effectiveRadius(int radius,
+                    int extent)
+    {
+        return (std::size_t)std::clamp(radius, 0, std::max(0, extent - 1));
+    }
+
+    // The window's original values live in a circular scratch of (mask + 1) * n floats.
     void
     blurVertical(float* buf,
                  std::size_t height,
@@ -231,7 +237,7 @@ boxMeanRow(float* row,
     if ((width <= 0) || (channels <= 0) || (channels > kBoxMaxChannels)) {
         return;
     }
-    blurHorizontal(row, (std::size_t)width, (std::size_t)std::max(0, radius), scratch, channels, summation == eBoxSummationKahan);
+    blurHorizontal(row, (std::size_t)width, effectiveRadius(radius, width), scratch, channels, summation == eBoxSummationKahan);
 }
 
 void
@@ -247,7 +253,7 @@ boxMeanColumns(float* buf,
         return;
     }
     const std::size_t stride = (std::size_t)width * (std::size_t)channels;
-    const std::size_t r = (std::size_t)std::max(0, radius);
+    const std::size_t r = effectiveRadius(radius, height);
     const std::size_t scratchSize = (circularMask(r) + 1) * kColumnBlock;
     const bool compensated = summation == eBoxSummationKahan;
     const int blocks = (int)((stride + kColumnBlock - 1) / kColumnBlock);

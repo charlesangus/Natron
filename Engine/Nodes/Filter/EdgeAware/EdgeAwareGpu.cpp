@@ -346,7 +346,6 @@ namespace {
         return {};
     }
 
-    // resample(): a copy at the same size, interpolateBilinear() otherwise.
     GpuStatus
     resample(GpuRecordContext& ctx,
              const GpuBuffer& in,
@@ -368,7 +367,7 @@ namespace {
         return interpolate(ctx, in, widthIn, heightIn, out, widthOut, heightOut, channels, finite ? kInterpolateFinite : 0);
     }
 
-    // variance_analyse() and the box mean of its a and b, into ab (2 channels).
+    // The fitted a and b and their box mean, into ab (2 channels).
     GpuStatus
     varianceAnalyse(GpuRecordContext& ctx,
                     const GpuBuffer& guide,
@@ -665,10 +664,13 @@ recordFastGuidedFilterGrey(GpuRecordContext& ctx,
     if ((width <= 0) || (height <= 0)) {
         return {};
     }
+    if (subsampling < 2) {
+        return recordGuidedFilterGrey(ctx, guide, target, out, width, height, radius, eps);
+    }
     const float scaling = (float)subsampling;
     const int dsWidth = (int)((float)width / scaling);
     const int dsHeight = (int)((float)height / scaling);
-    if ((subsampling < 2) || (dsWidth < 1) || (dsHeight < 1)) {
+    if ((dsWidth < 1) || (dsHeight < 1)) {
         return recordGuidedFilterGrey(ctx, guide, target, out, width, height, radius, eps);
     }
     if (!fits(width, height, 2)) {
@@ -818,7 +820,7 @@ recordRecursiveGaussianBlur(GpuRecordContext& ctx,
     GpuBuffer* range = nullptr;
     EDGEAWARE_GPU_TRY(rangeBuffer(ctx, channels, min, max, range));
 
-    return gaussian(ctx, in, out, *range, eigfParams(width, height, channels, dericheCoefficients(sigma)));
+    return gaussian(ctx, in, out, *range, eigfParams(width, height, channels, dericheCoefficients(clampGaussianSigma(sigma, width, height))));
 }
 
 GpuStatus
@@ -841,6 +843,7 @@ recordEigfSurfaceBlur(GpuRecordContext& ctx,
         return invalid("recordEigfSurfaceBlur", "the buffers exceed 32-bit indexing");
     }
     const uint64_t size = (uint64_t)width * (uint64_t)height;
+    sigma = clampGaussianSigma(sigma, width, height);
     float scaling = std::fmax(std::fmin(sigma, 4.0f), 1.0f);
     int dsWidth = (int)((float)width / scaling);
     int dsHeight = (int)((float)height / scaling);
@@ -853,7 +856,7 @@ recordEigfSurfaceBlur(GpuRecordContext& ctx,
     const uint64_t dsSize = (uint64_t)dsWidth * (uint64_t)dsHeight;
     const bool quantized = quantization != 0.0f;
     const int channels = quantized ? 4 : 2;
-    const DericheCoefficients g = dericheCoefficients(dsSigma);
+    const DericheCoefficients g = dericheCoefficients(clampGaussianSigma(dsSigma, dsWidth, dsHeight));
     // channelRange()'s starting minimum and maximum.
     const float noRange[4] = { 10000000.0f, 10000000.0f, 10000000.0f, 10000000.0f };
     const float zeroRange[4] = { 0.f, 0.f, 0.f, 0.f };
@@ -979,7 +982,7 @@ recordBsplineDecomposeScales(GpuRecordContext& ctx,
     EDGEAWARE_GPU_TRY(copy(ctx, in, residual, rowFloats, (uint32_t)height, kCopyFinite));
     ctx.computeBarrier();
     for (int s = 0; s < scales; ++s) {
-        const GpuWaveletParams p = { (uint32_t)width, (uint32_t)height, bsplineSpacing(1 << s, width, height), 1, kBsplineStep };
+        const GpuWaveletParams p = { (uint32_t)width, (uint32_t)height, bsplineSpacing(bsplineStepMult(s), width, height), 1, kBsplineStep };
         EDGEAWARE_GPU_TRY(wavelet(ctx, GpuKernelId::wav_bspline_v, residual, *temp, *temp, *temp, in, p));
         ctx.computeBarrier();
         EDGEAWARE_GPU_TRY(wavelet(ctx, GpuKernelId::wav_bspline_h, residual, *temp, *temp, *details[s], in, p));
@@ -1096,7 +1099,7 @@ recordPoissonHeal(GpuRecordContext& ctx,
     p.height = h;
     p.groupsX = divUp(sweepWidth, kHealGroupSide);
     p.groups = p.groupsX * divUp(h, kHealGroupSide);
-    // heal.c's epsilon: 0.1 / 255 in double, rounded to float.
+    // 0.1 / 255 in double, rounded to float, as the CPU computes it.
     p.epsilon = (float)(0.1 / 255);
 
     GpuBuffer* diff = nullptr;

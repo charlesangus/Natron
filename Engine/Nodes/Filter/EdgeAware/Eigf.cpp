@@ -162,8 +162,7 @@ namespace {
         }
     }
 
-    // eigf_variance_analysis(): out holds the averages of guide, its variance, the average of
-    // mask and the covariance.
+    // out holds the averages of guide, its variance, the average of mask and the covariance.
     void
     varianceAnalysis(const float* guide,
                      const float* mask,
@@ -197,7 +196,6 @@ namespace {
         });
     }
 
-    // eigf_variance_analysis_no_mask()
     void
     varianceAnalysisNoMask(const float* guide,
                            float* out,
@@ -239,7 +237,6 @@ namespace {
         return std::sqrt(pixel * std::fmax(pixel * a + b, kMinFloat));
     }
 
-    // eigf_blending()
     void
     eigfBlending(float* image,
                  const float* mask,
@@ -267,7 +264,6 @@ namespace {
         });
     }
 
-    // eigf_blending_no_mask()
     void
     eigfBlendingNoMask(float* image,
                        const float* av,
@@ -326,7 +322,7 @@ recursiveGaussianBlur(const float* in,
     if ((width <= 0) || (height <= 0) || (channels <= 0) || (channels > kMaxGaussianChannels)) {
         return;
     }
-    const DericheCoefficients g = dericheCoefficients(sigma);
+    const DericheCoefficients g = dericheCoefficients(clampGaussianSigma(sigma, width, height));
     const std::size_t ch = (std::size_t)channels;
     const std::size_t rowStride = (std::size_t)width * ch;
     std::vector<float> temp(rowStride * (std::size_t)height);
@@ -363,6 +359,7 @@ eigfSurfaceBlur(float* image,
     NonFiniteSamples nonFinite;
     nonFinite.take(image, size);
 
+    sigma = clampGaussianSigma(sigma, width, height);
     float scaling = std::fmax(std::fmin(sigma, 4.0f), 1.0f);
     int dsWidth = (int)((float)width / scaling);
     int dsHeight = (int)((float)height / scaling);

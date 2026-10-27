@@ -40,17 +40,17 @@ NATRON_NAMESPACE_ENTER
  * subsampling of the fast variants clamps to the last row and column.
  **/
 namespace EdgeAware {
-/// darktable's subsampling factor for its fast guided filter.
+/// The subsampling factor of the fast guided filters.
 const int kFastGuidedSubsampling = 4;
 
-/// darktable's dt_iop_guided_filter_blending_t.
+/// How the fitted a and b are applied: image a + b, or its geometric mean with the image.
 enum GuidedBlendingEnum {
     eGuidedBlendingLinear = 0,
     eGuidedBlendingGeomean
 };
 
 /**
- * @brief darktable's guided_filter(): filters the single-channel in with a colour guide of
+ * @brief Filters the single-channel in with a colour guide of
  * guideChannels interleaved floats per pixel (at least 3, the first three used).
  *
  * radius is the box radius w, sqrtEps the square root of the regulariser, guideWeight a
@@ -75,7 +75,7 @@ void guidedFilter(const float* guide,
 /**
  * @brief The single-channel guided filter at full resolution: out = mean(a) guide + mean(b),
  * where a and b fit target = a guide + b over each box of the given radius with the variance
- * regulariser eps, darktable's variance_analyse() (its feathering is eps). A pixel whose guide or
+ * regulariser eps. A pixel whose guide or
  * target is non-finite gets its target value; elsewhere those samples count as 0.
  **/
 void guidedFilterGrey(const float* guide,
@@ -110,7 +110,7 @@ void fastGuidedFilterGrey(const float* guide,
                           const ParallelFor& parallel);
 
 /**
- * @brief darktable's fast_surface_blur(): in place, the self-guided fast guided filter on a
+ * @brief In place, the self-guided fast guided filter on a
  * single-channel positive image, subsampled by kFastGuidedSubsampling.
  *
  * Each of iterations re-fits a and b against the image quantized by quantize(), blending
@@ -132,7 +132,7 @@ void fastSurfaceBlur(float* image,
                      const ParallelFor& parallel);
 
 /**
- * @brief darktable's interpolate_bilinear(): resamples a widthIn x heightIn image of channels
+ * @brief Resamples a widthIn x heightIn image of channels
  * interleaved floats to widthOut x heightOut, output pixel j reading input position
  * j * widthIn / widthOut, neighbours clamped to the image.
  **/
@@ -146,7 +146,7 @@ void interpolateBilinear(const float* in,
                          const ParallelFor& parallel);
 
 /**
- * @brief darktable's quantize(): posterizes size samples into exposure steps of sampling EV,
+ * @brief Posterizes size samples into exposure steps of sampling EV,
  * clamped to [clipMin, clipMax]. sampling 0 copies.
  **/
 void quantize(const float* image,

@@ -81,7 +81,6 @@ namespace {
         });
     }
 
-    // _get_max_scale()
     int
     getMaxScale(int width,
                 int height,
@@ -103,7 +102,7 @@ namespace {
         return maxscale;
     }
 
-    // dwt_decompose_vert(): 2 center + above + below, mirrored at the edges.
+    // 2 center + above + below, mirrored at the edges.
     void
     hatVertical(float* out,
                 const float* in,
@@ -130,8 +129,8 @@ namespace {
         });
     }
 
-    // dwt_decompose_horiz(): turns the vertical sums in coarse into the hat low-pass, and
-    // subtracts it from details, which holds the scale's input.
+    // Turns the vertical sums in coarse into the hat low-pass, and subtracts it from details, which
+    // holds the scale's input.
     void
     hatHorizontal(float* coarse,
                   float* details,
@@ -214,6 +213,15 @@ namespace {
         sparseScalarProduct(temp, indices, out, clipNegatives);
     }
 
+    // A spacing of the image's extent already clamps every tap to the edge, as any larger one does.
+    inline int
+    clampMult(int mult,
+              int width,
+              int height)
+    {
+        return std::clamp(mult, 0, std::max(width, height));
+    }
+
     void
     zeroAt(const NonFiniteSamples& samples,
            float* buf)
@@ -236,9 +244,8 @@ dwtFirstScaleVisible(const DwtParams& params)
     int firstScale = 0;
 
     for (int lev = 0; lev < params.scales; ++lev) {
-        int sc = 1 << lev;
-        sc *= params.previewScale;
-        if (sc > 0) {
+        // (int)(2^lev * previewScale) > 0, without 1 << lev overflowing on a large scale count.
+        if (std::ldexp(params.previewScale, lev) >= 1.f) {
             firstScale = lev + 1;
             break;
         }
@@ -407,7 +414,7 @@ bsplineDecomposeScales(const float* in,
     std::vector<float> lf(samples);
     for (int s = 0; s < scales; ++s) {
         std::vector<float> hf(samples);
-        decompose2DBspline(out.residual.data(), hf.data(), lf.data(), width, height, 1 << s, parallel);
+        decompose2DBspline(out.residual.data(), hf.data(), lf.data(), width, height, bsplineStepMult(s), parallel);
         zeroAt(nonFinite, hf.data());
         out.details.emplace_back(std::move(hf));
         std::swap(out.residual, lf);
@@ -448,6 +455,7 @@ blur2DBspline(const float* in,
     }
     const std::size_t w = (std::size_t)width;
     const std::size_t h = (std::size_t)height;
+    mult = clampMult(mult, width, height);
 
     forBlocks(parallel, height, kRowBlock, [&](int begin, int end) {
         std::vector<float> temp(4 * w);
@@ -474,6 +482,7 @@ decompose2DBspline(const float* in,
     }
     const std::size_t w = (std::size_t)width;
     const std::size_t h = (std::size_t)height;
+    mult = clampMult(mult, width, height);
 
     forBlocks(parallel, height, kRowBlock, [&](int begin, int end) {
         std::vector<float> temp(4 * w);
@@ -510,9 +519,13 @@ numStepsToReachEquivalentSigma(float sigmaFilter,
     unsigned int s = 0;
     float radius = sigmaFilter;
 
+    // A sigma that is not positive never grows, so no number of steps reaches sigmaFinal.
+    if (!(sigmaFilter > 0.f)) {
+        return 1;
+    }
     while (radius < sigmaFinal) {
         ++s;
-        radius = std::sqrt(sqf(radius) + sqf((float)(1 << s) * sigmaFilter));
+        radius = std::sqrt(sqf(radius) + sqf(std::exp2((float)s) * sigmaFilter));
     }
 
     return s + 1;

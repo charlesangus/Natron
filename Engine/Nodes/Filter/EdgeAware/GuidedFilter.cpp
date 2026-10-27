@@ -71,6 +71,17 @@ namespace {
         return ((size % alignment) == 0) ? size : ((size - 1) / alignment + 1) * alignment;
     }
 
+    // 3 w rounded up to 16, in 64 bits so that no radius overflows it, capped at limit.
+    inline int
+    tripleRadius(int w,
+                 int limit)
+    {
+        const long long tripled = 3LL * (long long)w;
+        const long long rounded = ((tripled + 15) / 16) * 16;
+
+        return (int)std::min<long long>(rounded, limit);
+    }
+
     struct Tile {
         int left, right, lower, upper;
     };
@@ -93,7 +104,6 @@ namespace {
         kVarBB = 8
     };
 
-    // _guided_filter_tiling()
     void
     guidedFilterTile(const float* guide,
                      int guideChannels,
@@ -109,7 +119,7 @@ namespace {
                      float max,
                      const ParallelFor& parallel)
     {
-        const int overlap = roundUp(3 * w, 16);
+        const int overlap = tripleRadius(w, std::max(imageWidth, imageHeight));
         const Tile source = { std::max(target.left - overlap, 0), std::min(target.right + overlap, imageWidth),
                               std::max(target.lower - overlap, 0), std::min(target.upper + overlap, imageHeight) };
         const int width = source.right - source.left;
@@ -219,7 +229,7 @@ namespace {
         });
     } // guidedFilterTile
 
-    // variance_analyse(): a and b fitting mask = a guide + b over each box.
+    // a and b fitting mask = a guide + b over each box.
     void
     varianceAnalyse(const float* guide,
                     const float* mask,
@@ -421,13 +431,16 @@ guidedFilter(const float* guide,
     if ((width <= 0) || (height <= 0) || (guideChannels < 3)) {
         return;
     }
-    const int w = std::max(1, radius);
+    const int extent = std::max(width, height);
+    // A radius of the image's extent already makes one tile and whole-image box means, as any
+    // larger one does.
+    const int w = std::clamp(radius, 1, std::max(1, extent));
     const std::size_t size = (std::size_t)width * (std::size_t)height;
     std::vector<float> guideStorage;
     std::vector<float> inStorage;
     const float* finiteGuide = finiteView(guide, size * guideChannels, guideStorage);
     const float* finiteIn = finiteView(in, size, inStorage);
-    const int tileDim = std::max(roundUp(3 * w, 16), kTileSize);
+    const int tileDim = std::max(tripleRadius(w, extent), std::min(kTileSize, extent));
     const float eps = sqrtEps * sqrtEps;
 
     for (int j = 0; j < height; j += tileDim) {
@@ -492,10 +505,15 @@ fastGuidedFilterGrey(const float* guide,
     if ((width <= 0) || (height <= 0)) {
         return;
     }
+    if (subsampling < 2) {
+        guidedFilterGrey(guide, target, out, width, height, radius, eps, parallel);
+
+        return;
+    }
     const float scaling = (float)subsampling;
     const int dsWidth = (int)((float)width / scaling);
     const int dsHeight = (int)((float)height / scaling);
-    if ((subsampling < 2) || (dsWidth < 1) || (dsHeight < 1)) {
+    if ((dsWidth < 1) || (dsHeight < 1)) {
         guidedFilterGrey(guide, target, out, width, height, radius, eps, parallel);
 
         return;

@@ -97,6 +97,7 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Decisions
 
+- 2026-10-27 — Gate run 40531328785: only failure was RenderIsolation timing out after all 12 cases passed (hang at process exit, taskgraph leg; ~1 s everywhere else). Treated as a flake; M229's gate (contains M228 HEAD) is the re-run. If it recurs, file a shutdown-deadlock milestone.
 - 2026-10-27 — A plain left-drag marquee-selects wherever it starts, in every preset (Nuke docs: "click and drag a marquee"); a click selects, Ctrl+drag tumbles. Locked navigation: the view draws a transient camera during the gesture and writes the camera knobs once on release (one undo step); wheel runs commit 300 ms after the last step. Root cause was a knob write → evaluate → full scene re-sync per mouse event.
 - 2026-10-27 — UAT round 1 (user): fixes in Phase 228.4. Lock with several cameras offers a menu (PM call: one camera locks directly).
 - 2026-10-27 — **Choices (bosley-native-nodes):** Nuke preset follows the Nuke 17 docs (Ctrl+left tumble, Alt+left pan, Alt+middle dolly; plain middle-drag pan added); Back/Left/Bottom views added; clip planes per viewer, not saved; a camera created from the view is not auto-connected (as Nuke). Release gate 568/568; GUI checks pass; draft PR #137; UAT pending.

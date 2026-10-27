@@ -65,6 +65,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/Settings.h"
 #include "Engine/Texture.h"
 #include "Engine/Timer.h" // for gettimeofday
@@ -531,6 +532,10 @@ ViewerGL::paintGL()
         }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
+
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteFramePainted();
+    }
 } // paintGL
 
 void
@@ -2140,6 +2145,9 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     if ( !_imp->viewerTab->getGui() ) {
         return;
     }
@@ -2473,6 +2481,9 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
 void
 ViewerGL::mouseMoveEvent(QMouseEvent* e)
 {
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     if ( !penMotionInternal(e->position().x(), e->position().y(), /*pressure=*/ 1., currentTimeForEvent(e), e) ) {
         QOpenGLWidget::mouseMoveEvent(e);
     }
@@ -2481,6 +2492,9 @@ ViewerGL::mouseMoveEvent(QMouseEvent* e)
 void
 ViewerGL::tabletEvent(QTabletEvent* e)
 {
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     qreal pressure = e->pressure();
     if (pressure <= 0.) {
         // Some tablets seem to return pressure between -0.5 and 0.5

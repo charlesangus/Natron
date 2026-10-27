@@ -67,6 +67,7 @@
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
@@ -3670,6 +3671,7 @@ public:
     RotoStrokeItemWPtr strokeItem;
     ViewerArgsPtr args[2];
     bool isRotoNeatRender;
+    std::uint64_t latencyMark;
 
     CurrentFrameFunctorArgs()
         : GenericThreadStartArgs()
@@ -3685,6 +3687,7 @@ public:
         , strokeItem()
         , args()
         , isRotoNeatRender(false)
+        , latencyMark(0)
     {
     }
 
@@ -3711,6 +3714,7 @@ public:
         , strokeItem(strokeItem)
         , args()
         , isRotoNeatRender(isRotoNeatRender)
+        , latencyMark(0)
     {
         if (isRotoPaintRequest && isRotoNeatRender) {
             isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(true);
@@ -3849,6 +3853,11 @@ public:
             }
         }
 
+        RotoLatencyProbe* latencyProbe = RotoLatencyProbe::instance();
+        if (latencyProbe) {
+            latencyProbe->noteRenderStarted(_args->latencyMark);
+        }
+
         try {
             if (!_args->isRotoPaintRequest || _args->isRotoNeatRender) {
                 stat = _args->viewer->renderViewer(_args->view, QThread::currentThread() == qApp->thread(), false, _args->viewerHash, _args->canAbort,
@@ -3883,6 +3892,9 @@ public:
                         ret.push_back(_args->args[i]->params);
                     }
                 }
+            }
+            if (latencyProbe) {
+                latencyProbe->noteRenderFinished(_args->latencyMark);
             }
         }
 
@@ -4276,6 +4288,9 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
 #endif
     functorArgs->args[0] = args[0];
     functorArgs->args[1] = args[1];
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        functorArgs->latencyMark = probe->noteRenderRequested();
+    }
 
     if (appPTR->getCurrentSettings()->getNumberOfThreads() == -1) {
         RenderCurrentFrameFunctorRunnable task(functorArgs);

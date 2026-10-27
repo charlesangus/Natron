@@ -290,6 +290,7 @@ set(GuiTests_SOURCES
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
+    RotoLatencyProbe_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
     SceneViewport_Test.cpp

@@ -61,4 +61,6 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 - 2026-10-26 — **Started alongside M184 (user):** the user asked for it to be picked up in parallel. P1 is read-only and runs now. P2 starts once M184 - Variable-Size Filter Kit has merged (it brings `knobValueAsFloat`), on a branch rebased onto main.
 
+- 2026-10-26 — **RADV failures inherited from main (gpu, seen on M184 - Variable-Size Filter Kit's branch rebased onto main, which touches neither):** `NativeNoiseGpuTest.MatchesTheCpuRender` has 1-ulp CPU/GPU mismatches on RADV (white per pixel / rotated cells, worst 5.96e-08), and its exact comparison is in P1.T2's scope. `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` reports OCIODisplay and OCIOLookTransform as GPU-capable but not allowlisted. Both pass PR CI on lavapipe. Also in scope: in debug builds, Merge `plus` (`MergeOperators::separable<31>`) traps FE_INVALID on +inf + -inf, so any pixel op that legitimately makes NaN from non-finite input kills a debug render. Decide whether pixel kernels should run with invalid held, or the trap stays and tests avoid it.
+
 **Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), including the new sweep.

@@ -307,6 +307,53 @@ LoopBegin::getRegionOfDefinition(U64 hash,
     return tail->getRegionOfDefinition_public(tail->getRenderHash(), previous.time, scale, view, rod, &isProjectFormat);
 } // LoopBegin::getRegionOfDefinition
 
+bool
+LoopBegin::forwardsOutput(const RenderRoIArgs& args,
+                          const std::list<ImageLayerDesc>& layers,
+                          const RectI& roi,
+                          std::map<ImageLayerDesc, ImagePtr>* outputLayers,
+                          RenderRoIRetCode* code)
+{
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    if ((layers.size() != 1) || (args.returnStorage != eStorageModeRAM) || !end || !end->feedbackStepBefore(getCurrentRenderContext(), args.time, &previous)) {
+        return false;
+    }
+    const EffectInstancePtr tail = previous.tail->getEffectInstance();
+    if (!tail) {
+        return false;
+    }
+    ImagePtr src;
+    const bool fromStore = LoopEnd::feedbackUsesFrameStore();
+    if (fromStore) {
+        // Only what the store holds: render() pulls the tail when it is missing.
+        InputContextScope scope(this, previous.context);
+        InputContextArgs tailContext(this, tail, -1, previous.time, args.view);
+        std::list<ImagePtr> stored;
+        if (!lookupFrameStore(tail, previous.time, args.view, args.mipmapLevel, layers, roi, &stored, &tailContext) || (stored.size() != 1)) {
+            return false;
+        }
+        src = stored.front();
+    } else {
+        *code = end->feedbackImage(this, previous, args.view, args.scale, args.byPassCache, &src);
+        if (*code != eRenderRoIRetCodeOk) {
+            return true;
+        }
+    }
+    if (!src || (src->getComponents() != layers.front()) || (src->getBitDepth() != args.bitdepth) || (src->getMipmapLevel() != args.mipmapLevel) || (src->getStorageMode() != eStorageModeRAM) || !src->getBounds().contains(roi)) {
+        return false;
+    }
+    if (fromStore) {
+        noteFrameStoreHit();
+    }
+    refreshConformMessage(std::string());
+    outputLayers->insert(std::make_pair(layers.front(), src));
+    *code = eRenderRoIRetCodeOk;
+
+    return true;
+} // LoopBegin::forwardsOutput
+
 StatusEnum
 LoopBegin::render(const RenderActionArgs& args)
 {
@@ -321,50 +368,57 @@ LoopBegin::render(const RenderActionArgs& args)
     if (!tail) {
         return eStatusFailed;
     }
-    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
     ImagePtr src;
-    {
+    if (LoopEnd::feedbackUsesFrameStore()) {
+        const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
+        ImageLayerDesc layer, pairedLayer;
+        ImageBitDepthEnum depth = eImageBitDepthFloat;
+        {
+            ActionContextScope actions(true, previous.context);
+            NodeMetadataConstPtr metadata = tail->getRenderMetadata(previous.time, args.view);
+            if (metadata) {
+                getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
+                depth = metadata->getBitDepth(-1);
+            }
+        }
+        if ((layer.getNumComponents() == 0) && !args.outputLayers.empty()) {
+            layer = args.outputLayers.front().first;
+        }
         InputContextScope scope(this, previous.context);
         InputContextArgs tailContext(this, tail, -1, previous.time, args.view);
-        src = end->findFeedbackImage(tailContext.contextKey(), previous.time, args.view, mipmapLevel, args.roi);
-        if (!src) {
-            ImageLayerDesc layer, pairedLayer;
-            ImageBitDepthEnum depth = eImageBitDepthFloat;
-            {
-                ActionContextScope actions(true, previous.context);
-                NodeMetadataConstPtr metadata = tail->getRenderMetadata(previous.time, args.view);
-                if (metadata) {
-                    getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
-                    depth = metadata->getBitDepth(-1);
-                }
-            }
-            if ((layer.getNumComponents() == 0) && !args.outputLayers.empty()) {
-                layer = args.outputLayers.front().first;
-            }
-            RenderRoIArgs tailArgs(previous.time,
-                                   args.mappedScale,
-                                   mipmapLevel,
-                                   args.view,
-                                   args.byPassCache,
-                                   args.roi,
-                                   RectD(),
-                                   std::list<ImageLayerDesc>(1, layer),
-                                   depth,
-                                   false,
-                                   this,
-                                   eStorageModeRAM,
-                                   args.time);
-            std::map<ImageLayerDesc, ImagePtr> images;
-            const RenderRoIRetCode code = renderInputOrTakeFromStore(tail, -1, &tailArgs, &images, this, &tailContext);
-            if (code == eRenderRoIRetCodeAborted) {
-                return eStatusOK;
-            }
-            if (code == eRenderRoIRetCodeFailed) {
-                return eStatusFailed;
-            }
-            if (!images.empty()) {
-                src = images.begin()->second;
-            }
+        RenderRoIArgs tailArgs(previous.time,
+                               args.mappedScale,
+                               mipmapLevel,
+                               args.view,
+                               args.byPassCache,
+                               args.roi,
+                               RectD(),
+                               std::list<ImageLayerDesc>(1, layer),
+                               depth,
+                               false,
+                               this,
+                               eStorageModeRAM,
+                               args.time);
+        std::map<ImageLayerDesc, ImagePtr> images;
+        const RenderRoIRetCode code = renderInputOrTakeFromStore(tail, -1, &tailArgs, &images, this, &tailContext);
+        if (code == eRenderRoIRetCodeAborted) {
+            return eStatusOK;
+        }
+        if (code == eRenderRoIRetCodeFailed) {
+            return eStatusFailed;
+        }
+        if (!images.empty()) {
+            src = images.begin()->second;
+        }
+    } else {
+        // The LoopEnd renders the chain up to the iteration before, once per render, from the
+        // first iteration on when nothing of it is rendered yet: never this one's from scratch.
+        const RenderRoIRetCode code = end->feedbackImage(this, previous, args.view, args.mappedScale, args.byPassCache, &src);
+        if (code == eRenderRoIRetCodeAborted) {
+            return eStatusOK;
+        }
+        if (code != eRenderRoIRetCodeOk) {
+            return eStatusFailed;
         }
     }
 

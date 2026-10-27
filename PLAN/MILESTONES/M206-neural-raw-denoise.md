@@ -85,4 +85,5 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
 
 ## Decisions
 
+- 2026-10-27 — **User:** the user makes the darktable neural-restore reference by hand (darktable 5.6.2, raw denoise 100% on the CR2 → convert with tools/raw/make-neural-restore-reference.py). **No proxy fallback**: the node always renders at full resolution.
 - 2026-10-27 — Gate green (f841b1472). UAT: build/appimages/Natron-m206-neural-raw-denoise.AppImage, M206-uat.md. Open for the user: darktable-cli can't run neural restore, so the darktable reference needs a hand-made darktable 5.6.2 run (or a self-recorded reference); full-resolution only (no proxy fallback) for now.

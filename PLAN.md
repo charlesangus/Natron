@@ -269,7 +269,7 @@ future core work has solid ground to build on.
 | M173 | Global Mode For Value Knobs | todo | M119 |  | E10 | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 | M174 | Wayland Support | blocked | - |  | E1 | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
 | M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
-| M176 | Splice-Vertical Regression | todo | - | | E10 | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
+| M176 | Splice-Vertical Regression | doing | - | bosley-native-nodes | E10 | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
 | M178 | Render Context Core | done | M167 |  | E13 | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
 | M179 | Render Graph Continuation | todo | M178 |  | E6 | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
 | M180 | Loop Block Core | doing | M178 | bosley-native-nodes | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
@@ -303,7 +303,7 @@ future core work has solid ground to build on.
 | M207 | Neural Denoise | todo | M203, M204 |  | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
 | M208 | Neural Upscale | todo | M203, M204, M207 |  | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | doing | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
-| M210 | Profiled Denoise | todo | M209 |  | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
+| M210 | Profiled Denoise | doing | M209 | bosley-native-nodes | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | todo | M209, M146 |  | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
 | M212 | Tone Equalizer | todo | M209 |  | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
 | M213 | Contrast And Texture | todo | M209 |  | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |

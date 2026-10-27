@@ -342,6 +342,34 @@ TEST_F(NativeRetimeTest, LockedOutputEndsSetTheSpeed)
     expectBlend(retime, 10., 5, 0.5);
 }
 
+// Unlocked, the output ends show the range the speed derives and edits to them are reset, so the
+// hash sweep exempts them; locked, they are render parameters and must move the hash.
+TEST_F(NativeRetimeTest, LockedOutputEndsMoveTheHash)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobBool>(retime, kRetimeParamOutputFirstLock, true);
+    setKnob<KnobBool>(retime, kRetimeParamOutputLastLock, true);
+    setKnob<KnobDouble>(retime, kRetimeParamOutputFirst, 1.);
+    setKnob<KnobDouble>(retime, kRetimeParamOutputLast, 50.);
+
+    const char* const ends[] = { kRetimeParamOutputFirst, kRetimeParamOutputLast };
+    for (const char* end : ends) {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(retime->getKnobByName(end));
+        ASSERT_TRUE(bool(knob)) << end;
+        retime->refreshHashNow();
+        const U64 before = retime->getHashValue();
+        const double original = knob->getValue();
+        knob->setValue(original + 1.);
+        EXPECT_DOUBLE_EQ(original + 1., knob->getValue()) << end;
+        retime->refreshHashNow();
+        EXPECT_NE(before, retime->getHashValue()) << end;
+        knob->setValue(original);
+        retime->refreshHashNow();
+        EXPECT_EQ(before, retime->getHashValue()) << end;
+    }
+}
+
 TEST_F(NativeRetimeTest, LockedInputEndsLimitTheInputRange)
 {
     NodePtr retime = createRetime();

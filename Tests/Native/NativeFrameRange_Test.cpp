@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -130,12 +132,15 @@ TEST_F(NativeFrameRangeTest, BlackIsEmptyOutsideTheRange)
     ASSERT_TRUE(bool(range));
     expectBlack(range, 10.);
     expectBlack(range, 21.);
+    expectBlack(range, 30.);
 
-    const std::vector<float> pixel = firstPixel(range, 30.);
-    ASSERT_EQ(4u, pixel.size());
-    for (int c = 0; c < 4; ++c) {
-        EXPECT_EQ(0.f, pixel[c]) << "channel " << c;
-    }
+    // An empty output renders nothing: renderRoI succeeds and hands back no plane, which the
+    // helper reports as its "no plane" failure.
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    EXPECT_FALSE(renderNodePlanesDirect(range, 30., ViewIdx(0), 0, NativeTimeNodes::kWindow, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error));
+    EXPECT_EQ(std::string("the render produced no plane"), error);
+    EXPECT_TRUE(planes.empty());
 }
 
 TEST_F(NativeFrameRangeTest, ResetTakesTheInputRange)

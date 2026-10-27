@@ -113,3 +113,5 @@ The per-context render core shared by E13 - RFV and E15 - Loops And I-Nodes, spl
 2026-10-26: UAT round 1 fixes (timeline cached-frames line, mount-independent OpenFX binary stamps) and main (M167) merged in; release green. Checked: the timeline GUI script passes; render hashes of a Constant → CImgChromaBlur → Grade project match across two AppImage extract paths. AppImage Natron-m178-context.AppImage for UAT round 2.
 
 UAT approved 2026-10-26 (round 3: viewer cache line). Main merged in (Tests/CMakeLists.txt union with M237/M226 tests); merging after PR CI.
+
+Shipped: merged as 622c03219 (#119) on 2026-10-27. M202 - Clean-Hash Cache Stores now lands after it (restacked, context-aware snapshot).

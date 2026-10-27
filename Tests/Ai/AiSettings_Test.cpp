@@ -39,6 +39,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Settings.h"
 

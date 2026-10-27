@@ -42,7 +42,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Phase 216.1: Model and fit
 
-- [ ] M216.P1.T1 — Homography model and warp (CPU)
+- [x] M216.P1.T1 — Homography model and warp (CPU)
   - files: new `Engine/Nodes/Transform/AutoStraighten.h`, `Engine/Nodes/Transform/AutoStraighten.cpp`, `Engine/Nodes/Transform/AutoStraighten.reg.inc`
   - approach:
     - Port `homography()`, the lens-model and crop math (`do_crop`, `crop_adjust`) and every param knob from `ashift.c`.
@@ -51,13 +51,13 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: P2.T3's reference jobs for the manual parameters pass.
   - size: L
 
-- [ ] M216.P1.T2 — Line detection
+- [x] M216.P1.T2 — Line detection
   - files: new `Engine/Nodes/Transform/AshiftLsd.{h,cpp}`, new `Engine/Nodes/Transform/AshiftLines.{h,cpp}`
   - approach: port `ashift_lsd.c` (LSD; read its licence header and record it in `tools/license/components/README.md`, stopping to ask if it is not GPL-3-compatible) and `ashift.c`'s `get_structure`, enhance modes, line classification and weighting. Expose a `lines(time)` accessor for M165.
   - verify: `Tests/Native/AshiftLines_Test.cpp` (P2.T3) on a synthetic grid rotated by 3° finds its verticals and horizontals within 0.1°.
   - size: L
 
-- [ ] M216.P1.T3 — Nelder–Mead fit and fit actions
+- [x] M216.P1.T3 — Nelder–Mead fit and fit actions
   - files: new `Engine/Nodes/Transform/AshiftFit.{h,cpp}`, `Engine/Nodes/Transform/AutoStraighten.cpp`
   - approach: port `ashift_nmsimplex.c` and `nmsfit`/`model_fitness`. Add the fit buttons, each running detection and fitting on the current frame and setting the knobs as one undo step.
   - verify: P2.T3's fit tests pass.
@@ -65,19 +65,19 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Phase 216.2: Interaction, GPU and parity
 
-- [ ] M216.P2.T1 — Rectangle guide mode
+- [x] M216.P2.T1 — Rectangle guide mode
   - files: `Engine/Nodes/Transform/AutoStraighten.cpp`
   - approach: add four animatable corner position knobs with `addPositionInteract`, shown only in rectangle mode, which feed darktable's quad fit.
   - verify: P2.T4's GUI script passes.
   - size: M
 
-- [ ] M216.P2.T2 — GPU warp
+- [x] M216.P2.T2 — GPU warp
   - files: `Engine/Nodes/Transform/AutoStraighten.cpp`, new `Tests/Native/NativeAutoStraightenGpu_Test.cpp`
   - approach: reuse the native resampler's GPU path. Detection and fitting stay on the CPU, since they are actions, not renders.
   - verify: `ctest -R NativeAutoStraightenGpu` passes on lavapipe within 1e-4 relative.
   - size: M
 
-- [ ] M216.P2.T3 — Reference parity, fit tests and knob audit
+- [x] M216.P2.T3 — Reference parity, fit tests and knob audit
   - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeAutoStraighten_Test.cpp`, new `Tests/Native/AshiftLines_Test.cpp`
   - approach:
     - darktable-cli jobs with fixed rotation, lens shift, shear and lens model, crossed with each `autoCrop` mode, compared within the doc's tolerance.
@@ -86,7 +86,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: `ctest -R "NativeAutoStraighten|AshiftLines"` passes.
   - size: L
 
-- [ ] M216.P2.T4 — GUI script, doc and icon
+- [x] M216.P2.T4 — GUI script, doc and icon
   - files: new `Tests/gui/test_auto_straighten.py`, `Engine/Nodes/Transform/docs/AutoStraighten.md`, `Gui/Resources/Images/NativeNodes/`
   - approach: under Xvfb, fit "both" on a tilted architecture fixture, check that the knobs moved, switch to rectangle mode, drag a corner, and take screenshots. The doc covers the fits, the lens model, crop and the M165 follow-up.
   - verify: the script passes under Xvfb, and `ctest -R NativePluginList` passes.
@@ -100,4 +100,5 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Decisions
 
+- 2026-10-27 — Drawn Lines implemented: a Draw Line tool (V) makes two-point open curves auto-tagged by direction; Line Orientation knob / right-click retag; fit needs ≥2 lines per relevant direction. Curve-hosting hunks copied from M211 (expect overlap when M211 merges).
 - 2026-10-27 — **User-drawn lines replace line detection (user):** no LSD (AGPL-3) and no own detector; the user draws vertical/horizontal guide lines with the shared roto groundwork (M146 curve hosting) on the node, tagged as vertical or horizontal; the fit uses those lines (darktable's ashift fit on the user's segments). Rectangle mode stays.

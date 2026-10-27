@@ -247,19 +247,19 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 121.7: UAT round 1
 
-- [ ] M122.P7.T1 — Premult "all" breaks the node permanently
+- [x] M122.P7.T1 — Premult "all" breaks the node permanently
   - files: `Engine/Nodes/Color/Premult.{h,cpp}` and whatever holds the stuck state
   - approach: user repro: Constant → Shuffle to a second layer → Copy a blurred alpha in → Premult → Unpremult is fine. Set Premult's channels to "all" and the Unpremult gives very bright edges; setting Premult back to rgba, refreshing the viewer and clearing caches doesn't recover. Find the persistent state (a knob, metadata, a premult flag, a layer selection) and fix it.
   - verify: a gtest of the repro: after the round trip all → rgba the output equals a fresh node's; plus the GUI check.
   - size: L
 
-- [ ] M122.P7.T2 — ColorMatrix matrix interface
+- [x] M122.P7.T2 — ColorMatrix matrix interface
   - files: ColorMatrix, a matrix knob display in Gui
   - approach: a grid of sliderless float fields (4×4, with a 3×3 mode that hides the alpha row and column and leaves them identity), in place of four RGBA rows.
   - verify: Xvfb screenshot shared with the user; gtests for 3×3 mode keeping alpha untouched.
   - size: L
 
-- [ ] M122.P7.T3 — HueKeyer becomes HSVKeyer
+- [x] M122.P7.T3 — HueKeyer becomes HSVKeyer
   - files: `Engine/Nodes/Keyer/HSVKeyer.*` (rename), a trapezoid range knob and its Gui widget
   - approach: pick a source colour, which centres the ranges; one trapezoid (outer low, inner low, inner high, outer high) per hue, saturation and value/luma, edited on a custom widget; a toggle for each component's contribution to the alpha; a colour-model choice. Hue ranges wrap.
   - verify: gtests per component and model, plus the wrap; Xvfb screenshots shared with the user.
@@ -295,3 +295,5 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - No retired OFX ID loads.
 Shipped: phase 6 at 0c1fe3168 (release gate green, run 40239056993).
 Review round (Codex, PR #114): Threshold icon and CPU cost seeds fixed at 137eaaafa; release gate green. GPU seeds pending the GPU host; UAT pending.
+
+UAT approved 2026-10-26 (round 4, from screenshots: luma defaults to edges 0, 0.05, 0.5, 0.95, 1). Merging after PR CI on main.

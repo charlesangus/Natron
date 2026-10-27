@@ -284,6 +284,9 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain has DenoiseProfiled between RawDemosaic and RawInputColor.
+    bool isDevelopRawDenoiseEnabled() const;
+
     bool isAutoFixRelativeFilePathEnabled() const;
 
     ///////////////////////////////////////////////////////
@@ -513,6 +516,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobBoolPtr _developRawDenoise;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
 

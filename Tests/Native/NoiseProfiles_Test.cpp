@@ -138,6 +138,30 @@ TEST(NoiseProfilesTest, AnIsoBetweenEntriesIsInterpolated)
     expectNear(kIso110B, found.profile.b, "b");
 }
 
+// dt_iop_denoiseprofile_get_auto_profile() with compensate_hilite_pres: the ISO shifted right by
+// the whole EV, named with the exif ISO and the shift.
+TEST(NoiseProfilesTest, HighlightPreservationShiftsTheIso)
+{
+    const std::vector<NoiseProfiles::Profile> profiles = NoiseProfiles::matching(NoiseProfiles::database(), "Canon", "EOS 5D Mark III");
+
+    const NoiseProfiles::AutoProfile found = NoiseProfiles::autoProfile(profiles, 200, 1);
+    EXPECT_TRUE(found.detected);
+    EXPECT_EQ("found ISO 100 (ISO 200 -1 EV)", found.name);
+    EXPECT_EQ(100, found.profile.iso);
+    expectNear(kIso100A, found.profile.a, "a");
+
+    const NoiseProfiles::AutoProfile interpolated = NoiseProfiles::autoProfile(profiles, 440, 2);
+    EXPECT_TRUE(interpolated.detected);
+    EXPECT_EQ("interpolated ISO 110 (ISO 440 -2 EV)", interpolated.name);
+    expectNear(kIso110A, interpolated.profile.a, "a");
+
+    EXPECT_EQ("found ISO 100", NoiseProfiles::autoProfile(profiles, 100, 0).name);
+    EXPECT_EQ(0, NoiseProfiles::highlightPreservationShift(0.66));
+    EXPECT_EQ(1, NoiseProfiles::highlightPreservationShift(1.33));
+    EXPECT_EQ(2, NoiseProfiles::highlightPreservationShift(2.));
+    EXPECT_EQ(0, NoiseProfiles::highlightPreservationShift(-1.));
+}
+
 TEST(NoiseProfilesTest, AnIsoOutsideTheProfiledRangeGetsTheGenericProfile)
 {
     const std::vector<NoiseProfiles::Profile> profiles = NoiseProfiles::matching(NoiseProfiles::database(), "Canon", "EOS 5D Mark III");

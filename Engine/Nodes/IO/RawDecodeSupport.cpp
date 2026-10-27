@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -235,6 +236,128 @@ namespace {
                 const double limit = entry->getFloat();
                 if (std::isfinite(limit)) {
                     return limit;
+                }
+            }
+        } catch (const std::exception&) {
+        }
+
+        return std::nullopt;
+    }
+
+    // rawspeed parses a makernote into a TiffRootIFD under the IFD holding the MakerNote tag. A
+    // TiffRootIFD under another root is an embedded file's tree (a RAF's JPEG), not a makernote.
+    void
+    collectMakerNotes(const rawspeed::TiffIFD* ifd,
+                      bool parentIsRoot,
+                      bool isTop,
+                      std::vector<const rawspeed::TiffIFD*>* notes)
+    {
+        const bool isRoot = dynamic_cast<const rawspeed::TiffRootIFD*>(ifd) != nullptr;
+        if (isRoot && !isTop && !parentIsRoot) {
+            notes->push_back(ifd);
+        }
+        for (const rawspeed::TiffIFDOwner& sub : ifd->getSubIFDs()) {
+            collectMakerNotes(sub.get(), isRoot, false, notes);
+        }
+    }
+
+    std::optional<long>
+    makerNoteValue(const std::vector<const rawspeed::TiffIFD*>& notes,
+                   uint16_t tag,
+                   uint32_t index)
+    {
+        const rawspeed::TiffTag key = static_cast<rawspeed::TiffTag>(tag);
+        for (const rawspeed::TiffIFD* note : notes) {
+            if (!note->hasEntry(key)) {
+                continue;
+            }
+            const rawspeed::TiffEntry* entry = note->getEntry(key);
+            if (index >= entry->count) {
+                return std::nullopt;
+            }
+            switch (entry->type) {
+            case rawspeed::TiffDataType::BYTE:
+            case rawspeed::TiffDataType::UNDEFINED:
+                return (long)entry->getByte(index);
+            case rawspeed::TiffDataType::SHORT:
+                return (long)entry->getU16(index);
+            case rawspeed::TiffDataType::SSHORT:
+                return (long)entry->getI16(index);
+            case rawspeed::TiffDataType::LONG:
+                return (long)entry->getU32(index);
+            case rawspeed::TiffDataType::SLONG:
+                return (long)entry->getI32(index);
+            default:
+                return std::nullopt;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    // darktable's _check_highlight_preservation (src/common/exif.cc), on the makernote of the
+    // camera's make, with its order: the first tag found decides, even when its value adds
+    // nothing (a Nikon's ColorSpace hides its ActiveDLighting). Olympus keeps Gradation in a
+    // makernote sub-IFD and Canon CR3 in a CMT box, neither of which rawspeed parses, and darktable
+    // rates both below one EV, which its denoise ignores.
+    std::optional<double>
+    highlightPreservation(rawspeed::RawDecoder& decoder,
+                          const std::string& make)
+    {
+        try {
+            const rawspeed::TiffIFD* root = decoder.getRootIFD();
+            if (!root) {
+                return std::nullopt;
+            }
+            std::vector<const rawspeed::TiffIFD*> notes;
+            collectMakerNotes(root, false, true, &notes);
+            if (notes.empty()) {
+                return std::nullopt;
+            }
+            std::string lower(make);
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            if (lower.find("canon") != std::string::npos) {
+                if (const std::optional<long> state = makerNoteValue(notes, 0x4018, 2)) {
+                    return (*state == 0) ? 0.50 : (*state == 1) ? 0.33
+                        : (*state == 2)                         ? 0.66
+                                                                : 0.;
+                }
+            } else if (lower.find("fuji") != std::string::npos) {
+                std::optional<long> dr = makerNoteValue(notes, 0x1403, 0);
+                if (!dr) {
+                    dr = makerNoteValue(notes, 0x140b, 0);
+                }
+                if (dr) {
+                    return (*dr == 200) ? 1. : (*dr == 400) ? 2.
+                                                            : 0.;
+                }
+            } else if (lower.find("nikon") != std::string::npos) {
+                if (const std::optional<long> colorSpace = makerNoteValue(notes, 0x001e, 0)) {
+                    return (*colorSpace == 4) ? 2. : 0.;
+                }
+                if (const std::optional<long> adl = makerNoteValue(notes, 0x0022, 0)) {
+                    switch (*adl) {
+                    case 3:
+                        return 0.33;
+                    case 5:
+                        return 0.66;
+                    case 7:
+                        return 1.00;
+                    case 8:
+                        return 1.10;
+                    case 9:
+                        return 1.20;
+                    case 10:
+                        return 1.30;
+                    case 11:
+                        return 1.33;
+                    default:
+                        return 0.;
+                    }
+                }
+            } else if (lower.find("pentax") != std::string::npos || lower.find("ricoh") != std::string::npos) {
+                if (const std::optional<long> expansion = makerNoteValue(notes, 0x0069, 0)) {
+                    return (*expansion == 1) ? 1. : 0.;
                 }
             }
         } catch (const std::exception&) {
@@ -610,6 +733,9 @@ namespace {
         RawMetadata::setModel(&metadata, header->model);
         if (const std::optional<double> limit = linearResponseLimit(decoder)) {
             RawMetadata::setLinearResponseLimit(&metadata, *limit);
+        }
+        if (const std::optional<double> ev = highlightPreservation(decoder, header->make)) {
+            RawMetadata::setHighlightPreservation(&metadata, *ev);
         }
         if (const std::optional<std::array<double, 9>> d65 = dngD65Matrix(decoder)) {
             RawMetadata::setDngD65Matrix(&metadata, *d65);

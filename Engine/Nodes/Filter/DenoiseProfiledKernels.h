@@ -66,6 +66,7 @@ NATRON_NAMESPACE_ENTER
  **/
 namespace DenoiseProfiledKernels {
 using Vec3 = std::array<float, 3>;
+using Vec3d = std::array<double, 3>;
 using Matrix3 = std::array<Vec3, 3>;
 using RawKernels::ParallelFor;
 
@@ -79,6 +80,7 @@ enum ModeEnum {
     eModeNlmAuto,
     eModeWavelets,
     eModeWaveletsAuto,
+    eModeVariance,
 };
 
 enum ColorModeEnum {
@@ -251,6 +253,14 @@ void denoiseNlm(const float* in,
                 double renderScale,
                 float* out,
                 const ParallelFor& parallel);
+
+/**
+ * @brief process_variance(): the red, green and blue sample variance of n interleaved RGB pixels
+ * after the variance-stabilising transform, which is 1 where the profile fits a uniform patch.
+ **/
+Vec3d measureVariance(const float* in,
+                      std::size_t n,
+                      const Settings& settings) WARN_UNUSED_RETURN;
 
 /**
  * @brief The number of wavelet scales process_wavelets() uses at renderScale for an image whose

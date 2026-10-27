@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit the native RAW nodes against darktable's modules.
+"""Audit the native RAW nodes and DenoiseProfiled against darktable's modules.
 
 Every params field and described enum value of the darktable modules the RAW nodes port, colorin's
 input-profile list, and the hand list of GUI-only controls in darktable-parity.json is an item.
@@ -8,13 +8,13 @@ a reason, or to DEFERRED. An item without an entry is MISSING.
 
 Knobs and options a node has beyond darktable's are EXTRA, each with a reason in the mapping's
 "extras". With --write-docs the script rewrites the "darktable controls" section of each node's
-Engine/Nodes/Raw/docs/<node>.md from the same rows; without it a stale section is a problem.
+Engine/Nodes/<dir>/docs/<node>.md from the same rows; without it a stale section is a problem.
 
 Usage: python3 -I tools/raw/parity-audit.py [--darktable-ref DIR] [--mapping FILE] [--write-docs]
 
 DARKTABLE_REF (environment variable or --darktable-ref) defaults to /tmp/dt-src-562, then
 build/darktable-src. The exit status is non-zero on any MISSING row, on any mapped knob or option
-that the sources under Engine/Nodes/Raw do not define, on a node knob neither mapped nor listed as
+that the node's sources do not define, on a node knob neither mapped nor listed as
 EXTRA, and on a stale docs section.
 """
 
@@ -27,8 +27,6 @@ from collections import OrderedDict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-NODE_DIR = os.path.join(REPO, "Engine", "Nodes", "Raw")
-DOCS_DIR = os.path.join(NODE_DIR, "docs")
 DOCS_HEADING = "## darktable controls"
 
 # darktable module -> the node that ports it (file stem under Engine/Nodes/Raw)
@@ -42,7 +40,18 @@ MODULES = OrderedDict([
     ("cacorrect", "RawCACorrect"),
     ("rawdenoise", "RawDenoise"),
     ("channelmixerrgb", "RawColorCalibration"),
+    ("denoiseprofile", "DenoiseProfiled"),
 ])
+
+# Nodes outside Engine/Nodes/Raw. Their headers also define option ids as k<Node>Param..., so
+# their knob names are the defines that a setName() call uses.
+NODE_DIRS = {
+    "denoiseprofile": "Filter",
+}
+
+
+def node_dir(module):
+    return os.path.join(REPO, "Engine", "Nodes", NODE_DIRS.get(module, "Raw"))
 
 # Headers whose described enums belong to a module besides its own .c file.
 EXTRA_ENUM_FILES = {
@@ -86,18 +95,18 @@ def parse_params(module, text):
     if not match:
         return []
     fields = []
-    for line in match.group(1).splitlines():
-        code, _, comment = line.partition("//")
-        code = re.sub(r"/\*.*?\*/", "", code).strip()
-        if not code.endswith(";"):
+    # Each declaration with the comment after it: to the end of the line, or a block comment
+    # that may run over several lines.
+    body = match.group(1)
+    for decl in re.finditer(r"^[ \t]*((?:struct\s+)?\w+\s+[^;/{}]+);([ \t]*(?://[^\n]*|/\*.*?\*/))?", body, re.M | re.S):
+        code = re.match(r"^(?:struct\s+)?(\w+)\s+(.+)$", decl.group(1).strip(), re.S)
+        if not code:
             continue
-        decl = re.match(r"^(?:struct\s+)?(\w+)\s+(.+);$", code)
-        if not decl:
-            continue
-        ftype = decl.group(1)
-        default = re.search(r"\$DEFAULT:\s*(\S+)", comment)
+        comment = decl.group(2) or ""
+        ftype = code.group(1)
+        default = re.search(r"\$DEFAULT:\s*([^\s*]+)", comment)
         description = re.search(r'\$DESCRIPTION:\s*"([^"]*)"', comment)
-        for name in decl.group(2).split(","):
+        for name in code.group(2).split(","):
             name = re.sub(r"\[.*?\]", "", name).strip()
             if name:
                 fields.append((name, ftype, default.group(1) if default else None,
@@ -172,19 +181,27 @@ def collect_items(ref, mapping):
 def node_literals(module):
     """Every string literal in the node's sources, and the names it gives knobs."""
     stem = MODULES[module]
+    directory = node_dir(module)
     literals = set()
     names = set()
-    if not os.path.isdir(NODE_DIR):
+    defines = {}
+    named = set()
+    if not os.path.isdir(directory):
         return literals, names
-    for filename in sorted(os.listdir(NODE_DIR)):
+    for filename in sorted(os.listdir(directory)):
         if not filename.startswith(stem):
             continue
         if not filename.endswith((".h", ".cpp", ".inc")):
             continue
-        text = read(os.path.join(NODE_DIR, filename))
+        text = read(os.path.join(directory, filename))
         literals.update(re.findall(r'"((?:[^"\\\n]|\\.)*)"', text))
-        names.update(re.findall(r'#define\s+kRaw\w*(?:Param|Tab)\w*\s+"([^"]+)"', text))
+        if module not in NODE_DIRS:
+            names.update(re.findall(r'#define\s+kRaw\w*(?:Param|Tab)\w*\s+"([^"]+)"', text))
+        defines.update(re.findall(r'#define\s+(k\w+)\s+"([^"]+)"', text))
+        named.update(re.findall(r'setName\(\s*(k\w+)\s*\)', text))
         names.update(re.findall(r'setName\(\s*"([^"]+)"\s*\)', text))
+    if module in NODE_DIRS:
+        names.update(defines[ident] for ident in named if ident in defines)
     return literals, names
 
 
@@ -372,7 +389,7 @@ def sync_docs(items, extras, write):
     """The docs files whose section is stale; with write, rewrites them instead."""
     stale = []
     for module, stem in MODULES.items():
-        path = os.path.join(DOCS_DIR, stem + ".md")
+        path = os.path.join(node_dir(module), "docs", stem + ".md")
         if not os.path.isfile(path):
             stale.append("%s: no %s" % (module, os.path.relpath(path, REPO)))
             continue

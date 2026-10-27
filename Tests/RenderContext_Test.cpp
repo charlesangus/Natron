@@ -389,7 +389,7 @@ TEST_F(ContextReadSetGraph, BindingIdentityFollowsTheKnob)
 {
     NodePtr probe = createNode(QString::fromUtf8(kGradePluginID));
     ASSERT_TRUE(bool(probe));
-    KnobDoublePtr offset = std::dynamic_pointer_cast<KnobDouble>(probe->getKnobByName("offset"));
+    KnobDoublePtr offset = probe->getEffectInstance()->createDoubleKnob("bindingProbe", "Binding Probe", 1);
     ASSERT_TRUE(bool(offset));
     const RenderContextPtr captured = RenderContext::Builder().set(plainName("outer"), 1.).build();
 

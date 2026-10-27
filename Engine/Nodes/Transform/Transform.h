@@ -199,6 +199,13 @@ struct TransformOp {
 static_assert(GpuResampleOp<TransformOp>);
 
 /**
+ * @brief Moves op's centre to the middle of sourceRoD, changing translate so that the image at
+ * full amount does not move, as the OpenFX plug-in's resetCenter does. Shared by the nodes built
+ * on TransformOp's knobs.
+ **/
+void resetTransformCenter(KnobHolder* holder, const TransformOp& op, const RectD& sourceRoD, double time);
+
+/**
  * @brief Transform: translates, rotates, scales and skews the image about a centre. It registers
  * under the openfx-misc TransformPlugin's ID one major above.
  *

@@ -35,7 +35,7 @@ handles on its first match (`drawTransformHandles`, `getHandleTarget` in
 
 ## Phase 230.1: Widgets
 
-- [ ] M230.P1.T1 — Translate/rotate/scale widgets on the selection
+- [x] M230.P1.T1 — Translate/rotate/scale widgets on the selection
   - files: `Gui/SceneTransformWidget.{h,cpp}` (new, factoring the M20 gizmo out of `Gui/SceneViewport.cpp`), `Gui/SceneViewport.{h,cpp}`, `Gui/ActionShortcuts.cpp` (T/R/E/Y/Q bindings), `Gui/CMakeLists.txt`
   - approach: a tool state on SceneViewport, with handles drawn at the selection pivot in local or world space. A drag produces a world-space delta matrix per selected prim and hands it to a target-policy interface (M230.P2.T1). In this task a test policy just records the deltas. Move the M20 USDEditTransform-panel gizmo onto this widget.
   - verify: Xvfb GUI script with a recording test policy — `T` then dragging the X handle 100 px yields a translation along X only; `R` and `E` produce rotation and scale deltas; the space toggle changes the axis frame.
@@ -43,10 +43,14 @@ handles on its first match (`drawTransformHandles`, `getHandleTarget` in
 
 ## Phase 230.2: Target policies
 
-- [ ] M230.P2.T1 — Owner lookup and the three drag-target policies
+- [x] M230.P2.T1 — Owner lookup and the three drag-target policies
   - files: `Gui/SceneTransformTarget.{h,cpp}` (new), `Engine/Settings.{h,cpp}` (policy preference), `Gui/ViewerTab.cpp`, `Tests/gui/scene_transform_policies.py`
   - approach: resolve each selected prim's owner by walking the viewed branch upstream: create nodes match by Prim Path rewritten through downstream USDXformPrim/USDScopePrim re-parenting; USDEditTransform nodes match by pattern. Implement the three policies. Owner writes convert the world delta into the owner's parent space and set its TRS knobs. Edit-node writes set the USDEditTransform's matrix knobs. Node creation goes through the existing node-creation + insert-after path, with the pattern set to the selection's paths. Wrap each drag in one undo macro.
   - verify: Xvfb GUI script, per policy — dragging a USDCard under a USDXformPrim writes the expected node (Card's translate / the open edit / a new edit node at the branch end); Undo once restores the graph and knobs exactly; a USDRead prim under policy 1 creates an edit node.
   - size: L
 
 **Verification gate:** release gate green; widget and policy GUI scripts pass under Xvfb; the user tries all three policies on real hardware and picks the default; screenshots shared before sign-off.
+
+## Decisions
+
+- 2026-10-27 — PM: R/Y act as transform tools while the 3D view has focus (over the Viewer's own R/Y); the pivot toggle is menu-only. A created edit node is inserted after the viewed node and takes all its outputs (the scene edit applies downstream, not only in the Viewer). Handle drags preview and write once on release as one undo step.

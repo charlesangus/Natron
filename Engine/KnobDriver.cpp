@@ -31,6 +31,11 @@
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
 
@@ -153,16 +158,55 @@ KnobDriver::ease(double t) const
     return t;
 }
 
+std::string
+KnobDriver::getProjectVariableName() const
+{
+    return _name.ns.empty() ? _name.name : std::string();
+}
+
 bool
 KnobDriver::evaluate(const RenderContextPtr& context,
+                     const Project* project,
+                     double time,
+                     ViewIdx view,
                      double* value) const
 {
-    if (!context) {
-        return false;
-    }
-    const RenderContextValue* held = context->find(_name);
+    const RenderContextValue* held = context ? context->find(_name) : NULL;
+    RenderContextValue bound;
+
     if (!held) {
-        return false;
+        // The project's variable is the base every context starts from.
+        const KnobIPtr variable = (project && _name.ns.empty()) ? RFV::findDeclaredVariable(project, _name.name) : KnobIPtr();
+        if (!variable) {
+            return false;
+        }
+        try {
+            ActionContextScope variableContext(bool(context), context);
+            if (!RFV::getVariableValue(variable, time, view, &bound)) {
+                return false;
+            }
+        } catch (const std::exception&) {
+            return false;
+        }
+        held = &bound;
+    } else if (const RenderContextBinding* binding = std::get_if<RenderContextBinding>(held)) {
+        // A time-varying variable: its knob's value at the driven knob's time, under the context
+        // it captured, as rfv reads it. A knob deleted since, or off its node, is unset.
+        const KnobIPtr boundKnob = binding->knob.lock();
+        const KnobHolder* boundHolder = boundKnob ? boundKnob->getHolder() : NULL;
+        const EffectInstance* boundEffect = dynamic_cast<const EffectInstance*>(boundHolder);
+        if (!boundHolder || (boundEffect && !boundEffect->getNode())) {
+            return false;
+        }
+        try {
+            ActionContextScope bindingContext(true, binding->captured);
+            if (!RFV::getVariableValue(boundKnob, time, view, &bound)) {
+                return false;
+            }
+        } catch (const std::exception&) {
+            return false;
+        }
+        held = &bound;
     }
     double t;
     if (const double* d = std::get_if<double>(held)) {
@@ -177,7 +221,7 @@ KnobDriver::evaluate(const RenderContextPtr& context,
     *value = _start + (_end - _start) * ease(t);
 
     return true;
-}
+} // KnobDriver::evaluate
 
 void
 KnobDriver::appendContentHash(ContentHasher& h) const

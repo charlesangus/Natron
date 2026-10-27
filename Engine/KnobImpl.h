@@ -768,7 +768,7 @@ Knob<T>::getValue(int dimension,
     }
     {
         T driven;
-        if (getValueFromDriver(dimension, clamp, &driven)) {
+        if (hasDrivers() && getValueFromDriver(getCurrentTime(), expressionView(view), dimension, clamp, &driven)) {
             return driven;
         }
     }
@@ -813,7 +813,9 @@ Knob<T>::getValue(int dimension,
 
 template <typename T>
 bool
-Knob<T>::getValueFromDriver(int dimension,
+Knob<T>::getValueFromDriver(double time,
+                            ViewIdx view,
+                            int dimension,
                             bool clamp,
                             T* ret) const
 {
@@ -821,7 +823,7 @@ Knob<T>::getValueFromDriver(int dimension,
         return false;
     } else {
         double value;
-        if (!getDriverValue(dimension, &value)) {
+        if (!getDriverValue(time, view, dimension, &value)) {
             return false;
         }
         if constexpr (std::is_same<T, int>::value) {
@@ -918,7 +920,7 @@ Knob<T>::getValueAtTime(double time,
     }
     {
         T driven;
-        if (getValueFromDriver(dimension, clamp, &driven)) {
+        if (hasDrivers() && getValueFromDriver(time, expressionView(view), dimension, clamp, &driven)) {
             return driven;
         }
     }

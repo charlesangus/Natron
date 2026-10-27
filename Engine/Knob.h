@@ -2104,6 +2104,26 @@ public:
                                  RenderContextPtr* context = 0) const;
 
     /**
+     * @brief Whether this knob's dimensions take a driver (see KnobDriver): those of Int, Double
+     * and Color knobs, choices and parametric knobs excepted.
+     **/
+    bool canHaveDriver() const;
+
+    /**
+     * @brief Gives dimension a driver, or removes its own with a null one, and registers the
+     * driver as a read source of the knob. Returns false, changing nothing, for a dimension out
+     * of range or a knob that cannot have one. MT-safe.
+     **/
+    bool setDriver(int dimension, const KnobDriverPtr& driver);
+    KnobDriverPtr getDriver(int dimension) const;
+    bool hasDrivers() const;
+
+    /**
+     * @brief The variables the drivers of every dimension read. MT-safe.
+     **/
+    RenderContextReadSet getDriverReadSet() const;
+
+    /**
      * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
      * them: its own read sources' and, transitively, those of what its expressions and links read.
      * Walks them all even when called while such a gathering runs.
@@ -2135,26 +2155,12 @@ public:
     RenderContextReadSet getRFVReadSet() const;
 
     /**
-     * @brief Has every project variable an expression of this knob reads of rfv listened to by
-     * the expression's dimension, as setting the expression does, for the variables the project
-     * declares after the expression was set. Listeners already registered are kept as they are.
+     * @brief Has every project variable an expression of this knob reads of rfv, or a driver of
+     * it falls back to, listened to by that dimension, as setting the expression or the driver
+     * does, for the variables the project declares after it was set. Listeners already registered
+     * are kept as they are.
      **/
     void refreshRFVListeners();
-
-    /**
-     * @brief Whether this knob's dimensions take a driver (see KnobDriver): those of Int, Double
-     * and Color knobs, choices and parametric knobs excepted.
-     **/
-    bool canHaveDriver() const;
-
-    /**
-     * @brief Gives dimension a driver, or removes its own with a null one, and registers the
-     * driver as a read source of the knob. Returns false, changing nothing, for a dimension out
-     * of range or a knob that cannot have one. MT-safe.
-     **/
-    bool setDriver(int dimension, const KnobDriverPtr& driver);
-    KnobDriverPtr getDriver(int dimension) const;
-    bool hasDrivers() const;
 
     /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
@@ -2165,11 +2171,11 @@ public:
 
 protected:
     /**
-     * @brief The value the driver of dimension gives under the render context the holder is
-     * queried under on the calling thread, and true; false without a driver or a context holding
-     * its variable.
+     * @brief The value the driver of dimension gives at time and view under the render context
+     * the holder is queried under on the calling thread, and true; false without a driver or a
+     * context holding its variable.
      **/
-    bool getDriverValue(int dimension, double* value) const;
+    bool getDriverValue(double time, ViewIdx view, int dimension, double* value) const;
 
     /**
      * @brief False for knobs that feed no render (pages, groups, separators, plain buttons):
@@ -2861,7 +2867,7 @@ private:
 
     bool getValueFromExpression(double time, ViewIdx view, int dimension, bool clamp, T* ret);
 
-    bool getValueFromDriver(int dimension, bool clamp, T* ret) const;
+    bool getValueFromDriver(double time, ViewIdx view, int dimension, bool clamp, T* ret) const;
 
     bool getValueFromExpression_pod(double time, ViewIdx view, int dimension, bool clamp, double* ret);
 

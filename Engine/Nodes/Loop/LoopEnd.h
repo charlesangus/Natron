@@ -46,6 +46,15 @@
 #define kLoopEndParamStep "step"
 #define kLoopEndParamMode "mode"
 #define kLoopEndParamModeAccumulate "accumulate"
+#define kLoopEndParamModeSinglePass "singlePass"
+#define kLoopEndParamSinglePassIteration "singlePassIteration"
+#define kLoopEndParamIterateOver "iterateOver"
+#define kLoopEndParamIterateOverCount "count"
+#define kLoopEndParamIterateOverFrames "frames"
+#define kLoopEndParamFrameStart "frameStart"
+#define kLoopEndParamFrameEnd "frameEnd"
+#define kLoopEndParamFrameStep "frameStep"
+#define kLoopEndParamStopCondition "stopCondition"
 #define kLoopEndParamOperation "operation"
 #define kLoopEndParamOperationMean "mean"
 #define kLoopEndParamOperationSum "sum"
@@ -103,12 +112,37 @@ private:
     struct Resolved {
         NodePtr begin;
         std::string loopName;
+        // The iterations the loop defines; loop.count and loop.t are relative to it.
         int count = 0;
         int start = 0;
         int step = 1;
+        bool frames = false;
+        int frameStart = 0;
+        int frameStep = 1;
+        // The iteration Single Pass outputs, or -1.
+        int singlePass = -1;
+        // How many iterations are folded: count, fewer when the stop condition ended the loop
+        // early, or 1 for Single Pass.
+        int folded = 0;
         MessageTypeEnum messageType = eMessageTypeError;
         // Empty when the loop can render.
         std::string message;
+        // Why the stop condition failed; the iterations before it still render.
+        std::string stopError;
+    };
+
+    struct Iteration {
+        RenderContextPtr context;
+        double time = 0.;
+    };
+
+    struct StopResult {
+        AbortableRenderInfoWPtr render;
+        double time = 0.;
+        std::string expression;
+        int count = 0;
+        int stopAt = 0;
+        std::string error;
     };
 
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -120,16 +154,23 @@ private:
         .id = PLUGINID_NATRON_LOOPEND,
         .label = "LoopEnd",
         .description = "Ends a loop body started by a LoopBegin above it. The body is rendered once per "
-                       "iteration, each time with the loop variables loop.iteration (Start plus the "
-                       "iteration number times Step), loop.count (Iterations), loop.t (0 at the first "
-                       "iteration, 1 at the last) and loop.frame (the current frame) set; knob drivers "
-                       "in the body read them. Accumulate folds the iterations together in order with "
-                       "the Operation: their mean, sum, minimum or maximum, each iteration over the "
-                       "ones before it (Over), or under them (Under); Reverse Order folds from the last "
-                       "iteration to the first. A loop nested in another sees "
-                       "the outer loop's variables as loops.<name>.*, where name is the outer "
-                       "LoopBegin's Name. More iterations than Max Iterations is an error rather than "
-                       "a truncated loop.",
+                       "iteration, each time with the loop variables loop.iteration, loop.count, loop.t "
+                       "(0 at the first iteration, 1 at the last) and loop.frame set; knob drivers in the "
+                       "body read them. Iterate Over Count runs Iterations iterations, loop.iteration "
+                       "being Start plus the iteration number times Step, all at the current frame. "
+                       "Iterate Over Frames runs one iteration per frame from the current frame plus "
+                       "Frame Start to the current frame plus Frame End, by Frame Step, rendering the "
+                       "body at that frame; loop.iteration is then the iteration number and loop.frame "
+                       "that frame. Accumulate folds the iterations together in order with the "
+                       "Operation: their mean, sum, minimum or maximum, each iteration over the ones "
+                       "before it (Over), or under them (Under); Reverse Order folds from the last "
+                       "iteration to the first. Single Pass outputs the one iteration Single Pass "
+                       "Iteration names, unfolded. A Stop Condition, a Python expression, is evaluated "
+                       "before each iteration with loop.iteration, loop.count, loop.t, loop.frame and "
+                       "frame set: the first iteration it is true for, and those after it, are not run. "
+                       "A loop nested in another sees the outer loop's variables as loops.<name>.*, "
+                       "where name is the outer LoopBegin's Name. More iterations than Max Iterations "
+                       "is an error rather than a truncated loop.",
         .grouping = PLUGIN_GROUP_LOOP,
         .majorVersion = PLUGIN_MAJOR_NATRON_LOOPEND,
         .minorVersion = 0,
@@ -157,6 +198,14 @@ private:
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
+
+    virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated,
+                                   double time,
+                                   ViewIdx view,
+                                   int visitsCount) const OVERRIDE FINAL;
+
+    virtual FramesNeededMap getFramesNeeded(double time,
+                                            ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool supportsTiles() const OVERRIDE FINAL
     {
@@ -187,16 +236,29 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The loop as its knobs and graph define it, every iteration folded.
     Resolved resolve() const WARN_UNUSED_RETURN;
 
-    // The contexts of every iteration, in iteration order, under context with no fold step.
-    std::vector<RenderContextPtr> iterationContexts(const Resolved& resolved,
-                                                    const RenderContextPtr& context,
-                                                    double time) const WARN_UNUSED_RETURN;
+    // resolve(), with the iterations the stop condition leaves at time.
+    Resolved resolveAt(double time) const WARN_UNUSED_RETURN;
 
-    // The iteration fold step k folds in.
+    // The iteration the stop condition first holds for at time, count when none; error is set
+    // when it raised, at the iteration returned. Evaluated once per render and time.
+    int evaluateStop(const Resolved& resolved,
+                     const std::string& expression,
+                     double time,
+                     std::string* error) const WARN_UNUSED_RETURN;
+
+    // The folded iterations, in iteration order, under context with no fold step.
+    std::vector<Iteration> foldedIterations(const Resolved& resolved,
+                                            const RenderContextPtr& context,
+                                            double time) const WARN_UNUSED_RETURN;
+
+    // The index in foldedIterations() fold step k folds in.
     int iterationOfStep(int k,
-                        int count) const WARN_UNUSED_RETURN;
+                        const Resolved& resolved) const WARN_UNUSED_RETURN;
+
+    void refreshKnobVisibility();
 
     // Folds step - 1's output out of the frame's store into acc; false when it is not there.
     bool takePreviousStep(const RenderActionArgs& args,
@@ -218,9 +280,18 @@ private:
     KnobChoiceWPtr _operation;
     KnobBoolWPtr _reverseOrder;
     KnobIntWPtr _maxIterations;
+    KnobIntWPtr _singlePassIteration;
+    KnobChoiceWPtr _iterateOver;
+    KnobIntWPtr _frameStart;
+    KnobIntWPtr _frameEnd;
+    KnobIntWPtr _frameStep;
+    KnobStringWPtr _stopCondition;
 
     mutable QMutex _messageMutex;
     std::string _postedMessage;
+
+    mutable QMutex _stopMutex;
+    mutable std::vector<StopResult> _stopResults;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -458,7 +458,8 @@ namespace {
             if (!helper) {
                 continue;
             }
-            const RenderContextReadSet reads = helper->getRFVReadSet();
+            RenderContextReadSet reads = helper->getRFVReadSet();
+            reads.merge(helper->getDriverReadSet());
             if (reads.empty()) {
                 continue;
             }

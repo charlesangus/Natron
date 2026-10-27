@@ -1,0 +1,217 @@
+{
+  "schema": 1,
+  "source": {
+    "repository": "darktable-org/darktable-ai",
+    "tag": "release-5.6.0"
+  },
+  "models": [
+    {
+      "id": "mask-object-segnext-b2hq",
+      "task": "mask-object",
+      "name": "SegNext ViT-B SAx2 HQ",
+      "package": "mask-object-segnext-b2hq",
+      "files": [
+        "encoder.onnx",
+        "decoder.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/mask-object-segnext-b2hq.dtmodel",
+      "sha256": "87936f12f815e05c6f601be5e46d69ce2e52c788ae2c26ec7e3db39d33780857",
+      "size": 422711159,
+      "weightsLicence": "MIT",
+      "trainingDataLicence": "COCO: CC BY 4.0; LVIS: CC BY 4.0; HQSeg-44K: mixed (see datasets)",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/mask-object-segnext-b2hq/README.md",
+      "default": true
+    },
+    {
+      "id": "mask-object-sam21-tiny",
+      "task": "mask-object",
+      "name": "SAM 2.1 Hiera Tiny",
+      "package": "mask-object-sam21-tiny",
+      "files": [
+        "encoder.onnx",
+        "decoder.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/mask-object-sam21-tiny.dtmodel",
+      "sha256": "1e0887434f2c5a452ae5c37c543656d5ad3c478f35d0497baeb7f3e039e42c91",
+      "size": 143293697,
+      "weightsLicence": "Apache-2.0",
+      "trainingDataLicence": "SA-V: CC BY 4.0; SA-1B: custom Meta research-only license",
+      "osaid": "Open Weights",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/mask-object-sam21-tiny/README.md",
+      "default": false
+    },
+    {
+      "id": "mask-object-sam21-small",
+      "task": "mask-object",
+      "name": "SAM 2.1 Hiera Small",
+      "package": "mask-object-sam21-small",
+      "files": [
+        "encoder.onnx",
+        "decoder.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/mask-object-sam21-small.dtmodel",
+      "sha256": "06a629ac1adf40daec47d2191cbdbdac609d93769584a05f65f4276bf784663f",
+      "size": 169639526,
+      "weightsLicence": "Apache-2.0",
+      "trainingDataLicence": "SA-V: CC BY 4.0; SA-1B: custom Meta research-only license",
+      "osaid": "Open Weights",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/mask-object-sam21-small/README.md",
+      "default": false
+    },
+    {
+      "id": "mask-object-sam21-base-plus",
+      "task": "mask-object",
+      "name": "SAM 2.1 Hiera Base Plus",
+      "package": "mask-object-sam21-base-plus",
+      "files": [
+        "encoder.onnx",
+        "decoder.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/mask-object-sam21-base-plus.dtmodel",
+      "sha256": "ee9a5d3c86cbc0ef4e4c550070c25af224a44ec80c8bade4419383b7aab890cb",
+      "size": 308511140,
+      "weightsLicence": "Apache-2.0",
+      "trainingDataLicence": "SA-V: CC BY 4.0; SA-1B: custom Meta research-only license",
+      "osaid": "Open Weights",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/mask-object-sam21-base-plus/README.md",
+      "default": false
+    },
+    {
+      "id": "denoise-nind",
+      "task": "denoise",
+      "name": "NIND UNet",
+      "package": "denoise-nind",
+      "files": [
+        "model.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/denoise-nind.dtmodel",
+      "sha256": "825b3657cbb5193a67432a2f0b44ab86531cc7337f89e8e6c17d93db9665708a",
+      "size": 55008210,
+      "weightsLicence": "GPL-3.0",
+      "trainingDataLicence": "CC BY 4.0 / CC0 (per-image, Wikimedia Commons)",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/denoise-nind/README.md",
+      "default": true
+    },
+    {
+      "id": "denoise-nafnet",
+      "task": "denoise",
+      "name": "NAFNet SIDD",
+      "package": "denoise-nafnet",
+      "files": [
+        "model.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/denoise-nafnet.dtmodel",
+      "sha256": "4b5c0b9c2650956eaab9a3fc6ffe3e11d4dc4f55b246b7f3a0d2d72161b6980c",
+      "size": 108413592,
+      "weightsLicence": "MIT",
+      "trainingDataLicence": "MIT",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/denoise-nafnet/README.md",
+      "default": false
+    },
+    {
+      "id": "rawdenoise-nind-bayer",
+      "task": "denoise-raw-bayer",
+      "name": "RawNIND UtNet2 Bayer",
+      "package": "rawdenoise-nind",
+      "files": [
+        "model_bayer.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/rawdenoise-nind.dtmodel",
+      "sha256": "d71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af",
+      "size": 57700134,
+      "weightsLicence": "GPL-3.0",
+      "trainingDataLicence": "CC BY 4.0 / CC0 (per-image, Wikimedia Commons)",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/rawdenoise-nind/README.md",
+      "default": true
+    },
+    {
+      "id": "rawdenoise-nind-linear",
+      "task": "denoise-linear",
+      "name": "RawNIND UtNet2 Linear",
+      "package": "rawdenoise-nind",
+      "files": [
+        "model_linear.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/rawdenoise-nind.dtmodel",
+      "sha256": "d71b5f1e727c85a359e6f74dca9e2016c9d8fc3e2f7ac3e9b347d80ceca969af",
+      "size": 57700134,
+      "weightsLicence": "GPL-3.0",
+      "trainingDataLicence": "CC BY 4.0 / CC0 (per-image, Wikimedia Commons)",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/rawdenoise-nind/README.md",
+      "default": true
+    },
+    {
+      "id": "upscale-realplksr-x2",
+      "task": "upscale-2x",
+      "name": "RealPLKSR 2x",
+      "package": "upscale-realplksr",
+      "files": [
+        "model_x2.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/upscale-realplksr.dtmodel",
+      "sha256": "7f7b4942b2363691628f10c52bce66ff3ac67d07d4d55c3804d3f89fc9cd6ba7",
+      "size": 54935127,
+      "weightsLicence": "MIT",
+      "trainingDataLicence": "see neosr / RealESRGAN degradation references",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/upscale-realplksr/README.md",
+      "default": true
+    },
+    {
+      "id": "upscale-realplksr-x4",
+      "task": "upscale-4x",
+      "name": "RealPLKSR 4x",
+      "package": "upscale-realplksr",
+      "files": [
+        "model_x4.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/upscale-realplksr.dtmodel",
+      "sha256": "7f7b4942b2363691628f10c52bce66ff3ac67d07d4d55c3804d3f89fc9cd6ba7",
+      "size": 54935127,
+      "weightsLicence": "MIT",
+      "trainingDataLicence": "see neosr / RealESRGAN degradation references",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/upscale-realplksr/README.md",
+      "default": true
+    },
+    {
+      "id": "upscale-bsrgan-x2",
+      "task": "upscale-2x",
+      "name": "BSRGAN 2x",
+      "package": "upscale-bsrgan",
+      "files": [
+        "model_x2.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/upscale-bsrgan.dtmodel",
+      "sha256": "e90621e12fea12098ad6abd701bf67f50cea6c633bad98a19a4ccebba94404a6",
+      "size": 124072128,
+      "weightsLicence": "Apache-2.0",
+      "trainingDataLicence": "DIV2K: CC0; Flickr2K, WED, OST: no explicit open-source licenses",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/upscale-bsrgan/README.md",
+      "default": false
+    },
+    {
+      "id": "upscale-bsrgan-x4",
+      "task": "upscale-4x",
+      "name": "BSRGAN 4x",
+      "package": "upscale-bsrgan",
+      "files": [
+        "model_x4.onnx"
+      ],
+      "url": "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/upscale-bsrgan.dtmodel",
+      "sha256": "e90621e12fea12098ad6abd701bf67f50cea6c633bad98a19a4ccebba94404a6",
+      "size": 124072128,
+      "weightsLicence": "Apache-2.0",
+      "trainingDataLicence": "DIV2K: CC0; Flickr2K, WED, OST: no explicit open-source licenses",
+      "osaid": "Open Source AI",
+      "cardUrl": "https://github.com/darktable-org/darktable-ai/blob/release-5.6.0/models/upscale-bsrgan/README.md",
+      "default": false
+    }
+  ]
+}

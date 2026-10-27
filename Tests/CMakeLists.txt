@@ -102,6 +102,8 @@ set(Tests_SOURCES
     Ai/OrtLoader_Test.cpp
     Ai/InferenceSession_Test.cpp
     Ai/TiledInference_Test.cpp
+    Ai/ModelRegistry_Test.cpp
+    Ai/ModelDownloader_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp

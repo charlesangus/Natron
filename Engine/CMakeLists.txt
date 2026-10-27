@@ -222,6 +222,13 @@ if(NATRON_GPU)
 endif()
 
 add_library(NatronEngine STATIC ${NatronEngine_HEADERS} ${NatronEngine_SOURCES})
+# The pinned darktable-ai model manifest Ai/ModelRegistry reads, as :/Ai/ai_models.json.
+# tools/ai/update-manifest.py regenerates it.
+qt_add_resources(NatronEngine AiModelManifest
+    PREFIX "/Ai"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
+)
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport

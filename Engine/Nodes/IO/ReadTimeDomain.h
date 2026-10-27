@@ -93,6 +93,23 @@ int effectiveTimeOffset(const Settings& settings);
  **/
 FrameRange outputRange(const Settings& settings);
 
+struct RangeTime {
+    enum Kind {
+        eWithin,
+        eBlack,
+        eError,
+    };
+    Kind kind = eBlack;
+    double time = 0.; // valid when kind == eWithin
+};
+
+/**
+ * @brief Where `time` falls on the frames [first, last]: itself inside, else what `before` or
+ * `after` makes of it, as a read maps an output time onto its sequence. A time beyond 1e9 frames
+ * is an error.
+ **/
+RangeTime mapIntoRange(double time, int first, int last, BeforeAfter before, BeforeAfter after);
+
 /**
  * @brief What to load at output `time`. `framesOnDisk` holds the file frame numbers that exist.
  **/

@@ -78,7 +78,7 @@ def image(index):
     param(noise, "reseedPerFrame").set(True)
     param(noise, "decorrelate").set(True)
     param(noise, "seed").set(1000 * index)
-    m = make("net.sf.openfx.MergePlugin")
+    m = make("Merge")
     m.connectInput(0, cb)
     m.connectInput(1, noise)
     param(m, "mix").set(0.5)

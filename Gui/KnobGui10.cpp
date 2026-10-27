@@ -661,9 +661,11 @@ KnobGui::removeKnobKeyframe(const KnobIPtr& knob,
         Q_EMIT gui->keyFrameRemoved();
     }
 
-    assert( knob->getHolder()->getApp() );
-    if ( !knob->getIsSecret() ) {
-        knob->getHolder()->getApp()->removeKeyFrameIndicator(time);
+    // Roto item knobs have no holder, hence no app to keep timeline indicators on.
+    KnobHolder* holder = knob->getHolder();
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    if (app && !knob->getIsSecret()) {
+        app->removeKeyFrameIndicator(time);
     }
     refreshLiveGui(knob, dimension);
 }

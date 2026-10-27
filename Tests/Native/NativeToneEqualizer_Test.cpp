@@ -288,12 +288,12 @@ protected:
         return node;
     }
 
-    // A RawTestSource of rgb, rows from the top as a TIFF's.
+    // An ImageTestSource of rgb, rows from the top as a TIFF's.
     NodePtr createSource(const std::vector<float>& rgb,
                          int width,
                          int height)
     {
-        NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
+        NodePtr source = createNode(QString::fromUtf8(kImageTestSourceID));
         EXPECT_TRUE(bool(source));
         if (!source) {
             return source;

@@ -3,9 +3,8 @@
 A native `NeuralDenoise` node, image in and image out, built from darktable 5.6's neural restore denoise (PR #20523, `src/common/ai/restore*.c`). darktable runs it as a batch utility that writes a TIFF; here it is a graph node, rendered tiled on demand.
 
 There are three models. NIND UNet and NAFNet-SIDD are the two that darktable feeds **sRGB [0,1]**, which would clip scene-linear values above 1. This milestone adds a shared **scene-linear range wrapper** that makes those two safe, and M208 - Neural Upscale reuses it:
-- **Convert:** the working space goes to the model's space through OCIO (M50 - Project OCIO Support).
-- **Compress:** the positive part is mapped onto [0,1) by an invertible soft-knee, after an exposure normalisation. Negative residue is held aside.
-- **Restore:** after the model, the compression is undone, the residue is added back, and the result is converted back.
+- **Compress:** after an exposure normalisation, OCIO (M50 - Project OCIO Support) converts the working space to an sRGB display-referred space whose transform maps scene-linear onto [0,1] and is invertible. One transform does both the colour conversion and the range compression, for most working spaces. Negative residue is held aside.
+- **Restore:** after the model, the same OCIO transform runs inverted, the exposure is undone and the residue is added back.
 
 The third model, RawNIND's linear Rec.2020 variant, is natively scene-linear. It is the default and bypasses the compression. It also covers X-Trans and other non-Bayer raws after RawInputColor, which M206 - Neural Raw Denoise can't.
 
@@ -22,10 +21,10 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
   - range-wrapper controls (sRGB models only):
     - `exposureMode`: Auto from the frame's 99.5th-percentile luminance, or Manual
     - `exposure`, in stops
-    - `knee`, default 0.8
+    - `compression`, the OCIO sRGB display-referred space used to compress, limited to spaces whose transform is invertible; the default is the config's sRGB display view
   - `tileSize`
   - every control darktable's neural restore offers for denoise
-- **`Engine/Ai/SceneLinearWrapper.{h,cpp}`**: the convert, compress and restore stages above, plus a per-frame exposure statistic computed on a downsampled frame, so every tile of a frame gets the same exposure.
+- **`Engine/Ai/SceneLinearWrapper.{h,cpp}`**: the compress and restore stages above, plus a per-frame exposure statistic computed on a downsampled frame, so every tile of a frame gets the same exposure.
 - Tests, a doc, an icon and `gpuWeight` Heavy.
 
 **Out:**
@@ -35,24 +34,26 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
 
 **Edge cases:**
 - **Auto exposure on a black frame:** the statistic floors at a tiny value, so a black frame stays black rather than turning into noise.
-- **Values above the knee:** preserved after the round trip within floating-point error. The model's own changes there are compressed. The doc explains the trade-off.
+- **Bright values:** preserved after the round trip within the OCIO inverse's precision. The model's own changes there are compressed by the display transform's shoulder. The doc explains the trade-off.
+- **A config with no invertible sRGB display-referred space:** the sRGB models report a persistent error naming the config. RawNIND linear still works.
 - **Negative and non-finite values:** negatives skip the model through the residue path. Non-finite values pass through untouched.
 - **Region-of-interest requests:** expanded by the tile overlap. The exposure statistic is per frame, not per RoI, so a crop renders identically.
 - **Proxy scale:** the model runs at the render scale. The doc notes that the result differs from the full-resolution result.
 
 **Assumptions:**
 - Each model's `config.json` states its colour space, `srgb` or `linear-rec2020` (M204.P1.T2's `ModelConfig`).
+- The project's OCIO configs (M50) carry an sRGB display-referred space or view whose forward and inverse round-trip HDR values closely enough. A LUT-based view may not reach 1e-5, and its precision bounds P1.T1's tolerance.
 
 ## Phase 207.1: Wrapper and node
 
 - [ ] M207.P1.T1 — Scene-linear range wrapper
   - files: new `Engine/Ai/SceneLinearWrapper.h`, `Engine/Ai/SceneLinearWrapper.cpp`, new `Tests/Ai/SceneLinearWrapper_Test.cpp`
   - approach:
-    - `prepare(frameStats, cfg)` returns the wrapper parameters: exposure gain and knee.
-    - `forward(rgb, n) -> modelRgb, residue` converts working space to the model space through an OCIO `CPUProcessor` (M50's project config). It applies the gain, splits off the residue `min(x,0)`, applies the soft-knee `x<k ? x : k + (1-k)(1-exp(-(x-k)/(1-k)))`, then applies the sRGB OETF if the model is `srgb`.
-    - `inverse` undoes each step exactly.
+    - `prepare(frameStats, cfg)` returns the wrapper parameters: the exposure gain and the OCIO forward and inverse `CPUProcessor`s from working space to the chosen sRGB display-referred space (M50's project config). It rejects a space whose transform has no inverse.
+    - `forward(rgb, n) -> modelRgb, residue` applies the gain, splits off the residue `min(x,0)`, then runs the forward processor.
+    - `inverse` runs the inverse processor, undoes the gain and adds the residue back.
     - `frameStats(image)` reads the 99.5th-percentile luminance from a 256-px-wide downsample.
-  - verify: the gtest round-trips forward then inverse without the model on HDR data (values up to 1e4 and negatives) within 1e-5 relative. The knee is continuous with a continuous first derivative.
+  - verify: the gtest round-trips forward then inverse without the model on HDR data (values up to 1e4 and negatives) through the default config's sRGB space, within a tolerance measured once and recorded in the test. The compressed output lies in [0,1]. A non-invertible space is rejected by `prepare`.
   - size: M
 
 - [ ] M207.P1.T2 — NeuralDenoise node
@@ -84,3 +85,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
 - The full build and ctest pass, with the model-gated tests run where the models are installed.
 - Under Xvfb, NeuralDenoise renders on a high-ISO EXR plate with bright highlights for each model. Screenshots, compared against the input, are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — The range wrapper compresses through OCIO, not a custom soft-knee: an invertible sRGB display-referred OCIO space takes most working spaces to sRGB [0,1] in one transform (user, inbox 2026-10-27).

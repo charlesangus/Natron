@@ -245,3 +245,7 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 ### 2026-10-26T16:00:00Z — change-request
 - refs: none
 - From M185 - Variable Warps UAT (bosley-native-nodes, user). New milestone suggested ("Cache Invalidation Audit"): the user saw STMap keep rendering as if its old Map were still connected after the Map input was disconnected; not reproducible later. Thoroughly audit cache invalidation for holes: input connect/disconnect (including optional inputs such as Map/Mask), node hash and render-hash composition, the ActionsCache, the image and viewer texture caches, GPU residency and region caches, the timeline cached-frames line, expression and link invalidation, and per-frame metadata retention. Related: M178 - Render Context Core's UAT found the timeline line ignoring invalidation and OFX binary stamps changing per AppImage mount. Deliver a written map of every cache and what invalidates it, stress tests (random edit/connect/disconnect sequences compared against a cache-off render), and fixes.
+
+### 2026-10-27T05:18:45+00:00 — change-request
+- refs: M207
+- Use OCIO to do the compression; can use an srgb display-referred space that compresses to 0-1 to go from most colourspaces to srgb, and it's invertible.

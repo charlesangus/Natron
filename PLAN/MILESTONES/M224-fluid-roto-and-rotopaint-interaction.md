@@ -103,3 +103,5 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 **Verification gate:** `tools/ci/remote/build.sh release --tests` is green for each phase. The stroke and shape goldens are bit-identical. The `m224_*` Xvfb tests pass. `roto_bench` `compare.py` against `roto-xvfb.jsonl` shows no regression. Host p95 pen-to-pixel latency is within the signed-off budget, and the user passes UAT.
 
 ## Decisions
+
+- 2026-10-27 — **User:** preview under the pen = brush-faithful dabs (size, hardness, opacity, pressure). Live render while dragging shapes = a **preference** (Adaptive default: live with latest-wins abort, falling back to render-on-release when a frame exceeds a threshold; plus Always Live and On Release). Shortcuts: adopt **Nuke's Roto/RotoPaint map wholesale**. Latency budget: preview within **1 display frame p95**, real render converging within **100 ms**. Bench records keep the op's main cost in `median_ms` with a `headline` field (PM).

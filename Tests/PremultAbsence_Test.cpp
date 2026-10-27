@@ -201,21 +201,21 @@ TEST_F(PremultAbsenceTest, ReportedOutputPremultIsDiscarded)
     connectNodes(upstream, downstream, 0, true);
 
     ASSERT_TRUE(setKnobValue(upstream, kNatronTestPremultProbeParamReported, kNatronTestPremultProbeReportedPreMultipliedID));
-    NodeMetadata upstreamBefore, downstreamBefore;
-    ASSERT_EQ(eStatusOK, upstream->getEffectInstance()->getPreferredMetadata_public(upstreamBefore));
-    ASSERT_EQ(eStatusOK, downstream->getEffectInstance()->getPreferredMetadata_public(downstreamBefore));
+    NodeMetadataConstPtr upstreamBefore, downstreamBefore;
+    ASSERT_TRUE(upstreamBefore = upstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
+    ASSERT_TRUE(downstreamBefore = downstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
     ProbeReading before;
     ASSERT_TRUE(readProbe(downstream, &before));
 
     ASSERT_TRUE(setKnobValue(upstream, kNatronTestPremultProbeParamReported, kNatronTestPremultProbeReportedOpaqueID));
-    NodeMetadata upstreamAfter, downstreamAfter;
-    ASSERT_EQ(eStatusOK, upstream->getEffectInstance()->getPreferredMetadata_public(upstreamAfter));
-    ASSERT_EQ(eStatusOK, downstream->getEffectInstance()->getPreferredMetadata_public(downstreamAfter));
+    NodeMetadataConstPtr upstreamAfter, downstreamAfter;
+    ASSERT_TRUE(upstreamAfter = upstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
+    ASSERT_TRUE(downstreamAfter = downstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
     ProbeReading after;
     ASSERT_TRUE(readProbe(downstream, &after));
 
-    EXPECT_TRUE(upstreamBefore == upstreamAfter) << "upstream metadata";
-    EXPECT_TRUE(downstreamBefore == downstreamAfter) << "downstream metadata";
+    EXPECT_TRUE(*upstreamBefore == *upstreamAfter) << "upstream metadata";
+    EXPECT_TRUE(*downstreamBefore == *downstreamAfter) << "downstream metadata";
     EXPECT_EQ(before.clip, after.clip) << "downstream clip";
     EXPECT_EQ(before.image, after.image) << "downstream image";
     EXPECT_EQ(kProbeUnPreMultiplied, after.clip) << "downstream clip";

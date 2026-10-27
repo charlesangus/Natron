@@ -1068,7 +1068,7 @@ Run 3's `.ntpz` save and load were contended by other work on the host; runs 1 a
 
 ## Bezier keying before and after incremental GUI copy (2026-10-27)
 
-Machine: 4-core Intel N100, 15 GB RAM, in the natron-dev container. Release AppImages extracted and run with NatronRenderer: "before" is main at 39930fe80 (M122), "after" is M163 at 0e3d9b2bb-era HEAD with all three phases. `tools/bench/bezier_keying_bench.py`, auto-keying on.
+Machine: 4-core Intel N100, 15 GB RAM, in the natron-dev container. Release AppImages extracted and run with NatronRenderer: "before" is main at 39930fe80 (M122), "after" is M163 at 2bf6ff26a with all three phases. `tools/bench/bezier_keying_bench.py`, auto-keying on.
 
 | build | shapes x points | keys | keying (s) | median edit (ms) | slope |
 |---|---|---|---|---|---|

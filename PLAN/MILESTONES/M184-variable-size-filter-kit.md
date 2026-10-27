@@ -90,6 +90,8 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Decisions
 
+- 2026-10-26 — **Outside the Map is remapped (user, PR review):** Codex flagged that the code (commit 7bc098f65) read the Map as 0 outside its image with no invert or remap, contradicting the 2026-10-25 decision. The user chose the decision's behaviour: outside pixels are raw 0 through invert and the remap, on CPU and GPU, so an inverted roto Map gives full effect outside its shape. Size At Black is also capped at Size's maximum (1000) after a review finding that a huge value hung `boxRadius`.
+
 - 2026-10-26 — **Cost seeds dropped (user):** GPU seed rows are not measured for IBlur, IErode or IDilate; M239 - Weight-Based GPU Placement replaces the measured cost model (`PLAN/DECISIONS/2026-10-26-weight-based-gpu-placement.md`). The CPU seeds already committed stay until M239 deletes them.
 - 2026-10-26 — **RADV run (gpu, AMD Radeon AI PRO R9700, RADV GFX1201):** NativeIErodeDilateGpuTest passes. Two failures remain: NativeIBlurGpuTest.NonFiniteSourceMatchesTheCpu hits SIGFPE (invalid) in `ConstantOp::bake` under debug float traps, on lavapipe too; MapRemapGpu.RemapMatchesTheCpu differs because RADV flushes the subnormals that the CPU smooth remap produces at exponents 3.7 and 100 to zero (lavapipe passes). Taken over from bosley-native-nodes by the user's request to finish here.
 

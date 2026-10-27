@@ -12,3 +12,6 @@ Open question for the user before elaborating (M226 UAT item 7): when a scene's 
 Research first (see [[usd-research-before-design]]): `.local/docs/usd` (UsdGeom stage metrics, `UsdGeomGetStageUpAxis`, `UsdGeomLinearUnits`), Solaris's handling (`.local/docs/solaris/docs`, Configure Stage / Reference LOP up-axis and units options), Katana and Gaffer.
 
 Correct M226's "Units on edit layers" decision to match the answer.
+
+Input from M226's Codex review (PR #126, declined there 2026-10-27 and deferred here): under USDXformPrim/USDScopePrim each graft layer copies its input's `metersPerUnit`/`upAxis` and sits stronger than the node's override layer, so a mismatching file's metrics win downstream, contrary to the M226 decision text ("downstream of any Natron node the composed scene always reports the project's units"), while the approved UAT and `Tests/gui/m226_scene_hierarchy.py` expect the file's axis to survive. A project-wins answer means: grafts carry only the time-code rate, every Natron layer authors the project metrics, and the structure/graft memo keys include them.
+

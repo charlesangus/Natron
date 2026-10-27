@@ -233,6 +233,12 @@ set(NatronEngine_WB_PRESETS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Raw/data/wb_p
 configure_file(${NatronEngine_WB_PRESETS_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/wb_presets.json COPYONLY)
 install(FILES ${NatronEngine_WB_PRESETS_JSON} DESTINATION Resources/darktable)
 
+# The plugInfo.json declaring the natron:// live-texture resolver and image reader to OpenUSD,
+# registered at startup from <bin>/../Resources/usd/natronLiveTexture (SceneCaches::registerLiveTextures).
+set(NatronEngine_LIVE_TEXTURE_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/plugInfo.json)
+configure_file(${NatronEngine_LIVE_TEXTURE_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/plugInfo.json COPYONLY)
+install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/natronLiveTexture)
+
 # Some Linux dependencies (notably Qt) can expose the distribution FreeType
 # before this static library's transitive link interface is expanded.  The
 # ASWF image also provides HarfBuzz and a newer, ABI-compatible FreeType under

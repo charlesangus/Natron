@@ -88,6 +88,28 @@ double getMetersPerUnit(const SceneLayerEdit& edit);
  **/
 std::string getAnchoredFilePath(const KnobFilePtr& knob);
 
+/**
+ * @brief The live texture of layer of the image the node connected to consumer's input inputNb
+ * renders: the node, its content hash and whether it varies over time, without rendering it, over
+ * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
+ * authors them through recordLiveTexture().
+ **/
+bool getLiveTextureSource(const EffectInstance& consumer,
+                          int inputNb,
+                          const std::string& layer,
+                          LiveTextureSource* source);
+
+// What a layer authoring source reads of it.
+void appendLiveTextureSource(const LiveTextureSource& source,
+                             ContentHasher* h);
+
+/**
+ * @brief Records source as authored in edit's layer, over edit's frames, and returns it as
+ * recorded: its getUri(frame) is what the layer authors at frame.
+ **/
+LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
+                                    const LiveTextureSource& source);
+
 void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);
 

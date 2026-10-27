@@ -25,11 +25,14 @@
 
 #include "USDMaterial.h"
 
+#include <functional>
 #include <string>
 
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -40,6 +43,11 @@ namespace {
 // The names of the prims the node authors under the material.
 const char* const kSurfaceName = "PreviewSurface";
 const char* const kReaderName = "TexCoordReader";
+// The layer of an image input a live texture reads.
+const char* const kLiveTextureLayer = "rgba";
+
+// How a texture's file input is authored: a fixed path, or a live texture's URI per frame.
+typedef std::function<bool(const PXR_NS::UsdAttribute& file)> AuthorFileFunc;
 
 KnobFilePtr
 makeTextureKnob(USDMaterial* holder,
@@ -102,16 +110,18 @@ makeColorKnob(USDMaterial* holder,
     return knob;
 }
 
-// The texture shader that feeds a surface input: a UsdUVTexture of file, read at the "st"
-// primvar, whose output output (rgb or r) is connected to input. Scalar inputs read the file's
-// values as they are; colour inputs let the renderer pick the file's colour space.
+// The texture shader that feeds a surface input: a UsdUVTexture whose file authorFile authors,
+// read at the "st" primvar, whose output output (rgb or r) is connected to input. Scalar inputs
+// and normals read the file's values as they are; colour inputs let the renderer pick the file's
+// colour space. A normal map encodes -1..1 in 0..1, which the texture's scale and bias undo.
 bool
 connectTexture(const PXR_NS::UsdStageRefPtr& stage,
                const PXR_NS::SdfPath& materialPath,
                const PXR_NS::UsdShadeShader& reader,
                const std::string& inputName,
-               const std::string& file,
+               const AuthorFileFunc& authorFile,
                bool isColor,
+               bool isNormal,
                PXR_NS::UsdShadeInput& input)
 {
     PXR_NS::UsdShadeShader texture = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken(inputName + "Texture")));
@@ -122,13 +132,33 @@ connectTexture(const PXR_NS::UsdStageRefPtr& stage,
     const PXR_NS::UsdShadeInput fileInput = texture.CreateInput(PXR_NS::TfToken("file"), PXR_NS::SdfValueTypeNames->Asset);
     const PXR_NS::UsdShadeInput st = texture.CreateInput(PXR_NS::TfToken("st"), PXR_NS::SdfValueTypeNames->Float2);
     const PXR_NS::UsdShadeInput colorSpace = texture.CreateInput(PXR_NS::TfToken("sourceColorSpace"), PXR_NS::SdfValueTypeNames->Token);
-    const PXR_NS::UsdShadeOutput output = texture.CreateOutput(PXR_NS::TfToken(isColor ? "rgb" : "r"), isColor ? PXR_NS::SdfValueTypeNames->Float3 : PXR_NS::SdfValueTypeNames->Float);
+    const bool isVector = isColor || isNormal;
+    const PXR_NS::UsdShadeOutput output = texture.CreateOutput(PXR_NS::TfToken(isVector ? "rgb" : "r"), isVector ? PXR_NS::SdfValueTypeNames->Float3 : PXR_NS::SdfValueTypeNames->Float);
     const PXR_NS::UsdShadeOutput readerOutput = reader.GetOutput(PXR_NS::TfToken("result"));
+    if (isNormal) {
+        const PXR_NS::UsdShadeInput scale = texture.CreateInput(PXR_NS::TfToken("scale"), PXR_NS::SdfValueTypeNames->Float4);
+        const PXR_NS::UsdShadeInput bias = texture.CreateInput(PXR_NS::TfToken("bias"), PXR_NS::SdfValueTypeNames->Float4);
+        if (!scale || !scale.Set(PXR_NS::GfVec4f(2.f, 2.f, 2.f, 1.f)) || !bias || !bias.Set(PXR_NS::GfVec4f(-1.f, -1.f, -1.f, 0.f))) {
+            return false;
+        }
+    }
 
-    return fileInput && fileInput.Set(PXR_NS::SdfAssetPath(file))
+    return fileInput && authorFile(fileInput.GetAttr())
         && colorSpace && colorSpace.Set(PXR_NS::TfToken(isColor ? "auto" : "raw"))
         && st && readerOutput && st.ConnectToSource(readerOutput)
         && output && input.ConnectToSource(output);
+}
+
+// The live texture of image input inputNb, or null when nothing is connected to it.
+const LiveTextureSource*
+getLiveTexture(const LiveTextureSourceList& liveTextures,
+               int inputNb)
+{
+    if ((inputNb < 0) || (inputNb >= (int)liveTextures.size()) || !liveTextures[inputNb].node.lock()) {
+        return nullptr;
+    }
+
+    return &liveTextures[inputNb];
 }
 } // anonymous namespace
 
@@ -195,6 +225,7 @@ USDMaterial::getTexturePath(const KnobFilePtr& knob)
 
 bool
 USDMaterial::authorLayer(const SceneLayerEdit& edit,
+                         const LiveTextureSourceList& liveTextures,
                          std::string* errorMessage) const
 {
     PXR_NS::SdfPath path;
@@ -254,22 +285,49 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
         return false;
     }
 
-    // The textures, all read at the "st" primvar through one reader.
+    // Authored only for a connected Normal input: the surface's own default is the geometry's.
+    PXR_NS::UsdShadeInput normalInput;
+    const LiveTextureSource* normalSource = getLiveTexture(liveTextures, kUSDMaterialInputNormal);
+    if (normalSource) {
+        normalInput = surface.CreateInput(PXR_NS::TfToken("normal"), PXR_NS::SdfValueTypeNames->Normal3f);
+        if (!normalInput) {
+            *errorMessage = tr("USD could not author the surface of the material at %1.").arg(pathString).toStdString();
+
+            return false;
+        }
+    }
+
+    // The textures, all read at the "st" primvar through one reader; a connected image input wins
+    // over the file.
     struct TexturedInput {
         std::string name;
         std::string file;
+        const LiveTextureSource* live;
         bool isColor;
+        bool isNormal;
         PXR_NS::UsdShadeInput* input;
     };
     const TexturedInput textured[] = {
-        { "diffuseColor", getTexturePath(_diffuseTexture.lock()), true, &diffuseInput },
-        { "metallic", getTexturePath(_metallicTexture.lock()), false, &metallicInput },
-        { "roughness", getTexturePath(_roughnessTexture.lock()), false, &roughnessInput },
-        { "emissiveColor", getTexturePath(_emissiveTexture.lock()), true, &emissiveInput },
+        { "diffuseColor", getTexturePath(_diffuseTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputDiffuseColor), true, false, &diffuseInput },
+        { "metallic", getTexturePath(_metallicTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputMetallic), false, false, &metallicInput },
+        { "roughness", getTexturePath(_roughnessTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputRoughness), false, false, &roughnessInput },
+        { "emissiveColor", getTexturePath(_emissiveTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputEmissiveColor), true, false, &emissiveInput },
+        { "normal", std::string(), normalSource, false, true, &normalInput },
     };
     PXR_NS::UsdShadeShader reader;
     for (const TexturedInput& t : textured) {
-        if (t.file.empty()) {
+        AuthorFileFunc authorFile;
+        if (t.live) {
+            const LiveTextureSource live = SceneNodeAuthoring::recordLiveTexture(edit, *t.live);
+            authorFile = [&edit, live](const PXR_NS::UsdAttribute& file) {
+                return authorValue(file, edit, live.varying, [&live](double frame) { return PXR_NS::SdfAssetPath(live.getUri(frame)); });
+            };
+        } else if (!t.file.empty()) {
+            const std::string path = t.file;
+            authorFile = [path](const PXR_NS::UsdAttribute& file) {
+                return file.Set(PXR_NS::SdfAssetPath(path));
+            };
+        } else {
             continue;
         }
         if (!reader) {
@@ -282,7 +340,7 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
                 return false;
             }
         }
-        if (!connectTexture(stage, path, reader, t.name, t.file, t.isColor, *t.input)) {
+        if (!connectTexture(stage, path, reader, t.name, authorFile, t.isColor, t.isNormal, *t.input)) {
             *errorMessage = tr("USD could not author the %1 texture of the material at %2.").arg(QString::fromStdString(t.name)).arg(pathString).toStdString();
 
             return false;
@@ -293,13 +351,25 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
 } // USDMaterial::authorLayer
 
 StatusEnum
-USDMaterial::renderScene(const SceneRenderActionArgs& /*args*/,
+USDMaterial::renderScene(const SceneRenderActionArgs& args,
                          ScenePayload* outputScene,
                          std::string* errorMessage)
 {
+    // The image inputs' identities and hashes, without rendering them: the layer reads nothing
+    // else of them, so an upstream image edit re-authors this layer and no other.
+    LiveTextureSourceList liveTextures(kUSDMaterialInputCount);
+    ContentHasher facts;
+    for (int i = 0; i < kUSDMaterialInputCount; ++i) {
+        const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, i, kLiveTextureLayer, &liveTextures[i]);
+        facts.appendBool(connected);
+        if (connected) {
+            SceneNodeAuthoring::appendLiveTextureSource(liveTextures[i], &facts);
+        }
+    }
     SceneLayerReads reads;
-    reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
-    if (!emitSceneLayer(ScenePayload(), reads, [this](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, error); }, outputScene, errorMessage)) {
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+    reads.factsDigest = facts.finalize();
+    if (!emitSceneLayer(ScenePayload(), reads, [this, &liveTextures](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, liveTextures, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
@@ -308,13 +378,32 @@ USDMaterial::renderScene(const SceneRenderActionArgs& /*args*/,
     // Checked on every evaluation, not only when the layer is authored: a file can appear or
     // vanish while the layer stays the same.
     QStringList warnings;
-    const KnobFilePtr textureKnobs[] = { _diffuseTexture.lock(), _metallicTexture.lock(), _roughnessTexture.lock(), _emissiveTexture.lock() };
-    for (const KnobFilePtr& knob : textureKnobs) {
-        const std::string texturePath = getTexturePath(knob);
+    const std::pair<KnobFilePtr, int> textureKnobs[] = {
+        { _diffuseTexture.lock(), kUSDMaterialInputDiffuseColor },
+        { _metallicTexture.lock(), kUSDMaterialInputMetallic },
+        { _roughnessTexture.lock(), kUSDMaterialInputRoughness },
+        { _emissiveTexture.lock(), kUSDMaterialInputEmissiveColor },
+    };
+    for (const std::pair<KnobFilePtr, int>& knob : textureKnobs) {
+        if (getLiveTexture(liveTextures, knob.second)) {
+            continue;
+        }
+        const std::string texturePath = getTexturePath(knob.first);
         if (!texturePath.empty() && PXR_NS::ArGetResolver().Resolve(texturePath).IsEmpty()) {
             warnings.push_back(tr("The texture %1 does not resolve; it is authored anyway, and the surface renders without it "
                                   "wherever it does not resolve.")
                                    .arg(QString::fromStdString(texturePath)));
+        }
+    }
+    // Repeated here because a consumer's prepare() warns once, and this clears messages.
+    for (const LiveTextureSource& source : liveTextures) {
+        if (!source.node.lock()) {
+            continue;
+        }
+        const std::string uri = source.getUri(args.time);
+        const std::string failure = LiveTextureStore::instance().getFailure(uri);
+        if (!failure.empty()) {
+            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
         }
     }
     if (warnings.isEmpty()) {

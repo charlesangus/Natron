@@ -31,6 +31,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -45,11 +46,14 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+
+#include <OpenImageIO/imageio.h>
 
 NATRON_NAMESPACE_ENTER
 
@@ -594,6 +598,90 @@ authorStageMetadata(const PXR_NS::SdfLayerRefPtr& layer,
     layer->SetStartTimeCode(startTime);
     layer->SetEndTimeCode(endTime);
 }
+
+// A live texture the written file refers to, and the file it is exported to.
+struct LiveTextureExport {
+    LiveTextureSource source;
+    // A frame whose URI it is.
+    double frame = 0.;
+    QString path;
+    bool needed = false;
+};
+
+// Letters, digits, '_', '-' and '.' kept, anything else '_': a node's name as a file name.
+QString
+fileNameOf(const std::string& name)
+{
+    QString result = QString::fromStdString(name);
+
+    for (QChar& c : result) {
+        if (!c.isLetterOrNumber() && (c != QLatin1Char('_')) && (c != QLatin1Char('-')) && (c != QLatin1Char('.'))) {
+            c = QLatin1Char('_');
+        }
+    }
+
+    return result;
+}
+
+/**
+ * @brief Every URI sources author over their frames, keyed to the file in directory it is
+ * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
+ * the frame padded to 4 digits.
+ **/
+std::map<std::string, LiveTextureExport>
+planLiveTextureExports(const LiveTextureSourceList& sources,
+                       const QString& directory)
+{
+    std::map<std::string, LiveTextureExport> exports;
+
+    for (const LiveTextureSource& source : sources) {
+        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer));
+        const double first = std::ceil(source.firstFrame);
+        const double last = source.varying ? std::max(first, std::floor(source.lastFrame)) : first;
+        for (double frame = first; frame <= last; frame += 1.) {
+            LiveTextureExport e;
+            e.source = source;
+            e.frame = frame;
+            e.path = source.varying ? QString::fromUtf8("%1.%2.exr").arg(stem).arg((int)source.getSourceFrame(frame), 4, 10, QLatin1Char('0')) : stem + QString::fromUtf8(".exr");
+            exports.insert(std::make_pair(source.getUri(frame), e));
+        }
+    }
+
+    return exports;
+}
+
+// Writes buffer to path as half-float RGBA OpenEXR, top row first.
+bool
+writeLiveTextureFile(const LiveTextureBufferConstPtr& buffer,
+                     const QString& path,
+                     std::string* error)
+{
+    const std::string file = path.toStdString();
+    std::unique_ptr<OIIO::ImageOutput> out = OIIO::ImageOutput::create(file);
+
+    if (!out) {
+        *error = OIIO::geterror();
+
+        return false;
+    }
+    OIIO::ImageSpec spec(buffer->getWidth(), buffer->getHeight(), 4, OIIO::TypeDesc::HALF);
+    spec.attribute("compression", "zip");
+    if (!out->open(file, spec)) {
+        *error = out->geterror();
+
+        return false;
+    }
+    bool ok = true;
+    for (int y = 0; ok && (y < buffer->getHeight()); ++y) {
+        ok = out->write_scanline(y, 0, OIIO::TypeDesc::FLOAT, buffer->getRow(buffer->getHeight() - 1 - y));
+    }
+    ok = out->close() && ok;
+    if (!ok) {
+        *error = out->geterror();
+    }
+
+    return ok;
+}
 } // anonymous namespace
 
 USDWrite::USDWrite(NodePtr node)
@@ -669,6 +757,17 @@ USDWrite::initializeKnobs()
     pathMode->setAnimationEnabled(false);
     page->addKnob(pathMode);
     _pathMode = pathMode;
+
+    KnobBoolPtr exportLiveTextures = createKnob<KnobBool>(tr("Export Live Textures"));
+    exportLiveTextures->setName(kUSDWriteParamExportLiveTextures);
+    exportLiveTextures->setHintToolTip(tr("Renders the images a USDMaterial's image inputs feed the scene to OpenEXR files in "
+                                          "<file name>_textures beside the file, one per frame for an image that changes over "
+                                          "time, and points the materials at them. Off, the file names the images as only this "
+                                          "Natron session can read them."));
+    exportLiveTextures->setDefaultValue(true);
+    exportLiveTextures->setAnimationEnabled(false);
+    page->addKnob(exportLiveTextures);
+    _exportLiveTextures = exportLiveTextures;
 
     KnobChoicePtr frameRange = createKnob<KnobChoice>(tr("Frame Range"));
     frameRange->setName(kUSDWriteParamFrameRange);
@@ -839,6 +938,16 @@ USDWrite::writeFrameRange(int firstFrame,
     const double startTime = SceneOps::frameToTimeCode(scene, firstFrame, fps);
     const double endTime = SceneOps::frameToTimeCode(scene, lastFrame, fps);
 
+    KnobBoolPtr exportLiveTexturesKnob = _exportLiveTextures.lock();
+    const bool exportLiveTextures = exportLiveTexturesKnob && exportLiveTexturesKnob->getValue();
+    const QString texturesDir = QDir(outputDir).filePath(outputInfo.completeBaseName() + QString::fromUtf8("_textures"));
+    std::map<std::string, LiveTextureExport> liveTextures;
+    if (exportLiveTextures) {
+        liveTextures = planLiveTextureExports(SceneOps::getLiveTextures(scene), texturesDir);
+    }
+    // natron:// URIs written as they are, which only this session resolves.
+    std::set<std::string> unexportedLiveTextures;
+
     PXR_NS::TfErrorMark mark;
     // What is written, the file itself first, then, in layered mode, the sidecars beside it: the
     // runs of anonymous layers below a file the scene reads, and the stacks of the anonymous layers
@@ -953,6 +1062,17 @@ USDWrite::writeFrameRange(int firstFrame,
                 if (sidecar != stackOfLayer.end()) {
                     return rewriteAssetPath(stacks[sidecar->second].path.toStdString(), outputDir, pathMode);
                 }
+                if (assetPath.compare(0, std::string(kLiveTextureScheme "://").size(), kLiveTextureScheme "://") == 0) {
+                    const std::map<std::string, LiveTextureExport>::iterator live = liveTextures.find(assetPath);
+                    if (live == liveTextures.end()) {
+                        unexportedLiveTextures.insert(assetPath);
+
+                        return assetPath;
+                    }
+                    live->second.needed = true;
+
+                    return rewriteAssetPath(live->second.path.toStdString(), outputDir, pathMode);
+                }
                 const QString referenced = referencedFilePath(assetPath);
                 if (!referenced.isEmpty()) {
                     keep.insert(referenced);
@@ -1036,6 +1156,32 @@ USDWrite::writeFrameRange(int firstFrame,
         }
         removedSidecars = removeStaleSidecars(outputInfo, keep);
     }
+    // After the scene's layers are let go: a render may need to write to a scene of its own.
+    for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
+        if (!live.second.needed) {
+            continue;
+        }
+        if (!QDir().mkpath(texturesDir)) {
+            return fail(tr("Cannot create the directory %1.").arg(texturesDir));
+        }
+        LiveTextureStore& store = LiveTextureStore::instance();
+        LiveTextureBufferConstPtr buffer = store.find(live.first);
+        if (!buffer) {
+            // On a thread of its own, which owns no render state: this one may be a render's.
+            std::thread renderer([&]() { store.prepare(LiveTextureSourceList(1, live.second.source), live.second.frame, view); });
+            renderer.join();
+            buffer = store.find(live.first);
+        }
+        if (!buffer) {
+            const std::string failure = store.getFailure(live.first);
+
+            return fail(tr("The live texture %1 could not be rendered%2").arg(QString::fromStdString(live.first)).arg(failure.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(failure)));
+        }
+        std::string writeError;
+        if (!writeLiveTextureFile(buffer, live.second.path, &writeError)) {
+            return fail(tr("Cannot write %1: %2").arg(live.second.path).arg(QString::fromStdString(writeError)));
+        }
+    }
     // Layers already open on the files, such as a USDRead's of them, would go on showing what
     // they held before: they are reloaded in place, through the barrier, so every stage composing
     // them sees the new content.
@@ -1053,6 +1199,14 @@ USDWrite::writeFrameRange(int firstFrame,
     mark.Clear();
 
     clearPersistentMessage(false);
+    QStringList warnings;
+    if (!unexportedLiveTextures.empty()) {
+        warnings.push_back(tr("%1 names %2 live textures, such as %3, which only this Natron session can read: "
+                              "turn on Export Live Textures to write them beside it.")
+                               .arg(outputInfo.fileName())
+                               .arg((int)unexportedLiveTextures.size())
+                               .arg(QString::fromStdString(*unexportedLiveTextures.begin())));
+    }
     // A layered write replaces its own sidecars, as expected; a flattened one removes files the user
     // may not know the export mode made, so it says which.
     if ((exportMode == eExportModeFlattened) && !removedSidecars.isEmpty()) {
@@ -1060,12 +1214,14 @@ USDWrite::writeFrameRange(int firstFrame,
         const QString what = (removedSidecars.size() <= kMaxNamed)
             ? removedSidecars.join(QString::fromUtf8(", "))
             : tr("%1 files named %2_layerN.%3").arg(removedSidecars.size()).arg(outputInfo.completeBaseName()).arg(outputInfo.suffix());
-        setPersistentMessage(eMessageTypeWarning, tr("Removed %1 from %2: sidecar files of a layered write to %3, which the "
-                                                     "flattened file does not use.")
-                                                      .arg(what)
-                                                      .arg(outputDir)
-                                                      .arg(outputInfo.fileName())
-                                                      .toStdString());
+        warnings.push_back(tr("Removed %1 from %2: sidecar files of a layered write to %3, which the "
+                              "flattened file does not use.")
+                               .arg(what)
+                               .arg(outputDir)
+                               .arg(outputInfo.fileName()));
+    }
+    if (!warnings.isEmpty()) {
+        setPersistentMessage(eMessageTypeWarning, warnings.join(QString::fromUtf8("\n")).toStdString());
     }
     ++_writeCount;
 

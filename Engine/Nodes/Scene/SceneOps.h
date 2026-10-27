@@ -58,6 +58,9 @@ struct SceneLayerEdit {
     // Links out of their root that layer composes from the layers it sublayers, which the scan of
     // layer itself does not reach: an author sublayering a file records the file's here.
     SceneLinkIndex* sublayerLinks = nullptr;
+    // The live textures the author authors (SceneNodeAuthoring::recordLiveTexture), kept with the
+    // layer. Null where a layer cannot record any.
+    LiveTextureSourceList* liveTextures = nullptr;
 };
 
 /**
@@ -202,6 +205,12 @@ bool reparentRoots(const SceneReparentArgs& args,
  * @brief The payload's layers, weakest first.
  **/
 std::vector<SceneLayerEntry> getLayers(const ScenePayload& payload);
+
+/**
+ * @brief Every live texture the payload's layers record, those of the stacks they compose from
+ * (a grafted material's) included, each layer's once.
+ **/
+LiveTextureSourceList getLiveTextures(const ScenePayload& payload);
 
 /**
  * @brief The stage-level metadata layer authors on its pseudo-root, over weaker for whatever it

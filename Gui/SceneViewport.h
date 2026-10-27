@@ -104,6 +104,10 @@ public:
      **/
     bool syncScene(const ScenePayload& payload, std::string* error);
 
+    // syncScene(), and shows the stage at frame from then on: a paint never sees one without the
+    // other.
+    bool syncScene(const ScenePayload& payload, double frame, double framesPerSecond, std::string* error);
+
     /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
      * camera is framed on the scene the first time a scene is shown, and kept for later scenes.

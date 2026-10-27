@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <map>
 #include <string>
 #include <vector>
@@ -48,6 +49,8 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -58,6 +61,8 @@
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+
+#include <OpenImageIO/imageio.h>
 
 NATRON_NAMESPACE_USING
 
@@ -431,4 +436,156 @@ TEST_F(USDWriteTest, SidecarsAreStableAndStaleOnesAreRemoved)
     EXPECT_TRUE(layer->GetSubLayerPaths().empty());
     EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/Transform1/World/Box"))));
     EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/Transform2/Card/Red"))));
+}
+
+namespace {
+// The red of the pixel at the centre of the OpenEXR file path, or -1 when it cannot be read.
+float
+centreRedOf(const QString& path)
+{
+    std::unique_ptr<OIIO::ImageInput> in = OIIO::ImageInput::open(path.toStdString());
+
+    if (!in) {
+        return -1.f;
+    }
+    const OIIO::ImageSpec& spec = in->spec();
+    std::vector<float> row((std::size_t)spec.width * (std::size_t)spec.nchannels);
+    const bool ok = in->read_scanline(spec.height / 2, 0, OIIO::TypeDesc::FLOAT, row.data());
+    in->close();
+
+    return ok ? row[(std::size_t)(spec.width / 2) * (std::size_t)spec.nchannels] : -1.f;
+}
+} // anonymous namespace
+
+// A USDMaterial whose Diffuse Color input is a Constant, its red 0.1, or keyed 0.1, 0.2 and 0.3 at
+// frames 1 to 3 when animated.
+class USDWriteLiveTextureTest
+    : public USDWriteTest {
+protected:
+    NodePtr createMaterial(bool animated)
+    {
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        if (!constant || !material) {
+            ADD_FAILURE() << "Constant or USDMaterial is not registered";
+
+            return NodePtr();
+        }
+        constant->setScriptName("Constant1");
+        material->setScriptName("Material1");
+        KnobColor* color = getKnob<KnobColor>(constant, kConstantParamColor);
+        EXPECT_TRUE(color != NULL);
+        if (!color) {
+            return NodePtr();
+        }
+        if (animated) {
+            for (int frame = 1; frame <= 3; ++frame) {
+                color->setValueAtTime(frame, 0.1 * frame, ViewSpec::all(), 0);
+            }
+        } else {
+            color->setValue(0.1, ViewSpec::all(), 0);
+        }
+        EXPECT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+
+        return material;
+    }
+
+    // The file attribute of Material1's diffuse texture.
+    static PXR_NS::UsdAttribute diffuseFileOf(const PXR_NS::UsdStageRefPtr& stage)
+    {
+        const PXR_NS::UsdPrim texture = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/diffuseColorTexture")) : PXR_NS::UsdPrim();
+
+        EXPECT_TRUE(texture.IsValid());
+
+        return texture ? texture.GetAttribute(PXR_NS::TfToken("inputs:file")) : PXR_NS::UsdAttribute();
+    }
+};
+
+TEST_F(USDWriteLiveTextureTest, AnAnimatedLiveTextureIsExportedOneFilePerFrame)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(true);
+    ASSERT_TRUE(bool(material));
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeLayered, 1, 3);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    EXPECT_FALSE(writer->hasPersistentMessage());
+
+    const QString texturesDir = outDir + QString::fromUtf8("/scene_textures");
+    const QStringList expected = QStringList() << QString::fromUtf8("Constant1_rgba.0001.exr") << QString::fromUtf8("Constant1_rgba.0002.exr")
+                                               << QString::fromUtf8("Constant1_rgba.0003.exr");
+    EXPECT_EQ(expected, fileNames(texturesDir));
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    std::vector<double> times;
+    ASSERT_TRUE(file.GetTimeSamples(&times));
+    ASSERT_EQ((std::size_t)3, times.size());
+    for (int i = 0; i < 3; ++i) {
+        PXR_NS::SdfAssetPath asset;
+        ASSERT_TRUE(file.Get(&asset, PXR_NS::UsdTimeCode(times[i])));
+        EXPECT_EQ("./scene_textures/" + expected[i].toStdString(), asset.GetAssetPath());
+        const QString exported = texturesDir + QLatin1Char('/') + expected[i];
+        EXPECT_EQ(cleanAbsolute(exported).toStdString(), QDir::cleanPath(QString::fromStdString(asset.GetResolvedPath())).toStdString());
+        // Half floats: 0.1, 0.2 and 0.3 to within their precision.
+        EXPECT_NEAR(0.1 * (i + 1), centreRedOf(exported), 1e-3) << exported.toStdString();
+    }
+}
+
+TEST_F(USDWriteLiveTextureTest, AStaticLiveTextureIsExportedOnce)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(false);
+    ASSERT_TRUE(bool(material));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 3);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+
+    const QString texturesDir = tmp.path() + QString::fromUtf8("/scene_textures");
+    EXPECT_EQ(QStringList() << QString::fromUtf8("Constant1_rgba.exr"), fileNames(texturesDir));
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    EXPECT_EQ((std::size_t)0, file.GetNumTimeSamples());
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(file.Get(&asset));
+    EXPECT_EQ(std::string("./scene_textures/Constant1_rgba.exr"), asset.GetAssetPath());
+    EXPECT_NEAR(0.1, centreRedOf(texturesDir + QString::fromUtf8("/Constant1_rgba.exr")), 1e-3);
+}
+
+TEST_F(USDWriteLiveTextureTest, WithoutExportTheUrisAreWrittenWithAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(false);
+    ASSERT_TRUE(bool(material));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeLayered, 1, 3);
+    ASSERT_TRUE(writer && getWriter(writer));
+    KnobBool* exportLiveTextures = getKnob<KnobBool>(writer, kUSDWriteParamExportLiveTextures);
+    ASSERT_TRUE(exportLiveTextures != NULL);
+    exportLiveTextures->setValue(false);
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+
+    EXPECT_FALSE(QFileInfo(tmp.path() + QString::fromUtf8("/scene_textures")).exists());
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(file.Get(&asset));
+    const std::string uri = asset.GetAssetPath();
+    EXPECT_EQ(0u, uri.rfind(std::string(kLiveTextureScheme) + "://", 0)) << uri;
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    writer->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromStdString(uri))) << message.toStdString();
 }

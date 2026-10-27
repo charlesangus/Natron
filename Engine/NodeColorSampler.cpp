@@ -38,10 +38,12 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Node.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TLSHolder.h"
@@ -93,6 +95,7 @@ renderLayer(const NodePtr& node,
             unsigned int mipmapLevel,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
+            bool wholeDefinition,
             RectI* roi,
             ImagePtr* image)
 {
@@ -120,7 +123,29 @@ renderLayer(const NodePtr& node,
     }
     const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
-    *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
+    if (wholeDefinition) {
+        // A generator's infinite region becomes the project format.
+        if (rod.isInfinite()) {
+            Format format;
+            node->getApp()->getProject()->getProjectDefaultFormat(&format);
+            const RectD formatRect = format.toCanonicalFormat();
+            if (rod.x1 <= kOfxFlagInfiniteMin) {
+                rod.x1 = formatRect.x1;
+            }
+            if (rod.y1 <= kOfxFlagInfiniteMin) {
+                rod.y1 = formatRect.y1;
+            }
+            if (rod.x2 >= kOfxFlagInfiniteMax) {
+                rod.x2 = formatRect.x2;
+            }
+            if (rod.y2 >= kOfxFlagInfiniteMax) {
+                rod.y2 = formatRect.y2;
+            }
+        }
+        *roi = rod.toPixelEnclosing(mipmapLevel, par);
+    } else {
+        *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
+    }
     if (roi->isNull()) {
         return false;
     }
@@ -163,16 +188,18 @@ renderLayer(const NodePtr& node,
 
 } // namespace
 
+namespace {
 ImagePtr
-renderNodeImage(const NodePtr& node,
-                double time,
-                ViewIdx view,
-                unsigned int mipmapLevel,
-                const RectI& pixelRect,
-                const ImageLayerDesc& layer,
-                RectI* renderedRect)
+renderNodeImageImpl(const NodePtr& node,
+                    double time,
+                    ViewIdx view,
+                    unsigned int mipmapLevel,
+                    const RectI& pixelRect,
+                    const ImageLayerDesc& layer,
+                    bool wholeDefinition,
+                    RectI* renderedRect)
 {
-    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || pixelRect.isNull()) {
+    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!wholeDefinition && pixelRect.isNull())) {
         return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
@@ -197,7 +224,7 @@ renderNodeImage(const NodePtr& node,
 
     RectI roi;
     ImagePtr image;
-    const bool rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, &roi, &image);
+    const bool rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, wholeDefinition, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -213,7 +240,30 @@ renderNodeImage(const NodePtr& node,
     }
 
     return image;
-} // renderNodeImage
+} // renderNodeImageImpl
+} // namespace
+
+ImagePtr
+renderNodeImage(const NodePtr& node,
+                double time,
+                ViewIdx view,
+                unsigned int mipmapLevel,
+                const RectI& pixelRect,
+                const ImageLayerDesc& layer,
+                RectI* renderedRect)
+{
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, false, renderedRect);
+}
+
+ImagePtr
+renderNodeImageOverDefinition(const NodePtr& node,
+                              double time,
+                              ViewIdx view,
+                              const ImageLayerDesc& layer,
+                              RectI* renderedRect)
+{
+    return renderNodeImageImpl(node, time, view, 0, RectI(), layer, true, renderedRect);
+}
 
 bool
 sampleNodeColor(const NodePtr& node,

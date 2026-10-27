@@ -32,6 +32,7 @@
 #include <memory>
 #include <vector>
 
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
@@ -63,6 +64,9 @@ struct SceneLayerEntry {
     std::shared_ptr<const SceneLayerDependencies> dependencies;
     // Null for a layer that authors no link out of its root.
     std::shared_ptr<const SceneLinkIndex> links;
+    // The live textures the layer authors, which consumers render before Hydra reads them. Null
+    // for a layer that authors none.
+    std::shared_ptr<const LiveTextureSourceList> liveTextures;
 };
 
 /**

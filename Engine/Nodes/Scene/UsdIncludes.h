@@ -53,6 +53,8 @@
 #include <pxr/base/vt/array.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/pxr.h>
+#include <pxr/usd/ar/asset.h>
+#include <pxr/usd/ar/resolvedPath.h>
 #include <pxr/usd/ar/resolver.h>
 #include <pxr/usd/kind/registry.h>
 #include <pxr/usd/sdf/assetPath.h>

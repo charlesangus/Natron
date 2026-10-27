@@ -387,7 +387,9 @@ TEST_F(ContextReadSetGraph, FollowsGraphEdits)
 // captured context give the same identity, and an edit of the knob's curve or expression moves it.
 TEST_F(ContextReadSetGraph, BindingIdentityFollowsTheKnob)
 {
-    KnobDoublePtr offset = getApp()->getProject()->createDoubleKnob("bindingProbe", "Binding Probe", 1);
+    NodePtr probe = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(probe));
+    KnobDoublePtr offset = std::dynamic_pointer_cast<KnobDouble>(probe->getKnobByName("offset"));
     ASSERT_TRUE(bool(offset));
     const RenderContextPtr captured = RenderContext::Builder().set(plainName("outer"), 1.).build();
 

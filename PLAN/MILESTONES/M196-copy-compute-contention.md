@@ -37,13 +37,13 @@ Scouted facts (2026-10-25; re-check at promotion):
   - verify: On the GPU host, the isolated rows reproduce about 16.1 down / 10.4 up and the overlap rows reproduce about 10 / 9.9; the build compiles under the existing spike target.
   - size: M
 
-- [ ] M196.P1.T2 — Attribute in-app copy rate to queue sharing in comps
+- [x] M196.P1.T2 — Attribute in-app copy rate to queue sharing in comps
   - files: `Engine/GpuRegionTask.cpp`, `tools/bench/gpu_region_summary.py`
   - approach: Using M156's per-download profile record (`queueFamily`, `queueIndex`, `deviceMs`, overlap-with-kernel flag), summarise per comp and resolution the copy rate split by whether the copy ran beside a kernel and by queue. Extend the summary only; add no new profile fields unless the existing record lacks one, and say which.
   - verify: Run on the GPU host over keying_grade, cg_multipass and defocus_retime at UHD and 8K; the summary table shows, per comp, copy rate overlapped vs not, and the Decisions entry states whether contention explains the 7.5–11.7 / 5.6–7.9 GB/s gap.
   - size: M
 
-- [ ] M196.P1.T3 — Prototype the two candidate fixes behind a switch and measure
+- [x] M196.P1.T3 — Prototype the two candidate fixes behind a switch and measure
   - files: `Engine/Gpu/GpuDevice.cpp`, `Engine/GpuRegionTask.cpp`, `Engine/Gpu/GpuTransfer.cpp`
   - approach: Behind an environment switch (default off), (a) request a dedicated transfer or SDMA queue where the device exposes one and route region copies to it, and (b) order a region's submissions so copies at region edges do not overlap kernels. Run each over the three comps and record exposed-transfer ratio against the same-boot GpuBench floor.
   - verify: Results table in `## Decisions` for baseline, (a), (b) and both, per comp and resolution, same boot, three rounds.
@@ -73,3 +73,15 @@ Scouted facts (2026-10-25; re-check at promotion):
   - Without `RADV_PERFTEST`: no transfer-only family. Compute-family copies run 10.6 up and 11.7–12.1 down alone. Beside a compute load on another compute queue they fall to 0.3–3.6 up and 4.8 down. On the same queue as the load they keep 9.6–10.9 up and 11.9 down (serialised).
   - With `RADV_PERFTEST=transfer_queue`: a 2-queue transfer-only family appears. Copies on it run **44.7 up and 44.8 down alone, and 44.8 up and 41.5 down beside compute**.
   - So contention on the compute queues is real, and the SDMA queue is about 4× faster than any compute-queue copy and barely slowed by compute. Candidate (a) in P1.T3 is the lead. Its catch is that RADV exposes the queue only behind `RADV_PERFTEST`, so the fix has to decide whether Natron sets it (before instance creation) or documents it.
+
+- 2026-10-27 — **P1.T2/P1.T3 bench (gpu, same boot, R9700 RADV, release AppImage at c3361e8d0, 3 rounds in rotated order).** (a) = `NATRON_GPU_TRANSFER_QUEUE=1`, which adds `transfer_queue` to `RADV_PERFTEST` so copies use the SDMA family. (b) = `NATRON_GPU_SERIAL_COPIES=1`. Wall time is the median ms per render, and exposed transfer is in ms.
+
+  | comp | base wall | a | b | both | base exposed | a | b | both |
+  |---|---|---|---|---|---|---|---|---|
+  | keying_grade | 414 | 224 (0.54) | 445 (1.07) | 225 (0.54) | 266 | 47 (0.18) | 300 | 59 |
+  | cg_multipass | 403 | 274 (0.68) | 415 (1.03) | 283 (0.70) | 139 | 68 (0.49) | 163 | 81 |
+  | defocus_retime | 1740 | 1626 (0.93) | 1745 (1.00) | 1614 (0.93) | 402 | 53 (0.13) | 447 | 123 |
+
+  - **Copy rates (P1.T2's `--copy-rate`):** base uses compute family 1 at about 5.1–5.5 GB/s, and only about 1.9 down when a copy overlaps a kernel. (a) uses transfer family 2 at 26–37 GB/s, and 36–40 overlapped. Same-boot GpuBench floors: compute queue 10.5 up / 12.1 down, transfer family 44.8 / 44.8 (41.5 down beside compute).
+  - **Verdict:** contention on the compute queues explains the gap, and the dedicated transfer queue recovers most of it. (b) alone is neutral to slightly worse, and both is no better than (a). P2.T1 lands (a) and drops (b).
+  - **Bench caveat:** the "8k" cases (`BENCH_COMP_SIZES=7680x4320`) rendered at UHD, with output bytes identical to the UHD cases. The gate re-runs at a real 8K.

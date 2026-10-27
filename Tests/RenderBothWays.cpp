@@ -70,6 +70,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+const char kRenderProducedNoPlane[] = "the render produced no plane";
+
 namespace {
 
 class ThreadPoolSizeGuard {
@@ -442,7 +444,7 @@ renderDirect(const NodePtr& node,
         }
     }
     if (layers.empty()) {
-        pass.error = failure("the render produced no plane", frame);
+        pass.error = failure(kRenderProducedNoPlane, frame);
 
         return pass;
     }

@@ -207,7 +207,9 @@ TEST_F(QueuedInputEditTest, InputsStayQueuedUnderARenderStartedByAValueCallback)
 
     std::unique_ptr<RenderingFlagSetter> first(new RenderingFlagSetter(node));
     value->setValue(2.);
-    EXPECT_EQ(1., value->getValue());
+    // The main thread reads the gui value at once; renders read the raw value, which stays queued.
+    EXPECT_EQ(2., value->getValue());
+    EXPECT_EQ(1., value->getRawValue(0));
     ASSERT_EQ(0, node->disconnectInput(0));
     ASSERT_TRUE(node->connectInput(b, 0));
     EXPECT_EQ(a, node->getInput(0));
@@ -223,7 +225,7 @@ TEST_F(QueuedInputEditTest, InputsStayQueuedUnderARenderStartedByAValueCallback)
     QCoreApplication::processEvents();
     effect->valueChanged = std::function<void()>();
     ASSERT_TRUE(bool(second)) << "the dequeue did not run the value callback";
-    EXPECT_EQ(2., value->getValue());
+    EXPECT_EQ(2., value->getRawValue(0));
     EXPECT_EQ(a, node->getInput(0));
     EXPECT_EQ(b, node->getGuiInput(0));
 
@@ -231,7 +233,7 @@ TEST_F(QueuedInputEditTest, InputsStayQueuedUnderARenderStartedByAValueCallback)
     QCoreApplication::processEvents();
     EXPECT_EQ(b, node->getInput(0));
     EXPECT_EQ(b, node->getGuiInput(0));
-    EXPECT_EQ(2., value->getValue());
+    EXPECT_EQ(2., value->getRawValue(0));
 }
 
 // An input edit that found no render holds the node keeps render starts out until it has

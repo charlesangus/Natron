@@ -1010,9 +1010,24 @@ namespace {
     struct Probe {
         bool rendered = false;
         bool ok = false;
+        // The render succeeded and produced nothing (ok is true, plane is unset).
+        bool empty = false;
         RenderedPlane plane;
         std::string error;
     };
+
+    // Records a render's result in probe; an output that is legitimately empty is a result too.
+    void
+    setOutcome(Probe* probe,
+               bool ok)
+    {
+        probe->rendered = true;
+        probe->empty = !ok && (probe->error == kRenderProducedNoPlane);
+        probe->ok = ok || probe->empty;
+        if (probe->empty) {
+            probe->error.clear();
+        }
+    }
 
     struct StepRecord {
         Step step;
@@ -1059,8 +1074,7 @@ namespace {
         if (probe < 0) {
             return out;
         }
-        out.rendered = true;
-        out.ok = renderProbe(rt.graph.nodes[probe], currentTime(rt), rt.mipmap, windowAt(rt), mode, byPassCache, &out.plane, &out.error);
+        setOutcome(&out, renderProbe(rt.graph.nodes[probe], currentTime(rt), rt.mipmap, windowAt(rt), mode, byPassCache, &out.plane, &out.error));
 
         return out;
     }
@@ -1081,6 +1095,12 @@ namespace {
         }
         if (!got.ok) {
             return "the cached render failed: " + got.error;
+        }
+        if (reference.empty != got.empty) {
+            return reference.empty ? "the reference rendered nothing but the cached render produced a plane" : "the cached render produced nothing but the reference rendered a plane";
+        }
+        if (reference.empty) {
+            return std::string();
         }
 
         return compare ? compare(reference.plane, got.plane) : compareExact(reference.plane, got.plane);
@@ -1630,8 +1650,7 @@ run(const AppInstancePtr& app,
             }
             if (options.cachedRender && options.cachedRenderReference && (record.probe >= 0)) {
                 clearEverything(app);
-                record.custom.rendered = true;
-                record.custom.ok = options.cachedRender(rt.graph.nodes[record.probe], record.time, record.mipmap, windowAt(rt), &record.custom.plane, &record.custom.error);
+                setOutcome(&record.custom, options.cachedRender(rt.graph.nodes[record.probe], record.time, record.mipmap, windowAt(rt), &record.custom.plane, &record.custom.error));
             }
             records.push_back(record);
             // A step whose reference fails proves nothing about the cache, even if the cached
@@ -1699,8 +1718,7 @@ run(const AppInstancePtr& app,
         if (mismatch.empty() && options.cachedRender) {
             Probe got;
             if (probe >= 0) {
-                got.rendered = true;
-                got.ok = options.cachedRender(rt.graph.nodes[probe], currentTime(rt), rt.mipmap, windowAt(rt), &got.plane, &got.error);
+                setOutcome(&got, options.cachedRender(rt.graph.nodes[probe], currentTime(rt), rt.mipmap, windowAt(rt), &got.plane, &got.error));
             }
             if (options.cachedRenderReference) {
                 mismatch = compareProbes(record.custom, got);

@@ -47,7 +47,8 @@ NATRON_NAMESPACE_ENTER
  * result must equal, bit for bit, a render of the same state from empty caches. A reference render
  * empties the caches, so a run is two passes over the same graph: pass A applies the ops and
  * renders each step from empty caches, pass B rebuilds the graph, applies the same ops and renders
- * through the caches without ever clearing them.
+ * through the caches without ever clearing them. A reference render that fails fails the seed; one
+ * that produces nothing (an empty output) is a valid reference the cached render must match.
  *
  * NATRON_CACHE_STRESS_SEED=<n> replays one seed, NATRON_CACHE_STRESS_STEPS=<n> changes the step
  * budget and NATRON_CACHE_STRESS_SEEDS=<n> adds n seeds to every case (the heavy mode).

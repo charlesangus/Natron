@@ -49,7 +49,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - verify: the build passes, and `ctest -R "GpuResidency|GpuRegion|RenderScheduler"` passes.
   - size: L
 
-- [ ] M239.P2.T2 — Delete the seed fragments and generator
+- [x] M239.P2.T2 — Delete the seed fragments and generator
   - files: `Engine/Nodes/**/*.costseed.inc`, `Engine/GpuCostSeeds/`, `Engine/CMakeLists.txt`, `tools/bench/render-profile-report.py`, `Tests/CMakeLists.txt`
   - approach: Remove every `*.costseed.inc`, `Engine/GpuCostSeeds/` and the `GpuCostSeedsAll.inc` aggregation. In `render-profile-report.py`, drop `--emit-cost-table`, `GPU_KERNEL_UHD_MS` and the other measured constants, and the self-test asserts on them; keep the report itself. Adjust `RenderProfileReportSelfTest` to match.
   - verify: the build passes, `ctest -R RenderProfileReportSelfTest` passes, and `git grep -n "costseed\|GpuCostSeeds\|emit-cost-table"` is empty outside `docs/decisions/`.

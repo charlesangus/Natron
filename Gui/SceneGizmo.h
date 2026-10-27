@@ -35,7 +35,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 // The geometry of the scene viewer's transform handles, free of GL: where the handles of a
-// USDTransform's op sit in the world, which handle a pixel is on, and the knob change a drag
+// USDEditTransform's op sit in the world, which handle a pixel is on, and the knob change a drag
 // from one pixel to another makes. Includes USD, so only SceneViewport.cpp and tests include it.
 
 NATRON_NAMESPACE_ENTER

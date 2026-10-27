@@ -55,8 +55,7 @@ NATRON_NAMESPACE_ENTER
 struct SceneLayerEdit;
 
 /**
- * @brief Authors a UsdLux light prim -- distant, sphere, rect or dome -- on top of its optional
- * scene input or as a scene source. Colour, intensity, exposure and normalize are the light's
+ * @brief Authors a UsdLux light prim -- distant, sphere, rect or dome -- as a scene source. Colour, intensity, exposure and normalize are the light's
  * UsdLux inputs, written unchanged: the colour is in the project working space, with no
  * transform. A dome's texture path is authored whether or not it resolves (it may on the farm or
  * through a pipeline resolver); one that does not resolve here sets a node warning naming it.
@@ -71,14 +70,10 @@ public:
         eLightTypeDome
     };
 
-    static constexpr InputSpec kInputs[] = {
-        InputSpec { .label = "Scene", .kind = eDataKindScene, .optional = true },
-    };
-
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDLIGHT,
         .label = "USDLight",
-        .description = "Create a UsdLux light (distant, sphere, rect or dome) on top of the input scene, or as a scene of its own. "
+        .description = "Create a scene holding one UsdLux light (distant, sphere, rect or dome). "
                        "Colour, intensity and exposure are written to the light's inputs unchanged; the colour is in the project "
                        "working space. A dome takes a texture file, authored even when it does not resolve, with a warning. "
                        "Animated knobs are written as time samples.",
@@ -88,7 +83,6 @@ public:
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDLight.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
-        .inputs = kInputs,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

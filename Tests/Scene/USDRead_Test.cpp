@@ -139,6 +139,16 @@ holdsOnly(const PXR_NS::UsdStageRefPtr& stage,
 class USDReadTest
     : public BaseTest {
 protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        // The files read here are centimetre scenes, authored or by USD's fallback: a project in
+        // the same units reads them without a units warning.
+        KnobDouble* metersPerUnit = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("metersPerUnit").get());
+        ASSERT_TRUE(metersPerUnit != NULL);
+        metersPerUnit->setValue(0.01);
+    }
+
     virtual void TearDown() OVERRIDE
     {
         if (_projectFrameRate) {

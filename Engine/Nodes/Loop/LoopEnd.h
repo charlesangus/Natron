@@ -34,6 +34,7 @@
 #include <QtCore/QMutex>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Loop/LoopFold.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
 
@@ -50,6 +51,9 @@
 #define kLoopEndParamOperationSum "sum"
 #define kLoopEndParamOperationMin "min"
 #define kLoopEndParamOperationMax "max"
+#define kLoopEndParamOperationOver "over"
+#define kLoopEndParamOperationUnder "under"
+#define kLoopEndParamReverseOrder "reverseOrder"
 #define kLoopEndParamMaxIterations "maxIterations"
 
 #define kLoopEndDefaultMaxIterations 1024
@@ -65,17 +69,15 @@ inline constexpr InputSpec kLoopEndInputs[] = {
  * holding that iteration's loop variables, and folds the iterations together. The body starts at
  * the LoopBegin found walking up from its input. Nodes of the body that read no loop variable
  * keep their context key and render once.
+ *
+ * On the task-graph scheduler the fold is a chain of tasks of this node, one per iteration, each
+ * under its own value of the fold step variable: step k folds iteration k into step k - 1's
+ * output, so the iterations render ahead as far as the bytes budget allows while only the ones
+ * not yet folded stay resident. The output under no fold step is the last step.
  **/
 class LoopEnd
     : public NativeEffectBase {
 public:
-    enum OperationEnum {
-        eOperationMean = 0,
-        eOperationSum,
-        eOperationMin,
-        eOperationMax
-    };
-
     static EffectInstance* BuildEffect(NodePtr node)
     {
         return new LoopEnd(node);
@@ -121,8 +123,10 @@ private:
                        "iteration, each time with the loop variables loop.iteration (Start plus the "
                        "iteration number times Step), loop.count (Iterations), loop.t (0 at the first "
                        "iteration, 1 at the last) and loop.frame (the current frame) set; knob drivers "
-                       "in the body read them. Accumulate folds the iterations together with the "
-                       "Operation: their mean, sum, minimum or maximum. A loop nested in another sees "
+                       "in the body read them. Accumulate folds the iterations together in order with "
+                       "the Operation: their mean, sum, minimum or maximum, each iteration over the "
+                       "ones before it (Over), or under them (Under); Reverse Order folds from the last "
+                       "iteration to the first. A loop nested in another sees "
                        "the outer loop's variables as loops.<name>.*, where name is the outer "
                        "LoopBegin's Name. More iterations than Max Iterations is an error rather than "
                        "a truncated loop.",
@@ -165,6 +169,8 @@ private:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL;
+
     virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL;
 
     virtual bool getInputContexts(int inputNb,
@@ -173,9 +179,32 @@ private:
                                   const RenderContextPtr& context,
                                   std::vector<RenderContextPtr>* contexts) const OVERRIDE FINAL;
 
+    virtual void getContextNodeRequests(double time,
+                                        ViewIdx view,
+                                        const RenderContextPtr& context,
+                                        const RectD& roi,
+                                        std::vector<ContextNodeRequest>* requests) const OVERRIDE FINAL;
+
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     Resolved resolve() const WARN_UNUSED_RETURN;
+
+    // The contexts of every iteration, in iteration order, under context with no fold step.
+    std::vector<RenderContextPtr> iterationContexts(const Resolved& resolved,
+                                                    const RenderContextPtr& context,
+                                                    double time) const WARN_UNUSED_RETURN;
+
+    // The iteration fold step k folds in.
+    int iterationOfStep(int k,
+                        int count) const WARN_UNUSED_RETURN;
+
+    // Folds step - 1's output out of the frame's store into acc; false when it is not there.
+    bool takePreviousStep(const RenderActionArgs& args,
+                          const RenderContextPtr& context,
+                          int step,
+                          const ImageLayerDesc& layer,
+                          int nComps,
+                          float* acc);
 
     // The LoopBegin the walk up from input 0 pairs with, or why there is none.
     NodePtr findLoopBegin(std::string* error) const WARN_UNUSED_RETURN;
@@ -187,6 +216,7 @@ private:
     KnobIntWPtr _step;
     KnobChoiceWPtr _mode;
     KnobChoiceWPtr _operation;
+    KnobBoolWPtr _reverseOrder;
     KnobIntWPtr _maxIterations;
 
     mutable QMutex _messageMutex;

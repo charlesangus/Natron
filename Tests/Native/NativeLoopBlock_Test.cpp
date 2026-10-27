@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -42,6 +44,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -51,6 +54,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -58,6 +62,7 @@
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -169,6 +174,52 @@ allZero(const std::map<ImageLayerDesc, ImagePtr>& planes)
     return true;
 }
 
+// The bottom-left pixel of node's RGBA output.
+bool
+renderedPixel(const NodePtr& node,
+              float pixel[4])
+{
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    if (!renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, fullWindow(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true /*byPassCache*/)) {
+        ADD_FAILURE() << error;
+
+        return false;
+    }
+    if (planes.empty() || (planes[0].pixels.size() < 4)) {
+        ADD_FAILURE() << "no pixel was read back";
+
+        return false;
+    }
+    std::copy(planes[0].pixels.begin(), planes[0].pixels.begin() + 4, pixel);
+
+    return true;
+}
+
+// Restores the scheduler's bytes budget on destruction.
+class BytesBudgetGuard {
+public:
+    explicit BytesBudgetGuard(std::size_t budget)
+        : _scheduler(appPTR->getRenderScheduler())
+        , _saved(_scheduler->getBytesBudget())
+    {
+        _scheduler->setBytesBudgetForTests(budget);
+    }
+
+    ~BytesBudgetGuard()
+    {
+        _scheduler->setBytesBudgetForTests(_saved);
+    }
+
+    BytesBudgetGuard(const BytesBudgetGuard&) = delete;
+    BytesBudgetGuard& operator=(const BytesBudgetGuard&) = delete;
+
+private:
+    RenderScheduler* _scheduler;
+    std::size_t _saved;
+};
+
 KnobDriverPtr
 linearDriver(const std::string& variable,
              double start,
@@ -225,6 +276,25 @@ protected:
         }
         for (int i = 0; i < multiply->getDimension(); ++i) {
             EXPECT_TRUE(multiply->setDriver(i, linearDriver(variable, start, end)));
+        }
+
+        return node;
+    }
+
+    // A Grade whose red, green and blue multiply go from start to end over loop.t, its alpha left alone.
+    NodePtr createDrivenColorGrade(double start,
+                                   double end)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+        KnobColorPtr multiply = node ? std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kGradeParamMultiply)) : KnobColorPtr();
+
+        EXPECT_TRUE(bool(multiply));
+        if (!multiply) {
+            return NodePtr();
+        }
+        EXPECT_EQ(4, multiply->getDimension());
+        for (int i = 0; i < 3; ++i) {
+            EXPECT_TRUE(multiply->setDriver(i, linearDriver(kKnobDriverDefaultVariable, start, end)));
         }
 
         return node;
@@ -483,4 +553,108 @@ TEST_F(NativeLoopBlockTest, InvalidOrDuplicateLoopNamesAreErrors)
 
     secondName->setValue(std::string("1st"));
     expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("is not valid"));
+}
+
+// Iterations of red 1, 2 and 3 under alpha 0.5. Over puts each iteration over the ones before:
+// 3 + (2 + 1 * 0.5) * 0.5 = 4.25; reversed, 1 + (2 + 3 * 0.5) * 0.5 = 2.75. Under is Over with
+// the order reversed. Alpha is 0.875 in every case. Both schedulers give the same bits.
+TEST_F(NativeLoopBlockTest, OverAndUnderFoldInOrder)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr grade = createDrivenColorGrade(1., 3.);
+    NodePtr end = createLoopEnd(3, kLoopEndParamOperationOver);
+    ASSERT_TRUE(constant && begin && grade && end);
+    KnobColorPtr color = std::dynamic_pointer_cast<KnobColor>(constant->getKnobByName(kConstantParamColor));
+    ASSERT_TRUE(bool(color));
+    color->setValue(0.5, ViewSpec::all(), 3);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(grade->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(grade, 0));
+    KnobChoicePtr operation = std::dynamic_pointer_cast<KnobChoice>(end->getKnobByName(kLoopEndParamOperation));
+    KnobBoolPtr reverseOrder = std::dynamic_pointer_cast<KnobBool>(end->getKnobByName(kLoopEndParamReverseOrder));
+    ASSERT_TRUE(bool(operation));
+    ASSERT_TRUE(bool(reverseOrder));
+    EXPECT_EQ(std::string("Reverse Order"), reverseOrder->getLabel());
+
+    struct Case {
+        const char* operation;
+        bool reverse;
+        float red;
+    };
+    const Case cases[] = {
+        { kLoopEndParamOperationOver, false, 4.25f },
+        { kLoopEndParamOperationOver, true, 2.75f },
+        { kLoopEndParamOperationUnder, false, 2.75f },
+        { kLoopEndParamOperationUnder, true, 4.25f },
+    };
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.operation) + (c.reverse ? " reversed" : ""));
+        operation->setValueFromID(c.operation, 0);
+        reverseOrder->setValue(c.reverse);
+
+        float pixel[4] = { -1.f, -1.f, -1.f, -1.f };
+        ASSERT_TRUE(renderedPixel(end, pixel));
+        EXPECT_NEAR(c.red, pixel[0], 1e-5);
+        EXPECT_NEAR(0.875, pixel[3], 1e-5);
+
+        std::vector<int> unplanned;
+        const RenderMismatch m = renderBothWaysDirect(end, kTime, ViewIdx(0), 0, fullWindow(), poolSizes, std::function<void()>(), 0.f, &unplanned);
+        EXPECT_FALSE(m.any) << describe(m);
+        ASSERT_EQ(poolSizes.size(), unplanned.size());
+        for (std::size_t i = 0; i < unplanned.size(); ++i) {
+            // Every step found the previous one and its iteration in the frame's store.
+            EXPECT_EQ(0, unplanned[i]) << "pool " << poolSizes[i];
+        }
+    }
+}
+
+// 64 iterations of a UHD float body: the task graph folds them in a chain, so with a budget of a
+// few images the iterations never all wait in the frame's store at once, and the result is the
+// same bits as the Legacy render's serial fold at every pool size.
+TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
+{
+    const int width = 3840;
+    const int height = 2160;
+    const int iterations = 64;
+    const std::size_t imageBytes = (std::size_t)width * height * 4 * sizeof(float);
+    const std::size_t budget = 6 * imageBytes;
+
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr grade = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
+    NodePtr end = createLoopEnd(iterations, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && grade && end);
+    KnobChoicePtr extent = std::dynamic_pointer_cast<KnobChoice>(constant->getKnobByName(kNativeGeneratorParamExtent));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(constant->getKnobByName(kNativeGeneratorParamSize));
+    ASSERT_TRUE(bool(extent));
+    ASSERT_TRUE(bool(size));
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    size->setValue((double)width, ViewSpec::all(), 0);
+    size->setValue((double)height, ViewSpec::all(), 1);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(grade->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(grade, 0));
+
+    BytesBudgetGuard guard(budget);
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    scheduler->resetPeakBytesInFlight();
+
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    std::vector<int> unplanned;
+    const RenderMismatch m = renderBothWaysDirect(end, kTime, ViewIdx(0), 0, RectI(0, 0, width, height), poolSizes, std::function<void()>(), 0.f, &unplanned);
+    EXPECT_FALSE(m.any) << describe(m);
+    ASSERT_EQ(poolSizes.size(), unplanned.size());
+    for (std::size_t i = 0; i < unplanned.size(); ++i) {
+        EXPECT_EQ(0, unplanned[i]) << "pool " << poolSizes[i];
+    }
+    // A branch is admitted only while the stores fit the budget, except one admitted when nothing
+    // else runs, which may go over by its own output.
+    EXPECT_GT(scheduler->getPeakBytesInFlight(), (std::size_t)0);
+    EXPECT_LE(scheduler->getPeakBytesInFlight(), budget + imageBytes);
 }

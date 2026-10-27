@@ -40,6 +40,8 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -80,7 +82,21 @@ void
 RotoCurveContext::onItemCreated(const RotoDrawableItemPtr& item,
                                 bool /*connectNodes*/)
 {
+    NodePtr node = getNode();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (effect) {
+        effect->onCurveItemCreated(item);
+    }
     item->observeKnobChanges();
+}
+
+void
+RotoCurveContext::addHostItemKnob(const KnobIPtr& knob)
+{
+    if (knob) {
+        _imp->knobs.push_back(knob);
+    }
 }
 
 RotoLayerPtr

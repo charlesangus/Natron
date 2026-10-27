@@ -1328,6 +1328,45 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
     return image;
 } // RotoDrawableItem::renderMaskInternal
 
+bool
+Bezier::rasterizeCoverage(double time,
+                          unsigned int mipmapLevel,
+                          const RectI& roi,
+                          std::vector<float>* coverage) const
+{
+    coverage->assign((std::size_t)std::max(0, roi.width()) * (std::size_t)std::max(0, roi.height()), 0.f);
+    if (roi.isNull() || !isCurveFinished() || isOpenBezier() || !isActivated(time) || (getControlPointsCount() <= 1)) {
+        return false;
+    }
+
+    CairoImageWrapper imgWrapper;
+    imgWrapper.cairoImg = cairo_image_surface_create(CAIRO_FORMAT_A8, roi.width(), roi.height());
+    if (cairo_surface_status(imgWrapper.cairoImg) != CAIRO_STATUS_SUCCESS) {
+        return false;
+    }
+    cairo_surface_set_device_offset(imgWrapper.cairoImg, -roi.x1, -roi.y1);
+    imgWrapper.ctx = cairo_create(imgWrapper.cairoImg);
+    cairo_set_fill_rule(imgWrapper.ctx, CAIRO_FILL_RULE_WINDING);
+    cairo_set_antialias(imgWrapper.ctx, CAIRO_ANTIALIAS_NONE);
+    RotoContextPrivate::renderBezier(imgWrapper.ctx, this, 1., time, time, time, 1., mipmapLevel);
+    cairo_surface_flush(imgWrapper.cairoImg);
+
+    const unsigned char* data = cairo_image_surface_get_data(imgWrapper.cairoImg);
+    const int stride = cairo_image_surface_get_stride(imgWrapper.cairoImg);
+    const int width = roi.width();
+    bool any = false;
+    for (int y = 0; y < roi.height(); ++y) {
+        const unsigned char* row = data + (std::size_t)y * stride;
+        float* dst = &(*coverage)[(std::size_t)y * width];
+        for (int x = 0; x < width; ++x) {
+            dst[x] = row[x] / 255.f;
+            any = any || row[x];
+        }
+    }
+
+    return any;
+}
+
 static inline
 double
 hardnessGaussLookup(double f)

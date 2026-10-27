@@ -13,6 +13,8 @@ future core work has solid ground to build on.
 
 # Context and constraints
 
+- **Six lanes, same-file rule waived (user, 2026-10-27):** bosley-native-nodes runs six parallel lanes across E13, E9, E3, E10, E15, E16, E17 plus M224, M163 and M242; lanes may overlap files and accept rebases. M64 - Tiled Rendering gates nothing. A milestone blocked on user feedback pauses and its lane takes the next one.
+
 - **Stop Docker containers gracefully (user, 2026-10-27):** never `docker kill`, `docker rm -f` or SIGKILL a running natron-dev (or any Natron) container; `docker stop` (SIGTERM, a timeout of 30 s or more) and then `docker rm`. Killed containers left GPU/driver memory held on the host, which looked like M225's "memory not released" bug.
 
 | | |

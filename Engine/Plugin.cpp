@@ -329,6 +329,23 @@ Plugin::getOfxPlugin() const
 }
 
 U64
+Plugin::ofxBinaryStamp(const std::string& binaryPath)
+{
+    ContentHasher h;
+    h.appendString("ofx");
+    // The file name and not the path: plug-ins bundled in an AppImage sit under its mount point,
+    // which differs every launch, and a path in the stamp would miss the disk cache every session.
+    // The plug-in ID and version, hashed beside this stamp, tell bundles of one name apart.
+    QFileInfo info(QString::fromUtf8(binaryPath.c_str()));
+    h.appendString(info.fileName().toStdString());
+    h.appendBool(info.exists());
+    h.appendI64(info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0);
+    h.appendI64(info.exists() ? info.size() : 0);
+
+    return h.finalize();
+}
+
+U64
 Plugin::getBinaryContentStamp() const
 {
     U64 stamp = _binaryContentStamp.load(std::memory_order_acquire);
@@ -339,13 +356,7 @@ Plugin::getBinaryContentStamp() const
     ContentHasher h;
     OFX::Host::PluginBinary* binary = _ofxPlugin ? _ofxPlugin->getBinary() : 0;
     if (binary) {
-        h.appendString("ofx");
-        const std::string& path = binary->getFilePath();
-        h.appendString(path);
-        QFileInfo info(QString::fromUtf8(path.c_str()));
-        h.appendBool(info.exists());
-        h.appendI64(info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0);
-        h.appendI64(info.exists() ? info.size() : 0);
+        h.appendU64(ofxBinaryStamp(binary->getFilePath()));
     } else {
         h.appendString("native");
         h.appendString(NATRON_VERSION_STRING);

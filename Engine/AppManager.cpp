@@ -2639,6 +2639,29 @@ AppManager::getOrActivateViewerCacheSignalEmitter() const
     return _imp->_viewerCache->activateSignalEmitter();
 }
 
+void
+AppManager::getViewerCachedFrames(const std::string& holderID,
+                                  U64 viewerHash,
+                                  unsigned int mipmapLevel,
+                                  std::map<SequenceTime, StorageModeEnum>* frames) const
+{
+    frames->clear();
+    if (!_imp->_viewerCache) {
+        return;
+    }
+    _imp->_viewerCache->visitEntryKeys([&](const FrameKey& key, StorageModeEnum storage) {
+        if ((key.getTreeVersion() != viewerHash) || (key.getMipmapLevel() != mipmapLevel) || (key.getCacheHolderID() != holderID)) {
+            return;
+        }
+        std::map<SequenceTime, StorageModeEnum>::iterator found = frames->find(key.getTime());
+        if (found == frames->end()) {
+            frames->insert(std::make_pair(key.getTime(), storage));
+        } else if (storage == eStorageModeRAM) {
+            found->second = eStorageModeRAM;
+        }
+    });
+}
+
 SettingsPtr AppManager::getCurrentSettings() const
 {
     return _imp->_settings;

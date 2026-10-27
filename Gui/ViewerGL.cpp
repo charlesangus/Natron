@@ -1627,6 +1627,10 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
         }
         setRegionOfDefinition(rod, par, textureIndex);
     }
+
+    // A frame served from the cache adds no entry, so this is where an undo back to cached frames
+    // reaches the cached line.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 } // ViewerGL::endTransferBufferFromRAMToGPU
 
 void
@@ -1901,8 +1905,13 @@ ViewerGL::transferHandoffFrame(const GpuDeviceImagePtr& root,
     glCheckError();
     if (result) {
         *texture = tex;
-        QMutexLocker k(&_imp->lastRenderedImageMutex);
-        info.pendingDeviceRoot = root;
+        {
+            QMutexLocker k(&_imp->lastRenderedImageMutex);
+            info.pendingDeviceRoot = root;
+        }
+        // A device frame does not pass through endTransferBufferFromRAMToGPU(), and one rendered
+        // outside the texture cache adds no entry, so an edit reaches the cached line here.
+        _imp->viewerTab->refreshTimelineCacheLineIfStale();
     }
 
     return result;

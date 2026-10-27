@@ -383,6 +383,20 @@ public:
     U64 getRenderHash() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The context the calling thread queries this effect under: while a getMetadata()
+     * derivation runs on this thread, the context it derives under; otherwise the one the frame
+     * args this thread renders the effect with carry. Null for the empty context.
+     **/
+    RenderContextPtr getCurrentRenderContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Keeps one more hash state of this effect's action results than the fixed count for as
+     * long as the returned token lives, so that a render querying the effect under many contexts
+     * keeps the results of each until it is done.
+     **/
+    std::shared_ptr<void> reserveActionsCacheState() WARN_UNUSED_RETURN;
+
+    /**
      * @brief Appends render-affecting state the effect keeps outside its knobs. Called under no
      * node lock, from any thread; whoever changes that state must follow it with
      * Node::markHashDirty().
@@ -1008,6 +1022,11 @@ public:
      **/
     void invalidateParallelRenderArgsTLS();
 
+    /**
+     * @brief Pops the frame args setParallelRenderArgsTLS() pushed last, leaving the rotopaint tree's alone.
+     **/
+    void popParallelRenderArgsTLS();
+
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
     /**
@@ -1068,7 +1087,8 @@ public:
                                  unsigned mipmap,
                                  const std::list<ImageLayerDesc>& comps,
                                  const RectI& pixelRoI,
-                                 std::list<ImagePtr>* out);
+                                 std::list<ImagePtr>* out,
+                                 const InputContextArgs* inputContext = 0);
 
     /**
      * @brief Whether images from the store are already in the depth and storage renderRoI() would return, so that they
@@ -1082,11 +1102,15 @@ public:
      * @brief Calls input->renderRoI(*args, layers) unless the frame installed on this thread stored what it asks for,
      * in which case the stored images are returned in its place. Stored images needing a conversion are passed to
      * renderRoI() in args->inputImagesList under inputNb, where it finds them by key.
+     * The input renders under the context consumer pulls it under (see InputContextArgs), which
+     * inputContext gives when the caller already resolved it.
      **/
     static RenderRoIRetCode renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                                        int inputNb,
                                                        RenderRoIArgs* args,
-                                                       std::map<ImageLayerDesc, ImagePtr>* layers);
+                                                       std::map<ImageLayerDesc, ImagePtr>* layers,
+                                                       const EffectInstance* consumer,
+                                                       InputContextArgs* inputContext = 0);
 
     /**
      * @brief Count, in the stats of the frame installed on this thread, an input taken from the store or one rendered
@@ -1863,6 +1887,62 @@ public:
     virtual bool dependsOnProjectFrameRange() const
     {
         return false;
+    }
+
+    /**
+     * @brief Render context variables this effect reads that no knob source reports. Call
+     * invalidateRenderContextReads() when the answer changes.
+     **/
+    virtual RenderContextReadSet getExtraContextReads() const;
+
+    /**
+     * @brief The context variables every context getInputContexts() names for input inputNb sets,
+     * whatever the context this effect renders under: what the input reads of them does not reach
+     * this effect's output, so they are left out of its read-set. Names only; empty, the default,
+     * leaves the input's reads whole. Call invalidateRenderContextReads() when the answer changes.
+     **/
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const;
+
+    /**
+     * @brief The contexts to request input inputNb under when this effect renders under context
+     * (null for the empty context) at time/view. Return false, the default, to request it under
+     * context alone. An effect returning several contexts pulls the input once per context in its
+     * render action, each with getImage() under an InputContextScope; the host does not pre-render it.
+     **/
+    virtual bool getInputContexts(int /*inputNb*/,
+                                  double /*time*/,
+                                  ViewIdx /*view*/,
+                                  const RenderContextPtr& /*context*/,
+                                  std::vector<RenderContextPtr>* /*contexts*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief The output of a node, possibly this effect's own, under a context the effect names.
+     * comps defaults to RGBA; roi is in canonical coordinates.
+     **/
+    struct ContextNodeRequest {
+        NodePtr node;
+        RenderContextPtr context;
+        double time = 0.;
+        ViewIdx view;
+        RectD roi;
+        std::list<ImageLayerDesc> comps;
+    };
+
+    /**
+     * @brief Nodes whose output this effect needs under a context it names when rendering roi under
+     * context at time/view, besides its inputs: the request pass plans each one as a dependency of
+     * this frame/view. A request for this effect's own output under the context key it renders under
+     * fails the request pass.
+     **/
+    virtual void getContextNodeRequests(double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const RenderContextPtr& /*context*/,
+                                        const RectD& /*roi*/,
+                                        std::vector<ContextNodeRequest>* /*requests*/) const
+    {
     }
 
     /**

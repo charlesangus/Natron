@@ -34,12 +34,14 @@
 #include "Engine/EffectInstance.h"
 
 #include <atomic>
+#include <mutex>
 
 #include <QWaitCondition>
 #include <QReadWriteLock>
 #include <QMutex>
 
 #include "Engine/Hash64.h"
+#include "Engine/RenderContext.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -242,6 +244,8 @@ public:
         , persistentMessageRenderSequence(0)
         , channelSelectorResolvedSequence(0)
         , dataKindConflictMessage()
+        , contextCountWarningMessage()
+        , contextCountWarningSequence(0)
         , guiPointer()
         , layoutMutex()
         , posX(0.)
@@ -397,6 +401,10 @@ public:
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
+    mutable std::mutex contextReadsMutex; //< protects the two below; no other lock is taken under it
+    mutable U64 contextReadsGeneration = 0; //< the read-sets generation contextReads was computed at
+    mutable RenderContextReadSetConstPtr contextReads;
+
     // The knob part of the content hash, memoized against the effect's knobs content generation.
     // Knobs that read another knob or a file are kept as live entries and hashed on every use.
     struct KnobsDigestEntry {
@@ -508,6 +516,11 @@ public:
     // can tell a stale diagnostic of its own from an unrelated message that has since replaced it.
     // Guarded by persistentMessageMutex.
     QString dataKindConflictMessage;
+
+    // The text Node::setContextCountWarning() last posted into persistentMessage, empty when it
+    // took it back, and the render sequence it was logged for. Guarded by persistentMessageMutex.
+    QString contextCountWarningMessage;
+    U64 contextCountWarningSequence;
     NodeGuiIWPtr guiPointer;
 
     // Node-graph layout, kept here so a headless session and a save off the main thread see it.

@@ -145,6 +145,9 @@ jobs:
       # build/assets/rawspeed is the installed rawspeed (static library,
       # headers, cameras.xml) the Natron build links, built by its own
       # stamped step, so a hit skips that compile too.
+      #
+      # build/assets/onnxruntime is the unpacked ONNX Runtime CPU release
+      # whose headers the build includes and whose library the bundle ships.
       - name: Cache test assets
         uses: actions/cache@v6.1.0
         with:
@@ -153,6 +156,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets
@@ -262,6 +266,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

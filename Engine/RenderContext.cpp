@@ -31,6 +31,9 @@
 #include <iterator>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
+#include "Engine/Node.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -87,6 +90,8 @@ struct ValueHasher {
             h->appendString(s);
         }
     }
+
+    void operator()(const RenderContextBinding& v) const { h->appendU64(v.identity); }
 };
 
 struct ValueEquals {
@@ -109,6 +114,12 @@ struct ValueEquals {
         }
 
         return true;
+    }
+
+    bool operator()(const RenderContextBinding& a,
+                    const RenderContextBinding& b) const
+    {
+        return a.identity == b.identity;
     }
 
     template <typename T>
@@ -152,6 +163,116 @@ RenderContextName::loops(const std::string& loopName,
                          const std::string& name)
 {
     return RenderContextName("loops." + loopName, name);
+}
+
+namespace {
+U64
+bindingIdentity(const KnobIPtr& knob,
+                const std::string& name,
+                const RenderContextPtr& captured)
+{
+    ContentHasher h;
+    U64 contentHash = 0;
+    std::string owner;
+    if (knob) {
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knob.get());
+        if (helper) {
+            helper->getMemoizedValueContext(0, &contentHash);
+        } else {
+            contentHash = knob->getContentHash();
+        }
+        // Knobs with equal curves or expressions are still different variables.
+        const EffectInstance* effect = dynamic_cast<const EffectInstance*>(knob->getHolder());
+        const NodePtr node = effect ? effect->getNode() : NodePtr();
+        owner = (node ? node->getFullyQualifiedName() : std::string()) + '.' + knob->getName();
+    }
+    h.appendString(owner);
+    h.appendU64(contentHash);
+    h.appendString(name);
+    h.appendU64(captured->hash());
+
+    return h.finalize();
+}
+} // anonymous namespace
+
+RenderContextBinding
+RenderContextBinding::create(const KnobIPtr& knob,
+                             const std::string& name,
+                             const RenderContextPtr& captured)
+{
+    RenderContextBinding binding;
+    binding.knob = knob;
+    binding.captured = captured ? captured : RenderContext::empty();
+    binding.identity = bindingIdentity(knob, name, binding.captured);
+
+    return binding;
+}
+
+RenderContextBindingsSnapshot::RenderContextBindingsSnapshot(const RenderContextPtr& context)
+{
+    collect(context);
+    if (!_bound.empty()) {
+        _context = context;
+    }
+}
+
+void
+RenderContextBindingsSnapshot::collect(const RenderContextPtr& context)
+{
+    if (!context) {
+        return;
+    }
+    for (const RenderContext::Entry& entry : context->entries()) {
+        const RenderContextBinding* binding = std::get_if<RenderContextBinding>(&entry.second);
+        if (!binding) {
+            continue;
+        }
+        Bound bound;
+        bound.binding = binding;
+        bound.name = entry.first.name;
+        const KnobIPtr knob = binding->knob.lock();
+        const EffectInstance* effect = knob ? dynamic_cast<const EffectInstance*>(knob->getHolder()) : 0;
+        bound.node = effect ? effect->getNode() : NodePtr();
+        bound.marks = bound.node ? bound.node->getHashMarkCount() : 0;
+        _bound.push_back(bound);
+        // The bound knob's value reads the captured context's bindings live in turn.
+        collect(binding->captured);
+    }
+}
+
+bool
+RenderContextBindingsSnapshot::identitiesCurrent() const
+{
+    for (const Bound& bound : _bound) {
+        const KnobIPtr knob = bound.binding->knob.lock();
+        if (!knob || (bindingIdentity(knob, bound.name, bound.binding->captured) != bound.binding->identity)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+RenderContextBindingsSnapshot::marksUnmoved() const
+{
+    for (const Bound& bound : _bound) {
+        if (bound.node && (bound.node->getHashMarkCount() != bound.marks)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+RenderContextBindingsSnapshot::isCurrent() const
+{
+    if (_bound.empty()) {
+        return true;
+    }
+
+    return identitiesCurrent() && KnobContentWrite::noneInFlight() && marksUnmoved();
 }
 
 bool

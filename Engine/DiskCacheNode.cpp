@@ -185,7 +185,7 @@ DiskCacheNode::getFrameRange(double *first,
     case 0: {
         EffectInstancePtr input = getInput(0);
         if (input) {
-            input->getFrameRange_public(input->getHash(), first, last);
+            input->getFrameRange_public(input->getRenderHash(), first, last);
         }
         break;
     }

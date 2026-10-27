@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
@@ -62,6 +63,7 @@
 #define kSTMapInputUV 0
 #define kSTMapInputSource 1
 #define kSTMapInputMask 2
+#define kSTMapInputMap 3
 
 NATRON_NAMESPACE_ENTER
 
@@ -69,6 +71,7 @@ inline constexpr InputSpec kSTMapInputs[] = {
     InputSpec { .label = "UV", .role = InputRole::Aux },
     InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    kMapInputSpec,
 };
 
 inline constexpr NodeSpec kSTMapNodeSpec = {
@@ -83,6 +86,9 @@ inline constexpr NodeSpec kSTMapNodeSpec = {
                    "region of definition, as \"Format from\" says.\n"
                    "Filtering widens with the local stretch of the map, measured from the differences of UV between "
                    "neighbouring pixels; the impulse filter takes the nearest pixel with no widening.\n"
+                   "The optional Map input scales the move per pixel: where it is black the pixel keeps its own place, "
+                   "where it is white it goes all the way to its UV position, and in between it goes part of the way. "
+                   "It is read at the output pixel.\n"
                    "With the UV input disconnected the output is black.",
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_STMAP,
@@ -121,6 +127,14 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The Map is read only while it is connected and its channel resolves.
+     **/
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -151,7 +165,7 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    // The layers the U and V selectors resolve to, read from the UV input.
+    // The layers the U and V selectors resolve to, read from the UV input, and the Map's layer.
     virtual bool getInputLayersRead(int inputNb,
                                     double time,
                                     ViewIdx view,
@@ -167,7 +181,7 @@ private:
 
     /**
      * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
-     * channels or to none.
+     * channels or to none, and so does the Map's channel.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -219,6 +233,7 @@ private:
     KnobBoolWPtr _blackOutside;
     KnobChoiceWPtr _formatFrom;
     KnobBoolWPtr _uvAlpha;
+    MapInput _map;
 };
 
 NATRON_NAMESPACE_EXIT

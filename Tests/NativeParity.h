@@ -341,7 +341,7 @@ bool readParityF32(const std::string& path, ParityF32Image* image, std::string* 
  * each user-visible OFX knob must exist on the native node with the same script name, knob type,
  * dimension and default per dimension, a choice's default compared by option ID. Secret knobs,
  * pages, separators, the OFX-internal names (NatronOfxParamProcess*, unPremultBy*,
- * premultChanged, aChannelsChanged, bChannelsChanged) and `ignoredNames` are skipped.
+ * aChannelsChanged, bChannelsChanged) and `ignoredNames` are skipped.
  **/
 std::vector<std::string> knobParityProblems(const NodePtr& ofxNode,
                                             const NodePtr& nativeNode,

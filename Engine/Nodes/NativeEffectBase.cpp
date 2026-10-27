@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -407,6 +408,8 @@ namespace {
 // Bounds the memory held for a node scrubbed across a long sequence; the entries are cheap
 // to rebuild.
 const std::size_t kMaxCachedMetadataFrames = 256;
+// How many render contexts' answers a node keeps at once, least recently used dropped first.
+const std::size_t kMaxCachedMetadataContexts = 8;
 } // anonymous namespace
 
 ImageMetadata
@@ -442,39 +445,70 @@ NativeEffectBase::getOutputMetadata(double time,
 {
     const MetadataKey key(time, view.value());
     // The hash covers this node's knobs and everything upstream of it, and an edit only marks it
-    // dirty: reading it recomputes it, so a cache filled under another hash is stale.
+    // dirty: reading it recomputes it, so a cache filled under another hash is stale. Under a
+    // render context the node reads, the context's key is folded in, so an answer derived under one
+    // context is never served under another.
     const NodePtr node = getNode();
-    const U64 hash = node ? node->getHashValue() : 0;
+    const RenderContextPtr context = node ? getCurrentRestrictedRenderContext() : RenderContextPtr();
+    const U64 contextKey = context ? context->hash() : 0;
+    const U64 nodeHash = node ? node->getHashValue() : 0;
+    const U64 hash = node ? mixRenderContextKey(nodeHash, contextKey) : 0;
     U64 generation;
-    std::map<MetadataKey, ImageMetadata> dropped;
+    std::list<MetadataCacheEntry> dropped;
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);
-        if (hash != _metadataCacheHash) {
+        if (nodeHash != _metadataCacheHash) {
             dropped.swap(_metadataCache);
             ++_metadataGeneration;
-            _metadataCacheHash = hash;
+            _metadataCacheHash = nodeHash;
         } else {
-            std::map<MetadataKey, ImageMetadata>::const_iterator it = _metadataCache.find(key);
-            if (it != _metadataCache.end()) {
-                return it->second;
+            for (std::list<MetadataCacheEntry>::iterator entry = _metadataCache.begin(); entry != _metadataCache.end(); ++entry) {
+                if (entry->mixedHash != hash) {
+                    continue;
+                }
+                _metadataCache.splice(_metadataCache.begin(), _metadataCache, entry);
+                std::map<MetadataKey, ImageMetadata>::const_iterator it = entry->frames.find(key);
+                if (it != entry->frames.end()) {
+                    return it->second;
+                }
+                break;
             }
         }
         generation = _metadataGeneration;
     }
 
     // Derived with the lock released: it asks upstream nodes, which take their own locks.
+    const CleanHashSnapshot clean(node, context);
     ImageMetadata derived = deriveOutputMetadata(time, view);
+    const bool storable = clean.allowsStoreUnder(hash);
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);
         // An invalidation that raced the derivation above must not be undone by storing a
         // result that may predate it.
-        if (generation == _metadataGeneration) {
-            if (_metadataCache.size() >= kMaxCachedMetadataFrames) {
-                _metadataCache.clear();
+        if (storable && (generation == _metadataGeneration)) {
+            if (_metadataCache.empty() || (_metadataCache.front().mixedHash != hash)) {
+                std::list<MetadataCacheEntry>::iterator found = _metadataCache.begin();
+                while ((found != _metadataCache.end()) && (found->mixedHash != hash)) {
+                    ++found;
+                }
+                if (found != _metadataCache.end()) {
+                    _metadataCache.splice(_metadataCache.begin(), _metadataCache, found);
+                } else {
+                    MetadataCacheEntry fresh;
+                    fresh.mixedHash = hash;
+                    _metadataCache.push_front(fresh);
+                    if (_metadataCache.size() > kMaxCachedMetadataContexts) {
+                        dropped.splice(dropped.end(), _metadataCache, --_metadataCache.end());
+                    }
+                }
             }
-            _metadataCache[key] = derived;
+            std::map<MetadataKey, ImageMetadata>& frames = _metadataCache.front().frames;
+            if (frames.size() >= kMaxCachedMetadataFrames) {
+                frames.clear();
+            }
+            frames[key] = derived;
         }
     }
 
@@ -504,7 +538,7 @@ NativeEffectBase::invalidateOutputMetadata()
 void
 NativeEffectBase::dropCachedOutputMetadata()
 {
-    std::map<MetadataKey, ImageMetadata> dropped;
+    std::list<MetadataCacheEntry> dropped;
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);

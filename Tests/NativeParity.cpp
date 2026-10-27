@@ -661,6 +661,14 @@ ParityTolerance::accepts(float reference,
     if (std::isnan(reference) || std::isnan(native)) {
         return std::isnan(reference) && std::isnan(native);
     }
+    if (flushBelow > 0.f) {
+        if (std::fabs(reference) < flushBelow) {
+            reference = std::copysign(0.f, reference);
+        }
+        if (std::fabs(native) < flushBelow) {
+            native = std::copysign(0.f, native);
+        }
+    }
     if (reference == native) {
         return true;
     }

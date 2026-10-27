@@ -402,6 +402,53 @@ TEST_F(SceneViewportStorm, LooksThroughAStageCamera)
     EXPECT_TRUE(isReddish(pixel(fallback, 128, 128))) << "an unknown camera looks through the free one";
 }
 
+// A locked camera's move is drawn from a transform the renderer is handed, with the stage
+// untouched. Moved to (3, 0, 10), unturned, /World/Cam has the ball (at (3, 0, 0) at timecode 1)
+// at the centre of the frame, and the box leaves (69, 187), where it is from (1, 1, 10).
+TEST_F(SceneViewportStorm, DrawsALookedThroughCameraFromAGivenTransform)
+{
+    if (_skip) {
+        return;
+    }
+    _renderer.setLookThroughCamera("/World/Cam");
+    EXPECT_FALSE(_renderer.hasLookThroughTransform());
+    const QImage atPrim = render();
+    EXPECT_TRUE(isReddish(pixel(atPrim, 69, 187))) << "the box through /World/Cam: " << pixel(atPrim, 69, 187);
+    SceneViewportRenderer::CameraPose primPose;
+    ASSERT_TRUE(_renderer.getViewPose(kSize, kSize, &primPose));
+    EXPECT_DOUBLE_EQ(1., primPose.cameraToWorld[12]);
+    EXPECT_DOUBLE_EQ(1., primPose.cameraToWorld[13]);
+    EXPECT_DOUBLE_EQ(10., primPose.cameraToWorld[14]);
+
+    const PXR_NS::GfMatrix4d moved = PXR_NS::GfMatrix4d(1.).SetTranslate(PXR_NS::GfVec3d(3., 0., 10.));
+    _renderer.setLookThroughTransform(moved.data());
+    EXPECT_TRUE(_renderer.hasLookThroughTransform());
+    EXPECT_EQ(std::string("/World/Cam"), _renderer.getLookThroughCamera());
+    const QImage atMove = render();
+    EXPECT_TRUE(isBluish(pixel(atMove, 128, 128))) << "the ball through the moved camera: " << pixel(atMove, 128, 128);
+    EXPECT_TRUE(isBackground(pixel(atMove, 69, 187))) << "the box left the frame: " << pixel(atMove, 69, 187);
+    EXPECT_EQ(std::string("/World/Ball"), _renderer.pick(128, 128, kSize, kSize));
+    SceneViewportRenderer::CameraPose movedPose;
+    ASSERT_TRUE(_renderer.getViewPose(kSize, kSize, &movedPose));
+    EXPECT_DOUBLE_EQ(3., movedPose.cameraToWorld[12]);
+    EXPECT_DOUBLE_EQ(0., movedPose.cameraToWorld[13]);
+    EXPECT_DOUBLE_EQ(10., movedPose.cameraToWorld[14]);
+    EXPECT_DOUBLE_EQ(primPose.viewHeight, movedPose.viewHeight) << "the lens is the prim's";
+
+    _renderer.clearLookThroughTransform();
+    EXPECT_FALSE(_renderer.hasLookThroughTransform());
+    EXPECT_TRUE(isReddish(pixel(render(), 69, 187))) << "back at the prim's transform";
+
+    // Looking through again, or through another camera, forgets the transform.
+    _renderer.setLookThroughTransform(moved.data());
+    _renderer.setLookThroughCamera("/World/Cam");
+    EXPECT_FALSE(_renderer.hasLookThroughTransform());
+    _renderer.setLookThroughTransform(moved.data());
+    _renderer.tumble(0., 0.);
+    _renderer.setLookThroughCamera("/World/Cam");
+    EXPECT_FALSE(_renderer.hasLookThroughTransform());
+}
+
 TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
 {
     if (_skip) {

@@ -47,19 +47,19 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 
 ## Phase 236.2: Assignment
 
-- [ ] M236.P2.T1 — `SceneNodeAuthoring::authorCollectionBinding` on one root
+- [x] M236.P2.T1 — `SceneNodeAuthoring::authorCollectionBinding` on one root
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}`, `Tests/Scene/SceneMaterialBinding_Test.cpp`
   - approach: given a root prim, matched paths, material path, binding name, purpose, strength and the root's existing collection-binding names: apply `CollectionAPI(<name>)` (includes, `expandPrims`) and `MaterialBindingAPI`; author `material:binding:collection[:<purpose>]:<name>` = [collection, material] with `bindMaterialAs`; write `propertyOrder` with the new binding first.
   - verify: pure-USD gtest — `ComputeBoundMaterial` resolves per purpose. A second binding written later wins on overlap. Stronger beats a descendant's direct binding and Weaker does not. After an internal-reference graft plus a repaired material target, the binding still resolves.
   - size: M
 
-- [ ] M236.P2.T2 — `USDAssignMaterial` node with Material Path
+- [x] M236.P2.T2 — `USDAssignMaterial` node with Material Path
   - files: `Engine/Nodes/Scene/USDAssignMaterial.{h,cpp,reg.inc}`, `Tests/Scene/USDAssignMaterial_Test.cpp`
   - approach: Scene input. Match with `matchPrims` through `SceneQueryPool`, group matches by root, skip the scope, and call P2.T1 per root inside `emitSceneLayer` with `eUpstreamReadFacts` (the digest covers matches, material path and existing binding names). Warnings follow the Edge cases. Knob labels follow script names.
   - verify: gtest — `/Asset/geo/*` binds `/materials/M`. The node then goes under a USDXformPrim and `/T1/Asset/geo/a` still resolves to it. Two chained assigns: the later wins. A Card's own material is overridden. A miss warns.
   - size: L
 
-- [ ] M236.P2.T3 — Material input grafts into the scope
+- [x] M236.P2.T3 — Material input grafts into the scope
   - files: `Engine/Nodes/Scene/USDAssignMaterial.{h,cpp}`, `Tests/Scene/USDAssignMaterial_Test.cpp`
   - approach: when connected, `reparentRoots` the input under the scope (Scope type, scope root passed through) with its own graft memo, stacks it on the scene input via `SceneOps::appendEntry`, and binds the first material depth first. Material Path greys out while the input is connected.
   - verify: gtest — USDMaterial1 → `/materials/Material1`, bound. Two assigns sharing one material node give one `/materials/Material1`. A `USDScopePrim` named `materials` does not nest.
@@ -67,25 +67,25 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 
 ## Phase 236.3: Export, render, docs
 
-- [ ] M236.P3.T1 — USDWrite round-trip of shared materials
+- [x] M236.P3.T1 — USDWrite round-trip of shared materials
   - files: `Engine/Nodes/Scene/USDWrite.cpp` (only if needed), `Tests/Scene/USDWrite_Test.cpp`
   - approach: a USDRead asset → USDAssignMaterial (Material input) → USDXformPrim → USDWrite in both modes, then read back. Fix the export only if the check fails.
   - verify: round-trip gtest — exactly one `/materials/Material1`; `ComputeBoundMaterial` is identical before and after; the repaired binding is written plainly into the output (no anonymous layer identifiers); in layered mode the asset file is still referenced by a relative path.
   - size: M
 
-- [ ] M236.P3.T2 — Strict-GL Storm render of a pattern-bound asset
+- [x] M236.P3.T2 — Strict-GL Storm render of a pattern-bound asset
   - files: `Tests/Scene/USDRenderStorm_Test.cpp`, one committed reference crop (≤256 px, half-float, zip)
   - approach: render the P3.T1 graph with a red shared material over a grey asset material, Stronger strength, then again with a second assign over it.
   - verify: passes under `build/m63-gui/run-gl-tests.sh` with `NATRON_TEST_REQUIRE_GL=1`; switching Strength to Weaker makes it fail.
   - size: M
 
-- [ ] M236.P3.T3 — GUI script and screenshots
+- [x] M236.P3.T3 — GUI script and screenshots
   - files: `Tests/gui/scene_assign_material.py` (fixtures under `build/`)
   - approach: build the graph under Xvfb at 1920x1080 and screenshot the Viewer's 3D view before and after inserting the USDXformPrim, plus the USDAssignMaterial panel.
   - verify: the script passes and writes three screenshots; they are shared with the user (SendUserFile) before sign-off.
   - size: M
 
-- [ ] M236.P3.T4 — Node docs
+- [x] M236.P3.T4 — Node docs
   - files: `Engine/Nodes/Scene/docs/USDAssignMaterial.md` (new), `docs/USDXformPrim.md`, `docs/USDScopePrim.md`
   - approach: describe the knobs, the collection-per-root model, strength/purpose and scope pass-through, following the existing docs' layout.
   - verify: the files render and name every knob.
@@ -95,5 +95,6 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 
 ## Decisions
 
+- 2026-10-27 — PM: the Storm check compares a 64x64 half-float EXR crop via a new OIIO-based helper (LFS rule), not a full-frame .f32 like older Storm references; record it after the build under Xvfb GL. Placeholder icon.
 - 2026-10-27 — **User:** USDAssignMaterial has both a Material input (grafted into the scope and bound) and a Material Path knob (greyed while the input is connected). Default strength Stronger Than Descendants.
 - 2026-10-27 — **Collection binding per matched root, Stronger Than Descendants by default (cat-plan):** with bindings only on roots, graph order equals binding strength. A later assign is either on the same root (where `propertyOrder` decides) or on a higher ancestor after a re-parent (where stronger-than-descendants decides). Weaker would let an asset's internal bindings, or an earlier assign deeper down, beat a later node. Rejected: direct bindings on each prim (~900 ms repair per graft at 20k prims).

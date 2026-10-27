@@ -1090,6 +1090,39 @@ model does not price them: a region of two or more connected GPU candidates with
 goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
 (`PlacementInputs::isPriced`).
 
+### AI nodes
+
+An AI node runs a neural network through `Engine/Ai` (see `Engine/Ai/README.md`),
+usually over its render window with `runTiled()`. Three rules hold for every one.
+
+**CPU-only.** Inference goes through host memory on ONNX Runtime's own devices,
+not through Vulkan. An AI node is therefore a CPU node as far as the scheduler
+can tell. It is a Custom node that doesn't override `canRenderOpOnGpu()`, so its
+`NodeSpec` and pipeline place it on the CPU and it ends any GPU region it sits
+in. That holds even when ONNX Runtime itself runs on CUDA or MIGraphX.
+
+**A persistent error when AI can't run.** The node opens its session with
+`InferenceSession::open()`, which throws `AiError` when ONNX Runtime is
+unavailable. In that case the node posts
+`setPersistentMessage(eMessageTypeError, ...)` and fails the render; it never
+renders black or passes the input through quietly. The message is
+`OrtLoader::process()->unavailableReason()`:
+- when "AI Enabled" is off, `OrtLoader::disabledReason()`, "AI is disabled in
+  Preferences";
+- otherwise, the paths the loader tried and why each one failed.
+
+The node clears the message once a render succeeds. `AiAborted` is a normal
+abort, not an error: return `eStatusFailed` without a message. Pass the abort
+predicate as `[this] { return aborted(); }`.
+
+**`pack` and `unpack` own colour.** The node's `pack` callback converts the
+render window's pixels into the model's tensor space, for example sRGB-encoded
+and clamped, or log, with any channel reordering. Its `unpack` callback converts
+the result back to scene-linear, and it is called only once every tile has
+succeeded. `Engine/Ai` never interprets pixel values; the conversion lives in
+the node, beside the model it serves. Remember that tensor row 0 is the top of
+the image, `y2 - 1`.
+
 ### The GPU side of an op
 
 A Point op names its GPU work with a `GpuOpRef` returned from `gpu()`:

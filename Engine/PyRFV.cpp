@@ -332,12 +332,18 @@ getVariable(const std::string& name)
                 return toPython(*value);
             }
             // The Set's variable at this time, its expression reading the context the Set
-            // received.
+            // received. A knob deleted since, or off its node, is unset.
+            const KnobIPtr boundKnob = binding->knob.lock();
+            const KnobHolder* boundHolder = boundKnob ? boundKnob->getHolder() : NULL;
+            const EffectInstance* boundEffect = dynamic_cast<const EffectInstance*>(boundHolder);
+            if (!boundHolder || (boundEffect && !boundEffect->getNode())) {
+                Py_RETURN_NONE;
+            }
             RenderContextValue bound;
             bool found = false;
             try {
                 ActionContextScope bindingContext(true, binding->captured);
-                found = RFV::getVariableValue(binding->knob, time, view, &bound);
+                found = RFV::getVariableValue(boundKnob, time, view, &bound);
             } catch (const std::exception& e) {
                 PyErr_SetString(PyExc_RuntimeError, e.what());
 

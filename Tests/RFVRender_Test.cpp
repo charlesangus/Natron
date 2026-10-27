@@ -272,17 +272,18 @@ protected:
         return stat;
     }
 
-    // Renders root's RGBA at time and view through the given scheduler and returns its first
-    // pixel's red, or -1.
+    // Renders root's RGBA at time and view through the given scheduler, bypassing the cache
+    // unless told otherwise, and returns its first pixel's red, or -1.
     float renderFirstPixel(const NodePtr& root,
                            RenderSchedulerModeEnum mode,
                            double time = 1.,
-                           ViewIdx view = ViewIdx(0))
+                           ViewIdx view = ViewIdx(0),
+                           bool byPassCache = true)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, true /*byPassCache*/, &planes, &error)) {
+        if (!renderNodePlanesInMode(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, byPassCache, &planes, &error)) {
             ADD_FAILURE() << error;
 
             return -1.f;
@@ -526,6 +527,49 @@ TEST_F(RFVRender, AnimatedVariableFollowsTheFrame)
     EXPECT_EQ(20.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph, 2.));
     EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, 1.));
     EXPECT_EQ(20.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, 2.));
+}
+
+// Through the cache, an animated Set variable keys each frame apart: going back to a frame gives
+// that frame's value, not the last one rendered.
+TEST_F(RFVRender, AnimatedVariableThroughTheCacheFollowsTheFrame)
+{
+    NodePtr reader = createReader("rfv.v or 0");
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(reader && set && v);
+    v->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    v->setValueAtTime(2., 20., ViewSpec::all(), 0);
+    connectNodes(reader, set, 0, true);
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+        EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
+        EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2., ViewIdx(0), false /*byPassCache*/));
+        EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
+    }
+}
+
+// Through the cache, a Set variable whose expression reads another node's knob follows edits of
+// that knob.
+TEST_F(RFVRender, SetVariableExpressionThroughTheCacheFollowsTheKnobItReads)
+{
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr reader = createReader("rfv.v or 0");
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(source && reader && set && v);
+    KnobDoublePtr sourceValue = std::dynamic_pointer_cast<KnobDouble>(source->getKnobByName("value"));
+    ASSERT_TRUE(bool(sourceValue));
+    sourceValue->setValue(5.);
+    ASSERT_NO_THROW(v->setExpression(0, source->getScriptName() + ".value.getValue(0)", false, true));
+    connectNodes(reader, set, 0, true);
+
+    double expected = 5.;
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+        EXPECT_EQ((float)expected, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
+        expected += 2.;
+        sourceValue->setValue(expected);
+        EXPECT_EQ((float)expected, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
+    }
 }
 
 // A Set variable's expression reads what the nodes below the Set set.

@@ -85,13 +85,14 @@ typedef std::shared_ptr<const RenderContext> RenderContextPtr;
 /**
  * @brief A variable whose value depends on the time it is read at: the variable knob that gives
  * it, evaluated at the reading expression's time and view under the context captured, the one
- * the knob's value reads (see PyRFV::getVariable()). identity stands for the value at every time:
- * it mixes the knob's content hash, the variable name and the captured context's hash, so it is
- * the same at every frame and moves on any edit of the knob's curve or expression. Hashes and
- * compares by identity alone.
+ * the knob's value reads (see PyRFV::getVariable()). The knob is held weakly: a binding outliving
+ * it reads as an unset variable. identity stands for the value at every time: it mixes the
+ * knob's owning node and name, its content hash, the variable name and the captured context's
+ * hash, so it is the same at every frame and moves on any edit of the knob's curve or expression.
+ * Hashes and compares by identity alone.
  **/
 struct RenderContextBinding {
-    KnobIPtr knob;
+    KnobIWPtr knob;
     RenderContextPtr captured;
     U64 identity = 0;
 

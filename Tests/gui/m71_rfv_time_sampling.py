@@ -10,8 +10,7 @@ Cases (all at frame 5):
               shows that the expression moves the image at all;
   motion-blur Transform motionBlur 1, shutter 1: the render must differ from the sharp one;
   above       TimeBlur between Transform and Set, motionBlur 0: must differ from the sharp render;
-  below       TimeBlur between Set and Viewer, motionBlur 0: must differ from the sharp render
-              (regression: this worked before the variables were sampled over time).
+  below       TimeBlur between Set and Viewer, motionBlur 0: must differ from the sharp render.
 
 The viewer is compared through screen grabs, since a widget grab of the GL viewer can come out blank
 under llvmpipe. Results and screenshots go where Tests/gui/run-gui-test.sh puts them.

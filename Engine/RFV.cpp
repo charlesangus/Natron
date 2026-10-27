@@ -736,14 +736,29 @@ isTimeVarying(const KnobIPtr& knob)
     if (!knob) {
         return false;
     }
+    // Keyframes or an expression.
     if (knob->hasAnimation()) {
         return true;
+    }
+    // A linked knob takes its master's value.
+    bool linked = false;
+    for (int i = 0, n = knob->getDimension(); i < n; ++i) {
+        const std::pair<int, KnobIPtr> master = knob->getMaster(i);
+        if (master.second) {
+            if (isTimeVarying(master.second)) {
+                return true;
+            }
+            linked = true;
+        }
+    }
+    if (linked) {
+        return false;
     }
     bool hasExpression = false;
     bool readsOutsideKnob = false;
     knob->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
 
-    return hasExpression || readsOutsideKnob;
+    return readsOutsideKnob;
 }
 
 RenderContextPtr
@@ -758,7 +773,11 @@ overlayDeclaredVariables(const KnobHolder* holder,
         if (isTimeVarying(declaration.knob)) {
             const KnobHelper* helper = dynamic_cast<const KnobHelper*>(declaration.knob.get());
             const RenderContextPtr incoming = base ? base : RenderContext::empty();
-            const RenderContextPtr captured = helper ? incoming->restrictTo(helper->getValueContextReads()) : incoming;
+            RenderContextReadSetConstPtr reads;
+            if (helper) {
+                helper->getMemoizedValueContext(&reads, 0);
+            }
+            const RenderContextPtr captured = reads ? incoming->restrictTo(*reads) : incoming;
             builder.set(RenderContextName::plain(declaration.name), RenderContextBinding::create(declaration.knob, declaration.name, captured));
             continue;
         }

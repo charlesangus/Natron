@@ -1917,8 +1917,16 @@ public:
     /**
      * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
      * them: its own read sources' and, transitively, those of what its expressions and links read.
+     * Walks them all even when called while such a gathering runs.
      **/
     RenderContextReadSet getValueContextReads() const;
+
+    /**
+     * @brief getValueContextReads() and getContentHash(), memoized until the next
+     * invalidateRenderContextReads(), which every content change of a node's or the project's
+     * knob raises. Either output may be null. MT-safe.
+     **/
+    void getMemoizedValueContext(RenderContextReadSetConstPtr* reads, U64* contentHash) const;
 
     /**
      * @brief What the Python expression source reads of the rfv object: the variable named by each

@@ -43,9 +43,9 @@ NATRON_NAMESPACE_ENTER
  * EffectInstance::getCurrentRenderContext()) when that context sets it, otherwise the project's
  * variable. A context's binding (see RenderContextBinding) and the project's variable are
  * evaluated at the time the expression is evaluated at, and at the view the render started at,
- * or outside a render the view the expression is evaluated at. The project variable's own expression reads
- * rfv for that same render: at its time and view, under its context. Values are Python bools,
- * ints, floats, strings, or lists of them for a variable with several dimensions.
+ * or outside a render the view the expression is evaluated at. The project variable's own
+ * expression reads rfv for that same render: at its time and view, under its context. Values are
+ * Python bools, ints, floats, strings, or lists of them for a variable with several dimensions.
  **/
 namespace PyRFV {
 

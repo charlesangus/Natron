@@ -211,8 +211,9 @@ KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name)
 bool getVariableValue(const KnobIPtr& knob, double time, ViewIdx view, RenderContextValue* value);
 
 /**
- * @brief Whether the variable knob's value may differ between times: it has keyframes, an
- * expression (any, whatever it reads) or a link, or hashes state outside itself.
+ * @brief Whether the variable knob's value may differ between times: it has keyframes or an
+ * expression (any, whatever it reads), is linked to a time-varying master, or, unlinked, hashes
+ * state outside itself.
  **/
 bool isTimeVarying(const KnobIPtr& knob);
 

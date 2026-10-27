@@ -552,6 +552,10 @@ struct KnobHelperPrivate
     // the source registered with those reads, null while they are empty.
     RenderContextReadSet rfvReads;
     ContextReadSourcePtr rfvReadSource;
+    mutable QMutex valueContextMemoMutex; // protects the 3 members below
+    mutable U64 valueContextMemoGeneration = 0;
+    mutable RenderContextReadSetConstPtr valueContextMemoReads; // null until computed
+    mutable U64 valueContextMemoContentHash = 0;
 
     KnobHelperPrivate(KnobHelper* publicInterface_,
                       KnobHolder* holder_,
@@ -2968,7 +2972,7 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension)
     std::string error;
     bool ok;
     {
-        PyRFV::ExpressionScope rfvScope(publicInterface);
+        PyRFV::ExpressionScope rfvScope(publicInterface, 0., ViewIdx(0));
         ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, NULL);
     }
     if ( !error.empty() ) {
@@ -3087,7 +3091,7 @@ KnobHelper::validateExpression(const std::string& expression,
         ss << funcExecScript << '(' << getCurrentTime() << ", " <<  getCurrentView() << ")\n";
         bool evaluated;
         {
-            PyRFV::ExpressionScope rfvScope(this);
+            PyRFV::ExpressionScope rfvScope(this, getCurrentTime(), getCurrentView());
             evaluated = NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, 0);
         }
         if (!evaluated) {
@@ -6264,14 +6268,54 @@ KnobHelper::getExpressionContextKey(U64* key) const
 RenderContextReadSet
 KnobHelper::getValueContextReads() const
 {
-    if (t_expressionReadSetQuery) {
-        return getContextReadSet();
-    }
+    const bool nested = t_expressionReadSetQuery;
     t_expressionReadSetQuery = true;
-    RenderContextReadSet reads = expressionContextReads(this);
-    t_expressionReadSetQuery = false;
+    RenderContextReadSet reads;
+    try {
+        reads = expressionContextReads(this);
+    } catch (...) {
+        t_expressionReadSetQuery = nested;
+        throw;
+    }
+    t_expressionReadSetQuery = nested;
 
     return reads;
+}
+
+void
+KnobHelper::getMemoizedValueContext(RenderContextReadSetConstPtr* reads,
+                                    U64* contentHash) const
+{
+    // Read before the walk and the hash, so that a change landing during them leaves the memo
+    // stale.
+    const U64 generation = getRenderContextReadsGeneration();
+    {
+        QMutexLocker k(&_imp->valueContextMemoMutex);
+        if (_imp->valueContextMemoReads && (_imp->valueContextMemoGeneration == generation)) {
+            if (reads) {
+                *reads = _imp->valueContextMemoReads;
+            }
+            if (contentHash) {
+                *contentHash = _imp->valueContextMemoContentHash;
+            }
+
+            return;
+        }
+    }
+    const RenderContextReadSetConstPtr computedReads = std::make_shared<const RenderContextReadSet>(getValueContextReads());
+    const U64 computedHash = getContentHash();
+    {
+        QMutexLocker k(&_imp->valueContextMemoMutex);
+        _imp->valueContextMemoGeneration = generation;
+        _imp->valueContextMemoReads = computedReads;
+        _imp->valueContextMemoContentHash = computedHash;
+    }
+    if (reads) {
+        *reads = computedReads;
+    }
+    if (contentHash) {
+        *contentHash = computedHash;
+    }
 }
 
 void

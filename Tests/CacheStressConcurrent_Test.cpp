@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -42,8 +43,10 @@
 
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "CacheStressTestEffect.h"
 #include "CountingTestEffect.h"
 #include "NativeParity.h"
+#include "SceneTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -476,6 +479,161 @@ runRaces(const AppInstancePtr& app,
     return failures;
 } // runRaces
 
+void
+setSourceValue(const NodePtr& source,
+               int value)
+{
+    KnobInt* knob = dynamic_cast<KnobInt*>(source->getKnobByName("value").get());
+
+    ASSERT_TRUE(knob != NULL);
+    knob->setValue(value);
+}
+
+// The value the source's scene composes, evaluated on this thread.
+std::string
+evaluateSource(const NodePtr& source,
+               int* value)
+{
+    ScenePayload payload;
+    std::string error;
+
+    if (source->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(kTime, ViewIdx(0)), &payload, &error) != EffectInstance::eRenderRoIRetCodeOk) {
+        return "the evaluation failed: " + error;
+    }
+    if (!sceneTestReadSourceValue(payload, value, &error)) {
+        return "could not read the scene: " + error;
+    }
+
+    return std::string();
+}
+
+// One round: a worker evaluates the source with its value set to `asked`, and is held inside the
+// authoring while the main thread sets `edited`. Then the edit is undone and redone, each
+// evaluation checked against the knob, which is what a source authored from empty caches holds.
+std::string
+sceneRaceRound(const NodePtr& source,
+               int asked,
+               int edited)
+{
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool entered = false;
+    bool released = false;
+
+    setSourceValue(source, asked);
+    sceneTestSourceAuthorHook() = [&]() {
+        std::unique_lock<std::mutex> k(mutex);
+        entered = true;
+        cond.notify_all();
+        cond.wait_for(k, std::chrono::seconds(30), [&]() { return released; });
+    };
+    int workerValue = 0;
+    std::string workerError;
+    std::thread worker([&]() {
+        workerError = evaluateSource(source, &workerValue);
+    });
+    bool held = false;
+    {
+        std::unique_lock<std::mutex> k(mutex);
+        held = cond.wait_for(k, std::chrono::seconds(10), [&]() { return entered; });
+    }
+    if (held) {
+        setSourceValue(source, edited);
+    }
+    {
+        std::lock_guard<std::mutex> k(mutex);
+        released = true;
+        cond.notify_all();
+    }
+    worker.join();
+    sceneTestSourceAuthorHook() = std::function<void()>();
+    if (!held) {
+        return "the evaluation never reached the authoring";
+    }
+    if (!workerError.empty()) {
+        return "the held evaluation: " + workerError;
+    }
+
+    const int checks[] = { asked, edited };
+    for (int value : checks) {
+        setSourceValue(source, value);
+        int got = 0;
+        const std::string error = evaluateSource(source, &got);
+        if (!error.empty()) {
+            return error;
+        }
+        if (got != value) {
+            std::ostringstream os;
+            os << "the value is " << value << " but the scene composes " << got;
+
+            return os.str();
+        }
+    }
+
+    return std::string();
+} // sceneRaceRound
+
+// One round on source -> filter, filter reading wide or narrow: references of both, then from
+// cold caches connect wide, revert to narrow and connect wide again, each followed by a cached
+// render. The filter stores its region of definition from onInputChanged(), under the hash the
+// node has then. Returns "" or what went wrong.
+std::string
+inputChangedRound(const AppInstancePtr& app,
+                  const NodePtr& filter,
+                  const NodePtr& wide,
+                  const NodePtr& narrow)
+{
+    std::string error;
+    RenderedPlane refWide;
+    RenderedPlane refNarrow;
+
+    if (!filter->replaceInput(narrow, 0)) {
+        return "could not connect the narrow source";
+    }
+    clearEverything(app);
+    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refNarrow, &error)) {
+        return "the narrow reference failed: " + error;
+    }
+    if (!filter->replaceInput(wide, 0)) {
+        return "could not connect the wide source";
+    }
+    clearEverything(app);
+    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWide, &error)) {
+        return "the wide reference failed: " + error;
+    }
+    if (compareExact(refWide, refNarrow).empty()) {
+        return "the two sources render alike";
+    }
+    if (!filter->replaceInput(narrow, 0)) {
+        return "could not revert to the narrow source";
+    }
+    clearEverything(app);
+
+    const struct {
+        NodePtr source;
+        const RenderedPlane* ref;
+        const char* what;
+    } steps[] = {
+        { wide, &refWide, "connect wide" },
+        { narrow, &refNarrow, "revert to narrow" },
+        { wide, &refWide, "connect wide again" },
+    };
+    for (const auto& step : steps) {
+        if (!filter->replaceInput(step.source, 0)) {
+            return std::string(step.what) + ": the edit failed";
+        }
+        RenderedPlane got;
+        if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, false, &got, &error)) {
+            return std::string(step.what) + ": the cached render failed: " + error;
+        }
+        const std::string diff = compareExact(*step.ref, got);
+        if (!diff.empty()) {
+            return std::string(step.what) + ": " + diff;
+        }
+    }
+
+    return std::string();
+}
 } // namespace
 
 class CacheStressConcurrentTest
@@ -511,4 +669,152 @@ TEST_F(CacheStressConcurrentTest, DISABLED_KnobEditsDuringRender)
 TEST_F(CacheStressConcurrentTest, DequeueUnderARestartedRender)
 {
     EXPECT_EQ(0, runRaces(getApp(), eRaceRestarted));
+}
+
+// A knob edited while a scene node authors its layer: the layer holds the edit, so it must not be
+// memoized under the key taken before it, or undoing the edit would serve it.
+TEST_F(CacheStressConcurrentTest, SceneKnobEditDuringAuthoring)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        getApp()->getProject()->reset(false, true);
+        clearEverything(getApp());
+        const NodePtr source = createIn(getApp(), getApp()->getProject(), kTestPluginIDSceneSource);
+        ASSERT_TRUE(bool(source));
+        std::mt19937 rng(seeds[s]);
+        std::ostringstream log;
+        // The memo holds the layer of the last value evaluated; asking for another one authors.
+        int last = 0;
+        for (int r = 0; r < rounds; ++r) {
+            int asked = 1 + (int)(rng() % 4);
+            if (asked == last) {
+                asked = last + 1;
+            }
+            const int edited = asked + 1 + (int)(rng() % 3);
+            last = edited;
+            log << "  " << r << ": ask " << asked << ", edit to " << edited << " while authoring\n";
+            const std::string mismatch = sceneRaceRound(source, asked, edited);
+            if (!mismatch.empty()) {
+                ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << ": " << mismatch << "\nedit log:\n"
+                              << log.str();
+                break;
+            }
+        }
+    }
+}
+
+// What onInputChanged() stores in a node's own actions cache is keyed under the node's new hash:
+// stored under the hash from before the edit, reverting the edit would serve it.
+TEST_F(CacheStressConcurrentTest, OnInputChangedUnderTheNewHash)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        getApp()->getProject()->reset(false, true);
+        clearEverything(getApp());
+        const NodeCollectionPtr root = getApp()->getProject();
+        std::mt19937 rng(seeds[s]);
+        const NodePtr wide = createConstantIn(getApp(), root, kWindow, { 0.2, 0.3, 0.4, 1. });
+        const NodePtr filter = createIn(getApp(), root, kTestPluginIDInputChanged);
+        ASSERT_TRUE(bool(wide) && bool(filter));
+        for (int r = 0; r < rounds; ++r) {
+            // Strictly inside the window, so the two regions always differ.
+            const int x1 = 1 + (int)(rng() % (kWindow.width() / 2));
+            const int y1 = 1 + (int)(rng() % (kWindow.height() / 2));
+            const RectI extent(x1, y1, x1 + 1 + (int)(rng() % (kWindow.x2 - x1 - 1)), y1 + 1 + (int)(rng() % (kWindow.y2 - y1 - 1)));
+            const NodePtr narrow = createConstantIn(getApp(), root, extent, { 0.2, 0.3, 0.4, 1. });
+            ASSERT_TRUE(bool(narrow));
+            const std::string mismatch = inputChangedRound(getApp(), filter, wide, narrow);
+            if (!mismatch.empty()) {
+                ADD_FAILURE() << "cache stress: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << ", narrow source (" << extent.x1 << ", " << extent.y1 << ", "
+                              << extent.x2 << ", " << extent.y2 << "): " << mismatch;
+                break;
+            }
+        }
+    }
+}
+
+// A render thread reads the viewer hash at the moment the A/B switch marks it: the mark comes
+// after the active inputs change, so the hash it recomputes, and the one the viewer keeps, name
+// the input now shown.
+TEST_F(CacheStressConcurrentTest, ViewerABSwitchDuringRender)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+    const std::vector<std::vector<double>> colors = { { 0.9, 0.1, 0.1, 1. }, { 0.1, 0.8, 0.2, 1. }, { 0.2, 0.3, 0.7, 1. } };
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        getApp()->getProject()->reset(false, true);
+        clearEverything(getApp());
+        const NodeCollectionPtr root = getApp()->getProject();
+        const NodePtr viewerNode = createViewerIn(getApp(), root);
+        ASSERT_TRUE(bool(viewerNode));
+        InspectorNode* viewer = dynamic_cast<InspectorNode*>(viewerNode.get());
+        ASSERT_TRUE(viewer != NULL);
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            const NodePtr source = createConstantIn(getApp(), root, kWindow, colors[i]);
+            ASSERT_TRUE(bool(source));
+            ASSERT_TRUE(viewerNode->connectInput(source, (int)i));
+        }
+        viewer->setInputA(0);
+        // The hash of each B side, set the way that marks after the change.
+        std::vector<U64> hashOfB(colors.size());
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            viewer->setInputB((int)i);
+            hashOfB[i] = viewerNode->getHashValue();
+        }
+        int b = (int)colors.size() - 1;
+
+        std::mt19937 rng(seeds[s]);
+        std::ostringstream log;
+        for (int r = 0; r < rounds; ++r) {
+            const int next = (b + 1 + (int)(rng() % (colors.size() - 1))) % (int)colors.size();
+            log << "  " << r << ": B " << b << " -> " << next << "\n";
+            // Nothing else is pending, so the read below flushes no other mark.
+            (void)viewerNode->getHashValue();
+
+            std::mutex m;
+            std::condition_variable cv;
+            bool read = false;
+            std::atomic<bool> armed(true);
+            std::thread worker;
+            Node::setHashMarkTraceForTesting([&](const Node* node,
+                                                 const char* /*reason*/,
+                                                 const KnobI* /*knob*/) {
+                if ((node != viewerNode.get()) || !armed.exchange(false)) {
+                    return;
+                }
+                worker = std::thread([&]() {
+                    (void)viewerNode->getHashValue();
+                    {
+                        std::lock_guard<std::mutex> l(m);
+                        read = true;
+                    }
+                    cv.notify_all();
+                });
+                // Bounded: a read that has to report a mark of its own waits for this one.
+                std::unique_lock<std::mutex> l(m);
+                cv.wait_for(l, std::chrono::seconds(2), [&]() { return read; });
+            });
+            viewer->setActiveInputAndRefresh(next, false);
+            Node::setHashMarkTraceForTesting(Node::HashMarkTrace());
+            if (worker.joinable()) {
+                worker.join();
+            }
+            b = next;
+
+            int activeA = -1, activeB = -1;
+            viewer->getActiveInputs(activeA, activeB);
+            ASSERT_EQ(next, activeB);
+            if (viewerNode->getHashValue() != hashOfB[next]) {
+                ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r
+                              << ": the viewer shows input " << next << " under another hash than that input's\nswitch log:\n"
+                              << log.str();
+                break;
+            }
+        }
+    }
 }

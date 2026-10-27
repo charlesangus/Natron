@@ -210,6 +210,8 @@ registerCacheStressTestPlugins()
     registerTestBuiltInPlugin<StaleMemoTestEffect>();
     // A filter whose knob edits queue under a render, for the queued-edit tests.
     registerTestBuiltInPlugin<QueuedEditTestEffect>();
+    // A filter that stores an actions-cache answer from onInputChanged().
+    registerTestBuiltInPlugin<InputChangedTestEffect>();
 }
 }
 

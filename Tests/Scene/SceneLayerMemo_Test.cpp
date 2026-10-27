@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -166,6 +167,49 @@ TEST(SceneLayerMemoTest, FailedAuthoringKeepsThePreviousLayer)
 
     ASSERT_TRUE(memo.produce(makeKey(1), ScenePayload(), "SceneLayerMemoTest", makeAuthor(1), &again, &error)) << error;
     EXPECT_EQ(topLayer(first), topLayer(again));
+}
+
+// A knob edited while the layer is authored: the layer holds the new value but the key was taken
+// before, so it must not answer for that key once the edit is undone.
+TEST(SceneLayerMemoTest, ALayerWhoseKeyMovedWhileAuthoringIsNotMemoized)
+{
+    SceneLayerMemo memo;
+    ScenePayload edited, undone, again;
+    std::string error;
+    int live = 1;
+    const SceneLayerMemo::AuthorFunc editingAuthor = [&live](const SceneLayerEdit& edit, std::string* errorMessage) {
+        live = 2;
+
+        return sceneTestAuthorSource(edit, live, errorMessage);
+    };
+    const SceneLayerMemo::AuthorFunc liveAuthor = [&live](const SceneLayerEdit& edit, std::string* errorMessage) {
+        return sceneTestAuthorSource(edit, live, errorMessage);
+    };
+    const SceneLayerMemo::KeyCheckFunc keyStillValid = [&live](const SceneLayerMemo::Key& key) {
+        return key == makeKey(live);
+    };
+
+    ASSERT_TRUE(memo.produce(makeKey(1), ScenePayload(), "SceneLayerMemoTest", editingAuthor, &edited, &error, keyStillValid)) << error;
+    EXPECT_EQ((U64)1, memo.getAuthorCount());
+    ASSERT_TRUE(bool(topLayer(edited)));
+
+    // Undo: the knob is back to the value the first key was taken under.
+    live = 1;
+    ASSERT_TRUE(memo.produce(makeKey(1), ScenePayload(), "SceneLayerMemoTest", liveAuthor, &undone, &error, keyStillValid)) << error;
+    EXPECT_EQ((U64)2, memo.getAuthorCount());
+    EXPECT_NE(topLayer(edited), topLayer(undone));
+    // The edited layer does not hash as if authored under the key it missed.
+    EXPECT_NE(edited.getStackHash(), undone.getStackHash());
+    int value = 0;
+    ASSERT_TRUE(sceneTestReadSourceValue(edited, &value, &error)) << error;
+    EXPECT_EQ(2, value);
+    ASSERT_TRUE(sceneTestReadSourceValue(undone, &value, &error)) << error;
+    EXPECT_EQ(1, value);
+
+    // A layer whose key held is memoized as before.
+    ASSERT_TRUE(memo.produce(makeKey(1), ScenePayload(), "SceneLayerMemoTest", liveAuthor, &again, &error, keyStillValid)) << error;
+    EXPECT_EQ((U64)2, memo.getAuthorCount());
+    EXPECT_EQ(topLayer(undone), topLayer(again));
 }
 
 TEST(SceneLayerMemoTest, InvalidateForcesAuthoring)
@@ -367,6 +411,34 @@ TEST_F(SceneLayerChainTest, ReEvaluationAuthorsNothing)
     EXPECT_EQ((U64)1, authorCount(_source));
     EXPECT_EQ((U64)1, authorCount(_middle));
     EXPECT_EQ((U64)1, authorCount(_last));
+}
+
+// A knob edited while the source authors lands in the layer but not in the key the layer was
+// asked for; undoing the edit must not bring that layer back.
+TEST_F(SceneLayerChainTest, AKnobEditDuringAuthoringIsNotServedAfterUndo)
+{
+    ScenePayload payload;
+    std::string error;
+    int value = 0;
+
+    setValue(_source, 2);
+    sceneTestSourceAuthorHook() = [this]() {
+        sceneTestSourceAuthorHook() = std::function<void()>();
+        setValue(_source, 3);
+    };
+    const EffectInstance::RenderRoIRetCode edited = _source->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error);
+    sceneTestSourceAuthorHook() = std::function<void()>();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, edited) << error;
+    ASSERT_TRUE(sceneTestReadSourceValue(payload, &value, &error)) << error;
+    EXPECT_EQ(3, value);
+    const U64 authored = authorCount(_source);
+
+    // Undo the edit made during authoring.
+    setValue(_source, 2);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, _source->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error)) << error;
+    EXPECT_EQ(authored + 1, authorCount(_source));
+    ASSERT_TRUE(sceneTestReadSourceValue(payload, &value, &error)) << error;
+    EXPECT_EQ(2, value);
 }
 
 TEST_F(SceneLayerChainTest, ChangingTheLastNodeReAuthorsOnlyItsLayer)

@@ -848,6 +848,9 @@ Node::connectInput(const NodePtr & input,
             _imp->guiInputs[inputNumber] = input;
             _imp->actionsQueued = true;
         }
+        // Marked before a render can start: one starting once the lock is released must not find
+        // the new inputs under the old hash, and onInputChanged() below must read the new hash.
+        markHashDirty();
     }
     input->connectOutput(useGuiInputs, shared_from_this());
 
@@ -866,8 +869,6 @@ Node::connectInput(const NodePtr & input,
         mustCallEnd = true;
         onInputChanged(inputNumber);
     }
-
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -938,6 +939,8 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
             _imp->guiInputs[inputNumber] = input;
             _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
     if (curIn) {
         QObject::connect(curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
@@ -958,8 +961,6 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
         onInputChanged(inputNumber);
         invalidateDetachedInputDataKind(detachedInput);
     }
-
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1052,6 +1053,8 @@ Node::switchInput0And1()
             _imp->guiInputs[inputBIndex] = input0;
             _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
     Q_EMIT inputChanged(inputAIndex);
     Q_EMIT inputChanged(inputBIndex);
@@ -1062,7 +1065,6 @@ Node::switchInput0And1()
         onInputChanged(inputAIndex);
         onInputChanged(inputBIndex);
     }
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1154,6 +1156,8 @@ Node::disconnectInput(int inputNumber)
             _imp->guiInputs[inputNumber].reset();
             _imp->actionsQueued = true;
         }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
     }
 
     QObject::disconnect(inputShared.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
@@ -1174,7 +1178,6 @@ Node::disconnectInput(int inputNumber)
         onInputChanged(inputNumber);
         invalidateDetachedInputDataKind(inputShared);
     }
-    computeHash();
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
@@ -1230,6 +1233,8 @@ Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
                 _imp->guiInputs[found].reset();
                 _imp->actionsQueued = true;
             }
+            // Under the render-start lock, as in connectInput().
+            markHashDirty();
         }
     }
     if (found != -1) {
@@ -1242,7 +1247,6 @@ Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
             onInputChanged(found);
             invalidateDetachedInputDataKind(inputShared);
         }
-        computeHash();
 
         std::string inputChangedCB = getInputChangedCallback();
         if ( !inputChangedCB.empty() ) {
@@ -1849,10 +1853,10 @@ InspectorNode::setActiveInputAndRefresh(int inputNb,
         return;
     }
 
-    computeHash();
-
+    // The active inputs are part of the hash: they change first, so the mark follows them.
     Q_EMIT inputChanged(inputNb);
     onInputChanged(inputNb, isASide);
+    computeHash();
 
     runInputChangedCallback(inputNb);
 

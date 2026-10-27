@@ -43,6 +43,7 @@
 
 #include "RawSpeed-API.h"
 
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/IO/RawspeedRuntime.h"
@@ -495,4 +496,42 @@ TEST_F(RawDecodeSupportTest, DecodeCacheIsBoundedButKeepsTheLatestFile)
     RawDecodeSupport::evict({ bayerFixture().path() });
     ASSERT_TRUE(bool(RawDecodeSupport::readHeader(bayerFixture().path(), &error))) << error;
     EXPECT_EQ(5, decodes.load());
+}
+
+TEST_F(RawDecodeSupportTest, ARewrittenFileFailsWithoutADecodeUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = temporaryCopy(dir, "pinned.cr2", readFixtureBytes(bayerFixture().path()));
+    std::atomic<int> decodes(0);
+    RawDecodeSupport::setDecodedHookForTests([&decodes](const std::string&) { ++decodes; });
+
+    std::string error;
+    std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    EXPECT_EQ(1, header->channels);
+    float pixel = 0.f;
+    const RectI first(header->window.x1, header->window.y1, header->window.x1 + 1, header->window.y1 + 1);
+    ASSERT_TRUE(RawDecodeSupport::decode(path, first, &pixel, 1, &error)) << error;
+    EXPECT_EQ(1, decodes.load());
+
+    const std::vector<char> linear = readFixtureBytes(linearFixture().path());
+    ASSERT_TRUE(writeFixtureBytes(path, linear.data(), linear.size()));
+    const std::string changed = FileStampRegistry::changedOnDiskMessage(path);
+    error.clear();
+    EXPECT_FALSE(bool(RawDecodeSupport::readHeader(path, &error)));
+    EXPECT_EQ(changed, error);
+    error.clear();
+    EXPECT_FALSE(RawDecodeSupport::decode(path, first, &pixel, 1, &error));
+    EXPECT_EQ(changed, error);
+    EXPECT_EQ(1, decodes.load());
+
+    // Reload: the stamp and the decode go, and the new file comes in.
+    FileStampRegistry::instance().invalidate(path);
+    RawDecodeSupport::evict({ path });
+    error.clear();
+    header = RawDecodeSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    EXPECT_EQ(3, header->channels);
+    EXPECT_EQ(2, decodes.load());
 }

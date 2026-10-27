@@ -26,10 +26,13 @@
 #include "Global/Macros.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <sys/stat.h>
 
 #include <cstdint>
+#include <functional>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -54,6 +57,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -224,6 +228,144 @@ TEST(FileStamp, DetectsFramePatterns)
     EXPECT_FALSE(FileStampRegistry::hasFramePattern("/tmp/100%.exr"));
 }
 
+TEST(FileStamp, IdentityIsKeptUntilInvalidated)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("a.txt")).toStdString();
+    writeFile(path, "hello");
+    setMTime(path, 1000000);
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    const FileIdentity first = registry.identity(path);
+    EXPECT_TRUE(first.exists);
+    EXPECT_EQ(5u, first.size);
+    EXPECT_EQ(1000000, first.mtimeSec);
+    EXPECT_TRUE(registry.matchesDisk(path));
+
+    writeFile(path, "hello, longer content");
+    EXPECT_TRUE(first == registry.identity(path));
+    registry.invalidate(path);
+    EXPECT_FALSE(first == registry.identity(path));
+    EXPECT_TRUE(registry.matchesDisk(path));
+}
+
+TEST(FileStamp, AnInPlaceRewriteFailsMatchesDisk)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("a.txt")).toStdString();
+    writeFile(path, "hello");
+    setMTime(path, 1000000);
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    FileIdentity recorded;
+    ASSERT_TRUE(registry.matchesDisk(path, &recorded));
+    EXPECT_TRUE(recorded == registry.identity(path));
+
+    writeFile(path, "hello, longer content");
+    setMTime(path, 1000000);
+    EXPECT_FALSE(registry.matchesDisk(path));
+    EXPECT_TRUE(recorded == registry.identity(path));
+}
+
+TEST(FileStamp, ARenameReplaceFailsMatchesDisk)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("a.txt")).toStdString();
+    const std::string replacement = dir.filePath(QString::fromUtf8("b.txt")).toStdString();
+    writeFile(path, "hello");
+    setMTime(path, 1000000);
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    const U64 stamp = registry.stamp(path);
+    ASSERT_TRUE(registry.matchesDisk(path));
+
+    // Same size and modification time: only the inode tells the files apart.
+    writeFile(replacement, "jello");
+    setMTime(replacement, 1000000);
+    ASSERT_EQ(0, ::rename(replacement.c_str(), path.c_str()));
+    EXPECT_FALSE(registry.matchesDisk(path));
+    EXPECT_EQ(stamp, registry.stamp(path));
+    registry.invalidate(path);
+    EXPECT_NE(stamp, registry.stamp(path));
+    EXPECT_TRUE(registry.matchesDisk(path));
+}
+
+TEST(FileStamp, ASequenceRecordsTheIdentityOfEachFrame)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    std::string frames[2];
+    for (int i = 0; i < 2; ++i) {
+        frames[i] = dir.filePath(QString::fromUtf8("seq.%1.txt").arg(i + 1, 4, 10, QLatin1Char('0'))).toStdString();
+        writeFile(frames[i], i == 0 ? "one" : "three");
+        setMTime(frames[i], 1000000);
+    }
+    const std::string pattern = dir.filePath(QString::fromUtf8("seq.####.txt")).toStdString();
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    const U64 stamp = registry.sequenceStamp(pattern);
+    const std::uint64_t accesses = registry.diskAccessCount();
+    EXPECT_EQ(3u, registry.identity(frames[0]).size);
+    EXPECT_EQ(5u, registry.identity(frames[1]).size);
+    EXPECT_EQ(accesses, registry.diskAccessCount());
+
+    writeFile(frames[1], "three, rewritten");
+    EXPECT_TRUE(registry.matchesDisk(frames[0]));
+    EXPECT_FALSE(registry.matchesDisk(frames[1]));
+    EXPECT_EQ(stamp, registry.sequenceStamp(pattern));
+    registry.invalidate(pattern);
+    EXPECT_NE(stamp, registry.sequenceStamp(pattern));
+    EXPECT_TRUE(registry.matchesDisk(frames[1]));
+}
+
+TEST(FileStamp, OiioReaderFailsOnARewrittenFileUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("pinned.exr")).toStdString();
+    ASSERT_TRUE(writeFlatExr(path, 16, 12, 0.25f));
+
+    int parses = 0;
+    OiioReadSupport::setHeaderParsedHookForTests([&parses](const std::string&) {
+        ++parses;
+    });
+    std::string error;
+    std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    ASSERT_EQ(1u, header->subimages.size());
+    EXPECT_EQ(16, header->subimages[0].width);
+    const RectI window(0, 0, 4, 4);
+    std::vector<float> pixels((std::size_t)window.area() * 4, 0.f);
+    ASSERT_TRUE(OiioReadSupport::decode(path, 0, 0, 4, window, pixels.data(), (std::size_t)window.width() * 4, &error)) << error;
+    EXPECT_FLOAT_EQ(0.25f, pixels[0]);
+    EXPECT_EQ(1, parses);
+
+    ASSERT_TRUE(writeFlatExr(path, 20, 10, 0.75f));
+    const std::string changed = FileStampRegistry::changedOnDiskMessage(path);
+    error.clear();
+    EXPECT_FALSE(bool(OiioReadSupport::readHeader(path, &error)));
+    EXPECT_EQ(changed, error);
+    error.clear();
+    EXPECT_FALSE(OiioReadSupport::decode(path, 0, 0, 4, window, pixels.data(), (std::size_t)window.width() * 4, &error));
+    EXPECT_EQ(changed, error);
+    EXPECT_EQ(1, parses);
+
+    // Reload: the stamp and the header go, and the new file comes in.
+    FileStampRegistry::instance().invalidate(path);
+    OiioReadSupport::evictHeaders(std::vector<std::string>(1, path));
+    error.clear();
+    header = OiioReadSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    EXPECT_EQ(20, header->subimages[0].width);
+    ASSERT_TRUE(OiioReadSupport::decode(path, 0, 0, 4, window, pixels.data(), (std::size_t)window.width() * 4, &error)) << error;
+    EXPECT_FLOAT_EQ(0.75f, pixels[0]);
+    EXPECT_EQ(2, parses);
+    OiioReadSupport::setHeaderParsedHookForTests(std::function<void(const std::string&)>());
+}
+
 TEST_F(BaseTest, FileKnobContentHashFollowsTheFileOnlyOnReload)
 {
     QTemporaryDir dir;
@@ -341,8 +483,8 @@ TEST_F(BaseTest, ReadKeepsAFileOverwrittenInPlaceUntilReload)
 
     NodePtr reader = createWorkingSpaceRead(path);
     ASSERT_TRUE(bool(reader));
-    // A Read with no output does not cache what it renders, so each render decodes the file as it
-    // is now. Only an image cached under the unchanged hash keeps the old pixels until Reload.
+    // A Read with no output does not cache what it renders, and the reader refuses the rewritten
+    // file; only an image cached under the unchanged hash keeps answering until Reload.
     KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(reader->getKnobByName("forceCaching"));
     ASSERT_TRUE(bool(forceCaching));
     forceCaching->setValue(true);

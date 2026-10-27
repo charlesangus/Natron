@@ -3526,7 +3526,7 @@ AppManager::getReaderPluginIDForFile(const std::string& originalPath,
         }
     }
     // DeepRead reads the first part, so that is the part that decides.
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL);
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL, FilePin::eDisk);
     if (header && !header->subimages.empty() && header->subimages[0].deep) {
         return std::string(PLUGINID_NATRON_DEEPREAD);
     }

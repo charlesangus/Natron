@@ -48,8 +48,11 @@ NATRON_NAMESPACE_ENTER
  * rawspeed has no header-only parse, so the first look at a file decodes all of it. The decoded
  * image goes into a decode cache shared by every node and bounded to a fraction of the project's
  * RAM cache (decodeCacheCapacity()); the parsed header outlives it in a header cache. Both are
- * keyed on (path, modification time, size), so a file changed on disk is decoded again. Every
- * function is thread-safe; a file several threads ask for at once is decoded once.
+ * keyed on the path and the file's identity as FileStampRegistry recorded it with its stamp: once
+ * the file on disk is another one, readHeader and decode fail with
+ * FileStampRegistry::changedOnDiskMessage and decode nothing, until Reload invalidates the stamp
+ * and evict() drops the cached results. Every function is thread-safe; a file several threads ask
+ * for at once is decoded once.
  **/
 namespace RawDecodeSupport {
 struct Header {

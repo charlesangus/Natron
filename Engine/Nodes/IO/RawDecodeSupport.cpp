@@ -40,12 +40,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <filesystem>
 #include <future>
 #include <list>
 #include <map>
 #include <mutex>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -57,6 +55,7 @@
 #include "tiff/TiffTag.h"
 
 #include "Engine/AppManager.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Nodes/IO/RawDngOpcodes.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
@@ -77,14 +76,14 @@ namespace {
 
     const std::size_t kMaxCachedHeaders = 4096;
 
+    // The file as its stamp recorded it, which every decode and cached result is tied to.
     struct FileKey {
         std::string path;
-        std::filesystem::file_time_type mtime;
-        std::uintmax_t size = 0;
+        FileIdentity identity;
 
         bool operator==(const FileKey& other) const
         {
-            return path == other.path && mtime == other.mtime && size == other.size;
+            return path == other.path && identity == other.identity;
         }
     };
 
@@ -113,8 +112,7 @@ namespace {
     };
 
     struct HeaderEntry {
-        std::filesystem::file_time_type mtime;
-        std::uintmax_t size = 0;
+        FileIdentity identity;
         std::shared_ptr<const Header> header;
     };
 
@@ -141,21 +139,19 @@ namespace {
         return false;
     }
 
+    // Fails once the file on disk is no longer the one the stamp recorded: only Reload, which
+    // invalidates the stamp and evicts, lets a new version be decoded.
     bool
     statFile(const std::string& path,
              FileKey* key,
              std::string* error)
     {
-        std::error_code ec;
-        const std::filesystem::path fsPath(path);
-
         key->path = path;
-        key->mtime = std::filesystem::last_write_time(fsPath, ec);
-        if (!ec) {
-            key->size = std::filesystem::file_size(fsPath, ec);
+        if (!FileStampRegistry::instance().matchesDisk(path, &key->identity)) {
+            return fail(error, FileStampRegistry::changedOnDiskMessage(path));
         }
-        if (ec) {
-            return fail(error, "Could not read " + path + ": " + ec.message());
+        if (!key->identity.exists) {
+            return fail(error, "Could not read " + path);
         }
 
         return true;
@@ -643,8 +639,20 @@ namespace {
         // identify() reads on failure, point into the file's bytes.
         decltype(rawspeed::FileReader(nullptr).readFile()) file;
         std::unique_ptr<rawspeed::RawDecoder> decoder;
+        // The stats around the read keep a file rewritten or replaced meanwhile from being
+        // decoded under the stamp of the one before.
+        if (FileStampRegistry::statNow(key.path) != key.identity) {
+            outcome.error = FileStampRegistry::changedOnDiskMessage(key.path);
+
+            return outcome;
+        }
         try {
             file = rawspeed::FileReader(key.path.c_str()).readFile();
+            if (FileStampRegistry::statNow(key.path) != key.identity) {
+                outcome.error = FileStampRegistry::changedOnDiskMessage(key.path);
+
+                return outcome;
+            }
             rawspeed::RawParser parser(file.second);
             decoder = parser.getDecoder(cameras);
             if (!decoder) {
@@ -718,8 +726,7 @@ namespace {
             g_headers.clear();
         }
         HeaderEntry& entry = g_headers[key.path];
-        entry.mtime = key.mtime;
-        entry.size = key.size;
+        entry.identity = key.identity;
         entry.header = header;
     }
 
@@ -823,7 +830,7 @@ readHeader(const std::string& path,
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         const std::map<std::string, HeaderEntry>::const_iterator it = g_headers.find(path);
-        if (it != g_headers.end() && it->second.mtime == key.mtime && it->second.size == key.size) {
+        if (it != g_headers.end() && it->second.identity == key.identity) {
             return it->second.header;
         }
     }

@@ -105,6 +105,14 @@ private:
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
+    virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    /**
+     * @brief Opens the file, walks every file it brings in and keys the node on their stamps.
+     * Outside any render: when the File changes and when the node is created or loaded.
+     **/
+    void stampClosure();
+
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;

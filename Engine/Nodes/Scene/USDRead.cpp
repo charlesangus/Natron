@@ -43,6 +43,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 
@@ -104,10 +105,11 @@ struct USDRead::Implementation {
     // which visits every spec of every layer, while closure starts with the layer it sublayers
     // and no reload has run since. Reload walks afresh, which also finds files that were missing.
     std::uint64_t closureReloadCount;
-    // The stamps of closurePaths as of the last purge, 0 before any: keys the node, so a Reload
-    // that read a changed file again, however deep, re-authors the layer. Taken only when the
-    // files are read again, never by an evaluation, so an evaluation cannot re-key the node
-    // while the layers still hold what was read before.
+    // The stamps of closurePaths as of the last time the file was loaded (File set, project
+    // loaded) or reloaded: keys the node, so a file brought in that changed on disk, however
+    // deep, re-keys it then, including while the application was closed. Taken only when the
+    // files are read, never by an evaluation, so an evaluation cannot re-key the node while the
+    // layers still hold what was read before.
     std::atomic<U64> closureDigest;
 
     Implementation()
@@ -145,6 +147,25 @@ struct USDRead::Implementation {
             }
         }
         setClosure(layer);
+    }
+
+    // Hashes the registry's stamps of closurePaths: those recorded when each file was first
+    // looked at, until a Reload drops them.
+    U64 stampClosurePaths()
+    {
+        std::vector<std::string> paths;
+        {
+            std::lock_guard<std::mutex> lock(fileLayerMutex);
+            paths = closurePaths;
+        }
+        FileStampRegistry& stamps = FileStampRegistry::instance();
+        ContentHasher h;
+        h.appendU64(paths.size());
+        for (const std::string& path : paths) {
+            h.appendU64(path.empty() ? 0 : stamps.stamp(path));
+        }
+
+        return h.finalize();
     }
 };
 
@@ -210,7 +231,13 @@ USDRead::knobChanged(KnobI* k,
                      bool /*originatedFromMainThread*/)
 {
     KnobButtonPtr reload = _reload.lock();
+    KnobFilePtr file = _filename.lock();
 
+    if (file && (k == file.get())) {
+        stampClosure();
+
+        return true;
+    }
     if (!reload || (k != reload.get())) {
         return false;
     }
@@ -273,15 +300,43 @@ USDRead::purgeCaches()
             stamps.invalidate(path);
         }
     }
-    ContentHasher h;
-    h.appendU64(paths.size());
-    for (const std::string& path : paths) {
-        h.appendU64(path.empty() ? 0 : stamps.stamp(path));
-    }
-    _imp->closureDigest = h.finalize();
+    _imp->closureDigest = _imp->stampClosurePaths();
     invalidateSceneLayer();
     clearActionsCache();
 } // USDRead::purgeCaches
+
+void
+USDRead::onEffectCreated(bool /*mayCreateFileDialog*/,
+                         const CreateNodeArgs& /*args*/)
+{
+    // After the knobs are loaded, project or preset, and before any render.
+    stampClosure();
+}
+
+void
+USDRead::stampClosure()
+{
+    KnobFilePtr filename = _filename.lock();
+    const std::string path = filename ? filename->getSingleFilePath() : std::string();
+    PXR_NS::SdfLayerRefPtr layer;
+
+    if (!path.empty() && SceneOps::checkUsdRuntime(nullptr)) {
+        // Opens files, as authoring does: no layer reload may run meanwhile.
+        SceneWriteBarrier::ReadScope read;
+        PXR_NS::TfErrorMark mark;
+        layer = PXR_NS::SdfLayer::FindOrOpen(path);
+        // Authoring reports a file USD cannot read.
+        mark.Clear();
+        _imp->setClosure(layer);
+    } else {
+        _imp->setClosure(PXR_NS::SdfLayerRefPtr());
+    }
+    _imp->closureDigest = _imp->stampClosurePaths();
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+} // USDRead::stampClosure
 
 void
 USDRead::appendNodeContentHash(ContentHasher& h) const

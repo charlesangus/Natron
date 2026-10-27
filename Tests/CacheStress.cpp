@@ -49,6 +49,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
@@ -72,6 +73,8 @@ namespace {
         // The expression primitive in force per (knob target, dimension); absent means none.
         std::map<std::pair<int, int>, Primitive> expressions;
         unsigned mipmap = 0;
+        // A file was rewritten and no Reload has happened since.
+        bool stale = false;
     };
 
     double
@@ -318,6 +321,12 @@ namespace {
         case ePrimMipmap:
             os << "mipmap " << p.first;
             break;
+        case ePrimRewriteFile:
+            os << "rewrite file " << p.first << " as version " << p.input;
+            break;
+        case ePrimReload:
+            os << "reload " << nodeName(rt, p.node);
+            break;
         }
 
         return os.str();
@@ -446,6 +455,10 @@ namespace {
             inverse->push_back(q);
             break;
         }
+        case ePrimRewriteFile:
+        case ePrimReload:
+            // Scripted only: a file's past versions are not undone.
+            break;
         } // switch
     } // captureInverse
 
@@ -596,6 +609,30 @@ namespace {
             rt.mipmap = (unsigned)p.first;
 
             return true;
+        case ePrimRewriteFile:
+            if ((p.first < 0) || (p.first >= (int)rt.graph.files.size())) {
+                *error = "the graph has no such file";
+
+                return false;
+            }
+            if (!rt.graph.files[p.first](p.input, error)) {
+                return false;
+            }
+            rt.stale = true;
+
+            return true;
+        case ePrimReload: {
+            KnobButton* reload = dynamic_cast<KnobButton*>(rt.graph.nodes[p.node]->getKnobByName(kNatronReadParamReload).get());
+            if (!reload) {
+                *error = "the node has no Reload button";
+
+                return false;
+            }
+            reload->trigger();
+            rt.stale = false;
+
+            return true;
+        }
         } // switch
 
         return false;
@@ -1000,6 +1037,8 @@ namespace {
             step->prims.push_back(mipmapPrim(rt.mipmap == 0 ? 1 : 0));
 
             return true;
+        case eOpRewriteFile:
+        case eOpReload:
         case eOpCount:
             break;
         } // switch
@@ -1035,6 +1074,10 @@ namespace {
         double time = 0.;
         unsigned mipmap = 0;
         int probe = -1;
+        // Set while a file is stale: the record whose renders this step's must equal, if any
+        // succeed. The reference pass does not render such a step, since emptying the caches
+        // purges the Reads, which reloads their files.
+        int pinnedTo = -1;
         Probe legacy;
         Probe taskGraph;
         Probe custom;
@@ -1183,7 +1226,7 @@ namespace {
 OpMask
 defaultOps()
 {
-    return allOps() & ~(opBit(eOpWholeValueExpression) | opBit(eOpViewerB) | opBit(eOpMipmap));
+    return allOps() & ~(opBit(eOpWholeValueExpression) | opBit(eOpViewerB) | opBit(eOpMipmap) | opBit(eOpRewriteFile) | opBit(eOpReload));
 }
 
 OpMask
@@ -1234,6 +1277,10 @@ opName(OpKind kind)
         return "viewerB";
     case eOpMipmap:
         return "mipmap";
+    case eOpRewriteFile:
+        return "rewriteFile";
+    case eOpReload:
+        return "reload";
     case eOpCount:
         break;
     }
@@ -1289,6 +1336,30 @@ mipmapPrim(int level)
 
     p.kind = ePrimMipmap;
     p.first = level;
+
+    return p;
+}
+
+Primitive
+rewriteFilePrim(int file,
+                int version)
+{
+    Primitive p;
+
+    p.kind = ePrimRewriteFile;
+    p.first = file;
+    p.input = version;
+
+    return p;
+}
+
+Primitive
+reloadPrim(int node)
+{
+    Primitive p;
+
+    p.kind = ePrimReload;
+    p.node = node;
 
     return p;
 }
@@ -1600,6 +1671,7 @@ run(const AppInstancePtr& app,
         }
         Rng rng(seed);
         std::vector<std::vector<Primitive>> undoStack;
+        int pinned = -1;
         // The first record renders the graph as built, so the first edit already meets filled caches.
         const int total = 1 + (int)options.scripted.size() + (options.seeded ? options.steps : 0);
         for (int i = 0; i < total; ++i) {
@@ -1640,6 +1712,24 @@ run(const AppInstancePtr& app,
             record.time = currentTime(rt);
             record.mipmap = rt.mipmap;
             record.probe = resolveProbe(rt);
+            if (rt.stale) {
+                record.pinnedTo = pinned;
+                const StepRecord* before = (pinned >= 0) ? &records[pinned] : 0;
+                if (!before || (before->time != record.time) || (before->mipmap != record.mipmap) || (before->probe != record.probe)) {
+                    std::ostringstream os;
+                    os << "NATRON_CACHE_STRESS_SEED=" << seed << ": step " << i
+                       << " renders a stale file at another time, scale or node than the last render before the rewrite\n"
+                       << formatLog(records, records.size());
+                    result.ok = false;
+                    result.failedStep = i;
+                    result.report = os.str();
+
+                    return result;
+                }
+                records.push_back(record);
+                continue;
+            }
+            pinned = i;
             if (options.legacy) {
                 clearEverything(app);
                 record.legacy = renderOnce(rt, record.probe, eRenderSchedulerModeLegacy, true);
@@ -1712,6 +1802,34 @@ run(const AppInstancePtr& app,
         std::string mode;
         if (probe != record.probe) {
             mismatch = "the passes probe different nodes";
+        }
+        if (mismatch.empty() && (record.pinnedTo >= 0)) {
+            // Pinned to the file as last loaded: failing or rendering nothing is fine, any other
+            // image than the one before the rewrite mixes in the new file.
+            const StepRecord& pinnedRecord = records[record.pinnedTo];
+            for (int m = 0; (m < 2) && mismatch.empty(); ++m) {
+                const bool legacy = (m == 0);
+                if (legacy ? !options.legacy : !options.taskGraph) {
+                    continue;
+                }
+                const Probe got = renderOnce(rt, probe, legacy ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph, false);
+                if (got.ok && !got.empty) {
+                    mismatch = compareProbes(legacy ? pinnedRecord.legacy : pinnedRecord.taskGraph, got);
+                    mode = legacy ? "legacy, stale file" : "task graph, stale file";
+                }
+            }
+            if (!mismatch.empty()) {
+                std::ostringstream os;
+                os << "cache stress mismatch: NATRON_CACHE_STRESS_SEED=" << seed << " step " << i << " (" << mode << "): " << mismatch << "\n"
+                   << "op log:\n"
+                   << formatLog(records, i);
+                result.ok = false;
+                result.failedStep = (int)i;
+                result.report = os.str();
+
+                return result;
+            }
+            continue;
         }
         // Alternate which mode renders first, so each also runs against the other's entries.
         const bool legacyFirst = (i % 2) == 0;

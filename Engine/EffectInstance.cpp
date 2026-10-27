@@ -6253,6 +6253,15 @@ EffectInstance::abortViewerRendersForEdit()
 }
 
 void
+EffectInstance::notifyValueQueued()
+{
+    NodePtr node = getNode();
+    if (node) {
+        node->notifyActionQueued();
+    }
+}
+
+void
 EffectInstance::abortAllRendersReadingThis()
 {
     std::list<OutputEffectInstance*> outputNodes;

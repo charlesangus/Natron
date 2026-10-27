@@ -1556,6 +1556,13 @@ public:
      **/
     bool isNodeRendering() const;
 
+    /**
+     * @brief Records that an edit was queued because the node was rendering, so a dequeue
+     * deferred by a render that still holds the node aborts the viewer renders instead of waiting
+     * for them to end on their own.
+     **/
+    void notifyActionQueued();
+
     bool hasPersistentMessage() const;
 
     bool hasAnyPersistentMessage() const;

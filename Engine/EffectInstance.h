@@ -1419,6 +1419,7 @@ public:
     virtual bool canSetValue() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
     virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
+    virtual void notifyValueQueued() OVERRIDE FINAL;
     virtual double getCurrentTime() const OVERRIDE WARN_UNUSED_RETURN;
     virtual ViewIdx getCurrentView() const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool getCanTransform() const

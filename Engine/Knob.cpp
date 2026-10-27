@@ -1898,6 +1898,10 @@ KnobHelper::setGuiCurveHasChanged(ViewSpec /*view*/,
     } else if (_imp->linkCurveWriter != QThread::currentThread()) {
         _imp->guiCurveChangedOutsideLink[dimension] = true;
     }
+    k.unlock();
+    if (changed && _imp->holder && !_imp->holder->isSetValueCurrentlyPossible()) {
+        _imp->holder->notifyValueQueued();
+    }
 }
 
 bool

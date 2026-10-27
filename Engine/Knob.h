@@ -3133,6 +3133,11 @@ public:
     virtual void abortAllRendersReadingThis() { }
 
     /**
+     * @brief Called when a value set while the holder renders is queued instead of applied.
+     **/
+    virtual void notifyValueQueued() { }
+
+    /**
      * @brief abortViewerRendersForEdit() for a change being made, deferred to the end of the
      * outermost begin/endChanges bracket when the change is made inside a nested one.
      **/

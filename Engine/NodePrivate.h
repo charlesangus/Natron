@@ -233,6 +233,7 @@ public:
         , inputIsRenderingCounter(0)
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
+        , actionsQueued(false)
         , nodeIsDequeuingMutex()
         , nodeIsDequeuingCond()
         , nodeIsRendering(0)
@@ -489,6 +490,8 @@ public:
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty
     bool nodeIsDequeuing;
+    // An edit waits in a queue for the renders holding the node to end; protected by nodeIsDequeuingMutex
+    bool actionsQueued;
     QMutex nodeIsDequeuingMutex;
     QWaitCondition nodeIsDequeuingCond;
 

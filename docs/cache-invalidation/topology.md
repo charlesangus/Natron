@@ -135,8 +135,13 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   dequeue in progress, and the count goes up under the dequeuing lock, so a dequeue either sees the
   render or finishes before it starts. Stress case:
   `CacheStressConcurrentTest.DequeueUnderARestartedRender`; unit test:
-  `Tests/QueuedInputEdit_Test.cpp`. An edit made while the node never stops rendering waits until
-  it does. The direct path (T7) is not covered.
+  `Tests/QueuedInputEdit_Test.cpp`. So that an edit during playback doesn't wait for playback to
+  stop, the queued input edits and knob values flag the node (`Node::notifyActionQueued`), and a
+  dequeue deferred while that flag is set aborts the viewer renders below the node
+  (`abortViewerRendersForEdit`); the last aborted render emits the dequeue again, and the edit's own
+  render restarts playback. Renders that aren't viewer renders still run to their end first. Keyframe
+  and curve edits written to the GUI curves (`shouldUseGuiCurve`) set it too, through
+  `KnobHelper::setGuiCurveHasChanged`. The direct path (T7) is not covered.
 - **T2. Viewer A/B selection doesn't mark the viewer.** The viewer's content hash folds its
   active inputs (Node.cpp:976-980), but `InspectorNode::setInputA`/`setInputB`
   (NodeInputs.cpp:1977-1995) leave the hash as it was. The viewer's `FrameKey` also names the input

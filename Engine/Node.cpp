@@ -7926,12 +7926,22 @@ Node::isNodeRendering() const
 }
 
 void
+Node::notifyActionQueued()
+{
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+
+    _imp->actionsQueued = true;
+}
+
+void
 Node::dequeueActions()
 {
     assert( QThread::currentThread() == qApp->thread() );
 
     // A render that started after mustDequeueActions was emitted still holds the node: its hash
     // names the inputs it started with, so the queue waits. Its unsetNodeIsRendering emits again.
+    bool held;
+    bool abortHolders;
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (_imp->nodeIsDequeuing) {
@@ -7939,11 +7949,23 @@ Node::dequeueActions()
         }
         {
             QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
-            if (_imp->nodeIsRendering > 0) {
-                return;
-            }
+            held = _imp->nodeIsRendering > 0;
         }
-        _imp->nodeIsDequeuing = true;
+        abortHolders = held && _imp->actionsQueued;
+        if (!held) {
+            _imp->nodeIsDequeuing = true;
+            _imp->actionsQueued = false;
+        }
+    }
+    if (held) {
+        // During playback the frames overlap and a new one may start before this slot runs, so
+        // without an abort a queued edit could wait until playback stops. The aborted renders end
+        // quickly, the last one emits again, and the edit's own render restarts playback.
+        if (abortHolders && _imp->effect) {
+            _imp->effect->abortViewerRendersForEdit();
+        }
+
+        return;
     }
     bool hasChanged = false;
     if (_imp->effect) {

@@ -30,6 +30,7 @@ POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 280
 RENDER_MS = 1500
 PLAY_MS = 1000
+EDIT_APPLIES_S = 2.0
 # Screen pixels are 8-bit and pass through the viewer's display transform.
 COLOUR_SLACK = 3
 GRID = 5
@@ -190,12 +191,17 @@ try:
         ok = yield ("until", lambda: cached_frames() is not None, POLL_TIMEOUT_S)
         require(ok, "the timeline publishes natronCachedFrames")
 
+        # An edit made while the STMap renders (during playback) is queued and applies once the
+        # renders it aborts have ended, so getInput (the rendered inputs) changes a moment later.
         def connect_map():
             require(stmap.connectInput(STMAP_INPUT_MAP, mapping), "reconnect the Map")
+            ok = yield ("until", lambda: stmap.getInput(STMAP_INPUT_MAP) is not None, EDIT_APPLIES_S)
+            require(ok, "the reconnected Map applies within %g s" % EDIT_APPLIES_S)
 
         def disconnect_map():
             stmap.disconnectInput(STMAP_INPUT_MAP)
-            require(stmap.getInput(STMAP_INPUT_MAP) is None, "disconnect the Map")
+            ok = yield ("until", lambda: stmap.getInput(STMAP_INPUT_MAP) is None, EDIT_APPLIES_S)
+            require(ok, "the Map disconnect applies within %g s" % EDIT_APPLIES_S)
 
         gt.section("references")
         py_viewer.seek(1)
@@ -203,13 +209,13 @@ try:
         with_map = yield from settle()
         require(with_map is not None, "read the viewer with the Map")
         gt.shot("cache-invalidation-reference-with-map.png")
-        disconnect_map()
+        yield from disconnect_map()
         clear_all_caches(win)
         without_map = yield from settle()
         require(without_map is not None, "read the viewer without the Map")
         gt.shot("cache-invalidation-reference-without-map.png")
         require(not same(with_map, without_map), "the Map changes what the viewer shows, so a stale frame is visible")
-        connect_map()
+        yield from connect_map()
         clear_all_caches(win)
         yield from expect_shown("reference restored", with_map, "with-Map")
 
@@ -218,23 +224,23 @@ try:
             py_viewer.seek(frame)
             yield ("until", lambda f=frame: f in (cached_frames() or []), POLL_TIMEOUT_S)
         yield from expect_line("idle visited", [1, 2, 3, 4, 5])
-        disconnect_map()
+        yield from disconnect_map()
         yield from expect_shown("idle disconnected", without_map, "without-Map")
         yield from expect_line("idle disconnected", [5])
         py_viewer.seek(2)
         yield from expect_shown("idle revisit", without_map, "without-Map")
-        connect_map()
+        yield from connect_map()
         yield from expect_shown("idle reconnected", with_map, "with-Map")
 
         gt.section("scrub")
         py_viewer.seek(6)
         py_viewer.seek(7)
-        disconnect_map()
+        yield from disconnect_map()
         py_viewer.seek(8)
         yield from expect_shown("scrub disconnected", without_map, "without-Map")
         py_viewer.seek(6)
         yield from expect_shown("scrub revisit", without_map, "without-Map")
-        connect_map()
+        yield from connect_map()
         yield from expect_shown("scrub reconnected", with_map, "with-Map")
 
         gt.section("playback")
@@ -242,14 +248,14 @@ try:
         yield from expect_shown("before playback", with_map, "with-Map")
         py_viewer.startForward()
         yield ("sleep", PLAY_MS)
-        disconnect_map()
+        yield from disconnect_map()
         yield ("sleep", PLAY_MS)
         py_viewer.pause()
         report("NOTE playback paused at frame %d" % py_viewer.getCurrentFrame())
         yield from expect_shown("playback disconnected", without_map, "without-Map")
         py_viewer.seek(1)
         yield from expect_shown("playback revisit", without_map, "without-Map")
-        connect_map()
+        yield from connect_map()
         yield from expect_shown("playback reconnected", with_map, "with-Map")
         faulthandler.cancel_dump_traceback_later()
 

@@ -12,3 +12,7 @@ Filed from M242 - Cache Invalidation Audit (2026-10-27). The full list, with fil
 - **I3, I4, E2 (string replace on rename), E3, A4, A5, K3–K8:** lower-risk keying and expression issues.
 
 Each fix enables or adds a CacheStress case.
+
+## Decisions
+
+- 2026-10-27 — **Reload is the recheck (user):** Natron never watches files on disk. For N3, a Read pins to the file as it was when last loaded or reloaded: the OIIO header and Raw decode caches must not pick up a changed file on their own; only Reload re-reads it (and moves the node hash). Old header plus new pixels must never mix.

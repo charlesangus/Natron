@@ -84,8 +84,24 @@ Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfv
 
 **Verification gate:** full ctest passes; the user has signed off the AppImage check (M72.P3.T2); decisions from this feature are published to `docs/decisions/`.
 
+## Phase 72.6: UAT round 1 fixes (user, 2026-10-27)
+
+- [ ] M72.P6.T1 — RFVSwitch matches non-string variables
+  - The switch seemingly fails on numeric/bool/other variable types. Match against the value's canonical text form (same text the error message shows), and test every RFV type.
+- [ ] M72.P6.T2 — RFVSwitch refreshes and errors correctly
+  - Editing a project variable (or a Set node's value) must invalidate and re-render the switch at once, as for every other RFV reader.
+  - The "The variable <name> = "<v>" matches no pattern" warning shows inconsistently when a project var is overridden by an RFVSet below it: the message must reflect the value the switch actually sees in its render context, and clear/appear deterministically.
+- [ ] M72.P6.T3 — RFVSwitch pattern editing
+  - Replace the bare multiline text with one row per pattern with +/- buttons (add after, remove), each row aligned with the input it selects (label "Input N"). Fit 1920x1080.
+- [ ] M72.P6.T4 — RFVRead respects time nodes
+  - RFVRead must read the value at the time its context resolves to, through TimeOffset/FrameHold/Retime/etc. above it, like every other RFV reader (M71: the value is evaluated when read, at the reader's time).
+- [ ] M72.P6.T5 — Rename ReverseFlowVariableSet to RFVSet; Reverse Flow Variable toolbar category
+  - Node label and plugin id `RFVSet` (no backward compat). All RFV nodes (RFVSet, RFVSwitch, RFVRead) move to a new toolbar category "Reverse Flow Variable" with its own icon (icon pending the user's pick; placeholder until then).
+- [ ] M72.P6.T6 — Rebuild, AppImage, re-UAT
+
 ## Decisions
 
+- 2026-10-27 — UAT round 1 (user): fixes in Phase 72.6. RFVSet is the node name; RFV nodes get their own toolbar category.
 - 2026-10-27 — **Frame range follows the Set too (bosley-native-nodes):** P1.T2 found format, RoD and layers already follow the Set below a node (M71), but frame range read the project's values. For consistency the frame range is computed under each input's context and its cache keyed by context. Code for P1.T1-P2.T1 at f2e3d8525; P1.T1's engine part was already in M71 (`registerRFVListeners`), `knobsAge` no longer exists.
 
 2026-10-27: Phases 72.1, 72.2, 72.4, 72.5 done; release gate 491/491; RFVRead GUI check passes; AppImage and M72-uat.md ready; draft PR stacked on #122. UAT pending (P3.T2).

@@ -90,3 +90,7 @@ Building M16 - Project Format Redesign's heavy benchmark project (30 beziers × 
 **Verification gate:** `tools/ci/remote/build.sh release --tests` is green for each phase. `BezierGuiCopyEquivalence` matches the golden fixture byte for byte (serialized roto and mask checksums), and `BezierEditScaling`, `RotoContentHash`, `RotoLayer`, `RotoFeatherDrag` and `RotoXmlEquivalence` pass. The host AppImage bench shows a 24×200 build roughly linear in keys with flat per-edit cost. The drag check passes, through the GUI bench if M117 - GUI Perf Harness And Baseline has landed.
 
 2026-10-27: Release gate 547/547; bench 73.5 s → 0.20 s at 200 keys (BASELINE.md); draft PR #134; UAT pending (drag check).
+
+## Decisions
+
+- 2026-10-27 — **UAT passed (user).** Pre-existing roto-keys-in-editors issue filed as M261.

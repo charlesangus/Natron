@@ -85,6 +85,17 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 **Verification gate:** release gate green; scene GUI scripts (select, navigation presets, ortho, lock, create camera) pass under Xvfb; screenshots of each preset's shortcut-editor page and an ortho view shared before sign-off; user tries the Nuke preset on real hardware.
 
+## Phase 228.4: UAT round 1 fixes (user, 2026-10-27)
+
+- [ ] M228.P4.T1 — Nuke preset: plain drag marquee-selects
+  - Ctrl-drag tumbles in the Nuke preset, so plain left-drag on empty space must marquee-select (click still selects).
+- [ ] M228.P4.T2 — Locked look-through viewport performance
+  - Viewport interaction is very slow while locked to a camera. Profile the locked path (likely per-event authoring of the camera prim / engine rebuild / full-scene re-sync) and make it as fast as the free camera.
+- [ ] M228.P4.T3 — One-step lock
+  - "Lock" with no look-through camera: one camera in the scene locks to it directly; several open a menu of cameras to pick from. Also add the camera list to the look-through control so lock is one step.
+- [ ] M228.P4.T4 — Rebuild, AppImage, re-UAT
+
 ## Decisions
 
+- 2026-10-27 — UAT round 1 (user): fixes in Phase 228.4. Lock with several cameras offers a menu (PM call: one camera locks directly).
 - 2026-10-27 — **Choices (bosley-native-nodes):** Nuke preset follows the Nuke 17 docs (Ctrl+left tumble, Alt+left pan, Alt+middle dolly; plain middle-drag pan added); Back/Left/Bottom views added; clip planes per viewer, not saved; a camera created from the view is not auto-connected (as Nuke). Release gate 568/568; GUI checks pass; draft PR #137; UAT pending.

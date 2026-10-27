@@ -25,22 +25,23 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Decisions
 
+- 2026-10-27 — PM: T5 becomes the real group bug — removing a GroupInput returns early in NodeGroup::notifyNodeDeactivated without syncing the GUI list, so the next dequeue restores it (nothing queues group connection changes, so the planned test can't fail). Clear All Caches does not re-stamp files: only Reload re-reads (user's rule), so a changed file errors after Clear Caches until Reload. The A/B switch marks inside refreshActiveInputs so the viewer's own onInputChanged runs under the new hash.
 - 2026-10-27 — PM: a Write frame whose render args moved mid-render (A4) is re-rendered once under fresh args, then fails with an error if they move again. A pinned Read's "changed on disk since it was loaded, Reload to read it" error text goes to the user at UAT.
 - 2026-10-27 — **Reload is the recheck (user):** Natron never watches files on disk. For N3, a Read pins to the file as it was when last loaded or reloaded: the OIIO header and Raw decode caches must not pick up a changed file on their own; only Reload re-reads it (and moves the node hash). Old header plus new pixels must never mix.
 
 ## Phase 260.1: Read file pinning
 
-- [ ] M260.P1.T1 — FileStampRegistry records each file's identity, not only its hash
+- [x] M260.P1.T1 — FileStampRegistry records each file's identity, not only its hash
   - files: Engine/FileStampRegistry.h, Engine/FileStampRegistry.cpp
   - approach: Add `struct FileIdentity { bool exists; int64 mtimeSec, mtimeNsec; uint64 size, inode; }` and `FileIdentity identity(const std::string& path)`. It is recorded on first use under the same generation guard as `stamp()` (FileStampRegistry.cpp:111-131). `sequenceStamp()` records the identity of each member file it stats (:94). `invalidate()` drops identities along with stamps. Add `bool matchesDisk(path, FileIdentity*)`, which stats now and compares. `computeStamp` (:41-61) hashes the same record, so the two can never disagree.
   - verify: gtest in Tests/FileStampRegistry_Test.cpp (new or existing). Identity is stable until `invalidate`. An in-place rewrite and a rename-replace each fail `matchesDisk`. A sequence's members get identities.
   - size: M
-- [ ] M260.P1.T2 — OIIO reader pins to the stamped identity
+- [x] M260.P1.T2 — OIIO reader pins to the stamped identity
   - files: Engine/Nodes/IO/OiioReadSupport.cpp, Engine/Nodes/IO/OiioReadSupport.h
   - approach: Key `g_cache` (:63-80) on the registry's `FileIdentity`, inode included, instead of a fresh `last_write_time` and `file_size` (:146-147). `readHeader` fails with the "changed on disk, Reload" error when `matchesDisk` is false, and never re-parses. `decode` (.h:274) stats before open and after the read and fails the same way on a mismatch. Only `evictHeaders` (called from Reload, NativeRead.cpp:628) lets a new header in.
   - verify: gtest. Write an EXR, read the header and a tile, rewrite it at another size, then `readHeader` and `decode` both fail. After `invalidate` and `evictHeaders` they return the new file. CacheStress primitives `ePrimRewriteFile` and `ePrimReload` (Tests/CacheStress.h:134) on a NativeRead graph give a new case, `CacheStressTest.ReadPinnedUntilReload`. Its `compare` hook (CacheStress.h:186) accepts only the pre-rewrite reference or an empty render between rewrite and Reload, then an exact match after Reload.
   - size: M
-- [ ] M260.P1.T3 — Raw decode caches pin to the stamped identity
+- [x] M260.P1.T3 — Raw decode caches pin to the stamped identity
   - files: Engine/Nodes/IO/RawDecodeSupport.cpp
   - approach: Same as T2 for `FileKey` (:80-88) and `statFile` (:146-160). The key becomes the registry identity, inode included. A mismatch fails before decoding. `evict` (:906) stays the only path to a new decode.
   - verify: gtest with a Raw fixture rewritten under the decoder (`setDecodedHookForTests` counts decodes): no second decode and an error until Reload. Add a Raw variant to `CacheStressTest.ReadPinnedUntilReload`.
@@ -48,12 +49,12 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Phase 260.2: USD layers
 
-- [ ] M260.P2.T1 — N1: a scene layer is memoized only if its key still holds after authoring
+- [x] M260.P2.T1 — N1: a scene layer is memoized only if its key still holds after authoring
   - files: Engine/Nodes/Scene/SceneOps.cpp, Engine/Nodes/Scene/SceneLayerMemo.h, Engine/Nodes/NativeEffectBase.cpp
   - approach: `SceneLayerMemo::produce` (SceneOps.cpp:1040-1136) computes `layerHash` before `author` (:1114) and stores it unconditionally (:1126-1132). Pass a `std::function<bool(const Key&)> keyStillValid` that `NativeEffectBase::emitSceneLayer` (:948-961) builds by re-running `getSceneLayerKey` (:903-945) and comparing. If the key moved, return the layer without memoizing it (`valid` stays false), as `CurveTablesCache` does.
   - verify: Tests/Scene/SceneLayerMemo_Test.cpp: an author callback edits a knob mid-author, the memo does not serve that layer for the old key, and undo re-authors. CacheStress: add `CacheStressConcurrentTest.SceneKnobEditDuringAuthoring` (a USDPrim graph with knob edits during evaluation, reference from empty caches).
   - size: M
-- [ ] M260.P2.T2 — N2: USDRead stamps its closure when the file is first loaded
+- [x] M260.P2.T2 — N2: USDRead stamps its closure when the file is first loaded
   - files: Engine/Nodes/Scene/USDRead.cpp
   - approach: `closureDigest` is 0 until the first `purgeCaches` (:107-115, :256-284). Factor the stamp loop (:270-281) into `stampClosure()`. On File knob change and on project load (`knobChanged` :206, plus the load hook), outside any render, `FindOrOpen` the file, `setClosure`, `stampClosure()` and `markHashDirty`. Rendering keeps not re-keying (the comment at :107-110 holds).
   - verify: gtest in Tests/Scene: a sublayer is rewritten between two app instances, and the node hash in the second session differs from the first with no Reload. CacheStress: add `CacheStressSelfTest`-style case `USDReadSublayerChangedWhileClosed` using the save, rewrite, fresh-load reference path (`TheReferenceEqualsAFreshAppLoadOfTheSavedProject`, CacheStressSelf_Test.cpp:196) with a persisted DiskCache.
@@ -61,12 +62,12 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Phase 260.3: Topology and hash ordering
 
-- [ ] M260.P3.T1 — T8 and T4: mark the hash inside the render-start lock, right after the input write
+- [x] M260.P3.T1 — T8 and T4: mark the hash inside the render-start lock, right after the input write
   - files: Engine/NodeInputs.cpp, Engine/Node.cpp
   - approach: In `connectInput` (NodeInputs.cpp:832-850), `replaceInputInternal`, `switchInput0And1`, both disconnects and `dequeueActions` (Node.cpp:8072-8091), call `markHashDirty()` while `lockRenderStarts` is still held, after the `inputs` write. The trailing `computeHash()` calls (NodeInputs.cpp:870, :962, :1065, :1177, :1245; Node.cpp:8105) then come after `onInputChanged` and become redundant; drop them. `markHashDirtyInternal` (Node.cpp:1408-1436) takes only the queue mutex, so it is safe under the lock. Because the hash is already dirty when `onInputChanged` runs, its `buildArgsMap` reads the new hash (fixes T4).
   - verify: Tests/QueuedInputEdit_Test.cpp: use the input-edit hook (Node.cpp:1492-1497) to start a render between write and mark; the render's `nodeHash` is the new one. CacheStress: CacheStressTestEffect stores an ActionsCache answer from `onInputChanged`. Add `CacheStressConcurrentTest.OnInputChangedUnderTheNewHash` with connect, revert and render.
   - size: M
-- [ ] M260.P3.T2 — T3: the inspector changes its active inputs before it marks
+- [x] M260.P3.T2 — T3: the inspector changes its active inputs before it marks
   - files: Engine/NodeInputs.cpp
   - approach: In `InspectorNode::setActiveInputAndRefresh` (:1842-1858), call `onInputChanged(inputNb, isASide)` first, then `computeHash()`. The mark then follows every change to `_activeInputs`.
   - verify: `CacheStressTest.ViewerABSwitch` (CacheStress_Test.cpp:553) plus a concurrent variant `CacheStressConcurrentTest.ViewerABSwitchDuringRender`.

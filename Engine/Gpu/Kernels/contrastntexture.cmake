@@ -1,0 +1,3 @@
+slang_add_kernel(contrastntexture_luminance Kernels/contrastntexture.slang ENTRY contrastntexture_luminance REGISTRY NatronGpu)
+slang_add_kernel(contrastntexture_details Kernels/contrastntexture.slang ENTRY contrastntexture_details REGISTRY NatronGpu)
+slang_add_kernel(contrastntexture_apply Kernels/contrastntexture.slang ENTRY contrastntexture_apply REGISTRY NatronGpu)

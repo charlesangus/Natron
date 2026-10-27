@@ -11,3 +11,7 @@
 ### 2026-10-27T05:18:45+00:00 — change-request
 - refs: M207
 - Use OCIO to do the compression; can use an srgb display-referred space that compresses to 0-1 to go from most colourspaces to srgb, and it's invertible.
+
+### 2026-10-27T05:19:47+00:00 — change-request
+- refs: M203
+- Spike/investigate if we _need_ to end GPU regions for this to be practical.

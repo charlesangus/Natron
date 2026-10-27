@@ -232,6 +232,13 @@ GpuRecordContext::maxScratchBytes() const
     return largestSizeWithin(maxStorageBufferBytes());
 }
 
+uint64_t
+GpuRecordContext::maxScratchBytesFor(uint64_t deviceRange)
+{
+    const uint64_t cap = gMaxStorageBufferBytesForTests.load(std::memory_order_relaxed);
+    return largestSizeWithin((cap != 0) ? std::min(deviceRange, cap) : deviceRange);
+}
+
 void
 GpuRecordContext::setMaxStorageBufferBytesForTests(uint64_t bytes)
 {

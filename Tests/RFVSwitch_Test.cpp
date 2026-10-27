@@ -457,7 +457,7 @@ TEST_F(RFVSwitchTest, NoMatchFailsTheRenderAndPostsWhy)
         if (renderPixel(rfvSwitch, mode, 1., true, &pixel, &error)) {
             EXPECT_EQ(0.f, pixel);
         } else {
-            EXPECT_EQ(std::string("no plane rendered"), error);
+            EXPECT_EQ(std::string("the render produced no plane"), error);
         }
     }
 }

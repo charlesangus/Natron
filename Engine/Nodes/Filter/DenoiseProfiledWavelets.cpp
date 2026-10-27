@@ -137,28 +137,7 @@ namespace {
         const float varf = std::sqrt(2.0f + 2.0f * 4.0f * 4.0f + 6.0f * 6.0f) / 16.0f;
         const float sigmaBand = std::pow(varf, (float)scale);
         const float sb2 = sigmaBand * sigmaBand;
-        Vec3 adjt = { 8.0f, 8.0f, 8.0f };
-        const int bandIndex = kBands - (scale + (kBands - maxScale) + 1);
-        const auto force2 = [&](int curve) {
-            const float f = settings.force[curve][bandIndex];
-
-            return f * f * 4;
-        };
-
-        if (settings.colorMode == eColorModeRgb) {
-            const float all = force2(eCurveAll);
-            for (int c = 0; c < 3; ++c) {
-                adjt[c] *= all;
-            }
-            adjt[0] *= force2(eCurveRed);
-            adjt[1] *= force2(eCurveGreen);
-            adjt[2] *= force2(eCurveBlue);
-        } else {
-            adjt[0] *= force2(eCurveY0);
-            const float u0v0 = force2(eCurveU0V0);
-            adjt[1] *= u0v0;
-            adjt[2] *= u0v0;
-        }
+        const Vec3 adjt = waveletAdjust(scale, maxScale, settings);
         Vec3 thrs;
         for (int c = 0; c < 3; ++c) {
             const float varY = (float)sumY2[c] / (npixels - 1.0f);
@@ -169,6 +148,37 @@ namespace {
         return thrs;
     }
 } // namespace
+
+Vec3
+waveletAdjust(int scale,
+              int maxScale,
+              const Settings& settings)
+{
+    Vec3 adjt = { 8.0f, 8.0f, 8.0f };
+    const int bandIndex = kBands - (scale + (kBands - maxScale) + 1);
+    const auto force2 = [&](int curve) {
+        const float f = settings.force[curve][bandIndex];
+
+        return f * f * 4;
+    };
+
+    if (settings.colorMode == eColorModeRgb) {
+        const float all = force2(eCurveAll);
+        for (int c = 0; c < 3; ++c) {
+            adjt[c] *= all;
+        }
+        adjt[0] *= force2(eCurveRed);
+        adjt[1] *= force2(eCurveGreen);
+        adjt[2] *= force2(eCurveBlue);
+    } else {
+        adjt[0] *= force2(eCurveY0);
+        const float u0v0 = force2(eCurveU0V0);
+        adjt[1] *= u0v0;
+        adjt[2] *= u0v0;
+    }
+
+    return adjt;
+}
 
 int
 waveletScales(double renderScale,

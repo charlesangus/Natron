@@ -54,6 +54,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawKernels.h"
@@ -238,6 +239,11 @@ NlmGeometry nlmGeometry(const Settings& settings,
                         double renderScale) WARN_UNUSED_RETURN;
 
 /**
+ * @brief The scattered shifts of g, a row and a column each, in the order denoiseNlm() walks them.
+ **/
+std::vector<std::array<int, 2>> nlmPatches(const NlmGeometry& g) WARN_UNUSED_RETURN;
+
+/**
  * @brief process_nlmeans() on a width x height buffer: preconditions it, denoises the window of
  * windowWidth x windowHeight pixels at (windowX, windowY) with the buffer's edges as the image's,
  * and back-transforms the result into out (windowWidth x windowHeight pixels).
@@ -268,6 +274,14 @@ Vec3d measureVariance(const float* in,
  **/
 int waveletScales(double renderScale,
                   int fullSize) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The factor of the curves on a channel's BayesShrink threshold at wavelet level scale of
+ * maxScale.
+ **/
+Vec3 waveletAdjust(int scale,
+                   int maxScale,
+                   const Settings& settings) WARN_UNUSED_RETURN;
 
 /**
  * @brief process_wavelets() on the whole width x height image in, into out. fullSize is the

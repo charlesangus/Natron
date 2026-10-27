@@ -2,6 +2,11 @@
 4 Ways tab with a grade on every wheel, and the Masks tab with each mask output chosen. The panel
 must fit a 1920x1080 screen. Shots go to $NATRON_GUI_TEST_OUT as colorbalancergb_<tab>.png.
 
+The 4 Ways tab is a 2x2 grid of wheels (angle = hue, radius = chroma), each with its title above,
+its luminance slider beneath and a value readout, and the knobs' rows in a collapsed Values group.
+In the default layout the tab must fit the panel without a vertical scrollbar. A drag on the lift
+wheel must change liftHue and liftChroma, and one undo must restore both.
+
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m214_colour_balance_rgb.py <Natron binary or AppImage>
 """
 import os
@@ -14,6 +19,7 @@ STARTUP_TIMEOUT_S = 60.0
 PLUGIN_ID = "ColorBalanceRGB"
 TABS = (("Master", "master"), ("4 Ways", "4ways"), ("Masks", "masks"))
 WHEELS = ("offset", "lift", "gain", "power")
+WHEEL_TITLES = ("Global Offset", "Shadows Lift", "Highlights Gain", "Power")
 WHEEL_GRADE = {
     "offset": (0.01, 200.0, 0.005),
     "lift": (0.2, 30.0, 0.2),
@@ -25,9 +31,9 @@ SCREEN_W = 1920
 SCREEN_H = 1080
 
 try:
-    from PySide6.QtCore import QMetaObject, QRect
-    from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QTabWidget
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, QRect, Qt
+    from PySide6.QtGui import QGuiApplication, QMouseEvent
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QScrollArea, QTabWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -79,6 +85,50 @@ try:
         else:
             report("NOTE could not save screenshot " + path)
 
+    def wheel_of(panel, wheel):
+        name = "ColorWheel_%sChroma" % wheel
+        for w in panel.findChildren(QWidget):
+            if gt.class_name(w) == "ColorWheelWidget" and w.objectName() == name:
+                return w
+        return None
+
+    def child_named(panel, name):
+        for w in panel.findChildren(QWidget):
+            if w.objectName() == name:
+                return w
+        return None
+
+    def scroll_area_of(panel, widget):
+        for area in panel.findChildren(QScrollArea):
+            content = area.widget()
+            if content is not None and content.isAncestorOf(widget):
+                return area
+        return None
+
+    def send_mouse(widget, kind, local, button, buttons):
+        local = QPointF(local)
+        ev = QMouseEvent(kind, local, QPointF(widget.mapToGlobal(local)), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(widget, ev)
+
+    def drag(widget, start, delta, steps=8):
+        send_mouse(widget, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        QApplication.processEvents()
+        for k in range(1, steps + 1):
+            p = QPoint(start.x() + delta.x() * k // steps, start.y() + delta.y() * k // steps)
+            send_mouse(widget, QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
+            QApplication.processEvents()
+        end = QPoint(start.x() + delta.x(), start.y() + delta.y())
+        send_mouse(widget, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+        QApplication.processEvents()
+
+    def click_panel_undo(panel):
+        for b in panel.findChildren(QAbstractButton):
+            if "Undo the last change" in b.toolTip() and b.isEnabled():
+                b.click()
+                QApplication.processEvents()
+                return True
+        return False
+
     def steps():
         gt.section("colorbalancergb")
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
@@ -94,6 +144,27 @@ try:
         require(ok, "open ColorBalanceRGB's settings panel")
         yield ("sleep", 800)
         panel = panel_of(node)
+
+        # Before enlarge(): the tab must fit the panel as the default layout sizes it.
+        check(show_tab(panel, "4 Ways"), "the panel has a 4 Ways tab")
+        yield ("sleep", 300)
+        grid = child_named(panel_of(node), "ColorWheelGrid_wheels")
+        if check(grid is not None and grid.isVisible(), "the 4 Ways tab shows the wheel grid"):
+            area = scroll_area_of(panel_of(node), grid)
+            if check(area is not None, "the wheel grid sits in the panel's scroll area"):
+                bar = area.verticalScrollBar()
+                report("NOTE 4 Ways viewport %dx%d, content %dx%d, scroll max %d" % (
+                    area.viewport().width(), area.viewport().height(),
+                    area.widget().width(), area.widget().height(), bar.maximum()))
+                check(not bar.isVisible() and bar.maximum() == 0,
+                      "the 4 Ways tab fits the panel without a vertical scrollbar")
+            cells = [child_named(panel_of(node), "ColorWheelCell_%sChroma" % w) for w in WHEELS]
+            if check(all(c is not None for c in cells), "the grid has a cell per wheel"):
+                pos = [grid.mapFromGlobal(c.mapToGlobal(QPoint(0, 0))) for c in cells]
+                check(pos[0].y() == pos[1].y() and pos[2].y() == pos[3].y() and pos[0].y() < pos[2].y()
+                      and pos[0].x() < pos[1].x() and pos[2].x() < pos[3].x(),
+                      "the wheels are laid out two to a row (offset, lift / gain, power)")
+        screen_crop("colorbalancergb_4ways_default", panel_of(node))
         enlarge(panel)
         yield ("sleep", 300)
 
@@ -108,6 +179,34 @@ try:
             yield ("sleep", 300)
             screen_crop("colorbalancergb_" + name, panel_of(node))
 
+        gt.section("wheels")
+        show_tab(panel_of(node), "4 Ways")
+        yield ("sleep", 300)
+        for wheel in WHEELS:
+            w = wheel_of(panel_of(node), wheel)
+            if check(w is not None, "the 4 Ways tab has a %s wheel" % wheel):
+                report("NOTE %s wheel is %dx%d" % (wheel, w.width(), w.height()))
+        lift_hue = node.getParam("liftHue")
+        lift_chroma = node.getParam("liftChroma")
+        require(lift_hue is not None and lift_chroma is not None, "ColorBalanceRGB has liftHue and liftChroma")
+        wheel = wheel_of(panel_of(node), "lift")
+        require(wheel is not None, "found the lift wheel")
+        h0, c0 = lift_hue.getValue(), lift_chroma.getValue()
+        centre = QPoint(wheel.width() // 2, wheel.height() // 2)
+        drag(wheel, centre, QPoint(30, -30))
+        yield ("sleep", 400)
+        h1, c1 = lift_hue.getValue(), lift_chroma.getValue()
+        report("NOTE lift wheel drag: hue %r -> %r, chroma %r -> %r" % (h0, h1, c0, c1))
+        check(c1 > c0, "a lift wheel drag away from the centre raises liftChroma")
+        check(h1 != h0, "a lift wheel drag up and to the right changes liftHue")
+        check(0.0 < h1 < 90.0, "the drag's angle (up and to the right) lands liftHue between 0 and 90 degrees (got %r)" % h1)
+        screen_crop("colorbalancergb_4ways_wheel_dragged", panel_of(node))
+        check(click_panel_undo(panel_of(node)), "the panel's undo button is enabled after the drag")
+        yield ("sleep", 400)
+        h2, c2 = lift_hue.getValue(), lift_chroma.getValue()
+        report("NOTE after one undo: hue %r, chroma %r" % (h2, c2))
+        check(h2 == h0 and c2 == c0, "one undo restores liftHue and liftChroma (the drag is one undo step)")
+
         for wheel in WHEELS:
             luminance, hue, chroma = WHEEL_GRADE[wheel]
             for suffix, value in (("Luminance", luminance), ("Hue", hue), ("Chroma", chroma)):
@@ -117,10 +216,15 @@ try:
         show_tab(panel_of(node), "4 Ways")
         yield ("sleep", 400)
         labels = visible_labels(panel_of(node))
+        for title in WHEEL_TITLES + ("Values",):
+            check(any(t.startswith(title) for t in labels), "the 4 Ways tab shows %s" % title)
         for wheel in WHEELS:
-            for suffix in ("Luminance", "Hue", "Chroma"):
-                label = "%s %s" % (wheel.capitalize(), suffix)
-                check(any(t.startswith(label) for t in labels), "the 4 Ways tab shows %s" % label)
+            luminance, hue, chroma = WHEEL_GRADE[wheel]
+            readout = child_named(panel_of(node), "ColorWheelReadout_%sChroma" % wheel)
+            text = readout.text() if readout is not None else ""
+            report("NOTE %s readout: %s" % (wheel, text))
+            check(("C %.4f" % chroma) in text and ("Y %.3f" % luminance) in text,
+                  "the %s readout follows the knobs (got %r)" % (wheel, text))
         screen_crop("colorbalancergb_4ways_graded", panel_of(node))
 
         output = node.getParam("output")

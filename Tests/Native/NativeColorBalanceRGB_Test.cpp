@@ -62,7 +62,8 @@ const char* const kLinearRec2020 = "Linear Rec.2020";
 
 /**
  * The bound a darktable comparison holds, relative to the reference's mean absolute value over
- * the crop, as in Engine/Nodes/Color/docs/ColorBalanceRGB.md.
+ * the crop, as in Engine/Nodes/Color/docs/ColorBalanceRGB.md. The graded references are half
+ * float, so each sample's error is taken beyond their rounding.
  **/
 const double kReferenceMean = 2e-4;
 const double kReferenceMax = 5e-3;
@@ -232,7 +233,8 @@ TEST_F(NativeColorBalanceRGBTest, ControlsAndDefaults)
     }
 }
 
-// The 4 Ways tab holds each wheel's luminance, hue and chroma; Master and Masks the rest.
+// The 4 Ways tab holds each wheel's luminance, hue and chroma (in its Values group); Master and
+// Masks the rest.
 TEST_F(NativeColorBalanceRGBTest, KnobsSitInTheirTabs)
 {
     NodePtr node = makeNode();
@@ -250,7 +252,14 @@ TEST_F(NativeColorBalanceRGBTest, KnobsSitInTheirTabs)
         for (const char* name : tab.second) {
             KnobIPtr knob = node->getKnobByName(name);
             ASSERT_TRUE(bool(knob)) << name;
-            EXPECT_EQ(KnobIPtr(group), knob->getParentKnob()) << name << " in " << tab.first;
+            // The 4 Ways rows sit in the tab's collapsed Values group, under the wheel grid.
+            KnobIPtr tabOf = knob->getParentKnob();
+            KnobGroupPtr inner = std::dynamic_pointer_cast<KnobGroup>(tabOf);
+            if (inner && !inner->isTab()) {
+                EXPECT_EQ(std::string("values"), inner->getName()) << name;
+                tabOf = inner->getParentKnob();
+            }
+            EXPECT_EQ(KnobIPtr(group), tabOf) << name << " in " << tab.first;
         }
     }
 }
@@ -589,7 +598,7 @@ TEST_F(NativeColorBalanceRGBTest, MatchesDarktable)
             for (int x = 0; x < width; ++x) {
                 for (int c = 0; c < 3; ++c) {
                     const double want = expected[((size_t)y * width + x) * 3 + c];
-                    const double diff = std::fabs(out[(size_t)x * 4 + c] - want);
+                    const double diff = RawReference::halfFloatError(out[(size_t)x * 4 + c], want);
                     level += std::fabs(want);
                     sum += diff;
                     if (diff > maxError) {

@@ -34,13 +34,15 @@ READ_LAST_FRAME = 30
 CONSTANT_OFFSET = 10
 ANIMATED_KEYS = ((1.0, 0.0), (40.0, 20.0))
 FRAME_RANGE = (12, 33)
+FIT_RANGE = (-5, 60)
+MAX_ZOOM_OUT_STEPS = 40
 DRAG_FRAMES = 5
 MIN_PIXELS_PER_FRAME = 3.0
 
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, QRect, Qt
-    from PySide6.QtGui import QGuiApplication, QMouseEvent
+    from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
     from PySide6.QtWidgets import QApplication
 
     import guitest as gt
@@ -52,9 +54,12 @@ try:
 
     # ---- plumbing --------------------------------------------------------------------------
 
+    def opened_props():
+        # A node joins the dope sheet when its settings panel is created.
+        return {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
+
     def create(plugin_id, x, y):
-        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
-        node = app.createNode(plugin_id, -1, None, props)
+        node = app.createNode(plugin_id, -1, None, opened_props())
         require(node is not None, "create " + plugin_id, gt.plugin_problem(plugin_id))
         node.setPosition(x, y)
         return node
@@ -83,22 +88,45 @@ try:
         views = [v for v in gt.widgets_of("HierarchyView") if v.isVisible()]
         return views[0] if views else None
 
-    def row_item(label):
+    def tree_rows():
+        """(label, QModelIndex, hidden) for every row of the dope sheet tree, depth first."""
         tree = hierarchy()
         if tree is None:
-            return None
-        items = tree.findItems(label, Qt.MatchExactly | Qt.MatchRecursive, 0)
-        return items[0] if items else None
+            return []
+        model = tree.model()
+        out = []
+
+        def walk(parent):
+            for r in range(model.rowCount(parent)):
+                idx = model.index(r, 0, parent)
+                out.append((idx.data(), idx, tree.isRowHidden(r, parent)))
+                walk(idx)
+
+        walk(tree.rootIndex())
+        return out
+
+    def row_index(label):
+        for text, idx, _hidden in tree_rows():
+            if text == label:
+                return idx
+        return None
 
     def row_center_y(label):
-        tree, item = hierarchy(), row_item(label)
-        if tree is None or item is None:
+        tree, idx = hierarchy(), row_index(label)
+        if tree is None or idx is None:
             return None
-        rect = tree.visualItemRect(item)
+        rect = tree.visualRect(idx)
         return rect.center().y() if rect.isValid() and rect.height() > 0 else None
 
     def mouse(view, kind, x, y, button, buttons):
         QApplication.sendEvent(view, QMouseEvent(kind, QPointF(x, y), button, buttons, Qt.NoModifier))
+        QApplication.processEvents()
+
+    def zoom_out(view):
+        pos = QPointF(view.width() / 2.0, view.height() / 2.0)
+        QApplication.sendEvent(view, QWheelEvent(pos, QPointF(view.mapToGlobal(pos.toPoint())), QPoint(0, 0),
+                                                 QPoint(0, -120), Qt.NoButton, Qt.NoModifier,
+                                                 Qt.NoScrollPhase, False))
         QApplication.processEvents()
 
     def clip_span(label):
@@ -187,7 +215,7 @@ try:
 
         gt.section("setup")
         path = os.path.join(gt.FIXTURES, SEQUENCE)
-        read = app.createReader(path)
+        read = app.createReader(path, None, opened_props())
         require(read is not None, "create a Read for " + SEQUENCE)
         require(read.getPluginID() == READ_ID, "the Read is the native Read (%s)" % read.getPluginID())
         read.setPosition(0, 0)
@@ -203,7 +231,7 @@ try:
         require(offset_node.connectInput(0, read), "connect the Read to TimeOffset")
         range_node = create(FRAMERANGE_ID, 0, 300)
         require(range_node.connectInput(0, offset_node), "connect TimeOffset to FrameRange")
-        read2 = app.createReader(path)
+        read2 = app.createReader(path, None, opened_props())
         require(read2 is not None, "create a second Read")
         read2.setPosition(300, 0)
         retime_node = create(RETIME_ID, 300, 150)
@@ -220,10 +248,31 @@ try:
         ok = yield ("until", lambda: dope_view() is not None and hierarchy() is not None, POLL_TIMEOUT_S)
         require(ok, "the dope sheet is shown")
         labels = [n.getLabel() for n in (read, offset_node, range_node, read2, retime_node)]
-        ok = yield ("until", lambda: all(row_item(l) is not None for l in labels), POLL_TIMEOUT_S)
-        require(ok, "the dope sheet has a row for each node", "labels %r" % (labels,))
+        ok = yield ("until", lambda: all(row_index(l) is not None for l in labels), POLL_TIMEOUT_S)
+        require(ok, "the dope sheet has a row for each node",
+                "missing %r; rows %r" % ([l for l in labels if row_index(l) is None],
+                                         [(t, h) for t, _i, h in tree_rows()]))
         hierarchy().expandAll()
+        # A wide FrameRange clip stands in for every range measured below: the view is framed and
+        # then zoomed out around its centre until that clip lies inside it, so all the measurements
+        # share one fixed scale.
+        range_defaults = (range_first.get(), range_last.get())
+        range_first.set(FIT_RANGE[0])
+        range_last.set(FIT_RANGE[1])
+        yield ("sleep", SETTLE_MS)
         QMetaObject.invokeMethod(dope_view(), "centerOnSelection")
+        yield ("sleep", SETTLE_MS)
+        fits = False
+        for _ in range(MAX_ZOOM_OUT_STEPS):
+            span, width = clip_span(range_node.getLabel()), dope_view().width()
+            if span is not None and span[0] > 0 and span[1] < width - 1:
+                fits = True
+                break
+            zoom_out(dope_view())
+            yield ("sleep", 50)
+        require(fits, "the dope sheet zooms out to hold frames %d to %d" % FIT_RANGE)
+        range_first.set(range_defaults[0])
+        range_last.set(range_defaults[1])
         yield ("sleep", SETTLE_MS)
         ok = yield ("until", lambda: all(row_center_y(l) is not None for l in labels), POLL_TIMEOUT_S)
         require(ok, "every row is laid out")

@@ -198,7 +198,7 @@ future core work has solid ground to build on.
 | M126 | Runtime GPU Shaders | done | M85 | gpu | E5 | [M126-runtime-gpu-shaders.md](PLAN/MILESTONES/M126-runtime-gpu-shaders.md) |
 | M127 | Native OCIO Nodes | done | M120, M126, M107 |  | E3 | [M127-native-ocio-nodes.md](PLAN/MILESTONES/M127-native-ocio-nodes.md) |
 | M128 | Native Shape Generators | todo | M120 |  | E3 | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
-| M129 | Clean-Sheet Noise Node | doing | M120 | bosley-native-nodes | E3 | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
+| M129 | Clean-Sheet Noise Node | done | M120 |  | E3 | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
 | M130 | Native Edge-Preserving And Directional Filters | todo | M120 |  | E3 | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
 | M131 | Native Defocus Family | todo | M120 |  | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |

@@ -199,3 +199,5 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-13 — **Spike before choosing the library (user):** Cycles kernels (Apache-2.0, binaries effectively GPLv3) against OpenSimplex2 (CC0) plus our own cellular/value/fractals. The licence choice stays with the user at P1.T3. (Superseded 2026-10-25: the Cycles and OpenSimplex2 candidates and their licence choice are dropped; see the FastNoise2 decision.)
 - 2026-10-13 — **A pure generator (user):** no Source input, and CImg Noise's add-to-input mode is retired.
 Review round (Codex, PR #115): finite knobs and octave bounds, exact loop phase, plate script, spike results and CPU seed fixed at 25c891e02; release gate green. GPU seed pending the GPU host; UAT pending.
+
+Shipped: merged as 960517278 (#115) on 2026-10-26.

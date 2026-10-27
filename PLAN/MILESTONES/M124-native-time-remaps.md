@@ -198,6 +198,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-27 — UAT: AppImage build/appimages/Natron-m124-time-remaps.AppImage, checklist M124-uat.md, draft PR #139. defocus_retime comp rebuilt; Retime cost seed 0.0028 ms/Mpx (serial, loaded host; pass-through dominates, blend tasks ~1 ms/Mpx).
 - 2026-10-27 — Retime's Output First/Last are derived from Speed while their locks are off and reset on edit, as in Nuke; the hash sweep exempts them (allowlist) and `NativeRetimeTest.LockedOutputEndsMoveTheHash` covers the locked case. FrameRange's Black outside the range is an empty render (no plane), not a black plane.
 - 2026-10-13 — **Four Nuke-style nodes** (user): TimeOffset, FrameHold, FrameRange and Retime stay separate. They are not merged into one Time node or into each other.
 - 2026-10-13 — **All time nodes on the GPU, to maximise residency** (user). For the pure remaps this means placement keeps a region through them, since they have no pixel work. Retime's blend gets a kernel.

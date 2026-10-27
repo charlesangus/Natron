@@ -116,3 +116,5 @@ Vocabulary. Nodes are `NativeEffectBase` subclasses that author one memoized lay
 Release gate green at 8fd54c78f (522/522 both schedulers); scene_viewer_flip and scene_viewer_live_edit pass at 1920x1080. Draft PR #126. Remaining: GUI verification script and screenshots, then UAT.
 
 UAT approved 2026-10-27; the up-axis question (item 7) moves to M241 - Up Axis Policy, and the "Units on edit layers" decision stands until it is answered there. Next: PR review, main merge, CI, merge.
+
+Shipped: merged as 59f836282 (#126) on 2026-10-27.

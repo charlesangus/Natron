@@ -2012,11 +2012,15 @@ public:
 
     virtual ViewIdx getCurrentView() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The view an expression is evaluated at: the requested one, or for the current view the one
-    // the calling thread renders or acts at.
+    // The view an expression is evaluated at: the requested one, for the current view the one the
+    // calling thread renders or acts at, and for all views the main view.
     ViewIdx expressionView(ViewSpec view) const
     {
-        return view.isCurrent() ? getCurrentView() : ViewIdx(view.value());
+        if (view.isCurrent()) {
+            return getCurrentView();
+        }
+
+        return view.isAll() ? ViewIdx(0) : ViewIdx(view.value());
     }
 
     virtual std::string getDimensionName(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;

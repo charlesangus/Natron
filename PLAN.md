@@ -265,7 +265,7 @@ future core work has solid ground to build on.
 | M184 | Variable-Size Filter Kit | done | M120, M137 | gpu | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
 | M185 | Variable Warps | doing | M113, M184 | bosley-native-nodes | E15 | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
 | M186 | Exact IDefocus | todo | M131, M184 |  | E15 | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
-| M187 | Variable Sharpen And Glow | todo | M123, M184 |  | E15 | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
+| M187 | Variable Sharpen And Glow | blocked | M123, M184 |  | E15 | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
 | M188 | Variable Median And DirBlur | todo | M130, M184 |  | E15 | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
 | M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
 | M190 | Cross-Frame Feedback | todo | M182 |  | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
@@ -334,6 +334,7 @@ future core work has solid ground to build on.
 - **M123 - Native Sharpen And Glow, Bloom design:** the user requires GPU residency (no CPU fallback) if at all possible; candidates are being spiked. Filter default (FIR Gaussian, recommended, or CImg's quasi-Gaussian) still open.
 - **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.
 - **M46 - Labelmaker Annotations:** on hold, not eligible for pickup (user, 2026-10-27, during its grilling). Resume only with the user's go-ahead, then finish the interview (`/cat-grill M46`).
+- **M187 - Variable Sharpen And Glow:** on hold, not eligible for pickup (user, 2026-10-27, inbox). Resume only with the user's say-so.
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 
 

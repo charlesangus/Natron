@@ -249,3 +249,7 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 ### 2026-10-27T05:18:45+00:00 — change-request
 - refs: M207
 - Use OCIO to do the compression; can use an srgb display-referred space that compresses to 0-1 to go from most colourspaces to srgb, and it's invertible.
+
+### 2026-10-27T05:22:05+00:00 — change-request
+- refs: M187
+- Hold on this til my say-so.

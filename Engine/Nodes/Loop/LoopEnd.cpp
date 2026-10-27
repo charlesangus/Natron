@@ -38,6 +38,7 @@
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/TLSHolder.h"
@@ -491,14 +492,13 @@ LoopEnd::Resolved
 LoopEnd::resolveAt(double time) const
 {
     Resolved resolved = resolve();
-    KnobStringPtr stopCondition = _stopCondition.lock();
 
     // Single Pass shows any iteration, whether or not the loop would have reached it.
-    if (!resolved.message.empty() || (resolved.singlePass >= 0) || !stopCondition) {
+    if (!resolved.message.empty() || (resolved.singlePass >= 0)) {
         return resolved;
     }
-    const std::string expression = stopCondition->getValue();
-    if (expression.find_first_not_of(" \t\r\n") == std::string::npos) {
+    const std::string expression = activeStopCondition();
+    if (expression.empty()) {
         return resolved;
     }
     resolved.folded = evaluateStop(resolved, expression, time, &resolved.stopError);
@@ -667,22 +667,44 @@ LoopEnd::refreshKnobVisibility()
     }
 }
 
-bool
-LoopEnd::shouldCacheOutput(bool isFrameVaryingOrAnimated,
-                           double time,
-                           ViewIdx view,
-                           int visitsCount) const
+std::string
+LoopEnd::activeStopCondition() const
 {
-    // The stop condition may read anything Python reaches, none of it in the node's hash.
     KnobStringPtr stopCondition = _stopCondition.lock();
     KnobChoicePtr mode = _mode.lock();
-    const bool singlePass = mode && (mode->getActiveEntry().id == kLoopEndParamModeSinglePass);
 
-    if (!singlePass && stopCondition && (stopCondition->getValue().find_first_not_of(" \t\r\n") != std::string::npos)) {
-        return false;
+    if (!stopCondition || (mode && (mode->getActiveEntry().id == kLoopEndParamModeSinglePass))) {
+        return std::string();
+    }
+    const std::string expression = stopCondition->getValue();
+
+    return (expression.find_first_not_of(" \t\r\n") == std::string::npos) ? std::string() : expression;
+}
+
+void
+LoopEnd::refreshStopDependencies()
+{
+    KnobStringPtr stopCondition = _stopCondition.lock();
+
+    if (!stopCondition) {
+        return;
+    }
+    const std::string expression = stopCondition->getValue();
+    stopCondition->setReadDependencyExpression(0, (expression.find_first_not_of(" \t\r\n") == std::string::npos) ? std::string() : expression);
+}
+
+StatusEnum
+LoopEnd::getPreferredMetadataAt(double /*time*/,
+                                ViewIdx /*view*/,
+                                NodeMetadata& metadata)
+{
+    // The stop condition may read the frame, or knobs at it, so where the loop stops can change
+    // from frame to frame with nothing animated: the output is only cached per frame.
+    if (!activeStopCondition().empty()) {
+        metadata.setIsFrameVarying(true);
     }
 
-    return EffectInstance::shouldCacheOutput(isFrameVaryingOrAnimated, time, view, visitsCount);
+    return eStatusOK;
 }
 
 Route
@@ -722,6 +744,9 @@ LoopEnd::knobChanged(KnobI* k,
             if ((mode && (k == mode.get())) || (iterateOver && (k == iterateOver.get()))) {
                 refreshKnobVisibility();
             }
+            if (k == _stopCondition.lock().get()) {
+                refreshStopDependencies();
+            }
             refreshMessage(resolveAt(time));
 
             return true;
@@ -741,6 +766,7 @@ void
 LoopEnd::onKnobsLoaded()
 {
     refreshKnobVisibility();
+    refreshStopDependencies();
     refreshMessage(resolve());
 }
 

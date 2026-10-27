@@ -817,6 +817,11 @@ KnobI::restoreExpressionsFromSerialization(const Serialization::KnobSerializatio
         QString error = QString::fromUtf8("Failed to restore expression: %1").arg(QString::fromUtf8(e.what()));
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(getName().c_str()), QDateTime::currentDateTime(), error);
     }
+    // Every node a read dependency source may read exists by now, as for expressions.
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(this);
+    if (helper) {
+        helper->refreshReadDependencies();
+    }
 }
 
 Serialization::KnobSerialization

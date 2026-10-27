@@ -58,8 +58,10 @@ M259 - GPU Placement Under Render Contexts.
 - Ending before the first iteration outputs black with a warning. An exception, a syntax
   error among them, ends the loop at the iteration it was raised for and shows the error on
   the LoopEnd; the iterations before it still render.
-- A LoopEnd with a stop condition does not keep its own output in the cache, since what the
-  expression reads is not part of the node's hash.
+- The parameters and project variables the stop condition reads are part of the LoopEnd's
+  hash, as for an expression: editing one re-renders it. Its output is cached per frame, since
+  the condition may read the frame. A node created after the condition was typed is only
+  tracked once the condition is edited or the project reloaded.
 
 ## Limits
 

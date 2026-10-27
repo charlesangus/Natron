@@ -585,11 +585,18 @@ public:
     bool isFeatherPolygonClockwiseOriented(bool useGuiCurve, double time) const;
 
     /**
-     * @brief Refresh the polygon orientation for a specific keyframe or for all keyframes. Auto polygon orientation must be set to true
-     * so make sure setAutoOrientationComputation(true) has been called before.
+     * @brief Forgets the orientation of the GUI (useGuiCurve) or internal polygon wherever an edit
+     * at time can have reshaped it, so the next read computes it again.
+     * Does nothing while setAutoOrientationComputation(false) is in effect.
      **/
-    void refreshPolygonOrientation(bool useGuiCurve, double time);
-    void refreshPolygonOrientation(bool useGuiCurve);
+    void invalidatePolygonOrientation(bool useGuiCurve, double time);
+
+    /**
+     * @brief Forgets the orientation of both polygons at every time, after an edit that changed
+     * the points or whether the shape is closed.
+     * Does nothing while setAutoOrientationComputation(false) is in effect.
+     **/
+    void invalidatePolygonOrientation();
 
     void setAutoOrientationComputation(bool autoCompute);
 
@@ -606,12 +613,69 @@ private:
 
     void computePolygonOrientation(bool useGuiCurves, double time, bool isStatic) const;
 
+    /**
+     * @brief The times between which an edit at time reshapes the polygon: the second keyframe
+     * either side of time, because smooth interpolation derives each key's tangents from its
+     * neighbours. Infinite on a side with fewer keyframes.
+     **/
+    void getOrientationSpan(bool useGuiCurve, double time, double* from, double* to) const;
+
+    /**
+     * @brief Erases the cached orientation of one side within getOrientationSpan(), and the
+     * static one. itemMutex must be held.
+     **/
+    void eraseOrientationAroundTime(bool useGuiCurve, double time);
+
+    /**
+     * @brief Erases every cached orientation of one side. itemMutex must be held.
+     **/
+    void eraseOrientation(bool useGuiCurve);
+
     /*
      * @brief If the node is currently involved in a render, returns false, otherwise returns true
      */
     bool canSetInternalPoints() const;
 
+    /**
+     * @brief setKeyframe() on the internal curves. copyToGui also copies the new key and its
+     * neighbours' re-derived tangents to the GUI copy; edit paths pass false and sync the GUI
+     * copy themselves, so pending GUI edits made during a render are not overwritten.
+     **/
+    void setKeyframeInternal(double time, bool copyToGui);
+
     void copyInternalPointsToGuiPoints();
+
+    /**
+     * @brief Copies every control and feather point at time, and the orientation around time,
+     * to the GUI copy. The GUI copy must hold the internal state everywhere else.
+     **/
+    void copyInternalPointsToGuiAtTime(double time);
+
+    /**
+     * @brief Copies one control point and its feather point, either of which may be null, at
+     * every time to the GUI copy.
+     **/
+    void copyInternalPointToGui(BezierCP* cp, BezierCP* fp);
+
+    /**
+     * @brief Copies one control point and its feather point, either of which may be null, at
+     * time only to the GUI copy.
+     **/
+    void copyInternalPointToGuiAtTime(BezierCP* cp, BezierCP* fp, double time);
+
+    /**
+     * @brief Copies the orientation cached within getOrientationSpan() of time, and the
+     * orientation of an unkeyed shape, from one side of the GUI copy to the other.
+     **/
+    void copyOrientationAroundTime(bool toGui, double time);
+
+    /**
+     * @brief After an edit at time of a control point and its feather point, either of which may
+     * be null, brings the GUI copy up to date, or during a render records what dequeueGuiActions()
+     * must write back. allTimes tells that the edit changed the points at every keyframe, and
+     * keyedAllPoints that its auto-key keyed every point at time. Takes itemMutex.
+     **/
+    void syncGuiAfterEdit(bool useGuiCurve, const BezierCPPtr& cp, const BezierCPPtr& fp, double time, bool allTimes, bool keyedAllPoints);
 
 public:
     void toSerialization(Serialization::BezierSerialization* serialization) const;

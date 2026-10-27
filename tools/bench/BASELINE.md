@@ -1065,3 +1065,15 @@ Run 3's `.ntpz` save and load were contended by other work on the host; runs 1 a
 | `.ntpz` (save and autosave) | 53,661,635 |
 
 `.ntpz` is 22.4× smaller. The median of the three run medians is 7.62 s for the `.ntpz` save against 17.17 s for XML (2.3× faster), and 7.68 s for autosave. XML loading was no longer possible when this was measured, so there is no load comparison.
+
+## Bezier keying before and after incremental GUI copy (2026-10-27)
+
+Machine: 4-core Intel N100, 15 GB RAM, in the natron-dev container. Release AppImages extracted and run with NatronRenderer: "before" is main at 39930fe80 (M122), "after" is M163 at 2bf6ff26a with all three phases. `tools/bench/bezier_keying_bench.py`, auto-keying on.
+
+| build | shapes x points | keys | keying (s) | median edit (ms) | slope |
+|---|---|---|---|---|---|
+| before | 1 x 24 | 50 / 100 / 200 | 3.56 / 16.82 / 73.51 | 6.796 | 2.18 |
+| after | 1 x 24 | 50 / 100 / 200 | 0.038 / 0.101 / 0.202 | 0.020 | 1.20 |
+| after (heavy) | 30 x 24 | 200 | 5.83 | 0.018 | — |
+
+At 200 keys keying is about 360 times faster and the per-edit cost no longer grows with the key count. The heavy preset was not run on the before build: at its measured cost it would take about 30 x 73.5 s, roughly 37 minutes.

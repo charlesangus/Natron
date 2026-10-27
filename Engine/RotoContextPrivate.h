@@ -32,6 +32,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
@@ -398,38 +399,83 @@ struct BezierPrivate
     BezierCPs points; //< the control points of the curve
     BezierCPs featherPoints; //< the feather points, the number of feather points must equal the number of cp.
 
-    //updated whenever the Bezier is edited, this is used to determine if a point lies inside the bezier or not
-    //it has a value for each keyframe
+    // Orientation of the feather polygon, computed on first read at a time and erased by the
+    // edits that reshape the polygon there; the static value is for a shape with no keyframes.
     mutable std::map<double, bool> isClockwiseOriented;
-    mutable bool isClockwiseOrientedStatic; //< used when the bezier has no keyframes
+    mutable bool isClockwiseOrientedStatic;
+    mutable bool isClockwiseOrientedStaticDirty;
     mutable std::map<double, bool> guiIsClockwiseOriented;
-    mutable bool guiIsClockwiseOrientedStatic; //< used when the bezier has no keyframes
-    bool autoRecomputeOrientation; // when true, orientation will be computed automatically on editing
+    mutable bool guiIsClockwiseOrientedStatic;
+    mutable bool guiIsClockwiseOrientedStaticDirty;
+    bool autoRecomputeOrientation; // when false, edits leave the orientation cache alone
     bool finished; //< when finished is true, the last point of the list is connected to the first point of the list.
     bool isOpenBezier;
     mutable QMutex guiCopyMutex;
-    bool mustCopyGui;
+    // What edits made during a render left in the GUI copy only, for dequeueGuiActions() to write
+    // back: everything, every point at some times, or some points at every time.
+    bool guiDirtyAll;
+    std::set<double> guiDirtyTimes;
+    std::set<BezierCPPtr> guiDirtyPoints;
 
     BezierPrivate(bool isOpenBezier)
         : points()
         , featherPoints()
         , isClockwiseOriented()
         , isClockwiseOrientedStatic(false)
+        , isClockwiseOrientedStaticDirty(true)
         , guiIsClockwiseOriented()
         , guiIsClockwiseOrientedStatic(false)
+        , guiIsClockwiseOrientedStaticDirty(true)
         , autoRecomputeOrientation(true)
         , finished(false)
         , isOpenBezier(isOpenBezier)
         , guiCopyMutex()
-        , mustCopyGui(false)
+        , guiDirtyAll(false)
+        , guiDirtyTimes()
+        , guiDirtyPoints()
     {
     }
 
-    void setMustCopyGuiBezier(bool copy)
+    void markGuiDirtyAll()
     {
         QMutexLocker k(&guiCopyMutex);
 
-        mustCopyGui = copy;
+        guiDirtyAll = true;
+    }
+
+    void markGuiDirtyAtTime(double time)
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        if (!guiDirtyAll) {
+            guiDirtyTimes.insert(time);
+        }
+    }
+
+    void markGuiDirtyPoint(const BezierCPPtr& point)
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        if (!guiDirtyAll && point) {
+            guiDirtyPoints.insert(point);
+        }
+    }
+
+    // Moves the pending write-back into the arguments; false when there is none.
+    bool takeGuiDirty(bool* all,
+                      std::set<double>* times,
+                      std::set<BezierCPPtr>* dirtyPoints)
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        *all = guiDirtyAll;
+        times->swap(guiDirtyTimes);
+        dirtyPoints->swap(guiDirtyPoints);
+        guiDirtyAll = false;
+        guiDirtyTimes.clear();
+        guiDirtyPoints.clear();
+
+        return *all || !times->empty() || !dirtyPoints->empty();
     }
 
     bool hasKeyframeAtTime(bool useGuiCurves,
@@ -455,6 +501,28 @@ struct BezierPrivate
             return;
         }
         points.front()->getKeyframeTimes(useGuiCurves, times);
+    }
+
+    // The shared pointer the shape holds to a control or feather point, or null.
+    BezierCPPtr findOwnedPoint(const BezierCP* point) const
+    {
+        // PRIVATE - should not lock
+
+        if (!point) {
+            return BezierCPPtr();
+        }
+        for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
+            if (it->get() == point) {
+                return *it;
+            }
+        }
+        for (BezierCPs::const_iterator it = featherPoints.begin(); it != featherPoints.end(); ++it) {
+            if (it->get() == point) {
+                return *it;
+            }
+        }
+
+        return BezierCPPtr();
     }
 
     BezierCPs::const_iterator atIndex(int index) const

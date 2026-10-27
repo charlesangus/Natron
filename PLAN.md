@@ -145,7 +145,7 @@ future core work has solid ground to build on.
 | M24 | Node Graph Category Colour | done | - |  | E10 | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | done | - |  | E10 | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
 | M55 | Node Graph Polish | done | M24 |  | E10 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
-| M46 | Labelmaker Annotations | todo | M56, M118 |  | E10 | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
+| M46 | Labelmaker Annotations | blocked | M56, M118 |  | E10 | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M56 | Visual And Menu Polish | done | M44, M55 | amber-falcon | E10 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
 | M45 | Native Tab Menu | done | M55 | amber-falcon | E10 | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
 | M25 | GL Init FP Guard | todo |  |  | E2 | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
@@ -333,6 +333,7 @@ future core work has solid ground to build on.
 
 - **M123 - Native Sharpen And Glow, Bloom design:** the user requires GPU residency (no CPU fallback) if at all possible; candidates are being spiked. Filter default (FIR Gaussian, recommended, or CImg's quasi-Gaussian) still open.
 - **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.
+- **M46 - Labelmaker Annotations:** on hold, not eligible for pickup (user, 2026-10-27, during its grilling). Resume only with the user's go-ahead, then finish the interview (`/cat-grill M46`).
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 
 

@@ -13,6 +13,19 @@ The readouts are driven by a shipped base config plus a personal JSON config key
 
 The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wraps). One build at the end (user rule): implementers do not compile.
 
+## Scope
+
+**In:**
+- A built-in channel-flow readout for Merge-style nodes, as Labelmaker has: native Merge reads `(rgba) plus (rgba) --> (rgba)` from its A, B and Output channel toggles, and ChannelCopy and Shuffle show the channels they route (P1.T3).
+
+**Out:**
+- A config editor: users edit the JSON (decided 2026-10-11). No milestone owns it.
+
+**Assumptions:**
+- Unconfirmed: the base config and built-in readouts target native plugin IDs first, plus the bundled OFX nodes that have no native replacement yet. OFX twins of native nodes get no entries.
+- Unconfirmed: Labelmaker's other readouts carry over too: Write's render order (with colour space and file type), and the Roto and RotoPaint entries in its base config.
+- Unconfirmed: the interview stopped at its second question (the milestone went on hold). Callers, failure paths, edge cases and the gate were not walked. Resume with `/cat-grill M46`.
+
 ## Phase 46.1: Annotation model (Engine, pure)
 
 - [ ] M46.P1.T1 — Parse and layer annotation configs, with unit tests
@@ -67,7 +80,7 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
     - an animated knob, or a `refresh: frame` Python line, sets `frameDependent`; a static Blur does not.
   - size: L
 
-- [ ] M46.P1.T3 — Add the built-in readouts: channel/mask/premult/mix line, class disambiguation, file name
+- [ ] M46.P1.T3 — Add the built-in readouts: channel/mask/premult/mix line, Merge channel flow, class disambiguation, file name
   - files: `Engine/NodeAnnotation.h`, `Engine/NodeAnnotation.cpp`, `Tests/NodeAnnotation_Test.cpp`
   - approach:
     - `QString channelSummaryLine(const NodePtr&)` extends today's layer summary (the logic in `NodeGui::onLayerSelectionChanged`):
@@ -75,13 +88,15 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
       - ` /* alpha` when (un)premult is on;
       - a separate `mix 0.5` when `kOfxMixParamName` is not 1.
       - Find the premult and mask-channel knob script names on the native nodes (e.g. Grade's, from `Engine/Nodes/Color/Grade.cpp`) and on the openfx-supportext mask/mix helpers, and handle both.
+    - `QString mergeFlowLine(const NodePtr&)` is the channel-flow readout for Merge-style nodes. For the native Merge (`Engine/Nodes/Merge/Merge.cpp`), it reads the A, B and Output channel toggles (`kMergeParamAChannels`, `kMergeParamBChannels`, `kMergeParamOutputChannels`) as `(rgba) plus (rgba) --> (rgba)`, using the operation's label. That line replaces today's Merge operator sublabel when annotations are on. ChannelCopy and Shuffle (`Engine/Nodes/Channel/`) get a line naming the channels they route.
     - `QString classDisambiguation(const NodePtr&)` returns `"<plugin label> | <node label>"` when the node label doesn't start with the plugin's label (without its suffix), and empty otherwise.
     - `QString fileLine(const NodePtr&)` returns the basename of the Read/Write file knob (use `isReader()`/`isWriter()` and the file knob). For Writes, it adds the output colour space and file type when they are not the defaults.
   - verify: `ctest -R NodeAnnotation` adds cases for:
     - a masked, inverted Grade with mix 0.5;
     - a Blur renamed "guy" → "Blur | guy", while Blur1 gives nothing;
-    - a Read of `/tmp/x/plate.####.exr` → "plate.####.exr".
-  - size: M
+    - a Read of `/tmp/x/plate.####.exr` → "plate.####.exr";
+    - a Merge (plus) with B alpha off → `(rgba) plus (rgb) --> (rgba)`, and a ChannelCopy and a Shuffle routing alpha into red, each with its routing line.
+  - size: L
 
 - [ ] M46.P1.T4 — Author the shipped base config for Natron's nodes, with a test that every key and knob exists
   - files: `Gui/Resources/NodeAnnotations/base_config.json` (new), `Gui/GuiResources.qrc`, `Tests/NodeAnnotationBaseConfig_Test.cpp` (new), `Tests/CMakeLists.txt`
@@ -210,7 +225,7 @@ The layout rides on M56 Phase 56.1 (node text grows to a maximum width, then wra
   - approach:
     - In `setNameItemHtml` (`NodeGui.cpp:3348`), when annotations are enabled, build the text in this order:
       - the name, or `classDisambiguation` when non-empty;
-      - the sublabel or Merge operator (unchanged);
+      - the sublabel, or for Merge-style nodes `mergeFlowLine` from P1.T3 in place of the operator;
       - the channel summary line from P1.T3, which **replaces** `_channelsExtraLabel` so the layer summary is never shown twice;
       - the file line;
       - the configured lines (P1.T2 → P3.T1 HTML);
@@ -315,3 +330,5 @@ Scheduling note (2026-10-08, user): runs together with M55. Before elaborating, 
   - **Deps:** `M56` (Phase 56.1 width cap and wrap).
 - 2026-10-13 — Annotations evaluate lazily, never per tick (user, during the M118 - Large Graph GUI Responsiveness grilling): "should be evaluated lazily, low prio idle process, stale labels are acceptable but gui performance issues are not." P2.T3 now runs an input-debounced, low-priority idle pass over dirty visible nodes only, with no evaluation during playback or interaction. P5.T3 holds M118's bench budgets with annotations on.
 - 2026-10-13 — Deps are now M56 and M118 - Large Graph GUI Responsiveness (user): the push-down layout builds on M118's local stacking and indexed scene, and M46 must pass the GUI bench.
+- 2026-10-27 — Merge, ChannelCopy and Shuffle get a built-in channel-flow readout (user, `/cat-grill`): a port means every Labelmaker feature, and templates can't read the flow reliably. P1.T3 adds `mergeFlowLine`, and P3.T2 uses it in place of the operator sublabel.
+- 2026-10-27 — On hold, not eligible for pickup (user, during the grilling): the board row is `blocked` with a blank Owner, so no PM can claim it. The reason is in the board's `# Open questions`.

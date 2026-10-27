@@ -89,6 +89,8 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `{cr2,raf}-colorcal-gray-normalize-{on,off}.tif` | D 4500 K CAT16, gray 0.4, 0.6, 0.3, normalize on and off | RCD, Markesteijn |
 | `dng-colorcal-camera.tif` | CAT16, as shot in camera, embedded matrix | RCD |
 | `{cr2,raf,dng}-scene-referred-default.tif` | `scene-referred (sigmoid)` workflow with its automatic presets, sigmoid, exposure and sharpen off: darktable's default temperature (as shot to reference) and color calibration | RCD, Markesteijn, RCD |
+| `toneequal-source.tif` | Synthetic 256x192 linear Rec. 709 RGB float source of the toneequal jobs, written by `make-reference.py` (`toneequal_scene()`): -10 EV to +1 EV left to right with ripples, hard-edged patches and texture, three tints by row band | (source) |
+| `toneequal-{bands,details-*,estimator-*,compensations-*,smoothing-diffusion,quantization}.tif` | toneequal on the source, whole frame; colorin (input and working profile linear Rec. 709) and colorout (linear Rec. 709) are identities around it. Every job sets the bands to 1.2, 0.9, 0.6, 0.3, 0, -0.2, -0.5, -0.8, -1 EV; `bands` is darktable's defaults otherwise (EIGF, euclidean norm, smoothing diameter 5 %, curve smoothing sqrt 2); `details-*` each preserve details mode, `estimator-*` each luminance estimator; `compensations-guided` guided filter with mask exposure 1.5 EV and contrast 0.8 EV, `compensations-eigf` -0.5 EV and 0.6 EV; `smoothing-diffusion` curve smoothing 2^0.75, 3 iterations, feathering 20, diameter 10 %; `quantization` mask quantization 0.5 | ToneEqualizer |
 
 ### darktable settings
 
@@ -435,6 +437,13 @@ guided laplacians (float sums and iterated wavelets), 1e-3 for reconstruct color
 LinearResponseLimit clip, the GainMap flat field and hot pixels, which multiply or replace
 photosites. Against the unclipped mosaic, clip changes 97 (Bayer) and 84 (X-Trans) photosites
 by up to 1, opposed 104 and 115 by up to 0.74, LCh 173 and 134 by up to 0.54.
+
+`NativeToneEqualizerReferenceTest` compares ToneEqualizer's whole frame on `toneequal-source.tif`
+with each `toneequal-*.tif`, relative to the reference's mean level as the crops are: a mean of
+0.1 % and a max of 1 %, no pixel over it, except `quantization`, which may put 100 pixels (0.2 %)
+over it. The mask's estimate and its guided or EIGF filter are float sums that the port keeps in
+darktable's order; quantization snaps the mask to steps, so a
+pixel within rounding of a step boundary lands on the next step.
 
 ## Memory bounds on the 100 MP mosaic
 

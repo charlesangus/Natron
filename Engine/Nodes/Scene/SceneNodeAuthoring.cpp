@@ -579,6 +579,58 @@ composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
     return rotation;
 }
 
+PXR_NS::GfVec3d
+decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
+                        SceneRotateOrderEnum rotateOrder,
+                        const PXR_NS::GfVec3d& hint)
+{
+    const int i = getRotateOrderAxis(rotateOrder, 0);
+    const int j = getRotateOrderAxis(rotateOrder, 1);
+    const int k = getRotateOrderAxis(rotateOrder, 2);
+    // In column-vector terms the rotation is Rk Rj Ri, and r(a, b) is its element at row a,
+    // column b: the transpose of Gf's row-vector matrix.
+    const auto r = [&rotation](int a, int b) {
+        return rotation[b][a];
+    };
+    // +1 when the order is a cyclic permutation of XYZ.
+    const double s = ((j - i + 3) % 3 == 1) ? 1. : -1.;
+    const double sinB = std::min(1., std::max(-1., -s * r(k, i)));
+    double a, b, c;
+    b = std::asin(sinB);
+    if (std::abs(r(k, i)) < 1. - 1e-10) {
+        a = std::atan2(s * r(k, j), r(k, k));
+        c = std::atan2(s * r(j, i), r(i, i));
+    } else {
+        // Gimbal lock: only the sum or difference of the outer angles is defined.
+        c = 0.;
+        a = std::atan2(-s * r(j, k), r(j, j));
+    }
+    const double toDegrees = 180. / M_PI;
+    // Two sets of angles give each rotation: (a, b, c) and (a + 180, 180 - b, c + 180).
+    PXR_NS::GfVec3d candidates[2];
+    candidates[0][i] = a * toDegrees;
+    candidates[0][j] = b * toDegrees;
+    candidates[0][k] = c * toDegrees;
+    candidates[1][i] = a * toDegrees + 180.;
+    candidates[1][j] = 180. - b * toDegrees;
+    candidates[1][k] = c * toDegrees + 180.;
+    PXR_NS::GfVec3d best;
+    double bestDistance = -1.;
+    for (PXR_NS::GfVec3d& candidate : candidates) {
+        double distance = 0.;
+        for (int axis = 0; axis < 3; ++axis) {
+            candidate[axis] += 360. * std::round((hint[axis] - candidate[axis]) / 360.);
+            distance += std::abs(candidate[axis] - hint[axis]);
+        }
+        if ((bestDistance < 0.) || (distance < bestDistance)) {
+            best = candidate;
+            bestDistance = distance;
+        }
+    }
+
+    return best;
+} // decomposeRotationMatrix
+
 PXR_NS::GfMatrix4d
 composeTransformMatrix(const PXR_NS::GfVec3d& translate,
                        const PXR_NS::GfVec3d& rotate,

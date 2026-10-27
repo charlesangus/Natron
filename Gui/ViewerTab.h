@@ -78,6 +78,9 @@ public:
     // Whether the tab shows the scene view rather than the 2D viewer.
     bool isShowingScene() const;
 
+    // The node whose scene the scene view shows, the viewer's input A; null when none.
+    NodePtr getSceneViewedNode() const;
+
     void setCurrentView(ViewIdx view);
 
     ViewIdx getCurrentView() const;

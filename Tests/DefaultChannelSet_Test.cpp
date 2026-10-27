@@ -116,7 +116,7 @@ const char* const kKeepsColorLayer[] = {
     "net.sf.openfx.SaturationPlugin",
     "net.sf.openfx.Clamp",
     "net.sf.openfx.ColorLookupPlugin",
-    "net.sf.openfx.MergePlugin",
+    "Merge",
     "net.sf.openfx.KeyerPlugin",
     "net.sf.openfx.ChromaKeyerPlugin",
     "net.sf.openfx.anaglyphPlugin",

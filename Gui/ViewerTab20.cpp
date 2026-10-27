@@ -143,12 +143,13 @@ ViewerTab::drawOverlays(double time,
         }
 
 #endif
-        bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(*it);
-        if (!isInActiveViewerUI) {
+        if (!_imp->isOverlayHiddenByViewerSlot(*it)) {
             EffectInstancePtr effect = (*it)->getEffectInstance();
             assert(effect);
             effect->setCurrentViewportForOverlays_public(_imp->viewer);
+            effect->setDrawingPassiveOverlay(_imp->hasInactiveNodeViewerContext(*it));
             effect->drawOverlay_public(time, renderScale, view);
+            effect->setDrawingPassiveOverlay(false);
         }
 
 #ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS

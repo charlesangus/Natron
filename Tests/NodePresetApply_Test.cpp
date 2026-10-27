@@ -58,6 +58,7 @@ namespace {
 
 const char* const kOwnUserKnob = "ownUser";
 const char* const kAddedUserKnob = "addedUser";
+const char* const kLinkedUserKnob = "linkedUser";
 
 class NodePresetApply
     : public BaseTest {
@@ -174,23 +175,25 @@ protected:
     }
 
     // Modifies every kind of state a preset apply must clear: keyframes, an expression, a link
-    // and a plain value, plus the exceptions a preset leaves alone.
-    void modifyTarget(const NodePtr& target,
-                      const NodePtr& linkSource)
+    // and a plain value, plus the exceptions a preset leaves alone. The link is to a user knob of
+    // the same node, which a snapshot of the node links again by itself.
+    void modifyTarget(const NodePtr& target)
     {
         KnobDoublePtr size = knob<KnobDouble>(target, kBlurParamSize);
         KnobBoolPtr crop = knob<KnobBool>(target, kBlurParamCropToFormat);
         KnobChoicePtr filter = knob<KnobChoice>(target, kBlurParamFilter);
-        KnobBoolPtr sourceCrop = knob<KnobBool>(linkSource, kBlurParamCropToFormat);
         KnobBoolPtr disable = knob<KnobBool>(target, kDisableNodeKnobName);
         KnobStringPtr label = knob<KnobString>(target, kUserLabelKnobName);
-        ASSERT_TRUE(size && crop && filter && sourceCrop && disable && label);
+        EffectInstancePtr effect = target->getEffectInstance();
+        KnobBoolPtr linkedUser = effect->createBoolKnob(kLinkedUserKnob, kLinkedUserKnob);
+        ASSERT_TRUE(size && crop && filter && disable && label && linkedUser);
+        effect->getOrCreateUserPageKnob()->addKnob(linkedUser);
 
         size->setValueAtTime(1, 5., ViewSpec::all(), 0);
         size->setValueAtTime(10, 20., ViewSpec::all(), 0);
         ASSERT_NO_THROW(size->setExpression(1, "3.5", false, true));
-        sourceCrop->setValue(!sourceCrop->getDefaultValue(0));
-        ASSERT_TRUE(crop->slaveTo(0, sourceCrop, 0));
+        linkedUser->setValue(!crop->getDefaultValue(0));
+        ASSERT_TRUE(crop->linkTo(0, linkedUser, 0));
         ASSERT_GT(filter->getNumEntries(), 1);
         filter->setValue((filter->getDefaultValue(0) + 1) % filter->getNumEntries());
         disable->setValue(true);
@@ -198,7 +201,8 @@ protected:
 
         ASSERT_EQ(2, size->getKeyFramesCount(ViewSpec::current(), 0));
         ASSERT_EQ(std::string("3.5"), size->getExpression(1));
-        ASSERT_TRUE(crop->isSlave(0));
+        ASSERT_TRUE(bool(crop->getLinkGroup(0)));
+        ASSERT_NE(crop->getDefaultValue(0), crop->getValue());
     }
 };
 
@@ -207,10 +211,9 @@ protected:
 TEST_F(NodePresetApply, APresetFromADefaultNodeResetsKeyframesExpressionsLinksAndValues)
 {
     NodePtr source = createBlur();
-    NodePtr linkSource = createBlur();
     NodePtr target = createBlur();
-    ASSERT_TRUE(source && linkSource && target);
-    ASSERT_NO_FATAL_FAILURE(modifyTarget(target, linkSource));
+    ASSERT_TRUE(source && target);
+    ASSERT_NO_FATAL_FAILURE(modifyTarget(target));
 
     const Serialization::NodeSerialization preset = presetFileOf(snapshot(source));
     std::list<KnobIPtr> created;
@@ -224,7 +227,7 @@ TEST_F(NodePresetApply, APresetFromADefaultNodeResetsKeyframesExpressionsLinksAn
         EXPECT_TRUE(size->getExpression(i).empty()) << "dimension " << i;
         EXPECT_DOUBLE_EQ(size->getDefaultValue(i), size->getValue(i)) << "dimension " << i;
     }
-    EXPECT_FALSE(crop->isSlave(0));
+    EXPECT_FALSE(bool(crop->getLinkGroup(0)));
     EXPECT_EQ(crop->getDefaultValue(0), crop->getValue());
     EXPECT_EQ(filter->getDefaultValue(0), filter->getValue());
     EXPECT_TRUE(created.empty());
@@ -233,10 +236,9 @@ TEST_F(NodePresetApply, APresetFromADefaultNodeResetsKeyframesExpressionsLinksAn
 TEST_F(NodePresetApply, APresetKeepsTheLabelDisableSwitchAndUserKnobsItCarriesOtherValuesFor)
 {
     NodePtr source = createBlur();
-    NodePtr linkSource = createBlur();
     NodePtr target = createBlur();
-    ASSERT_TRUE(source && linkSource && target);
-    ASSERT_NO_FATAL_FAILURE(modifyTarget(target, linkSource));
+    ASSERT_TRUE(source && target);
+    ASSERT_NO_FATAL_FAILURE(modifyTarget(target));
     knob<KnobBool>(source, kDisableNodeKnobName)->setValue(true);
     knob<KnobBool>(target, kDisableNodeKnobName)->setValue(false);
     knob<KnobString>(source, kUserLabelKnobName)->setValue(std::string("preset label"));
@@ -345,11 +347,10 @@ TEST_F(NodePresetApply, APresetKeepsTheRotoShapesAndUndoingWithTheSnapshotRestor
 TEST_F(NodePresetApply, ASparsePresetSetsItsKnobsAndResetsTheRest)
 {
     NodePtr source = createBlur();
-    NodePtr linkSource = createBlur();
     NodePtr target = createBlur();
-    ASSERT_TRUE(source && linkSource && target);
+    ASSERT_TRUE(source && target);
     setBothDimensions(knob<KnobDouble>(source, kBlurParamSize), 4.);
-    ASSERT_NO_FATAL_FAILURE(modifyTarget(target, linkSource));
+    ASSERT_NO_FATAL_FAILURE(modifyTarget(target));
 
     Serialization::NodeSerialization sparse = snapshot(source);
     sparse.knobs.remove_if([](const Serialization::KnobSerialization& k) { return k.name != kBlurParamSize; });
@@ -362,7 +363,7 @@ TEST_F(NodePresetApply, ASparsePresetSetsItsKnobsAndResetsTheRest)
         EXPECT_EQ(0, size->getKeyFramesCount(ViewSpec::current(), i)) << "dimension " << i;
         EXPECT_TRUE(size->getExpression(i).empty()) << "dimension " << i;
     }
-    EXPECT_FALSE(knob<KnobBool>(target, kBlurParamCropToFormat)->isSlave(0));
+    EXPECT_FALSE(bool(knob<KnobBool>(target, kBlurParamCropToFormat)->getLinkGroup(0)));
     KnobChoicePtr filter = knob<KnobChoice>(target, kBlurParamFilter);
     EXPECT_EQ(filter->getDefaultValue(0), filter->getValue());
 }
@@ -370,12 +371,11 @@ TEST_F(NodePresetApply, ASparsePresetSetsItsKnobsAndResetsTheRest)
 TEST_F(NodePresetApply, APresetAddsItsUserKnobsAndUndoingWithTheSnapshotRestoresTheNodeExactly)
 {
     NodePtr source = createBlur();
-    NodePtr linkSource = createBlur();
     NodePtr target = createBlur();
-    ASSERT_TRUE(source && linkSource && target);
+    ASSERT_TRUE(source && target);
     setBothDimensions(knob<KnobDouble>(source, kBlurParamSize), 9.);
     ASSERT_TRUE(bool(addUserDouble(source, kAddedUserKnob, 6.)));
-    ASSERT_NO_FATAL_FAILURE(modifyTarget(target, linkSource));
+    ASSERT_NO_FATAL_FAILURE(modifyTarget(target));
     ASSERT_TRUE(bool(addUserDouble(target, kOwnUserKnob, 2.)));
 
     const Serialization::NodeSerialization before = snapshot(target);
@@ -407,17 +407,18 @@ TEST_F(NodePresetApply, APresetAddsItsUserKnobsAndUndoingWithTheSnapshotRestores
     EXPECT_EQ(2, size->getKeyFramesCount(ViewSpec::current(), 0));
     EXPECT_EQ(std::string("3.5"), size->getExpression(1));
     KnobBoolPtr crop = knob<KnobBool>(target, kBlurParamCropToFormat);
-    ASSERT_TRUE(crop->isSlave(0));
-    EXPECT_EQ(knob<KnobBool>(linkSource, kBlurParamCropToFormat), crop->getMaster(0).second);
+    KnobBoolPtr linkedUser = knob<KnobBool>(target, kLinkedUserKnob);
+    ASSERT_TRUE(bool(linkedUser));
+    ASSERT_TRUE(bool(crop->getLinkGroup(0)));
+    EXPECT_EQ(crop->getLinkGroup(0), linkedUser->getLinkGroup(0));
     EXPECT_EQ(beforeYaml, yamlOf(snapshot(target)));
 }
 
 TEST_F(NodePresetApply, ApplyingAFreshSnapshotOfANodeChangesNothing)
 {
-    NodePtr linkSource = createBlur();
     NodePtr target = createBlur();
-    ASSERT_TRUE(linkSource && target);
-    ASSERT_NO_FATAL_FAILURE(modifyTarget(target, linkSource));
+    ASSERT_TRUE(bool(target));
+    ASSERT_NO_FATAL_FAILURE(modifyTarget(target));
     ASSERT_TRUE(bool(addUserDouble(target, kOwnUserKnob, 2.)));
 
     const Serialization::NodeSerialization before = snapshot(target);

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <string>
 #include <vector>
@@ -51,6 +52,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/LayerRegistry.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
@@ -189,7 +191,7 @@ protected:
         }
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         if (!QFile::exists(QString::fromStdString(path))) {
             *error = "frame was not rendered: " + path;
@@ -221,14 +223,18 @@ TEST_F(RotoLayerTest, RotoPaintWritesOneChannelOfDiffuseInsideTheShape)
     // the registry, whether or not its own inputs carry that plane.
     NodePtr bottomMerge = roto->getRotoContext()->getRotoPaintBottomMergeNode();
     ASSERT_TRUE(bool(bottomMerge));
-    KnobChannelSetPtr mergeChannels = std::dynamic_pointer_cast<KnobChannelSet>(bottomMerge->getLayerKnob());
-    ASSERT_TRUE(bool(mergeChannels));
-    EXPECT_TRUE(bottomMerge->isTargetLayerKnob(mergeChannels));
-    std::vector<ChannelSetRow> rows = mergeChannels->getRows();
+    // The merge has no host layer knob: its Layers list is the whole layer, and A is read in its
+    // namesake. RotoPaint copies the channels it does not write back from its input.
+    EXPECT_FALSE(bool(bottomMerge->getLayerKnob()));
+    KnobChannelSetPtr mergeLayers = std::dynamic_pointer_cast<KnobChannelSet>(bottomMerge->getKnobByName(kNativeMergeParamLayers));
+    ASSERT_TRUE(bool(mergeLayers));
+    const std::vector<ChannelSetRow> rows = mergeLayers->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
     EXPECT_EQ(std::string("diffuse"), rows[0].layerOrPattern);
-    EXPECT_TRUE(rows[0].channels.empty());
+    KnobLayerSelectPtr mergeA = std::dynamic_pointer_cast<KnobLayerSelect>(bottomMerge->getKnobByName(kNativeMergeParamALayer));
+    ASSERT_TRUE(bool(mergeA));
+    EXPECT_EQ(std::string(kNatronLayerSelectAll), mergeA->getLayer());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -396,6 +402,131 @@ TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoContainer)
     EXPECT_EQ(error.find(rotoName), error.rfind(rotoName)) << error;
     EXPECT_EQ(std::string::npos, error.find("_Effect")) << error;
     EXPECT_EQ(std::string::npos, error.find("_Merge")) << error;
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, RotoPaintBezierGetsItsRenderNodes)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr paint = roto->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+    EXPECT_EQ(paint.get(), roto->getCurveContext().get());
+
+    BezierPtr square = addSquare(roto);
+    ASSERT_TRUE(bool(square));
+    NodePtr effectNode = square->getEffectNode();
+    NodePtr mergeNode = square->getMergeNode();
+    ASSERT_TRUE(bool(effectNode));
+    ASSERT_TRUE(bool(mergeNode));
+
+    NodesList tree;
+    paint->getRotoPaintTreeNodes(&tree);
+    EXPECT_NE(tree.end(), std::find(tree.begin(), tree.end(), effectNode));
+    EXPECT_NE(tree.end(), std::find(tree.begin(), tree.end(), mergeNode));
+
+    project->reset(false, true);
+}
+
+namespace {
+
+// Each tool group of the viewer toolbar page, followed by its actions, as "Group" and "Group/Action".
+std::vector<std::string>
+listToolbar(const NodePtr& node)
+{
+    std::vector<std::string> names;
+    KnobPagePtr toolbar = std::dynamic_pointer_cast<KnobPage>(node->getKnobByName("Toolbar"));
+    if (!toolbar) {
+        return names;
+    }
+    std::vector<KnobIPtr> groups = toolbar->getChildren();
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        names.push_back(groups[i]->getName());
+        KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(groups[i]);
+        if (!group) {
+            continue;
+        }
+        std::vector<KnobIPtr> actions = group->getChildren();
+        for (std::size_t j = 0; j < actions.size(); ++j) {
+            names.push_back(groups[i]->getName() + "/" + actions[j]->getName());
+        }
+    }
+
+    return names;
+}
+
+std::vector<std::string>
+expectedCurveToolbar()
+{
+    const char* names[] = {
+        "SelectionToolButton",
+        "SelectionToolButton/SelectAllTool",
+        "SelectionToolButton/SelectPointsTool",
+        "SelectionToolButton/SelectShapesTool",
+        "SelectionToolButton/SelectFeatherTool",
+        "EditPointsToolButton",
+        "EditPointsToolButton/AddPointsTool",
+        "EditPointsToolButton/RemovePointsTool",
+        "EditPointsToolButton/CuspPointsTool",
+        "EditPointsToolButton/SmoothPointsTool",
+        "EditPointsToolButton/OpenCloseShapeTool",
+        "EditPointsToolButton/RemoveFeatherPointTool",
+        "EditBezierToolButton",
+        "EditBezierToolButton/DrawBezierTool",
+        "EditBezierToolButton/DrawEllipseTool",
+        "EditBezierToolButton/DrawRectangleTool",
+        "PaintBrushToolButton",
+        "PaintBrushToolButton/PaintSolidTool",
+        "PaintBrushToolButton/PencilTool",
+        "PaintBrushToolButton/EraserTool",
+    };
+
+    return std::vector<std::string>(names, names + sizeof(names) / sizeof(names[0]));
+}
+
+} // namespace
+
+TEST_F(RotoLayerTest, RotoToolbarKnobsKeepTheirNamesAndOrder)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    EXPECT_EQ(expectedCurveToolbar(), listToolbar(roto));
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, RotoPaintToolbarKnobsKeepTheirNamesAndOrder)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+
+    std::vector<std::string> expected = expectedCurveToolbar();
+    const char* paintNames[] = {
+        "CloneToolButton",
+        "CloneToolButton/CloneTool",
+        "CloneToolButton/RevealTool",
+        "EffectToolButton",
+        "EffectToolButton/BlurTool",
+        "EffectToolButton/SmearTool",
+        "MergeToolButton",
+        "MergeToolButton/DodgeTool",
+        "MergeToolButton/BurnTool",
+    };
+    expected.insert(expected.end(), paintNames, paintNames + sizeof(paintNames) / sizeof(paintNames[0]));
+    EXPECT_EQ(expected, listToolbar(roto));
 
     project->reset(false, true);
 }

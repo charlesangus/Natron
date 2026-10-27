@@ -45,12 +45,12 @@
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
+#include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
-#define PLUGINID_OFX_MERGE        "net.sf.openfx.MergePlugin"
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
 #define PLUGINID_OFX_DOTEXAMPLE   "net.sf.openfx.dotexample"
 #define PLUGINID_OFX_RADIAL       "net.sf.openfx.Radial"
@@ -504,6 +504,29 @@ public:
         return false;
     }
 
+    enum CurveContextKindEnum {
+        eCurveContextKindNone = 0,
+        // Layers and Beziers only: no render nodes, no strokes, no paint pages.
+        eCurveContextKindGeometry,
+        // A RotoContext: strokes, the paint pages and the internal render tree.
+        eCurveContextKindPaint
+    };
+
+    /**
+     * @brief Which curve context the node holds, created along with the node. Paint for RotoPaint,
+     * Roto and the internal OFX Roto plug-in, None otherwise.
+     **/
+    virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
+     * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
+     **/
+    virtual RotoCurvePanelHook* getCurvePanelHook() const WARN_UNUSED_RETURN
+    {
+        return 0;
+    }
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**
@@ -829,6 +852,51 @@ public:
                                             const std::list<ImageLayerDesc>& layers,
                                             std::list<ImagePtr>* outputImages,
                                             DeepImagePtr* outputDeepImage = NULL) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether what this effect puts on its output is a scene, as the graph around it
+     * resolves it: eDataKindScene and unambiguously so. Decides whether evaluateScene() may be
+     * asked of it.
+     **/
+    bool producesSceneData() const WARN_UNUSED_RETURN;
+
+    struct EvaluateSceneArgs {
+        // Only decides identities, such as a node disabled at some frames: the payload itself
+        // is the same at every time.
+        double time;
+        ViewIdx view;
+
+        EvaluateSceneArgs()
+            : time(0)
+            , view(0)
+        {
+        }
+
+        EvaluateSceneArgs(double time_,
+                          ViewIdx view_)
+            : time(time_)
+            , view(view_)
+        {
+        }
+    };
+
+    /**
+     * @brief The scene counterpart of renderDeepRoI(): evaluates this effect's scene and returns
+     * it in *outputScene. One payload per layer stack, not per frame: consumers pick the time
+     * when they query a stage composing it (SceneStage, SceneQueryPool).
+     *
+     * The same pull pipeline as renderDeepRoI(): identities (Dot, the NoOps, disabled nodes,
+     * group boundaries) hand back their input's payload, every input whose effective data kind
+     * is eDataKindScene is evaluated first, the render's abort flag is checked between steps,
+     * and only then is this effect's renderScene() called.
+     *
+     * On eRenderRoIRetCodeOk, *outputScene is set, possibly to an empty scene. On
+     * eRenderRoIRetCodeFailed, *errorMessage (if given) carries the message of the node that
+     * failed, whichever node upstream that was.
+     **/
+    RenderRoIRetCode evaluateScene(const EvaluateSceneArgs& args,
+                                   ScenePayload* outputScene,
+                                   std::string* errorMessage) WARN_UNUSED_RETURN;
 
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,
@@ -1349,7 +1417,8 @@ public:
     virtual bool tryLock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual void unlock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual bool canSetValue() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual void abortAnyEvaluation(bool keepOldestRender = true) OVERRIDE FINAL;
+    virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
+    virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
     virtual double getCurrentTime() const OVERRIDE WARN_UNUSED_RETURN;
     virtual ViewIdx getCurrentView() const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool getCanTransform() const
@@ -1553,6 +1622,28 @@ public:
         }
     };
 
+    struct SceneRenderActionArgs {
+        double time;
+        ViewIdx view;
+        // The payload of each connected input that produces a scene, by input number.
+        std::map<int, ScenePayload> inputScenes;
+        bool isRenderResponseToUserInteraction;
+
+        SceneRenderActionArgs()
+            : time(0)
+            , view(0)
+            , inputScenes()
+            , isRenderResponseToUserInteraction(false)
+        {
+        }
+
+        /**
+         * @brief The payload of inputNb, or an empty one if that input is not connected or does
+         * not produce a scene.
+         **/
+        ScenePayload getInputScene(int inputNb) const;
+    };
+
 protected:
     /**
      * @brief Must fill the image 'output' for the region of interest 'roi' at the given time and
@@ -1579,6 +1670,23 @@ protected:
      * over a single allocation.
      **/
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusReplyDefault;
+    }
+
+    /**
+     * @brief The scene counterpart of render(): must set *outputScene to this effect's scene,
+     * typically args.getInputScene(0) with this node's layer on top (see
+     * NativeEffectBase::emitSceneLayer()). Pre-condition: evaluateScene() has already evaluated
+     * every scene input. Must not edit any layer an input's payload holds.
+     *
+     * On failure returns eStatusFailed with *errorMessage set to what the user should read. The
+     * default returns eStatusReplyDefault, meaning "this effect does not produce a scene", which
+     * evaluateScene() turns into a failure.
+     **/
+    virtual StatusEnum renderScene(const SceneRenderActionArgs& /*args*/,
+                                   ScenePayload* /*outputScene*/,
+                                   std::string* /*errorMessage*/) WARN_UNUSED_RETURN
     {
         return eStatusReplyDefault;
     }
@@ -1857,6 +1965,14 @@ public:
 
     void setCurrentViewportForOverlays_public(OverlaySupport* viewport);
     OverlaySupport* getCurrentViewportForOverlays() const;
+
+    /**
+     * @brief True while the viewer draws this effect's overlay without sending it pen, key or focus
+     * events, because another node owns the viewer tool slot. The overlay should then leave out
+     * feedback for the tool in use, such as a brush cursor.
+     **/
+    void setDrawingPassiveOverlay(bool passive);
+    bool isDrawingPassiveOverlay() const;
 
 protected:
 
@@ -2468,7 +2584,8 @@ public:
 
     virtual void onKnobSlaved(const KnobIPtr& slave, const KnobIPtr& master,
                               int dimension,
-                              bool isSlave) OVERRIDE FINAL;
+                              bool isSlave,
+                              bool isExpression) OVERRIDE FINAL;
 
     /**
      * @brief This function calls the implementation specific attachOpenGLContext()
@@ -2604,7 +2721,22 @@ public:
                                    bool* isIdentity = NULL);
 
 private:
+    void getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNodes) const;
+
     bool isResolvingLayersPassThrough() const;
+
+    /**
+     * @brief Whether the output follows the layer knob and its selection processes no channel,
+     * which makes the effect an identity of its pass-through input (see isIdentity_public()).
+     **/
+    bool processesNoChannel(double time, ViewIdx view) const;
+
+    /**
+     * @brief Whether the output follows the layer knob and its selection resolves to at least one
+     * layer but to no channel on any of them. Unlike processesNoChannel(), a selection resolving
+     * to no layer is excluded: it falls back to the metadata planes, processed on every channel.
+     **/
+    bool selectsOnlyLayersWithNoChannel(double time, ViewIdx view) const;
 
     ComponentsNeededResultsPtr getPresentLayersResults(double time, ViewIdx view, int inputNb);
 
@@ -2854,6 +2986,46 @@ protected:
         return false;
     }
 
+    /**
+     * @brief Adds to comps the layers the effect reads from its inputs beside those
+     * getComponentsNeededDefault() plans from the layer knob, mask and divisor, so that the request
+     * pass plans them upstream. Called at the end of getComponentsNeededDefault(), which is all a
+     * non-multi-planar effect gets: getComponentsNeededAndProduced() is only called on a
+     * multi-planar one. producedPlanes are the planes addProducedPlanes() added to the output.
+     **/
+    virtual void addInputLayersNeeded(double /*time*/,
+                                      ViewIdx /*view*/,
+                                      const std::list<ImageLayerDesc>& /*producedPlanes*/,
+                                      EffectInstance::ComponentsNeededMap* /*comps*/)
+    {
+    }
+
+    /**
+     * @brief Adds to planes the planes a non-multi-planar effect renders beside those its layer
+     * knob selects. getComponentsNeededDefault() makes each one an output plane and a plane of
+     * every non-mask input, so that the effect renders it alone, reading it from those inputs,
+     * as it renders a selected plane. None by default.
+     **/
+    virtual void addProducedPlanes(double /*time*/,
+                                   ViewIdx /*view*/,
+                                   std::list<ImageLayerDesc>* /*planes*/)
+    {
+    }
+
+    /**
+     * @brief Sets, for output planes of an effect without a layer knob that chooses its planes
+     * and channels with a knob of its own, the channels it processes on each, as a layer knob's
+     * channel buttons do: every other channel of such a plane passes through from the
+     * pass-through input. outputPlanes are every plane the effect renders, addProducedPlanes()'
+     * among them. A plane left out of the map is processed on every channel. Nothing by default.
+     **/
+    virtual void addProducedPlanesChannels(double /*time*/,
+                                           ViewIdx /*view*/,
+                                           const std::list<ImageLayerDesc>& /*outputPlanes*/,
+                                           ProcessChannelsPerPlaneMap* /*processChannelsPerPlane*/)
+    {
+    }
+
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)
     {
 
@@ -3084,7 +3256,6 @@ public:
     virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
 
 private:
-    virtual void onAllKnobsSlaved(bool isSlave, KnobHolder* master) OVERRIDE FINAL;
     enum RenderingFunctorRetEnum
     {
         eRenderingFunctorRetFailed, //< must stop rendering

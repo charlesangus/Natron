@@ -221,8 +221,9 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
   unconnected clip: every standard key describes the source, so a value made up
   from the clip or the timeline would misdescribe it.
 
-Framework policies: `Merge` takes the metadata of its A input (then A2.., then
-B if no A is connected), never B's; the generators (`GeneratorNode`) output only
+Framework policies: `Merge` takes the metadata of its B input by default (its
+Metadata From choice picks A or B; the other input's when that one is not
+connected, and A means input A, not A2 onwards); the generators (`GeneratorNode`) output only
 `ofx/framerate` and `ofx/pixelaspect` (they have no source, and `ofx/frame` is the
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
@@ -488,8 +489,8 @@ under "Flat image nodes", and `Grade` is the example to read.
    naming the class and its header relative to the fragment. A template
    registered under several IDs gets one fragment per ID, each naming its
    full instantiation and named after the node it registers
-   (`Merge/MergePlus.reg.inc` holds
-   `NATRON_NATIVE_NODE(MergePreset<eMergePresetPlus>, "Merge.h")`). The
+   (`Color/Add.reg.inc` holds
+   `NATRON_NATIVE_NODE(ColorMathNode<eColorMathOperationAdd>, "ColorMathNode.h")`). The
    class is a macro argument, so an instantiation whose arguments contain a
    comma is named through an alias (`Solid` in `Generator/Constant.h`).
    CMake globs the fragments into the generated `NativeRegistryAll.inc`, which
@@ -500,6 +501,21 @@ under "Flat image nodes", and `Grade` is the example to read.
    grouping and versions already come from there. Registration instantiates
    the node once (with a null `NodePtr`) purely to read that metadata back off
    it and register a `Plugin*` -- it is not a live node instance.
+
+   An I-node -- a variable-size variant of a base node, whose Map input scales
+   the effect per pixel -- adds a second line to its fragment pairing it with
+   its base node:
+
+   ```cpp
+   NATRON_I_VARIANT(PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR)
+   ```
+
+   The base ID, the I-node's ID, then any number of `{ baseKnob, iKnob }`
+   pairs for knobs whose names differ (`Filter/IBlur.reg.inc` needs none);
+   every other knob converts to the knob of the same name. `IVariantRegistry::builtin()` (`IVariantRegistry.h`) collects
+   these lines, and the Make I-Node action reads it to convert a node either
+   way. The I-node's Map input and knobs come from `MapInput`
+   (`Filter/MapInput.h`).
 
 5. **Test it**: see "Testing" below.
 
@@ -512,7 +528,8 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       above. One per registered ID; a template argument list containing a comma
       goes through an alias. Icon, `deprecated` and `internal` are `NodeSpec`
       fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
-      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`.
+      `NativeRegistryAll.inc` from `Nodes/*.reg.inc`. An I-node's fragment also
+      holds its `NATRON_I_VARIANT` line, see step 4.
 - [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
       from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
       and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
@@ -561,8 +578,12 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   connection typing, but there is no deep payload type, no deep cache, and no
   deep render path yet. Declaring a kind does not mean a node can render that
   kind of data today.
-- `eDataKindScene` -- 3D scene data. Same caveat as deep: declaration only,
-  no scene payload or evaluation path yet.
+- `eDataKindScene` -- 3D scene data: a `ScenePayload` (`Engine/ScenePayload.h`),
+  an immutable stack of USD layers, one per scene node. A consumer pulls it
+  with `EffectInstance::evaluateScene()`; a native scene node overrides
+  `renderScene()` and authors its layer through `NativeEffectBase::emitSceneLayer()`,
+  which memoizes it. USD types stay in `Engine/Nodes/Scene/`, which includes
+  them only through `UsdIncludes.h`.
 - `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
   "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
   other `NoOps`, group boundaries, `TypedPassthrough`), and for a source whose
@@ -990,6 +1011,12 @@ them:
   a Source input, and a Composite or Resample op cannot have it (no one divisor
   applies to several inputs, and a resampler reads the source as stored); both
   are compile errors.
+- **`Divisor`** gives the op the same selector, starting on `rgba.A` and
+  labelled `ImagePipelineSpec::divisorLabel`, but divides and multiplies
+  nothing: the op reads `RowIO::divisor` itself (on the GPU,
+  `runWrappedDivisor<>` hands it to an `IDivisorPixelOp`). With None picked the
+  node is an identity. It excludes `Premult` and needs a Point op; Premult and
+  Unpremult use it.
 - **`MaskMix`** blends each processed channel of the op's result with the
   *undivided* source by mask x `mix`, with the `ofxsMaskMixPix()` arithmetic. It
   needs a Mask input.
@@ -1093,9 +1120,20 @@ the base input by default). Every input is read at the evaluation's time. The re
 as the base input's row and `step()` combines it with each further input's row
 in turn: `io.src[0]` is the result so far, `io.src[1]` the next input's row, and
 `step()` writes the processed channels to `io.dst`. Mask and mix apply once, to
-the final result. An input is read in the layer its `InputSpec::layer` names and
-reads zero wherever it has no pixel. An op reading several inputs at once is not
-supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does.
+the final result. An input is read in the layer its `InputSpec::layer` names, or the one
+the `KnobLayerSelect` its `CompositeInput::layerKnob` names selects, and reads zero wherever
+it has no pixel. A `CompositeInput` may also carry an alpha source (`CompositeAlpha`): one
+channel a `KnobChannelSelect` selects, broadcast to every channel; a layer a `KnobLayerSelect`
+selects, read per channel, which must have as many channels as the read layer or the render
+fails with an error naming both; or the read layer's own `A`/`alpha` channel, falling back to
+a channel select. When any folded input has one, `step()` gets `io.alpha[0]` (the result's)
+and `io.alpha[1]` (the input's) as strided spans, an input without one reading zero, and writes
+the new result's alpha to `io.dstAlpha`; the base's alpha source gives the first result's. An
+input's alpha resolves apart from its pixels: a connected input lacking the layer it is read in
+has zero pixels but keeps its alpha, and only a disconnected one reads zero alpha too. With
+`CompositeInputs::resultIsAlpha` the carried alpha, not the folded pixels, is the result, as
+Merge writes B's per-channel alpha layer. An op
+reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve and Merge do. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`addInputLayersNeeded()`); a further input read in a selected colour layer of another colour layout than the plane's is handed over in that layer instead (`getGpuInputLayer()`, `stageGpuSourceInputLayer()`), the fold reading its channels by channel as the CPU does; a further input lacking a rendered plane other than the colour one reads zero pixels there and is handed over in the layer its alpha is read from; a base read in a layer whose channel count differs from the plane's stays on the CPU.
 
 **Custom** is the way out, and the cost of it is that the node owns its pixels.
 A Custom node derives from `StagedImageEffect` directly, returns
@@ -1103,9 +1141,9 @@ A Custom node derives from `StagedImageEffect` directly, returns
 from `imagePipelineSpec()` (with `.op = OpKind::Custom`), and implements
 `isOpIdentity(time, scale, roi, view)` and `renderOp(args, plan)`. It still gets
 the layer knob, the stage knobs and the composed identities, and reads the mask,
-mix and divisor from the `StagePlan` instead of its own knobs. Merge, Keyer and
-ChromaKeyer are Custom nodes; Merge until M101 - Clean-Sheet Merge Node, the
-keyers until M95 - Knob Cleanup And Keyer Redesign. A Custom node is on the CPU
+mix and divisor from the `StagePlan` instead of its own knobs. Keyer and
+ChromaKeyer are Custom nodes, as are the Raw nodes; Merge is a Composite op. A
+Custom node is on the CPU
 unless it opts into the GPU by overriding three virtuals:
 `canRenderOpOnGpu(query)` (the answer may depend only on the query, the
 node's settings and its source metadata), `renderOpGpu(args)` to record its dispatches over
@@ -1192,6 +1230,15 @@ lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
 
+A runtime shader finds its source and destination by name, not by binding: its
+only storage buffers are the blocks named `Src` and `Dst`
+(`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set
+0, so generated code that puts its own uniform block at binding 0, as
+OpenColorIO's does, is wrapped as it is. Every other binding is a uniform block
+or a texture matched by name to `GpuShaderInputs`. A texture with a `cacheKey`
+is kept by the GPU context's `GpuTextureCache`, shared with the viewer, and
+uploaded once rather than for each render.
+
 The kernel is an `IPixelOp` in the style of `Engine/Gpu/Kernels/pixelwrap.slang`:
 `load()` reads the block, `apply(float4, int2)` does the maths on a pixel in
 channel-bit order, and an entry calls `runWrapped<Op>`. The wrapper does the
@@ -1242,7 +1289,7 @@ source plane, the divisor layer (through the "(Un)premult by" selector) and the
 mask layer (through the mask selector), all at the render window, and a Passes
 or Resample op widens the source's region of interest by its halo or filter
 reach. A node that reads more -- another input, another time, a wider window --
-declares it through `getRegionsOfInterest()`, `getComponentsNeededAndProduced()`
+declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, matching the OpenFX conditions so identities become
 identity tasks. No node here touches deep data or GL.
@@ -1274,9 +1321,8 @@ suite does. Each node parallelises its own render, within the thread budget
   between the full frame and a 1x1 window, about 1% of the input's range;
   `NativeSpatialFilterWindow_Test.cpp` holds them to 2e-2. The box family is a
   running sum in double whose rounding to float measured identical.
-- Resample ops and the Custom nodes with their own `renderOp()` (`Merge`,
-  `Keyer`, `ChromaKeyer`) and the generators split row bands the same way as
-  point ops.
+- Resample ops and the Custom nodes with their own `renderOp()` (`Keyer`,
+  `ChromaKeyer`) and the generators split row bands the same way as point ops.
 
 Read an image's bounds with `Image::getBounds()` on the calling thread, before
 the bands start, and hand the rectangle to the band. `getBounds()` takes the
@@ -1304,9 +1350,7 @@ is how a parity test renders both side by side. The ID and major live in
 node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are in
 `Gui/Resources/Images/NativeNodes/<pluginID>.png`.
 
-Siblings are one op under several IDs, each with its own `NodeSpec`: the Merge
-presets (`Plus`, `Matte`, `Multiply`, `In`, `Out`, `Screen`, `Max`, `Min`,
-`Difference`) are `MergeNode` with a default `operation`; `Solid` is a
+Siblings are one op under several IDs, each with its own `NodeSpec`: `Solid` is a
 `ConstantNode` over `ConstantOp` with its own spec; `TransformMasked` is
 `TransformImageNode<true>`, the `TransformOp` node with a mask input; `Add`,
 `Multiply` and `Gamma` are `ColorMathNode<KIND>`; `Erode` and `Dilate` are
@@ -1348,9 +1392,9 @@ NaNs matches, as do equal infinities.
 
 | Class | `ParityTolerance` | Bound | Used for |
 |---|---|---|---|
-| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge Porter-Duff operators, Crop without softness |
-| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve |
-| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes |
+| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge's multiply-and-add Porter-Duff operators on the GPU, Crop without softness |
+| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve, Merge's conjoint-over and disjoint-over on the GPU |
+| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes on the GPU |
 | Resampling | `resampling()` | 1e-5 absolute | Transform, Reformat, Crop softness |
 | IIR | `iir()` | 1e-4 absolute | Blur, EdgeDetect, Transform motion blur |
 

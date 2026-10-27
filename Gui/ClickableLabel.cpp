@@ -40,8 +40,8 @@
 
 NATRON_NAMESPACE_ENTER
 
-ClickableLabel::ClickableLabel(const QString &text,
-                               QWidget *parent)
+ClickableLabel::ClickableLabel(const QString& text,
+                               QWidget* parent)
     : Label(text, parent)
     , _toggled(false)
     , _bold(false)
@@ -49,11 +49,12 @@ ClickableLabel::ClickableLabel(const QString &text,
     , _readOnly(false)
     , _animation(0)
     , _sunkenStyle(false)
+    , _linked(false)
 {
 }
 
-ClickableLabel::ClickableLabel(const QPixmap &icon,
-                               QWidget *parent)
+ClickableLabel::ClickableLabel(const QPixmap& icon,
+                               QWidget* parent)
     : Label(parent)
     , _toggled(false)
     , _bold(false)
@@ -61,6 +62,7 @@ ClickableLabel::ClickableLabel(const QPixmap &icon,
     , _readOnly(false)
     , _animation(0)
     , _sunkenStyle(false)
+    , _linked(false)
 {
     setPixmap(icon);
 }
@@ -139,6 +141,15 @@ ClickableLabel::setSunken(bool s)
 {
     if (_sunkenStyle != s) {
         _sunkenStyle = s;
+        refreshStyle();
+    }
+}
+
+void
+ClickableLabel::setLinked(bool linked)
+{
+    if (_linked != linked) {
+        _linked = linked;
         refreshStyle();
     }
 }

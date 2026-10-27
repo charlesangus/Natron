@@ -118,9 +118,6 @@ struct NodeSerialization {
     // Still read and written so the file layout is stable, but ignored on load and saved as 0.
     std::uint64_t knobsAge;
 
-    // The fully qualified name of the node all knobs of this node are slaved to, if any.
-    std::string masterNodeName;
-
     bool hasRotoContext;
     RotoContextSerialization rotoContext;
     bool hasTrackerContext;
@@ -149,7 +146,6 @@ struct NodeSerialization {
         , knobs()
         , inputs()
         , knobsAge(0)
-        , masterNodeName()
         , hasRotoContext(false)
         , rotoContext()
         , hasTrackerContext(false)

@@ -330,7 +330,7 @@ try:
         require(size.setExpression(EXPRESSION, False, 1), "set an expression on %s.size" % tgt)
         crop_default = default(tgt, "cropToFormat")
         link_source.getParam("cropToFormat").setValue(not crop_default)
-        require(target.getParam("cropToFormat").slaveTo(link_source.getParam("cropToFormat"), 0, 0),
+        require(target.getParam("cropToFormat").linkTo(link_source.getParam("cropToFormat"), 0, 0),
                 "linked %s.cropToFormat to %s" % (tgt, lnk))
         filt = target.getParam("filter")
         filt.setValue((default(tgt, "filter") + 1) % filt.getNumOptions())

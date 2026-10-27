@@ -142,7 +142,7 @@ def blur(name, src, size, mask=None):
 
 
 def merge(name, op, a, b):
-    n = make("net.sf.openfx.MergePlugin", name)
+    n = make("Merge", name)
     n.connectInput(0, b)
     n.connectInput(1, a)
     choice(n, "operation", op)
@@ -240,7 +240,7 @@ def keying_grade():
     grown = single("net.sf.cimg.CImgDilate", "matte_dilate", soft)
     p(grown, "size").set(2, 2)
 
-    clean = single("net.sf.openfx.Despill", "despill", plate)
+    clean = single("Despill", "despill", plate)
     fg = merge("fg_in_matte", "in", clean, grown)
     fg = grade("fg_grade1", fg, mult=(1.05, 1.0, 0.95, 1.0))
     fg = colorcorrect("fg_cc1", fg, sat=1.1, gain=1.05)

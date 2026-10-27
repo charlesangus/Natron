@@ -57,7 +57,7 @@ if [ -e "/tmp/.X11-unix/X$DISPLAY_NUM" ] || [ -e "/tmp/.X$DISPLAY_NUM-lock" ]; t
     echo "display :$DISPLAY_NUM is already in use (set GL_TEST_DISPLAY or stop the old Xvfb)" >&2
     exit 2
 fi
-LD_LIBRARY_PATH=/usr/lib64 Xvfb ":$DISPLAY_NUM" -screen 0 1600x1000x24 +extension GLX > /dev/null 2>&1 &
+LD_LIBRARY_PATH=/usr/lib64 Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 +extension GLX > /dev/null 2>&1 &
 XPID=$!
 # /tmp/.X11-unix is root-owned in the container, so Xvfb listens on an abstract socket only and
 # no socket file ever appears; ask the server itself whether it is up.

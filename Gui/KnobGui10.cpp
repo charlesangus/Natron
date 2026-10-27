@@ -30,9 +30,12 @@
 #include <stdexcept>
 
 #include <QDebug>
+#include <QStringList>
 
 #include "Engine/Knob.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
@@ -61,32 +64,9 @@ KnobGui::onCreateAliasOnGroupActionTriggered()
 }
 
 void
-KnobGui::onRemoveAliasLinkActionTriggered()
-{
-    KnobIPtr thisKnob = getKnob();
-    KnobI::ListenerDimsMap listeners;
-
-    thisKnob->getListeners(listeners);
-    KnobIPtr aliasMaster;
-    KnobIPtr listener;
-    if ( !listeners.empty() ) {
-        listener = listeners.begin()->first.lock();
-        if (listener) {
-            aliasMaster = listener->getAliasMaster();
-        }
-        if (aliasMaster != thisKnob) {
-            aliasMaster.reset();
-        }
-    }
-    if (aliasMaster && listener) {
-        listener->setKnobAsAliasOfThis(aliasMaster, false);
-    }
-}
-
-void
 KnobGui::onUnlinkActionTriggered()
 {
-    QAction* action = qobject_cast<QAction*>( sender() );
+    QAction* action = qobject_cast<QAction*>(sender());
 
     if (!action) {
         return;
@@ -94,21 +74,258 @@ KnobGui::onUnlinkActionTriggered()
     int dim = action->data().toInt();
     KnobIPtr thisKnob = getKnob();
     int dims = thisKnob->getDimension();
-    KnobIPtr aliasMaster = thisKnob->getAliasMaster();
-    if (aliasMaster) {
-        thisKnob->setKnobAsAliasOfThis(aliasMaster, false);
-    } else {
-        thisKnob->beginChanges();
-        for (int i = 0; i < dims; ++i) {
-            if ( (dim == -1) || (i == dim) ) {
-                std::pair<int, KnobIPtr> other = thisKnob->getMaster(i);
-                thisKnob->onKnobUnSlaved(i);
-                onKnobSlavedChanged(i, false);
-            }
+    thisKnob->beginChanges();
+    for (int i = 0; i < dims; ++i) {
+        if ((dim == -1) || (i == dim)) {
+            std::pair<int, KnobIPtr> other = thisKnob->getMaster(i);
+            thisKnob->onKnobUnSlaved(i);
+            onKnobSlavedChanged(i, false);
         }
-        thisKnob->endChanges();
     }
+    thisKnob->endChanges();
     getKnob()->getHolder()->getApp()->triggerAutoSave();
+}
+
+/**
+ * @brief The members of a non-permanent link group of the knob's dimension other than that dimension, on
+ * active nodes.
+ **/
+static std::vector<KnobLinkGroup::Member>
+getLinkPartners(const KnobIPtr& knob,
+                int dimension)
+{
+    std::vector<KnobLinkGroup::Member> ret;
+    KnobLinkGroupPtr group = knob->getLinkGroup(dimension);
+
+    if (!group || group->isPermanent()) {
+        return ret;
+    }
+    std::vector<KnobLinkGroup::Member> members = group->getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr member = it->knob.lock();
+        if (!member || ((member == knob) && (it->dimension == dimension))) {
+            continue;
+        }
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(member->getHolder());
+        if (effect && !effect->getNode()->isActivated()) {
+            continue;
+        }
+        ret.push_back(*it);
+    }
+
+    return ret;
+}
+
+/**
+ * @brief "Node.knob", followed by ".dimension" when withDimension is set and the knob has several.
+ **/
+static QString
+getLinkMemberName(const KnobLinkGroup::Member& member,
+                  bool withDimension)
+{
+    KnobIPtr knob = member.knob.lock();
+    QString name;
+
+    if (!knob) {
+        return name;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    if (effect) {
+        name += QString::fromUtf8(effect->getNode()->getFullyQualifiedName().c_str());
+        name += QLatin1Char('.');
+    } else if (dynamic_cast<Project*>(knob->getHolder())) {
+        name += QString::fromUtf8("Project.");
+    }
+    name += QString::fromUtf8(knob->getName().c_str());
+    if (withDimension && (knob->getDimension() > 1)) {
+        name += QLatin1Char('.');
+        name += QString::fromUtf8(knob->getDimensionName(member.dimension).c_str());
+    }
+
+    return name;
+}
+
+/**
+ * @brief The names of the members, without repeats, the unlinked ones marked.
+ **/
+static QString
+joinLinkMemberNames(const std::vector<KnobLinkGroup::Member>& members,
+                    bool withDimension)
+{
+    QStringList names;
+
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        QString name = getLinkMemberName(*it, withDimension);
+        if (name.isEmpty()) {
+            continue;
+        }
+        if (!it->linked) {
+            name += QLatin1Char(' ');
+            name += KnobGui::tr("(unlinked)");
+        }
+        if (!names.contains(name)) {
+            names.push_back(name);
+        }
+    }
+
+    return names.join(QString::fromUtf8(", ")).toHtmlEscaped();
+}
+
+bool
+KnobGui::hasLinkPartners() const
+{
+    KnobIPtr knob = getKnob();
+
+    if (!knob || knob->getAliasMaster()) {
+        return false;
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (!getLinkPartners(knob, i).empty()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+KnobGui::isLinkedToPartners() const
+{
+    KnobIPtr knob = getKnob();
+
+    if (!knob || knob->getAliasMaster()) {
+        return false;
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->isLinked(i) && !knob->isLinkPermanent(i) && !getLinkPartners(knob, i).empty()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @brief True if every dimension has partners and they are all the same knobs.
+ **/
+static bool
+sameLinkPartnerNames(const std::vector<std::vector<KnobLinkGroup::Member>>& partners)
+{
+    for (std::size_t i = 0; i < partners.size(); ++i) {
+        if (partners[i].empty() || (joinLinkMemberNames(partners[i], false) != joinLinkMemberNames(partners[0], false))) {
+            return false;
+        }
+    }
+
+    return !partners.empty();
+}
+
+/**
+ * @brief The tool tip lines about the knob's link groups, as HTML, or an empty string when it has no
+ * link partner. A knob linked in some dimensions only gets one line per dimension.
+ **/
+static QString
+getLinkToolTip(const KnobIPtr& knob)
+{
+    if (!knob || knob->getAliasMaster()) {
+        return QString();
+    }
+    const int nDims = knob->getDimension();
+    std::vector<std::vector<KnobLinkGroup::Member>> partners(nDims);
+    int nLinked = 0;
+    int nUnlinked = 0;
+    for (int i = 0; i < nDims; ++i) {
+        partners[i] = getLinkPartners(knob, i);
+        if (partners[i].empty()) {
+            continue;
+        }
+        if (knob->isLinked(i) && !knob->isLinkPermanent(i)) {
+            ++nLinked;
+        } else {
+            ++nUnlinked;
+        }
+    }
+    if ((nLinked == 0) && (nUnlinked == 0)) {
+        return QString();
+    }
+
+    QString ret;
+    if (nLinked == nDims) {
+        std::vector<KnobLinkGroup::Member> all;
+        for (int i = 0; i < nDims; ++i) {
+            all.insert(all.end(), partners[i].begin(), partners[i].end());
+        }
+        ret = KnobGui::tr("Linked to %1.").arg(joinLinkMemberNames(all, false));
+    } else if ((nUnlinked == nDims) && sameLinkPartnerNames(partners)) {
+        ret = KnobGui::tr("Unlinked from %1.").arg(joinLinkMemberNames(partners[0], false));
+    } else {
+        ret = (nLinked > 0) ? KnobGui::tr("Partially linked:") : KnobGui::tr("Unlinked:");
+        for (int i = 0; i < nDims; ++i) {
+            const QString dimName = QString::fromUtf8(knob->getDimensionName(i).c_str()).toHtmlEscaped();
+            QString line;
+            if (partners[i].empty()) {
+                line = KnobGui::tr("%1 is not linked").arg(dimName);
+            } else if (knob->isLinked(i) && !knob->isLinkPermanent(i)) {
+                line = KnobGui::tr("%1 is linked to %2").arg(dimName, joinLinkMemberNames(partners[i], true));
+            } else {
+                line = KnobGui::tr("%1 is unlinked from %2").arg(dimName, joinLinkMemberNames(partners[i], true));
+            }
+            ret += QString::fromUtf8("<br />");
+            ret += line;
+        }
+    }
+    ret += QString::fromUtf8("<br />");
+    if (nLinked > 0) {
+        ret += KnobGui::tr("Right-click and choose Unlink to edit it on its own.");
+    } else {
+        ret += KnobGui::tr("Right-click and choose Re-link to take the linked value again.");
+    }
+
+    return ret;
+} // getLinkToolTip
+
+void
+KnobGui::onLinkStateChanged()
+{
+    if (_imp->guiRemoved || _imp->isInViewerUIKnob) {
+        return;
+    }
+    if (_imp->descriptionLabel) {
+        _imp->descriptionLabel->setLinked(isLinkedToPartners());
+        _imp->descriptionLabel->setToolTip(toolTip());
+    }
+    if (_imp->widgetCreated) {
+        updateToolTip();
+    }
+} // KnobGui::onLinkStateChanged
+
+void
+KnobGui::onUnlinkFromGroupsActionTriggered()
+{
+    KnobIPtr knob = getKnob();
+
+    if (knob) {
+        pushUndoCommand(new KnobLinkUndoCommand(knob, false));
+    }
+}
+
+void
+KnobGui::onRelinkToGroupsActionTriggered()
+{
+    KnobIPtr knob = getKnob();
+
+    if (!knob || !knob->hasRelinkableGroups()) {
+        return;
+    }
+    StandardButtonEnum reply = Dialogs::questionDialog(tr("Re-link").toStdString(),
+                                                       tr("Re-linking will discard this knob's local values and use the linked value.").toStdString(),
+                                                       false,
+                                                       StandardButtons(eStandardButtonOk | eStandardButtonCancel),
+                                                       eStandardButtonOk);
+    if (reply != eStandardButtonOk) {
+        return;
+    }
+    pushUndoCommand(new KnobLinkUndoCommand(knob, true));
 }
 
 void
@@ -572,6 +789,11 @@ KnobGui::toolTip() const
         tt.replace( QString::fromUtf8("<h2>"), QString::fromUtf8("<h2 style=\"font-size:large;\">") );
     }
 
+    const QString linkTt = getLinkToolTip(knob);
+    if (!linkTt.isEmpty()) {
+        tt += isMarkdown ? QString::fromUtf8("<p>%1</p>").arg(linkTt) : QString::fromUtf8("<br /><br />%1").arg(linkTt);
+    }
+
     return tt;
 } // KnobGui::toolTip
 
@@ -688,6 +910,7 @@ KnobGui::show(int /*index*/)
     } else {
         _imp->customInteract->show();
     }
+    onLinkStateChanged();
 
     //also show the curve from the curve editor if there's any
     KnobIPtr knob = getKnob();

@@ -94,6 +94,7 @@ KnobGuiLayerSelect::createWidget(QHBoxLayout* layout)
     if (knob) {
         _imp->row->setAllowNone(knob->getAllowNone());
         _imp->row->setAllowAll(knob->getAllowAll());
+        _imp->row->setAllLabel(QString::fromUtf8(knob->getAllLabel().c_str()));
     }
     _imp->row->setAbsentMarker(getAbsentMarkerText());
     QObject::connect(_imp->row, &LayerChannelRow::layerChosen, this, [this](const QString& id) {

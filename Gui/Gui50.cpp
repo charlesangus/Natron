@@ -98,6 +98,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ProgressPanel.h"
 #include "Gui/PropertiesBinWrapper.h"
 #include "Gui/RightClickableWidget.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
@@ -838,6 +839,10 @@ Gui::redrawAllViewers()
     for (std::list<ViewerTab*>::const_iterator it = _imp->_viewerTabs.begin(); it != _imp->_viewerTabs.end(); ++it) {
         if ( (*it)->isVisible() ) {
             (*it)->getViewer()->redraw();
+            // The scene viewer draws handles for the nodes whose panels are open.
+            if ((*it)->isShowingScene()) {
+                (*it)->getSceneViewport()->update();
+            }
         }
     }
 }

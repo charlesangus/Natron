@@ -114,7 +114,8 @@ public:
     void restartTask();
 
     // A foreground task is shown in its own modal dialog, so nothing it does may switch the
-    // current tab to the Progress panel.
+    // current tab to the Progress panel. Stopping it cancels it rather than pausing it: it runs
+    // in this process and a restart would read the project as edited since.
     void setForeground(bool foreground);
 
     bool isForeground() const;
@@ -168,7 +169,7 @@ Q_SIGNALS:
 
     void taskCanceled();
 
-    // Fraction of the task's frame range rendered so far, in [0, 1].
+    // Fraction of the task done so far, in [0, 1]: for a render, of its frame range.
     void progressChanged(double progress);
 
     // Emitted once per run of the task, whether it succeeded, failed, was aborted or was cancelled.

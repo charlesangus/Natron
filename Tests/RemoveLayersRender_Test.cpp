@@ -76,7 +76,7 @@ const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
 const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
-const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
+const char* const kMergePluginID = "Merge";
 
 std::set<std::string>
 channelSet(const FlatExrImage& image)
@@ -264,7 +264,7 @@ protected:
         ASSERT_TRUE(writerEffect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         ASSERT_TRUE(QFile::exists(QString::fromStdString(path))) << "frame was not rendered: " << path;
         std::string error;
@@ -752,7 +752,7 @@ TEST_F(RemoveLayersRenderTest, BlurOnNoneOverAColourlessStreamProducesNoColourPl
 
 // B is the colourless stream and Merge's pass-through input, but A brings colour: A over a zero
 // B is A, (1, 0, 0, 1).
-TEST_F(RemoveLayersRenderTest, MergeOnAllKeepsTheColourOfAOverAColourlessB)
+TEST_F(RemoveLayersRenderTest, MergeKeepsTheColourOfAOverAColourlessB)
 {
     createRemoveOnFixture();
     if (HasFatalFailure()) {
@@ -777,9 +777,6 @@ TEST_F(RemoveLayersRenderTest, MergeOnAllKeepsTheColourOfAOverAColourlessB)
     ASSERT_GE(inputB, 0);
     connectNodes(_remove, merge, inputB, true);
     connectNodes(colored, merge, inputA, true);
-    KnobChannelSetPtr mergeChannels = std::dynamic_pointer_cast<KnobChannelSet>(merge->getKnobByName(kNodeParamChannelSet));
-    ASSERT_TRUE(bool(mergeChannels));
-    mergeChannels->setAll();
     _last = merge;
 
     FlatExrImage image;

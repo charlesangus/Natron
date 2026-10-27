@@ -26,6 +26,7 @@
 #include "GuiApplicationManager.h"
 #include "GuiApplicationManagerPrivate.h"
 
+#include <iostream>
 #include <stdexcept> // runtime_error
 
 #ifdef Q_OS_DARWIN
@@ -41,6 +42,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QGuiApplication>
+#include <QMessageBox>
 #include <QPixmapCache>
 #include <QScreen>
 #include <QSettings>
@@ -65,9 +67,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/CurveWidget.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiGLRequirements.h"
+#include "Gui/HydraGLContextQt.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/TabMenuBridge.h"
+#include "Gui/ViewerTab.h"
 
 /**
  * @macro Registers a keybind to the application.
@@ -299,6 +305,8 @@ GuiApplicationManager::initializeQApp(int &argc,
         // division_by_zero happens here - don't trap it
         boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
+        // The default format must be in place before the QApplication exists for contexts to share.
+        GuiGLRequirements::installDefaultFormat();
         app = new Application(this, argc, argv);
     }
     // QDesktopWidget is gone in Qt6; QScreen carries the same values and exists
@@ -323,6 +331,33 @@ GuiApplicationManager::initializeQApp(int &argc,
 
     ///Register all the shortcuts.
     populateShortcuts();
+}
+
+bool
+GuiApplicationManager::checkGLContextRequirements()
+{
+    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(GuiGLRequirements::probe());
+    if (verdict.accepted) {
+        HydraGLContextQt::install();
+
+        return true;
+    }
+    _imp->glContextRefused = true;
+    std::cerr << verdict.message.toStdString() << std::endl;
+
+    const QString platform = QGuiApplication::platformName();
+    const bool canShowDialog = platform != QLatin1String("offscreen") && platform != QLatin1String("minimal");
+    if (canShowDialog && !GuiGLRequirements::isRefusalDialogSuppressed()) {
+        QMessageBox::critical(nullptr, QString::fromUtf8(NATRON_APPLICATION_NAME), verdict.message);
+    }
+
+    return false;
+}
+
+bool
+GuiApplicationManager::hasRefusedGLContext() const
+{
+    return _imp->glContextRefused;
 }
 
 QString
@@ -808,6 +843,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionClearNodeCache, kShortcutDescActionClearNodeCache, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionClearPluginsLoadCache, kShortcutDescActionClearPluginsLoadCache, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionClearAllCaches, kShortcutDescActionClearAllCaches, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_K);
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionFreeGpuMemory, kShortcutDescActionFreeGpuMemory, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionRenderSelected, kShortcutDescActionRenderSelected, Qt::NoModifier, Qt::Key_F7);
 
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionRenderAll, kShortcutDescActionRenderAll, Qt::NoModifier, Qt::Key_F5);
@@ -933,7 +969,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRearrangeNodes, kShortcutDescActionGraphRearrangeNodes, Qt::NoModifier, Qt::Key_L);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, kShortcutDescActionGraphDisableNodes, Qt::NoModifier, Qt::Key_D);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, kShortcutDescActionGraphRemoveNodes, Qt::NoModifier, Qt::Key_Backspace);
-    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowExpressions, kShortcutDescActionGraphShowExpressions, Qt::ShiftModifier, Qt::Key_E);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines, kShortcutDescActionGraphShowLinkLines, Qt::ShiftModifier, Qt::Key_E);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateDownstream, kShortcutDescActionGraphNavigateDownstram, Qt::NoModifier, Qt::Key_Down);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateUpstream, kShortcutDescActionGraphNavigateUpstream, Qt::NoModifier, Qt::Key_Up);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectUp, kShortcutDescActionGraphSelectUp, Qt::ShiftModifier, Qt::Key_Up);
@@ -945,11 +981,15 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCopy, kShortcutDescActionGraphCopy, Qt::ControlModifier, Qt::Key_C);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphPaste, kShortcutDescActionGraphPaste, Qt::ControlModifier, Qt::Key_V);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCut, kShortcutDescActionGraphCut, Qt::ControlModifier, Qt::Key_X);
-    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphClone, kShortcutDescActionGraphClone, Qt::AltModifier, Qt::Key_K);
-    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDeclone, kShortcutDescActionGraphDeclone, Qt::AltModifier | Qt::ShiftModifier, Qt::Key_K);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateLinkedNode, kShortcutDescActionGraphCreateLinkedNode, Qt::AltModifier, Qt::Key_K);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphUnlinkNode, kShortcutDescActionGraphUnlinkNode, Qt::AltModifier | Qt::ShiftModifier, Qt::Key_K);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDuplicate, kShortcutDescActionGraphDuplicate, Qt::AltModifier, Qt::Key_C);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphForcePreview, kShortcutDescActionGraphForcePreview, Qt::ShiftModifier, Qt::Key_P);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphTogglePreview, kShortcutDescActionGraphToggleAutoPreview, Qt::AltModifier, Qt::Key_P);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeMask, kShortcutDescActionMergeMask, Qt::NoModifier, Qt::Key_Semicolon);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeStencil, kShortcutDescActionMergeStencil, Qt::NoModifier, Qt::Key_Apostrophe);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeMaskAllLayers, kShortcutDescActionMergeMaskAllLayers, Qt::ShiftModifier, Qt::Key_Semicolon);
+    registerKeybind(kShortcutGroupNodes, kShortcutIDActionMergeStencilAllLayers, kShortcutDescActionMergeStencilAllLayers, Qt::ShiftModifier, Qt::Key_Apostrophe);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, kShortcutDescActionGraphToggleAutoPreview, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, kShortcutDescActionGraphToggleAutoTurbo, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFrameNodes, kShortcutDescActionGraphFrameNodes, Qt::NoModifier, Qt::Key_F);
@@ -1137,6 +1177,26 @@ GuiApplicationManager::clearLastRenderedTextures()
     }
 }
 
+void
+GuiApplicationManager::releaseSceneViewEngines()
+{
+    const AppInstanceVec& instances = getAppInstances();
+
+    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+        GuiAppInstance* guiApp = dynamic_cast<GuiAppInstance*>(it->get());
+        Gui* gui = guiApp ? guiApp->getGui() : nullptr;
+        if (!gui) {
+            continue;
+        }
+        const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
+        for (ViewerTab* viewer : viewers) {
+            if (SceneViewport* view = viewer->getSceneViewport()) {
+                view->releaseEngine();
+            }
+        }
+    }
+}
+
 bool
 GuiApplicationManager::isNodeClipBoardEmpty() const
 {
@@ -1154,6 +1214,7 @@ GuiApplicationManager::clearNodeClipBoard()
 {
     _imp->_nodeCB.nodes.clear();
     _imp->_nodeCB.sourceNodes.clear();
+    _imp->_nodeCB.sourceProject.clear();
 }
 
 ///The symbol has been generated by Shiboken in  Engine/NatronEngine/natronengine_module_wrapper.cpp

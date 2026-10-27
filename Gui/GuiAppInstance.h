@@ -131,6 +131,7 @@ public:
                                      const ProcessHandlerPtr & process) OVERRIDE FINAL;
     virtual void notifyRenderRestarted( OutputEffectInstance* writer,
                                         const ProcessHandlerPtr & process) OVERRIDE FINAL;
+    virtual void renderForeground(const std::list<RenderWork>& writers) OVERRIDE FINAL;
     virtual void setupViewersForViews(const std::vector<std::string>& viewNames) OVERRIDE FINAL;
 
     void setViewersCurrentView(ViewIdx view);
@@ -260,6 +261,10 @@ private:
     virtual void createNodeGui(const NodePtr &node,
                                const NodePtr&  parentMultiInstance,
                                const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    // Shows the application-modal progress dialog whenever `node`'s tracker tracks, if it has one.
+    void followTrackingInModal(const NodePtr& node);
+
     std::unique_ptr<GuiAppInstancePrivate> _imp;
 };
 

@@ -36,6 +36,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Format.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -45,11 +46,22 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+bool
+isAuxInput(const NodeSpec& spec,
+           int inputNb)
+{
+    const NodeSpec::ResolvedInput input = spec.resolveInput(inputNb);
+
+    return input.spec && (input.spec->role == InputRole::Aux);
+}
+} // namespace
+
 StagedImageEffect::StagedImageEffect(NodePtr node)
     : NativeEffectBase(node)
     , _stageKnobs()
-    , _rawStageErrorMutex()
-    , _postedRawStageError()
+    , _stageErrorMutex()
+    , _postedStageError()
 {
 }
 
@@ -78,7 +90,9 @@ StagedImageEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) co
 bool
 StagedImageEffect::wantsHostUnPremultSelector() const
 {
-    return imagePipelineSpec().stages.has(Stage::Premult);
+    const StageSet& stages = imagePipelineSpec().stages;
+
+    return stages.has(Stage::Premult) || stages.has(Stage::Divisor);
 }
 
 bool
@@ -142,9 +156,11 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     if (imagePipelineSpec().op != OpKind::Composite) {
         return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
     }
-    const CompositeInputs inputs = opInputs(query.time, query.view);
+    const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
     resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.plane = query.plane;
+    resolveStageSourcesLayers(*self, &plan);
 
     return plan;
 }
@@ -152,13 +168,13 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (rawStageError(query.time, query.view)) {
+    if (rawStageError(query.time, query.view) || opError(query.time, query.view)) {
         return false;
     }
     const OpKind kind = imagePipelineSpec().op;
 
     if (kind == OpKind::Passes) {
-        return canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
+        return opPassesOnGpu() && canRecordPassesGpu(resolveGpuPlan(query), query, opPasses(query.time, query.view, query.mappedScale));
     }
     if (kind == OpKind::Resample) {
         return opResamplesOnGpu() && canRecordResampleGpu(*this, resolveGpuPlan(query), query, opResample(query.time, query.view, query.mappedScale));
@@ -195,6 +211,15 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     if ((inputNb == source) && (kind == OpKind::Passes)) {
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
+    if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputRoI(inputNb, outputRect, scale);
+    }
+    if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
+        const PassList list = opPasses(time, view, scale);
+        if (list.opMask) {
+            return passListSourceRoI(outputRect, list);
+        }
+    }
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
         return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
     }
@@ -220,9 +245,87 @@ StagedImageEffect::getGpuInputLayer(int inputNb,
     if ((kind != OpKind::Point) && (kind != OpKind::Composite) && (kind != OpKind::Passes) && ((kind != OpKind::Resample) || !opResamplesOnGpu())) {
         return false;
     }
+    if ((kind == OpKind::Passes) && (inputNb != getSourceInput()) && isAuxInput(*nodeSpec(), inputNb)) {
+        return opPassesInputLayer(inputNb, plane, time, view, layer);
+    }
     stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+    if ((kind == OpKind::Composite) && !isInputMask(inputNb)) {
+        // Resolving only reads knobs and the node's inputs' layers.
+        StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+        StagePlan plan = resolveSourcesPlan(time, view, plane);
+        resolveStageSourcesLayers(*self, &plan);
+        *layer = stageGpuSourceInputLayer(plan, inputNb, plane);
+    }
 
     return true;
+}
+
+CompositeInputs
+StagedImageEffect::opInputsForPlane(double time,
+                                    ViewIdx view,
+                                    const ImageLayerDesc& plane) const
+{
+    CompositeInputs inputs = opInputs(time, view);
+
+    adjustInputsForPlane(plane, time, view, &inputs);
+
+    return inputs;
+}
+
+StagePlan
+StagedImageEffect::resolveSourcesPlan(double time,
+                                      ViewIdx view,
+                                      const ImageLayerDesc& plane) const
+{
+    StagePlan plan;
+    const CompositeInputs inputs = opInputsForPlane(time, view, plane);
+
+    plan.time = time;
+    plan.view = view;
+    plan.sourceInput = inputs.blend();
+    plan.plane = plane;
+    resolveStageSources(nodeSpec(), inputs, &plan);
+
+    return plan;
+}
+
+bool
+StagedImageEffect::getGpuExtraInputLayers(int inputNb,
+                                          const ImageLayerDesc& plane,
+                                          double time,
+                                          ViewIdx view,
+                                          std::vector<ImageLayerDesc>* layers) const
+{
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return true;
+    }
+    // Resolving only reads knobs and the node's inputs' layers.
+    StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
+
+    return stageSourcesGpuLayers(*self, resolveSourcesPlan(time, view, plane), inputNb, plane, time, view, layers);
+}
+
+void
+StagedImageEffect::addInputLayersNeeded(double time,
+                                        ViewIdx view,
+                                        const std::list<ImageLayerDesc>& producedPlanes,
+                                        EffectInstance::ComponentsNeededMap* comps)
+{
+    if (imagePipelineSpec().op != OpKind::Composite) {
+        return;
+    }
+    std::vector<StagePlan> plans;
+    plans.reserve(producedPlanes.size() + 1);
+    plans.push_back(resolveSourcesPlan(time, view, ImageLayerDesc()));
+    for (const ImageLayerDesc& plane : producedPlanes) {
+        plans.push_back(resolveSourcesPlan(time, view, plane));
+    }
+    const int nInputs = getNInputs();
+    for (const StagePlan& plan : plans) {
+        for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
+            stageSourcesNeededLayers(*this, plan, inputNb, time, view, &(*comps)[inputNb]);
+        }
+    }
 }
 
 StatusEnum
@@ -231,6 +334,9 @@ StagedImageEffect::renderGpu(const GpuRenderArgs& args)
     const GpuQuery& query = args.query;
     const OpKind kind = imagePipelineSpec().op;
 
+    // canRenderOnGpu() turns down every frame render() fails with an error, so one rendered here
+    // has none and withdraws the error an earlier CPU frame posted.
+    postStageError(std::nullopt);
     if (kind == OpKind::Passes) {
         return recordPassesGpu(*this, resolveGpuPlan(query), args, opPasses(query.time, query.view, query.mappedScale));
     }
@@ -510,9 +616,15 @@ StagedImageEffect::getRegionsOfInterest(double time,
 
     const double par = getRenderMetadata(time, view)->getPixelAspectRatio(source);
     const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
-    RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
+    const PassList list = opPasses(time, view, scale);
+    RectD srcRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, list), scale, par);
     if (doMasking && (mix != 1.)) {
         srcRoI.merge(renderWindow);
+    }
+    // An op that applies its mask itself reads it wherever it reads the source.
+    EffectInstancePtr maskEffect = (doMasking && list.opMask) ? getInput(getMaskInput()) : EffectInstancePtr();
+    if (maskEffect && (maskEffect != input)) {
+        (*ret)[maskEffect] = srcRoI;
     }
     // The mask may be the same effect as the source, in which case both needs share one entry.
     RoIMap::iterator found = ret->find(input);
@@ -674,6 +786,14 @@ StagedImageEffect::isIdentity(double time,
     if (maskMix && (getMixValue(time, view) == 0.)) {
         return true;
     }
+    // A Divisor stage's op multiplies or divides by its divisor, which is 1 when none is picked.
+    if (imagePipelineSpec().stages.has(Stage::Divisor)) {
+        NodePtr node = getNode();
+        KnobChannelSelectPtr divisor = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+        if (!divisor || divisor->isNone()) {
+            return true;
+        }
+    }
     if (isOpIdentity(time, scale, roi, view)) {
         return true;
     }
@@ -687,44 +807,65 @@ StagedImageEffect::isIdentity(double time,
     return false;
 } // StagedImageEffect::isIdentity
 
+bool
+StagedImageEffect::postStageError(const std::optional<std::string>& error)
+{
+    if (error) {
+        {
+            std::lock_guard<std::mutex> lock(_stageErrorMutex);
+            _postedStageError = *error;
+        }
+        setPersistentMessage(eMessageTypeError, *error);
+
+        return false;
+    }
+    std::string posted;
+    {
+        std::lock_guard<std::mutex> lock(_stageErrorMutex);
+        posted.swap(_postedStageError);
+    }
+    NodePtr node = getNode();
+    // Only the message this check posted is cleared; another one stays the user's to read.
+    if (!posted.empty() && node) {
+        QString current;
+        int type = 0;
+        node->getPersistentMessage(&current, &type, false);
+        if (current == QString::fromUtf8(posted.c_str())) {
+            node->clearPersistentMessage(false);
+        }
+    }
+
+    return true;
+}
+
 StatusEnum
 StagedImageEffect::render(const RenderActionArgs& args)
 {
-    if (imagePipelineSpec().rawStage != RawStageRequirement::Any) {
-        const std::optional<std::string> stageError = rawStageError(args.time, args.view);
+    const bool checksRawStage = (imagePipelineSpec().rawStage != RawStageRequirement::Any);
+    const bool composite = (imagePipelineSpec().op == OpKind::Composite);
 
-        if (stageError) {
-            {
-                std::lock_guard<std::mutex> lock(_rawStageErrorMutex);
-                _postedRawStageError = *stageError;
-            }
-            setPersistentMessage(eMessageTypeError, *stageError);
-
+    if (!composite) {
+        if (checksRawStage && !postStageError(rawStageError(args.time, args.view))) {
             return eStatusFailed;
         }
-        std::string posted;
-        {
-            std::lock_guard<std::mutex> lock(_rawStageErrorMutex);
-            posted.swap(_postedRawStageError);
-        }
-        NodePtr node = getNode();
-        // Only the message this check posted is cleared; another one stays the user's to read.
-        if (!posted.empty() && node) {
-            QString current;
-            int type = 0;
-            node->getPersistentMessage(&current, &type, false);
-            if (current == QString::fromUtf8(posted.c_str())) {
-                node->clearPersistentMessage(false);
-            }
-        }
-    }
 
-    if (imagePipelineSpec().op != OpKind::Composite) {
         return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
     }
-    const CompositeInputs inputs = opInputs(args.time, args.view);
+    const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
+    const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
     resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.plane = plane;
+    std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
+    if (!error) {
+        error = opError(args.time, args.view);
+    }
+    if (!error) {
+        error = stageSourcesError(*this, plan, args.time, args.view);
+    }
+    if (!postStageError(error)) {
+        return eStatusFailed;
+    }
 
     return renderOp(args, plan);
 }

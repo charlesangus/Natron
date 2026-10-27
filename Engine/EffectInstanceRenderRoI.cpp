@@ -52,6 +52,7 @@
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
@@ -1881,6 +1882,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             tiledArgs->layers = layersToRender;
             tiledArgs->compsNeeded = compsNeeded;
             tiledArgs->frameContext = AppTLS::currentFrameContext();
+            tiledArgs->isolatedJob = IsolatedJob::current();
 
 #ifdef NATRON_HOSTFRAMETHREADING_SEQUENTIAL
             std::vector<EffectInstance::RenderingFunctorRetEnum> ret( tiledData.size() );

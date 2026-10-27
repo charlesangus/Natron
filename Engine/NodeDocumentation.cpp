@@ -31,6 +31,14 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/OCIO/OCIOCDLTransform.h"
+#include "Engine/Nodes/OCIO/OCIOColorSpace.h"
+#include "Engine/Nodes/OCIO/OCIODisplay.h"
+#include "Engine/Nodes/OCIO/OCIOFileTransform.h"
+#include "Engine/Nodes/OCIO/OCIOLookTransform.h"
+#include "Engine/Nodes/OCIO/OcioFileKnobs.h"
 #include "Engine/Utils.h"
 
 NATRON_NAMESPACE_ENTER
@@ -45,20 +53,87 @@ NATRON_NAMESPACE_ENTER
 #define kOCIOParamInputSpaceChoice "ocioInputSpaceIndex"
 #define kOCIOParamOutputSpaceChoice "ocioOutputSpaceIndex"
 
-#define kOCIODisplayPluginIdentifier "fr.inria.openfx.OCIODisplay"
-#define kOCIODisplayParamDisplay "display"
-#define kOCIODisplayParamDisplayChoice "displayIndex"
-#define kOCIODisplayParamView "view"
-#define kOCIODisplayParamViewChoice "viewIndex"
+// The hidden config pair every node with OcioSpaceKnobs (Engine/Nodes/IO/OcioSpaceKnobs.h)
+// carries, which the project pushes.
+#define kOCIOParamConfigFile "ocioConfigFile"
+#define kOCIOParamWorkingSpace "ocioWorkingSpace"
 
-// not yet implemented (see OCIOCDLTransform.cpp)
-//#define kOCIOCDLTransformPluginIdentifier "fr.inria.openfx.OCIOCDLTransform"
-//#define kOCIOCDLTransformParamCCCID "cccId"
-//#define kOCIOCDLTransformParamCCCIDChoice "cccIdIndex"
+NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-#define kOCIOFileTransformPluginIdentifier "fr.inria.openfx.OCIOFileTransform"
-#define kOCIOFileTransformParamCCCID "cccId"
-#define kOCIOFileTransformParamCCCIDChoice "cccIdIndex"
+// The script names of the spaces OcioSpaceKnobs builds on the native nodes. Each space is a
+// string knob (the name), a menu (name + "Index") and a flag (name + "Set").
+const char* const kOcioSpaceKnobNames[] = {
+    kNatronReadNodeOCIOParamInputSpace,
+    kNatronWriteParamOCIOOutputSpace,
+    kOCIOColorSpaceParamInputSpace,
+    kOCIOColorSpaceParamOutputSpace,
+};
+
+bool
+isNativeOcioNode(const QString& pluginID)
+{
+    const std::string id = pluginID.toStdString();
+
+    return (id == PLUGINID_NATRON_OCIOCOLORSPACE) || (id == PLUGINID_NATRON_OCIODISPLAY) || (id == PLUGINID_NATRON_OCIOCDLTRANSFORM) || (id == PLUGINID_NATRON_OCIOFILETRANSFORM) || (id == PLUGINID_NATRON_OCIOLOOKTRANSFORM);
+}
+
+// The space strings, which their menus stand for, the flags recording that a space was picked,
+// and the hidden config pair: none is a parameter the user sets.
+bool
+isHiddenOcioKnob(const QString& pluginID,
+                 const QString& knobScriptName)
+{
+    if (!Node::documentationDependsOnOcioConfig(pluginID.toStdString())) {
+        return false;
+    }
+    if ((knobScriptName == QString::fromUtf8(kOCIOParamConfigFile)) || (knobScriptName == QString::fromUtf8(kOCIOParamWorkingSpace))) {
+        return true;
+    }
+    for (std::size_t i = 0; i < sizeof(kOcioSpaceKnobNames) / sizeof(kOcioSpaceKnobNames[0]); ++i) {
+        const QString space = QString::fromUtf8(kOcioSpaceKnobNames[i]);
+        if ((knobScriptName == space) || (knobScriptName == space + QString::fromUtf8("Set"))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The menus the native nodes fill from the project's OpenColorIO config, or from a file, at run
+// time: their options are not part of the plug-in.
+bool
+hasRunTimeOcioOptions(const QString& pluginID,
+                      const QString& knobScriptName)
+{
+    if (!Node::documentationDependsOnOcioConfig(pluginID.toStdString())) {
+        return false;
+    }
+    for (std::size_t i = 0; i < sizeof(kOcioSpaceKnobNames) / sizeof(kOcioSpaceKnobNames[0]); ++i) {
+        if (knobScriptName == QString::fromUtf8(kOcioSpaceKnobNames[i]) + QString::fromUtf8("Index")) {
+            return true;
+        }
+    }
+    const std::string id = pluginID.toStdString();
+    if (id == PLUGINID_NATRON_OCIODISPLAY) {
+        return (knobScriptName == QString::fromUtf8(kOCIODisplayParamDisplay)) || (knobScriptName == QString::fromUtf8(kOCIODisplayParamView));
+    }
+    if (id == PLUGINID_NATRON_OCIOLOOKTRANSFORM) {
+        return knobScriptName == QString::fromUtf8(kOCIOLookTransformParamLook);
+    }
+    if ((id == PLUGINID_NATRON_OCIOCDLTRANSFORM) || (id == PLUGINID_NATRON_OCIOFILETRANSFORM)) {
+        return knobScriptName == QString::fromUtf8(kOcioFileParamCCCIdMenu);
+    }
+
+    return false;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+Node::documentationDependsOnOcioConfig(const std::string& pluginID)
+{
+    return (pluginID == PLUGINID_NATRON_READ) || (pluginID == PLUGINID_NATRON_WRITE) || isNativeOcioNode(QString::fromStdString(pluginID));
+}
 
 // genHTML: true for live HTML output for the internal web-server, false for markdown output
 QString
@@ -156,19 +231,7 @@ Node::makeDocumentation(bool genHTML) const
         QString knobHint = NATRON_NAMESPACE::convertFromPlainTextToMarkdown( QString::fromUtf8( (*it)->getHintToolTip().c_str() ), genHTML, true);
 
         // totally ignore the documentation for these parameters (which are always secret in Natron)
-        if ( knobScriptName.startsWith( QString::fromUtf8("NatronOfxParam") ) ||
-             knobScriptName == QString::fromUtf8("exportAsPyPlug") ||
-             knobScriptName == QString::fromUtf8(kOCIOParamInputSpace) ||
-             knobScriptName == QString::fromUtf8(kOCIOParamOutputSpace) ||
-             ( ( pluginID == QString::fromUtf8(kOCIODisplayPluginIdentifier) ) &&
-               ( knobScriptName == QString::fromUtf8(kOCIODisplayParamDisplay) ) ) ||
-             ( ( pluginID == QString::fromUtf8(kOCIODisplayPluginIdentifier) ) &&
-               ( knobScriptName == QString::fromUtf8(kOCIODisplayParamView) ) ) ||
-             //( ( pluginID == QString::fromUtf8(kOCIOCDLTransformPluginIdentifier) ) &&
-             //  ( knobScriptName == QString::fromUtf8(kOCIOCDLTransformParamCCCID) ) ) ||
-             ( ( pluginID == QString::fromUtf8(kOCIOFileTransformPluginIdentifier) ) &&
-               ( knobScriptName == QString::fromUtf8(kOCIOFileTransformParamCCCID) ) ) ||
-             false ) {
+        if (knobScriptName.startsWith(QString::fromUtf8("NatronOfxParam")) || knobScriptName == QString::fromUtf8("exportAsPyPlug") || knobScriptName == QString::fromUtf8(kOCIOParamInputSpace) || knobScriptName == QString::fromUtf8(kOCIOParamOutputSpace) || isHiddenOcioKnob(pluginID, knobScriptName)) {
             continue;
         }
 
@@ -225,10 +288,7 @@ Node::makeDocumentation(bool genHTML) const
                     // If this is a ChoiceParam and we are not generating live HTML doc,
                     // only add the list of entries and their help if this node should not be
                     // ignored (eg. OCIO colorspace knobs).
-                    if (isChoice && (genHTML || !(knobScriptName == QString::fromUtf8(kOCIOParamInputSpaceChoice) || knobScriptName == QString::fromUtf8(kOCIOParamOutputSpaceChoice) || ((pluginID == QString::fromUtf8(kOCIODisplayPluginIdentifier)) && (knobScriptName == QString::fromUtf8(kOCIODisplayParamDisplayChoice))) || ((pluginID == QString::fromUtf8(kOCIODisplayPluginIdentifier)) && (knobScriptName == QString::fromUtf8(kOCIODisplayParamViewChoice))) ||
-                                                  //( ( pluginID == QString::fromUtf8(kOCIOCDLTransformPluginIdentifier) ) &&
-                                                  //   ( knobScriptName == QString::fromUtf8(kOCIOCDLTransformParamCCCIDChoice) ) ) ||
-                                                  ((pluginID == QString::fromUtf8(kOCIOFileTransformPluginIdentifier)) && (knobScriptName == QString::fromUtf8(kOCIOFileTransformParamCCCIDChoice))) || ((pluginID == QString::fromUtf8("net.fxarena.openfx.Text") || pluginID == QString::fromUtf8("net.fxarena.openfx.MagickText")) && (knobScriptName == QString::fromUtf8("name"))) || // font family from Text plugins
+                    if (isChoice && (genHTML || !(knobScriptName == QString::fromUtf8(kOCIOParamInputSpaceChoice) || knobScriptName == QString::fromUtf8(kOCIOParamOutputSpaceChoice) || hasRunTimeOcioOptions(pluginID, knobScriptName) || ((pluginID == QString::fromUtf8("net.fxarena.openfx.Text") || pluginID == QString::fromUtf8("net.fxarena.openfx.MagickText")) && (knobScriptName == QString::fromUtf8("name"))) || // font family from Text plugins
                                                   ((pluginID == QString::fromUtf8("net.fxarena.openfx.Polaroid")) && (knobScriptName == QString::fromUtf8("font"))) || // font family from Polaroid plugin
                                                   ((pluginID == QString::fromUtf8(PLUGINID_NATRON_PRECOMP)) && (knobScriptName == QString::fromUtf8("writeNode"))) || ((pluginID == QString::fromUtf8(PLUGINID_NATRON_ONEVIEW)) && (knobScriptName == QString::fromUtf8("view")))))) {
                         // see also KnobChoice::getHintToolTipFull()
@@ -328,52 +388,10 @@ Node::makeDocumentation(bool genHTML) const
         }
     } // for (KnobsVec::const_iterator it = knobs.begin(); it!=knobs.end(); ++it) {
 
-
     // Generate plugin info
     // section header must be first, or cross-refs will not work:
-    // Documentation/source/plugins/net.sf.openfx.MergeMatte.rst:10: WARNING: undefined label: net.sf.openfx.mergeplugin (if the link has no caption the label must precede a section header)
     ms << tr("%1 node").arg(pluginLabel) << "\n==========\n\n";
     ms << ( QString::fromUtf8("<!-- ") + tr("Do not edit this file! It is generated automatically by %1 itself.").arg ( QString::fromUtf8( NATRON_APPLICATION_NAME) ) + QString::fromUtf8(" -->\n\n") );
-
-    // a hack to avoid repeating the documentation for the various merge plugins
-    if ( pluginID.startsWith( QString::fromUtf8("net.sf.openfx.Merge") ) ) {
-        std::string id = pluginID.toStdString();
-        std::string op;
-        if (id == PLUGINID_OFX_MERGE) {
-            // do nothing
-        } else if (id == "net.sf.openfx.MergeDifference") {
-            op = "difference (a.k.a. absminus)";
-        } else if (id == "net.sf.openfx.MergeIn") {
-            op = "in";
-        } else if (id == "net.sf.openfx.MergeMatte") {
-            op = "matte";
-        } else if (id == "net.sf.openfx.MergeMax") {
-            op = "max";
-        } else if (id == "net.sf.openfx.MergeMin") {
-            op = "min";
-        } else if (id == "net.sf.openfx.MergeMultiply") {
-            op = "multiply";
-        } else if (id == "net.sf.openfx.MergeOut") {
-            op = "out";
-        } else if (id == "net.sf.openfx.MergePlus") {
-            op = "plus";
-        } else if (id == "net.sf.openfx.MergeScreen") {
-            op = "screen";
-        }
-        if ( !op.empty() ) {
-            // we should use the custom link "[Merge node](|http::/plugins/" PLUGINID_OFX_MERGE ".html||rst::net.sf.openfx.MergePlugin|)"
-            // but pandoc borks it
-            ms << tr("The *%1* node is a convenience node identical to the %2, except that the operator is set to *%3* by default.")
-            .arg(pluginLabel)
-            .arg(genHTML ? QString::fromUtf8("<a href=\"" PLUGINID_OFX_MERGE ".html\">Merge node</a>") :
-                 QString::fromUtf8(":ref:`" PLUGINID_OFX_MERGE "`")
-                 //QString::fromUtf8("[Merge node](http::/plugins/" PLUGINID_OFX_MERGE ".html)")
-                 )
-            .arg( QString::fromUtf8( op.c_str() ) );
-            goto OUTPUT;
-        }
-
-    }
 
     if (!pluginIconUrl.isEmpty()) {
         // add a nonbreaking space so that pandoc doesn't use the alt-text as a caption
@@ -444,7 +462,6 @@ Node::makeDocumentation(bool genHTML) const
         }
     }
 
-OUTPUT:
     // output
     if (genHTML) {
         // use hoedown to convert to HTML

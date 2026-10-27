@@ -43,10 +43,14 @@ inline constexpr std::string_view kClipboardYamlMimeType = "application/vnd.natr
  **/
 struct ClipboardSerialization {
     std::list<NodeSerializationPtr> nodes;
+
+    // Identifies the project the nodes were copied from, or empty if unknown.
+    std::string sourceProject;
 };
 
 /**
- * @brief The clipboard document: `format: natron-clipboard`, `formatVersion` and `nodes` in the
+ * @brief The clipboard document: `format: natron-clipboard`, `formatVersion`, an optional
+ * `sourceProject` and `nodes` in the
  * project.yaml node schema (so a node's inputs name its siblings by script name, and position,
  * size and colours sit on each node). Heavy roto and tracker tables are inlined as base64.
  **/

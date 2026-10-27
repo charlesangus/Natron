@@ -514,7 +514,7 @@ def native_node_paths(root):
 
     The id is the one the class's NodeSpec sets: the .id assignments, naming a PLUGINID_ macro, of the header the
     fragment names and of that header's .cpp. Several NodeSpecs share a header (Add, Multiply and Gamma; Erode and
-    Dilate; the Merge operators), so where the files assign more than one id, the node's is the one whose name is the
+    Dilate), so where the files assign more than one id, the node's is the one whose name is the
     fragment's."""
     defines = {}
     for rel_dir, recursive in (("Global", False), ("Engine", False), (NODES_DIR, True)):
@@ -781,10 +781,10 @@ def self_test(args):
     assert nodes[ADD_PLUGIN_ID] == NODES_DIR + "/Color/Add", nodes
     assert nodes[ERODE_PLUGIN_ID] == NODES_DIR + "/Filter/Erode", nodes
     assert nodes[DILATE_PLUGIN_ID] == NODES_DIR + "/Filter/Dilate", nodes
-    assert nodes["net.sf.openfx.MergeDifference"] == NODES_DIR + "/Merge/MergeDifference", nodes
+    assert nodes["Merge"] == NODES_DIR + "/Merge/Merge", nodes
     assert nodes["fr.inria.built-in.Write"] == NODES_DIR + "/IO/NativeWrite", nodes
     assert nodes[KEYER_PLUGIN_ID] == NODES_DIR + "/Keyer/Keyer", nodes
-    assert "net.sf.openfx.Despill" not in nodes, nodes
+    assert "net.sf.openfx.Radial" not in nodes, nodes
 
     tables = parse_cost_fragments(SEED_ROOT)
     checked_in = {path: read_text(os.path.join(SEED_ROOT, path)) for path in seed_fragment_paths(SEED_ROOT)}

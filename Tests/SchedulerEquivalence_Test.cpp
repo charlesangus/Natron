@@ -66,6 +66,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -231,7 +232,7 @@ renderJointly(const std::vector<JointOutput>& outputs,
         connections.push_back(QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [code](int retCode) { *code = retCode; }, Qt::DirectConnection));
         works.push_back(AppInstance::RenderWork(outputs[i].effect, kFirstFrame, kLastFrame, 1, false));
     }
-    outputs.front().effect->getApp()->startWritersRendering(true, works);
+    outputs.front().effect->getApp()->startWritersRendering(eRenderModeBlocking, works);
     for (std::size_t i = 0; i < connections.size(); ++i) {
         QObject::disconnect(connections[i]);
     }
@@ -398,7 +399,7 @@ protected:
     NodePtr createMerge(const NodePtr& b,
                         const NodePtr& a)
     {
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_OFX_MERGE));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
         EXPECT_TRUE(bool(merge));
         if (!merge) {
             return merge;

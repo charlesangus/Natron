@@ -47,11 +47,13 @@
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/OfxRetired.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -306,7 +308,8 @@ TEST_F(NativePluginListTest, NativeWriteIsTheOnlyImageWriter)
     for (const auto& versions : appPTR->getPluginsList()) {
         for (const Plugin* plugin : versions.second) {
             if (plugin->isWriter()) {
-                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE) << versions.first;
+                // USDWrite writes scenes, not images.
+                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE || versions.first == PLUGINID_NATRON_USDWRITE) << versions.first;
             }
         }
     }
@@ -315,6 +318,27 @@ TEST_F(NativePluginListTest, NativeWriteIsTheOnlyImageWriter)
 TEST_F(NativePluginListTest, OfxWriterIDBuildsNothing)
 {
     CreateNodeArgs args(PLUGINID_OFX_WRITEOIIO, getApp()->getProject());
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+
+    EXPECT_FALSE(bool(getApp()->createNode(args)));
+}
+
+// The native Merge is the only Merge: no net.sf.openfx.Merge* ID is registered, and the old
+// node's ID builds nothing (an old project loads it as a missing plug-in).
+TEST_F(NativePluginListTest, MergeIsTheOnlyMerge)
+{
+    bool found = false;
+    for (const auto& versions : appPTR->getPluginsList()) {
+        EXPECT_NE(0u, versions.first.rfind("net.sf.openfx.Merge", 0)) << versions.first;
+        found = found || (versions.first == PLUGINID_NATRON_NATIVE_MERGE);
+    }
+    EXPECT_TRUE(found);
+
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(bool(merge));
+    EXPECT_TRUE(dynamic_cast<NativeEffectBase*>(merge->getEffectInstance().get()));
+
+    CreateNodeArgs args("net.sf.openfx.MergePlugin", getApp()->getProject());
     args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
 
     EXPECT_FALSE(bool(getApp()->createNode(args)));

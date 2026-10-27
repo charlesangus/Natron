@@ -1,0 +1,3 @@
+slang_add_kernel(ierodedilate_load Kernels/ierodedilate.slang ENTRY ierodedilate_load REGISTRY NatronGpu)
+slang_add_kernel(ierodedilate_level Kernels/ierodedilate.slang ENTRY ierodedilate_level REGISTRY NatronGpu)
+slang_add_kernel(ierodedilate_filter Kernels/ierodedilate.slang ENTRY ierodedilate_filter REGISTRY NatronGpu)

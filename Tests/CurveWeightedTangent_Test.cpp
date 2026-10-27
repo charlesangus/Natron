@@ -78,7 +78,7 @@ struct ThreeKeyCurve {
         curve->addKeyFrame(KeyFrame(0., 0., 0., 0., eKeyframeTypeFree));
         curve->addKeyFrame(middle);
         curve->addKeyFrame(KeyFrame(20., 0., 0., 0., eKeyframeTypeFree));
-        curveGui = std::make_shared<KnobCurveGui>(nullptr, curve, KnobIPtr(knob), RotoContextPtr(),
+        curveGui = std::make_shared<KnobCurveGui>(nullptr, curve, KnobIPtr(knob), RotoCurveContextPtr(),
                                                   0, QString::fromUtf8("WeightedTangent"), QColor());
         KeyFrame selected;
         if (!curve->getKeyFrameWithTime(selectedTime, &selected)) {

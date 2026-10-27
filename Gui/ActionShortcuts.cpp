@@ -64,6 +64,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionClearNodeCache);
     (void)QT_TR_NOOP(kShortcutDescActionClearPluginsLoadCache);
     (void)QT_TR_NOOP(kShortcutDescActionClearAllCaches);
+    (void)QT_TR_NOOP(kShortcutDescActionFreeGpuMemory);
     (void)QT_TR_NOOP(kShortcutDescActionShowAbout);
     (void)QT_TR_NOOP(kShortcutDescActionRenderSelected);
     (void)QT_TR_NOOP(kShortcutDescActionEnableRenderStats);
@@ -137,7 +138,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionPlayerPlaybackOut);
     (void)QT_TR_NOOP(kShortcutDescActionGraphRearrangeNodes);
     (void)QT_TR_NOOP(kShortcutDescActionGraphRemoveNodes);
-    (void)QT_TR_NOOP(kShortcutDescActionGraphShowExpressions);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphShowLinkLines);
     (void)QT_TR_NOOP(kShortcutDescActionGraphNavigateUpstream);
     (void)QT_TR_NOOP(kShortcutDescActionGraphNavigateDownstram);
     (void)QT_TR_NOOP(kShortcutDescActionGraphSelectUp);
@@ -148,8 +149,8 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionGraphSwitchInputs);
     (void)QT_TR_NOOP(kShortcutDescActionGraphCopy);
     (void)QT_TR_NOOP(kShortcutDescActionGraphPaste);
-    (void)QT_TR_NOOP(kShortcutDescActionGraphClone);
-    (void)QT_TR_NOOP(kShortcutDescActionGraphDeclone);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphCreateLinkedNode);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlinkNode);
     (void)QT_TR_NOOP(kShortcutDescActionGraphCut);
     (void)QT_TR_NOOP(kShortcutDescActionGraphDuplicate);
     (void)QT_TR_NOOP(kShortcutDescActionGraphDisableNodes);

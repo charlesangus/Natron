@@ -52,6 +52,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
     Q_PROPERTY(int animation READ getAnimation WRITE setAnimation)
     Q_PROPERTY(bool readOnly READ isReadOnly WRITE setReadOnly)
     Q_PROPERTY(bool sunkenStyle READ isSunken WRITE setSunken)
+    Q_PROPERTY(bool linked READ isLinked WRITE setLinked)
 
 public:
 
@@ -102,6 +103,16 @@ public:
 
     void setSunken(bool s);
 
+    /**
+     * @brief Whether the label names a parameter that is linked: the stylesheet gives it the link colour.
+     **/
+    bool isLinked() const
+    {
+        return _linked;
+    }
+
+    void setLinked(bool linked);
+
     void setBold(bool b);
 
     virtual bool canAlter() const OVERRIDE FINAL;
@@ -124,6 +135,7 @@ private:
     bool _readOnly;
     int _animation;
     bool _sunkenStyle;
+    bool _linked;
 };
 
 

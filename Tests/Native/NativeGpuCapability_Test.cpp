@@ -44,19 +44,36 @@
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
+#include "Engine/Nodes/Color/ColorMatrix.h"
+#include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/HSVTool.h"
+#include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Posterize.h"
+#include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Color/Threshold.h"
+#include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeBlur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/Glow.h"
+#include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IErodeDilate.h"
+#include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Despill.h"
+#include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
@@ -113,11 +130,30 @@ gpuCapableIds()
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
         PLUGINID_NATRON_RAWHOTPIXELS,
         PLUGINID_NATRON_DISSOLVE,
+        PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_EDGEDETECT,
+        PLUGINID_NATRON_IBLUR,
+        PLUGINID_NATRON_IERODE,
+        PLUGINID_NATRON_IDILATE,
+        PLUGINID_NATRON_EDGEEXTEND,
+        PLUGINID_NATRON_SHARPEN,
+        PLUGINID_NATRON_BLOOM,
+        PLUGINID_NATRON_GLOW,
+        PLUGINID_NATRON_EDGEBLUR,
         PLUGINID_NATRON_SHUFFLE,
         PLUGINID_NATRON_SHUFFLECOPY,
         PLUGINID_NATRON_ADDLAYERS,
         PLUGINID_NATRON_REMOVELAYERS,
+        PLUGINID_NATRON_PREMULT,
+        PLUGINID_NATRON_UNPREMULT,
+        PLUGINID_NATRON_COLORMATRIX,
+        PLUGINID_NATRON_THRESHOLD,
+        PLUGINID_NATRON_COLORSPACE,
+        PLUGINID_NATRON_HSVTOOL,
+        PLUGINID_NATRON_HUECORRECT,
+        PLUGINID_NATRON_HSVKEYER,
+        PLUGINID_NATRON_DESPILL,
+        PLUGINID_NATRON_POSTERIZE,
     };
 
     return ids;

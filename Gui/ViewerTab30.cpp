@@ -666,8 +666,8 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         return;
     }
 
-    std::string pluginID = n->getNode()->getPluginID();
-    std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForPlugin(pluginID);
+    std::string slot = ViewerTabPrivate::getViewerSlot(n->getNode());
+    std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForSlot(slot);
     NodeGuiPtr activeNodeForPlugin;
     if ( foundActive != _imp->currentNodeContext.end() ) {
         activeNodeForPlugin = foundActive->currentNode.lock();
@@ -720,7 +720,7 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         for (std::list<ViewerTabPrivate::PluginViewerContext>::const_iterator it = _imp->currentNodeContext.begin();
              it != _imp->currentNodeContext.end();
              ++it) {
-            qDebug() << QString::fromUtf8(it->pluginID.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
+            qDebug() << QString::fromUtf8(it->slot.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
         }
 #       endif
         while ( (int)_imp->currentNodeContext.size() >= maxNodeContextOpened ) {
@@ -731,7 +731,7 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
             for (std::list<ViewerTabPrivate::PluginViewerContext>::const_iterator it = _imp->currentNodeContext.begin();
                  it != _imp->currentNodeContext.end();
                  ++it) {
-                qDebug() << QString::fromUtf8(it->pluginID.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
+                qDebug() << QString::fromUtf8(it->slot.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
             }
 #           endif
         }
@@ -764,7 +764,7 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         }
     }
     ViewerTabPrivate::PluginViewerContext p;
-    p.pluginID = pluginID;
+    p.slot = slot;
     p.currentNode = n;
     p.currentContext = it->second;
     _imp->currentNodeContext.push_back(p);
@@ -789,14 +789,14 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
         return;
     }
 
-    std::string pluginID = n->getNode()->getPluginID();
+    std::string slot = ViewerTabPrivate::getViewerSlot(n->getNode());
     NodeGuiPtr activeNodeForPlugin;
     QToolBar* activeItemToolBar = 0;
     QWidget* activeItemContainer = 0;
 
     {
         // Keep the iterator under this scope since we erase it
-        std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForPlugin(pluginID);
+        std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForSlot(slot);
         if ( foundActive != _imp->currentNodeContext.end() ) {
             activeNodeForPlugin = foundActive->currentNode.lock();
 
@@ -830,7 +830,7 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
     }
 
     if (setAnotherFromSamePlugin && activeNodeForPlugin == n) {
-        ///If there's another roto node, set it as the current roto interface
+        /// If there's another node in the same slot (e.g another curve host), set it as the current interface
         ViewerTabPrivate::NodeViewerContextsMap::iterator newInterface = _imp->nodesContext.end();
         for (ViewerTabPrivate::NodeViewerContextsMap::iterator it2 = _imp->nodesContext.begin(); it2 != _imp->nodesContext.end(); ++it2) {
             NodeGuiPtr otherNode = it2->first.lock();
@@ -840,7 +840,7 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
             if (otherNode == n) {
                 continue;
             }
-            if (otherNode->getNode()->getPluginID() != pluginID) {
+            if (ViewerTabPrivate::getViewerSlot(otherNode->getNode()) != slot) {
                 continue;
             }
             if ( (it2->second != found->second) && it2->first.lock()->isSettingsPanelVisible() ) {
@@ -992,6 +992,11 @@ ViewerTab::onCompositingOperatorIndexChanged(int index)
 void
 ViewerTab::setCompositingOperator(ViewerCompositingOperatorEnum op)
 {
+    if (_imp->wipeDisabledByDataKind && (op != eViewerCompositingOperatorNone)) {
+        // No wipe while an input is a scene; the operator comes back once none is.
+        _imp->compositingOperatorBeforeScene = op;
+        op = eViewerCompositingOperatorNone;
+    }
     int comboIndex;
 
     switch (op) {

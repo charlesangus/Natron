@@ -4,6 +4,7 @@
 #include "GpuTexture.h"
 
 #include <algorithm>
+#include <cfenv>
 #include <string>
 #include <utility>
 
@@ -213,8 +214,16 @@ GpuKernel::create(GpuDevice& device, const GpuKernelDesc& desc,
             k->bindings_[i].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
     }
-    if (GpuStatus s = k->createPipeline(pipelineCache); !s) {
-        return s;
+    // Kernels are created lazily, on whichever render thread first needs one, and debug builds trap
+    // floating-point exceptions there. The driver compiles the pipeline in this call, and Mesa's
+    // compilers raise invalid and divide-by-zero exceptions of their own doing, so the call runs with
+    // traps held and the flags it raises are dropped, leaving the thread's environment as it was.
+    std::fenv_t env;
+    std::feholdexcept(&env);
+    const GpuStatus created = k->createPipeline(pipelineCache);
+    std::fesetenv(&env);
+    if (!created) {
+        return created;
     }
     out = std::move(k);
     return {};

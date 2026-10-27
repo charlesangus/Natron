@@ -34,6 +34,7 @@
 #include <cstring>
 #include <functional>
 #include <future>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -75,8 +76,12 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -85,10 +90,16 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/ImagePipelineSpec.h"
+#include "Engine/Nodes/Image/Op.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -100,6 +111,77 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
+
+#define kNoGpuPathTestOpPluginID "test.natron.built-in.GpuResidencyNoGpuPathOp"
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+
+constexpr InputSpec kNoGpuPathInputs[] = {
+    InputSpec { .label = "Source" },
+};
+
+/**
+ * @brief A Point op writing 2 * input that declares no GPU path, so a region holding it is refused by the GPU.
+ **/
+struct NoGpuPathTestOp {
+    struct Params {
+        int unused;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kNoGpuPathTestOpPluginID,
+        .label = "Test No GPU Path Op",
+        .grouping = "Other/Test",
+        .inputs = kNoGpuPathInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, false),
+        .op = OpKind::Point,
+    };
+
+    Params bake(const KnobReader& /*reader*/) const
+    {
+        return Params { 0 };
+    }
+
+    bool isIdentity(const Params& /*params*/) const
+    {
+        return false;
+    }
+
+    void row(const Params& /*params*/,
+             const RowIO& io) const
+    {
+        const int nComps = io.nComps;
+        const float* src = io.src[0];
+        float* dst = io.dst;
+
+        for (int x = 0; x < io.width; ++x, src += nComps, dst += nComps) {
+            for (int c = 0; (c < nComps) && (c < 4); ++c) {
+                if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+                    dst[c] = 2.f * src[c];
+                }
+            }
+        }
+    }
+
+    GpuOpRef gpu(const Params& /*params*/) const
+    {
+        return GpuOpRef::none();
+    }
+};
+
+static_assert(PointOp<NoGpuPathTestOp>);
+
+typedef ImageNode<NoGpuPathTestOp> NoGpuPathTestEffect;
+
+} // namespace
+
+NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING
 
@@ -117,6 +199,32 @@ const qint64 kFrameTimeoutMs = 60000;
 // Tall enough for a 1 MB storage buffer range to split a Blur of size 60 (sigma 25) into several strips.
 const int kStripWidth = 256;
 const int kStripHeight = 768;
+
+void
+registerNoGpuPathTestOpOnce()
+{
+    static std::once_flag once;
+
+    std::call_once(once, []() {
+        EffectInstancePtr node(NoGpuPathTestEffect::BuildEffect(NodePtr()));
+        std::map<std::string, void (*)()> functions;
+
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&NoGpuPathTestEffect::BuildEffect));
+        LibraryBinary* binary = new LibraryBinary(functions);
+
+        std::list<std::string> grouping;
+        node->getPluginGrouping(&grouping);
+        QStringList qgrouping;
+        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+            qgrouping.push_back(QString::fromUtf8(it->c_str()));
+        }
+
+        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                           QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
+        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+    });
+}
 
 struct FrameRun {
     AbortableRenderInfoPtr abortInfo;
@@ -397,6 +505,33 @@ protected:
         }
 
         return grade;
+    }
+
+    // A Shuffle that reads input in its colour plane and its extra layer, the extra layer's green written to red. Null
+    // when a knob is missing.
+    NodePtr makeTwoLayerShuffle(const NodePtr& input)
+    {
+        NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        if (!shuffle) {
+            return NodePtr();
+        }
+        connectNodes(input, shuffle, Shuffle::eInputMain, true);
+        const char* knobs[] = { kShuffleParamIn1, kShuffleParamIn2, kShuffleParamOut1, kShuffleParamOut2 };
+        const std::string layers[] = { kNatronColorViewRGBA, kParitySourceExtraLayerID, kNatronColorViewRGBA, std::string() };
+        for (int i = 0; i < 4; ++i) {
+            KnobLayerSelectPtr knob = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(knobs[i]));
+            if (!knob) {
+                return NodePtr();
+            }
+            knob->setLayer(layers[i]);
+        }
+        KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+        if (!mapping) {
+            return NodePtr();
+        }
+        mapping->setSource(1, 0, ShuffleSource::makeInput(2, 1));
+
+        return shuffle;
     }
 
     NodePtr makeBlur(double size)
@@ -1019,8 +1154,8 @@ TEST_F(GpuResidencyTest, SharedProducerRendersOnceAndDownloadsOnlyCpuOutputs)
     NodePtr grade2 = makeGrade(0.5, 0.2);
     NodePtr blur2 = makeBlur(12.);
     NodePtr invert = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
-    NodePtr merge1 = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
-    NodePtr merge2 = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+    NodePtr merge1 = makeNode(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    NodePtr merge2 = makeNode(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     ASSERT_TRUE(source && grade && blur1 && grade2 && blur2 && invert && merge1 && merge2);
     connectNodes(source, grade, 0, true);
     connectNodes(grade, blur1, 0, true);
@@ -1257,6 +1392,87 @@ TEST_F(GpuResidencyTest, MaskInAnotherLayerThanItsProducersPlaneIsReadThroughIts
     expectMatchesCpu(grade, run);
 }
 
+// The Shuffle reads its CPU-rendered input in two layers: the region uploads each once, as its own buffer.
+TEST_F(GpuResidencyTest, ExternalInputReadInTwoLayersIsUploadedOncePerLayer)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    ASSERT_NE(nullptr, source);
+    setParitySourceComponents(source, "rgba");
+    setParitySourceExtraLayer(source, true);
+    NodePtr shuffle = makeTwoLayerShuffle(source);
+    ASSERT_NE(nullptr, shuffle);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(shuffle, &run, &error)) << error;
+    placeOnGpu(&run, { shuffle });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(1u, run.graph.regions[0].members.size());
+    ASSERT_EQ(1u, run.graph.regions[0].externalInputs.size());
+    const int sourceTask = taskOf(run.graph, source);
+    ASSERT_TRUE(sourceTask >= 0);
+    const unsigned long long area = (unsigned long long)run.graph.tasks[sourceTask].renderedRoI.area();
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, shuffle));
+    EXPECT_EQ(0, renderRoICallsOf(run, shuffle)) << "the Shuffle rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
+    EXPECT_GT(run.stats->getUploadBytes(), area * 4 * sizeof(float)) << "the extra layer was not uploaded";
+    EXPECT_LE(run.stats->getUploadBytes(), area * (4 + 3) * sizeof(float)) << "a layer was uploaded more than once";
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    expectReleased(run);
+    expectMatchesCpu(shuffle, run);
+}
+
+// The Shuffle reads a Grade of the same region in two layers: the Grade's colour plane where it was rendered and the
+// extra layer it passes through, neither downloaded.
+TEST_F(GpuResidencyTest, ResidentInputReadInTwoLayersStaysInTheRegion)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    NodePtr producer = makeGrade(0.5, 0.25);
+    ASSERT_TRUE(source && producer);
+    setParitySourceComponents(source, "rgba");
+    setParitySourceExtraLayer(source, true);
+    connectNodes(source, producer, 0, true);
+    NodePtr shuffle = makeTwoLayerShuffle(producer);
+    ASSERT_NE(nullptr, shuffle);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(shuffle, &run, &error)) << error;
+    const int producerTask = taskOf(run.graph, producer);
+    const int shuffleTask = taskOf(run.graph, shuffle);
+    ASSERT_TRUE(producerTask >= 0 && shuffleTask >= 0);
+    std::vector<std::string> expectedLayers = { kNatronColorLayerID, kParitySourceExtraLayerID };
+    std::sort(expectedLayers.begin(), expectedLayers.end());
+    std::vector<std::string> producerLayers;
+    for (const ImageLayerDesc& layer : run.graph.tasks[producerTask].components) {
+        producerLayers.push_back(layer.getLayerID());
+    }
+    std::sort(producerLayers.begin(), producerLayers.end());
+    EXPECT_EQ(expectedLayers, producerLayers) << "the Grade is asked for both layers the Shuffle reads";
+    assignRegions(&run.graph, { { producerTask, shuffleTask } });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, producer));
+    EXPECT_EQ(1, gpuRunsOf(run, shuffle));
+    EXPECT_EQ(0, renderRoICallsOf(run, shuffle)) << "the Shuffle rendered on the CPU";
+    EXPECT_EQ(2, run.stats->getUploadCount()) << "the source's colour plane and its extra layer, once each";
+    EXPECT_EQ(1, run.stats->getDownloadCount()) << "only the root is downloaded";
+    expectReleased(run);
+    expectMatchesCpu(shuffle, run);
+}
+
 // The Grade's source and its mask are the same member of the region, which the request records as one edge: both
 // inputs read the member's one slot.
 TEST_F(GpuResidencyTest, ProducerWiredToSourceAndMaskIsReadFromOneSlot)
@@ -1371,19 +1587,19 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     expectMatchesCpu(chain.sink, run);
 }
 
-// The Merge has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
-TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
+// The Merge renders on the GPU through its own kernel: a region holding it runs whole on the device, root included.
+TEST_F(GpuResidencyTest, MergeJoinsTheRegionAndRendersOnTheGpu)
 {
     if (!gpuOrSkip()) {
         return;
     }
     NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
     NodePtr grade = makeGrade(1.25, 0.05);
-    NodePtr merge = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+    NodePtr merge = makeNode(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     ASSERT_TRUE(source && grade && merge);
     connectNodes(source, grade, 0, true);
-    connectNodes(grade, merge, 0, true);
-    connectNodes(grade, merge, 1, true);
+    connectNodes(grade, merge, kNativeMergeInputB, true);
+    connectNodes(grade, merge, kNativeMergeInputA, true);
 
     FrameRun run;
     std::string error;
@@ -1394,14 +1610,48 @@ TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
     assignRegions(&run.graph, { { gradeTask, mergeTask } });
 
     ASSERT_TRUE(render(&run));
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, grade));
+    EXPECT_EQ(1, gpuRunsOf(run, merge));
+    EXPECT_EQ(0, renderRoICallsOf(run, grade));
+    EXPECT_EQ(0, renderRoICallsOf(run, merge));
+    expectReleased(run);
+    expectMatchesCpu(merge, run);
+}
+
+// A member with no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    registerNoGpuPathTestOpOnce();
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.25, 0.05);
+    NodePtr member = createNode(QString::fromUtf8(kNoGpuPathTestOpPluginID));
+    ASSERT_TRUE(source && grade && member);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, member, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(member, &run, &error)) << error;
+    const int gradeTask = taskOf(run.graph, grade);
+    const int memberTask = taskOf(run.graph, member);
+    ASSERT_TRUE(gradeTask >= 0 && memberTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, memberTask } });
+
+    ASSERT_TRUE(render(&run));
     EXPECT_EQ(1, fallbacksOf(run));
     EXPECT_EQ(1, fallbacksOf(run, "GPU refused"));
     EXPECT_EQ(0, run.stats->getGpuRegionRetries());
     EXPECT_EQ(0, run.stats->getGpuRegionsRun());
     EXPECT_EQ(1, renderRoICallsOf(run, grade));
-    EXPECT_EQ(1, renderRoICallsOf(run, merge));
+    EXPECT_EQ(1, renderRoICallsOf(run, member));
     expectReleased(run);
-    expectMatchesCpu(merge, run);
+    expectMatchesCpu(member, run);
 }
 
 // The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render
@@ -1690,9 +1940,9 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
         connectNodes(grade1, blur, 0, true);
         connectNodes(blur, grade2, 0, true);
         if (root) {
-            NodePtr merge = makeNode(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+            NodePtr merge = makeNode(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
             ASSERT_TRUE(bool(merge));
-            ASSERT_TRUE(setKnobValue(merge, kMergeParamOperation, "plus"));
+            ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "plus"));
             connectNodes(root, merge, 0, true);
             connectNodes(grade2, merge, 1, true);
             root = merge;
@@ -2103,6 +2353,7 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         }
     } profileOff;
 
+    const int kTimedRuns = 3;
     const char* const modes[] = { "whole", "serial strips", "pipelined strips" };
     for (int mode = 0; mode < 3; ++mode) {
         SCOPED_TRACE(modes[mode]);
@@ -2112,67 +2363,75 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
             setGpuStripOverridesForTests(2u << 20, 0);
             setGpuStripPipeliningForTests((mode == 2) ? GpuStripPipelining::On : GpuStripPipelining::Off);
         }
-        *last = RenderScheduler::RegionReport();
-        FrameRun run;
-        std::string error;
-        ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
-        const int blurTask = taskOf(run.graph, blur);
-        const int gradeTask = taskOf(run.graph, grade);
-        ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
-        assignRegions(&run.graph, { { blurTask, gradeTask } });
-        const std::vector<int> members = run.graph.regions[0].members;
-        ASSERT_EQ(2u, members.size());
-        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
-        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
-        const RenderScheduler::RegionReport report = *last;
-        EXPECT_EQ(0, fallbacksOf(run));
-        EXPECT_EQ(mode > 0, report.strips > 1);
-        if (mode > 0) {
-            EXPECT_EQ((mode == 2) && canPipeline(), report.stripsInFlight > 1);
-        }
-        ASSERT_EQ(2u, report.memberNs.size());
-
-        const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
-        const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
-        const double sumMs = (double)(blurNs + gradeNs) * 1e-6;
-        std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, ownership %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, "
-                    "submit/wait %.3f ms; %llu pool misses, %llu imports of %llu bytes; %zu member intervals\n",
-                    modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.ownershipMs, report.kernelMs, report.planMs, report.recordMs,
-                    report.acquireMs, report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes, report.memberIntervals.size());
-        EXPECT_GT(gradeNs, 0);
-        EXPECT_GT(blurNs, gradeNs);
-        EXPECT_GT(report.kernelMs, 0.);
-        if (mode == 2 && report.stripsInFlight > 1) {
-            // Pipelined strips run their queue-ownership barriers inside the strip's timed span, outside every member.
-            EXPECT_NEAR(report.kernelMs, sumMs + report.ownershipMs, report.kernelMs * 0.05);
-        } else {
-            EXPECT_EQ(0., report.ownershipMs);
-            EXPECT_NEAR(report.kernelMs, sumMs, report.kernelMs * 0.05);
-        }
-        if (runtime()->transfer().timestampsSupported()) {
-            EXPECT_EQ((std::size_t)std::max(1, report.strips) * members.size(), report.memberIntervals.size());
-            std::map<int, long long> stripEnd;
-            long long intervalsNs = 0;
-            for (const GpuMemberInterval& interval : report.memberIntervals) {
-                EXPECT_GE(interval.beginNs, 0);
-                EXPECT_LE(interval.beginNs, interval.endNs);
-                EXPECT_GT(interval.pixels, 0u);
-                const std::map<int, long long>::const_iterator previous = stripEnd.find(interval.strip);
-                if (previous != stripEnd.end()) {
-                    EXPECT_GE(interval.beginNs, previous->second) << "strip " << interval.strip << ", member " << interval.member;
-                }
-                stripEnd[interval.strip] = interval.endNs;
-                intervalsNs += interval.endNs - interval.beginNs;
+        // One run's member time can carry a spike from other work on the device, so Blur outweighing Grade is judged
+        // on each member's fastest of several runs.
+        long long minBlurNs = std::numeric_limits<long long>::max();
+        long long minGradeNs = std::numeric_limits<long long>::max();
+        for (int timedRun = 0; timedRun < kTimedRuns; ++timedRun) {
+            *last = RenderScheduler::RegionReport();
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+            const int blurTask = taskOf(run.graph, blur);
+            const int gradeTask = taskOf(run.graph, grade);
+            ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+            assignRegions(&run.graph, { { blurTask, gradeTask } });
+            const std::vector<int> members = run.graph.regions[0].members;
+            ASSERT_EQ(2u, members.size());
+            run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            const RenderScheduler::RegionReport report = *last;
+            EXPECT_EQ(0, fallbacksOf(run));
+            EXPECT_EQ(mode > 0, report.strips > 1);
+            if (mode > 0) {
+                EXPECT_EQ((mode == 2) && canPipeline(), report.stripsInFlight > 1);
             }
-            // Each interval and each member's time round their timestamps to whole ns apart.
-            EXPECT_NEAR(sumMs, (double)intervalsNs * 1e-6, 1e-6 * 2. * (double)(report.memberIntervals.size() + 1));
-        } else {
-            EXPECT_TRUE(report.memberIntervals.empty());
+            ASSERT_EQ(2u, report.memberNs.size());
+
+            const long long blurNs = report.memberNs[(members[0] == blurTask) ? 0 : 1];
+            const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
+            const double sumMs = (double)(blurNs + gradeNs) * 1e-6;
+            std::printf("[          ] %s: Blur %.3f ms, Grade %.3f ms, ownership %.3f ms, kernel %.3f ms; plan %.3f, record %.3f, acquire %.3f, "
+                        "submit/wait %.3f ms; %llu pool misses, %llu imports of %llu bytes; %zu member intervals\n",
+                        modes[mode], (double)blurNs * 1e-6, (double)gradeNs * 1e-6, report.ownershipMs, report.kernelMs, report.planMs, report.recordMs,
+                        report.acquireMs, report.submitWaitMs, report.poolMisses, report.importCount, report.newImportBytes, report.memberIntervals.size());
+            minBlurNs = std::min(minBlurNs, blurNs);
+            minGradeNs = std::min(minGradeNs, gradeNs);
+            EXPECT_GT(report.kernelMs, 0.);
+            if (mode == 2 && report.stripsInFlight > 1) {
+                // Pipelined strips run their queue-ownership barriers inside the strip's timed span, outside every member.
+                EXPECT_NEAR(report.kernelMs, sumMs + report.ownershipMs, report.kernelMs * 0.05);
+            } else {
+                EXPECT_EQ(0., report.ownershipMs);
+                EXPECT_NEAR(report.kernelMs, sumMs, report.kernelMs * 0.05);
+            }
+            if (runtime()->transfer().timestampsSupported()) {
+                EXPECT_EQ((std::size_t)std::max(1, report.strips) * members.size(), report.memberIntervals.size());
+                std::map<int, long long> stripEnd;
+                long long intervalsNs = 0;
+                for (const GpuMemberInterval& interval : report.memberIntervals) {
+                    EXPECT_GE(interval.beginNs, 0);
+                    EXPECT_LE(interval.beginNs, interval.endNs);
+                    EXPECT_GT(interval.pixels, 0u);
+                    const std::map<int, long long>::const_iterator previous = stripEnd.find(interval.strip);
+                    if (previous != stripEnd.end()) {
+                        EXPECT_GE(interval.beginNs, previous->second) << "strip " << interval.strip << ", member " << interval.member;
+                    }
+                    stripEnd[interval.strip] = interval.endNs;
+                    intervalsNs += interval.endNs - interval.beginNs;
+                }
+                // Each interval and each member's time round their timestamps to whole ns apart.
+                EXPECT_NEAR(sumMs, (double)intervalsNs * 1e-6, 1e-6 * 2. * (double)(report.memberIntervals.size() + 1));
+            } else {
+                EXPECT_TRUE(report.memberIntervals.empty());
+            }
+            EXPECT_GT(report.recordMs, 0.);
+            EXPECT_GE(report.planMs, 0.);
+            EXPECT_GE(report.submitWaitMs, 0.);
+            expectReleased(run);
         }
-        EXPECT_GT(report.recordMs, 0.);
-        EXPECT_GE(report.planMs, 0.);
-        EXPECT_GE(report.submitWaitMs, 0.);
-        expectReleased(run);
+        EXPECT_GT(minGradeNs, 0);
+        EXPECT_GT(minBlurNs, minGradeNs);
     }
     RenderScheduler::flushProfile();
     const std::string profilePath = RenderScheduler::getProfileFilePath();
@@ -2190,7 +2449,7 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
         }
         EXPECT_EQ(runtime()->transfer().timestampsSupported(), record.find("\"memberIntervals\":[{") != std::string::npos) << record;
     }
-    EXPECT_EQ(3, regionRecords);
+    EXPECT_EQ(3 * kTimedRuns, regionRecords);
 }
 
 // Copies sharing the device with pipelined strips slow their members several times over, so the cost model takes its
@@ -2242,12 +2501,18 @@ TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
         return code;
     });
 
+    // One run calibrates from one sample, and other work sharing the device or, on a CPU device, the host's cores only
+    // ever slows a sample down. Each mode is judged on its fastest of several runs, and the modes alternate so that a
+    // stretch of load falls on both. A copy overlapping a sample is no such accident: pipelined strips overlap one in
+    // every run, so a contended sample taken into the model shows in the fastest run too.
+    const int kRunsPerMode = 5;
+    const double inf = std::numeric_limits<double>::infinity();
     const char* const modes[] = { "serial strips", "pipelined strips" };
-    double calibratedMsPerMpx[2] = { 0., 0. };
-    double rawMsPerMpx[2] = { 0., 0. };
-    bool sampled[2] = { false, false };
-    int skipped[2] = { 0, 0 };
-    for (int mode = 0; mode < 2; ++mode) {
+    double calibratedMsPerMpx[2] = { inf, inf };
+    double rawMsPerMpx[2] = { inf, inf };
+    int sampledRuns[2] = { 0, 0 };
+    for (int timedRun = 0; timedRun < 2 * kRunsPerMode; ++timedRun) {
+        const int mode = timedRun % 2;
         SCOPED_TRACE(modes[mode]);
         GpuCostModel& model = GpuCostModel::session();
         model.reset();
@@ -2281,32 +2546,39 @@ TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
 
         // The region observes Grade once: a seeded rate moves kEmaWeight of the way to the sample, and an unseeded
         // one takes the sample whole.
-        sampled[mode] = (after != before);
-        calibratedMsPerMpx[mode] = std::isfinite(before) ? before + (after - before) / GpuCostModel::kEmaWeight : after;
+        const bool sampled = (after != before);
+        const double calibrated = std::isfinite(before) ? before + (after - before) / GpuCostModel::kEmaWeight : after;
         const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
-        rawMsPerMpx[mode] = (double)gradeNs * 1e-6 / gradeMpx;
-        skipped[mode] = report.calibrationSkipped;
+        const double raw = (double)gradeNs * 1e-6 / gradeMpx;
+        rawMsPerMpx[mode] = std::min(rawMsPerMpx[mode], raw);
+        if (sampled) {
+            ++sampledRuns[mode];
+            calibratedMsPerMpx[mode] = std::min(calibratedMsPerMpx[mode], calibrated);
+        }
+        if (mode == 0) {
+            // Serial strips run no copy alongside their members, so each of them calibrates.
+            EXPECT_EQ(0, report.calibrationSkipped);
+        } else if (!sampled) {
+            EXPECT_GT(report.calibrationSkipped, 0);
+        }
         std::printf("[          ] %s: Grade raw %.4f ms/Mpx, calibrated %.4f ms/Mpx%s; %d members skipped, %zu member intervals\n",
-                    modes[mode], rawMsPerMpx[mode], calibratedMsPerMpx[mode], sampled[mode] ? "" : " (no sample)", skipped[mode],
+                    modes[mode], raw, calibrated, sampled ? "" : " (no sample)", report.calibrationSkipped,
                     report.memberIntervals.size());
         expectReleased(run);
     }
 
-    // Serial strips run no copy alongside their members, so each of them calibrates.
-    EXPECT_EQ(0, skipped[0]);
-    ASSERT_TRUE(sampled[0]);
+    ASSERT_EQ(kRunsPerMode, sampledRuns[0]);
     ASSERT_GT(calibratedMsPerMpx[0], 0.);
-    std::printf("[          ] pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
-                sampled[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
-    if (sampled[1]) {
-        // Each mode calibrates from one sample: a CPU device such as lavapipe shares its cores with the rest of the
-        // host, so one of its samples strays further than a GPU's.
+    std::printf("[          ] fastest pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
+                sampledRuns[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
+    if (sampledRuns[1] > 0) {
+        // A single run lands at 0.87-1.10 on an NVIDIA GPU and at 0.56-0.92 on lavapipe, a CPU device sharing its cores
+        // with the rest of the host, and the fastest of several runs only narrows that. A Grade sample overlapped by a
+        // copy runs 2.9-6.8 times slower, well outside either band.
         const bool cpuDevice = runtime()->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU;
         const double ratio = calibratedMsPerMpx[1] / calibratedMsPerMpx[0];
         EXPECT_GE(ratio, cpuDevice ? 0.4 : 0.67);
         EXPECT_LE(ratio, cpuDevice ? 2.5 : 1.5);
-    } else {
-        EXPECT_GT(skipped[1], 0);
     }
 }
 

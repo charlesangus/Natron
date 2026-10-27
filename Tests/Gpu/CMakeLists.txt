@@ -16,6 +16,7 @@ foreach(_e wrap_divide wrap_finish)
     slang_add_kernel(test_${_e} ${NATRON_GPU_KERNEL_DIR}/pixelwrap.slang ENTRY ${_e} CPP)
 endforeach()
 slang_add_kernel(compositestep_halveadd ${NATRON_GPU_KERNEL_DIR}/compositestep.slang ENTRY compositestep_halveadd CPP)
+slang_add_kernel(mergeops_oracle ${NATRON_GPU_KERNEL_DIR}/mergeops_oracle.slang ENTRY mergeops_oracle CPP)
 slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
 slang_add_kernel(smoke kernels/smoke.slang ENTRY smoke)
 slang_add_kernel(test_smoke kernels/smoke.slang ENTRY smoke CPP)
@@ -38,9 +39,13 @@ set(GpuTests_SOURCES
     GpuRuntimeShader_Test.cpp
     GpuShaderCompiler_Test.cpp
     GpuTransfer_Test.cpp
+    MergeOpsOracle_Test.cpp
     PixelWrapCompose_Test.cpp
     PixelWrap_Test.cpp
     Smoke_Test.cpp
+    # The CPU Merge operators depend on nothing but Global/Macros.h, so the oracle test holds them
+    # to the Slang module without linking the Engine.
+    ${CMAKE_SOURCE_DIR}/Engine/Nodes/Merge/MergeOps.cpp
 )
 if(TARGET OpenGL::EGL)
     list(APPEND GpuTests_SOURCES GlInterop_Test.cpp)
@@ -52,6 +57,7 @@ target_include_directories(GpuTests
         .
         ../google-test/include
         ../google-test
+        ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(GpuTests
     PRIVATE
@@ -69,6 +75,7 @@ target_link_libraries(GpuTests
         test_wrap_divide
         test_wrap_finish
         compositestep_halveadd
+        mergeops_oracle
         test_smoke
         -static-libstdc++
         -static-libgcc

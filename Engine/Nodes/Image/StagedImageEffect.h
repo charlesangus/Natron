@@ -137,8 +137,8 @@ public:
     /**
      * @brief When inputNb is the source, at time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
-     * resampleGpuSourceRoI(). For a Custom op, getOpGpuInputRoI() for any input. outputRect
-     * otherwise.
+     * resampleGpuSourceRoI(). For an Aux input of a Passes op, opPassesInputRoI(). For a Custom
+     * op, getOpGpuInputRoI() for any input. outputRect otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  double time,
@@ -165,13 +165,35 @@ public:
     /**
      * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
      * its plane is read in, except for the mask input, which is read in the layer its mask channel
-     * resolves in. For a Custom op, getOpGpuInputLayer(). False for every other op.
+     * resolves in, a Composite input read in a selected colour layer of another colour layout, which
+     * is read in that layer (stageGpuSourceInputLayer()), and an Aux input of a Passes op, which
+     * opPassesInputLayer() chooses. For a Custom op, getOpGpuInputLayer(). False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
                                   double time,
                                   ViewIdx view,
                                   ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Composite op, the layers beyond plane its inputs read input inputNb in on the
+     * GPU (stageSourcesGpuLayers()): selected layers and alpha layers. None for every other op.
+     **/
+    virtual bool getGpuExtraInputLayers(int inputNb,
+                                        const ImageLayerDesc& plane,
+                                        double time,
+                                        ViewIdx view,
+                                        std::vector<ImageLayerDesc>* layers) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Composite op, the selected layers and alpha layers its inputs read
+     * (stageSourcesNeededLayers()) for its selected plane and for each of producedPlanes, so that
+     * the request pass plans them upstream.
+     **/
+    virtual void addInputLayersNeeded(double time,
+                                      ViewIdx view,
+                                      const std::list<ImageLayerDesc>& producedPlanes,
+                                      EffectInstance::ComponentsNeededMap* comps) OVERRIDE;
 
     /**
      * @brief Records a Point or Composite op's gpu() description through the StagePlan of
@@ -356,6 +378,28 @@ protected:
         return CompositeInputs();
     }
 
+    /**
+     * @brief Rewrites a Composite op's inputs for rendering plane, one of the planes
+     * addProducedPlanes() declares; called with an empty plane when none is known. Leaves them
+     * by default.
+     **/
+    virtual void adjustInputsForPlane(const ImageLayerDesc& /*plane*/,
+                                      double /*time*/,
+                                      ViewIdx /*view*/,
+                                      CompositeInputs* /*inputs*/) const
+    {
+    }
+
+    /**
+     * @brief A Composite op's error(params) at time and view, which fails the render with that
+     * message; nullopt for an op without it or of another kind.
+     **/
+    virtual std::optional<std::string> opError(double /*time*/,
+                                               ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
     virtual bool opHasMatrix() const WARN_UNUSED_RETURN
     {
         return false;
@@ -364,6 +408,42 @@ protected:
     virtual bool opResamplesOnGpu() const WARN_UNUSED_RETURN
     {
         return false;
+    }
+
+    /**
+     * @brief False for a Passes op that has no GPU path, which then stays on the CPU even when its
+     * pass list is empty.
+     **/
+    virtual bool opPassesOnGpu() const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
+     * @brief For a Passes op, the layer its GPU recorder reads Aux input inputNb in, which
+     * PassGpuIO::inputs then holds. False when the recorder cannot read it, which keeps the node on
+     * the CPU; plane by default.
+     **/
+    virtual bool opPassesInputLayer(int /*inputNb*/,
+                                    const ImageLayerDesc& plane,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    ImageLayerDesc* layer) const WARN_UNUSED_RETURN
+    {
+        *layer = plane;
+
+        return true;
+    }
+
+    /**
+     * @brief For a Passes op, the pixels of Aux input inputNb its GPU recorder reads to fill
+     * outputRect, at the current time and view. outputRect by default.
+     **/
+    virtual RectI opPassesInputRoI(int /*inputNb*/,
+                                   const RectI& outputRect,
+                                   const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
     }
 
     virtual bool opCanConcatenate() const WARN_UNUSED_RETURN
@@ -439,13 +519,30 @@ private:
      **/
     std::optional<std::string> rawStageError(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Posts error as the node's persistent error and returns false, or with no error
+     * withdraws the one this last posted, if the node still shows it, and returns true.
+     **/
+    bool postStageError(const std::optional<std::string>& error);
+
+    /**
+     * @brief opInputs() at time and view as adjustInputsForPlane() rewrites them for plane.
+     **/
+    CompositeInputs opInputsForPlane(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief A Composite op's inputs at time and view for plane, as resolveStageSources() pairs
+     * them, in an otherwise empty plan.
+     **/
+    StagePlan resolveSourcesPlan(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
+
     ResampleRegionStages getResampleRegionStages(double time,
                                                  ViewIdx view) const WARN_UNUSED_RETURN;
 
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;
-    std::mutex _rawStageErrorMutex;
-    std::string _postedRawStageError;
+    std::mutex _stageErrorMutex;
+    std::string _postedStageError;
 };
 
 /**
@@ -708,6 +805,19 @@ private:
             Q_UNUSED(view);
 
             return CompositeInputs();
+        }
+    }
+
+    virtual std::optional<std::string> opError(double time,
+                                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if constexpr ((PIPELINE.op == OpKind::Composite) && FailingCompositeOp<OP>) {
+            return _op.error(bake(time, view));
+        } else {
+            Q_UNUSED(time);
+            Q_UNUSED(view);
+
+            return std::nullopt;
         }
     }
 

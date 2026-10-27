@@ -30,27 +30,46 @@
 
 #include <gtest/gtest.h>
 
+#include <ofxNatron.h>
+
 #include "BaseTest.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
 
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
+#include "Engine/Nodes/Color/ColorMatrix.h"
+#include "Engine/Nodes/Color/Colorspace.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/HSVTool.h"
+#include "Engine/Nodes/Color/HueCorrect.h"
 #include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Posterize.h"
+#include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Color/Threshold.h"
+#include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/Glow.h"
+#include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Despill.h"
+#include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -79,6 +98,20 @@ choice(const GoldenGraph& g,
        const std::string& id)
 {
     return setKnobValue(g.node, name, id);
+}
+
+// Sets the node's Channels knob to process R, G, B and A of the colour plane.
+bool
+processRgba(const GoldenGraph& g)
+{
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(g.node->getKnobByName(kNodeParamChannelSet));
+
+    if (!channels) {
+        return false;
+    }
+    channels->setChannels(0, std::vector<std::string> { "R", "G", "B", "A" });
+
+    return true;
 }
 
 GoldenVariant
@@ -203,7 +236,7 @@ mergeSpec(const std::string& name,
           const std::string& id,
           bool secondA)
 {
-    GoldenNodeSpec spec = plainSpec(name, id, PLUGIN_MAJOR_NATRON_MERGE);
+    GoldenNodeSpec spec = plainSpec(name, id, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
     spec.maskInput = "Mask";
     spec.extraInputs.push_back("A");
@@ -217,27 +250,50 @@ mergeSpec(const std::string& name,
 Apply
 mergeOperation(const std::string& operation)
 {
-    return [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation); };
+    return [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation); };
 }
 
-// The cases every Merge registration shares: B and the A inputs sit at different origins, so each
-// A reaches outside the render window and the bounding box modes differ.
+// Layers set to All, so that the non-colour case, which turns on the sources' spec layer, merges
+// spec rather than passing it through from B.
+bool
+mergeAllLayers(const GoldenGraph& g)
+{
+    KnobChannelSetPtr layers = g.node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+
+    if (!layers) {
+        ADD_FAILURE() << "Merge has no " kNativeMergeParamLayers " knob";
+
+        return false;
+    }
+    std::vector<ChannelSetRow> rows(1);
+    rows[0].mode = ChannelSetRow::eModeAll;
+    layers->setRows(rows);
+
+    return true;
+}
+
+// The cases every Merge registration shares, each merging every layer: B and the A inputs sit at
+// different origins, so each A reaches outside the render window and the bounding box modes
+// differ.
 void
 addMergeCases(std::vector<GoldenVariant>* variants,
               const std::string& operation)
 {
+    const auto allLayers = [](const Apply& apply) {
+        return Apply([apply](const GoldenGraph& g) { return mergeAllLayers(g) && apply(g); });
+    };
     const Apply op = mergeOperation(operation);
 
-    variants->push_back(variant("default", op));
-    variants->push_back(variant("bboxa", [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation) && choice(g, kMergeParamBBox, kMergeBBoxA); }));
-    variants->push_back(variant("bboxintersection", [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation) && choice(g, kMergeParamBBox, kMergeBBoxIntersection); }));
-    variants->push_back(variant("channels", [operation](const GoldenGraph& g) {
-        return choice(g, kMergeParamOperation, operation) && num(g, std::string(kMergeParamAChannels) + "R", { 0. }) && num(g, std::string(kMergeParamOutputChannels) + "A", { 0. });
-    }));
-    variants->push_back(maskVariant("maskmix", [operation](const GoldenGraph& g) {
-        return choice(g, kMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
-    }));
-    variants->push_back(maskVariant("maskplain", op));
+    variants->push_back(variant("default", allLayers(op)));
+    variants->push_back(variant("bboxa", allLayers([operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamSetBBox, kNativeMergeBBoxA); })));
+    variants->push_back(variant("bboxintersection", allLayers([operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamSetBBox, kNativeMergeBBoxIntersection); })));
+    variants->push_back(variant("noalpha", allLayers([operation](const GoldenGraph& g) {
+                                    return choice(g, kNativeMergeParamOperation, operation) && setGoldenChannelSelect(g.node, kNativeMergeParamAAlpha, std::string()) && setGoldenChannelSelect(g.node, kNativeMergeParamBAlpha, std::string());
+                                })));
+    variants->push_back(maskVariant("maskmix", allLayers([operation](const GoldenGraph& g) {
+                                        return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
+                                    })));
+    variants->push_back(maskVariant("maskplain", allLayers(op)));
 }
 
 } // namespace
@@ -284,6 +340,189 @@ TEST_F(NativeGoldenTest, Saturation)
     }));
     addPremultAndMaskMix(&v, boost);
     run(filterSpec("Saturation", PLUGINID_NATRON_SATURATION, PLUGIN_MAJOR_NATRON_SATURATION), v);
+}
+
+// Premult and Unpremult: the default divisor (alpha), another channel as the divisor, alpha
+// processed too, no divisor at all, and a mask with mix.
+void
+addPremultVariants(std::vector<GoldenVariant>* v)
+{
+    v->push_back(variant("default"));
+    v->push_back(variant("byG", [](const GoldenGraph& g) { return setGoldenChannelSelect(g.node, kUnPremultByKnobName, "rgba.G"); }));
+    v->push_back(variant("processA", processRgba));
+    v->push_back(variant("none", [](const GoldenGraph& g) { return setGoldenChannelSelect(g.node, kUnPremultByKnobName, std::string()); }));
+    v->push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.6 }); }));
+}
+
+TEST_F(NativeGoldenTest, Premult)
+{
+    std::vector<GoldenVariant> v;
+    addPremultVariants(&v);
+    run(filterSpec("Premult", PLUGINID_NATRON_PREMULT, PLUGIN_MAJOR_NATRON_PREMULT), v);
+}
+
+TEST_F(NativeGoldenTest, Unpremult)
+{
+    std::vector<GoldenVariant> v;
+    addPremultVariants(&v);
+    run(filterSpec("Unpremult", PLUGINID_NATRON_UNPREMULT, PLUGIN_MAJOR_NATRON_PREMULT), v);
+}
+
+TEST_F(NativeGoldenTest, ColorMatrix)
+{
+    const Apply hdr = [](const GoldenGraph& g) {
+        return num(g, kColorMatrixParamMatrixSize, { (double)ColorMatrixOp::eMatrixSize4x4 }) && num(g, kColorMatrixParamMatrix, { 1.75, -0.4, 0.25, 0.5, 0.3, 2.5, -0.8, 0., -1.2, 0.1, 3., -0.25, 0.2, 0.3, 0.1, 0.6 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("hdr", hdr));
+    v.push_back(variant("clamps", [hdr](const GoldenGraph& g) { return hdr(g) && num(g, kColorMatrixParamClampBlack, { 1. }) && num(g, kColorMatrixParamClampWhite, { 1. }); }));
+    addPremultAndMaskMix(&v, hdr);
+    run(filterSpec("ColorMatrix", PLUGINID_NATRON_COLORMATRIX, PLUGIN_MAJOR_NATRON_COLORMATRIX), v);
+}
+
+TEST_F(NativeGoldenTest, Threshold)
+{
+    const Apply ramp = [](const GoldenGraph& g) { return num(g, kThresholdParamLevel, { 0.5, 0.25, 1.2, 0.5 }) && num(g, kThresholdParamSoftness, { 0.25, 0.5, 0.4, 0.1 }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("hard", [](const GoldenGraph& g) { return num(g, kThresholdParamLevel, { 0.5, 1., -0.1, 0.5 }); }));
+    v.push_back(variant("ramp", ramp));
+    addPremultAndMaskMix(&v, ramp);
+    run(filterSpec("Threshold", PLUGINID_NATRON_THRESHOLD, PLUGIN_MAJOR_NATRON_THRESHOLD), v);
+}
+
+TEST_F(NativeGoldenTest, Posterize)
+{
+    const Apply bands = [](const GoldenGraph& g) { return num(g, kPosterizeParamLevels, { 5. }); };
+    const auto dithered = [](const std::string& id) {
+        return [id](const GoldenGraph& g) { return num(g, kPosterizeParamLevels, { 4. }) && choice(g, kPosterizeParamDither, id); };
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("bands", bands));
+    v.push_back(variant("range", [](const GoldenGraph& g) { return num(g, kPosterizeParamLevels, { 3.5 }) && num(g, kPosterizeParamRangeMin, { -0.25 }) && num(g, kPosterizeParamRangeMax, { 2. }); }));
+    v.push_back(variant("bayer2x2", dithered("bayer2x2")));
+    v.push_back(variant("bayer4x4", dithered("bayer4x4")));
+    v.push_back(variant("bayer8x8", dithered("bayer8x8")));
+    v.push_back(variant("vac14x14", dithered("vac14x14")));
+    v.push_back(variant("vac25x25", dithered("vac25x25")));
+    v.push_back(variant("random", dithered("random")));
+    v.push_back(variant("randomStatic", [dithered](const GoldenGraph& g) { return dithered("random")(g) && num(g, kPosterizeParamSeed, { 77. }) && num(g, kPosterizeParamStaticSeed, { 1. }); }));
+    v.push_back(variant("alpha", [bands](const GoldenGraph& g) { return bands(g) && processRgba(g); }));
+    addPremultAndMaskMix(&v, bands);
+    run(filterSpec("Posterize", PLUGINID_NATRON_POSTERIZE, PLUGIN_MAJOR_NATRON_POSTERIZE), v);
+}
+
+TEST_F(NativeGoldenTest, Colorspace)
+{
+    const auto models = [](int in, int out) {
+        return [in, out](const GoldenGraph& g) { return num(g, kColorspaceParamIn, { (double)in }) && num(g, kColorspaceParamOut, { (double)out }); };
+    };
+    const Apply toLab = models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelLab);
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("toHsv", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelHSV)));
+    v.push_back(variant("toHsi", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelHSI)));
+    v.push_back(variant("toLab", toLab));
+    v.push_back(variant("toXyY", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelXyY)));
+    v.push_back(variant("toYCbCr709", models(ColorMath::eColorspaceModelRGB, ColorMath::eColorspaceModelYCbCr709)));
+    v.push_back(variant("hslToRgb", models(ColorMath::eColorspaceModelHSL, ColorMath::eColorspaceModelRGB)));
+    v.push_back(variant("labToYuv601", models(ColorMath::eColorspaceModelLab, ColorMath::eColorspaceModelYUV601)));
+    addPremultAndMaskMix(&v, toLab);
+    run(filterSpec("Colorspace", PLUGINID_NATRON_COLORSPACE, PLUGIN_MAJOR_NATRON_COLORSPACE), v);
+}
+
+TEST_F(NativeGoldenTest, HSVTool)
+{
+    const Apply greens = [](const GoldenGraph& g) {
+        return num(g, kHSVToolParamHueRange, { 60., 180. }) && num(g, kHSVToolParamHueRangeRolloff, { 30. }) && num(g, kHSVToolParamHueRotation, { 40. }) && num(g, kHSVToolParamSaturationAdjustment, { 0.2 }) && num(g, kHSVToolParamBrightnessAdjustment, { -0.1 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("greens", greens));
+    v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
+        return num(g, kHSVToolParamHueRange, { 300., 60. }) && num(g, kHSVToolParamHueRotationGain, { 0.5 }) && num(g, kHSVToolParamSaturationRange, { 0.2, 0.9 }) && num(g, kHSVToolParamSaturationAdjustmentGain, { 1.5 }) && num(g, kHSVToolParamOutputAlpha, { (double)HSVToolOp::eOutputAlphaAll });
+    }));
+    v.push_back(variant("clamps", [greens](const GoldenGraph& g) { return greens(g) && num(g, kHSVToolParamClampBlack, { 1. }) && num(g, kHSVToolParamClampWhite, { 1. }); }));
+    addPremultAndMaskMix(&v, greens);
+    run(filterSpec("HSVTool", PLUGINID_NATRON_HSVTOOL, PLUGIN_MAJOR_NATRON_HSVTOOL), v);
+}
+
+// Sets point `nth` of one HueCorrect curve to value.
+static bool
+hueCurvePoint(const GoldenGraph& g,
+              int curve,
+              int nth,
+              double value)
+{
+    KnobParametricPtr knob = std::dynamic_pointer_cast<KnobParametric>(g.node->getKnobByName(kHueCorrectParamHue));
+    double key = 0.;
+    double old = 0.;
+
+    return knob && (knob->getNthControlPoint(curve, nth, &key, &old) == eStatusOK) && (knob->setNthControlPoint(eValueChangedReasonUserEdited, curve, nth, key, value) == eStatusOK);
+}
+
+TEST_F(NativeGoldenTest, HueCorrect)
+{
+    // Desaturate and darken greens, warm the reds.
+    const Apply greens = [](const GoldenGraph& g) {
+        return hueCurvePoint(g, HueCorrectOp::eCurveSat, 2, 0.3) && hueCurvePoint(g, HueCorrectOp::eCurveLum, 2, 0.7) && hueCurvePoint(g, HueCorrectOp::eCurveRed, 1, 1.4);
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("greens", greens));
+    v.push_back(variant("hueShiftSuppress", [](const GoldenGraph& g) {
+        return hueCurvePoint(g, HueCorrectOp::eCurveHue, 3, 1.4) && hueCurvePoint(g, HueCorrectOp::eCurveGSup, 2, 0.4) && hueCurvePoint(g, HueCorrectOp::eCurveSatThrsh, 2, 0.3);
+    }));
+    v.push_back(variant("mixLuminance", [greens](const GoldenGraph& g) { return greens(g) && num(g, kHueCorrectParamMixLuminance, { 0.7 }); }));
+    v.push_back(variant("clamps", [greens](const GoldenGraph& g) { return greens(g) && num(g, kHueCorrectParamClampBlack, { 1. }) && num(g, kHueCorrectParamClampWhite, { 1. }); }));
+    addPremultAndMaskMix(&v, greens);
+    run(filterSpec("HueCorrect", PLUGINID_NATRON_HUECORRECT, PLUGIN_MAJOR_NATRON_HUECORRECT), v);
+}
+
+TEST_F(NativeGoldenTest, HSVKeyer)
+{
+    // The model is set before the ranges: changing it recentres them on the source colour.
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("acrossRed", [](const GoldenGraph& g) {
+        return choice(g, kHSVKeyerParamColorModel, "hsv") && num(g, kHSVKeyerParamHueRange, { 0.1, 0.05, 0., 0.05, 0.1 }) && num(g, kHSVKeyerParamSaturationRange, { 0.3, 0.35, 0.65, 0.35, 0. }) && num(g, kHSVKeyerParamLumaRange, { 0.05, 0.45, 1., 0.5, 1. });
+    }));
+    v.push_back(variant("hsl", [](const GoldenGraph& g) {
+        return choice(g, kHSVKeyerParamColorModel, "hsl") && num(g, kHSVKeyerParamHueRange, { 0.08, 0.06, 0.34, 0.06, 0.1 }) && num(g, kHSVKeyerParamLumaRange, { 0.2, 0.2, 0.5, 0.2, 0.2 });
+    }));
+    v.push_back(variant("oklch", [](const GoldenGraph& g) {
+        return choice(g, kHSVKeyerParamColorModel, "oklch") && num(g, kHSVKeyerParamHueRange, { 0.06, 0.04, 0.4, 0.04, 0.06 }) && num(g, kHSVKeyerParamSaturationRange, { 0.04, 0.17, 0.23, 0.17, 0.1 }) && num(g, kHSVKeyerParamLumaRange, { 0.2, 0.25, 0.65, 0.25, 0.3 });
+    }));
+    v.push_back(variant("smooth", [](const GoldenGraph& g) {
+        return num(g, kHSVKeyerParamHueSmooth, { 1. }) && num(g, kHSVKeyerParamSaturationSmooth, { 1. }) && num(g, kHSVKeyerParamLumaSmooth, { 1. });
+    }));
+    v.push_back(variant("premultipliedHueOnly", [](const GoldenGraph& g) {
+        return num(g, kHSVKeyerParamUseSaturation, { 0. }) && num(g, kHSVKeyerParamUseLuma, { 0. }) && choice(g, kHSVKeyerParamOutputMode, "premultiplied");
+    }));
+    v.push_back(variant("matteInvert", [](const GoldenGraph& g) {
+        return num(g, kHSVKeyerParamInvert, { 1. }) && choice(g, kHSVKeyerParamOutputMode, "matte");
+    }));
+    v.push_back(filterMaskMix([](const GoldenGraph& g) { return num(g, kHSVKeyerParamHueRange, { 0.15, 0.1, 0.35, 0.1, 0.15 }); }));
+    run(filterSpec("HSVKeyer", PLUGINID_NATRON_HSVKEYER, PLUGIN_MAJOR_NATRON_HSVKEYER), v);
+}
+
+TEST_F(NativeGoldenTest, Despill)
+{
+    const Apply blue = [](const GoldenGraph& g) { return num(g, kDespillParamScreenColor, { 0., 0., 1. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("blue", blue));
+    v.push_back(variant("custom", [](const GoldenGraph& g) {
+        return num(g, kDespillParamScreenColor, { 0.07, 0.65, 0.16 }) && choice(g, kDespillParamLimit, "custom") && num(g, kDespillParamLimitWeights, { 0.7, 0.3 });
+    }));
+    v.push_back(variant("maxLimit", [](const GoldenGraph& g) { return choice(g, kDespillParamLimit, "max") && num(g, kDespillParamStrength, { 0.6 }); }));
+    v.push_back(variant("minLimitExpand", [](const GoldenGraph& g) { return choice(g, kDespillParamLimit, "min") && num(g, kDespillParamExpand, { 0.4 }); }));
+    v.push_back(variant("replace", [](const GoldenGraph& g) { return num(g, kDespillParamReplaceColor, { 0.8, 0.5, 0.3 }) && num(g, kDespillParamLumaRestore, { 1. }); }));
+    v.push_back(variant("spillMap", [](const GoldenGraph& g) { return choice(g, kDespillParamSpillMap, "alpha"); }));
+    addPremultAndMaskMix(&v, blue);
+    run(filterSpec("Despill", PLUGINID_NATRON_DESPILL, PLUGIN_MAJOR_NATRON_DESPILL), v);
 }
 
 TEST_F(NativeGoldenTest, ColorCorrect)
@@ -442,6 +681,83 @@ TEST_F(NativeGoldenTest, EdgeDetect)
     run(filterSpec("EdgeDetect", PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT), v);
 }
 
+TEST_F(NativeGoldenTest, EdgeExtend)
+{
+    const Apply wide = [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 20. }) && num(g, kEdgeExtendParamSlices, { 8. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("wide", wide));
+    v.push_back(variant("oneslice", [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 6. }) && num(g, kEdgeExtendParamSlices, { 1. }); }));
+    v.push_back(variant("premultiplied", [](const GoldenGraph& g) {
+        return num(g, kEdgeExtendParamPremultiplyOutput, { 1. }) && num(g, kEdgeExtendParamThreshold, { 0.2 });
+    }));
+    v.push_back(variant("straight", [](const GoldenGraph& g) {
+        return num(g, kEdgeExtendParamSourcePremultiplied, { 0. }) && num(g, kEdgeExtendParamThreshold, { 0.9 });
+    }));
+    v.push_back(filterMaskMix(wide));
+    run(filterSpec("EdgeExtend", PLUGINID_NATRON_EDGEEXTEND, PLUGIN_MAJOR_NATRON_EDGEEXTEND), v);
+}
+
+TEST_F(NativeGoldenTest, Sharpen)
+{
+    const Apply soften = [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamMode, kSharpenParamModeSoften) && num(g, kSharpenParamAmount, { 0.7 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("soften", soften));
+    v.push_back(variant("laplacian", [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamMode, kSharpenParamModeLaplacian) && num(g, kSharpenParamSize, { 5., 2. }) && num(g, kSharpenParamAmount, { 2. });
+    }));
+    v.push_back(variant("threshold", [](const GoldenGraph& g) {
+        return num(g, kSharpenParamThreshold, { 0.2 }) && num(g, kSharpenParamAmount, { 1.5 });
+    }));
+    v.push_back(variant("gaussian", [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamFilter, kBlurParamFilterGaussian) && num(g, kSharpenParamSize, { 6. });
+    }));
+    v.push_back(variant("box", [](const GoldenGraph& g) { return choice(g, kSharpenParamFilter, kBlurParamFilterBox) && num(g, kSharpenParamSize, { 7., 2. }); }));
+    v.push_back(filterMaskMix(soften));
+    run(filterSpec("Sharpen", PLUGINID_NATRON_SHARPEN, PLUGIN_MAJOR_NATRON_SHARPEN), v);
+}
+
+TEST_F(NativeGoldenTest, Bloom)
+{
+    const Apply pyramid = [](const GoldenGraph& g) { return num(g, kBloomParamSize, { 6. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("pyramid", pyramid));
+    v.push_back(variant("anisotropic", [](const GoldenGraph& g) {
+        return num(g, kBloomParamSize, { 12., 3. }) && num(g, kBloomParamRatio, { 1.5 }) && num(g, kBloomParamCount, { 4. });
+    }));
+    v.push_back(variant("single", [](const GoldenGraph& g) { return num(g, kBloomParamSize, { 8. }) && num(g, kBloomParamCount, { 1. }); }));
+    v.push_back(variant("gaussian", [](const GoldenGraph& g) {
+        return choice(g, kBloomParamFilter, kBlurParamFilterGaussian) && num(g, kBloomParamSize, { 4. }) && num(g, kBloomParamCount, { 3. });
+    }));
+    v.push_back(variant("box", [](const GoldenGraph& g) {
+        return choice(g, kBloomParamFilter, kBlurParamFilterBox) && num(g, kBloomParamSize, { 3. }) && num(g, kBloomParamCount, { 3. });
+    }));
+    v.push_back(filterMaskMix(pyramid));
+    run(filterSpec("Bloom", PLUGINID_NATRON_BLOOM, PLUGIN_MAJOR_NATRON_BLOOM), v);
+}
+
+TEST_F(NativeGoldenTest, Glow)
+{
+    const Apply small = [](const GoldenGraph& g) { return num(g, kGlowParamThreshold, { 0.1 }) && num(g, kGlowParamSize, { 3. }) && num(g, kGlowParamCount, { 3. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default", [](const GoldenGraph& g) { return num(g, kGlowParamThreshold, { 0.1 }); }));
+    v.push_back(variant("small", small));
+    v.push_back(variant("preview", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamPreview, { 1. }); }));
+    v.push_back(variant("graded", [small](const GoldenGraph& g) {
+        return small(g) && num(g, kGlowParamTint, { 1.5, 0.75, 0.5, 0.6 }) && num(g, kGlowParamBrightness, { 2. }) && num(g, kGlowParamSaturation, { 0.4, 1.3, 0. }) && num(g, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }) && num(g, kGlowParamStretch, { 0.5 });
+    }));
+    v.push_back(variant("screenAddInput", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamScreen, { 1. }) && num(g, kGlowParamAddInput, { 1. }); }));
+    v.push_back(variant("glowOnly", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamGlowOnly, { 1. }); }));
+    v.push_back(variant("box", [small](const GoldenGraph& g) { return small(g) && choice(g, kGlowParamFilter, kBlurParamFilterBox); }));
+    v.push_back(maskVariant("mask", small));
+    v.push_back(variant("rotated", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamStretch, { 0.6 }) && num(g, kGlowParamRotate, { 30. }); }));
+    v.push_back(variant("hue", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamIsolateHue, { 1. }) && num(g, kGlowParamPickHue, { 0.8, 0.2, 0.2 }); }));
+    run(filterSpec("Glow", PLUGINID_NATRON_GLOW, PLUGIN_MAJOR_NATRON_GLOW), v);
+}
+
 TEST_F(NativeGoldenTest, Erode)
 {
     const Apply wide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 3., 1. }); };
@@ -541,46 +857,35 @@ TEST_F(NativeGoldenTest, MergeOver)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "over");
-    v.push_back(variant("alphamasking", [](const GoldenGraph& g) { return choice(g, kMergeParamOperation, "over") && num(g, kMergeParamAlphaMasking, { 1. }); }));
-    run(mergeSpec("MergeOver", PLUGINID_NATRON_MERGE, false), v);
+    run(mergeSpec("MergeOver", PLUGINID_NATRON_NATIVE_MERGE, false), v);
 }
 
 TEST_F(NativeGoldenTest, MergePlusOperation)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "plus");
-    v.push_back(variant("alphamasking", [](const GoldenGraph& g) { return choice(g, kMergeParamOperation, "plus") && num(g, kMergeParamAlphaMasking, { 1. }); }));
-    run(mergeSpec("MergePlusOperation", PLUGINID_NATRON_MERGE, false), v);
+    run(mergeSpec("MergePlusOperation", PLUGINID_NATRON_NATIVE_MERGE, false), v);
 }
 
 TEST_F(NativeGoldenTest, MergeA2)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "over");
-    run(mergeSpec("MergeA2", PLUGINID_NATRON_MERGE, true), v);
+    run(mergeSpec("MergeA2", PLUGINID_NATRON_NATIVE_MERGE, true), v);
 }
 
 TEST_F(NativeGoldenTest, MergeA2Plus)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "plus");
-    run(mergeSpec("MergeA2Plus", PLUGINID_NATRON_MERGE, true), v);
-}
-
-TEST_F(NativeGoldenTest, MergePlus)
-{
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. }); }));
-    run(mergeSpec("MergePlus", MergeNode::presetPluginID(eMergePresetPlus), true), v);
+    run(mergeSpec("MergeA2Plus", PLUGINID_NATRON_NATIVE_MERGE, true), v);
 }
 
 TEST_F(NativeGoldenTest, MergeMultiply)
 {
     std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. }); }));
-    run(mergeSpec("MergeMultiply", MergeNode::presetPluginID(eMergePresetMultiply), false), v);
+    addMergeCases(&v, "multiply");
+    run(mergeSpec("MergeMultiply", PLUGINID_NATRON_NATIVE_MERGE, false), v);
 }
 
 TEST_F(NativeGoldenTest, Keyer)

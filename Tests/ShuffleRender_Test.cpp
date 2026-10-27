@@ -141,7 +141,7 @@ renderAndRead(const AppInstancePtr& app,
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
-    app->startWritersRendering(false, works);
+    app->startWritersRendering(eRenderModeBlocking, works);
 
     if (!QFile::exists(QString::fromStdString(path))) {
         *error = "frame was not rendered: " + path;

@@ -36,6 +36,11 @@ encodeClipboardYaml(const ClipboardSerialization& clipboard)
     YAML::Emitter em;
     em << YAML::BeginMap;
     emitDocumentFormat(em, kClipboardYamlFormat, kClipboardYamlFormatVersion);
+    if (!clipboard.sourceProject.empty()) {
+        emitKey(em, "sourceProject");
+        em << YAML::Value;
+        emitString(em, clipboard.sourceProject);
+    }
     emitKey(em, "nodes");
     em << YAML::Value;
     emitNodeMap(em, clipboard.nodes, std::string(), sink, &usedPaths);
@@ -60,6 +65,9 @@ decodeClipboardYaml(std::string_view text,
 
     ClipboardSerialization clipboard;
     NoBlobSource source;
+    if (YAML::Node sourceProject = reader.get("sourceProject")) {
+        clipboard.sourceProject = readString(sourceProject, "clipboard.sourceProject");
+    }
     if (YAML::Node nodes = reader.get("nodes")) {
         clipboard.nodes = readNodeMap(nodes, source, "clipboard.nodes", warnings);
     }

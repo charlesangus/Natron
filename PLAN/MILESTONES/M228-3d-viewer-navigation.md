@@ -37,13 +37,13 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Phase 228.1: Bindings
 
-- [ ] M228.P1.T1 — Rebindable mouse navigation actions
+- [x] M228.P1.T1 — Rebindable mouse navigation actions
   - files: `Gui/ActionShortcuts.{h,cpp}`, `Gui/PreferencesPanel.{h,cpp}` (the shortcut editor page), `Gui/GuiApplicationManager*.cpp` (action registration), `Tests/` (a shortcut serialization gtest)
   - approach: make `MouseAction`'s button and modifiers editable and persisted like key shortcuts, then show mouse bindings in the shortcut editor with a "press a mouse combo" capture. Register a `3DViewer` group: tumble, pan, dolly (drag), dolly (wheel), select, add to selection, toggle selection, marquee, frame selection, frame all, and the ortho views.
   - verify: gtest — a rebound mouse action round-trips through the shortcut settings; Xvfb GUI script — the shortcut editor lists the 3DViewer group and rebinding tumble to Alt+LMB takes effect in a 3D view.
   - size: L
 
-- [ ] M228.P1.T2 — Navigation presets and the SceneViewport dispatch
+- [x] M228.P1.T2 — Navigation presets and the SceneViewport dispatch
   - files: `Gui/SceneViewport.{h,cpp}`, `Engine/Settings.{h,cpp}` (preset choice), `Gui/ActionShortcuts.cpp` (preset tables)
   - approach: SceneViewport resolves press/move/release through the 3DViewer bound actions instead of hard-coded buttons. Presets: Nuke (Alt+LMB tumble, Alt+MMB pan, Alt+RMB / wheel dolly, LMB select), Maya (same with Alt), Blender (MMB tumble, Shift+MMB pan, Ctrl+MMB/wheel dolly), Houdini (Space/Alt+LMB tumble, +MMB pan, +RMB dolly). Choosing a preset in Preferences rewrites the group's bindings; later edits make it "Custom". Clear drag state on focus-out and on context-menu exec.
   - verify: Xvfb GUI script — under each preset, synthetic drags tumble/pan/dolly as tabled and a plain LMB click selects; a right-click menu followed by mouse moves does not move the camera.
@@ -51,13 +51,13 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Phase 228.2: Selection and framing
 
-- [ ] M228.P2.T1 — Multi-selection and marquee
+- [x] M228.P2.T1 — Multi-selection and marquee
   - files: `Gui/SceneViewport.{h,cpp}`, `Tests/gui/scene_viewer_select.py`
   - approach: replace the single `selected` path with an ordered set (the last-clicked path is "current"). Click replaces the set, Shift adds, Ctrl toggles. A marquee on empty space selects the prims whose pick IDs fall in the rectangle (`TestIntersection` over the rect, or the primId AOV under it). Highlight all through Storm's selection. Emit `selectionChanged(QStringList)` replacing `selectedPrimChanged(QString)`.
   - verify: Xvfb GUI script on a 3-prim scene — click, shift-click, ctrl-click and a marquee each give the expected set (read through a test hook).
   - size: M
 
-- [ ] M228.P2.T2 — Frame selection and frame all
+- [x] M228.P2.T2 — Frame selection and frame all
   - files: `Gui/SceneViewport.cpp`
   - approach: `frameSelection()` takes the union world bbox of the selected prims (default+proxy purposes). A degenerate bbox frames the prim's world origin with a default radius. `frameScene()` stays as frame-all. Bound to the M228.P1.T1 actions, plus context-menu entries.
   - verify: Xvfb GUI script — after selecting a far prim, frame selection puts its bbox centre at the view centre (pick at the centre returns it); with an empty selection it frames all.
@@ -65,22 +65,26 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Phase 228.3: Views and cameras
 
-- [ ] M228.P3.T1 — Orthographic views and user clip planes
+- [x] M228.P3.T1 — Orthographic views and user clip planes
   - files: `Gui/SceneViewport.{h,cpp}`
   - approach: a view-mode state (Perspective, Front, Side, Top) on the free camera. Ortho modes use an orthographic `GfCamera` aligned to the stage's up axis, pan and dolly scale the ortho extent, and tumble returns to perspective. Near/far knobs live in the view menu, persisted per viewer in its settings. Defaults stay the current distance-relative values, and setting them switches to absolute.
   - verify: Xvfb GUI script — Top view of a cube shows a square silhouette (a pixel test at the corners); a near clip beyond the cube hides it.
   - size: M
 
-- [ ] M228.P3.T2 — Look-through lock
+- [x] M228.P3.T2 — Look-through lock
   - files: `Gui/SceneViewport.{h,cpp}`, `Gui/ViewerTab.cpp` (finding the camera's owning node in the viewed branch)
   - approach: a lock toggle in the view menu/HUD. When locked and looking through a camera whose prim was authored by a `USDCamera` in the viewed branch (match the node's Prim Path), navigation drags compute the new camera transform and write that node's TRS knobs, as one undo entry per drag, keying when animated. A file camera with no owning node refuses with a HUD message. Unlocked keeps today's behaviour (navigation leaves look-through).
   - verify: Xvfb GUI script — locked tumble on a USDCamera changes its rotate knob and Undo restores it; on a USDRead camera the view doesn't move and the HUD message shows.
   - size: M
 
-- [ ] M228.P3.T3 — Create camera from view
+- [x] M228.P3.T3 — Create camera from view
   - files: `Gui/SceneViewport.cpp`, `Gui/ViewerTab.cpp`, `Gui/NodeGraph*` only for placing the new node
   - approach: context-menu action creating a `USDCamera` node whose transform, focal length and aperture reproduce the current free camera (converting with the project's up axis/units). It is placed near the viewed node in the graph, unconnected (create nodes have no inputs, M226 - Scene Hierarchy From Topology).
   - verify: Xvfb GUI script — after navigating, create the camera, merge it into the viewed scene and look through it: the image matches the pre-creation view within tolerance.
   - size: M
 
 **Verification gate:** release gate green; scene GUI scripts (select, navigation presets, ortho, lock, create camera) pass under Xvfb; screenshots of each preset's shortcut-editor page and an ortho view shared before sign-off; user tries the Nuke preset on real hardware.
+
+## Decisions
+
+- 2026-10-27 — **Choices (bosley-native-nodes):** Nuke preset follows the Nuke 17 docs (Ctrl+left tumble, Alt+left pan, Alt+middle dolly; plain middle-drag pan added); Back/Left/Bottom views added; clip planes per viewer, not saved; a camera created from the view is not auto-connected (as Nuke). Release gate 568/568; GUI checks pass; draft PR #137; UAT pending.

@@ -1918,9 +1918,9 @@ public:
     }
 
     /**
-     * @brief Whether getInputContexts() names a single context for input inputNb at time/view
-     * under the context this effect's actions answer for on this thread, and if so that context:
-     * the one the input's region of definition, metadata and layers are read under, through an
+     * @brief Whether getInputContexts() names contexts for input inputNb at time/view under the
+     * context this effect's actions answer for on this thread, and if so the last of them: the one
+     * the input's region of definition, metadata and layers are read under, through an
      * ActionContextScope, as the input renders under it.
      **/
     bool getInputActionContext(int inputNb,

@@ -651,7 +651,12 @@ LoopEnd::evaluateStop(const Resolved& resolved,
     // can change with the iteration of an enclosing loop: they key the result along with what the
     // stop condition reads through rfv.
     static const std::string kLoopsPrefix("loops.");
-    const RenderContextPtr context = getCurrentRenderContext();
+    RenderContextPtr context = getCurrentRenderContext();
+    RenderContextPtr acting;
+    if (!frameArgs && !ActionContextScope::current(&acting)) {
+        // Outside a render, as knob expressions read: the enclosing loops' preview iterations.
+        context = previewContextOf(getNode(), time);
+    }
     U64 contextKey = 0;
     if (render && stopCondition && context && !context->isEmpty()) {
         RenderContextReadSetConstPtr reads;
@@ -1064,8 +1069,9 @@ LoopEnd::getInputContexts(int inputNb,
         // A fold step needs only the iteration it folds in.
         contexts->push_back(iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].context);
     } else {
-        for (const Iteration& iteration : iterations) {
-            contexts->push_back(iteration.context);
+        // In the order render() pulls them: the last is the one a fold step with none set needs.
+        for (int k = 0; k < resolved.folded; ++k) {
+            contexts->push_back(iterations[iterationOfStep(k, resolved)].context);
         }
     }
 

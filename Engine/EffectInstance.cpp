@@ -532,10 +532,12 @@ EffectInstance::getInputActionContext(int inputNb,
         return false;
     }
     std::vector<RenderContextPtr> inputContexts;
-    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || (inputContexts.size() != 1)) {
+    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || inputContexts.empty()) {
         return false;
     }
-    *context = inputContexts.front();
+    // Of several, the last pulled: the input is read under variables it renders under, as it is
+    // where a scheduler splitting the pulls into steps asks the last step's.
+    *context = inputContexts.back();
 
     return true;
 }

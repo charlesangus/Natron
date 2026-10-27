@@ -637,6 +637,28 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadsAnOuterLoopsVariables)
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 
+// Set outside any render, a stop condition reading an outer loop's variable reads the outer
+// loop's preview iteration, as knob expressions do, and posts no error.
+TEST_F(NativeLoopBlockTest, AStopConditionReadingAnOuterLoopIsValidOutsideARender)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr outerBegin = createLoopBegin("outer");
+    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr innerEnd = createLoopEnd(10, kLoopEndParamOperationSum);
+    NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
+    ASSERT_TRUE(constant && outerBegin && innerBegin && innerEnd && outerEnd);
+    ASSERT_TRUE(outerBegin->connectInput(constant, 0));
+    ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
+    ASSERT_TRUE(innerEnd->connectInput(innerBegin, 0));
+    ASSERT_TRUE(outerEnd->connectInput(innerEnd, 0));
+    ASSERT_TRUE(setStopCondition(innerEnd, "loop.iteration >= loops.outer.iteration + 1"));
+
+    QString message;
+    int type = -1;
+    innerEnd->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+}
+
 TEST_F(NativeLoopBlockTest, ALoopEndWithoutALoopBeginIsBlack)
 {
     NodePtr constant = createConstant(1.);

@@ -61,13 +61,13 @@ namespace YamlDetail {
         bool
         isDimensionEmpty(const KnobDimensionSerialization& dimension)
         {
-            return !dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && dimension.enabled;
+            return !dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && !dimension.driver && dimension.enabled;
         }
 
         bool
         isDimensionPlainValue(const KnobDimensionSerialization& dimension)
         {
-            return dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && dimension.enabled;
+            return dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master && !dimension.linkGroup && !dimension.driver && dimension.enabled;
         }
 
         void
@@ -360,6 +360,29 @@ namespace YamlDetail {
                     emitBool(em, true);
                 }
             }
+            if (dimension.driver) {
+                const KnobDriverSerialization& driver = *dimension.driver;
+                emitKey(em, "driver");
+                em << YAML::Value << YAML::Flow << YAML::BeginMap;
+                emitKey(em, "variable");
+                em << YAML::Value;
+                emitString(em, driver.variable);
+                emitKey(em, "start");
+                em << YAML::Value;
+                emitDouble(em, driver.start);
+                emitKey(em, "end");
+                em << YAML::Value;
+                emitDouble(em, driver.end);
+                emitKey(em, "easing");
+                em << YAML::Value;
+                emitString(em, driver.easing);
+                if (driver.curve) {
+                    emitKey(em, "curve");
+                    em << YAML::Value;
+                    emitCurve(em, *driver.curve);
+                }
+                em << YAML::EndMap;
+            }
             if (dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master) {
                 emitKey(em, "value");
                 em << YAML::Value;
@@ -645,6 +668,31 @@ namespace YamlDetail {
                 if (YAML::Node nodeLink = reader.get("nodeLink")) {
                     dimension.linkGroup->nodeLink = readBool(nodeLink, context + ".nodeLink");
                 }
+            }
+            if (YAML::Node driverNode = reader.get("driver")) {
+                const std::string driverContext = context + ".driver";
+                if (!driverNode.IsMap()) {
+                    fail(driverNode, driverContext, "expected a map");
+                }
+                MapReader driverReader(driverNode, driverContext, warnings);
+                KnobDriverSerialization driver;
+                if (YAML::Node variable = driverReader.get("variable")) {
+                    driver.variable = readString(variable, driverContext + ".variable");
+                }
+                if (YAML::Node start = driverReader.get("start")) {
+                    driver.start = readDouble(start, driverContext + ".start");
+                }
+                if (YAML::Node end = driverReader.get("end")) {
+                    driver.end = readDouble(end, driverContext + ".end");
+                }
+                if (YAML::Node easing = driverReader.get("easing")) {
+                    driver.easing = readString(easing, driverContext + ".easing");
+                }
+                if (YAML::Node curve = driverReader.get("curve")) {
+                    driver.curve = readCurve(curve, driverContext + ".curve");
+                }
+                driverReader.finish();
+                dimension.driver = std::move(driver);
             }
             if (YAML::Node value = reader.get("value")) {
                 if (!value.IsNull()) {

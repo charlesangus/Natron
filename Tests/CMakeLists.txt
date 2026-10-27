@@ -76,6 +76,7 @@ set(Tests_SOURCES
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobDriver_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
     LazyHash_Test.cpp

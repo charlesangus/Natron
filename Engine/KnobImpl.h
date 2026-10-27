@@ -755,6 +755,12 @@ Knob<T>::getValue(int dimension,
     if ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
     }
+    {
+        T driven;
+        if (getValueFromDriver(dimension, clamp, &driven)) {
+            return driven;
+        }
+    }
     std::string hasExpr = getExpression(dimension);
     if ( !hasExpr.empty() ) {
         T ret;
@@ -791,6 +797,32 @@ Knob<T>::getValue(int dimension,
         } else {
             return _values[dimension];
         }
+    }
+}
+
+template <typename T>
+bool
+Knob<T>::getValueFromDriver(int dimension,
+                            bool clamp,
+                            T* ret) const
+{
+    if constexpr (std::is_same<T, std::string>::value) {
+        return false;
+    } else {
+        double value;
+        if (!getDriverValue(dimension, &value)) {
+            return false;
+        }
+        if constexpr (std::is_same<T, int>::value) {
+            *ret = (int)std::lround(value);
+        } else {
+            *ret = (T)value;
+        }
+        if (clamp) {
+            *ret = clampToMinMax(*ret, dimension);
+        }
+
+        return true;
     }
 }
 
@@ -872,6 +904,12 @@ Knob<T>::getValueAtTime(double time,
     assert( !view.isAll() );
     if  ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
+    }
+    {
+        T driven;
+        if (getValueFromDriver(dimension, clamp, &driven)) {
+            return driven;
+        }
     }
 
     bool useGuiValues = QThread::currentThread() == qApp->thread();

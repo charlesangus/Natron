@@ -2085,6 +2085,21 @@ public:
     bool getExpressionContextKey(U64* key) const;
 
     /**
+     * @brief Whether this knob's dimensions take a driver (see KnobDriver): those of Int, Double
+     * and Color knobs, choices and parametric knobs excepted.
+     **/
+    bool canHaveDriver() const;
+
+    /**
+     * @brief Gives dimension a driver, or removes its own with a null one, and registers the
+     * driver as a read source of the knob. Returns false, changing nothing, for a dimension out
+     * of range or a knob that cannot have one. MT-safe.
+     **/
+    bool setDriver(int dimension, const KnobDriverPtr& driver);
+    KnobDriverPtr getDriver(int dimension) const;
+    bool hasDrivers() const;
+
+    /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
      * that is not its holder (a roto item) and memoizes over the knob's content hash. Set before
      * the knob is shared.
@@ -2092,6 +2107,13 @@ public:
     void setContentGenerationObserver(const std::shared_ptr<std::atomic<U64>>& generation);
 
 protected:
+    /**
+     * @brief The value the driver of dimension gives under the render context the holder is
+     * queried under on the calling thread, and true; false without a driver or a context holding
+     * its variable.
+     **/
+    bool getDriverValue(int dimension, double* value) const;
+
     /**
      * @brief False for knobs that feed no render (pages, groups, separators, plain buttons):
      * their content hash then covers nothing, whatever GUI state their value carries.
@@ -2776,6 +2798,8 @@ private:
 
 
     bool getValueFromExpression(double time, ViewIdx view, int dimension, bool clamp, T* ret);
+
+    bool getValueFromDriver(int dimension, bool clamp, T* ret) const;
 
     bool getValueFromExpression_pod(double time, ViewIdx view, int dimension, bool clamp, double* ret);
 

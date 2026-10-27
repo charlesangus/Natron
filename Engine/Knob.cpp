@@ -60,6 +60,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobGuiI.h"
 #include "Engine/KnobLayerSelect.h"
@@ -578,6 +579,10 @@ struct KnobHelperPrivate
     std::vector<ContextReadSourcePtr> contextReadSources;
     // Lets the read-set walk skip the mutex on the many knobs without a source.
     std::atomic<bool> hasContextReadSources { false };
+    mutable QMutex driversMutex; // protects drivers
+    std::vector<KnobDriverPtr> drivers;
+    // Lets every value read skip the mutex on the many knobs without a driver.
+    std::atomic<bool> hasDrivers { false };
 
     KnobHelperPrivate(KnobHelper* publicInterface_,
                       KnobHolder* holder_,
@@ -669,6 +674,7 @@ struct KnobHelperPrivate
         mustCloneInternalCurves.resize(dimension);
         mustClearExprResults.resize(dimension);
         expressions.resize(dimension);
+        drivers.resize(dimension);
         hasModifications.resize(dimension);
         for (int i = 0; i < dimension_; ++i) {
             defaultEnabled[i] = enabled[i] = true;
@@ -7112,6 +7118,92 @@ KnobHelper::getExpressionContextKey(U64* key) const
     return true;
 }
 
+bool
+KnobHelper::canHaveDriver() const
+{
+    if (dynamic_cast<const KnobChoice*>(this) || dynamic_cast<const KnobParametric*>(this)) {
+        return false;
+    }
+
+    return dynamic_cast<const KnobIntBase*>(this) || dynamic_cast<const KnobDoubleBase*>(this);
+}
+
+bool
+KnobHelper::setDriver(int dimension,
+                      const KnobDriverPtr& driver)
+{
+    if ((dimension < 0) || (dimension >= getDimension()) || (driver && !canHaveDriver())) {
+        return false;
+    }
+    KnobDriverPtr previous;
+    {
+        KnobContentWrite write;
+        {
+            QMutexLocker k(&_imp->driversMutex);
+            previous = _imp->drivers[dimension];
+            if (previous == driver) {
+                return true;
+            }
+            _imp->drivers[dimension] = driver;
+            bool any = false;
+            for (const KnobDriverPtr& d : _imp->drivers) {
+                any = any || bool(d);
+            }
+            _imp->hasDrivers.store(any);
+        }
+        // A read source is held mutable by the knob, though a driver never changes.
+        if (previous) {
+            removeContextReadSource(std::const_pointer_cast<KnobDriver>(previous));
+        }
+        if (driver) {
+            addContextReadSource(std::const_pointer_cast<KnobDriver>(driver));
+        }
+        invalidateContentHash();
+    }
+    evaluateValueChange(dimension, getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    return true;
+}
+
+KnobDriverPtr
+KnobHelper::getDriver(int dimension) const
+{
+    if (!_imp->hasDrivers.load()) {
+        return KnobDriverPtr();
+    }
+    QMutexLocker k(&_imp->driversMutex);
+    if ((dimension < 0) || (dimension >= (int)_imp->drivers.size())) {
+        return KnobDriverPtr();
+    }
+
+    return _imp->drivers[dimension];
+}
+
+bool
+KnobHelper::hasDrivers() const
+{
+    return _imp->hasDrivers.load();
+}
+
+bool
+KnobHelper::getDriverValue(int dimension,
+                           double* value) const
+{
+    if (!_imp->hasDrivers.load()) {
+        return false;
+    }
+    const KnobDriverPtr driver = getDriver(dimension);
+    if (!driver) {
+        return false;
+    }
+    const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
+    if (!effect) {
+        return false;
+    }
+
+    return driver->evaluate(effect->getCurrentRenderContext(), value);
+}
+
 void
 KnobHelper::getContentHashDependencies(bool* hasExpression,
                                        bool* readsOutsideKnob) const
@@ -7178,6 +7270,15 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
             if (!expr.originalExpression.empty()) {
                 h.appendBool(expr.hasRet);
                 h.appendBool(expr.exprInvalid.empty());
+            }
+        }
+
+        {
+            QMutexLocker k(&_imp->driversMutex);
+            const KnobDriverPtr& driver = _imp->drivers[i];
+            h.appendBool(bool(driver));
+            if (driver) {
+                driver->appendContentHash(h);
             }
         }
 

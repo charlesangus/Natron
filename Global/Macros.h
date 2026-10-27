@@ -275,6 +275,7 @@ NATRON_VERSION_STRINGIZE__(major, minor)
 #define PLUGIN_GROUP_3D_USD "3D/USD"
 #define PLUGIN_GROUP_DEEP "Deep"
 #define PLUGIN_GROUP_METADATA "Metadata"
+#define PLUGIN_GROUP_LOOP "Loop"
 #define PLUGIN_GROUP_MULTIVIEW "Views"
 #define PLUGIN_GROUP_TOOLSETS "ToolSets"
 #define PLUGIN_GROUP_OTHER "Other"

@@ -172,6 +172,16 @@ groups what is loaded together: on load, or on paste, the dimensions with the sa
 to each other and to nothing else. An alias is not a link group in the file: it is written with
 `alias` and the `link` to its master.
 
+A dimension with a driver, which sets it from a render context variable such as a loop's
+`loop.t`, is written in the map form with `driver`, a map of `variable` (`loop.t`,
+`loops.<name>.t`, ...), `start`, `end`, `easing` (`linear`, `smooth` or `curve`) and, for
+`curve`, the easing `curve` over [0, 1]. Its own value is saved as well, and is what it reads
+outside a context holding the variable:
+
+```yaml
+multiply: [{driver: {variable: loop.t, start: 1, end: 2, easing: linear}, value: 1}, 1, 1, 1]
+```
+
 ### Example
 
 This is the document the tests pin (`kExampleProjectYaml` in

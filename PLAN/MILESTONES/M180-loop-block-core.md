@@ -30,19 +30,19 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Phase 180.1: Nodes and contexts
 
-- [ ] M180.P1.T1 — Write LoopBegin and LoopEnd nodes with count iteration
+- [x] M180.P1.T1 — Write LoopBegin and LoopEnd nodes with count iteration
   - files: `Engine/Nodes/Loop/LoopBegin.{h,cpp}`, `Engine/Nodes/Loop/LoopEnd.{h,cpp}`, `Engine/Nodes/Loop/LoopBegin.reg.inc`, `Engine/Nodes/Loop/LoopEnd.reg.inc`
   - approach: Both nodes accept and produce images only; a deep or scene connection is refused with a message. LoopBegin is an identity on its input that marks the body's start and carries a `name` knob (unique per graph scope, default `loop1`). LoopEnd finds its LoopBegin by walking its input's upstream (error if none or ambiguous), and overrides M178's `getInputContexts` to request its input once per iteration, each context overlaying `loop.*` (and the current `loop.*` renamed to `loops.<outerName>.*`). Knobs: `iterations`, `start`, `step`, `mode` (Accumulate for now), `maxIterations`. Read `Engine/Nodes/README.md` first.
   - verify: at the phase build, `ctest -R NativeLoopBlock` (T3) passes.
   - size: L
 
-- [ ] M180.P1.T2 — Write the native knob driver
+- [x] M180.P1.T2 — Write the native knob driver
   - files: `Engine/KnobDriver.h`, `Engine/KnobDriver.cpp` (new), `Engine/KnobImpl.h` (`getValueAtTime`), `Engine/Knob.cpp`, the knob serialization under `Serialization/`
   - approach: A `KnobDriver` on a numeric knob dimension names a context variable (default `loop.t`), a start and end value and an easing (linear, smooth, a parametric curve). `getValueAtTime` returns the eased lerp when the current thread's context holds the variable, else the knob's own value. It registers as an M178 read source naming that variable. Save and load it with the knob.
   - verify: gtest: a driven knob reads start at `t`=0, end at `t`=1, the eased midpoint at 0.5, its own value outside a context; a project save/load round-trips the driver.
   - size: L
 
-- [ ] M180.P1.T3 — Test the loop block on CPU
+- [x] M180.P1.T3 — Test the loop block on CPU
   - files: `Tests/Native/NativeLoopBlock_Test.cpp`
   - approach: Constant → Grade (gain driven 1→2 by `loop.t`) between LoopBegin and LoopEnd (Accumulate mean, 5 iterations): the output is the mean gain 1.5. A body node with no driver renders once (counter). A nested loop (outer 2 × inner 3) sees both `loop.t` and `loops.outer.t`. Error cases from `## Scope` render black with their message.
   - verify: at the phase build, `ctest -R NativeLoopBlock` passes.
@@ -86,6 +86,7 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Decisions
 
+- 2026-10-27 — **Phase 1 knob choices (bosley-native-nodes):** `loop.iteration = start + k*step`; Iterations defaults to 4; LoopEnd has a `mode` choice (Accumulate now, Single Pass in Phase 3) and a separate `operation` choice for the fold (mean, sum, min, max; over and under join in Phase 2). A knob driver wins over an expression; linear easing extrapolates outside 0..1, smooth and curve clamp; `clone()` does not copy drivers.
 - 2026-10-26: `loop.*` context variables stay plain values, never RFV bindings (M71 Phase 71.5 introduced time-resolved bindings for animated Set variables).
 - 2026-10-25 — **Houdini-style loop block on render contexts (user):** chosen over hidden clones (no cache sharing, graph edits mid-render, O(N²) graph hotspots) and over knob-override args (the same core without read-sets); see M178 - Render Context Core.
 - 2026-10-25 — **Native drivers, no Python on the hot path:** every Python expression takes the GIL on render threads (`Engine/KnobImpl.h:401`) and the tree has no exprtk.

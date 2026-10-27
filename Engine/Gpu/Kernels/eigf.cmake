@@ -1,0 +1,8 @@
+slang_add_kernel(eigf_range Kernels/eigf.slang ENTRY eigf_range REGISTRY NatronGpu)
+slang_add_kernel(eigf_gauss_columns Kernels/eigf.slang ENTRY eigf_gauss_columns REGISTRY NatronGpu)
+slang_add_kernel(eigf_gauss_rows Kernels/eigf.slang ENTRY eigf_gauss_rows REGISTRY NatronGpu)
+slang_add_kernel(eigf_prep_mask Kernels/eigf.slang ENTRY eigf_prep_mask REGISTRY NatronGpu)
+slang_add_kernel(eigf_prep Kernels/eigf.slang ENTRY eigf_prep REGISTRY NatronGpu)
+slang_add_kernel(eigf_variance Kernels/eigf.slang ENTRY eigf_variance REGISTRY NatronGpu)
+slang_add_kernel(eigf_blend_mask Kernels/eigf.slang ENTRY eigf_blend_mask REGISTRY NatronGpu)
+slang_add_kernel(eigf_blend Kernels/eigf.slang ENTRY eigf_blend REGISTRY NatronGpu)

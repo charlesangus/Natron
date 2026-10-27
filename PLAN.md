@@ -156,7 +156,7 @@ future core work has solid ground to build on.
 | M226 | Scene Hierarchy From Topology | done | M19, M20 |  | E9 | [M226-scene-hierarchy-from-topology.md](PLAN/MILESTONES/M226-scene-hierarchy-from-topology.md) |
 | M227 | USD Primitive Nodes | doing | M226 | bosley-native-nodes | E9 | [M227-usd-primitive-nodes.md](PLAN/MILESTONES/M227-usd-primitive-nodes.md) |
 | M228 | 3D Viewer Navigation | doing | M19, M20, M226 | bosley-native-nodes | E9 | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
-| M229 | 3D Viewer Guides And Display | todo | M228 |  | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
+| M229 | 3D Viewer Guides And Display | doing | M228 | bosley-native-nodes | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
 | M230 | 3D Transform Widgets | todo | M226, M229 |  | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
 | M231 | Scene Graph Panel | todo | M229 |  | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
 | M232 | Scene Selection To Nodes | todo | M226, M231 |  | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
@@ -226,7 +226,7 @@ future core work has solid ground to build on.
 | M131 | Native Defocus Family | todo | M120 |  | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |
 | M133 | ZDefocus Lens Aberrations | todo | M131 |  | E3 | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
-| M117 | GUI Perf Harness And Baseline | todo | - |  | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
+| M117 | GUI Perf Harness And Baseline | doing | - | bosley-native-nodes | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
 | M118 | Large Graph GUI Responsiveness | todo | M117, M56 |  | E10 | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
 | M119 | Trackball Panel Layout | done | M56, M69 | bosley-native-nodes | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | done | - | bosley-native-nodes | E10 | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
@@ -273,7 +273,7 @@ future core work has solid ground to build on.
 | M178 | Render Context Core | done | M167 |  | E13 | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
 | M179 | Render Graph Continuation | todo | M178 |  | E6 | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
 | M180 | Loop Block Core | doing | M178 | bosley-native-nodes | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
-| M181 | Loop Drivers And UI | todo | M180, M71 |  | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
+| M181 | Loop Drivers And UI | doing | M180, M71 | bosley-native-nodes | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
 | M182 | Loop Feedback | todo | M180 |  | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
 | M183 | Loop Map Blend | todo | M180, M179, M184 |  | E15 | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
 | M184 | Variable-Size Filter Kit | done | M120, M137 | gpu | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
@@ -300,12 +300,12 @@ future core work has solid ground to build on.
 | M204 | AI Model Manager | doing | M203 | bosley-native-nodes | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
 | M205 | Object Mask To Roto | todo | M203, M204, M146 |  | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
 | M206 | Neural Raw Denoise | todo | M203, M204 |  | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
-| M207 | Neural Denoise | todo | M203, M204 |  | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
+| M207 | Neural Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
 | M208 | Neural Upscale | todo | M203, M204, M207 |  | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | doing | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
 | M210 | Profiled Denoise | doing | M209 | bosley-native-nodes | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | todo | M209, M146 |  | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
-| M212 | Tone Equalizer | todo | M209 |  | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
+| M212 | Tone Equalizer | doing | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
 | M213 | Contrast And Texture | todo | M209 |  | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
 | M214 | Colour Balance RGB | todo | - |  | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
 | M215 | Colour Equalizer | todo | M209, M214 |  | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
@@ -320,7 +320,7 @@ future core work has solid ground to build on.
 | M224 | Fluid Roto And RotoPaint Interaction | todo | M146 |  | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
 | M260 | Cache Invalidation Follow-ups | todo | M242 |  | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
-| M261 | Roto Keyframes In Dope Sheet And Curve Editor | todo | M163 |  | E6 | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
+| M261 | Roto Keyframes In Dope Sheet And Curve Editor | doing | M163 | bosley-native-nodes | E6 | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 
 # Epics
 

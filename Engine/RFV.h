@@ -202,6 +202,21 @@ KnobIPtr promoteToProject(const KnobIPtr& knob, std::string* error = nullptr);
 KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name);
 
 /**
+ * @brief Adds to reads, transitively, what the expressions of the project variables it names read
+ * through rfv: such a variable is the base its readers see, so they read what its expression reads.
+ * Each name is expanded once, which also ends a cycle of variables reading each other.
+ **/
+void appendProjectVariableReads(const Project& project, RenderContextReadSet* reads);
+
+/**
+ * @brief Marks the hash of every node of the project whose EffectInstance::getExtraContextReads()
+ * names the variable, or names any when name is empty. A node reads such a variable outside any
+ * expression, so no listener links it to the project's knob; it hashes the project's value itself
+ * (see RFVSwitch::appendNodeContentHash()). Main thread.
+ **/
+void rehashExtraContextReaders(const Project& project, const std::string& name);
+
+/**
  * @brief The value of the variable knob at time and view, as a render context holds it: a bool
  * for a boolean, an integer for a one-dimensional integer or choice, a double for a
  * one-dimensional double, a list of either for more dimensions, and a string for a string.

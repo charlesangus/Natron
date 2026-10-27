@@ -5880,51 +5880,6 @@ KnobHelper::invalidateContentHash()
 
 namespace {
 
-/**
- * @brief Adds to reads, transitively, what the expressions of the project variables it names read
- * through rfv: such a variable is the base its readers see, so they read what its expression reads.
- * Each name is expanded once, which also ends a cycle of variables reading each other.
- **/
-void
-appendProjectVariableReads(const Project& project,
-                           RenderContextReadSet* reads)
-{
-    if (reads->readsAll()) {
-        return;
-    }
-    std::set<std::string> expanded;
-    std::vector<std::string> pending;
-    for (const RenderContextName& name : reads->names()) {
-        if (name.ns.empty()) {
-            pending.push_back(name.name);
-        }
-    }
-    while (!pending.empty()) {
-        const std::string name = pending.back();
-        pending.pop_back();
-        if (!expanded.insert(name).second) {
-            continue;
-        }
-        const KnobIPtr variable = RFV::findDeclaredVariable(&project, name);
-        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(variable.get());
-        if (!helper) {
-            continue;
-        }
-        const RenderContextReadSet variableReads = helper->getRFVReadSet();
-        if (variableReads.readsAll()) {
-            reads->setReadsAll();
-
-            return;
-        }
-        for (const RenderContextName& read : variableReads.names()) {
-            reads->add(read);
-            if (read.ns.empty()) {
-                pending.push_back(read.name);
-            }
-        }
-    }
-}
-
 // The reads of an expression scan, fixed once made, widened when asked by what the project
 // variables they name read in turn. A change of the scan replaces the source; a change of a
 // variable's expression or of the project's declarations invalidates the reads.
@@ -5943,7 +5898,7 @@ public:
         RenderContextReadSet own = _reads;
         const ProjectPtr project = _project.lock();
         if (project) {
-            appendProjectVariableReads(*project, &own);
+            RFV::appendProjectVariableReads(*project, &own);
         }
         reads->merge(own);
     }

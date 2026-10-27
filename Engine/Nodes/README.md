@@ -339,6 +339,16 @@ as reading every variable. A node's context key covers only the variables that
 it and everything upstream of it read. Nodes that read no variable have one
 context, so they render and cache exactly as they would without RFVs.
 
+### Switching on a variable: `RFVSwitch`
+
+The `RFVSwitch` node passes through the input whose line in its Patterns
+parameter first matches the value of one variable, read as `rfv` would read it
+in an expression of the switch. Lines are globs, or ECMAScript regular
+expressions after a `re:` prefix, matched against the whole value. Under two
+Set nodes setting different values, one switch picks a different input on each
+path, and only the picked inputs render (`Tests/RFVSwitch_Test.cpp`). See
+`Engine/Nodes/RFV/docs/RFVSwitch.md`.
+
 ### Resolution time
 
 A variable is read at the time of the expression that reads it, not at the time

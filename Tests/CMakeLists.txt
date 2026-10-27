@@ -121,9 +121,11 @@ set(Tests_SOURCES
     RFV_Test.cpp
     RFVExpression_Test.cpp
     RFVMetadata_Test.cpp
+    RFVPatternMatch_Test.cpp
     RFVPython_Test.cpp
     RFVRender_Test.cpp
     RFVSetNode_Test.cpp
+    RFVSwitch_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp

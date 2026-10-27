@@ -676,6 +676,66 @@ findDeclaredVariable(const KnobHolder* holder,
     return KnobIPtr();
 }
 
+void
+appendProjectVariableReads(const Project& project,
+                           RenderContextReadSet* reads)
+{
+    if (reads->readsAll()) {
+        return;
+    }
+    std::set<std::string> expanded;
+    std::vector<std::string> pending;
+    for (const RenderContextName& name : reads->names()) {
+        if (name.ns.empty()) {
+            pending.push_back(name.name);
+        }
+    }
+    while (!pending.empty()) {
+        const std::string name = pending.back();
+        pending.pop_back();
+        if (!expanded.insert(name).second) {
+            continue;
+        }
+        const KnobIPtr variable = findDeclaredVariable(&project, name);
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(variable.get());
+        if (!helper) {
+            continue;
+        }
+        const RenderContextReadSet variableReads = helper->getRFVReadSet();
+        if (variableReads.readsAll()) {
+            reads->setReadsAll();
+
+            return;
+        }
+        for (const RenderContextName& read : variableReads.names()) {
+            reads->add(read);
+            if (read.ns.empty()) {
+                pending.push_back(read.name);
+            }
+        }
+    }
+}
+
+void
+rehashExtraContextReaders(const Project& project,
+                          const std::string& name)
+{
+    NodesList nodes;
+    project.getNodes_recursive(nodes, false);
+    for (const NodePtr& node : nodes) {
+        if (!node || !node->isNodeCreated()) {
+            continue;
+        }
+        const RenderContextReadSet reads = node->getExtraContextReads();
+        if (reads.empty()) {
+            continue;
+        }
+        if (name.empty() || reads.readsAll() || reads.contains(RenderContextName::plain(name))) {
+            node->markHashDirty();
+        }
+    }
+}
+
 namespace {
 
     template <typename T, typename V>

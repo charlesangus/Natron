@@ -1026,12 +1026,16 @@ TEST_F(NativeLoopBlockTest, ARaisingStopConditionEndsTheLoopWithItsError)
     // Fixing the expression takes the error back.
     ASSERT_TRUE(setStopCondition(end, "False"));
     ASSERT_TRUE(renderedValue(end, &value));
+    message.clear();
     end->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 
     // A syntax error stops the loop before its first iteration.
     ASSERT_TRUE(setStopCondition(end, "loop.iteration >"));
     expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("SyntaxError"));
+    message.clear();
+    end->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("<stopCondition>, line 1"))) << message.toStdString();
 }
 
 // The stop condition reads another node's parameter: editing it moves the LoopEnd's hash, so the

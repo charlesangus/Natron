@@ -2326,10 +2326,11 @@ public:
      * @brief Compiles source, a single Python expression, into a function with the environment of an
      * expression of this knob: bare node names, thisNode, thisParam, rfv and app. It takes (frame, view)
      * then the parameters named, and returns the expression's value. The result is a new reference, null
-     * with error set when the source or the environment cannot be compiled. Call it with
-     * callExpressionFunction(). The Python GIL must be held.
+     * with error set when the source or the environment cannot be compiled; a syntax error names
+     * sourceName and the source's own line. Call it with callExpressionFunction(). The Python GIL must
+     * be held.
      **/
-    PyObject* compileExpressionSource(const std::string& source, const std::vector<std::string>& parameters, std::string* error) const;
+    PyObject* compileExpressionSource(const std::string& source, const std::string& sourceName, const std::vector<std::string>& parameters, std::string* error) const;
 
     /**
      * @brief Calls a function from compileExpressionSource() the way an expression of this knob is

@@ -642,17 +642,33 @@ LoopEnd::evaluateStop(const Resolved& resolved,
                       double time,
                       std::string* error) const
 {
-    // The request pass, the render and every action of one frame agree on where the loop stops.
+    KnobStringPtr stopCondition = _stopCondition.lock();
+    // The request pass, the render and every action of one frame agree on where the loop stops,
+    // under each context the render asks under: rfv reads the context of the render that asks.
     const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     // Enclosing loops' variables reach the expression as loops.<name>.*, so where the loop stops
-    // can change with the iteration of an enclosing loop.
+    // can change with the iteration of an enclosing loop: they key the result along with what the
+    // stop condition reads through rfv.
+    static const std::string kLoopsPrefix("loops.");
     const RenderContextPtr context = getCurrentRenderContext();
-    const U64 contextHash = context ? context->hash() : 0;
+    U64 contextKey = 0;
+    if (render && stopCondition && context && !context->isEmpty()) {
+        RenderContextReadSetConstPtr reads;
+        stopCondition->getMemoizedValueContext(&reads, NULL);
+        RenderContextReadSet keyed = reads ? *reads : RenderContextReadSet();
+        for (const RenderContext::Entry& entry : context->entries()) {
+            if ((entry.first.ns.size() > kLoopsPrefix.size()) && (entry.first.ns.compare(0, kLoopsPrefix.size(), kLoopsPrefix) == 0)) {
+                keyed.add(entry.first);
+            }
+        }
+        const RenderContextPtr kept = keyed.empty() ? RenderContextPtr() : context->restrictTo(keyed);
+        contextKey = kept ? kept->hash() : 0;
+    }
     if (render) {
         QMutexLocker k(&_stopMutex);
         for (const StopResult& result : _stopResults) {
-            if ((result.render.lock() == render) && (result.time == time) && (result.contextHash == contextHash) && (result.count == resolved.count) && (result.expression == expression)) {
+            if ((result.render.lock() == render) && (result.time == time) && (result.contextKey == contextKey) && (result.count == resolved.count) && (result.expression == expression)) {
                 *error = result.error;
 
                 return result.stopAt;
@@ -662,11 +678,10 @@ LoopEnd::evaluateStop(const Resolved& resolved,
 
     int stopAt = resolved.count;
     error->clear();
-    KnobStringPtr stopCondition = _stopCondition.lock();
     {
         PythonGILLocker pgl;
         std::string failure;
-        PyObject* function = stopCondition ? stopCondition->compileExpressionSource(expression, { "loop", "loops" }, &failure) : NULL;
+        PyObject* function = stopCondition ? stopCondition->compileExpressionSource(expression, "<stopCondition>", { "loop", "loops" }, &failure) : NULL;
         PyObject* types = function ? PyImport_ImportModule("types") : NULL;
         PyObject* simpleNamespace = types ? PyObject_GetAttrString(types, "SimpleNamespace") : NULL;
         PyObject* noArgs = simpleNamespace ? PyTuple_New(0) : NULL;
@@ -675,7 +690,6 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         PyObject* enclosing = ok ? PyDict_New() : NULL;
         ok = (enclosing != NULL);
         if (ok && context) {
-            static const std::string kLoopsPrefix("loops.");
             std::map<std::string, PyObject*> loopVariables;
             for (const RenderContext::Entry& entry : context->entries()) {
                 if ((entry.first.ns.size() <= kLoopsPrefix.size()) || (entry.first.ns.compare(0, kLoopsPrefix.size(), kLoopsPrefix) != 0)) {
@@ -759,7 +773,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         StopResult result;
         result.render = render;
         result.time = time;
-        result.contextHash = contextHash;
+        result.contextKey = contextKey;
         result.expression = expression;
         result.count = resolved.count;
         result.stopAt = stopAt;

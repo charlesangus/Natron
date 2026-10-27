@@ -89,6 +89,17 @@ NODES = {
              {"bottomLeft": (200.0, 150.0), "size": (3400.0, 1900.0), "softness": 20.0}, False),
     "reformat": ("net.sf.openfx.Reformat", {"reformatType": 1, "boxFixed": True, "boxSize": (1920, 1080)}, False),
     "position": ("net.sf.openfx.Position", {"translate": (12.6, 7.4)}, False),
+    "premult": ("Premult", {}, False),
+    "unpremult": ("Unpremult", {}, False),
+    "colorspace": ("Colorspace", {"colorspace_in": 0, "colorspace_out": 1}, False),
+    "colormatrix": ("ColorMatrix", {"matrix": (0.8, 0.15, 0.05, 0.0, 0.1, 0.8, 0.1, 0.0,
+                                               0.05, 0.15, 0.8, 0.0, 0.0, 0.0, 0.0, 1.0)}, False),
+    "hsvtool": ("HSVTool", {"hueRotation": 30.0, "saturationAdjustment": 0.1, "brightnessAdjustment": 0.05}, False),
+    "huecorrect": ("HueCorrect", {}, False),
+    "hsvkeyer": ("HSVKeyer", {}, False),
+    "despill": ("Despill", {"screenColor": (0.1, 0.9, 0.1, 1.0), "strength": 1.0}, False),
+    "threshold": ("Threshold", {"level": (0.5, 0.5, 0.5, 0.5), "softness": (0.1, 0.1, 0.1, 0.1)}, False),
+    "posterize": ("Posterize", {"levels": 6}, False),
     "constant": ("net.sf.openfx.ConstantPlugin", {}, True),
     "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
@@ -171,6 +182,12 @@ def configure(name, index):
     if plugin_id == "net.sf.openfx.TransformPlugin" and "translate" not in values:
         animate(param(node, "translate"), (0.0, 0.0), (14.0, 6.0))
         animate(param(node, "rotate"), (0.0,), (0.8,))
+    if name == "huecorrect":
+        # Bend the sat curve (dimension 1) and shift the hue curve (dimension 0); the defaults are identity.
+        curves = param(node, "hue")
+        for n in range(6):
+            curves.setNthControlPoint(1, n, float(n), 1.0 + 0.3 * (n % 2), 0.0, 0.0)
+            curves.setNthControlPoint(0, n, float(n), 0.1 * (n % 3), 0.0, 0.0)
     if name == "reformat":
         # Alternating the target size keeps every copy in a chain resampling.
         param(node, "boxSize").set(*((1920, 1080) if index % 2 == 0 else (3840, 2160)))

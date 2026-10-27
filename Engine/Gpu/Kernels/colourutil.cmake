@@ -1,0 +1,4 @@
+slang_add_kernel(premult_wrapped Kernels/colourutil.slang ENTRY premult_wrapped REGISTRY NatronGpu)
+slang_add_kernel(unpremult_wrapped Kernels/colourutil.slang ENTRY unpremult_wrapped REGISTRY NatronGpu)
+slang_add_kernel(colormatrix_wrapped Kernels/colourutil.slang ENTRY colormatrix_wrapped REGISTRY NatronGpu)
+slang_add_kernel(threshold_wrapped Kernels/colourutil.slang ENTRY threshold_wrapped REGISTRY NatronGpu)

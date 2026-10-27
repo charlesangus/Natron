@@ -34,12 +34,17 @@ NATRON_NAMESPACE_ENTER
  * Premult divides the source by the "(Un)premult by" channel before the op and multiplies the
  * processed channels back after it. MaskMix blends the op's result with the undivided source by
  * mask x mix. PassThroughUnprocessed writes the channels the op does not process from the
- * source; without it they are left for the host to copy.
+ * source; without it they are left for the host to copy. Divisor gives the op the "(Un)premult
+ * by" channel (RowIO::divisor, 1 outside its image) over the undivided source and multiplies
+ * nothing back: for an op whose work is the multiply or the divide itself, so that with no
+ * channel picked the node is an identity. Its selector starts on rgba.A and is labelled
+ * ImagePipelineSpec::divisorLabel.
  **/
 enum class Stage : unsigned char {
     Premult = 1 << 0,
     MaskMix = 1 << 1,
-    PassThroughUnprocessed = 1 << 2
+    PassThroughUnprocessed = 1 << 2,
+    Divisor = 1 << 3
 };
 
 class StageSet {
@@ -148,20 +153,32 @@ enum class RawStageRequirement : unsigned char {
 
 /**
  * @brief How the host runs an image node: the stages around its op, its layer policy, the kind
- * of its op and, for a node reading raw data, the raw stage it needs.
+ * of its op and, for a node reading raw data, the raw stage it needs. divisorLabel labels the
+ * channel selector of a Divisor stage, "(Un)premult by" when null.
  **/
 struct ImagePipelineSpec {
     StageSet stages = {};
     LayerPolicy layers = {};
     OpKind op = OpKind::Point;
     RawStageRequirement rawStage = RawStageRequirement::Any;
+    const char* divisorLabel = nullptr;
 };
 
 constexpr bool
 pipelinePremultHasSource(const ImagePipelineSpec& pipeline,
                          const NodeSpec& spec)
 {
-    return !pipeline.stages.has(Stage::Premult) || (nodeSpecSourceInput(spec) >= 0);
+    return (!pipeline.stages.has(Stage::Premult) && !pipeline.stages.has(Stage::Divisor)) || (nodeSpecSourceInput(spec) >= 0);
+}
+
+/**
+ * @brief The op either works divided by the "(Un)premult by" channel or is handed it, not both,
+ * and only a Point op is handed it.
+ **/
+constexpr bool
+pipelineDivisorIsValid(const ImagePipelineSpec& pipeline)
+{
+    return !pipeline.stages.has(Stage::Divisor) || (!pipeline.stages.has(Stage::Premult) && (pipeline.op == OpKind::Point));
 }
 
 constexpr bool
@@ -200,14 +217,14 @@ constexpr bool
 pipelineRawSourceHasNoImageStages(const ImagePipelineSpec& pipeline,
                                   const NodeSpec& spec)
 {
-    return !pipelineReadsRaw(spec) || (!pipeline.stages.has(Stage::Premult) && !pipeline.stages.has(Stage::MaskMix) && (pipeline.layers.kind == LayerPolicy::Kind::None));
+    return !pipelineReadsRaw(spec) || (!pipeline.stages.has(Stage::Premult) && !pipeline.stages.has(Stage::Divisor) && !pipeline.stages.has(Stage::MaskMix) && (pipeline.layers.kind == LayerPolicy::Kind::None));
 }
 
 constexpr bool
 isValidImagePipelineSpec(const ImagePipelineSpec& pipeline,
                          const NodeSpec& spec)
 {
-    return pipelinePremultHasSource(pipeline, spec) && pipelineRouteHasNoStages(pipeline) && pipelineOutputKindIsValid(spec) && pipelineRawStageHasRawSource(pipeline, spec) && pipelineRawSourceHasNoImageStages(pipeline, spec);
+    return pipelinePremultHasSource(pipeline, spec) && pipelineDivisorIsValid(pipeline) && pipelineRouteHasNoStages(pipeline) && pipelineOutputKindIsValid(spec) && pipelineRawStageHasRawSource(pipeline, spec) && pipelineRawSourceHasNoImageStages(pipeline, spec);
 }
 
 /**
@@ -218,11 +235,12 @@ template <const ImagePipelineSpec& PIPELINE, const NodeSpec& SPEC>
 const ImagePipelineSpec&
 staticImagePipelineSpec()
 {
-    static_assert(pipelinePremultHasSource(PIPELINE, SPEC), "a Premult stage needs a Source input to divide");
+    static_assert(pipelinePremultHasSource(PIPELINE, SPEC), "a Premult or Divisor stage needs a Source input to divide");
+    static_assert(pipelineDivisorIsValid(PIPELINE), "a Divisor stage hands a Point op the divisor, so it goes with no Premult stage and no other op kind");
     static_assert(pipelineRouteHasNoStages(PIPELINE), "a Route op renders nothing, so it has no stages and no raw stage");
     static_assert(pipelineOutputKindIsValid(SPEC), "an image pipeline outputs eDataKindImage, or eDataKindRaw from an eDataKindRaw Source input");
     static_assert(pipelineRawStageHasRawSource(PIPELINE, SPEC), "a raw stage other than Any needs an eDataKindRaw Source input");
-    static_assert(!pipelineReadsRaw(SPEC) || !PIPELINE.stages.has(Stage::Premult), "a raw Source input has no alpha to divide by, so no Premult stage");
+    static_assert(!pipelineReadsRaw(SPEC) || (!PIPELINE.stages.has(Stage::Premult) && !PIPELINE.stages.has(Stage::Divisor)), "a raw Source input has no alpha to divide by, so no Premult or Divisor stage");
     static_assert(!pipelineReadsRaw(SPEC) || !PIPELINE.stages.has(Stage::MaskMix), "a raw Source input is not blended against a mask, so no MaskMix stage");
     static_assert(!pipelineReadsRaw(SPEC) || (PIPELINE.layers.kind == LayerPolicy::Kind::None), "a raw Source input has no layers or channels to pick, so its layer policy is None");
 

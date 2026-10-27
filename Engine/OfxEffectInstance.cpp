@@ -744,7 +744,8 @@ namespace {
 
 // The plane choices ofxsMultiPlane.cpp builds with describeInContextAddPlaneChoice(). Unlike a
 // channel choice, a plane choice's describe-time option list is empty on a MultiPlaneV2 host,
-// so nothing in it can be recognised: the params have to be named.
+// so nothing in it can be recognised: the params have to be named, through
+// OfxEffectInstance::addPlaneChoiceTakeOverForTesting().
 struct PlaneChoiceTakeOver {
     const char* pluginID;
     const char* paramName;
@@ -752,11 +753,6 @@ struct PlaneChoiceTakeOver {
     const char* twinLabel;
     const char* clipName;
     bool ownsChannelQuad;
-};
-
-const PlaneChoiceTakeOver kPlaneChoiceTakeOvers[] = {
-    { "net.sf.openfx.Premult", "inputPlane", "hostInputLayer", "Layer", kOfxImageEffectSimpleSourceClipName, true },
-    { "net.sf.openfx.Unpremult", "inputPlane", "hostInputLayer", "Layer", kOfxImageEffectSimpleSourceClipName, true },
 };
 
 struct TestPlaneChoice {
@@ -774,37 +770,6 @@ testPlaneChoiceTakeOvers()
     return takeOvers;
 }
 
-// A take-over choice whose plugin label was left empty (openfx-misc's shared (un)premult
-// channel picker, SupportExt/ofxsMaskMix.h, never labelled it because it doubles as a mask
-// footer control there).
-struct ChannelChoiceLabelOverride {
-    const char* pluginID;
-    const char* paramName;
-    const char* twinLabel;
-};
-
-const ChannelChoiceLabelOverride kChannelChoiceLabelOverrides[] = {
-    { "net.sf.openfx.Premult", kUnPremultByChannelPluginKnobName, "Premult by" },
-    { "net.sf.openfx.Unpremult", kUnPremultByChannelPluginKnobName, "Unpremult by" },
-};
-
-std::string
-channelChoiceTwinLabel(const std::string& pluginID,
-                       const std::string& paramName,
-                       const std::string& pluginLabel)
-{
-    if (!pluginLabel.empty()) {
-        return pluginLabel;
-    }
-    for (std::size_t i = 0; i < sizeof(kChannelChoiceLabelOverrides) / sizeof(kChannelChoiceLabelOverrides[0]); ++i) {
-        if ((pluginID == kChannelChoiceLabelOverrides[i].pluginID) && (paramName == kChannelChoiceLabelOverrides[i].paramName)) {
-            return kChannelChoiceLabelOverrides[i].twinLabel;
-        }
-    }
-
-    return pluginLabel;
-}
-
 // ofxsMultiPlane.h's kMultiPlaneProcessAllPlanesParam: the checkbox that makes a plane choice
 // process every plane of its input, which a plane twin's All entry replaces.
 const char* const kPluginProcessAllPlanesParam = "processAllPlanes";
@@ -813,11 +778,6 @@ const PlaneChoiceTakeOver*
 findPlaneChoiceTakeOver(const std::string& pluginID,
                         const std::string& paramName)
 {
-    for (std::size_t i = 0; i < sizeof(kPlaneChoiceTakeOvers) / sizeof(kPlaneChoiceTakeOvers[0]); ++i) {
-        if ((pluginID == kPlaneChoiceTakeOvers[i].pluginID) && (paramName == kPlaneChoiceTakeOvers[i].paramName)) {
-            return &kPlaneChoiceTakeOvers[i];
-        }
-    }
     for (std::list<TestPlaneChoice>::const_iterator it = testPlaneChoiceTakeOvers().begin(); it != testPlaneChoiceTakeOvers().end(); ++it) {
         if ((pluginID == it->pluginID) && (paramName == it->paramName)) {
             return &it->takeOver;
@@ -1040,7 +1000,7 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
             layerSelect->setDefaultValue(layerSelect->encode(defaultLayer, defaultChannels));
             twinKnob = layerSelect;
         } else {
-            KnobChannelSelectPtr channelSelect = createChannelSelectKnob(twinName, channelChoiceTwinLabel(pluginID, paramName, choice->getLabel()), false);
+            KnobChannelSelectPtr channelSelect = createChannelSelectKnob(twinName, choice->getLabel(), false);
             twin.noneOption = OfxMultiplaneChoice::noneChannelOption(paramName);
             std::string defaultOption = defaultID;
             if (!clipPrefix.empty() && (defaultOption.compare(0, clipPrefix.size() + 1, clipPrefix + ".") == 0)) {
@@ -1181,8 +1141,7 @@ OfxEffectInstance::pushMultiplaneTwin(std::size_t index,
     if (pushChannelQuad && layerSelect && twin.channelQuad[0].lock()) {
         std::bitset<4> bits;
         if (allLayers) {
-            // Every plane then goes through the same quad, so the plugin's own default applies:
-            // Premult's leaves alpha out rather than multiplying it by itself.
+            // Every plane then goes through the same quad, so the plugin's own default applies.
             for (int c = 0; c < 4; ++c) {
                 KnobBoolPtr enabled = twin.channelQuad[c].lock();
                 bits.set(c, enabled && enabled->getDefaultValue(0));

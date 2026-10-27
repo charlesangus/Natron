@@ -98,6 +98,11 @@ public:
      **/
     virtual QWidget* getFullWidthRowWidget() const OVERRIDE FINAL;
 
+    /**
+     * @brief True for a matrix-display knob, whose label sits level with the column headers.
+     **/
+    virtual bool wantsTopAlignedLabel() const OVERRIDE;
+
 public Q_SLOTS:
 
     void onSpinBoxValueChanged();
@@ -115,6 +120,8 @@ public Q_SLOTS:
     void onRectangleFormatButtonClicked();
 
     void onResetToDefaultRequested();
+
+    void onMatrixVisibleExtentChanged();
 
 protected:
 
@@ -234,6 +241,11 @@ private:
      **/
     double valueAccordingToType(bool normalize, int dimension, double value) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief For a matrix-display knob, shows the fields and headers inside the knob's visible
+     * extent and hides the rest.
+     **/
+    void applyMatrixVisibleExtent();
 
     void expandAllDimensions();
     void foldAllDimensions();

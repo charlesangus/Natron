@@ -1146,6 +1146,14 @@ chosen space, and `apply()` runs one on interleaved RGB. Use it in `pack` and
 nothing more: range handling, if any, belongs to the user. NeuralDenoise is the
 example.
 
+A model that changes the image size (`AiTileSpec::scale` above 1) makes the
+node own its geometry. It scales the format in `getPreferredMetadataAt()` and
+the region of definition in `getRegionOfDefinition()`. It maps
+`getRegionsOfInterest()` back through the factor plus the tile overlap. It also
+clears `filterPassThroughLayers()`, because other layers would keep the input's
+size, and writes every channel of the output itself. NeuralUpscale is the
+example.
+
 ### The GPU side of an op
 
 A Point op names its GPU work with a `GpuOpRef` returned from `gpu()`:

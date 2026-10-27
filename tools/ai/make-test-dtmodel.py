@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Write Tests/fixtures/ai/identity.dtmodel, the package Tests/Ai installs.
+"""Write Tests/fixtures/ai/identity.dtmodel and upscale.dtmodel, the packages the tests install.
 
 usage: make-test-dtmodel.py [--out <dir>] [--check]
 
-The package is laid out like a darktable-ai release asset: a zip whose
+Each package is laid out like a darktable-ai release asset: a zip whose
 deflated members sit under a folder named after the package, holding
-config.json and the model, here identity.onnx from make-test-models.py.
+config.json and the models from make-test-models.py. identity.dtmodel
+(test-identity) holds identity.onnx as model.onnx; upscale.dtmodel
+(test-upscale) holds upscale2-nearest.onnx and upscale4-nearest.onnx as
+model_x2.onnx and model_x4.onnx, as darktable's upscale packages name them.
 Timestamps and attributes are fixed, so the same zlib writes byte-identical
-files; Tests/Ai/ModelDownloader_Test.cpp pins the result's sha256. --check
-writes nothing and exits non-zero when the committed package differs.
+files; the tests pin the results' sha256. --check writes nothing and exits
+non-zero when a committed package differs.
 """
 
 import argparse
@@ -18,42 +21,70 @@ import os
 import sys
 import zipfile
 
-PACKAGE = "test-identity"
+def identity_config():
+    return {
+        "id": "test-identity",
+        "name": "test identity",
+        "description": "float32 identity, for Tests/Ai",
+        "task": "denoise",
+        "arch": "identity",
+        "backend": "onnx",
+        "version": "1.0",
+        "tiling": True,
+        "model_card": {
+            "license": "MIT",
+            "training_data_license": "none",
+        },
+        "attributes": {
+            "input_sizes": [64],
+        },
+    }
 
-CONFIG = {
-    "id": PACKAGE,
-    "name": "test identity",
-    "description": "float32 identity, for Tests/Ai",
-    "task": "denoise",
-    "arch": "identity",
-    "backend": "onnx",
-    "version": "1.0",
-    "tiling": True,
-    "model_card": {
-        "license": "MIT",
-        "training_data_license": "none",
-    },
-    "attributes": {
-        "input_sizes": [64],
-    },
+
+def upscale_config():
+    return {
+        "id": "test-upscale",
+        "name": "test upscale",
+        "description": "float32 nearest-neighbour 2x and 4x, for Tests/Native",
+        "task": "upscale",
+        "arch": "nearest",
+        "backend": "onnx",
+        "version": "1.0",
+        "tiling": True,
+        "model_card": {
+            "license": "MIT",
+            "training_data_license": "none",
+        },
+        "attributes": {
+            "input_sizes": [32],
+        },
+    }
+
+
+# Output file: (package, config, [(member name, fixture model)]).
+PACKAGES = {
+    "identity.dtmodel": ("test-identity", identity_config, [("model.onnx", "identity.onnx")]),
+    "upscale.dtmodel": ("test-upscale", upscale_config,
+                        [("model_x2.onnx", "upscale2-nearest.onnx"), ("model_x4.onnx", "upscale4-nearest.onnx")]),
 }
 
 
-def member(name):
-    info = zipfile.ZipInfo(PACKAGE + "/" + name, date_time=(1980, 1, 1, 0, 0, 0))
+def member(package, name):
+    info = zipfile.ZipInfo(package + "/" + name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     info.create_system = 3
     info.external_attr = 0o644 << 16
     return info
 
 
-def build(fixtures):
-    with open(os.path.join(fixtures, "identity.onnx"), "rb") as f:
-        model = f.read()
-    path = os.path.join(fixtures, "identity.dtmodel.tmp")
+def build(fixtures, out_name):
+    package, config, models = PACKAGES[out_name]
+    path = os.path.join(fixtures, out_name + ".tmp")
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(member("config.json"), json.dumps(CONFIG, indent=4) + "\n")
-        archive.writestr(member("model.onnx"), model)
+        archive.writestr(member(package, "config.json"), json.dumps(config(), indent=4) + "\n")
+        for name, fixture in models:
+            with open(os.path.join(fixtures, fixture), "rb") as f:
+                archive.writestr(member(package, name), f.read())
     with open(path, "rb") as f:
         data = f.read()
     os.remove(path)
@@ -68,21 +99,26 @@ def main():
                         help="compare against the package in --out instead of writing it")
     args = parser.parse_args()
 
-    data = build(args.out)
-    path = os.path.join(args.out, "identity.dtmodel")
-    if args.check:
-        try:
-            with open(path, "rb") as f:
-                if f.read() == data:
-                    return 0
-        except FileNotFoundError:
-            pass
-        print("out of date: identity.dtmodel", file=sys.stderr)
-        return 1
+    stale = []
+    for out_name in sorted(PACKAGES):
+        data = build(args.out, out_name)
+        path = os.path.join(args.out, out_name)
+        if args.check:
+            try:
+                with open(path, "rb") as f:
+                    if f.read() == data:
+                        continue
+            except FileNotFoundError:
+                pass
+            stale.append(out_name)
+            continue
+        with open(path, "wb") as f:
+            f.write(data)
+        print("%s: %d bytes, sha256 %s" % (path, len(data), hashlib.sha256(data).hexdigest()))
 
-    with open(path, "wb") as f:
-        f.write(data)
-    print("%s: %d bytes, sha256 %s" % (path, len(data), hashlib.sha256(data).hexdigest()))
+    if stale:
+        print("out of date: " + ", ".join(stale), file=sys.stderr)
+        return 1
     return 0
 
 

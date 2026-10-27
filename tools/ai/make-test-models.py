@@ -63,17 +63,18 @@ def scale2(elem_type, name):
                  [two])
 
 
-def upscale2_nearest():
-    # Asymmetric coordinates with floor rounding: output pixel (x, y) is input pixel (x/2, y/2).
-    scales = helper.make_tensor("scales", TensorProto.FLOAT, [4], [1.0, 1.0, 2.0, 2.0])
+def upscale_nearest(factor):
+    # Asymmetric coordinates with floor rounding: output pixel (x, y) is input pixel
+    # (x/factor, y/factor).
+    scales = helper.make_tensor("scales", TensorProto.FLOAT, [4], [1.0, 1.0, float(factor), float(factor)])
     resize = helper.make_node("Resize", ["image", "", "scales"], ["output"],
                               mode="nearest",
                               coordinate_transformation_mode="asymmetric",
                               nearest_mode="floor")
-    return model("upscale2_nearest",
+    return model("upscale%d_nearest" % factor,
                  [resize],
                  [image_value("image", TensorProto.FLOAT)],
-                 [image_value("output", TensorProto.FLOAT, "height2", "width2")],
+                 [image_value("output", TensorProto.FLOAT, "height%d" % factor, "width%d" % factor)],
                  [scales])
 
 
@@ -104,7 +105,8 @@ MODELS = {
     "identity-64.onnx": identity_fixed,
     "scale2.onnx": lambda: scale2(TensorProto.FLOAT, "scale2"),
     "scale2-fp16.onnx": lambda: scale2(TensorProto.FLOAT16, "scale2_fp16"),
-    "upscale2-nearest.onnx": upscale2_nearest,
+    "upscale2-nearest.onnx": lambda: upscale_nearest(2),
+    "upscale4-nearest.onnx": lambda: upscale_nearest(4),
     "slow-loop.onnx": slow_loop,
 }
 

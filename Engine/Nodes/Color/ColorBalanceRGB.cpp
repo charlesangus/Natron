@@ -352,6 +352,38 @@ addDouble(KnobHolder* holder,
     return knob;
 }
 
+// The wheels' colours: each hue at a chroma that reaches kWheelShownChroma at the chroma knob's
+// display maximum, so every wheel reads alike however small its range, at kWheelShownLuminance.
+const float kWheelShownChroma = 0.12f;
+const float kWheelShownLuminance = 0.35f;
+
+void
+wheelColour(const KnobHolder* holder,
+            double displayMaximum,
+            double hueDegrees,
+            double chroma,
+            double rgb[3])
+{
+    const double t = (displayMaximum > 0.) ? std::min(1., std::max(0., chroma / displayMaximum)) : 0.;
+    float ych[4];
+    float grading[3];
+    float lms[3];
+    float xyz[3];
+
+    makeYch(kWheelShownLuminance, (float)t * kWheelShownChroma, degToRad((float)hueDegrees + kAngleShift), ych);
+    ychToGradingRgb(ych, grading);
+    gradingRgbToLms(grading, lms);
+    lmsToXyz(lms, xyz);
+
+    double w[9];
+    ColorMath::workingToXYZ(holder, w);
+    const std::optional<RawColorMath::Mat3> toWorking = RawColorMath::invert(RawColorMath::Mat3 { w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8] });
+    for (int c = 0; c < 3; ++c) {
+        rgb[c] = toWorking ? ((*toWorking)[3 * c] * xyz[0] + (*toWorking)[3 * c + 1] * xyz[1] + (*toWorking)[3 * c + 2] * xyz[2]) : xyz[c];
+        rgb[c] = std::max(0., rgb[c]);
+    }
+}
+
 } // anonymous namespace
 
 void
@@ -422,36 +454,60 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
     brillianceHighlights = addDouble(knobHolder, master, kColorBalanceRGBParamBrillianceHighlights, "Brilliance Highlights",
                                      "Increase or decrease brilliance proportionally to the original pixel brilliance, mostly in highlights.", 0., -1., 1., -1., 1.);
 
-    // One section per wheel: luminance, hue and chroma sliders, with darktable's soft ranges.
+    // The wheels come first, two to a row, each editing its hue, chroma and luminance knobs;
+    // the knobs' own rows sit in a collapsed group below for typed values, with darktable's soft
+    // ranges.
     KnobGroupPtr fourWays = addTab(knobHolder, page, kColorBalanceRGBTabFourWays, "4 Ways", "Selective color grading.");
-    addSeparator(knobHolder, fourWays, "offsetSection", "Global Offset");
-    wheels[eWheelOffset].luminance = addDouble(knobHolder, fourWays, kColorBalanceRGBParamOffsetLuminance, "Offset Luminance",
-                                               "Global luminance offset.", 0., -1., 1., -0.05, 0.05);
-    wheels[eWheelOffset].hue = addDouble(knobHolder, fourWays, kColorBalanceRGBParamOffsetHue, "Offset Hue",
+    KnobSeparatorPtr wheelGrid = AppManager::createKnob<KnobSeparator>(knobHolder, EffectInstance::tr("Wheels").toStdString(), 1, false);
+    wheelGrid->setName("wheels");
+    wheelGrid->setHintToolTip(EffectInstance::tr("Angle is hue, distance from the centre is chroma, the slider beneath is luminance.").toStdString());
+    fourWays->addKnob(wheelGrid);
+    KnobGroupPtr values = AppManager::createKnob<KnobGroup>(knobHolder, EffectInstance::tr("Values").toStdString());
+    values->setName("values");
+    values->setHintToolTip(EffectInstance::tr("The wheels' hue, chroma and luminance as numbers.").toStdString());
+    values->setDefaultValue(false);
+    fourWays->addKnob(values);
+    addSeparator(knobHolder, values, "offsetSection", "Global Offset");
+    wheels[eWheelOffset].hue = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetHue, "Offset Hue",
                                          "Hue of the global color offset, in degrees.", 0., 0., 360., 0., 360.);
-    wheels[eWheelOffset].chroma = addDouble(knobHolder, fourWays, kColorBalanceRGBParamOffsetChroma, "Offset Chroma",
+    wheels[eWheelOffset].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetChroma, "Offset Chroma",
                                             "Chroma of the global color offset.", 0., 0., 1., 0., 0.01);
-    addSeparator(knobHolder, fourWays, "liftSection", "Shadows Lift");
-    wheels[eWheelLift].luminance = addDouble(knobHolder, fourWays, kColorBalanceRGBParamLiftLuminance, "Lift Luminance",
-                                             "Luminance gain in shadows.", 0., -1., 1., -1., 1.);
-    wheels[eWheelLift].hue = addDouble(knobHolder, fourWays, kColorBalanceRGBParamLiftHue, "Lift Hue",
+    wheels[eWheelOffset].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetLuminance, "Offset Luminance",
+                                               "Global luminance offset.", 0., -1., 1., -0.05, 0.05);
+    addSeparator(knobHolder, values, "liftSection", "Shadows Lift");
+    wheels[eWheelLift].hue = addDouble(knobHolder, values, kColorBalanceRGBParamLiftHue, "Lift Hue",
                                        "Hue of the color gain in shadows, in degrees.", 0., 0., 360., 0., 360.);
-    wheels[eWheelLift].chroma = addDouble(knobHolder, fourWays, kColorBalanceRGBParamLiftChroma, "Lift Chroma",
+    wheels[eWheelLift].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamLiftChroma, "Lift Chroma",
                                           "Chroma of the color gain in shadows.", 0., 0., 1., 0., 0.5);
-    addSeparator(knobHolder, fourWays, "gainSection", "Highlights Gain");
-    wheels[eWheelGain].luminance = addDouble(knobHolder, fourWays, kColorBalanceRGBParamGainLuminance, "Gain Luminance",
-                                             "Luminance gain in highlights.", 0., -1., 1., -0.5, 0.5);
-    wheels[eWheelGain].hue = addDouble(knobHolder, fourWays, kColorBalanceRGBParamGainHue, "Gain Hue",
+    wheels[eWheelLift].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamLiftLuminance, "Lift Luminance",
+                                             "Luminance gain in shadows.", 0., -1., 1., -1., 1.);
+    addSeparator(knobHolder, values, "gainSection", "Highlights Gain");
+    wheels[eWheelGain].hue = addDouble(knobHolder, values, kColorBalanceRGBParamGainHue, "Gain Hue",
                                        "Hue of the color gain in highlights, in degrees.", 0., 0., 360., 0., 360.);
-    wheels[eWheelGain].chroma = addDouble(knobHolder, fourWays, kColorBalanceRGBParamGainChroma, "Gain Chroma",
+    wheels[eWheelGain].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamGainChroma, "Gain Chroma",
                                           "Chroma of the color gain in highlights.", 0., 0., 1., 0., 0.2);
-    addSeparator(knobHolder, fourWays, "powerSection", "Power");
-    wheels[eWheelPower].luminance = addDouble(knobHolder, fourWays, kColorBalanceRGBParamPowerLuminance, "Power Luminance",
-                                              "Luminance exponent in mid-tones.", 0., -1., 1., -0.25, 0.25);
-    wheels[eWheelPower].hue = addDouble(knobHolder, fourWays, kColorBalanceRGBParamPowerHue, "Power Hue",
+    wheels[eWheelGain].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamGainLuminance, "Gain Luminance",
+                                             "Luminance gain in highlights.", 0., -1., 1., -0.5, 0.5);
+    addSeparator(knobHolder, values, "powerSection", "Power");
+    wheels[eWheelPower].hue = addDouble(knobHolder, values, kColorBalanceRGBParamPowerHue, "Power Hue",
                                         "Hue of the color exponent in mid-tones, in degrees.", 0., 0., 360., 0., 360.);
-    wheels[eWheelPower].chroma = addDouble(knobHolder, fourWays, kColorBalanceRGBParamPowerChroma, "Power Chroma",
+    wheels[eWheelPower].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamPowerChroma, "Power Chroma",
                                            "Chroma of the color exponent in mid-tones.", 0., 0., 1., 0., 0.1);
+    wheels[eWheelPower].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamPowerLuminance, "Power Luminance",
+                                              "Luminance exponent in mid-tones.", 0., -1., 1., -0.25, 0.25);
+    const char* const wheelLabels[eWheelCount] = { "Global Offset", "Shadows Lift", "Highlights Gain", "Power" };
+    std::vector<KnobSeparator::ColorWheelSpec> wheelSpecs(eWheelCount);
+    for (int i = 0; i < eWheelCount; ++i) {
+        const double displayMaximum = wheels[i].chroma.lock()->getDisplayMaximum();
+        wheelSpecs[i].label = EffectInstance::tr(wheelLabels[i]).toStdString();
+        wheelSpecs[i].hue = wheels[i].hue;
+        wheelSpecs[i].chroma = wheels[i].chroma;
+        wheelSpecs[i].luminance = wheels[i].luminance;
+        wheelSpecs[i].colour = [knobHolder, displayMaximum](double hueDegrees, double c, double rgb[3]) {
+            wheelColour(knobHolder, displayMaximum, hueDegrees, c, rgb);
+        };
+    }
+    wheelGrid->setColorWheelGrid(wheelSpecs);
 
     KnobGroupPtr masks = addTab(knobHolder, page, kColorBalanceRGBTabMasks, "Masks", "Isolate luminances.");
     saturationFormula = addChoice(knobHolder, masks, kColorBalanceRGBParamSaturationFormula, "Saturation Formula",

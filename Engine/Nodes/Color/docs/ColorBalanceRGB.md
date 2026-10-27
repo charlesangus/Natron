@@ -4,7 +4,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| ColorBalanceRGB | darktable reference | `kReferenceMean` 2e-4, `kReferenceMax` 5e-3 | mean and largest absolute error over the crop, relative to the reference's mean level, against darktable-cli renders (`NativeColorBalanceRGB_Test.cpp`, `MatchesDarktable`). Provisional until the references are rendered |
+| ColorBalanceRGB | darktable reference | `kReferenceMean` 2e-4, `kReferenceMax` 5e-3 | mean and largest absolute error over the crop, relative to the reference's mean level, each sample's beyond the half float reference's rounding (`RawReference::halfFloatError`), against darktable-cli renders (`NativeColorBalanceRGB_Test.cpp`, `MatchesDarktable`). Provisional until the references are rendered |
 | ColorBalanceRGB | identity | 2e-4 relative | defaults on low-chroma colours, both formulas (`DefaultsKeepLowChromaColours`) |
 | ColorBalanceRGB | gpu | `ParityTolerance::make(0., 1e-4)` | kernel against the CPU row, both formulas, every control, mask outputs and presets (`NativeColorBalanceRGBGpu_Test.cpp`) |
 
@@ -50,8 +50,12 @@ presets; Apply writes every control, resetting the ones a preset does not name.
   before grading and the output is clipped at 0; the saturation is gamut-mapped against the
   Rec.2020 boundary. Even at its defaults the node is therefore not an identity for negative or
   highly saturated colours, and it never reports itself as one.
-- **4 Ways as sliders.** Each wheel is a luminance, hue and chroma slider; the trackball widget
-  has no polar mode, so the wheels are not drawn as trackballs.
+- **4 Ways as wheels.** As in darktable, the four wheels sit two to a row: Global Offset and
+  Shadows Lift, then Highlights Gain and Power. Each has its title above, its luminance slider
+  beneath and a readout of hue, chroma and luminance. On a wheel, angle is hue and distance from
+  the centre is chroma; the outer edge is the chroma knob's soft maximum, and scrolling zooms it.
+  Drag the ring to change the hue alone, and double-click to reset the chroma. A drag is one undo
+  step. To type values, open the tab's collapsed Values group, which holds the twelve knobs.
 - **Not ported:** the colour pickers (white fulcrum, grey fulcrum, neutralize), the colour checker
   and the GUI-only collapsible sections. Mask previews are the Output choice.
 - **Alpha** passes through. Premult, mask and mix are the host's stages.

@@ -37,8 +37,8 @@
 #include <gtest/gtest.h>
 
 #include "Engine/FrameRenderContext.h"
-#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuPlacement.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/RenderScheduler.h"
 
 #ifdef NATRON_HAVE_GPU

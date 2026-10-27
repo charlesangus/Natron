@@ -49,10 +49,10 @@
 #include "Engine/AppManager.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuMemberTiming.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
@@ -3133,7 +3133,6 @@ private:
         std::uint64_t begin = 0;
         std::uint64_t end = 0;
         unsigned long long pixels = 0;
-
     };
     struct TransferStamps {
         bool upload = true;

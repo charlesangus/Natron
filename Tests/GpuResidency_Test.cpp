@@ -68,10 +68,10 @@
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -3025,7 +3025,6 @@ private:
     std::shared_future<void> _future;
     std::thread _opener;
 };
-
 
 } // namespace
 

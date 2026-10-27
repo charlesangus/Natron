@@ -357,7 +357,7 @@ TransformOp::bake(const KnobReader& reader) const
 
 bool
 TransformOp::isIdentity(const Params& params,
-                       const PassContext& /*context*/) const
+                        const PassContext& /*context*/) const
 {
     if ((params.blur.shutter != 0.) && (params.blur.motionBlur != 0.)) {
         return false;

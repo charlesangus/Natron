@@ -425,7 +425,7 @@ CornerPinOp::isIdentityPin(const CornerPinPoints& pin)
 
 bool
 CornerPinOp::isIdentity(const Params& params,
-                       const PassContext& /*context*/) const
+                        const PassContext& /*context*/) const
 {
     if ((params.blur.shutter != 0.) && (params.blur.motionBlur != 0.)) {
         return false;

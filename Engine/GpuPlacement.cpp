@@ -38,8 +38,8 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
@@ -336,9 +336,7 @@ regionWeightGain(const FrameGraph& graph,
                  const std::function<GpuWeight(const FrameGraph::Task&)>& taskWeight,
                  bool rootOnDevice)
 {
-    return judgeByWeight(graph, region, [&graph](int m) {
-        return graph.tasks[m].isIdentity;
-    }, taskWeight, rootOnDevice);
+    return judgeByWeight(graph, region, [&graph](int m) { return graph.tasks[m].isIdentity; }, taskWeight, rootOnDevice);
 }
 
 void

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <list>
 #include <map>
@@ -45,6 +46,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -52,10 +54,12 @@
 
 #define kTestPluginIDCounting "test.natron.built-in.Counting"
 #define kTestPluginIDCountingMerge "test.natron.built-in.CountingMerge"
+#define kTestPluginIDTiledIdentity "test.natron.built-in.TiledIdentity"
 
 NATRON_NAMESPACE_ENTER
 
 const int kCountingTestSize = 32;
+const int kTiledIdentityTestSize = 512;
 
 /**
  * @brief The render and region of definition calls of every counting effect, keyed by node so that render clones
@@ -231,7 +235,8 @@ private:
  * @brief Fills its output with a constant: its "value" knob plus the sum of what its connected inputs hold at the
  * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
  * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
- * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap.
+ * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap. Its images are keyed by
+ * frame only when its "frameVarying" knob is set.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -243,6 +248,7 @@ public:
         , _delayMs()
         , _cacheOutput()
         , _throwInRender()
+        , _frameVarying()
     {
     }
 
@@ -337,6 +343,26 @@ private:
         throwInRender->setDefaultValue(false);
         page->addKnob(throwInRender);
         _throwInRender = throwInRender;
+
+        KnobBoolPtr frameVarying = createKnob<KnobBool>(std::string("Frame Varying"));
+        frameVarying->setName("frameVarying");
+        frameVarying->setAnimationEnabled(false);
+        frameVarying->setDefaultValue(false);
+        page->addKnob(frameVarying);
+        _frameVarying = frameVarying;
+    }
+
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        KnobBoolPtr frameVaryingKnob = _frameVarying.lock();
+
+        if (frameVaryingKnob && frameVaryingKnob->getValue()) {
+            metadata.setIsFrameVarying(true);
+        }
+
+        return eStatusOK;
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -407,6 +433,7 @@ private:
     KnobIntWPtr _delayMs;
     KnobBoolWPtr _cacheOutput;
     KnobBoolWPtr _throwInRender;
+    KnobBoolWPtr _frameVarying;
 };
 
 class CountingTestEffect
@@ -462,6 +489,121 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDCountingMerge,
         .label = "Test Counting Merge",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief Two inputs over a kTiledIdentityTestSize square: an identity of input B over every window
+ * missing the kCountingTestSize square at the origin, where input A, a counting node, is defined,
+ * and zero where it renders. A window it renders whole is not an identity, so renderRoI only takes
+ * the identity per tile, as it does when it splits the window during a paint stroke.
+ **/
+class TiledIdentityTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new TiledIdentityTestEffect(n);
+    }
+
+    explicit TiledIdentityTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        rod->x1 = 0.;
+        rod->y1 = 0.;
+        rod->x2 = kTiledIdentityTestSize;
+        rod->y2 = kTiledIdentityTestSize;
+
+        return eStatusOK;
+    }
+
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        const OfxPointD scalePt = scale.toOfxPointD();
+        const RectI inputA(0, 0, (int)std::ceil(kCountingTestSize * scalePt.x), (int)std::ceil(kCountingTestSize * scalePt.y));
+        if (roi.intersects(inputA)) {
+            return false;
+        }
+        *inputNb = 1;
+        *inputTime = time;
+        *inputView = view;
+
+        return true;
+    }
+
+    virtual void addAcceptedComponents(int /*inputNb*/,
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
+    {
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+private:
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+            const ImagePtr& image = it->second;
+            if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+                return eStatusFailed;
+            }
+            image->fillZero(args.roi);
+        }
+
+        return eStatusOK;
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "A", .kind = eDataKindImage, .optional = true },
+        InputSpec { .label = "B", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDTiledIdentity,
+        .label = "Test Tiled Identity",
         .outputKind = eDataKindImage,
         .inputs = kInputs,
     };

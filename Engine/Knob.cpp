@@ -4005,6 +4005,7 @@ KnobHelper::setReadDependencyExpression(int dimension,
         registerReadDependencies(dimension);
         invalidateContentHash();
     }
+    refreshRFVReads();
 }
 
 void
@@ -4215,6 +4216,7 @@ fetchPythonError()
 
 PyObject*
 KnobHelper::compileExpressionSource(const std::string& source,
+                                    const std::string& sourceName,
                                     const std::vector<std::string>& parameters,
                                     std::string* error) const
 {
@@ -4225,6 +4227,16 @@ KnobHelper::compileExpressionSource(const std::string& source,
 
         return NULL;
     }
+    // Compiled on its own first, so that a syntax error points at the source's own line rather
+    // than at the function wrapping it.
+    PyErr_Clear();
+    PyObject* code = Py_CompileString(source.c_str(), sourceName.c_str(), Py_eval_input);
+    if (!code) {
+        *error = fetchPythonError();
+
+        return NULL;
+    }
+    Py_DECREF(code);
     std::string declarations;
     try {
         declarations = _imp->declarePythonVariables(true, 0);
@@ -7533,8 +7545,11 @@ KnobHelper::refreshRFVReads()
     {
         QMutexLocker k(&_imp->expressionMutex);
         for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
-            if (!_imp->expressions[i].originalExpression.empty()) {
-                expressions.push_back(_imp->expressions[i].originalExpression);
+            const Expr& expr = _imp->expressions[i];
+            // A read dependency source, evaluated by the holder, reads the context as an expression would.
+            const std::string& source = expr.originalExpression.empty() ? expr.readDependencyExpression : expr.originalExpression;
+            if (!source.empty()) {
+                expressions.push_back(source);
             }
         }
     }
@@ -7576,8 +7591,10 @@ KnobHelper::refreshRFVListeners()
     {
         QMutexLocker k(&_imp->expressionMutex);
         for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
-            if (!_imp->expressions[i].originalExpression.empty()) {
-                expressions.push_back(std::make_pair((int)i, _imp->expressions[i].originalExpression));
+            const Expr& expr = _imp->expressions[i];
+            const std::string& source = expr.originalExpression.empty() ? expr.readDependencyExpression : expr.originalExpression;
+            if (!source.empty()) {
+                expressions.push_back(std::make_pair((int)i, source));
             }
         }
     }

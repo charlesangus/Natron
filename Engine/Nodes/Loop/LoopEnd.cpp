@@ -522,13 +522,25 @@ LoopEnd::evaluateStop(const Resolved& resolved,
                       double time,
                       std::string* error) const
 {
-    // The request pass, the render and every action of one frame agree on where the loop stops.
+    KnobStringPtr stopCondition = _stopCondition.lock();
+    // The request pass, the render and every action of one frame agree on where the loop stops,
+    // under each context the render asks under: rfv reads the context of the render that asks.
     const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    U64 contextKey = 0;
+    if (render && stopCondition) {
+        const RenderContextPtr context = getCurrentRenderContext();
+        if (context && !context->isEmpty()) {
+            RenderContextReadSetConstPtr reads;
+            stopCondition->getMemoizedValueContext(&reads, NULL);
+            const RenderContextPtr kept = reads ? context->restrictTo(*reads) : RenderContextPtr();
+            contextKey = kept ? kept->hash() : 0;
+        }
+    }
     if (render) {
         QMutexLocker k(&_stopMutex);
         for (const StopResult& result : _stopResults) {
-            if ((result.render.lock() == render) && (result.time == time) && (result.count == resolved.count) && (result.expression == expression)) {
+            if ((result.render.lock() == render) && (result.time == time) && (result.contextKey == contextKey) && (result.count == resolved.count) && (result.expression == expression)) {
                 *error = result.error;
 
                 return result.stopAt;
@@ -538,11 +550,10 @@ LoopEnd::evaluateStop(const Resolved& resolved,
 
     int stopAt = resolved.count;
     error->clear();
-    KnobStringPtr stopCondition = _stopCondition.lock();
     {
         PythonGILLocker pgl;
         std::string failure;
-        PyObject* function = stopCondition ? stopCondition->compileExpressionSource(expression, { "loop", "loops" }, &failure) : NULL;
+        PyObject* function = stopCondition ? stopCondition->compileExpressionSource(expression, "<stopCondition>", { "loop", "loops" }, &failure) : NULL;
         PyObject* types = function ? PyImport_ImportModule("types") : NULL;
         PyObject* simpleNamespace = types ? PyObject_GetAttrString(types, "SimpleNamespace") : NULL;
         PyObject* noArgs = simpleNamespace ? PyTuple_New(0) : NULL;
@@ -609,6 +620,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         StopResult result;
         result.render = render;
         result.time = time;
+        result.contextKey = contextKey;
         result.expression = expression;
         result.count = resolved.count;
         result.stopAt = stopAt;

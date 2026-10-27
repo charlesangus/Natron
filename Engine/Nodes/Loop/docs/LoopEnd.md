@@ -33,6 +33,10 @@ M259 - GPU Placement Under Render Contexts.
   enclosing loop as `loops.<name>.*`. Easing is Linear (which extrapolates outside 0 to 1),
   Smooth, or Curve, edited from the row's curve button; Smooth and Curve clamp the variable
   to 0 to 1.
+- Start and end animate like any parameter: right-click either, in the row or the table, to Set
+  Key, Remove Key or Remove animation. Once keyed, editing the value keys it at the current
+  frame, and the driven value at each frame goes between start and end at that frame, so the
+  node's output varies with the frame.
 - A driver whose variable no loop around the node sets, after the node was moved out of the
   loop or the loop renamed, keeps its value and shows a warning on the knob.
 - The `drivenKnobs` table lists every driven dimension of the body's nodes, one row each,

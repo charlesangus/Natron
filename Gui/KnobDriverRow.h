@@ -41,6 +41,8 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Global/Enums.h"
+
 #include "Engine/EngineFwd.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/UndoKnobRef.h"
@@ -126,7 +128,8 @@ double previewValue(const KnobIPtr& knob,
                     int dimension);
 
 /**
- * @brief One field of a driver set to a new value, the others kept.
+ * @brief One field of a driver set to a new value, the others kept. Start and end animate like a
+ * knob's value: while one is keyed, a new value for it keys it at time.
  **/
 struct DriverChange {
     enum FieldEnum {
@@ -134,6 +137,14 @@ struct DriverChange {
         eFieldStart,
         eFieldEnd,
         eFieldEasing,
+    };
+
+    // For eFieldStart and eFieldEnd: a new value, or a key set, removed or cleared at time.
+    enum KeyActionEnum {
+        eKeyActionNone = 0,
+        eKeyActionSet,
+        eKeyActionRemove,
+        eKeyActionClear,
     };
 
     explicit DriverChange(FieldEnum f)
@@ -144,6 +155,9 @@ struct DriverChange {
     FieldEnum field;
     std::string variable;
     double value = 0.;
+    KeyActionEnum keyAction = eKeyActionNone;
+    // The frame a key action acts on; editDrivers() gives a value edit the knob's current one.
+    double time = 0.;
     KnobDriver::EasingEnum easing = KnobDriver::eEasingLinear;
     // The easing curve, for eEasingCurve; null keeps the driver's.
     std::shared_ptr<const Curve> curve;
@@ -166,7 +180,27 @@ KnobDriverPtr makeDriver(const std::string& variable,
                          double start,
                          double end,
                          KnobDriver::EasingEnum easing,
-                         const Curve* curve);
+                         const Curve* curve,
+                         const Curve* startCurve = NULL,
+                         const Curve* endCurve = NULL);
+
+/**
+ * @brief How a spin box shows a driver's start or end at time: keyed there, animated, or not.
+ **/
+AnimationLevelEnum rangeAnimationLevel(const KnobDriverPtr& driver,
+                                       bool end,
+                                       double time);
+
+/**
+ * @brief The Set Key, Remove Key and Remove animation menu of the start or end of the driver of
+ * dimension, or of every driven one for -1, at the knob's current time; each entry is one
+ * undoable edit.
+ **/
+void showRangeKeyMenu(Gui* gui,
+                      const KnobIPtr& knob,
+                      int dimension,
+                      bool end,
+                      QWidget* parent);
 
 /**
  * @brief Drives the dimension of the knob, or all of them for -1, from the nearest loop's
@@ -291,6 +325,13 @@ public Q_SLOTS:
 
     void refreshPreview();
 
+    /**
+     * @brief Shows start and end at the current time, and whether they are keyed there.
+     **/
+    void refreshRange();
+
+    void onKnobValueChanged();
+
 private Q_SLOTS:
 
     void onVariableChanged(int index);
@@ -300,6 +341,8 @@ private Q_SLOTS:
     void onEasingChanged(int index);
     void onEditCurveClicked();
     void onContextMenuRequested(const QPoint& pos);
+    void onStartMenuRequested(const QPoint& pos);
+    void onEndMenuRequested(const QPoint& pos);
 
 protected:
     virtual void showEvent(QShowEvent* e) OVERRIDE FINAL;

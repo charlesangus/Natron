@@ -1104,17 +1104,51 @@ AnimatedParam::getDriverVariable(int dimension) const
 double
 AnimatedParam::getDriverStart(int dimension) const
 {
-    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+    KnobIPtr knob = _knob.lock();
 
-    return driver ? driver->getStart() : 0.;
+    return knob ? getDriverStartAtTime(knob->getCurrentTime(), dimension) : 0.;
 }
 
 double
 AnimatedParam::getDriverEnd(int dimension) const
 {
+    KnobIPtr knob = _knob.lock();
+
+    return knob ? getDriverEndAtTime(knob->getCurrentTime(), dimension) : 0.;
+}
+
+double
+AnimatedParam::getDriverStartAtTime(double time,
+                                    int dimension) const
+{
     KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
 
-    return driver ? driver->getEnd() : 0.;
+    return driver ? driver->getStartAt(time) : 0.;
+}
+
+double
+AnimatedParam::getDriverEndAtTime(double time,
+                                  int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return driver ? driver->getEndAt(time) : 0.;
+}
+
+int
+AnimatedParam::getDriverStartKeyCount(int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return (driver && driver->getStartCurve()) ? driver->getStartCurve()->getKeyFramesCount() : 0;
+}
+
+int
+AnimatedParam::getDriverEndKeyCount(int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return (driver && driver->getEndCurve()) ? driver->getEndCurve()->getKeyFramesCount() : 0;
 }
 
 QString

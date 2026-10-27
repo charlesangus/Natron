@@ -306,8 +306,19 @@ public:
     bool removeDriver(int dimension = -1);
     bool hasDriver(int dimension = 0) const;
     QString getDriverVariable(int dimension = 0) const;
+    /**
+     * @brief The driver's start and end at the current frame.
+     **/
     double getDriverStart(int dimension = 0) const;
     double getDriverEnd(int dimension = 0) const;
+    double getDriverStartAtTime(double time, int dimension = 0) const;
+    double getDriverEndAtTime(double time, int dimension = 0) const;
+
+    /**
+     * @brief The number of keys on the driver's start or end, 0 for a constant one.
+     **/
+    int getDriverStartKeyCount(int dimension = 0) const;
+    int getDriverEndKeyCount(int dimension = 0) const;
     QString getDriverEasing(int dimension = 0) const;
 
     bool setInterpolationAtTime(double time, Natron::KeyframeTypeEnum interpolation, int dimension = 0);

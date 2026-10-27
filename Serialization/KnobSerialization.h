@@ -101,12 +101,18 @@ struct KnobDriverSerialization {
     std::string easing;
     std::optional<CurveSerialization> curve;
 
+    // Present when start or end is keyed over time.
+    std::optional<CurveSerialization> startCurve;
+    std::optional<CurveSerialization> endCurve;
+
     KnobDriverSerialization()
         : variable()
         , start(0.)
         , end(1.)
         , easing()
         , curve()
+        , startCurve()
+        , endCurve()
     {
     }
 

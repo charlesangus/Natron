@@ -202,15 +202,15 @@ TEST_F(PremultAbsenceTest, ReportedOutputPremultIsDiscarded)
 
     ASSERT_TRUE(setKnobValue(upstream, kNatronTestPremultProbeParamReported, kNatronTestPremultProbeReportedPreMultipliedID));
     NodeMetadataConstPtr upstreamBefore, downstreamBefore;
-    ASSERT_TRUE(upstreamBefore = upstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
-    ASSERT_TRUE(downstreamBefore = downstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
+    ASSERT_TRUE(bool(upstreamBefore = upstream->getEffectInstance()->getMetadata(1., ViewIdx(0))));
+    ASSERT_TRUE(bool(downstreamBefore = downstream->getEffectInstance()->getMetadata(1., ViewIdx(0))));
     ProbeReading before;
     ASSERT_TRUE(readProbe(downstream, &before));
 
     ASSERT_TRUE(setKnobValue(upstream, kNatronTestPremultProbeParamReported, kNatronTestPremultProbeReportedOpaqueID));
     NodeMetadataConstPtr upstreamAfter, downstreamAfter;
-    ASSERT_TRUE(upstreamAfter = upstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
-    ASSERT_TRUE(downstreamAfter = downstream->getEffectInstance()->getMetadata(1., ViewIdx(0)));
+    ASSERT_TRUE(bool(upstreamAfter = upstream->getEffectInstance()->getMetadata(1., ViewIdx(0))));
+    ASSERT_TRUE(bool(downstreamAfter = downstream->getEffectInstance()->getMetadata(1., ViewIdx(0))));
     ProbeReading after;
     ASSERT_TRUE(readProbe(downstream, &after));
 

@@ -1,8 +1,9 @@
 # ToneEqualizer
 
 Tolerance: against darktable's export of the same linear Rec. 709 source, the whole frame, relative
-to the reference's mean level: a mean of 1e-3 and a max of 1e-2, with no pixel over the max except
-under Mask Quantization, which may put 100 of 49152 pixels over it
+to the reference's mean level, each sample's error beyond the half float reference's rounding: a
+mean of 1e-3 and a max of 1e-2, with no pixel over the max except under Mask Quantization, which
+may put 100 of 12288 pixels over it
 (`Tests/Native/NativeToneEqualizer_Test.cpp`, `MatchesDarktable`). GPU against CPU: 1e-3 relative
 for Result and Mask; Mask Exposure Histogram Zones a mean and max of 1e-3 with 16 pixels over
 (`Tests/Native/NativeToneEqualizerGpu_Test.cpp`).

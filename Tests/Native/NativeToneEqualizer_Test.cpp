@@ -527,7 +527,8 @@ const ReferenceJob kReferenceJobs[] = {
     { "toneequal-quantization.tif", eDetailsEigf, eEstimatorNorm2, 0., 0., 0., 1, 1., 5., 0.5, 100 },
 };
 
-// Tolerance: in Engine/Nodes/Color/docs/ToneEqualizer.md.
+// Tolerance: in Engine/Nodes/Color/docs/ToneEqualizer.md. The references are half float, so each
+// sample's error is taken beyond their rounding.
 const double kReferenceMean = 1e-3;
 const double kReferenceMax = 1e-2;
 
@@ -594,7 +595,7 @@ TEST_F(NativeToneEqualizerTest, MatchesDarktable)
                 double pixelMax = 0.;
                 for (int c = 0; c < 3; ++c) {
                     const double want = expected[((std::size_t)row * width + x) * 3 + c];
-                    const double diff = std::fabs((double)rawTestPlaneValue(plane, x, y, c) - want);
+                    const double diff = RawReference::halfFloatError(rawTestPlaneValue(plane, x, y, c), want);
                     sum += diff;
                     level += std::fabs(want);
                     pixelMax = std::max(pixelMax, diff);

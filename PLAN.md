@@ -161,8 +161,8 @@ future core work has solid ground to build on.
 | M229 | 3D Viewer Guides And Display | doing | M228 | bosley-native-nodes | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
 | M230 | 3D Transform Widgets | doing | M226, M229 | bosley-native-nodes | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
 | M231 | Scene Graph Panel | doing | M229 | bosley-native-nodes | E9 | [M231-scene-graph-panel.md](PLAN/MILESTONES/M231-scene-graph-panel.md) |
-| M232 | Scene Selection To Nodes | todo | M226, M231 |  | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
-| M233 | Live Node Textures | todo | M19, M20 |  | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
+| M232 | Scene Selection To Nodes | doing | M226, M231 | bosley-native-nodes | E9 | [M232-scene-selection-to-nodes.md](PLAN/MILESTONES/M232-scene-selection-to-nodes.md) |
+| M233 | Live Node Textures | doing | M19, M20 | bosley-native-nodes | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | todo | M227, M233 |  | E9 | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | todo | M226 |  | E9 | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | doing | M226 | bosley-native-nodes | E9 | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
@@ -170,7 +170,7 @@ future core work has solid ground to build on.
 | M238 | EdgeExtend Options | todo | M123 |  | E3 | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | doing | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | doing | - | gpu | E14 | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
-| M241 | Up Axis And Units Policy | todo | M226 |  | E9 | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
+| M241 | Up Axis And Units Policy | doing | M226 | bosley-native-nodes | E9 | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
 | M242 | Cache Invalidation Audit | done | M178, M185 | bosley-native-nodes | E14 | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
 | M243 | Startup Pane Paint On NVIDIA | todo | - |  | E10 | [M243-startup-pane-paint-on-nvidia.md](PLAN/MILESTONES/M243-startup-pane-paint-on-nvidia.md) |
 | M244 | NVIDIA Test Fixes | todo | M239 |  | E5 | [M244-nvidia-test-fixes.md](PLAN/MILESTONES/M244-nvidia-test-fixes.md) |
@@ -288,7 +288,7 @@ future core work has solid ground to build on.
 | M191 | Native VectorBlur | todo | M120, M137 |  | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | done | M167 |  | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
 | M192 | Reliable Pipe Pick-Up | done | - |  | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
-| M193 | Pipe Hint Highlight Colour | todo | M176 |  | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
+| M193 | Pipe Hint Highlight Colour | doing | M176 | bosley-native-nodes | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
 | M194 | Kiss Connections | todo | M192, M193 |  | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
 | M195 | Shake And Cut Disconnect | todo | M194 |  | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
 | M196 | Copy-Compute Contention | doing | M156 | gpu | E5 | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
@@ -319,7 +319,7 @@ future core work has solid ground to build on.
 | M221 | Neural Optical Flow | todo | M217, M203, M204 |  | E16 | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
 | M223 | Read And Write Knob Cleanup | todo | M167 |  | E3 | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
-| M224 | Fluid Roto And RotoPaint Interaction | todo | M146 |  | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
+| M224 | Fluid Roto And RotoPaint Interaction | doing | M146 | bosley-native-nodes | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
 | M260 | Cache Invalidation Follow-ups | doing | M242 | bosley-native-nodes | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | doing | M163 | bosley-native-nodes | E6 | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |

@@ -27,9 +27,11 @@
 
 #include "Engine/Nodes/Scene/SceneOps.h"
 
+#include <algorithm>
+
 NATRON_NAMESPACE_ENTER
 
-SceneStage::SceneStage()
+SceneStage::SceneStage(bool foldable)
 {
     if (!SceneOps::checkUsdRuntime(nullptr)) {
         return;
@@ -41,7 +43,13 @@ SceneStage::SceneStage()
     // The root carries every metadata field from the start, so later syncs only rewrite the
     // fields that change.
     SceneOps::writeRootMetadata(_root, _metadata, nullptr);
-    _stage = SceneOps::openStage(_root);
+    if (foldable) {
+        _session = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-session");
+        if (!_session) {
+            return;
+        }
+    }
+    _stage = SceneOps::openStage(_root, _session);
 }
 
 SceneStage::~SceneStage()
@@ -236,5 +244,109 @@ SceneStage::hasPreviewTransforms() const
 {
     return !_preview.empty();
 }
+
+bool
+SceneStage::isFoldable() const
+{
+    return bool(_stage) && bool(_session);
+}
+
+const std::set<PXR_NS::SdfPath>&
+SceneStage::getFoldedPrims() const
+{
+    return _folded;
+}
+
+bool
+SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
+{
+    if (!isFoldable()) {
+        return false;
+    }
+    std::set<PXR_NS::SdfPath> wanted;
+    for (const PXR_NS::SdfPath& path : paths) {
+        if (path.IsPrimPath() && path.IsAbsolutePath()) {
+            wanted.insert(path);
+        }
+    }
+    if (wanted == _folded) {
+        return false;
+    }
+
+    {
+        PXR_NS::SdfChangeBlock block;
+        for (const PXR_NS::SdfPath& path : _folded) {
+            if (wanted.count(path)) {
+                continue;
+            }
+            PXR_NS::SdfPrimSpecHandle spec = _session->GetPrimAtPath(path);
+            if (!spec) {
+                continue;
+            }
+            for (const PXR_NS::TfToken& name : { PXR_NS::UsdGeomTokens->modelApplyDrawMode, PXR_NS::UsdGeomTokens->modelDrawMode }) {
+                const PXR_NS::SdfPropertySpecHandle property = spec->GetPropertyAtPath(path.AppendProperty(name));
+                if (property) {
+                    spec->RemoveProperty(property);
+                }
+            }
+            spec->ClearInfo(PXR_NS::UsdTokens->apiSchemas);
+        }
+        for (const PXR_NS::SdfPath& path : wanted) {
+            if (_folded.count(path)) {
+                continue;
+            }
+            // Overs all the way down: a fold on a prim the scene does not have defines nothing.
+            PXR_NS::SdfPrimSpecHandle spec = PXR_NS::SdfCreatePrimInLayer(_session, path);
+            if (!spec) {
+                continue;
+            }
+            PXR_NS::SdfTokenListOp schemas;
+            schemas.SetPrependedItems(PXR_NS::TfTokenVector(1, PXR_NS::TfToken("GeomModelAPI")));
+            spec->SetInfo(PXR_NS::UsdTokens->apiSchemas, PXR_NS::VtValue(schemas));
+            PXR_NS::SdfAttributeSpecHandle apply = PXR_NS::SdfAttributeSpec::New(spec, PXR_NS::UsdGeomTokens->modelApplyDrawMode, PXR_NS::SdfValueTypeNames->Bool,
+                                                                                 PXR_NS::SdfVariabilityUniform);
+            if (apply) {
+                apply->SetDefaultValue(PXR_NS::VtValue(true));
+            }
+            PXR_NS::SdfAttributeSpecHandle mode = PXR_NS::SdfAttributeSpec::New(spec, PXR_NS::UsdGeomTokens->modelDrawMode, PXR_NS::SdfValueTypeNames->Token,
+                                                                                PXR_NS::SdfVariabilityUniform);
+            if (mode) {
+                mode->SetDefaultValue(PXR_NS::VtValue(PXR_NS::UsdGeomTokens->bounds));
+            }
+        }
+        // Drop the overs left holding nothing, deepest first, so their parents empty out in turn.
+        std::vector<PXR_NS::SdfPath> specPaths;
+        _session->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&specPaths](const PXR_NS::SdfPath& specPath) {
+            if (specPath.IsPrimPath()) {
+                specPaths.push_back(specPath);
+            }
+        });
+        std::sort(specPaths.begin(), specPaths.end(), [](const PXR_NS::SdfPath& a, const PXR_NS::SdfPath& b) {
+            return a.GetPathElementCount() > b.GetPathElementCount();
+        });
+        for (const PXR_NS::SdfPath& specPath : specPaths) {
+            PXR_NS::SdfPrimSpecHandle spec = _session->GetPrimAtPath(specPath);
+            if (!spec || wanted.count(specPath) || !spec->GetNameChildren().empty() || !spec->GetProperties().empty()) {
+                continue;
+            }
+            const PXR_NS::SdfPrimSpecHandle parent = spec->GetRealNameParent();
+            if (parent) {
+                parent->RemoveNameChild(spec);
+            } else {
+                _session->RemoveRootPrim(spec);
+            }
+        }
+    }
+
+    // Load rules, not Load/Unload calls: a fold kept inside an unfolded branch stays unloaded.
+    PXR_NS::UsdStageLoadRules rules = PXR_NS::UsdStageLoadRules::LoadAll();
+    for (const PXR_NS::SdfPath& path : wanted) {
+        rules.Unload(path);
+    }
+    _stage->SetLoadRules(rules);
+    _folded.swap(wanted);
+
+    return true;
+} // SceneStage::setFoldedPrims
 
 NATRON_NAMESPACE_EXIT

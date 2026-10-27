@@ -152,6 +152,7 @@ createScenePrimPathKnob(KnobHolder* holder,
     KnobStringPtr knob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Prim Path"));
 
     knob->setName(kSceneParamPrimPath);
+    knob->setPrimPathHint(KnobString::ePrimPathHintPath);
     knob->setHintToolTip(toolTip);
     knob->setAnimationEnabled(false);
     knob->setDefaultValue(defaultPath);

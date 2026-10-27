@@ -1016,6 +1016,8 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
         return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
     };
 
+    _sceneLayerMemo.setOwner(getNode());
+
     return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage, keyStillValid);
 }
 

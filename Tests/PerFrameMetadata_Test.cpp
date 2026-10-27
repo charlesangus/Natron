@@ -693,10 +693,10 @@ TEST_F(PerFrameMetadataTest, PixelAspectRatioWarningFollowsTheFrame)
     NodePtr sourceA, sourceB;
     NodePtr switchNode = createKeyedSwitch(&sourceA, &sourceB);
     NodePtr other = createSource(4);
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
     ASSERT_TRUE(switchNode && other && merge);
-    connectNodes(other, merge, kMergeInputB, true);
-    connectNodes(switchNode, merge, kMergeInputA, true);
+    connectNodes(other, merge, kNativeMergeInputB, true);
+    connectNodes(switchNode, merge, kNativeMergeInputA, true);
     // Set once connected: inputs whose ratios differ are refused a connection.
     KnobDoublePtr par = metadataSourceOf(sourceB)->getParKnob();
     ASSERT_TRUE(bool(par));

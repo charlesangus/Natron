@@ -68,6 +68,7 @@
 #include "Engine/Nodes/Keyer/HSVKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
@@ -124,6 +125,7 @@ gpuCapableIds()
         PLUGINID_NATRON_RAWCOLORCALIBRATION,
         PLUGINID_NATRON_RAWHOTPIXELS,
         PLUGINID_NATRON_DISSOLVE,
+        PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_IBLUR,
         PLUGINID_NATRON_IERODE,

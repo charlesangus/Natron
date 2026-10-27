@@ -51,7 +51,6 @@
 #include "Serialization/SerializationFwd.h"
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
-#define PLUGINID_OFX_MERGE        "net.sf.openfx.MergePlugin"
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
 #define PLUGINID_OFX_DOTEXAMPLE   "net.sf.openfx.dotexample"
 #define PLUGINID_OFX_RADIAL       "net.sf.openfx.Radial"
@@ -2725,6 +2724,19 @@ private:
 
     bool isResolvingLayersPassThrough() const;
 
+    /**
+     * @brief Whether the output follows the layer knob and its selection processes no channel,
+     * which makes the effect an identity of its pass-through input (see isIdentity_public()).
+     **/
+    bool processesNoChannel(double time, ViewIdx view) const;
+
+    /**
+     * @brief Whether the output follows the layer knob and its selection resolves to at least one
+     * layer but to no channel on any of them. Unlike processesNoChannel(), a selection resolving
+     * to no layer is excluded: it falls back to the metadata planes, processed on every channel.
+     **/
+    bool selectsOnlyLayersWithNoChannel(double time, ViewIdx view) const;
+
     ComponentsNeededResultsPtr getPresentLayersResults(double time, ViewIdx view, int inputNb);
 
     void computeComponentsNeededAndProduced(double time, ViewIdx view,
@@ -2969,6 +2981,46 @@ protected:
                                     std::list<ImageLayerDesc>* /*layers*/)
     {
         return false;
+    }
+
+    /**
+     * @brief Adds to comps the layers the effect reads from its inputs beside those
+     * getComponentsNeededDefault() plans from the layer knob, mask and divisor, so that the request
+     * pass plans them upstream. Called at the end of getComponentsNeededDefault(), which is all a
+     * non-multi-planar effect gets: getComponentsNeededAndProduced() is only called on a
+     * multi-planar one. producedPlanes are the planes addProducedPlanes() added to the output.
+     **/
+    virtual void addInputLayersNeeded(double /*time*/,
+                                      ViewIdx /*view*/,
+                                      const std::list<ImageLayerDesc>& /*producedPlanes*/,
+                                      EffectInstance::ComponentsNeededMap* /*comps*/)
+    {
+    }
+
+    /**
+     * @brief Adds to planes the planes a non-multi-planar effect renders beside those its layer
+     * knob selects. getComponentsNeededDefault() makes each one an output plane and a plane of
+     * every non-mask input, so that the effect renders it alone, reading it from those inputs,
+     * as it renders a selected plane. None by default.
+     **/
+    virtual void addProducedPlanes(double /*time*/,
+                                   ViewIdx /*view*/,
+                                   std::list<ImageLayerDesc>* /*planes*/)
+    {
+    }
+
+    /**
+     * @brief Sets, for output planes of an effect without a layer knob that chooses its planes
+     * and channels with a knob of its own, the channels it processes on each, as a layer knob's
+     * channel buttons do: every other channel of such a plane passes through from the
+     * pass-through input. outputPlanes are every plane the effect renders, addProducedPlanes()'
+     * among them. A plane left out of the map is processed on every channel. Nothing by default.
+     **/
+    virtual void addProducedPlanesChannels(double /*time*/,
+                                           ViewIdx /*view*/,
+                                           const std::list<ImageLayerDesc>& /*outputPlanes*/,
+                                           ProcessChannelsPerPlaneMap* /*processChannelsPerPlane*/)
+    {
     }
 
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)

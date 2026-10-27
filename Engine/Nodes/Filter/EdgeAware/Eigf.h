@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h"
 #include "Engine/Nodes/Filter/EdgeAware/GuidedFilter.h"
 
@@ -51,11 +54,24 @@ struct DericheCoefficients {
     float a0, a1, a2, a3, b1, b2, coefp, coefn;
 };
 
-/// _compute_gauss_params() of order 0 for sigma.
+/// The order-0 coefficients for sigma.
 DericheCoefficients dericheCoefficients(float sigma);
 
 /**
- * @brief dt_gaussian_blur() of order 0: the Deriche recursive gaussian of sigma, in out, over a
+ * @brief sigma capped at 16 times the image's larger side. A gaussian that wide is flat across the
+ * image well below float precision, while the coefficients of a much larger one lose all precision
+ * and turn NaN.
+ **/
+inline float
+clampGaussianSigma(float sigma,
+                   int width,
+                   int height)
+{
+    return std::fmin(sigma, 16.f * (float)std::max(width, height));
+}
+
+/**
+ * @brief The order-0 Deriche recursive gaussian of sigma, in out, over a
  * width x height image of channels interleaved floats (1 to 4). Every input sample is clamped
  * per channel to [min[c], max[c]] first. in and out must not overlap.
  **/
@@ -70,7 +86,7 @@ void recursiveGaussianBlur(const float* in,
                            const ParallelFor& parallel);
 
 /**
- * @brief darktable's fast_eigf_surface_blur(): in place, on a single-channel positive image.
+ * @brief In place, on a single-channel positive image.
  *
  * The statistics are taken on the image subsampled by clamp(sigma, 1, 4) with a gaussian of
  * max(sigma / subsampling, 1), then upsampled. Each of iterations blends linearly, the last one

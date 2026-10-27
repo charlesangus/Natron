@@ -99,6 +99,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
@@ -1582,6 +1583,43 @@ Node::getHashMarkCount() const
     return _imp->hashDirtyGeneration.load() + hashEpoch().load();
 }
 
+CleanHashSnapshot::CleanHashSnapshot(const NodePtr& node,
+                                     const RenderContextPtr& context)
+    : _node(node)
+    , _contextKey(context ? context->hash() : 0)
+    , _marks(node ? node->getHashMarkCount() : 0)
+    , _bindings(node ? context : RenderContextPtr())
+{
+}
+
+bool
+CleanHashSnapshot::allowsStoreUnder(U64 hash) const
+{
+    if (!_node) {
+        return false;
+    }
+    // The hash check comes first: a recompute it relies on may have read a value whose write
+    // has not marked yet, and that write began before the in-flight check below.
+    U64 current = 0;
+    if (!_node->getHashValueIfUpToDate(&current) && (hashComputeDepth == 0) && (_node->getHashMarkCount() == _marks)) {
+        // Marked before construction and recomputed by no one since, as when the state moved and
+        // came back between a frame's setup and its render. With a mark raised since, the store
+        // is refused whatever the hash, so an edit in progress costs no recompute.
+        (void)_node->getHashValue();
+    }
+    if (!_node->getHashValueIfUpToDate(&current) || (mixRenderContextKey(current, _contextKey) != hash)) {
+        return false;
+    }
+    if (!_bindings.identitiesCurrent()) {
+        return false;
+    }
+    if (!KnobContentWrite::noneInFlight()) {
+        return false;
+    }
+
+    return (_node->getHashMarkCount() == _marks) && _bindings.marksUnmoved();
+}
+
 bool
 Node::isHashDirty() const
 {
@@ -3023,13 +3061,13 @@ Node::makeInfoForInput(int inputNumber) const
     }
     {
         double first = 1., last = 1.;
-        input->getFrameRange_public(getHashValue(), &first, &last);
+        input->getFrameRange_public(input->getRenderHash(), &first, &last);
         ss << "<b>" << tr("Frame range:").toStdString() << "</b> <font color=#c8c8c8>" << first << " - " << last << "</font><br />";
     }
     {
         RectD rod;
         bool isProjectFormat;
-        StatusEnum stat = input->getRegionOfDefinition_public(getHashValue(),
+        StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(),
                                                               time,
                                                               RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
         if (stat != eStatusFailed) {

@@ -193,7 +193,7 @@ void gf_colour_apply(uint3 tid : SV_DispatchThreadID)
     outBuf[k] = (sum > params.maxValue) ? params.maxValue : ((sum < params.minValue) ? params.minValue : sum);
 }
 
-// variance_analyse()'s inputs: guide, target, guide^2 and guide x target.
+// The variance analysis inputs: guide, target, guide^2 and guide x target.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void gf_grey_prep(uint3 tid : SV_DispatchThreadID)
@@ -211,7 +211,7 @@ void gf_grey_prep(uint3 tid : SV_DispatchThreadID)
     aBuf[4 * k + 3] = gm;
 }
 
-// variance_analyse()'s fit from the box means of its inputs, eps being the feathering.
+// The a and b fit from the box means of its inputs, eps being the feathering.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void gf_grey_ab(uint3 tid : SV_DispatchThreadID)
@@ -252,7 +252,7 @@ void gf_grey_apply(uint3 tid : SV_DispatchThreadID)
     outBuf[k] = v;
 }
 
-// apply_linear_blending() and its geometric-mean variant, in place on outBuf with a and b from
+// Linear blending and its geometric-mean variant, in place on outBuf with a and b from
 // bBuf. With kBlendKeepNonFinite a non-finite sample is left as it is.
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -277,7 +277,7 @@ void gf_blend(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// quantize(): exposure steps of params.sampling EV, clamped, from targetBuf into outBuf; width is
+// Exposure steps of params.sampling EV, clamped, from targetBuf into outBuf; width is
 // the sample count of a row. With kQuantizeFinite a non-finite sample reads as 0.
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -318,7 +318,7 @@ void gf_quantize(uint3 tid : SV_DispatchThreadID)
     outBuf[k] = fmaxCpu(fminCpu(q, params.maxValue), params.minValue);
 }
 
-// interpolate_bilinear() from targetBuf (widthIn wide) into outBuf (width x height), params.channels
+// Bilinear resampling from targetBuf (widthIn wide) into outBuf (width x height), params.channels
 // floats a pixel, with the host's sample positions and weights.
 [shader("compute")]
 [numthreads(16, 16, 1)]

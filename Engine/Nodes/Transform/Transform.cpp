@@ -413,6 +413,51 @@ TransformOp::costHint(const Params& params,
     return hint;
 }
 
+void
+resetTransformCenter(KnobHolder* holder,
+                     const TransformOp& op,
+                     const RectD& sourceRoD,
+                     double time)
+{
+    KnobDoublePtr center = op.center.lock();
+    KnobDoublePtr translate = op.translate.lock();
+
+    if (!center) {
+        return;
+    }
+    const TransformMath::TransformParams p = bakeParams(op, time, ViewIdx(0)).transform;
+    double sx, sy;
+    TransformMath::effectiveScale(p.scaleX, p.scaleY, p.scaleUniform, &sx, &sy);
+    const double rot = TransformMath::toRadians(p.rotate);
+    const Mat3 rInv = TransformMath::rotation(-rot) * TransformMath::skewXY(p.skewX, p.skewY, p.skewOrderYX) * TransformMath::scale(sx, sy);
+
+    const double newCenterX = (sourceRoD.x1 + sourceRoD.x2) / 2;
+    const double newCenterY = (sourceRoD.y1 + sourceRoD.y2) / 2;
+    if ((newCenterX == p.centerX) && (newCenterY == p.centerY)) {
+        return;
+    }
+    double newTranslateX = 0.;
+    double newTranslateY = 0.;
+    if (translate) {
+        const double dxrot = newCenterX - p.centerX;
+        const double dyrot = newCenterY - p.centerY;
+        TransformMath::Point3 dRot = rInv * TransformMath::Point3(dxrot, dyrot, 1.);
+        if (dRot.z != 0) {
+            dRot.x /= dRot.z;
+            dRot.y /= dRot.z;
+        }
+        newTranslateX = p.translateX + dRot.x - dxrot;
+        newTranslateY = p.translateY + dRot.y - dyrot;
+    }
+
+    holder->beginChanges();
+    center->setValues(newCenterX, newCenterY, ViewSpec::all(), eValueChangedReasonPluginEdited);
+    if (translate) {
+        translate->setValues(newTranslateX, newTranslateY, ViewSpec::all(), eValueChangedReasonPluginEdited);
+    }
+    holder->endChanges();
+} // resetTransformCenter
+
 template <bool MASKED>
 TransformImageNode<MASKED>::TransformImageNode(NodePtr node)
     : Base(node)
@@ -649,10 +694,7 @@ template <bool MASKED>
 void
 TransformImageNode<MASKED>::resetCenter(double time)
 {
-    KnobDoublePtr center = this->op().center.lock();
-    KnobDoublePtr translate = this->op().translate.lock();
-
-    if (!center || !this->getInput(this->getSourceInput())) {
+    if (!this->op().center.lock() || !this->getInput(this->getSourceInput())) {
         return;
     }
     RectD rod;
@@ -666,38 +708,7 @@ TransformImageNode<MASKED>::resetCenter(double time)
         rod = getProjectRect();
     }
 
-    TransformMath::TransformParams p;
-    getTransformParams(time, ViewIdx(0), &p);
-    double sx, sy;
-    TransformMath::effectiveScale(p.scaleX, p.scaleY, p.scaleUniform, &sx, &sy);
-    const double rot = TransformMath::toRadians(p.rotate);
-    const Mat3 rInv = TransformMath::rotation(-rot) * TransformMath::skewXY(p.skewX, p.skewY, p.skewOrderYX) * TransformMath::scale(sx, sy);
-
-    const double newCenterX = (rod.x1 + rod.x2) / 2;
-    const double newCenterY = (rod.y1 + rod.y2) / 2;
-    if ((newCenterX == p.centerX) && (newCenterY == p.centerY)) {
-        return;
-    }
-    double newTranslateX = 0.;
-    double newTranslateY = 0.;
-    if (translate) {
-        const double dxrot = newCenterX - p.centerX;
-        const double dyrot = newCenterY - p.centerY;
-        TransformMath::Point3 dRot = rInv * TransformMath::Point3(dxrot, dyrot, 1.);
-        if (dRot.z != 0) {
-            dRot.x /= dRot.z;
-            dRot.y /= dRot.z;
-        }
-        newTranslateX = p.translateX + dRot.x - dxrot;
-        newTranslateY = p.translateY + dRot.y - dyrot;
-    }
-
-    this->beginChanges();
-    center->setValues(newCenterX, newCenterY, ViewSpec::all(), eValueChangedReasonPluginEdited);
-    if (translate) {
-        translate->setValues(newTranslateX, newTranslateY, ViewSpec::all(), eValueChangedReasonPluginEdited);
-    }
-    this->endChanges();
+    resetTransformCenter(this, this->op(), rod, time);
 } // TransformImageNode::resetCenter
 
 template class TransformImageNode<false>;

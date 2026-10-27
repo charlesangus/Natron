@@ -527,7 +527,7 @@ TEST(EdgeAwareGpu, RecursiveGaussianBlur)
     unsigned seed = 600;
     for (const Size& s : kSizes) {
         for (int channels : { 1, 2, 4 }) {
-            for (float sigma : { 0.8f, 4.f, 25.f }) {
+            for (float sigma : { 0.8f, 4.f, 25.f, 1e9f }) {
                 // The data's own range, then a narrower one that clamps.
                 for (bool clamped : { false, true }) {
                     const std::vector<float> input = makeImage(s.width, s.height, channels, seed++, eImageRandom);
@@ -605,7 +605,7 @@ TEST(EdgeAwareGpu, EigfSurfaceBlur)
     unsigned seed = 800;
     for (const Size& s : kSizes) {
         for (ImageKind kind : { eImageSmooth, eImageNonFinite }) {
-            for (float sigma : { 1.f, 3.f, 10.f }) {
+            for (float sigma : { 1.f, 3.f, 10.f, 1e9f }) {
                 for (int iterations : { 1, 2 }) {
                     for (GuidedBlendingEnum blending : { eGuidedBlendingLinear, eGuidedBlendingGeomean }) {
                         for (float quantization : { 0.f, 1.f }) {
@@ -743,6 +743,96 @@ TEST(EdgeAwareGpu, Bspline)
                 ASSERT_TRUE(run.download(lf, samples, got));
                 expectMatch(wantLF, got, kTolerance, what.str() + " LF");
             }
+        }
+    }
+}
+
+// A radius or tap spacing of the largest int must match the CPU, which clamps it to the image.
+TEST(EdgeAwareGpu, HugeRadiusMatchesTheCpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const int huge = std::numeric_limits<int>::max();
+    unsigned seed = 1100;
+    for (const Size& s : kSizes) {
+        const std::size_t pixels = (std::size_t)s.width * (std::size_t)s.height;
+        const std::vector<float> box = makeImage(s.width, s.height, 4, seed++, eImageRandom);
+        const std::vector<float> colourGuide = makeImage(s.width, s.height, 3, seed++, eImageRandom);
+        const std::vector<float> guide = makeImage(s.width, s.height, 1, seed++, eImageSmooth);
+        const std::vector<float> target = makeImage(s.width, s.height, 1, seed++, eImageSmooth);
+        std::vector<float> wantBox = box;
+        boxMean(wantBox.data(), s.width, s.height, 4, huge, 2, eBoxSummationKahan, kSerial);
+        std::vector<float> wantColour(pixels);
+        guidedFilter(colourGuide.data(), 3, target.data(), wantColour.data(), s.width, s.height, huge, 0.1f, 1.f, 0.f, 1.f, kSerial);
+        std::vector<float> wantFast(pixels);
+        fastGuidedFilterGrey(guide.data(), target.data(), wantFast.data(), s.width, s.height, huge, 1e-2f, kFastGuidedSubsampling, kSerial);
+        std::vector<float> wantBlur(4 * pixels);
+        blur2DBspline(box.data(), wantBlur.data(), s.width, s.height, huge, true, kSerial);
+
+        DeviceRun run(*runtime);
+        gpu::GpuBuffer* boxBuf = run.upload(box);
+        gpu::GpuBuffer* colourBuf = run.upload(colourGuide);
+        gpu::GpuBuffer* guideBuf = run.upload(guide);
+        gpu::GpuBuffer* targetBuf = run.upload(target);
+        gpu::GpuBuffer* colourOut = run.output(pixels);
+        gpu::GpuBuffer* fastOut = run.output(pixels);
+        gpu::GpuBuffer* blurOut = run.output(4 * pixels);
+        ASSERT_TRUE(boxBuf && colourBuf && guideBuf && targetBuf && colourOut && fastOut && blurOut);
+        ASSERT_TRUE(run.record([&](gpu::GpuRecordContext& ctx) {
+            gpu::GpuStatus status = recordBlur2DBspline(ctx, *boxBuf, *blurOut, s.width, s.height, huge, true);
+            if (status) {
+                status = recordGuidedFilter(ctx, *colourBuf, 3, *targetBuf, *colourOut, s.width, s.height, huge, 0.1f, 1.f, 0.f, 1.f);
+            }
+            if (status) {
+                status = recordFastGuidedFilterGrey(ctx, *guideBuf, *targetBuf, *fastOut, s.width, s.height, huge, 1e-2f, kFastGuidedSubsampling);
+            }
+            if (status) {
+                ctx.computeBarrier();
+                status = recordBoxMean(ctx, *boxBuf, s.width, s.height, 4, huge, 2, eBoxSummationKahan);
+            }
+
+            return status;
+        }));
+        std::vector<float> got;
+        ASSERT_TRUE(run.download(boxBuf, box.size(), got));
+        expectMatch(wantBox, got, kTolerance, sizeName(s) + " box mean");
+        ASSERT_TRUE(run.download(colourOut, pixels, got));
+        expectMatch(wantColour, got, kTolerance, sizeName(s) + " colour guided");
+        ASSERT_TRUE(run.download(fastOut, pixels, got));
+        expectMatch(wantFast, got, kTolerance, sizeName(s) + " fast guided");
+        ASSERT_TRUE(run.download(blurOut, 4 * pixels, got));
+        expectMatch(wantBlur, got, kTolerance, sizeName(s) + " B-spline blur");
+    }
+}
+
+TEST(EdgeAwareGpu, FastGuidedFilterBelowTwoSubsamplingIsThePlainOne)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    unsigned seed = 1200;
+    for (const Size& s : kSizes) {
+        const std::vector<float> guide = makeImage(s.width, s.height, 1, seed++, eImageSmooth);
+        const std::vector<float> target = makeImage(s.width, s.height, 1, seed++, eImageSmooth);
+        std::vector<float> want(guide.size());
+        guidedFilterGrey(guide.data(), target.data(), want.data(), s.width, s.height, 3, 1e-2f, kSerial);
+        for (int subsampling : { -3, 0, 1 }) {
+            DeviceRun run(*runtime);
+            gpu::GpuBuffer* g = run.upload(guide);
+            gpu::GpuBuffer* t = run.upload(target);
+            gpu::GpuBuffer* out = run.output(guide.size());
+            ASSERT_TRUE(g && t && out);
+            ASSERT_TRUE(run.record([&](gpu::GpuRecordContext& ctx) {
+                return recordFastGuidedFilterGrey(ctx, *g, *t, *out, s.width, s.height, 3, 1e-2f, subsampling);
+            }));
+            std::vector<float> got;
+            ASSERT_TRUE(run.download(out, guide.size(), got));
+            std::ostringstream what;
+            what << sizeName(s) << " subsampling " << subsampling;
+            expectMatch(want, got, kTolerance, what.str());
         }
     }
 }

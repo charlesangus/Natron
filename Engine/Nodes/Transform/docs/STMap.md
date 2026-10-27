@@ -18,9 +18,33 @@ pixels. The rows are one pixel wider than the window so that the result does not
 a tile ends. The impulse filter skips the Jacobian and takes the nearest pixel. There is no alpha
 coverage multiply and no UV unpremultiply.
 
+The optional Map input (input 3, after the Mask) scales how far each pixel moves: with c the
+centre of output pixel (x, y) and p the Source position its UV gives, the pixel samples
+`c + (p - c) * m`, m being the Map value. Map Channel picks one channel of any of the Map's layers
+(alpha by default) and Invert Map inverts it; the value is clamped to [0, 1] and remapped by Map
+Gamma and Map Response as in IBlur (`Engine/Nodes/Filter/docs/IBlur.md`). Where m is 0 the pixel
+samples its own centre exactly, so a black Map is an identity of the Source, non-finite UV
+included; where m is 1 the pixel samples p as without a Map; at 0.5 it goes half-way to its UV
+position. UV Alpha blacks a pixel out only where m is above 0: a pixel the Map keeps in place
+shows the Source whatever the UV's alpha. With the Map connected the region of definition also covers the Source's, where a black
+Map shows the Source untouched. With no Map connected the output is bit for bit the
+node's without the input.
+
+- The Map is sampled in output space, at the pixel being written, as the UV is. Outside its image
+  the Map reads as a black pixel, inverted and remapped like any other (the pixel stays in place unless
+  Invert Map is on).
+- The Jacobian takes the Map's gradient with the UV's, so the Map is read one pixel past the
+  render window. A hard Map edge between black and white tears the image along it when the UV
+  moves pixels far; soften the Map to bend the image instead.
+- STMap is a per-pixel warp: it never concatenates with transforms above or below it.
+- The GPU reads the Map as an extra input and remaps it with `mapremap.slang`, the CPU's remap
+  operation for operation.
+
 Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
 | STMap (STMap) | exact | `ParityTolerance::exact()` | Impulse filter: identity map, wrap modes, offset/scale against index arithmetic |
 | STMap (STMap) | resampling | `ParityTolerance::resampling()` | Filtered (cubic) identity map against the Source |
+| STMap (STMap) | exact | `ParityTolerance::exact()` | Map: a white Map against no Map, a black Map (impulse, UV Alpha on) against the Source, a Map of 0.5 and a per-pixel Map (impulse) against `Resampler::interpolate()` at `c + (p - c) * m` (`NativeIDistortAmount_Test.cpp`) |
+| STMap (STMap) | resampling | per filter, as without the Map | the GPU against the CPU with a Map, its remap knobs and UV Alpha (`NativeWarpGpu_Test.cpp`) |

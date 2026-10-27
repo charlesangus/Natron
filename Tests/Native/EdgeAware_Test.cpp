@@ -264,6 +264,34 @@ TEST(EdgeAware, BoxMeanMatchesBruteForce)
     }
 }
 
+// A radius past the image averages whole lines, so a huge one must give the extent's result and
+// size its scratch by the image, not the radius.
+TEST(EdgeAware, BoxMeanClampsAHugeRadiusToTheImage)
+{
+    const int width = 37;
+    const int height = 23;
+    const int huge = std::numeric_limits<int>::max();
+
+    for (int channels : { 1, 4 }) {
+        const std::vector<float> image = randomImage((std::size_t)width * height * channels, 11);
+        std::vector<float> clamped = image;
+        std::vector<float> got = image;
+        boxMean(clamped.data(), width, height, channels, std::max(width, height), 2, eBoxSummationKahan, kSerial);
+        boxMean(got.data(), width, height, channels, huge, 2, eBoxSummationKahan, kSerial);
+        EXPECT_EQ(maxAbsDiff(got, clamped), 0.) << channels;
+    }
+
+    const std::vector<float> image = randomImage((std::size_t)width * height, 13);
+    std::vector<float> clampedMean(image.size());
+    std::vector<float> clampedVariance(image.size());
+    std::vector<float> mean(image.size());
+    std::vector<float> variance(image.size());
+    boxMeanVariance(image.data(), width, height, width - 1, clampedMean.data(), clampedVariance.data(), kSerial);
+    boxMeanVariance(image.data(), width, height, huge, mean.data(), variance.data(), kSerial);
+    EXPECT_EQ(maxAbsDiff(mean, clampedMean), 0.);
+    EXPECT_EQ(maxAbsDiff(variance, clampedVariance), 0.);
+}
+
 TEST(EdgeAware, BoxMeanIterationsCompose)
 {
     const int width = 19;
@@ -483,6 +511,53 @@ TEST(EdgeAware, FastGuidedFilterFallsBackOnTinyImages)
     EXPECT_EQ(maxAbsDiff(fast, plain), 0.);
 }
 
+TEST(EdgeAware, GuidedFiltersClampAHugeRadiusToTheImage)
+{
+    const int width = 41;
+    const int height = 27;
+    const int extent = std::max(width, height);
+    const int huge = std::numeric_limits<int>::max();
+    const std::vector<float> colourGuide = randomImage((std::size_t)width * height * 3, 101);
+    const std::vector<float> guide = smoothImage(width, height, 16.f);
+    const std::vector<float> target = randomImage(guide.size(), 103, 0.05f, 1.f);
+    std::vector<float> clamped(guide.size());
+    std::vector<float> got(guide.size());
+
+    guidedFilter(colourGuide.data(), 3, target.data(), clamped.data(), width, height, extent - 1, 0.1f, 1.f, -10.f, 10.f, kSerial);
+    guidedFilter(colourGuide.data(), 3, target.data(), got.data(), width, height, huge, 0.1f, 1.f, -10.f, 10.f, kSerial);
+    EXPECT_EQ(maxAbsDiff(got, clamped), 0.);
+
+    guidedFilterGrey(guide.data(), target.data(), clamped.data(), width, height, extent - 1, 1e-2f, kSerial);
+    guidedFilterGrey(guide.data(), target.data(), got.data(), width, height, huge, 1e-2f, kSerial);
+    EXPECT_EQ(maxAbsDiff(got, clamped), 0.);
+
+    fastGuidedFilterGrey(guide.data(), target.data(), clamped.data(), width, height, extent, 1e-2f, kFastGuidedSubsampling, kSerial);
+    fastGuidedFilterGrey(guide.data(), target.data(), got.data(), width, height, huge, 1e-2f, kFastGuidedSubsampling, kSerial);
+    EXPECT_EQ(maxAbsDiff(got, clamped), 0.);
+
+    std::vector<float> clampedImage = guide;
+    std::vector<float> image = guide;
+    fastSurfaceBlur(clampedImage.data(), width, height, extent, 1e-2f, 2, eGuidedBlendingLinear, 0.f, 0.f, 1.f, kSerial);
+    fastSurfaceBlur(image.data(), width, height, huge, 1e-2f, 2, eGuidedBlendingLinear, 0.f, 0.f, 1.f, kSerial);
+    EXPECT_EQ(maxAbsDiff(image, clampedImage), 0.);
+}
+
+TEST(EdgeAware, FastGuidedFilterBelowTwoSubsamplingIsThePlainOne)
+{
+    const int width = 24;
+    const int height = 18;
+    const std::vector<float> guide = smoothImage(width, height, 12.f);
+    const std::vector<float> target = randomImage(guide.size(), 107);
+    std::vector<float> plain(guide.size());
+
+    guidedFilterGrey(guide.data(), target.data(), plain.data(), width, height, 3, 1e-2f, kSerial);
+    for (int subsampling : { -3, 0, 1 }) {
+        std::vector<float> fast(guide.size());
+        fastGuidedFilterGrey(guide.data(), target.data(), fast.data(), width, height, 3, 1e-2f, subsampling, kSerial);
+        EXPECT_EQ(maxAbsDiff(fast, plain), 0.) << subsampling;
+    }
+}
+
 TEST(EdgeAware, FastSurfaceBlurKeepsAFlatImageAndNonFiniteSamples)
 {
     const int width = 40;
@@ -542,6 +617,38 @@ TEST(EdgeAware, RecursiveGaussianKeepsAFlatImage)
     recursiveGaussianBlur(flat.data(), out.data(), width, height, 2, 4.f, min, max, kSerial);
     for (float v : out) {
         EXPECT_NEAR(v, 0.75f, 1e-5);
+    }
+}
+
+// A sigma far past the image is capped at 16 times its larger side, where the coefficients still
+// hold; uncapped, they turn NaN.
+TEST(EdgeAware, GaussianClampsAHugeSigmaToTheImage)
+{
+    const int width = 31;
+    const int height = 17;
+    const float capped = 16.f * std::max(width, height);
+    const std::vector<float> image = randomImage((std::size_t)width * height * 2, 113, 0.05f, 1.f);
+    const float min[2] = { 0.f, 0.f };
+    const float max[2] = { 1.f, 1.f };
+    std::vector<float> clamped(image.size());
+    std::vector<float> got(image.size());
+
+    recursiveGaussianBlur(image.data(), clamped.data(), width, height, 2, capped, min, max, kSerial);
+    recursiveGaussianBlur(image.data(), got.data(), width, height, 2, 1e9f, min, max, kSerial);
+    EXPECT_EQ(maxAbsDiff(got, clamped), 0.);
+    for (float v : got) {
+        ASSERT_TRUE(std::isfinite(v));
+    }
+
+    for (float quantization : { 0.f, 1.f }) {
+        std::vector<float> clampedImage = smoothImage(width, height, 8.f);
+        std::vector<float> blurred = clampedImage;
+        eigfSurfaceBlur(clampedImage.data(), width, height, capped, 0.01f, 2, eGuidedBlendingLinear, quantization, 0.01f, 1.f, kSerial);
+        eigfSurfaceBlur(blurred.data(), width, height, 1e9f, 0.01f, 2, eGuidedBlendingLinear, quantization, 0.01f, 1.f, kSerial);
+        EXPECT_EQ(maxAbsDiff(blurred, clampedImage), 0.) << quantization;
+        for (float v : blurred) {
+            ASSERT_TRUE(std::isfinite(v)) << quantization;
+        }
     }
 }
 
@@ -680,12 +787,53 @@ TEST(EdgeAware, BsplineRecomposesToTheInput)
     EXPECT_EQ(maxAbsDiff(lf, blurred), 0.);
 }
 
+// A tap spacing past the image clamps every tap to the edge, so a huge or overflowing one must give
+// the extent's result.
+TEST(EdgeAware, BsplineClampsAHugeSpacingToTheImage)
+{
+    const int width = 23;
+    const int height = 17;
+    const int extent = std::max(width, height);
+    const std::vector<float> image = randomImage((std::size_t)width * height * 4, 109, -0.5f, 1.5f);
+    std::vector<float> clamped(image.size());
+    std::vector<float> got(image.size());
+
+    blur2DBspline(image.data(), clamped.data(), width, height, extent, false, kSerial);
+    blur2DBspline(image.data(), got.data(), width, height, std::numeric_limits<int>::max(), false, kSerial);
+    EXPECT_EQ(maxAbsDiff(got, clamped), 0.);
+
+    std::vector<float> clampedHF(image.size());
+    std::vector<float> hf(image.size());
+    decompose2DBspline(image.data(), clampedHF.data(), clamped.data(), width, height, extent, kSerial);
+    decompose2DBspline(image.data(), hf.data(), got.data(), width, height, std::numeric_limits<int>::max(), kSerial);
+    EXPECT_EQ(maxAbsDiff(got, clamped), 0.);
+    EXPECT_EQ(maxAbsDiff(hf, clampedHF), 0.);
+
+    // Steps from 31 on would shift 1 past int; they must behave as the extent's spacing does.
+    EXPECT_EQ(bsplineStepMult(40), std::numeric_limits<int>::max());
+    WaveletScales scales;
+    bsplineDecomposeScales(image.data(), width, height, 34, scales, kSerial);
+    ASSERT_EQ((int)scales.details.size(), 34);
+    std::vector<float> out(image.size());
+    waveletRecompose(scales, width, height, out.data(), kSerial);
+    EXPECT_LT(maxAbsDiff(out, image), 2e-5);
+
+    DwtParams params;
+    params.width = width;
+    params.height = height;
+    params.scales = 64;
+    params.previewScale = std::ldexp(1.f, -40);
+    EXPECT_EQ(dwtFirstScaleVisible(params), 41);
+}
+
 TEST(EdgeAware, BsplineSigmaSteps)
 {
     EXPECT_EQ(equivalentSigmaAtStep(kBSplineSigma, 0), kBSplineSigma);
     EXPECT_NEAR(equivalentSigmaAtStep(1.f, 1), std::sqrt(5.f), 1e-6);
     EXPECT_EQ(numStepsToReachEquivalentSigma(kBSplineSigma, equivalentSigmaAtStep(kBSplineSigma, 3)), 4u);
     EXPECT_EQ(numStepsToReachEquivalentSigma(kBSplineSigma, kBSplineSigma), 1u);
+    EXPECT_GT(numStepsToReachEquivalentSigma(kBSplineSigma, 1e12f), 31u);
+    EXPECT_EQ(numStepsToReachEquivalentSigma(0.f, 10.f), 1u);
 }
 
 TEST(EdgeAware, PoissonHealFillsAHoleWithTheHarmonicRamp)

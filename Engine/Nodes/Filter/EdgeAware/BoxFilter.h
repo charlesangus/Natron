@@ -44,14 +44,14 @@ namespace EdgeAware {
 /// The most interleaved channels the box filters accept.
 const int kBoxMaxChannels = 16;
 
-/// darktable's plain running sum, or its BOXFILTER_KAHAN_SUM compensated one.
+/// A plain running sum, or a Kahan-compensated one.
 enum BoxSummationEnum {
     eBoxSummationPlain = 0,
     eBoxSummationKahan
 };
 
 /**
- * @brief dt_box_mean(): in place, iterations times, on a width x height image of channels
+ * @brief In place, iterations times, on a width x height image of channels
  * interleaved floats (1 to kBoxMaxChannels). Non-finite samples count as 0 and come out
  * unchanged.
  **/
@@ -65,7 +65,7 @@ void boxMean(float* buf,
              const ParallelFor& parallel);
 
 /**
- * @brief dt_box_mean_horizontal(): one horizontal pass in place over a single row of width pixels.
+ * @brief One horizontal pass in place over a single row of width pixels.
  * scratch holds at least channels * width floats. No non-finite handling.
  **/
 void boxMeanRow(float* row,
@@ -76,7 +76,7 @@ void boxMeanRow(float* row,
                 float* scratch);
 
 /**
- * @brief dt_box_mean_vertical(): one vertical pass in place over a whole image. No non-finite
+ * @brief One vertical pass in place over a whole image. No non-finite
  * handling.
  **/
 void boxMeanColumns(float* buf,

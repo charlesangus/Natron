@@ -209,7 +209,7 @@ bool
 isOfxInternalKnobName(const std::string& name)
 {
     static const char* const prefixes[] = { "NatronOfxParamProcess", "unPremultBy" };
-    static const char* const names[] = { "premultChanged", "aChannelsChanged", "bChannelsChanged" };
+    static const char* const names[] = { "aChannelsChanged", "bChannelsChanged" };
 
     for (const char* prefix : prefixes) {
         if (name.compare(0, std::strlen(prefix), prefix) == 0) {

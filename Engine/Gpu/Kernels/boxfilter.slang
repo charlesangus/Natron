@@ -93,8 +93,8 @@ void sub(inout Sum s, float v, bool kahan)
     }
 }
 
-// _blur_horizontal() and _blur_vertical(): count samples stride floats apart from base, from srcBuf
-// into dstBuf, the window shrinking at both ends.
+// count samples stride floats apart from base, from srcBuf into dstBuf, the window shrinking at
+// both ends.
 void boxLine(uint base, uint stride, uint count, uint radius, bool kahan)
 {
     Sum s = { 0.0f, 0.0f };

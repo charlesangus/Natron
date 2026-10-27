@@ -66,8 +66,8 @@ namespace {
         std::size_t count;
     };
 
-    // _heal_sub(): dest - src split into checkerboard halves, each with a zero padding row above
-    // and below. In an even image row, even columns go to black.
+    // dest - src split into checkerboard halves, each with a zero padding row above and below. In
+    // an even image row, even columns go to black.
     void
     healSub(const float* top,
             const float* bottom,
@@ -108,7 +108,6 @@ namespace {
         std::fill(black + (height + 1) * resStride, black + (height + 2) * resStride, 0.f);
     }
 
-    // _heal_add()
     void
     healAdd(const float* red,
             const float* black,
@@ -144,9 +143,9 @@ namespace {
         });
     }
 
-    // _heal_laplace_iteration(): one over-relaxed sweep of one colour, width being the colour
-    // buffer's width in pixels. Runs never share a pixel, so their order cannot change the
-    // result; the error is summed per block of runs, then over blocks in order.
+    // One over-relaxed sweep of one colour, width being the colour buffer's width in pixels. Runs
+    // never share a pixel, so their order cannot change the result; the error is summed per block
+    // of runs, then over blocks in order.
     float
     healLaplaceIteration(float* active,
                          const float* neighbor,
@@ -231,9 +230,9 @@ namespace {
         return err[0] + err[1] + err[2];
     }
 
-    // _collect_color_runs(): the runs of one row's pixels of one colour, those at columns start,
-    // start + 2, ... The first pixel of the row and the last of a run ending on the row's last
-    // pixel get runs of their own, so the sweep's left and right neighbours stay in the row.
+    // The runs of one row's pixels of one colour, those at columns start, start + 2, ... The first
+    // pixel of the row and the last of a run ending on the row's last pixel get runs of their own,
+    // so the sweep's left and right neighbours stay in the row.
     void
     collectColorRuns(const unsigned char* mask,
                      std::size_t startIndex,
@@ -291,7 +290,6 @@ namespace {
         }
     }
 
-    // _heal_laplace_loop()
     void
     healLaplaceLoop(float* red,
                     float* black,

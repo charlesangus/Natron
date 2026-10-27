@@ -36,6 +36,7 @@
 #include <variant>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
@@ -78,18 +79,41 @@ struct RenderContextName {
     }
 };
 
+class RenderContext;
+typedef std::shared_ptr<const RenderContext> RenderContextPtr;
+
+/**
+ * @brief A variable whose value depends on the time it is read at: the variable knob that gives
+ * it, evaluated at the reading expression's time and view under the context captured, the one
+ * the knob's value reads (see PyRFV::getVariable()). The knob is held weakly: a binding outliving
+ * it reads as an unset variable. identity stands for the value at every time: it mixes the
+ * knob's owning node and name, its content hash, the variable name and the captured context's
+ * hash, so it is the same at every frame and moves on any edit of the knob's curve or expression.
+ * Hashes and compares by identity alone.
+ **/
+struct RenderContextBinding {
+    KnobIWPtr knob;
+    RenderContextPtr captured;
+    U64 identity = 0;
+
+    static RenderContextBinding create(const KnobIPtr& knob,
+                                       const std::string& name,
+                                       const RenderContextPtr& captured);
+};
+
 typedef std::variant<bool,
                      std::int64_t,
                      double,
                      std::string,
                      std::vector<double>,
                      std::vector<std::int64_t>,
-                     std::vector<std::string>>
+                     std::vector<std::string>,
+                     RenderContextBinding>
     RenderContextValue;
 
 /**
  * @brief Equality as the context hash sees it: doubles compare by their bits, so -0 and 0 differ
- * and a NaN equals the same NaN.
+ * and a NaN equals the same NaN, and bindings by their identity.
  **/
 bool renderContextValuesEqual(const RenderContextValue& a,
                               const RenderContextValue& b);
@@ -170,9 +194,6 @@ U64 getRenderContextReadsGeneration();
  **/
 bool renderContextsInUse();
 void invalidateRenderContextReads();
-
-class RenderContext;
-typedef std::shared_ptr<const RenderContext> RenderContextPtr;
 
 /**
  * @brief An immutable map from namespaced variable names to values, shared by pointer. Its hash
@@ -257,6 +278,53 @@ private:
 
     std::vector<Entry> _entries;
     U64 _hash;
+};
+
+/**
+ * @brief The bindings a context holds, its captured contexts' included, taken before something is
+ * derived under the context and asked about once the result is ready. A binding's identity is
+ * fixed when the context is built, but its value is read from the knob live, so a result stored
+ * under a key carrying a binding is only good if the knob still has the content the identity
+ * stands for and was not edited during the derive. Takes nothing and checks nothing for a context
+ * without bindings.
+ **/
+class RenderContextBindingsSnapshot {
+public:
+    explicit RenderContextBindingsSnapshot(const RenderContextPtr& context);
+
+    bool empty() const
+    {
+        return _bound.empty();
+    }
+
+    /**
+     * @brief Whether every binding's knob, still alive, has the content its identity stands for.
+     **/
+    bool identitiesCurrent() const;
+
+    /**
+     * @brief Whether no node owning a bound knob was marked since construction.
+     **/
+    bool marksUnmoved() const;
+
+    /**
+     * @brief identitiesCurrent(), no knob content write in flight, then marksUnmoved(): any
+     * write the derive may have read has finished and raised its marks by the last check.
+     **/
+    bool isCurrent() const;
+
+private:
+    struct Bound {
+        const RenderContextBinding* binding;
+        std::string name;
+        NodePtr node;
+        U64 marks;
+    };
+
+    void collect(const RenderContextPtr& context);
+
+    RenderContextPtr _context;
+    std::vector<Bound> _bound;
 };
 
 /**

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <climits>
 #include <functional>
 #include <vector>
 
@@ -47,13 +48,13 @@ NATRON_NAMESPACE_ENTER
  * clamps to the edge sample.
  **/
 namespace EdgeAware {
-/// darktable's B_SPLINE_SIGMA: the standard deviation of the gaussian the B-spline approximates.
+/// The standard deviation of the gaussian the B-spline approximates.
 const float kBSplineSigma = 1.0553651328015339f;
-/// darktable's B_SPLINE_TO_LAPLACIAN: scales a B-spline detail band to approximate a laplacian.
+/// Scales a B-spline detail band to approximate a laplacian.
 const float kBSplineToLaplacian = 3.182727439285017f;
 
 /**
- * @brief darktable's dwt_params_t, without its image and user data. returnLayer 0 asks for the
+ * @brief returnLayer 0 asks for the
  * recomposed image, 1 to scales for one detail band, scales + 1 for the residual. Detail bands
  * from mergeFromScale on (when above 0) are summed into one. previewScale is the zoom, which
  * caps the number of scales on small previews.
@@ -68,20 +69,20 @@ struct DwtParams {
 };
 
 /**
- * @brief darktable's _dwt_layer_func: called in place on the image at scale 0 before the
+ * @brief Called in place on the image at scale 0 before the
  * decomposition, on each detail band (or merged band) at 1 to scales, on the residual at
  * scales + 1 and, when returnLayer is 0, on the recomposed image at scales + 2.
  **/
 using DwtLayerFn = std::function<void(float* layer, const DwtParams& params, int scale)>;
 
-/// dwt_get_max_scale(): the most scales the image and zoom allow.
+/// The most scales the image and zoom allow.
 int dwtMaxScale(const DwtParams& params);
 
-/// dt_dwt_first_scale_visible(): the first detail scale coarser than a pixel at the zoom.
+/// The first detail scale coarser than a pixel at the zoom.
 int dwtFirstScaleVisible(const DwtParams& params);
 
 /**
- * @brief dwt_decompose(): decomposes image (width x height x 4) in place with the hat transform,
+ * @brief Decomposes image (width x height x 4) in place with the hat transform,
  * calling layerFn on each layer, and leaves in image the layer returnLayer asks for. params.scales
  * and params.returnLayer are first capped as darktable does. Non-finite samples are 0 in every
  * layer and come out unchanged in the returned image.
@@ -132,7 +133,7 @@ void waveletRecompose(const WaveletScales& scales,
                       const ParallelFor& parallel);
 
 /**
- * @brief blur_2D_Bspline(): the B-spline low-pass of in into out (width x height x 4), taps mult
+ * @brief The B-spline low-pass of in into out (width x height x 4), taps mult
  * pixels apart, optionally clipping negatives after each pass. No non-finite handling.
  **/
 void blur2DBspline(const float* in,
@@ -144,7 +145,7 @@ void blur2DBspline(const float* in,
                    const ParallelFor& parallel);
 
 /**
- * @brief decompose_2D_Bspline(): the B-spline low-pass of in, negatives clipped, into LF and
+ * @brief The B-spline low-pass of in, negatives clipped, into LF and
  * in - LF into HF (width x height x 4 each). No non-finite handling.
  **/
 void decompose2DBspline(const float* in,
@@ -155,11 +156,18 @@ void decompose2DBspline(const float* in,
                         int mult,
                         const ParallelFor& parallel);
 
-/// equivalent_sigma_at_step(): the standard deviation of steps 0 to s of B-spline blurs of sigma.
+/// The tap spacing of B-spline step s, 2^s, saturating at the largest int instead of overflowing.
+inline int
+bsplineStepMult(int s)
+{
+    return (s < 0) ? 1 : ((s >= 30) ? INT_MAX : (1 << s));
+}
+
+/// The standard deviation of steps 0 to s of B-spline blurs of sigma.
 float equivalentSigmaAtStep(float sigma,
                             unsigned int s);
 
-/// num_steps_to_reach_equivalent_sigma(): the inverse of equivalentSigmaAtStep(), plus one.
+/// The inverse of equivalentSigmaAtStep(), plus one; 1 when sigmaFilter is not positive.
 unsigned int numStepsToReachEquivalentSigma(float sigmaFilter,
                                             float sigmaFinal);
 } // namespace EdgeAware

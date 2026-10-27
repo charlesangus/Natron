@@ -90,8 +90,7 @@ float clampRange(float a, float mn, float mx)
     return (a >= mn) ? ((a <= mx) ? a : mx) : mn;
 }
 
-// gaussianLine(): count samples step floats apart from base, causal pass then anticausal pass
-// added to it.
+// count samples step floats apart from base, causal pass then anticausal pass added to it.
 void gaussianLine(uint base, uint step, uint count)
 {
     const uint ch = params.channels;
@@ -172,8 +171,8 @@ void eigf_gauss_rows(uint3 tid : SV_DispatchThreadID)
     gaussianLine(tid.x * params.width * params.channels, params.channels, params.width);
 }
 
-// eigf_variance_analysis()'s inputs into outBuf: guide (inBuf), its square, mask (maskBuf) and
-// mask x guide.
+// The variance analysis inputs into outBuf: guide (inBuf), its square, mask (maskBuf) and mask x
+// guide.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void eigf_prep_mask(uint3 tid : SV_DispatchThreadID)
@@ -191,7 +190,7 @@ void eigf_prep_mask(uint3 tid : SV_DispatchThreadID)
     outBuf[4 * k + 3] = mg;
 }
 
-// eigf_variance_analysis_no_mask()'s inputs into outBuf: guide (inBuf) and its square.
+// The unmasked variance analysis inputs into outBuf: guide (inBuf) and its square.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void eigf_prep(uint3 tid : SV_DispatchThreadID)
@@ -241,7 +240,7 @@ float blend(float pixel, float a, float b)
     return clipped;
 }
 
-// eigf_blending(), in place on outBuf.
+// In place on outBuf.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void eigf_blend_mask(uint3 tid : SV_DispatchThreadID)
@@ -267,7 +266,7 @@ void eigf_blend_mask(uint3 tid : SV_DispatchThreadID)
     outBuf[k] = blend(pixel, a, b);
 }
 
-// eigf_blending_no_mask(), in place on outBuf.
+// In place on outBuf.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void eigf_blend(uint3 tid : SV_DispatchThreadID)

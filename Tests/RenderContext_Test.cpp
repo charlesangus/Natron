@@ -37,10 +37,15 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -376,4 +381,146 @@ TEST_F(ContextReadSetGraph, FollowsGraphEdits)
     EXPECT_TRUE(upstream(middle).empty());
     EXPECT_TRUE(upstream(tail).empty());
     EXPECT_EQ(readsOf({ loopT }), upstream(head));
+}
+
+// A binding's identity stands for the variable's value at every time: the same knob, name and
+// captured context give the same identity, and an edit of the knob's curve or expression moves it.
+TEST_F(ContextReadSetGraph, BindingIdentityFollowsTheKnob)
+{
+    NodePtr probe = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(probe));
+    KnobDoublePtr offset = probe->getEffectInstance()->createDoubleKnob("bindingProbe", "Binding Probe", 1);
+    ASSERT_TRUE(bool(offset));
+    const RenderContextPtr captured = RenderContext::Builder().set(plainName("outer"), 1.).build();
+
+    offset->setValueAtTime(1., 5., ViewSpec::all(), 0);
+    const RenderContextBinding first = RenderContextBinding::create(offset, "v", captured);
+    const RenderContextBinding same = RenderContextBinding::create(offset, "v", captured);
+    EXPECT_EQ(first.identity, same.identity);
+    EXPECT_TRUE(renderContextValuesEqual(RenderContextValue(first), RenderContextValue(same)));
+    const RenderContextPtr withFirst = RenderContext::Builder().set(plainName("v"), first).build();
+    const RenderContextPtr withSame = RenderContext::Builder().set(plainName("v"), same).build();
+    EXPECT_EQ(withFirst->hash(), withSame->hash());
+    EXPECT_TRUE(*withFirst == *withSame);
+
+    EXPECT_NE(first.identity, RenderContextBinding::create(offset, "w", captured).identity);
+    EXPECT_NE(first.identity, RenderContextBinding::create(offset, "v", RenderContext::empty()).identity);
+    EXPECT_NE(first.identity, RenderContextBinding::create(offset, "v", RenderContext::Builder().set(plainName("outer"), 2.).build()).identity);
+
+    // Knobs with the same curve are different variables: another knob on the node, and a knob of
+    // the same name on another node.
+    KnobDoublePtr sibling = probe->getEffectInstance()->createDoubleKnob("bindingProbeSibling", "Binding Probe Sibling", 1);
+    NodePtr otherProbe = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(sibling && otherProbe);
+    KnobDoublePtr namesake = otherProbe->getEffectInstance()->createDoubleKnob("bindingProbe", "Binding Probe", 1);
+    ASSERT_TRUE(bool(namesake));
+    sibling->setValueAtTime(1., 5., ViewSpec::all(), 0);
+    namesake->setValueAtTime(1., 5., ViewSpec::all(), 0);
+    EXPECT_NE(first.identity, RenderContextBinding::create(sibling, "v", captured).identity);
+    EXPECT_NE(first.identity, RenderContextBinding::create(namesake, "v", captured).identity);
+
+    offset->setValueAtTime(1., 6., ViewSpec::all(), 0);
+    const RenderContextBinding keyEdited = RenderContextBinding::create(offset, "v", captured);
+    EXPECT_NE(first.identity, keyEdited.identity);
+    offset->setValueAtTime(2., 7., ViewSpec::all(), 0);
+    const RenderContextBinding keyAdded = RenderContextBinding::create(offset, "v", captured);
+    EXPECT_NE(keyEdited.identity, keyAdded.identity);
+
+    ASSERT_NO_THROW(offset->setExpression(0, "frame * 2", false, true));
+    const RenderContextBinding expression = RenderContextBinding::create(offset, "v", captured);
+    EXPECT_NE(keyAdded.identity, expression.identity);
+    ASSERT_NO_THROW(offset->setExpression(0, "frame * 3", false, true));
+    const RenderContextBinding expressionEdited = RenderContextBinding::create(offset, "v", captured);
+    EXPECT_NE(expression.identity, expressionEdited.identity);
+    EXPECT_NE(withFirst->hash(), RenderContext::Builder().set(plainName("v"), expressionEdited).build()->hash());
+
+    // Restriction keeps a binding as it is.
+    const RenderContextPtr both = RenderContext::Builder(withFirst).set(plainName("other"), 3.).build();
+    const RenderContextPtr kept = both->restrictTo(readsOf({ plainName("v") }));
+    ASSERT_EQ(1u, kept->size());
+    const RenderContextBinding* keptBinding = std::get_if<RenderContextBinding>(kept->find(plainName("v")));
+    ASSERT_TRUE(keptBinding != 0);
+    EXPECT_EQ(first.identity, keptBinding->identity);
+    EXPECT_EQ(offset.get(), keptBinding->knob.lock().get());
+    EXPECT_EQ(captured.get(), keptBinding->captured.get());
+    EXPECT_EQ(withFirst->hash(), kept->hash());
+}
+
+// A Set's constant variable is stored as its value; an animated one or one with an expression as a
+// binding capturing what the knob reads of the incoming context, the same at every request time.
+TEST_F(ContextReadSetGraph, SetStoresConstantsAsValuesAndTimeVaryingAsBindings)
+{
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(bool(set));
+    EffectInstancePtr effect = set->getEffectInstance();
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+    ASSERT_TRUE(effect && variables);
+    KnobDoublePtr constant = effect->createDoubleKnob("constant", "constant", 1);
+    KnobDoublePtr animated = effect->createDoubleKnob("animated", "animated", 1);
+    KnobDoublePtr expression = effect->createDoubleKnob("expression", "expression", 1);
+    ASSERT_TRUE(variables->addKnob(constant));
+    ASSERT_TRUE(variables->addKnob(animated));
+    ASSERT_TRUE(variables->addKnob(expression));
+    KnobDoublePtr linkedConstant = effect->createDoubleKnob("linkedConstant", "linkedConstant", 1);
+    KnobDoublePtr linkedAnimated = effect->createDoubleKnob("linkedAnimated", "linkedAnimated", 1);
+    ASSERT_TRUE(variables->addKnob(linkedConstant));
+    ASSERT_TRUE(variables->addKnob(linkedAnimated));
+    effect->recreateUserKnobs(false);
+    constant->setValue(4.);
+    animated->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    animated->setValueAtTime(2., 20., ViewSpec::all(), 0);
+    ASSERT_NO_THROW(expression->setExpression(0, "rfv.outer or 0", false, true));
+    EXPECT_FALSE(RFV::isTimeVarying(constant));
+    EXPECT_TRUE(RFV::isTimeVarying(animated));
+    EXPECT_TRUE(RFV::isTimeVarying(expression));
+
+    // A linked variable varies as its master does.
+    NodePtr masters = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(masters));
+    KnobDoublePtr constantMaster = masters->getEffectInstance()->createDoubleKnob("constantMaster", "Constant Master", 1);
+    KnobDoublePtr animatedMaster = masters->getEffectInstance()->createDoubleKnob("animatedMaster", "Animated Master", 1);
+    ASSERT_TRUE(constantMaster && animatedMaster);
+    constantMaster->setValue(3.);
+    animatedMaster->setValueAtTime(1., 30., ViewSpec::all(), 0);
+    animatedMaster->setValueAtTime(2., 40., ViewSpec::all(), 0);
+    ASSERT_TRUE(linkedConstant->slaveTo(0, constantMaster, 0));
+    ASSERT_TRUE(linkedAnimated->slaveTo(0, animatedMaster, 0));
+    EXPECT_FALSE(RFV::isTimeVarying(linkedConstant));
+    EXPECT_TRUE(RFV::isTimeVarying(linkedAnimated));
+
+    const RenderContextPtr incoming = RenderContext::Builder().set(plainName("outer"), 1.).set(plainName("unread"), 2.).build();
+    const RenderContextPtr atOne = RFV::overlayDeclaredVariables(effect.get(), 1., ViewIdx(0), incoming);
+    const RenderContextPtr atTwo = RFV::overlayDeclaredVariables(effect.get(), 2., ViewIdx(0), incoming);
+
+    const RenderContextValue* constantValue = atOne->find(plainName("constant"));
+    ASSERT_TRUE(constantValue != 0);
+    ASSERT_TRUE(std::holds_alternative<double>(*constantValue));
+    EXPECT_EQ(4., std::get<double>(*constantValue));
+
+    const RenderContextBinding* animatedBinding = std::get_if<RenderContextBinding>(atOne->find(plainName("animated")));
+    ASSERT_TRUE(animatedBinding != 0);
+    EXPECT_EQ(animated.get(), animatedBinding->knob.lock().get());
+    EXPECT_TRUE(animatedBinding->captured->isEmpty());
+
+    const RenderContextBinding* expressionBinding = std::get_if<RenderContextBinding>(atOne->find(plainName("expression")));
+    ASSERT_TRUE(expressionBinding != 0);
+    ASSERT_EQ(1u, expressionBinding->captured->size());
+    EXPECT_TRUE(expressionBinding->captured->find(plainName("outer")) != 0);
+
+    const RenderContextValue* linkedConstantValue = atOne->find(plainName("linkedConstant"));
+    ASSERT_TRUE(linkedConstantValue != 0);
+    ASSERT_TRUE(std::holds_alternative<double>(*linkedConstantValue));
+    EXPECT_EQ(3., std::get<double>(*linkedConstantValue));
+    const RenderContextBinding* linkedAnimatedBinding = std::get_if<RenderContextBinding>(atOne->find(plainName("linkedAnimated")));
+    ASSERT_TRUE(linkedAnimatedBinding != 0);
+    EXPECT_EQ(linkedAnimated.get(), linkedAnimatedBinding->knob.lock().get());
+
+    // Bindings do not depend on the request time, so the overlay keys the same at every frame.
+    EXPECT_EQ(atOne->hash(), atTwo->hash());
+
+    // A constant whose value changes is still a value, and gets a new key.
+    constant->setValue(5.);
+    const RenderContextPtr edited = RFV::overlayDeclaredVariables(effect.get(), 1., ViewIdx(0), incoming);
+    EXPECT_NE(atOne->hash(), edited->hash());
+    EXPECT_TRUE(std::holds_alternative<double>(*edited->find(plainName("constant"))));
 }

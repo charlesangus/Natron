@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -119,6 +120,23 @@ private:
 
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Requests the input under one context: the incoming one with this node's variables set
+     * over it, each evaluated at time under the incoming context, so that a variable's expression
+     * reading rfv sees what the nodes downstream set.
+     **/
+    virtual bool getInputContexts(int inputNb,
+                                  double time,
+                                  ViewIdx view,
+                                  const RenderContextPtr& context,
+                                  std::vector<RenderContextPtr>* contexts) const OVERRIDE FINAL;
+
+    /**
+     * @brief The variables this node declares, as its declaration snapshot holds them (see
+     * RFV::getDeclarationSnapshot()), whatever the nodes upstream read of them.
+     **/
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 

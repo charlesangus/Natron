@@ -46,7 +46,7 @@ bool inImage(uint3 tid)
     return tid.x < params.width && tid.y < params.height;
 }
 
-// dwt_decompose_vert(): 2 centre + above + below into tempBuf, mirrored without repeating the edge.
+// 2 centre + above + below into tempBuf, mirrored without repeating the edge.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void wav_hat_v(uint3 tid : SV_DispatchThreadID)
@@ -67,7 +67,7 @@ void wav_hat_v(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// dwt_decompose_horiz(): the hat low-pass of tempBuf's vertical sums replaces srcBuf, and srcBuf
+// The hat low-pass of tempBuf's vertical sums replaces srcBuf, and srcBuf
 // minus it goes to hfBuf, 0 where inBuf is not finite.
 [shader("compute")]
 [numthreads(16, 16, 1)]

@@ -8,6 +8,9 @@
 #   NP_NODE    key of a node in NODES (below)
 #   NP_CHAIN   copies of the node in series (default 8). A generator is never chained. A chain
 #              lets the placement see a region worth its transfers; kernel time is then per chain.
+#              With the GPU on it must be 2 or more: a node with no GPU cost row is unpriced, and
+#              the placement keeps a lone unpriced candidate on the CPU, so a chain of 1 profiles
+#              the CPU while claiming to profile the GPU.
 #   NP_FRAMES  frames rendered one at a time (default 6); the first is cold and is dropped later
 #   NP_WORK    directory the frames are written to
 #   NP_OCIO_CONFIG  path of a config.ocio the project uses (as its Custom config) before any node is
@@ -148,6 +151,10 @@ def first_look(node):
             return option
     raise RuntimeError("the OCIO config has no looks")
 
+# Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
+# runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
+
 
 def configure(name, index):
     plugin_id, values, generator = NODES[name]
@@ -201,6 +208,9 @@ def main():
             param(size_map, "point1").set(3840.0, 0.0)
             param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
             param(size_map, "color1").set(1.0, 1.0, 1.0, 1.0)
+        if (os.environ.get("NATRON_GPU", "off") != "off") and (CHAIN < 2):
+            # Two or more unpriced candidates form a GPU region without a cost judgement; one stays on the CPU.
+            raise RuntimeError("NP_CHAIN must be 2 or more with the GPU on, or the node renders on the CPU")
         last = source
         count = CHAIN
         for i in range(count):

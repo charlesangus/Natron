@@ -11,3 +11,7 @@
 ### 2026-10-27T05:19:47+00:00 — change-request
 - refs: M203
 - Spike/investigate if we _need_ to end GPU regions for this to be practical.
+
+### 2026-10-27T18:00:00Z — change-request
+- refs: M203.P1.T2, M203.P1.T3, M203.P2.T1
+- From cat-plan (user, 2026-10-27). M246 - Vulkan Inference Provider will later register onnx-vulkan-rs, an ONNX Runtime plugin execution provider, through `RegisterExecutionProviderLibrary`. Keep M203 - ONNX Inference Backend open to that without building it: (1) M203.P1.T2: the loader keeps a data-driven provider table (name, how it is detected, how it is appended to session options) rather than hard-coding the Auto order and probe list, so a plugin EP library registered after `OrtEnv` creation can add an entry. (2) M203.P1.T3: `aiDevice`'s choices come from that table, not a fixed enum. Persist the provider name, so an entry added later doesn't shift saved values. (3) M203.P2.T1: the `SessionCache` key has room for an EP-specific part; M246 needs the input shape there, because the Vulkan plugin needs concrete input dimensions. No plugin loading, no Vulkan entry and no new UI in M203.

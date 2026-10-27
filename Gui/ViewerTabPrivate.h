@@ -181,11 +181,11 @@ struct ViewerTabPrivate
     NodeViewerContextsMap nodesContext;
 
     /*
-       Tells for a given plug-in ID, which nodes is currently activated in the viewer interface
+       Tells for a given viewer slot (see getViewerSlot()), which nodes is currently activated in the viewer interface
      */
     struct PluginViewerContext
     {
-        std::string pluginID;
+        std::string slot;
         NodeGuiWPtr currentNode;
         NodeViewerContextPtr currentContext;
     };
@@ -244,10 +244,20 @@ struct ViewerTabPrivate
     // colour plane).
     void getLayerViewsAvailabelAtTime(double time, ViewIdx view, std::list<ImageLayerDesc>* layerViews, std::list<ImageLayerDesc>* channelViews, ImageLayerDesc* storageColorLayer) const;
 
-    std::list<PluginViewerContext>::iterator findActiveNodeContextForPlugin(const std::string& pluginID);
+    // The viewer tool slot a node's interface occupies: one slot shared by every curve host (any
+    // node whose EffectInstance::getCurveContextKind() is not None), else one per plug-in ID.
+    static std::string getViewerSlot(const NodePtr& node);
 
-    // Returns true if this node has a viewer context but it is not active
+    std::list<PluginViewerContext>::iterator findActiveNodeContextForSlot(const std::string& slot);
+
+    // Returns true if this node has a viewer context but it is not active. Pen, key and focus
+    // events only go to nodes for which this is false.
     bool hasInactiveNodeViewerContext(const NodePtr& node);
+
+    // Whether the viewer leaves out this node's overlay. A curve host whose slot another curve
+    // host owns is still drawn, passively, so its curves stay visible; other nodes are hidden
+    // while another node of their slot owns it.
+    bool isOverlayHiddenByViewerSlot(const NodePtr& node);
 };
 
 NATRON_NAMESPACE_EXIT

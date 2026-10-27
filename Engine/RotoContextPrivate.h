@@ -541,7 +541,7 @@ struct BezierPrivate
 class RotoLayer;
 struct RotoItemPrivate
 {
-    RotoContextWPtr context;
+    RotoCurveContextWPtr context;
     std::string scriptName, label;
     RotoLayerWPtr parentLayer;
 
@@ -562,7 +562,7 @@ struct RotoItemPrivate
     mutable U64 geometryHashGeneration;
     mutable bool geometryHashValid;
 
-    RotoItemPrivate(const RotoContextPtr context,
+    RotoItemPrivate(const RotoCurveContextPtr context,
                     const std::string& n,
                     const RotoLayerPtr& parent)
         : context(context)
@@ -1442,9 +1442,10 @@ public:
      */
     NodesList globalMergeNodes;
 
-    RotoContextPrivate(const NodePtr& n )
+    RotoContextPrivate(const NodePtr& n,
+                       bool paintNode)
         : rotoContextMutex()
-        , isPaintNode(false)
+        , isPaintNode(paintNode)
         , layers()
         , autoKeying(true)
         , rippleEdit(false)
@@ -1456,24 +1457,13 @@ public:
         , mustDoNeatRender(false)
         , globalMergeNodes()
     {
-        EffectInstancePtr effect = n->getEffectInstance();
-        RotoPaint* isRotoNode = dynamic_cast<RotoPaint*>( effect.get() );
-
-        if (isRotoNode) {
-            isPaintNode = isRotoNode->isDefaultBehaviourPaintContext();
-        } else {
-            isPaintNode = false;
-        }
-
         assert( n && n->getEffectInstance() );
+        EffectInstancePtr effect = n->getEffectInstance();
 
-        KnobPagePtr shapePage, strokePage, generalPage, clonePage, transformPage;
+        KnobPagePtr shapePage, generalPage;
 
         generalPage = AppManager::createKnob<KnobPage>(effect.get(), tr("General"), 1, true);
         shapePage = AppManager::createKnob<KnobPage>(effect.get(), tr("Shape"), 1, true);
-        strokePage = AppManager::createKnob<KnobPage>(effect.get(), tr("Stroke"), 1, true);
-        clonePage = AppManager::createKnob<KnobPage>(effect.get(), tr("Clone"), 1, true);
-        transformPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Transform"), 1, true);
 
         KnobDoublePtr opacityKnob = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoOpacityParamLabel), 1, true);
         opacityKnob->setHintToolTip( tr(kRotoOpacityHint) );
@@ -1591,6 +1581,21 @@ public:
         knobs.push_back(featherFallOffKnob);
         shapeKnobs.push_back(featherFallOffKnob);
         featherFallOff = featherFallOffKnob;
+    }
+
+    /**
+     * @brief Creates the Stroke, Clone and Transform pages of a paint context, after the knobs
+     * of the constructor. Their order in the node is the one projects are saved in.
+     **/
+    void createPaintKnobs()
+    {
+        EffectInstancePtr effect = node.lock()->getEffectInstance();
+
+        KnobPagePtr strokePage, clonePage, transformPage;
+
+        strokePage = AppManager::createKnob<KnobPage>(effect.get(), tr("Stroke"), 1, true);
+        clonePage = AppManager::createKnob<KnobPage>(effect.get(), tr("Clone"), 1, true);
+        transformPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Transform"), 1, true);
 
         {
             KnobChoicePtr sourceType = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoBrushSourceColorLabel), 1, true);

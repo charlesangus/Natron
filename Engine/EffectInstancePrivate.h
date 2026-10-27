@@ -398,6 +398,7 @@ public:
 
     // set during interact actions on main-thread
     OverlaySupport* overlaysViewport;
+    bool drawingPassiveOverlay; // only used on main thread
     mutable QRecursiveMutex attachedContextsMutex;
 
     // A list of context that are currently attached (i.e attachOpenGLContext() has been called on them but not yet dettachOpenGLContext).

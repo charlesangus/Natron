@@ -247,15 +247,21 @@ Node::isPartOfProject() const
 void
 Node::createRotoContextConditionnally()
 {
-    assert(!_imp->rotoContext);
+    assert(!_imp->curveContext);
     assert(_imp->effect);
-    ///Initialize the roto context if any
-    if ( isRotoNode() || isRotoPaintingNode() ) {
-        _imp->effect->beginChanges();
-        _imp->rotoContext = RotoContext::create( shared_from_this() );
-        _imp->effect->endChanges(true);
-        _imp->rotoContext->createBaseLayer();
+    const EffectInstance::CurveContextKindEnum kind = _imp->effect->getCurveContextKind();
+    if (kind == EffectInstance::eCurveContextKindNone) {
+        return;
     }
+    _imp->effect->beginChanges();
+    if (kind == EffectInstance::eCurveContextKindPaint) {
+        _imp->rotoContext = RotoContext::create( shared_from_this() );
+        _imp->curveContext = _imp->rotoContext;
+    } else {
+        _imp->curveContext = RotoCurveContext::create(shared_from_this());
+    }
+    _imp->effect->endChanges(true);
+    _imp->curveContext->createBaseLayer();
 }
 
 void
@@ -681,7 +687,7 @@ Node::declareRotoPythonField()
     if (getScriptName_mt_safe().empty()) {
         return;
     }
-    assert(_imp->rotoContext);
+    assert(_imp->curveContext);
     std::string appID = getApp()->getAppIDString();
     std::string nodeName = getFullyQualifiedName();
     std::string nodeFullName = appID + "." + nodeName;
@@ -695,7 +701,7 @@ Node::declareRotoPythonField()
     if (!ok) {
         throw std::runtime_error("Node::declareRotoPythonField(): interpretPythonScript(" + script + ") failed!");
     }
-    _imp->rotoContext->declarePythonFields();
+    _imp->curveContext->declarePythonFields();
 }
 
 void
@@ -983,9 +989,9 @@ Node::computeContentHash(U64 projectDigest,
 
     // Roto geometry lives in the context and the items, not in knobs, so it is hashed here. The
     // tags keep absent and present contributions from colliding.
-    if (_imp->rotoContext) {
+    if (_imp->curveContext) {
         h.appendString("rotoContext");
-        h.appendU64(_imp->rotoContext->getContentHash());
+        h.appendU64(_imp->curveContext->getContentHash());
     }
     RotoDrawableItemPtr strokeItem = _imp->paintStroke.lock();
     if (strokeItem) {
@@ -2508,8 +2514,8 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     }
 
     ///now restore the roto context if the node has a roto context
-    if (serialization.hasRotoContext && _imp->rotoContext) {
-        _imp->rotoContext->fromSerialization(serialization.rotoContext);
+    if (serialization.hasRotoContext && _imp->curveContext) {
+        _imp->curveContext->fromSerialization(serialization.rotoContext);
     }
 
     if (serialization.hasTrackerContext && _imp->trackContext) {
@@ -4914,6 +4920,12 @@ Node::getRotoContext() const
     return _imp->rotoContext;
 }
 
+RotoCurveContextPtr
+Node::getCurveContext() const
+{
+    return _imp->curveContext;
+}
+
 TrackerContextPtr
 Node::getTrackerContext() const
 {
@@ -4923,8 +4935,8 @@ Node::getTrackerContext() const
 U64
 Node::getRotoAge() const
 {
-    if (_imp->rotoContext) {
-        return _imp->rotoContext->getAge();
+    if (_imp->curveContext) {
+        return _imp->curveContext->getAge();
     }
 
     RotoDrawableItemPtr item = _imp->paintStroke.lock();
@@ -7860,10 +7872,9 @@ Node::dequeueActions()
             isGroup->dequeueConnexions();
         }
     }
-    if (_imp->rotoContext) {
-        _imp->rotoContext->dequeueGuiActions();
+    if (_imp->curveContext) {
+        _imp->curveContext->dequeueGuiActions();
     }
-
 
     std::set<int> inputChanges;
     {
@@ -9061,7 +9072,7 @@ Node::declareAllPythonAttributes()
     try {
         declareNodeVariableToPython( getFullyQualifiedName() );
         declarePythonFields();
-        if (_imp->rotoContext) {
+        if (_imp->curveContext) {
             declareRotoPythonField();
         }
         if (_imp->trackContext) {

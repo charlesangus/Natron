@@ -44,7 +44,7 @@ Node::canHandleRenderScaleForOverlays() const
 bool
 Node::shouldDrawOverlay() const
 {
-    if ( !hasOverlay() && !getRotoContext() ) {
+    if (!hasOverlay() && !getCurveContext()) {
         return false;
     }
 

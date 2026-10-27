@@ -15,6 +15,7 @@
 #include "Engine/ViewerInstance.h"
 
 #include "CountingTestEffect.h"
+#include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
@@ -150,6 +151,14 @@ registerFrameGraphBuildTestPlugins()
 }
 
 void
+registerCurveHostTestPlugins()
+{
+    // Registered so CurveHost_Test.cpp can edit curves on a geometry curve host, which no shipped
+    // node is yet.
+    registerTestBuiltInPlugin<CurveHostTestEffect>();
+}
+
+void
 registerNativeMetadataTestPlugins()
 {
     // Registered so NativeMetadata_Test.cpp can inject metadata at the head of a native chain,
@@ -215,6 +224,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
+    registerCurveHostTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

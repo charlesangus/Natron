@@ -43,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class RotoCurveInteract;
 class RotoPaintInteract;
 
 // The commands below that override mergeWith() take the key of the interact's open undo gesture
@@ -55,10 +56,8 @@ class MoveControlPointsUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MoveControlPointsUndoCommand)
 
 public:
-
-    MoveControlPointsUndoCommand(const RotoPaintInteractPtr& roto,
-                                 const std::list<std::pair<BezierCPPtr, BezierCPPtr> > & toDrag
-                                 ,
+    MoveControlPointsUndoCommand(const RotoCurveInteractPtr& roto,
+                                 const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& toDrag,
                                  double dx,
                                  double dy,
                                  double time);
@@ -72,7 +71,7 @@ public:
 private:
 
     bool _firstRedoCalled; //< false by default
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     double _dx, _dy;
     bool _featherLinkEnabled;
     bool _rippleEditEnabled;
@@ -99,7 +98,7 @@ public:
         eTransformMidTop
     };
 
-    TransformUndoCommand(const RotoPaintInteractPtr& roto,
+    TransformUndoCommand(const RotoCurveInteractPtr& roto,
                          double centerX,
                          double centerY,
                          double rot,
@@ -122,7 +121,7 @@ private:
     void transformPoint(const BezierCPPtr & point);
 
     bool _firstRedoCalled; //< false by default
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _rippleEditEnabled;
     KnobButtonWPtr _selectedTool; //< corresponds to the RotoGui::RotoToolEnum enum
     Transform::Matrix3x3Ptr _matrix;
@@ -137,9 +136,8 @@ class AddPointUndoCommand
     Q_DECLARE_TR_FUNCTIONS(AddPointUndoCommand)
 
 public:
-
-    AddPointUndoCommand(const RotoPaintInteractPtr& roto,
-                        const BezierPtr & curve,
+    AddPointUndoCommand(const RotoCurveInteractPtr& roto,
+                        const BezierPtr& curve,
                         int index,
                         double t);
 
@@ -151,7 +149,7 @@ public:
 private:
 
     bool _firstRedoCalled; //< false by default
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     BezierPtr _curve;
     int _index;
     double _t;
@@ -174,13 +172,12 @@ private:
     };
 
 public:
+    RemovePointUndoCommand(const RotoCurveInteractPtr& roto,
+                           const BezierPtr& curve,
+                           const BezierCPPtr& cp);
 
-    RemovePointUndoCommand(const RotoPaintInteractPtr& roto,
-                           const BezierPtr & curve,
-                           const BezierCPPtr & cp);
-
-    RemovePointUndoCommand(const RotoPaintInteractPtr& roto,
-                           const std::list<std::pair < BezierCPPtr, BezierCPPtr> > & points);
+    RemovePointUndoCommand(const RotoCurveInteractPtr& roto,
+                           const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points);
 
     virtual ~RemovePointUndoCommand();
 
@@ -188,7 +185,7 @@ public:
     virtual void redo() OVERRIDE FINAL;
 
 private:
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     struct CurveOrdering
     {
         bool operator() (const CurveDesc & lhs,
@@ -217,10 +214,8 @@ private:
     };
 
 public:
-
-
-    RemoveCurveUndoCommand(const RotoPaintInteractPtr& roto,
-                           const std::list<RotoDrawableItemPtr> & curves);
+    RemoveCurveUndoCommand(const RotoCurveInteractPtr& roto,
+                           const std::list<RotoDrawableItemPtr>& curves);
 
     virtual ~RemoveCurveUndoCommand();
 
@@ -228,7 +223,7 @@ public:
     virtual void redo() OVERRIDE FINAL;
 
 private:
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     std::list<RemovedCurve> _curves;
 };
@@ -287,12 +282,11 @@ class MoveTangentUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MoveTangentUndoCommand)
 
 public:
-
-    MoveTangentUndoCommand(const RotoPaintInteractPtr& roto,
+    MoveTangentUndoCommand(const RotoCurveInteractPtr& roto,
                            double dx,
                            double dy,
                            double time,
-                           const BezierCPPtr & cp,
+                           const BezierCPPtr& cp,
                            bool left,
                            bool breakTangents);
 
@@ -305,7 +299,7 @@ public:
 private:
 
     bool _firstRedoCalled; //< false by default
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     double _dx, _dy;
     bool _featherLinkEnabled;
     bool _rippleEditEnabled;
@@ -328,7 +322,7 @@ public:
      * selectedPoints: each feather moves along its own direction by the signed distance the drag
      * projects to on point's direction.
      **/
-    MoveFeatherBarUndoCommand(const RotoPaintInteractPtr& roto,
+    MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
                               double dx,
                               double dy,
                               const std::pair<BezierCPPtr, BezierCPPtr>& point,
@@ -349,7 +343,7 @@ private:
 
     void addFeatherBar(const std::pair<BezierCPPtr, BezierCPPtr>& point);
 
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     double _dx, _dy;
     bool _rippleEditEnabled;
@@ -374,9 +368,8 @@ public:
         std::list<BezierCPPtr> oldPoints, newPoints;
     };
 
-
-    RemoveFeatherUndoCommand(const RotoPaintInteractPtr& roto,
-                             const std::list<RemoveFeatherData> & datas);
+    RemoveFeatherUndoCommand(const RotoCurveInteractPtr& roto,
+                             const std::list<RemoveFeatherData>& datas);
 
     virtual ~RemoveFeatherUndoCommand();
 
@@ -384,7 +377,7 @@ public:
     virtual void redo() OVERRIDE FINAL;
 
 private:
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedocalled;
     std::list<RemoveFeatherData> _datas;
 };
@@ -395,9 +388,8 @@ class OpenCloseUndoCommand
     Q_DECLARE_TR_FUNCTIONS(OpenCloseUndoCommand)
 
 public:
-
-    OpenCloseUndoCommand(const RotoPaintInteractPtr& roto,
-                         const BezierPtr & curve);
+    OpenCloseUndoCommand(const RotoCurveInteractPtr& roto,
+                         const BezierPtr& curve);
 
     virtual ~OpenCloseUndoCommand();
 
@@ -405,8 +397,7 @@ public:
     virtual void redo() OVERRIDE FINAL;
 
 private:
-
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
@@ -426,8 +417,8 @@ public:
         SelectedPointList newPoints, oldPoints;
     };
 
-    SmoothCuspUndoCommand(const RotoPaintInteractPtr& roto,
-                          const std::list<SmoothCuspCurveData> & data,
+    SmoothCuspUndoCommand(const RotoCurveInteractPtr& roto,
+                          const std::list<SmoothCuspCurveData>& data,
                           double time,
                           bool cusp,
                           const std::pair<double, double>& pixelScale);
@@ -439,7 +430,7 @@ public:
     virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
 
 private:
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     double _time;
     int _count;
@@ -454,9 +445,8 @@ class MakeBezierUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MakeBezierUndoCommand)
 
 public:
-
-    MakeBezierUndoCommand(const RotoPaintInteractPtr& roto,
-                          const BezierPtr & curve,
+    MakeBezierUndoCommand(const RotoCurveInteractPtr& roto,
+                          const BezierPtr& curve,
                           bool isOpenBezier,
                           bool createPoint,
                           double dx,
@@ -475,7 +465,7 @@ public:
 
 private:
     bool _firstRedoCalled;
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     RotoLayerPtr _parentLayer;
     int _indexInLayer;
     BezierPtr _oldCurve, _newCurve;
@@ -494,8 +484,7 @@ class MakeEllipseUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MakeEllipseUndoCommand)
 
 public:
-
-    MakeEllipseUndoCommand(const RotoPaintInteractPtr& roto,
+    MakeEllipseUndoCommand(const RotoCurveInteractPtr& roto,
                            bool create,
                            bool fromCenter,
                            bool constrained,
@@ -513,7 +502,7 @@ public:
 
 private:
     bool _firstRedoCalled;
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     RotoLayerPtr _parentLayer;
     int _indexInLayer;
     BezierPtr _curve;
@@ -531,8 +520,7 @@ class MakeRectangleUndoCommand
     Q_DECLARE_TR_FUNCTIONS(MakeRectangleUndoCommand)
 
 public:
-
-    MakeRectangleUndoCommand(const RotoPaintInteractPtr& roto,
+    MakeRectangleUndoCommand(const RotoCurveInteractPtr& roto,
                              bool create,
                              bool fromCenter,
                              bool constrained,
@@ -550,7 +538,7 @@ public:
 
 private:
     bool _firstRedoCalled;
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     RotoLayerPtr _parentLayer;
     int _indexInLayer;
     BezierPtr _curve;

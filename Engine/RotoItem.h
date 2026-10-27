@@ -85,14 +85,14 @@ public:
     // TODO: enable_shared_from_this
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
 
-    RotoItem( const RotoContextPtr& context,
-              const std::string & name,
-              RotoLayerPtr parent = RotoLayerPtr() );
+    RotoItem(const RotoCurveContextPtr& context,
+             const std::string& name,
+             RotoLayerPtr parent = RotoLayerPtr());
 
 public:
-    static RotoItemPtr create( const RotoContextPtr& context,
-                                               const std::string & name,
-                                               RotoLayerPtr parent = RotoLayerPtr() )
+    static RotoItemPtr create(const RotoCurveContextPtr& context,
+                              const std::string& name,
+                              RotoLayerPtr parent = RotoLayerPtr())
     {
         return std::make_shared<RotoItem>(context, name, parent);
     }
@@ -148,7 +148,13 @@ public:
      * @brief Returns the name of the node holding this item
      **/
     std::string getRotoNodeName() const;
-    RotoContextPtr getContext() const;
+    RotoCurveContextPtr getContext() const;
+
+    /**
+     * @brief The context, when it is a paint context (Roto, RotoPaint). Null on a host whose
+     * curves build no render node.
+     **/
+    RotoContextPtr getPaintContext() const;
     RotoItemPtr getPreviousItemInLayer() const;
 
     /**

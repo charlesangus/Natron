@@ -57,6 +57,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoContextPrivate.h" // for getCompositingOperators
+#include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/TimeLine.h"
@@ -359,7 +360,12 @@ struct RotoPanelPrivate
 public:
     RotoPanel* publicInterface;
     NodeGuiWPtr node;
-    RotoContextPtr context;
+    RotoCurveContextPtr context;
+    // True for a RotoContext: the Operator, Color and Inverted columns only apply there.
+    bool isPaintContext;
+    RotoCurvePanelHook* hostHook;
+    // The host's columns, after MAX_COLS.
+    std::vector<RotoCurvePanelHook::Column> hostColumns;
     QVBoxLayout* mainLayout;
     QWidget* splineContainer;
     QHBoxLayout* splineLayout;
@@ -392,10 +398,13 @@ public:
     bool settingNameFromGui;
 
     RotoPanelPrivate(RotoPanel* publicInter,
-                     const NodeGuiPtr&   n)
+                     const NodeGuiPtr& n)
         : publicInterface(publicInter)
         , node(n)
-        , context( n->getNode()->getRotoContext() )
+        , context(n->getNode()->getCurveContext())
+        , isPaintContext(bool(n->getNode()->getRotoContext()))
+        , hostHook(n->getNode()->getEffectInstance()->getCurvePanelHook())
+        , hostColumns()
         , mainLayout(0)
         , splineContainer(0)
         , splineLayout(0)
@@ -448,6 +457,8 @@ public:
     void updateSplinesInfoGUI(double time);
 
     void buildTreeFromContext();
+
+    void refreshHostColumns(QTreeWidgetItem* treeItem, const RotoItemPtr& item);
 
     TreeItems::iterator findItem(const RotoItemPtr& item)
     {
@@ -507,6 +518,7 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     QObject::connect( _imp->context.get(), SIGNAL(itemLabelChanged(RotoItemPtr)), this, SLOT(onItemLabelChanged(RotoItemPtr)) );
     QObject::connect( _imp->context.get(), SIGNAL(itemLockedChanged(int)), this, SLOT(onItemLockChanged(int)) );
     QObject::connect( _imp->context.get(), SIGNAL(itemGloballyActivatedChanged(RotoItemPtr)), this, SLOT(onItemGloballyActivatedChanged(RotoItemPtr)) );
+    QObject::connect(_imp->context.get(), SIGNAL(itemPanelColumnsChanged(RotoItemPtr)), this, SLOT(onItemPanelColumnsChanged(RotoItemPtr)));
     const QSize medButtonSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
     const QSize medButtonIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
 
@@ -617,10 +629,19 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
                       SLOT(onCurrentItemChanged(QTreeWidgetItem*,QTreeWidgetItem*)) );
     QObject::connect( _imp->tree, SIGNAL(itemSelectionChanged()), this, SLOT(onItemSelectionChanged()) );
 
-
-    _imp->tree->setColumnCount(MAX_COLS);
+    if (_imp->hostHook) {
+        _imp->hostColumns = _imp->hostHook->getColumns();
+    }
+    _imp->tree->setColumnCount(MAX_COLS + (int)_imp->hostColumns.size());
     _imp->treeHeader = new QTreeWidgetItem;
     _imp->treeHeader->setText( COL_LABEL, tr("Label") );
+    for (std::size_t i = 0; i < _imp->hostColumns.size(); ++i) {
+        const int col = MAX_COLS + (int)i;
+        _imp->treeHeader->setText(col, QString::fromUtf8(_imp->hostColumns[i].header.c_str()));
+        if (!_imp->hostColumns[i].toolTip.empty()) {
+            _imp->treeHeader->setToolTip(col, NATRON_NAMESPACE::convertFromPlainText(QString::fromUtf8(_imp->hostColumns[i].toolTip.c_str()), NATRON_NAMESPACE::WhiteSpaceNormal));
+        }
+    }
 
     appPTR->getIcon(NATRON_PIXMAP_LAYER, medIconSize, &_imp->iconLayer);
     appPTR->getIcon(NATRON_PIXMAP_BEZIER, medIconSize, &_imp->iconBezier);
@@ -656,6 +677,13 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     appPTR->getIcon(NATRON_PIXMAP_ROTO_MERGE, medIconSize, &mergeIcon);
     _imp->treeHeader->setIcon(COL_OPERATOR, mergeIcon);
     _imp->tree->setHeaderItem(_imp->treeHeader);
+    if (!_imp->isPaintContext) {
+        _imp->tree->setColumnHidden(COL_OPERATOR, true);
+        _imp->tree->setColumnHidden(COL_COLOR, true);
+#ifdef NATRON_ROTO_INVERTIBLE
+        _imp->tree->setColumnHidden(COL_INVERTED, true);
+#endif
+    }
     _imp->tree->setMinimumHeight( TO_DPIY(350) );
     _imp->tree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     _imp->buttonContainer = new QWidget(this);
@@ -993,12 +1021,30 @@ RotoPanel::updateItemGui(QTreeWidgetItem* item)
 #ifdef NATRON_ROTO_INVERTIBLE
         it->treeItem->setIcon(COL_INVERTED, drawable->getInverted(time) ? _imp->iconInverted : _imp->iconUninverted);
 #endif
-        QWidget* w = _imp->tree->itemWidget(it->treeItem, COL_OPERATOR);
-        assert(w);
-        ComboBox* cb = dynamic_cast<ComboBox*>(w);
-        assert(cb);
+        // Only paint contexts have the Operator combobox.
+        ComboBox* cb = dynamic_cast<ComboBox*>(_imp->tree->itemWidget(it->treeItem, COL_OPERATOR));
         if (cb) {
             cb->setCurrentIndex_no_emit( drawable->getCompositingOperator() );
+        }
+    }
+    _imp->refreshHostColumns(it->treeItem, it->rotoItem);
+}
+
+void
+RotoPanelPrivate::refreshHostColumns(QTreeWidgetItem* treeItem,
+                                     const RotoItemPtr& item)
+{
+    for (std::size_t i = 0; i < hostColumns.size(); ++i) {
+        treeItem->setText(MAX_COLS + (int)i, QString::fromUtf8(hostHook->getItemText(item, (int)i).c_str()));
+    }
+}
+
+void
+RotoPanel::onItemPanelColumnsChanged(const RotoItemPtr& item)
+{
+    for (TreeItems::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
+        if (!item || it->rotoItem == item) {
+            _imp->refreshHostColumns(it->treeItem, it->rotoItem);
         }
     }
 }
@@ -1123,6 +1169,7 @@ RotoPanelPrivate::insertItemRecursively(double time,
                                                                            "the shape."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     treeItem->setIcon(COL_LOCKED, item->getLocked() ? iconLocked : iconUnlocked);
     treeItem->setToolTip( COL_LOCKED, NATRON_NAMESPACE::convertFromPlainText(tr(kRotoLockedHint), NATRON_NAMESPACE::WhiteSpaceNormal) );
+    refreshHostColumns(treeItem, item);
 
     RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
     RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(item);
@@ -1228,6 +1275,10 @@ RotoPanel::makeCustomWidgetsForItem(const RotoDrawableItemPtr& item,
             return;
         }
         treeItem = found->treeItem;
+    }
+    // The Operator column only exists on paint contexts.
+    if (!_imp->isPaintContext) {
+        return;
     }
 
     ComboBox* cb = new ComboBox;
@@ -2170,7 +2221,7 @@ RotoPanel::getNodeName() const
     return getNode()->getNode()->getScriptName();
 }
 
-RotoContextPtr
+RotoCurveContextPtr
 RotoPanel::getContext() const
 {
     return _imp->context;
@@ -2226,6 +2277,32 @@ RotoPanel::showItemMenu(QTreeWidgetItem* item,
 
     ///The base layer cannot be duplicated
     duplicateAct->setEnabled(it->rotoItem->getParentLayer() != NULL);
+
+    if (_imp->hostHook) {
+        std::list<RotoItemPtr> selection;
+        QList<QTreeWidgetItem*> selectedTreeItems = _imp->tree->selectedItems();
+        for (QList<QTreeWidgetItem*>::iterator sel = selectedTreeItems.begin(); sel != selectedTreeItems.end(); ++sel) {
+            TreeItems::iterator found = _imp->findItem(*sel);
+            if (found != _imp->items.end()) {
+                selection.push_back(found->rotoItem);
+            }
+        }
+        if (selection.empty()) {
+            selection.push_back(it->rotoItem);
+        }
+        const std::vector<RotoCurvePanelHook::MenuAction> hostActions = _imp->hostHook->getItemMenuActions(selection);
+        if (!hostActions.empty()) {
+            menu.addSeparator();
+        }
+        RotoCurvePanelHook* hook = _imp->hostHook;
+        for (std::size_t i = 0; i < hostActions.size(); ++i) {
+            QAction* act = menu.addAction(QString::fromUtf8(hostActions[i].label.c_str()));
+            const std::string actionId = hostActions[i].id;
+            QObject::connect(act, &QAction::triggered, this, [hook, actionId, selection]() {
+                hook->onItemMenuActionTriggered(actionId, selection);
+            });
+        }
+    }
 
     menu.exec(globalPos);
 }
@@ -2695,7 +2772,7 @@ DragItemsUndoCommand::undo()
             it->dropped->droppedRotoItem->setParentLayer( RotoLayerPtr() );
         }
     }
-    _roto->getContext()->refreshRotoPaintTree();
+    _roto->getContext()->onStructureChanged();
     _roto->getContext()->evaluateChange();
 
     setText( tr("Re-organize items of %2").arg( QString::fromUtf8( _roto->getNodeName().c_str() ) ) );
@@ -2717,7 +2794,7 @@ DragItemsUndoCommand::redo()
         it->dropped->newParentItem->setExpanded(true);
         it->dropped->newParentLayer->insertItem(it->dropped->droppedRotoItem, it->dropped->insertIndex);
     }
-    _roto->getContext()->refreshRotoPaintTree();
+    _roto->getContext()->onStructureChanged();
     _roto->getContext()->evaluateChange();
     setText( tr("Re-organize items of %2").arg( QString::fromUtf8( _roto->getNodeName().c_str() ) ) );
 }
@@ -2792,37 +2869,12 @@ PasteItemUndoCommand::PasteItemUndoCommand(RotoPanel* roto,
             RotoLayerPtr srcLayer = std::dynamic_pointer_cast<RotoLayer>(it->rotoItem);
             RotoStrokeItemPtr srcStroke = std::dynamic_pointer_cast<RotoStrokeItem>(it->rotoItem);
             if (srcBezier) {
-                std::string name = getItemCopyName(roto, it->rotoItem);
-                BezierPtr copy( new Bezier(srcBezier->getContext(), name,
-                                                           srcBezier->getParentLayer(), false) );
-                copy->clone( srcBezier.get() );
-                copy->createNodes();
-                //clone overwrites the script name, don't forget to set it back
-                copy->setScriptName(name);
-                copy->setLabel(name);
-                it->itemCopy = copy;
+                it->itemCopy = srcBezier->getContext()->makeDrawableCopy(srcBezier, getItemCopyName(roto, it->rotoItem));
             } else if (srcStroke) {
-                std::string name = getItemCopyName(roto, it->rotoItem);
-                RotoStrokeItemPtr copy( new RotoStrokeItem( srcStroke->getBrushType(),
-                                                                            srcStroke->getContext(),
-                                                                            name,
-                                                                            RotoLayerPtr() ) );
-                copy->createNodes();
-                if ( srcStroke->getParentLayer() ) {
-                    srcStroke->getParentLayer()->insertItem(copy, 0);
-                }
-                copy->clone( srcStroke.get() );
-                copy->createNodes();
-                //clone overwrites the script name, don't forget to set it back
-                copy->setScriptName(name);
-                copy->setLabel(name);
-                it->itemCopy = copy;
+                it->itemCopy = srcStroke->getContext()->makeDrawableCopy(srcStroke, getItemCopyName(roto, it->rotoItem));
             } else {
                 assert(srcLayer);
-                RotoLayerPtr copy( new RotoLayer( srcLayer->getContext(),
-                                                                  "",
-                                                                  RotoLayerPtr() ) );
-                copy->clone( srcLayer.get() );
+                RotoLayerPtr copy = srcLayer->getContext()->makeLayerCopy(srcLayer);
                 setItemCopyNameRecursive( roto, copy );
                 it->itemCopy = copy;
             }
@@ -2861,12 +2913,14 @@ PasteItemUndoCommand::redo()
         Bezier* isBezier = dynamic_cast<Bezier*>( _targetItem.get() );
         RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>( _targetItem.get() );
         if (isBezier) {
-            BezierPtr oldBezier( new Bezier(isBezier->getContext(), isBezier->getScriptName(), isBezier->getParentLayer(), false) );
-            oldBezier->createNodes();
+            // The saved state is never in a layer, and wiring its render nodes looks it up among
+            // its parent layer's items, so it gets none.
+            BezierPtr oldBezier(new Bezier(isBezier->getContext(), isBezier->getScriptName(), RotoLayerPtr(), false));
+            oldBezier->getContext()->onItemCreated(oldBezier, true);
             _oldTargetItem = oldBezier;
         } else if (isStroke) {
             RotoStrokeItemPtr oldStroke( new RotoStrokeItem( isStroke->getBrushType(), isStroke->getContext(), isStroke->getScriptName(), RotoLayerPtr() ) );
-            oldStroke->createNodes();
+            oldStroke->getContext()->onItemCreated(oldStroke, true);
             _oldTargetItem = oldStroke;
             if ( isStroke->getParentLayer() ) {
                 //isStroke->getParentLayer()->insertItem(_oldTargetItem, 0);
@@ -2912,29 +2966,12 @@ DuplicateItemUndoCommand::DuplicateItemUndoCommand(RotoPanel* roto,
     RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>( _item.item);
     RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>( _item.item);
     if (isBezier) {
-        std::string name = getItemCopyName(roto, isBezier);
-        BezierPtr bezierCopy( new Bezier(isBezier->getContext(), name, isBezier->getParentLayer(), false) );
-        bezierCopy->createNodes();
-        _item.duplicatedItem = bezierCopy;
-        _item.duplicatedItem->clone( isBezier.get() );
-        //clone has overwritten the name
-        _item.duplicatedItem->setScriptName(name);
-        _item.duplicatedItem->setLabel(name);
+        _item.duplicatedItem = isBezier->getContext()->makeDrawableCopy(isBezier, getItemCopyName(roto, isBezier));
     } else if (isStroke) {
-        std::string name = getItemCopyName(roto, isStroke);
-        RotoStrokeItemPtr strokeCopy( new RotoStrokeItem( isStroke->getBrushType(), isStroke->getContext(), name, RotoLayerPtr() ) );
-        strokeCopy->createNodes();
-        _item.duplicatedItem = strokeCopy;
-        if ( isStroke->getParentLayer() ) {
-            isStroke->getParentLayer()->insertItem(_item.duplicatedItem, 0);
-        }
-        _item.duplicatedItem->clone( isStroke.get() );
-        //clone has overwritten the name
-        _item.duplicatedItem->setScriptName(name);
-        _item.duplicatedItem->setLabel(name);
+        _item.duplicatedItem = isStroke->getContext()->makeDrawableCopy(isStroke, getItemCopyName(roto, isStroke));
     } else {
         assert(isLayer);
-        _item.duplicatedItem.reset( new RotoLayer(*isLayer) );
+        _item.duplicatedItem = isLayer->getContext()->makeLayerCopy(isLayer);
         setItemCopyNameRecursive( roto, _item.duplicatedItem );
     }
 }

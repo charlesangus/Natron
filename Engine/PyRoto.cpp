@@ -46,7 +46,7 @@ namespace {
 // True, with a Python RuntimeError set, if a running render or track reads the Roto node whose
 // shapes context holds.
 bool
-refusesShapeEdit(const RotoContextPtr& context)
+refusesShapeEdit(const RotoCurveContextPtr& context)
 {
     NodePtr node = context ? context->getNode() : NodePtr();
 
@@ -602,7 +602,7 @@ BezierCurve::getCompositingOperatorParam() const
     return 0;
 }
 
-Roto::Roto(const RotoContextPtr& ctx)
+Roto::Roto(const RotoCurveContextPtr& ctx)
     : _ctx(ctx)
 {
 }

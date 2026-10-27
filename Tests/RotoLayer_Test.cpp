@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <string>
 #include <vector>
@@ -396,6 +397,131 @@ TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoContainer)
     EXPECT_EQ(error.find(rotoName), error.rfind(rotoName)) << error;
     EXPECT_EQ(std::string::npos, error.find("_Effect")) << error;
     EXPECT_EQ(std::string::npos, error.find("_Merge")) << error;
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, RotoPaintBezierGetsItsRenderNodes)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr paint = roto->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+    EXPECT_EQ(paint.get(), roto->getCurveContext().get());
+
+    BezierPtr square = addSquare(roto);
+    ASSERT_TRUE(bool(square));
+    NodePtr effectNode = square->getEffectNode();
+    NodePtr mergeNode = square->getMergeNode();
+    ASSERT_TRUE(bool(effectNode));
+    ASSERT_TRUE(bool(mergeNode));
+
+    NodesList tree;
+    paint->getRotoPaintTreeNodes(&tree);
+    EXPECT_NE(tree.end(), std::find(tree.begin(), tree.end(), effectNode));
+    EXPECT_NE(tree.end(), std::find(tree.begin(), tree.end(), mergeNode));
+
+    project->reset(false, true);
+}
+
+namespace {
+
+// Each tool group of the viewer toolbar page, followed by its actions, as "Group" and "Group/Action".
+std::vector<std::string>
+listToolbar(const NodePtr& node)
+{
+    std::vector<std::string> names;
+    KnobPagePtr toolbar = std::dynamic_pointer_cast<KnobPage>(node->getKnobByName("Toolbar"));
+    if (!toolbar) {
+        return names;
+    }
+    std::vector<KnobIPtr> groups = toolbar->getChildren();
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        names.push_back(groups[i]->getName());
+        KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(groups[i]);
+        if (!group) {
+            continue;
+        }
+        std::vector<KnobIPtr> actions = group->getChildren();
+        for (std::size_t j = 0; j < actions.size(); ++j) {
+            names.push_back(groups[i]->getName() + "/" + actions[j]->getName());
+        }
+    }
+
+    return names;
+}
+
+std::vector<std::string>
+expectedCurveToolbar()
+{
+    const char* names[] = {
+        "SelectionToolButton",
+        "SelectionToolButton/SelectAllTool",
+        "SelectionToolButton/SelectPointsTool",
+        "SelectionToolButton/SelectShapesTool",
+        "SelectionToolButton/SelectFeatherTool",
+        "EditPointsToolButton",
+        "EditPointsToolButton/AddPointsTool",
+        "EditPointsToolButton/RemovePointsTool",
+        "EditPointsToolButton/CuspPointsTool",
+        "EditPointsToolButton/SmoothPointsTool",
+        "EditPointsToolButton/OpenCloseShapeTool",
+        "EditPointsToolButton/RemoveFeatherPointTool",
+        "EditBezierToolButton",
+        "EditBezierToolButton/DrawBezierTool",
+        "EditBezierToolButton/DrawEllipseTool",
+        "EditBezierToolButton/DrawRectangleTool",
+        "PaintBrushToolButton",
+        "PaintBrushToolButton/PaintSolidTool",
+        "PaintBrushToolButton/PencilTool",
+        "PaintBrushToolButton/EraserTool",
+    };
+
+    return std::vector<std::string>(names, names + sizeof(names) / sizeof(names[0]));
+}
+
+} // namespace
+
+TEST_F(RotoLayerTest, RotoToolbarKnobsKeepTheirNamesAndOrder)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    EXPECT_EQ(expectedCurveToolbar(), listToolbar(roto));
+
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, RotoPaintToolbarKnobsKeepTheirNamesAndOrder)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+
+    std::vector<std::string> expected = expectedCurveToolbar();
+    const char* paintNames[] = {
+        "CloneToolButton",
+        "CloneToolButton/CloneTool",
+        "CloneToolButton/RevealTool",
+        "EffectToolButton",
+        "EffectToolButton/BlurTool",
+        "EffectToolButton/SmearTool",
+        "MergeToolButton",
+        "MergeToolButton/DodgeTool",
+        "MergeToolButton/BurnTool",
+    };
+    expected.insert(expected.end(), paintNames, paintNames + sizeof(paintNames) / sizeof(paintNames[0]));
+    EXPECT_EQ(expected, listToolbar(roto));
 
     project->reset(false, true);
 }

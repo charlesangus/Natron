@@ -491,6 +491,29 @@ public:
         return false;
     }
 
+    enum CurveContextKindEnum {
+        eCurveContextKindNone = 0,
+        // Layers and Beziers only: no render nodes, no strokes, no paint pages.
+        eCurveContextKindGeometry,
+        // A RotoContext: strokes, the paint pages and the internal render tree.
+        eCurveContextKindPaint
+    };
+
+    /**
+     * @brief Which curve context the node holds, created along with the node. Paint for RotoPaint,
+     * Roto and the internal OFX Roto plug-in, None otherwise.
+     **/
+    virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
+     * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
+     **/
+    virtual RotoCurvePanelHook* getCurvePanelHook() const WARN_UNUSED_RETURN
+    {
+        return 0;
+    }
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**
@@ -1852,6 +1875,14 @@ public:
 
     void setCurrentViewportForOverlays_public(OverlaySupport* viewport);
     OverlaySupport* getCurrentViewportForOverlays() const;
+
+    /**
+     * @brief True while the viewer draws this effect's overlay without sending it pen, key or focus
+     * events, because another node owns the viewer tool slot. The overlay should then leave out
+     * feedback for the tool in use, such as a brush cursor.
+     **/
+    void setDrawingPassiveOverlay(bool passive);
+    bool isDrawingPassiveOverlay() const;
 
 protected:
 

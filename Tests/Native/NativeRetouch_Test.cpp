@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <list>
 #include <string>
 #include <vector>
@@ -175,6 +176,64 @@ geometryPoints(ShapeKindEnum kind)
         { 36., 20., 38., 19., 34., 21. },
         { 24., 18., 25., 20., 23., 16. },
     };
+}
+
+// darktable draws a path's feather as integer-snapped lines from each border point
+// (_path_falloff_roi in src/develop/masks/path.c), which leaves a band about a pixel wide at
+// full strength, biased up and left, inside and along the outline. The comparison leaves out the
+// pixels this close to a path's outline, on either side.
+const double kPathEdgeBand = 2.;
+
+// The closed outline through points, y up, as a polygon of points on its cubic segments.
+std::vector<Point>
+sampleOutline(const std::vector<ShapePoint>& points)
+{
+    const int perSegment = 256;
+    std::vector<Point> outline;
+
+    for (std::size_t k = 0; k < points.size(); ++k) {
+        const ShapePoint& a = points[k];
+        const ShapePoint& b = points[(k + 1) % points.size()];
+        for (int i = 0; i < perSegment; ++i) {
+            const double t = (double)i / perSegment;
+            const double u = 1. - t;
+            const double w0 = u * u * u;
+            const double w1 = 3. * t * u * u;
+            const double w2 = 3. * t * t * u;
+            const double w3 = t * t * t;
+            Point p;
+            p.x = w0 * a.x + w1 * a.rx + w2 * b.lx + w3 * b.x;
+            p.y = w0 * a.y + w1 * a.ry + w2 * b.ly + w3 * b.y;
+            outline.push_back(p);
+        }
+    }
+
+    return outline;
+}
+
+// The distance from (x, y) to outline, negative inside it.
+double
+signedOutlineDistance(const std::vector<Point>& outline,
+                      double x,
+                      double y)
+{
+    double nearest = std::numeric_limits<double>::max();
+    bool inside = false;
+
+    for (std::size_t i = 0, j = outline.size() - 1; i < outline.size(); j = i++) {
+        const Point& p = outline[i];
+        const Point& q = outline[j];
+        const double ex = q.x - p.x;
+        const double ey = q.y - p.y;
+        const double len2 = ex * ex + ey * ey;
+        const double t = (len2 > 0.) ? std::max(0., std::min(1., ((x - p.x) * ex + (y - p.y) * ey) / len2)) : 0.;
+        nearest = std::min(nearest, std::hypot(x - p.x - t * ex, y - p.y - t * ey));
+        if (((p.y > y) != (q.y > y)) && (x < p.x + (y - p.y) * ex / ey)) {
+            inside = !inside;
+        }
+    }
+
+    return inside ? -nearest : nearest;
 }
 
 struct ReferenceShape {
@@ -699,6 +758,26 @@ TEST_F(NativeRetouchTest, MatchesDarktableReferences)
         ASSERT_TRUE(renderRGBA(node, &out)) << job.name;
         ASSERT_EQ((std::size_t)width * height * 4, out.pixels.size()) << job.name;
 
+        // Roto's feather falloff is not darktable's, so each shape's feather band, outside its
+        // outline, is left out, and around a path kPathEdgeBand on both sides.
+        std::vector<char> excluded((std::size_t)width * height, 0);
+        int excludedCount = 0;
+        for (const ReferenceShape& r : job.shapes) {
+            const std::vector<Point> outline = sampleOutline(geometryPoints(r.kind));
+            const double inner = (r.kind == eShapePath) ? -kPathEdgeBand : 0.;
+            const double outer = (r.kind == eShapePath) ? std::max(kPathEdgeBand, geometrySpec(r.kind).feather) : geometrySpec(r.kind).feather;
+            for (int row = 0; row < height; ++row) {
+                for (int x = 0; x < width; ++x) {
+                    const double d = signedOutlineDistance(outline, x + 0.5, height - row - 0.5);
+                    char& e = excluded[(std::size_t)row * width + x];
+                    if (!e && (d >= inner) && (d <= outer)) {
+                        e = 1;
+                        ++excludedCount;
+                    }
+                }
+            }
+        }
+
         double sum = 0.;
         double level = 0.;
         double worst = 0.;
@@ -706,6 +785,9 @@ TEST_F(NativeRetouchTest, MatchesDarktableReferences)
         int worstY = 0;
         for (int row = 0; row < height; ++row) {
             for (int x = 0; x < width; ++x) {
+                if (excluded[(std::size_t)row * width + x]) {
+                    continue;
+                }
                 for (int c = 0; c < 3; ++c) {
                     const double want = expected[((std::size_t)row * width + x) * 3 + c];
                     const double got = out.pixels[((std::size_t)(height - 1 - row) * width + x) * 4 + c];
@@ -721,11 +803,11 @@ TEST_F(NativeRetouchTest, MatchesDarktableReferences)
             }
         }
         ASSERT_GT(level, 0.) << job.name;
-        const double samples = 3. * width * height;
+        const double samples = 3. * (width * height - excludedCount);
         const double relMean = sum / level;
         const double relMax = worst * samples / level;
-        std::printf("%s against darktable: mean error %.4f%% of the mean level, max %.3f%% at %d,%d from the top-left\n",
-                    job.name.c_str(), 100. * relMean, 100. * relMax, worstX, worstY);
+        std::printf("%s against darktable: mean error %.4f%% of the mean level, max %.3f%% at %d,%d from the top-left, %d pixels of the edge bands left out\n",
+                    job.name.c_str(), 100. * relMean, 100. * relMax, worstX, worstY, excludedCount);
         EXPECT_LE(relMean, kDarktableClass.mean) << job.name;
         EXPECT_LE(relMax, kDarktableClass.max) << job.name;
     }

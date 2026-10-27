@@ -27,7 +27,10 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -49,6 +52,8 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -104,6 +109,126 @@ sceneWithUnits(const std::string& upAxis,
 {
     return "#usda 1.0\n(\n    upAxis = \"" + upAxis + "\"\n    metersPerUnit = " + std::to_string(metersPerUnit) + "\n)\n\ndef Xform \"World\"\n{\n}\n";
 }
+
+// A Z-up centimetre file: an Xform root holding a mesh from (0, 0, 0) to (100, 200, 300).
+const char* const kZUpCentimetres = "#usda 1.0\n"
+                                    "(\n"
+                                    "    upAxis = \"Z\"\n"
+                                    "    metersPerUnit = 0.01\n"
+                                    ")\n"
+                                    "def Xform \"World\"\n"
+                                    "{\n"
+                                    "    def Mesh \"Box\"\n"
+                                    "    {\n"
+                                    "        point3f[] points = [(0, 0, 0), (100, 200, 300)]\n"
+                                    "        int[] faceVertexCounts = [2]\n"
+                                    "        int[] faceVertexIndices = [0, 1]\n"
+                                    "    }\n"
+                                    "}\n";
+
+const char* const kUpAxisOp = "xformOp:rotateX:upAxisCorrection";
+const char* const kUnitsOp = "xformOp:scale:unitsCorrection";
+
+// Whether the payload's top layer authors the attribute on /World.
+bool
+topLayerHasWorldAttribute(const ScenePayload& payload,
+                          const std::string& name)
+{
+    const PXR_NS::SdfLayerRefPtr layer = getTopLayer(payload);
+
+    return layer && bool(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World." + name)));
+}
+
+PXR_NS::GfRange3d
+getWorldBounds(const ScenePayload& payload,
+               const std::string& path)
+{
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+
+    if (!stage) {
+        return PXR_NS::GfRange3d();
+    }
+    PXR_NS::UsdGeomBBoxCache cache(PXR_NS::UsdTimeCode::Default(), { PXR_NS::UsdGeomTokens->default_ });
+
+    return cache.ComputeWorldBound(stage->GetPrimAtPath(PXR_NS::SdfPath(path))).ComputeAlignedRange();
+}
+
+void
+expectNear(const PXR_NS::GfVec3d& expected,
+           const PXR_NS::GfVec3d& actual)
+{
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(expected[i], actual[i], 1e-6) << "component " << i;
+    }
+}
+
+// The node's persistent message, empty if it has none.
+std::string
+getMessage(const NodePtr& node)
+{
+    if (!node->hasPersistentMessage()) {
+        return std::string();
+    }
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+
+    return message.toStdString();
+}
+
+bool
+contains(const std::string& text,
+         const char* part)
+{
+    return text.find(part) != std::string::npos;
+}
+
+// Keeps what is recorded, the way the window's history would within one step.
+class CollectingRecorder
+    : public UndoRecorderI {
+public:
+    CollectingRecorder()
+        : UndoRecorderI()
+        , depth(0)
+        , serial(0)
+        , commands()
+    {
+    }
+
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return depth > 0;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+    }
+
+    int depth;
+    std::uint64_t serial;
+    std::vector<UndoCommandPtr> commands;
+};
 } // anonymous namespace
 
 class SceneUpAxisTest
@@ -155,6 +280,16 @@ protected:
         file->setValue(path);
 
         return reader;
+    }
+
+    static void setToggle(const NodePtr& reader,
+                          const char* name,
+                          bool on)
+    {
+        KnobBool* toggle = dynamic_cast<KnobBool*>(reader->getKnobByName(name).get());
+
+        ASSERT_TRUE(toggle != NULL);
+        toggle->setValue(on);
     }
 
     // The focal length a USDCamera with the given focal length in mm authors.
@@ -249,7 +384,8 @@ TEST_F(SceneUpAxisTest, AReaderWarnsWhenTheFileUnitsDifferFromTheProjects)
     zReader->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeWarning, type);
     EXPECT_TRUE(message.contains(QString::fromUtf8("up axis is Z"))) << message.toStdString();
-    EXPECT_TRUE(message.contains(QString::fromUtf8("are Y"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("project's is Y"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Match Project Up Axis"))) << message.toStdString();
     // Never converted: the file's own up axis passes through.
     EXPECT_EQ(SceneMetadata::eUpAxisZ, payload.getMetadata().upAxis);
 
@@ -286,4 +422,149 @@ TEST_F(SceneUpAxisTest, CameraLensMillimetresConvertWithTheProjectMetersPerUnit)
     EXPECT_FLOAT_EQ(5.f, authoredFocalLength(camera));
     setProjectMetersPerUnit(0.01);
     EXPECT_FLOAT_EQ(50.f, authoredFocalLength(camera));
+}
+
+TEST_F(SceneUpAxisTest, MatchTogglesConvertAZUpCentimetreFileToTheProject)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("zcm.usda")).toStdString();
+    writeFile(path, kZUpCentimetres);
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+
+    // Both off: both aspects are named, nothing is converted.
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    std::string message = getMessage(reader);
+    EXPECT_TRUE(contains(message, "up axis is Z")) << message;
+    EXPECT_TRUE(contains(message, "meters per unit is 0.01")) << message;
+    EXPECT_TRUE(contains(message, "Match Project Units")) << message;
+    EXPECT_FALSE(contains(message, "fallback")) << message;
+    EXPECT_FALSE(topLayerHasWorldAttribute(payload, kUpAxisOp));
+    EXPECT_FALSE(topLayerHasWorldAttribute(payload, kUnitsOp));
+    EXPECT_EQ(SceneMetadata::eUpAxisZ, payload.getMetadata().upAxis);
+    EXPECT_DOUBLE_EQ(0.01, payload.getMetadata().metersPerUnit);
+    const PXR_NS::SdfLayerRefPtr uncorrected = getTopLayer(payload);
+
+    // The axis alone: only the units are still named, and the scene is Y-up.
+    setToggle(reader, kUSDReadParamMatchUpAxis, true);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    message = getMessage(reader);
+    EXPECT_FALSE(contains(message, "up axis")) << message;
+    EXPECT_TRUE(contains(message, "meters per unit is 0.01")) << message;
+    EXPECT_TRUE(topLayerHasWorldAttribute(payload, kUpAxisOp));
+    EXPECT_FALSE(topLayerHasWorldAttribute(payload, kUnitsOp));
+    EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
+    EXPECT_DOUBLE_EQ(0.01, payload.getMetadata().metersPerUnit);
+
+    // Both: no warning, the project's metrics, and the box upright in metres.
+    setToggle(reader, kUSDReadParamMatchUnits, true);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_FALSE(reader->hasPersistentMessage()) << getMessage(reader);
+    EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
+    EXPECT_DOUBLE_EQ(1., payload.getMetadata().metersPerUnit);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->y, PXR_NS::UsdGeomGetStageUpAxis(stage));
+    EXPECT_DOUBLE_EQ(1., PXR_NS::UsdGeomGetStageMetersPerUnit(stage));
+    PXR_NS::GfRange3d bounds = getWorldBounds(payload, "/World/Box");
+    expectNear(PXR_NS::GfVec3d(0, 0, -2), bounds.GetMin());
+    expectNear(PXR_NS::GfVec3d(1, 3, 0), bounds.GetMax());
+
+    // Switching the project's axis re-authors the correction: a Z-up project needs no rotation.
+    setProjectUpAxisZ(true);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_FALSE(reader->hasPersistentMessage()) << getMessage(reader);
+    EXPECT_FALSE(topLayerHasWorldAttribute(payload, kUpAxisOp));
+    EXPECT_TRUE(topLayerHasWorldAttribute(payload, kUnitsOp));
+    EXPECT_EQ(SceneMetadata::eUpAxisZ, payload.getMetadata().upAxis);
+    bounds = getWorldBounds(payload, "/World/Box");
+    expectNear(PXR_NS::GfVec3d(0, 0, 0), bounds.GetMin());
+    expectNear(PXR_NS::GfVec3d(1, 2, 3), bounds.GetMax());
+    setProjectUpAxisZ(false);
+
+    // Both off again: the uncorrected layer, and the warning, come back.
+    setToggle(reader, kUSDReadParamMatchUpAxis, false);
+    setToggle(reader, kUSDReadParamMatchUnits, false);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_FALSE(topLayerHasWorldAttribute(payload, kUpAxisOp));
+    EXPECT_FALSE(topLayerHasWorldAttribute(payload, kUnitsOp));
+    EXPECT_EQ(SceneMetadata::eUpAxisZ, payload.getMetadata().upAxis);
+    EXPECT_DOUBLE_EQ(0.01, payload.getMetadata().metersPerUnit);
+    EXPECT_TRUE(contains(getMessage(reader), "up axis is Z")) << getMessage(reader);
+    // The layer handed out uncorrected was never edited.
+    ASSERT_TRUE(bool(uncorrected));
+    EXPECT_FALSE(bool(uncorrected->GetAttributeAtPath(PXR_NS::SdfPath(std::string("/World.") + kUpAxisOp))));
+}
+
+TEST_F(SceneUpAxisTest, AFileWithoutMetricsIsWarnedAboutWithTheFallbacksNamed)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("bare.usda")).toStdString();
+    writeFile(path, "#usda 1.0\ndef Xform \"World\"\n{\n}\n");
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    // Y matches the project; USD's 0.01 does not match its 1.
+    const std::string message = getMessage(reader);
+    EXPECT_FALSE(contains(message, "up axis")) << message;
+    EXPECT_TRUE(contains(message, "meters per unit is 0.01 (unauthored, USD fallback)")) << message;
+
+    setProjectUpAxisZ(true);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_TRUE(contains(getMessage(reader), "up axis is Y (unauthored, USD fallback)")) << getMessage(reader);
+}
+
+TEST_F(SceneUpAxisTest, UseFileMetricsSetsTheProjectToTheFilesAsOneUndoStep)
+{
+    NodePtr empty = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    ASSERT_TRUE(bool(empty));
+    KnobIPtr emptyButton = empty->getKnobByName(kUSDReadParamUseFileMetrics);
+    ASSERT_TRUE(bool(emptyButton));
+    EXPECT_FALSE(emptyButton->isEnabled(0));
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("zcm.usda")).toStdString();
+    writeFile(path, kZUpCentimetres);
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    KnobButton* button = dynamic_cast<KnobButton*>(reader->getKnobByName(kUSDReadParamUseFileMetrics).get());
+    ASSERT_TRUE(button != NULL);
+    EXPECT_TRUE(button->isEnabled(0));
+
+    std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    const std::uint64_t serialBefore = recorder->serial;
+    button->trigger();
+    EXPECT_EQ(serialBefore + 1, recorder->serial);
+    EXPECT_EQ(0, recorder->depth);
+    EXPECT_TRUE(getApp()->getProject()->isProjectUpAxisZ());
+    EXPECT_DOUBLE_EQ(0.01, getApp()->getProject()->getProjectMetersPerUnit());
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_FALSE(reader->hasPersistentMessage()) << getMessage(reader);
+
+    ASSERT_FALSE(recorder->commands.empty());
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::reverse_iterator it = recorder->commands.rbegin(); it != recorder->commands.rend(); ++it) {
+            (*it)->undo();
+        }
+    }
+    EXPECT_FALSE(getApp()->getProject()->isProjectUpAxisZ());
+    EXPECT_DOUBLE_EQ(1., getApp()->getProject()->getProjectMetersPerUnit());
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_TRUE(contains(getMessage(reader), "up axis is Z")) << getMessage(reader);
+
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
 }

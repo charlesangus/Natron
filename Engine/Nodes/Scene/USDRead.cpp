@@ -35,16 +35,21 @@
 
 #include <QFileInfo>
 #include <QString>
+#include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/FileStampRegistry.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include "Engine/PythonUndoCommands.h"
+#include "Engine/UndoRecorder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -86,6 +91,12 @@ upAxisName(SceneMetadata::UpAxisEnum upAxis)
 {
     return (upAxis == SceneMetadata::eUpAxisZ) ? QString::fromUtf8("Z") : QString::fromUtf8("Y");
 }
+
+const PXR_NS::TfToken&
+upAxisToken(SceneMetadata::UpAxisEnum upAxis)
+{
+    return (upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y;
+}
 } // anonymous namespace
 
 struct USDRead::Implementation {
@@ -109,11 +120,43 @@ struct USDRead::Implementation {
     // files are read again, never by an evaluation, so an evaluation cannot re-key the node
     // while the layers still hold what was read before.
     std::atomic<U64> closureDigest;
+    // What the metrics correction reads the file through: a payload of one layer sublayering
+    // sourceFileLayer at the file's rate, so a pooled stage composes it (payloads included) in the
+    // file's own time codes, and a toggle flip or a project change finds that stage again.
+    PXR_NS::SdfLayerRefPtr sourceFileLayer;
+    U64 sourceDigest;
+    double sourceTimeCodesPerSecond;
+    ScenePayload source;
 
     Implementation()
         : closureReloadCount(0)
         , closureDigest(0)
+        , sourceDigest(0)
+        , sourceTimeCodesPerSecond(0.)
     {
+    }
+
+    ScenePayload getCorrectionSource(const PXR_NS::SdfLayerRefPtr& fileLayer,
+                                     double timeCodesPerSecond)
+    {
+        const U64 digest = closureDigest.load();
+        std::lock_guard<std::mutex> lock(fileLayerMutex);
+
+        if ((sourceFileLayer != fileLayer) || (sourceDigest != digest) || (sourceTimeCodesPerSecond != timeCodesPerSecond)) {
+            PXR_NS::SdfLayerRefPtr wrapper = SceneOps::createNodeLayer("USDRead-source");
+            wrapper->SetTimeCodesPerSecond(timeCodesPerSecond);
+            wrapper->InsertSubLayerPath(fileLayer->GetIdentifier());
+            ContentHasher h;
+            h.appendString(fileLayer->GetIdentifier());
+            h.appendU64(digest);
+            h.appendDouble(timeCodesPerSecond);
+            source = SceneOps::appendLayer(ScenePayload(), wrapper, h.finalize());
+            sourceFileLayer = fileLayer;
+            sourceDigest = digest;
+            sourceTimeCodesPerSecond = timeCodesPerSecond;
+        }
+
+        return source;
     }
 
     void setClosure(const PXR_NS::SdfLayerRefPtr& layer)
@@ -153,6 +196,9 @@ USDRead::USDRead(NodePtr node)
     , _filename()
     , _frameOffset()
     , _reload()
+    , _matchUpAxis()
+    , _matchUnits()
+    , _useFileMetrics()
     , _imp(new Implementation)
 {
 }
@@ -200,6 +246,95 @@ USDRead::initializeKnobs()
     frameOffset->setDefaultValue(0.);
     page->addKnob(frameOffset);
     _frameOffset = frameOffset;
+
+    KnobBoolPtr matchUpAxis = createKnob<KnobBool>(tr("Match Project Up Axis"));
+    matchUpAxis->setName(kUSDReadParamMatchUpAxis);
+    matchUpAxis->setHintToolTip(tr("Turns the file to the project's up axis: a Z-up file in a Y-up project is rotated -90 degrees "
+                                   "about X, a Y-up file in a Z-up project +90 degrees. The rotation goes on the file's topmost "
+                                   "transformable prims, in this node's layer; the file is not edited and prim paths do not change. "
+                                   "The scene then reports the project's up axis."));
+    matchUpAxis->setDefaultValue(false);
+    matchUpAxis->setAnimationEnabled(false);
+    matchUpAxis->setAddNewLine(false);
+    page->addKnob(matchUpAxis);
+    _matchUpAxis = matchUpAxis;
+
+    KnobBoolPtr matchUnits = createKnob<KnobBool>(tr("Match Project Units"));
+    matchUnits->setName(kUSDReadParamMatchUnits);
+    matchUnits->setHintToolTip(tr("Scales the file to the project's meters per unit, by the file's meters per unit / the project's, "
+                                  "on its topmost transformable prims. Camera clipping ranges, focus distances, focal lengths and "
+                                  "apertures are rescaled to match. A file that authors no meters per unit is taken to be in "
+                                  "centimetres (USD's fallback, 0.01); leave this off if it is really in the project's units. "
+                                  "The scene then reports the project's meters per unit."));
+    matchUnits->setDefaultValue(false);
+    matchUnits->setAnimationEnabled(false);
+    page->addKnob(matchUnits);
+    _matchUnits = matchUnits;
+
+    KnobButtonPtr useFileMetrics = createKnob<KnobButton>(tr("Use File's Metrics For Project"));
+    useFileMetrics->setName(kUSDReadParamUseFileMetrics);
+    useFileMetrics->setHintToolTip(tr("Sets the project's Up Axis and Meters Per Unit to the file's, USD's fallbacks (Y, 0.01) for "
+                                      "those it does not author, as one undoable edit. Only sets them once: later changes to the "
+                                      "file do not follow."));
+    useFileMetrics->setAllDimensionsEnabled(false);
+    page->addKnob(useFileMetrics);
+    _useFileMetrics = useFileMetrics;
+}
+
+void
+USDRead::refreshUseFileMetricsEnabled()
+{
+    KnobButtonPtr useFileMetrics = _useFileMetrics.lock();
+    KnobFilePtr filename = _filename.lock();
+
+    if (useFileMetrics) {
+        useFileMetrics->setAllDimensionsEnabled(filename && !filename->getSingleFilePath().empty());
+    }
+}
+
+void
+USDRead::onKnobsLoaded()
+{
+    refreshUseFileMetricsEnabled();
+}
+
+void
+USDRead::useFileMetricsForProject()
+{
+    KnobFilePtr filename = _filename.lock();
+    const std::string path = filename ? filename->getSingleFilePath() : std::string();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    if (path.empty() || !project) {
+        return;
+    }
+    PXR_NS::SdfLayerRefPtr fileLayer;
+    {
+        PXR_NS::TfErrorMark mark;
+        fileLayer = PXR_NS::SdfLayer::FindOrOpen(path);
+        const std::string diagnostic = takeUsdErrors(mark);
+        if (!fileLayer) {
+            setPersistentMessage(eMessageTypeError, diagnostic.empty() ? tr("USD could not read %1.").arg(QString::fromStdString(path)).toStdString() : diagnostic);
+
+            return;
+        }
+    }
+    const SceneMetadata file = SceneOps::readLayerMetadata(fileLayer, SceneMetadata());
+    KnobChoicePtr upAxis = std::dynamic_pointer_cast<KnobChoice>(project->getKnobByName("upAxis"));
+    KnobDoublePtr metersPerUnit = std::dynamic_pointer_cast<KnobDouble>(project->getKnobByName("metersPerUnit"));
+    if (!upAxis || !metersPerUnit || IsolatedJob::refusesWrite(upAxis.get()) || IsolatedJob::refusesWrite(metersPerUnit.get())) {
+        return;
+    }
+    // A button runs inside its own undo step (KnobGui), which this joins; the step records each
+    // knob's state before the edit, the same way a Python edit of the project is undone. The
+    // refusals were checked above, so recordPythonKnobEdit() never needs the GIL here.
+    UndoStepGuard step(app, tr("Use File's Metrics For Project").toStdString());
+    if (!recordPythonKnobEdit(upAxis) || !recordPythonKnobEdit(metersPerUnit)) {
+        return;
+    }
+    upAxis->setValue((file.upAxis == SceneMetadata::eUpAxisZ) ? 1 : 0);
+    metersPerUnit->setValue(file.metersPerUnit);
 }
 
 bool
@@ -210,7 +345,19 @@ USDRead::knobChanged(KnobI* k,
                      bool /*originatedFromMainThread*/)
 {
     KnobButtonPtr reload = _reload.lock();
+    KnobFilePtr filename = _filename.lock();
+    KnobButtonPtr useFileMetrics = _useFileMetrics.lock();
 
+    if (filename && (k == filename.get())) {
+        refreshUseFileMetricsEnabled();
+
+        return false;
+    }
+    if (useFileMetrics && (k == useFileMetrics.get())) {
+        useFileMetricsForProject();
+
+        return true;
+    }
     if (!reload || (k != reload.get())) {
         return false;
     }
@@ -221,7 +368,6 @@ USDRead::knobChanged(KnobI* k,
         std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
         layers = _imp->closure;
     }
-    KnobFilePtr filename = _filename.lock();
     if (layers.empty() && filename) {
         const std::string path = filename->getSingleFilePath();
         PXR_NS::SdfLayerHandle open = path.empty() ? PXR_NS::SdfLayerHandle() : PXR_NS::SdfLayer::Find(path);
@@ -294,6 +440,8 @@ bool
 USDRead::authorLayer(const SceneLayerEdit& edit,
                      const std::string& path,
                      double frameOffset,
+                     bool matchUpAxis,
+                     bool matchUnits,
                      std::string* errorMessage)
 {
     // One layer per file, shared with every other consumer through USD's layer registry, and
@@ -320,15 +468,20 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     }
 
     // Stage metadata is only read from a stage's root layer, so the file's is carried up into
-    // this layer, where SceneOps::appendLayer() reads it.
+    // this layer, where SceneOps::appendLayer() reads it. An aspect the correction converts
+    // carries the project's value instead.
     const PXR_NS::SdfLayerRefPtr& layer = edit.layer;
     const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
     PXR_NS::TfToken upAxis;
-    if (fileLayer->HasField(root, PXR_NS::UsdGeomTokens->upAxis, &upAxis)) {
+    if (matchUpAxis) {
+        layer->SetField(root, PXR_NS::UsdGeomTokens->upAxis, upAxisToken(edit.upAxis));
+    } else if (fileLayer->HasField(root, PXR_NS::UsdGeomTokens->upAxis, &upAxis)) {
         layer->SetField(root, PXR_NS::UsdGeomTokens->upAxis, upAxis);
     }
     double metersPerUnit = 0.;
-    if (fileLayer->HasField(root, PXR_NS::UsdGeomTokens->metersPerUnit, &metersPerUnit)) {
+    if (matchUnits) {
+        layer->SetField(root, PXR_NS::UsdGeomTokens->metersPerUnit, edit.metersPerUnit);
+    } else if (fileLayer->HasField(root, PXR_NS::UsdGeomTokens->metersPerUnit, &metersPerUnit)) {
         layer->SetField(root, PXR_NS::UsdGeomTokens->metersPerUnit, metersPerUnit);
     }
     if (fileLayer->HasDefaultPrim()) {
@@ -342,8 +495,28 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     // A stage time t reads the sublayer at t - offset, so (f + frameOffset) in project frames is
     // read at frame f's timecode.
     const double framesPerSecond = (edit.framesPerSecond > 0.) ? edit.framesPerSecond : timeCodesPerSecond;
+    const PXR_NS::SdfLayerOffset offset(-frameOffset * timeCodesPerSecond / framesPerSecond);
     layer->InsertSubLayerPath(fileLayer->GetIdentifier());
-    layer->SetSubLayerOffset(PXR_NS::SdfLayerOffset(-frameOffset * timeCodesPerSecond / framesPerSecond), 0);
+    layer->SetSubLayerOffset(offset, 0);
+
+    if (matchUpAxis || matchUnits) {
+        const SceneMetadata file = SceneOps::readLayerMetadata(fileLayer, SceneMetadata());
+        SceneMetricsCorrection correction;
+        correction.fromUpAxis = file.upAxis;
+        correction.fromMetersPerUnit = file.metersPerUnit;
+        correction.toUpAxis = edit.upAxis;
+        correction.toMetersPerUnit = edit.metersPerUnit;
+        correction.correctUpAxis = matchUpAxis;
+        correction.correctUnits = matchUnits;
+        correction.sourceToLayer = offset;
+        if ((SceneOps::getMetricsCorrectionAngle(correction) != 0.) || (SceneOps::getMetricsCorrectionScale(correction) != 1.)) {
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(_imp->getCorrectionSource(fileLayer, timeCodesPerSecond), errorMessage);
+            if (!lease.isValid()) {
+                return false;
+            }
+            SceneOps::authorMetricsCorrection(layer, lease.getStage(), correction);
+        }
+    }
 
     {
         std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
@@ -379,33 +552,55 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
 
     KnobDoublePtr frameOffsetKnob = _frameOffset.lock();
     const double frameOffset = frameOffsetKnob ? frameOffsetKnob->getValue() : 0.;
+    KnobBoolPtr matchUpAxisKnob = _matchUpAxis.lock();
+    KnobBoolPtr matchUnitsKnob = _matchUnits.lock();
+    const bool matchUpAxis = matchUpAxisKnob && matchUpAxisKnob->getValue();
+    const bool matchUnits = matchUnitsKnob && matchUnitsKnob->getValue();
 
     // Nothing is sampled over the project's frame range: the offset is authored once.
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
     reads.frameRange = false;
-    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, error); }, outputScene, errorMessage)) {
+    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset, matchUpAxis, matchUnits](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, matchUpAxis, matchUnits, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
     }
 
-    // The file's units as its stage reads them, USD's fallbacks where it authors none.
-    const SceneMetadata& file = outputScene->getMetadata();
+    // The scene's metrics as this node's layer leaves them: the project's for a converted aspect,
+    // else the file's, USD's fallbacks where it authors none.
+    const SceneMetadata& scene = outputScene->getMetadata();
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (project) {
+        bool upAxisAuthored = false;
+        bool metersPerUnitAuthored = false;
+        {
+            std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+            if (_imp->fileLayer) {
+                const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+                upAxisAuthored = _imp->fileLayer->HasField(root, PXR_NS::UsdGeomTokens->upAxis);
+                metersPerUnitAuthored = _imp->fileLayer->HasField(root, PXR_NS::UsdGeomTokens->metersPerUnit);
+            }
+        }
+        const QString fallback = tr(" (unauthored, USD fallback)");
         const SceneMetadata::UpAxisEnum projectUpAxis = project->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
         const double projectMetersPerUnit = project->getProjectMetersPerUnit();
-        const bool sameMetersPerUnit = std::abs(file.metersPerUnit - projectMetersPerUnit) <= 1e-9 * std::max(std::abs(file.metersPerUnit), std::abs(projectMetersPerUnit));
-        if ((file.upAxis != projectUpAxis) || !sameMetersPerUnit) {
-            setPersistentMessage(eMessageTypeWarning,
-                                 tr("The file's up axis is %1 and meters per unit %2; the project's are %3 and %4. The scene is not converted.")
-                                     .arg(upAxisName(file.upAxis))
-                                     .arg(file.metersPerUnit)
-                                     .arg(upAxisName(projectUpAxis))
-                                     .arg(projectMetersPerUnit)
-                                     .toStdString());
+        QStringList differences;
+        if (scene.upAxis != projectUpAxis) {
+            differences << tr("The file's up axis is %1%2; the project's is %3. Match Project Up Axis converts it.")
+                               .arg(upAxisName(scene.upAxis))
+                               .arg(upAxisAuthored ? QString() : fallback)
+                               .arg(upAxisName(projectUpAxis));
+        }
+        if (!PXR_NS::UsdGeomLinearUnitsAre(scene.metersPerUnit, projectMetersPerUnit)) {
+            differences << tr("The file's meters per unit is %1%2; the project's is %3. Match Project Units converts it.")
+                               .arg(scene.metersPerUnit)
+                               .arg(metersPerUnitAuthored ? QString() : fallback)
+                               .arg(projectMetersPerUnit);
+        }
+        if (!differences.isEmpty()) {
+            setPersistentMessage(eMessageTypeWarning, differences.join(QLatin1Char('\n')).toStdString());
 
             return eStatusOK;
         }

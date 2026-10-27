@@ -80,6 +80,43 @@ const char* const kFastScene = "#usda 1.0\n"
                                "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
                                "    }\n}\n";
 
+// A Z-up centimetre file: a mesh from (0, 0, 0) to (100, 200, 300) and a camera, under an Xform.
+const char* const kZUpCentimetreScene = "#usda 1.0\n"
+                                        "(\n"
+                                        "    defaultPrim = \"World\"\n"
+                                        "    metersPerUnit = 0.01\n"
+                                        "    upAxis = \"Z\"\n"
+                                        ")\n"
+                                        "def Xform \"World\"\n{\n"
+                                        "    double3 xformOp:translate = (0, 0, 50)\n"
+                                        "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                                        "    def Mesh \"Box\"\n    {\n"
+                                        "        point3f[] points = [(0, 0, 0), (100, 200, 300)]\n"
+                                        "        int[] faceVertexCounts = [2]\n"
+                                        "        int[] faceVertexIndices = [0, 1]\n"
+                                        "    }\n"
+                                        "    def Camera \"Cam\"\n    {\n"
+                                        "        float2 clippingRange = (1, 100000)\n"
+                                        "    }\n}\n";
+
+PXR_NS::GfRange3d
+worldBounds(const PXR_NS::UsdStageRefPtr& stage,
+            const char* path)
+{
+    PXR_NS::UsdGeomBBoxCache cache(PXR_NS::UsdTimeCode::Default(), { PXR_NS::UsdGeomTokens->default_ });
+
+    return cache.ComputeWorldBound(stage->GetPrimAtPath(PXR_NS::SdfPath(path))).ComputeAlignedRange();
+}
+
+void
+expectNear(const PXR_NS::GfVec3d& expected,
+           const PXR_NS::GfVec3d& actual)
+{
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(expected[i], actual[i], 1e-6) << "component " << i;
+    }
+}
+
 QString
 cleanAbsolute(const QString& path)
 {
@@ -431,4 +468,81 @@ TEST_F(USDWriteTest, SidecarsAreStableAndStaleOnesAreRemoved)
     EXPECT_TRUE(layer->GetSubLayerPaths().empty());
     EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/Transform1/World/Box"))));
     EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/Transform2/Card/Red"))));
+}
+
+// A read corrected to the project's metrics writes as it composes in both modes: flattened bakes
+// the corrective ops in, layered keeps them over the file, which it still sublayers by relative
+// path, and both carry the project's metrics. An uncorrected read keeps the file's.
+TEST_F(USDWriteTest, CorrectedReadsRoundTripInBothModes)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString filePath = tmp.path() + QString::fromUtf8("/zcm.usda");
+    writeTextFile(filePath, kZUpCentimetreScene);
+
+    for (bool corrected : { true, false }) {
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        ASSERT_TRUE(bool(reader));
+        KnobFile* file = getKnob<KnobFile>(reader, kUSDReadParamFile);
+        KnobBool* matchUpAxis = getKnob<KnobBool>(reader, kUSDReadParamMatchUpAxis);
+        KnobBool* matchUnits = getKnob<KnobBool>(reader, kUSDReadParamMatchUnits);
+        ASSERT_TRUE(file && matchUpAxis && matchUnits);
+        file->setValue(filePath.toStdString());
+        matchUpAxis->setValue(corrected);
+        matchUnits->setValue(corrected);
+
+        const std::string original = exportStage(composeOutput(reader));
+        ASSERT_FALSE(original.empty());
+        const PXR_NS::TfToken upAxis = corrected ? PXR_NS::UsdGeomTokens->y : PXR_NS::UsdGeomTokens->z;
+        const double metersPerUnit = corrected ? 1. : 0.01;
+
+        const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+        for (USDWrite::ExportModeEnum mode : modes) {
+            const QString outDir = tmp.path() + QString::fromUtf8(corrected ? "/corrected" : "/uncorrected");
+            const QString path = outDir + QString::fromUtf8(mode == USDWrite::eExportModeLayered ? "/layered.usda" : "/flattened.usda");
+            NodePtr writer = createWriter(reader, path, mode, 1, 24);
+            ASSERT_TRUE(writer && getWriter(writer));
+            ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
+            ASSERT_TRUE(QFile::exists(path));
+
+            EXPECT_EQ(original, readBack(path)) << "corrected " << corrected << " mode " << (int)mode;
+
+            PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+            ASSERT_TRUE(static_cast<bool>(stage));
+            EXPECT_EQ(upAxis, PXR_NS::UsdGeomGetStageUpAxis(stage));
+            EXPECT_DOUBLE_EQ(metersPerUnit, PXR_NS::UsdGeomGetStageMetersPerUnit(stage));
+            const PXR_NS::GfRange3d bounds = worldBounds(stage, "/World/Box");
+            const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam")));
+            ASSERT_TRUE(static_cast<bool>(camera));
+            PXR_NS::GfVec2f clippingRange;
+            ASSERT_TRUE(camera.GetClippingRangeAttr().Get(&clippingRange));
+            if (corrected) {
+                // Scaled to metres, then Z-up turned Y-up: (x, y, z) becomes (x, z, -y).
+                expectNear(PXR_NS::GfVec3d(0, 0.5, -2), bounds.GetMin());
+                expectNear(PXR_NS::GfVec3d(1, 3.5, 0), bounds.GetMax());
+                EXPECT_FLOAT_EQ(0.01f, clippingRange[0]);
+                EXPECT_FLOAT_EQ(1000.f, clippingRange[1]);
+            } else {
+                expectNear(PXR_NS::GfVec3d(0, 0, 50), bounds.GetMin());
+                expectNear(PXR_NS::GfVec3d(100, 200, 350), bounds.GetMax());
+                EXPECT_FLOAT_EQ(1.f, clippingRange[0]);
+            }
+
+            PXR_NS::SdfLayerRefPtr written = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+            ASSERT_TRUE(static_cast<bool>(written));
+            const PXR_NS::SdfAttributeSpecHandle rotate = written->GetAttributeAtPath(PXR_NS::SdfPath("/World.xformOp:rotateX:upAxisCorrection"));
+            EXPECT_EQ(corrected, static_cast<bool>(rotate));
+            if (mode == USDWrite::eExportModeLayered) {
+                // The corrective opinions over the file, which is referred to, not copied.
+                const std::vector<std::string> subLayers = written->GetSubLayerPaths();
+                ASSERT_EQ((std::size_t)1, subLayers.size());
+                EXPECT_TRUE(QDir::isRelativePath(QString::fromStdString(subLayers[0]))) << subLayers[0];
+                EXPECT_EQ(cleanAbsolute(filePath), QDir::cleanPath(QDir(outDir).absoluteFilePath(QString::fromStdString(subLayers[0]))));
+                EXPECT_FALSE(static_cast<bool>(written->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.points"))));
+            } else {
+                EXPECT_TRUE(written->GetSubLayerPaths().empty());
+                EXPECT_TRUE(static_cast<bool>(written->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.points"))));
+            }
+        }
+    }
 }

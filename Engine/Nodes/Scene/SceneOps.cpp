@@ -29,6 +29,8 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
@@ -525,6 +527,200 @@ frameToTimeCode(const ScenePayload& payload,
 
     return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
 }
+
+double
+getMetricsCorrectionAngle(const SceneMetricsCorrection& correction)
+{
+    if (!correction.correctUpAxis || (correction.fromUpAxis == correction.toUpAxis)) {
+        return 0.;
+    }
+
+    return (correction.toUpAxis == SceneMetadata::eUpAxisZ) ? 90. : -90.;
+}
+
+double
+getMetricsCorrectionScale(const SceneMetricsCorrection& correction)
+{
+    if (!correction.correctUnits || (correction.fromMetersPerUnit <= 0.) || (correction.toMetersPerUnit <= 0.)
+        || PXR_NS::UsdGeomLinearUnitsAre(correction.fromMetersPerUnit, correction.toMetersPerUnit)) {
+        return 1.;
+    }
+
+    return correction.fromMetersPerUnit / correction.toMetersPerUnit;
+}
+
+namespace {
+    // name, or name with the first "_<n>" suffix that neither prim nor order has.
+    PXR_NS::TfToken
+    getFreeCorrectionOpName(const PXR_NS::UsdPrim& prim,
+                            const PXR_NS::VtTokenArray& order,
+                            const std::string& name)
+    {
+        const auto isFree = [&prim, &order](const PXR_NS::TfToken& candidate) {
+            return !prim.HasAttribute(candidate) && (std::find(order.begin(), order.end(), candidate) == order.end());
+        };
+        PXR_NS::TfToken candidate(name);
+        for (int i = 2; !isFree(candidate); ++i) {
+            candidate = PXR_NS::TfToken(name + "_" + std::to_string(i));
+        }
+
+        return candidate;
+    }
+
+    PXR_NS::SdfAttributeSpecHandle
+    getAttributeSpec(const PXR_NS::SdfLayerRefPtr& layer,
+                     const PXR_NS::SdfPath& primPath,
+                     const PXR_NS::TfToken& name,
+                     const PXR_NS::SdfValueTypeName& typeName,
+                     PXR_NS::SdfVariability variability)
+    {
+        const PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, primPath);
+        if (!prim) {
+            return PXR_NS::SdfAttributeSpecHandle();
+        }
+        PXR_NS::SdfAttributeSpecHandle spec = layer->GetAttributeAtPath(primPath.AppendProperty(name));
+
+        return spec ? spec : PXR_NS::SdfAttributeSpec::New(prim, name.GetString(), typeName, variability);
+    }
+
+    // Authors attr's value in layer scaled by scale, its default when it authors one and every
+    // time sample, the sample times mapped by sourceToLayer.
+    template <typename T, typename SCALE>
+    void
+    rescaleAttribute(const PXR_NS::SdfLayerRefPtr& layer,
+                     const PXR_NS::UsdAttribute& attr,
+                     const PXR_NS::SdfLayerOffset& sourceToLayer,
+                     const SCALE& scale)
+    {
+        if (!attr || !attr.HasAuthoredValue()) {
+            return;
+        }
+        const PXR_NS::SdfAttributeSpecHandle spec = getAttributeSpec(layer, attr.GetPrim().GetPath(), attr.GetName(), attr.GetTypeName(), attr.GetVariability());
+        if (!spec) {
+            return;
+        }
+        T value;
+        if ((attr.GetResolveInfo(PXR_NS::UsdTimeCode::Default()).GetSource() == PXR_NS::UsdResolveInfoSourceDefault) && attr.Get(&value, PXR_NS::UsdTimeCode::Default())) {
+            spec->SetDefaultValue(PXR_NS::VtValue(scale(value)));
+        }
+        std::vector<double> times;
+        attr.GetTimeSamples(&times);
+        for (double time : times) {
+            if (attr.Get(&value, time)) {
+                layer->SetTimeSample(spec->GetPath(), sourceToLayer * time, scale(value));
+            }
+        }
+    }
+
+    void
+    rescaleCamera(const PXR_NS::SdfLayerRefPtr& layer,
+                  const PXR_NS::UsdGeomCamera& camera,
+                  const PXR_NS::SdfLayerOffset& sourceToLayer,
+                  double scale)
+    {
+        const float s = (float)scale;
+        const auto scaleFloat = [s](float v) { return v * s; };
+
+        rescaleAttribute<PXR_NS::GfVec2f>(layer, camera.GetClippingRangeAttr(), sourceToLayer, [s](const PXR_NS::GfVec2f& v) { return v * s; });
+        // A clipping plane (a, b, c, d) in camera space keeps its normal; its distance scales.
+        rescaleAttribute<PXR_NS::VtVec4fArray>(layer, camera.GetClippingPlanesAttr(), sourceToLayer, [s](const PXR_NS::VtVec4fArray& planes) {
+            PXR_NS::VtVec4fArray scaled(planes);
+            for (PXR_NS::GfVec4f& plane : scaled) {
+                plane[3] *= s;
+            }
+
+            return scaled;
+        });
+        // Lens lengths are tenths of a scene unit: scaling them keeps the lens the same physical
+        // size, and the field of view, which only their ratios set, unchanged.
+        for (const PXR_NS::UsdAttribute& attr : { camera.GetFocusDistanceAttr(), camera.GetFocalLengthAttr(), camera.GetHorizontalApertureAttr(),
+                                                  camera.GetVerticalApertureAttr(), camera.GetHorizontalApertureOffsetAttr(), camera.GetVerticalApertureOffsetAttr() }) {
+            rescaleAttribute<float>(layer, attr, sourceToLayer, scaleFloat);
+        }
+    }
+} // anonymous namespace
+
+std::size_t
+authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
+                        const PXR_NS::UsdStageRefPtr& source,
+                        const SceneMetricsCorrection& correction)
+{
+    const double angle = getMetricsCorrectionAngle(correction);
+    const double scale = getMetricsCorrectionScale(correction);
+
+    if (!layer || !source || ((angle == 0.) && (scale == 1.))) {
+        return 0;
+    }
+
+    // A prim is corrected when no xformable ancestor carries the correction to it: it is the
+    // topmost xformable on its branch, or its op stack resets and so ignores its ancestors'.
+    std::vector<PXR_NS::UsdPrim> targets;
+    std::vector<PXR_NS::UsdPrim> cameras;
+    {
+        int xformableAncestors = 0;
+        PXR_NS::UsdPrimRange range = PXR_NS::UsdPrimRange::PreAndPostVisit(source->GetPseudoRoot());
+        for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+            const PXR_NS::UsdPrim& prim = *it;
+            const bool xformable = prim.IsA<PXR_NS::UsdGeomXformable>();
+            if (it.IsPostVisit()) {
+                if (xformable) {
+                    --xformableAncestors;
+                }
+                continue;
+            }
+            if (xformable) {
+                if ((xformableAncestors == 0) || PXR_NS::UsdGeomXformable(prim).GetResetXformStack()) {
+                    targets.push_back(prim);
+                }
+                ++xformableAncestors;
+            }
+            if ((scale != 1.) && prim.IsA<PXR_NS::UsdGeomCamera>()) {
+                cameras.push_back(prim);
+            }
+        }
+    }
+
+    PXR_NS::SdfChangeBlock block;
+    for (const PXR_NS::UsdPrim& prim : targets) {
+        PXR_NS::VtTokenArray order;
+        PXR_NS::UsdGeomXformable(prim).GetXformOpOrderAttr().Get(&order);
+        const bool resets = !order.empty() && (order[0] == PXR_NS::UsdGeomXformOpTypes->resetXformStack);
+
+        PXR_NS::VtTokenArray corrected;
+        if (resets) {
+            corrected.push_back(order[0]);
+        }
+        if (angle != 0.) {
+            const PXR_NS::TfToken name = getFreeCorrectionOpName(prim, order, "xformOp:rotateX:upAxisCorrection");
+            const PXR_NS::SdfAttributeSpecHandle op = getAttributeSpec(layer, prim.GetPath(), name, PXR_NS::SdfValueTypeNames->Double, PXR_NS::SdfVariabilityVarying);
+            if (op) {
+                op->SetDefaultValue(PXR_NS::VtValue(angle));
+                corrected.push_back(name);
+            }
+        }
+        if (scale != 1.) {
+            const PXR_NS::TfToken name = getFreeCorrectionOpName(prim, order, "xformOp:scale:unitsCorrection");
+            const PXR_NS::SdfAttributeSpecHandle op = getAttributeSpec(layer, prim.GetPath(), name, PXR_NS::SdfValueTypeNames->Double3, PXR_NS::SdfVariabilityVarying);
+            if (op) {
+                op->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3d(scale)));
+                corrected.push_back(name);
+            }
+        }
+        for (std::size_t i = resets ? 1 : 0; i < order.size(); ++i) {
+            corrected.push_back(order[i]);
+        }
+        const PXR_NS::SdfAttributeSpecHandle orderSpec = getAttributeSpec(layer, prim.GetPath(), PXR_NS::UsdGeomTokens->xformOpOrder,
+                                                                          PXR_NS::SdfValueTypeNames->TokenArray, PXR_NS::SdfVariabilityUniform);
+        if (orderSpec) {
+            orderSpec->SetDefaultValue(PXR_NS::VtValue(corrected));
+        }
+    }
+    for (const PXR_NS::UsdPrim& prim : cameras) {
+        rescaleCamera(layer, PXR_NS::UsdGeomCamera(prim), correction.sourceToLayer, scale);
+    }
+
+    return targets.size();
+} // authorMetricsCorrection
 
 namespace {
     // The defined, non-abstract root prims of input's composed stage, and the properties under

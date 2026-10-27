@@ -15,3 +15,7 @@
 ### 2026-10-27T05:19:47+00:00 — change-request
 - refs: M203
 - Spike/investigate if we _need_ to end GPU regions for this to be practical.
+
+### 2026-10-27T05:22:05+00:00 — change-request
+- refs: M187
+- Hold on this til my say-so.

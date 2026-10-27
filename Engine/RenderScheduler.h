@@ -232,7 +232,7 @@ public:
      **/
     struct RegionReport {
         // Per member, in Region::members order: its device time, 0 for an identity member. It is measured with
-        // timestamps, or on a device without them the submission's time split by the members' estimated costs.
+        // timestamps, or on a device without them the submission's time split evenly among its members.
         std::vector<long long> memberNs;
         double uploadMs = 0.;
         unsigned long long uploadBytes = 0;
@@ -275,7 +275,7 @@ public:
         unsigned long long importCount = 0;
         unsigned long long newImportBytes = 0;
 
-        // The transfer time placement's cost model predicts for uploadBytes and downloadBytes, to compare with the
+        // The transfer time the session's transfer model predicts for uploadBytes and downloadBytes, to compare with the
         // measured uploadMs and downloadMs; infinite when the model knows no bandwidth.
         double predictedTransferMs = 0.;
 
@@ -306,9 +306,6 @@ public:
         // strips run theirs outside the timed span.
         std::vector<GpuMemberInterval> memberIntervals;
         double ownershipMs = 0.;
-
-        // Members the device timed that had no clean interval to calibrate the cost model from.
-        int calibrationSkipped = 0;
 
         // Set by the scheduler when the profile is on; the region then lists each upload and download it issued, and
         // timestamps them on the device when it can.

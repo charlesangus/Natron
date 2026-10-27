@@ -1132,12 +1132,6 @@ public:
     static void noteUnplannedPull();
 
     /**
-     * @brief How many render actions the calling thread started so far. A renderRoI call that leaves it unchanged on
-     * its thread took its output from the cache, or rendered it on other threads.
-     **/
-    static unsigned long long getRenderActionsOnThisThread();
-
-    /**
      * @brief Whether input belongs to the internal tree of a RotoPaint node of the frame installed on this thread. The
      * RotoPaint task renders that tree itself, so pulling its nodes is not work the scheduler left unplanned.
      **/

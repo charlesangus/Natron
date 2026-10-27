@@ -38,7 +38,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuCostModel.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
@@ -911,7 +911,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
             rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
         }
 #endif
-        GpuCostModel::session().setTransferRates(rates);
+        GpuTransferModel::session().setTransferRates(rates);
     }
 
     // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI

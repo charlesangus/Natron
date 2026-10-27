@@ -37,7 +37,7 @@
 #include <gtest/gtest.h>
 
 #include "Engine/FrameRenderContext.h"
-#include "Engine/GpuCostModel.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/RenderScheduler.h"
 
@@ -726,13 +726,8 @@ TEST(GpuWeightPlacement, TransfersAreFreeOnlyWithoutUploadOrDownload)
 
 namespace {
 
-const char* const kGradeId = "net.sf.openfx.GradePlugin";
-const char* const kBlurId = "net.sf.cimg.CImgBlur";
-// A plug-in ID with no seed row.
-const char* const kUnseededId = "fr.natron.test.Unseeded";
 const RectI kUhd(0, 0, 3840, 2160);
 const std::size_t kUhdBytes = (std::size_t)3840 * 2160 * 4 * sizeof(float);
-const double kUhdMpx = 3840. * 2160. / 1e6;
 
 GpuTransferRates
 rates(double bytesPerSecond)
@@ -744,89 +739,6 @@ rates(double bytesPerSecond)
 
     return r;
 }
-
-/**
- * @brief A model on 16 threads, as the seeds were measured, whose traits come from a per-task table, over a graph of
- * UHD tasks.
- **/
-struct CostFixture {
-    GpuCostModel model;
-    std::map<int, GpuTaskTraits> traits;
-    FrameGraph graph;
-
-    CostFixture(int nTasks,
-                const std::vector<std::pair<int, int>>& edges)
-        : graph(makeGraph(nTasks, edges))
-    {
-        for (FrameGraph::Task& task : graph.tasks) {
-            task.roi = kUhd;
-            task.renderedRoI = kUhd;
-            task.estimatedBytes = kUhdBytes;
-        }
-        model.setThreadCount(16);
-        model.setTransferRates(rates(25e9));
-        model.setCpuSeed(kGradeId, 16., 16.);
-        const FrameGraph* g = &graph;
-        const std::map<int, GpuTaskTraits>* table = &traits;
-        model.setTraitsHint([g, table](const FrameGraph::Task& task) {
-            std::map<int, GpuTaskTraits>::const_iterator found = table->find(indexOf(*g, task));
-
-            return (found == table->end()) ? GpuTaskTraits() : found->second;
-        });
-    }
-};
-
-} // namespace
-
-TEST(GpuCostModel, GradeCostsFollowSeedOverride)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(16);
-    model.setCpuSeed(kGradeId, 16., 16.);
-    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), kUhdMpx), kUhdMpx, 1e-9);
-    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.497, 1e-3);
-    EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits(kUnseededId)));
-}
-
-TEST(GpuCostModel, SerialSeedScalesToPoolSize)
-{
-    GpuCostModel model;
-
-    // Blur FIR up to sigma 25: 84.6 ms/Mpx serial, 6.9458 at 16 threads.
-    const GpuTaskTraits blur(kBlurId, 25.);
-    model.setThreadCount(16);
-    EXPECT_NEAR(model.cpuMs(blur, 1.), 84.6 / 6.9458, 1e-6);
-    model.setThreadCount(1);
-    EXPECT_NEAR(model.cpuMs(blur, 1.), 84.6, 1e-6);
-    model.setThreadCount(4);
-    const double four = model.cpuMs(blur, 1.);
-    EXPECT_GT(four, 84.6 / 6.9458);
-    EXPECT_LT(four, 84.6);
-    EXPECT_GE(four, 84.6 / 4.);
-}
-
-TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(16);
-    model.setCpuSeed(kGradeId, 16., 16.);
-
-    // 32 thread-ms per Mpx against a seed of 16.
-    model.observeCpu(GpuTaskTraits(kGradeId), (std::int64_t)(2e6 * kUhdMpx), 16, kUhdMpx);
-    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), 1.), (16. + GpuCostModel::kEmaWeight * 16.) / 16., 1e-9);
-
-    const double seedGpu = model.gpuMs(GpuTaskTraits(kGradeId), 1.);
-    model.observeGpu(GpuTaskTraits(kGradeId), (std::int64_t)(1e6 * kUhdMpx), kUhdMpx);
-    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), 1.), seedGpu + GpuCostModel::kEmaWeight * (1. - seedGpu), 1e-9);
-
-    // A measured GPU run makes a plugin without a GPU seed eligible.
-    model.observeGpu(GpuTaskTraits(kUnseededId), 1000000, 1.);
-    EXPECT_TRUE(model.hasGpuCost(GpuTaskTraits(kUnseededId)));
-}
-
-namespace {
 
 GpuTransferRates
 pipelinedRates(double bytesPerSecond)
@@ -840,9 +752,14 @@ pipelinedRates(double bytesPerSecond)
 
 } // namespace
 
-TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesKernelHeightAndNoOutputKeptOnDevice)
+TEST(GpuTransferModel, PipeliningNeedsDeviceSupportBytesHeightAndNoOutputKeptOnDevice)
 {
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    for (FrameGraph::Task& task : graph.tasks) {
+        task.roi = kUhd;
+        task.renderedRoI = kUhd;
+        task.estimatedBytes = kUhdBytes;
+    }
     FrameGraph::Region region;
     region.members = { 1 };
     region.externalInputs = { 2 };
@@ -851,35 +768,41 @@ TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesKernelHeightAndNoOutputKeptO
     output.externalConsumers = 1;
     region.outputs.push_back(output);
     const double bytes = (double)kUhdBytes;
-    // At 25 GB/s the bytes take 10.6 ms, of which a kernel must run a quarter.
-    const double kernelMs = 5.;
+    GpuTransferModel model;
 
-    fixture.model.setTransferRates(rates(25e9));
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+    model.setTransferRates(rates(25e9));
+    EXPECT_FALSE(model.pipelinesTransfers(graph, region, bytes, bytes));
 
-    fixture.model.setTransferRates(pipelinedRates(25e9));
-    EXPECT_TRUE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, 1 << 20, 1 << 20, kernelMs));
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, 2.5));
+    model.setTransferRates(pipelinedRates(25e9));
+    EXPECT_TRUE(model.pipelinesTransfers(graph, region, bytes, bytes));
+    EXPECT_FALSE(model.pipelinesTransfers(graph, region, 1 << 20, 1 << 20));
 
-    fixture.graph.tasks[0].device = FrameGraph::Device::Gpu;
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
-    fixture.graph.tasks[0].device = FrameGraph::Device::Cpu;
+    GpuTransferRates unified = pipelinedRates(25e9);
+    unified.unifiedMemory = true;
+    model.setTransferRates(unified);
+    EXPECT_FALSE(model.pipelinesTransfers(graph, region, bytes, bytes));
+    model.setTransferRates(pipelinedRates(0.));
+    EXPECT_FALSE(model.pipelinesTransfers(graph, region, bytes, bytes));
+    model.setTransferRates(pipelinedRates(25e9));
 
-    fixture.graph.tasks[1].renderedRoI = RectI(0, 0, 3840, 128);
-    EXPECT_FALSE(fixture.model.pipelinesTransfers(fixture.graph, region, bytes, bytes, kernelMs));
+    graph.tasks[0].device = FrameGraph::Device::Gpu;
+    EXPECT_FALSE(model.pipelinesTransfers(graph, region, bytes, bytes));
+    graph.tasks[0].device = FrameGraph::Device::Cpu;
+
+    graph.tasks[1].renderedRoI = RectI(0, 0, 3840, 128);
+    EXPECT_FALSE(model.pipelinesTransfers(graph, region, bytes, bytes));
 }
 
-TEST(GpuCostModel, ObservedTransfersMoveRatesByMovingAverage)
+TEST(GpuTransferModel, ObservedTransfersMoveRatesByMovingAverage)
 {
-    GpuCostModel model;
+    GpuTransferModel model;
 
     model.setTransferRates(rates(25e9));
     EXPECT_NEAR(model.transferMs(1e9, 0.), 40., 1e-9);
 
     // 80 ms where the rates give 40.
     model.observeTransfer(1e9, 0., 80.);
-    const double scale = 1. + GpuCostModel::kEmaWeight;
+    const double scale = 1. + GpuTransferModel::kEmaWeight;
     EXPECT_NEAR(model.transferMs(1e9, 0.), 40. * scale, 1e-9);
     EXPECT_NEAR(model.transferMs(0., 1e9), 40. * scale, 1e-9);
 
@@ -907,300 +830,3 @@ TEST(GpuDevice, DiscreteDeviceWithResizableBarIsNotUnifiedMemory)
     EXPECT_TRUE(gpu::isUnifiedMemory(VK_PHYSICAL_DEVICE_TYPE_CPU));
 }
 #endif
-
-namespace {
-
-GpuTaskTraits
-unseededTraits()
-{
-    return GpuTaskTraits("test.NoSeedRows");
-}
-
-} // namespace
-
-// A plugin without rows has no price, not another plugin's: it is priced once it has measured both a CPU and a GPU row.
-TEST(GpuCostModel, UnseededPluginIsPricedOnlyByItsOwnRows)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(16);
-    const GpuTaskTraits unseeded = unseededTraits();
-    EXPECT_FALSE(model.isPriced(unseeded));
-    EXPECT_FALSE(model.hasGpuCost(unseeded));
-    EXPECT_EQ(model.cpuMs(unseeded, 1.), 0.);
-    EXPECT_EQ(model.gpuMs(unseeded, 1.), std::numeric_limits<double>::infinity());
-
-    model.observeCpu(unseeded, 9000000, 16, 1.);
-    EXPECT_FALSE(model.isPriced(unseeded));
-    EXPECT_NEAR(model.cpuMs(unseeded, 1.), 9., 1e-9);
-
-    model.observeGpu(unseeded, 7000000, 1.);
-    EXPECT_TRUE(model.isPriced(unseeded));
-    EXPECT_NEAR(model.gpuMs(unseeded, 1.), 7., 1e-9);
-
-    EXPECT_TRUE(model.isPriced(GpuTaskTraits(kGradeId)));
-    EXPECT_TRUE(model.isPriced(GpuTaskTraits(kBlurId, 25.)));
-}
-
-// The seed prices a Transform that renders with motion blur apart from a plain one, and measurements of either leave
-// the other alone.
-TEST(GpuCostModel, MotionBlurRowsPriceOnlyMotionBlur)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(1);
-    GpuTaskTraits plain("net.sf.openfx.TransformPlugin");
-    GpuTaskTraits blurred = plain;
-    blurred.motionBlur = true;
-    const double plainCpu = model.cpuMs(plain, 1.);
-    const double blurredCpu = model.cpuMs(blurred, 1.);
-    const double plainGpu = model.gpuMs(plain, 1.);
-    const double blurredGpu = model.gpuMs(blurred, 1.);
-    EXPECT_NE(plainCpu, model.cpuMs(GpuTaskTraits(kBlurId, 25.), 1.));
-    EXPECT_NE(plainGpu, model.gpuMs(GpuTaskTraits(kBlurId, 25.), 1.));
-    EXPECT_GT(blurredCpu, plainCpu);
-    EXPECT_GT(blurredGpu, plainGpu);
-
-    const double weight = GpuCostModel::kEmaWeight;
-    model.observeCpu(plain, 7000000, 1, 1.);
-    EXPECT_NEAR(model.cpuMs(plain, 1.), plainCpu + weight * (7. - plainCpu), 1e-9);
-    EXPECT_NEAR(model.cpuMs(blurred, 1.), blurredCpu, 1e-9);
-
-    model.observeGpu(blurred, 50000000, 1.);
-    EXPECT_NEAR(model.gpuMs(blurred, 1.), blurredGpu + weight * (50. - blurredGpu), 1e-9);
-    EXPECT_NEAR(model.gpuMs(plain, 1.), plainGpu, 1e-12);
-    const double blurredAfter = model.gpuMs(blurred, 1.);
-    model.observeGpu(plain, 2000000, 1.);
-    EXPECT_NEAR(model.gpuMs(plain, 1.), plainGpu + weight * (2. - plainGpu), 1e-9);
-    EXPECT_NEAR(model.gpuMs(blurred, 1.), blurredAfter, 1e-12);
-}
-
-// The recursive Blur filters have a GPU row of their own, which a measurement of the FIR rows does not touch.
-TEST(GpuCostModel, RecursiveBlurFiltersHaveTheirOwnGpuRow)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(1);
-    const GpuTaskTraits fir(kBlurId, 100., false);
-    const GpuTaskTraits iir(kBlurId, 100., true);
-    const double firGpu = model.gpuMs(fir, 1.);
-    const double iirGpu = model.gpuMs(iir, 1.);
-    EXPECT_GT(firGpu, 0.);
-    EXPECT_NE(firGpu, iirGpu);
-
-    model.observeGpu(iir, 4000000, 1.);
-    EXPECT_NEAR(model.gpuMs(iir, 1.), iirGpu + GpuCostModel::kEmaWeight * (4. - iirGpu), 1e-9);
-    EXPECT_NEAR(model.gpuMs(fir, 1.), firGpu, 1e-12);
-}
-
-TEST(GpuCostModel, ErodeSizeSelectsItsSeedRow)
-{
-    GpuCostModel model;
-    const std::string erode = "net.sf.cimg.CImgErode";
-
-    GpuTaskTraits small(erode);
-    small.size = 6;
-    GpuTaskTraits large(erode);
-    large.size = 40;
-    GpuTaskTraits unsized(erode);
-
-    EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
-    EXPECT_NEAR(model.gpuMs(large, kUhdMpx), 4.170, 1e-3);
-    EXPECT_NE(model.gpuMs(small, 1.), model.gpuMs(large, 1.));
-
-    GpuTaskTraits tiny = small;
-    tiny.size = 1;
-    GpuTaskTraits huge = large;
-    huge.size = 500;
-    EXPECT_NEAR(model.gpuMs(tiny, 1.), model.gpuMs(small, 1.), 1e-12);
-    EXPECT_NEAR(model.gpuMs(huge, 1.), model.gpuMs(large, 1.), 1e-12);
-    EXPECT_NEAR(model.gpuMs(unsized, 1.), model.gpuMs(small, 1.), 1e-12);
-
-    const double largeGpu = model.gpuMs(large, 1.);
-    model.observeGpu(large, 2000000, 1.);
-    EXPECT_NEAR(model.gpuMs(large, 1.), largeGpu + GpuCostModel::kEmaWeight * (2. - largeGpu), 1e-9);
-    EXPECT_NEAR(model.gpuMs(small, kUhdMpx), 6.827, 1e-3);
-}
-
-namespace {
-
-GpuTaskTraits
-seedTraits(const char* pluginId,
-           double sigma = 0.,
-           bool iir = false,
-           GpuBlurFilter filter = GpuBlurFilter::eAny,
-           int size = 0,
-           bool motionBlur = false)
-{
-    GpuTaskTraits traits(pluginId, sigma, iir, filter);
-
-    traits.size = size;
-    traits.motionBlur = motionBlur;
-
-    return traits;
-}
-
-} // namespace
-
-// The seeded cost of every row a lookup can reach, including the rows that stand in when none covers the traits, so
-// that the seed fragments and the lookup order cannot change a cost unnoticed.
-TEST(GpuCostModel, SeededCostsArePinned)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(1);
-    const char* const erode = "net.sf.cimg.CImgErode";
-    const char* const dilate = "net.sf.cimg.CImgDilate";
-    const char* const transform = "net.sf.openfx.TransformPlugin";
-    const char* const radial = "net.sf.openfx.Radial";
-    const char* const despill = "Despill";
-    const double beyond = 2e9;
-
-    const std::vector<std::pair<GpuTaskTraits, double>> gpu = {
-        { seedTraits(kGradeId), 0.0599 },
-        { seedTraits(kBlurId, 2.), 1.1470 },
-        { seedTraits(kBlurId, 3.), 1.1470 },
-        { seedTraits(kBlurId, 10.), 0.8527 },
-        { seedTraits(kBlurId, 25.), 0.8527 },
-        { seedTraits(kBlurId, 100.), 2.2600 },
-        { seedTraits(kBlurId, beyond), 2.2600 },
-        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eFirGaussian), 0.8527 },
-        { seedTraits(kBlurId, 100., true), 2.4130 },
-        { seedTraits(kBlurId, beyond, true), 2.4130 },
-        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eBox), 2.6886 },
-        { seedTraits(kBlurId, beyond, false, GpuBlurFilter::eBox), 2.6886 },
-        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eTriangle), 3.8870 },
-        { seedTraits(kBlurId, 25., false, GpuBlurFilter::eQuadratic), 4.7803 },
-        { seedTraits(kBlurId, 25., true, GpuBlurFilter::eGaussian), 3.4855 },
-        { seedTraits(kBlurId, 25., true, GpuBlurFilter::eQuasiGaussian), 4.2040 },
-        { seedTraits(kBlurId, 25., true, GpuBlurFilter::eBox), 2.4130 },
-        { seedTraits(erode), 0.8231 },
-        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 6), 0.8231 },
-        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 7), 0.5027 },
-        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 40), 0.5027 },
-        { seedTraits(erode, 0., false, GpuBlurFilter::eAny, 2000000), 0.5027 },
-        { seedTraits(dilate), 0.8337 },
-        { seedTraits(dilate, 0., false, GpuBlurFilter::eAny, 40), 0.8337 },
-        { seedTraits(transform), 0.0808 },
-        { seedTraits(transform, 0., false, GpuBlurFilter::eAny, 0, true), 1.1803 },
-    };
-    for (std::size_t i = 0; i < gpu.size(); ++i) {
-        EXPECT_DOUBLE_EQ(model.gpuMs(gpu[i].first, 1.), gpu[i].second) << i;
-    }
-    EXPECT_FALSE(model.hasGpuCost(seedTraits(radial)));
-    EXPECT_FALSE(model.hasGpuCost(seedTraits(despill)));
-
-    const std::vector<std::pair<GpuTaskTraits, double>> cpu = {
-        { seedTraits(kGradeId), 11.48 },
-        { seedTraits(kBlurId, 2.), 30.13 },
-        { seedTraits(kBlurId, 25.), 84.6 },
-        { seedTraits(kBlurId, 100.), 252.8 },
-        { seedTraits(kBlurId, beyond), 46.9759 },
-        { seedTraits(kBlurId, 100., true), 52.84 },
-        { seedTraits(erode), 54.6268 },
-        { seedTraits(dilate), 50.1112 },
-        { seedTraits(transform), 26.126 },
-        { seedTraits(transform, 0., false, GpuBlurFilter::eAny, 0, true), 996.1061 },
-        { seedTraits(radial), 8.7415 },
-        { seedTraits(despill), 22.5313 },
-    };
-    for (std::size_t i = 0; i < cpu.size(); ++i) {
-        EXPECT_DOUBLE_EQ(model.cpuMs(cpu[i].first, 1.), cpu[i].second) << i;
-    }
-}
-
-// Dilate has one seed row for every size, and the FIR Gaussian, the one Blur filter with no row of its own, prices like
-// the rows for any filter.
-TEST(GpuCostModel, RowsWithoutSizeOrFilterHoldForAny)
-{
-    GpuCostModel model;
-
-    GpuTaskTraits dilate("net.sf.cimg.CImgDilate");
-    const double any = model.gpuMs(dilate, 1.);
-    dilate.size = 40;
-    EXPECT_NEAR(model.gpuMs(dilate, 1.), any, 1e-12);
-
-    for (double sigma : { 2., 25., 100. }) {
-        const GpuTaskTraits fir(kBlurId, sigma, false, GpuBlurFilter::eFirGaussian);
-        EXPECT_NEAR(model.gpuMs(fir, 1.), model.gpuMs(GpuTaskTraits(kBlurId, sigma), 1.), 1e-12) << sigma;
-    }
-}
-
-// Each Blur filter is seeded apart, at one cost for every sigma, and what one filter measures leaves the others' costs
-// as they were.
-TEST(GpuCostModel, BlurFiltersAreSeededAndLearnedApart)
-{
-    GpuCostModel model;
-
-    const GpuTaskTraits fir(kBlurId, 25., false, GpuBlurFilter::eFirGaussian);
-    const GpuTaskTraits box(kBlurId, 25., false, GpuBlurFilter::eBox);
-    const GpuTaskTraits triangle(kBlurId, 25., false, GpuBlurFilter::eTriangle);
-    const GpuTaskTraits quadratic(kBlurId, 25., false, GpuBlurFilter::eQuadratic);
-    const GpuTaskTraits gaussian(kBlurId, 25., true, GpuBlurFilter::eGaussian);
-    const GpuTaskTraits quasiGaussian(kBlurId, 25., true, GpuBlurFilter::eQuasiGaussian);
-    const std::vector<GpuTaskTraits> filters = { fir, box, triangle, quadratic, gaussian, quasiGaussian };
-
-    EXPECT_NEAR(model.gpuMs(box, kUhdMpx), 22.30, 1e-3);
-    EXPECT_NEAR(model.gpuMs(triangle, kUhdMpx), 32.24, 1e-3);
-    EXPECT_NEAR(model.gpuMs(quadratic, kUhdMpx), 39.65, 1e-3);
-    EXPECT_NEAR(model.gpuMs(gaussian, kUhdMpx), 28.91, 1e-3);
-    EXPECT_NEAR(model.gpuMs(quasiGaussian, kUhdMpx), 34.87, 1e-3);
-    for (const GpuTaskTraits& traits : filters) {
-        if (traits.filter == GpuBlurFilter::eFirGaussian) {
-            continue;
-        }
-        for (double sigma : { 2., 100. }) {
-            GpuTaskTraits other = traits;
-            other.sigma = sigma;
-            EXPECT_NEAR(model.gpuMs(other, 1.), model.gpuMs(traits, 1.), 1e-12) << (int)traits.filter << " at " << sigma;
-        }
-    }
-
-    for (std::size_t observed = 0; observed < filters.size(); ++observed) {
-        std::vector<double> before;
-        for (const GpuTaskTraits& traits : filters) {
-            before.push_back(model.gpuMs(traits, 1.));
-        }
-        model.observeGpu(filters[observed], 100000000, 1.);
-        for (std::size_t i = 0; i < filters.size(); ++i) {
-            if (i == observed) {
-                EXPECT_NEAR(model.gpuMs(filters[i], 1.), before[i] + GpuCostModel::kEmaWeight * (100. - before[i]), 1e-9) << i;
-            } else {
-                EXPECT_NEAR(model.gpuMs(filters[i], 1.), before[i], 1e-12) << i << " after " << observed;
-            }
-        }
-    }
-}
-
-// Every node with a GPU kernel has seed rows of its own, so each is priced from the start.
-TEST(GpuCostModel, EveryGpuNodeIsSeeded)
-{
-    GpuCostModel model;
-
-    model.setThreadCount(16);
-    const char* const ids[] = {
-        "net.sf.openfx.GradePlugin",
-        "net.sf.openfx.ColorCorrectPlugin",
-        "net.sf.openfx.Invert",
-        "net.sf.openfx.Clamp",
-        "net.sf.openfx.AddPlugin",
-        "net.sf.openfx.MultiplyPlugin",
-        "net.sf.openfx.GammaPlugin",
-        "net.sf.openfx.SaturationPlugin",
-        "net.sf.openfx.ColorLookupPlugin",
-        "net.sf.openfx.KeyerPlugin",
-        "net.sf.openfx.ChromaKeyerPlugin",
-        "net.sf.cimg.CImgErode",
-        "net.sf.cimg.CImgDilate",
-        "net.sf.openfx.ConstantPlugin",
-        "net.sf.openfx.Solid",
-        "net.sf.openfx.CheckerBoardPlugin",
-        "net.sf.openfx.TransformPlugin",
-        "net.sf.cimg.CImgBlur",
-    };
-    for (const char* id : ids) {
-        GpuTaskTraits traits(id);
-        EXPECT_TRUE(model.isPriced(traits)) << id;
-        EXPECT_GT(model.cpuMs(traits, 1.), 0.) << id;
-    }
-}

@@ -57,27 +57,6 @@ isGaussianFamily(BlurKernels::Filter filter)
     return (filter == BlurKernels::eFilterQuasiGaussian) || (filter == BlurKernels::eFilterGaussian);
 }
 
-GpuBlurFilter
-gpuBlurFilterOf(BlurKernels::Filter filter)
-{
-    switch (filter) {
-    case BlurKernels::eFilterQuasiGaussian:
-        return GpuBlurFilter::eQuasiGaussian;
-    case BlurKernels::eFilterGaussian:
-        return GpuBlurFilter::eGaussian;
-    case BlurKernels::eFilterBox:
-        return GpuBlurFilter::eBox;
-    case BlurKernels::eFilterTriangle:
-        return GpuBlurFilter::eTriangle;
-    case BlurKernels::eFilterQuadratic:
-        return GpuBlurFilter::eQuadratic;
-    case BlurKernels::eFilterFIRGaussian:
-        return GpuBlurFilter::eFirGaussian;
-    }
-
-    return GpuBlurFilter::eAny;
-}
-
 int
 boxIterations(BlurKernels::Filter filter)
 {

@@ -42,7 +42,6 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
@@ -255,7 +254,7 @@ public:
     }
 
     /**
-     * @brief What the node's image op computes, which the scheduler's cost model and task records
+     * @brief What the node's image op computes, which GPU placement's task weights and task records
      * read; empty for a node that is not an image op, which GPU placement never considers.
      **/
     virtual std::optional<OpKind> opKind() const WARN_UNUSED_RETURN

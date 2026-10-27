@@ -4353,21 +4353,10 @@ EffectInstance::isDoingInteractAction() const
     return _imp->duringInteractAction;
 }
 
-namespace {
-thread_local unsigned long long tRenderActions = 0;
-}
-
-unsigned long long
-EffectInstance::getRenderActionsOnThisThread()
-{
-    return tRenderActions;
-}
-
 StatusEnum
 EffectInstance::render_public(const RenderActionArgs & args)
 {
     NON_RECURSIVE_ACTION();
-    ++tRenderActions;
     REPORT_CURRENT_THREAD_ACTION( kOfxImageEffectActionRender, getNode() );
 
     return render(args);

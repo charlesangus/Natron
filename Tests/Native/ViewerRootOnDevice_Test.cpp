@@ -66,7 +66,7 @@
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuCostModel.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
@@ -722,8 +722,8 @@ TEST_F(ViewerRootOnDevice, RenderPlacementTreatsAKeptRootAsFree)
     }
 }
 
-// A lone Grade over a UHD frame, seeded heavy enough that its downloaded root would run as overlapped strips, stays
-// whole once the root is kept on the device: stripping would only download it.
+// A lone Grade over a UHD frame, whose downloaded root moves enough bytes to run as overlapped strips, stays whole once
+// the root is kept on the device: stripping would only download it.
 TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
 {
     if (!gpuOrSkip()) {
@@ -747,27 +747,19 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
     connectNodes(source, grade, 0, true);
     const RectI window(0, 0, width, height);
 
-    GpuCostModel& session = GpuCostModel::session();
-    const GpuTransferRates savedRates = session.transferRates();
-    const double savedKernel = session.gpuMs(GpuTaskTraits(grade->getPluginID()), 1.);
-    struct CostBack {
-        GpuCostModel& model;
+    GpuTransferModel& session = GpuTransferModel::session();
+    struct RatesBack {
+        GpuTransferModel& model;
         GpuTransferRates rates;
-        std::string pluginId;
-        double kernelMsPerMpx;
-        ~CostBack()
+        ~RatesBack()
         {
             model.setTransferRates(rates);
-            if (std::isfinite(kernelMsPerMpx)) {
-                model.setGpuSeed(pluginId, kernelMsPerMpx);
-            }
         }
-    } costBack { session, savedRates, grade->getPluginID(), savedKernel };
+    } ratesBack { session, session.transferRates() };
     GpuTransferRates rates;
     rates.uploadBytesPerSecond = 10e9;
     rates.downloadBytesPerSecond = 10e9;
     session.setTransferRates(rates);
-    session.setGpuSeed(grade->getPluginID(), 40.);
     setGpuStripPipeliningForTests(GpuStripPipelining::On);
 
     std::vector<float> stripped;

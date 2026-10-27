@@ -596,8 +596,7 @@ enum OpenGLRequirementsTypeEnum
     eOpenGLRequirementsTypeRendering
 };
 
-enum DopeSheetItemType
-{
+enum DopeSheetItemType {
     eDopeSheetItemTypeCommon = 1001,
 
     // Range-based nodes
@@ -609,7 +608,11 @@ enum DopeSheetItemType
 
     // Others
     eDopeSheetItemTypeKnobRoot,
-    eDopeSheetItemTypeKnobDim
+    eDopeSheetItemTypeKnobDim,
+
+    // A curve host's item (Bezier or stroke), and a Bezier's shape keys under it
+    eDopeSheetItemTypeRotoItem,
+    eDopeSheetItemTypeShape
 };
 
 enum CreateNodeReason

@@ -36,11 +36,14 @@
 #include <QtEvents>
 
 // Natron includes
+#include "Engine/Bezier.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/RotoCurveContext.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -62,9 +65,7 @@
 NATRON_NAMESPACE_ENTER
 
 typedef std::map<KnobIWPtr, KnobGui *> KnobsAndGuis;
-typedef std::pair<QTreeWidgetItem *, DSNodePtr> TreeItemAndDSNode;
-typedef std::pair<QTreeWidgetItem *, DSKnob *> TreeItemAndDSKnob;
-
+typedef std::pair<QTreeWidgetItem*, DSNodePtr> TreeItemAndDSNode;
 
 ////////////////////////// Helpers //////////////////////////
 
@@ -125,8 +126,7 @@ createKnobNameItem(const QString &text,
 
     ret->setText(0, text);
 
-    if ( (itemType == eDopeSheetItemTypeKnobRoot)
-         || ( itemType == eDopeSheetItemTypeKnobDim) ) {
+    if (itemType >= eDopeSheetItemTypeKnobRoot) {
         ret->setFlags(ret->flags() & ~Qt::ItemIsDragEnabled & ~Qt::ItemIsDropEnabled);
     }
 
@@ -197,7 +197,15 @@ touchKey(UndoScope* scope,
 {
     DSKnobPtr knob = key.getContext();
 
-    if (knob) {
+    if (!knob) {
+        return;
+    }
+    // An item's knobs and shape have no holder; the host node owns their edits.
+    RotoDrawableItemPtr item = knob->getRotoItem();
+    RotoCurveContextPtr context = item ? item->getContext() : RotoCurveContextPtr();
+    if (context) {
+        scope->touchNode(context->getNode());
+    } else {
         scope->touchKnob(knob->getInternalKnob());
     }
 }
@@ -379,10 +387,6 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
             return;
         }
 
-        if ( node->isRotoNode() || node->isRotoPaintingNode() ) {
-            return;
-        }
-
         if ( node->getKnobs().empty() ) {
             return;
         }
@@ -470,10 +474,8 @@ DSNodePtr DopeSheet::findParentDSNode(QTreeWidgetItem *treeItem) const
             return DSNodePtr();
         }
 
-        if ( itemIt->parent() ) {
-            itemIt = itemIt->parent();
-            clickedDSNode = _imp->treeItemNodeMap.find(itemIt);
-        }
+        itemIt = itemIt->parent();
+        clickedDSNode = _imp->treeItemNodeMap.find(itemIt);
     }
 
     return (*clickedDSNode).second;
@@ -496,6 +498,9 @@ DSNodePtr DopeSheet::findDSNode(Node *node) const
 
 DSNodePtr DopeSheet::findDSNode(const KnobIPtr &knob) const
 {
+    if (!knob) {
+        return DSNodePtr();
+    }
     for (DSTreeItemNodeMap::const_iterator it = _imp->treeItemNodeMap.begin(); it != _imp->treeItemNodeMap.end(); ++it) {
         DSNodePtr dsNode = (*it).second;
         const DSTreeItemKnobMap& knobRows = dsNode->getItemKnobMap();
@@ -503,7 +508,7 @@ DSNodePtr DopeSheet::findDSNode(const KnobIPtr &knob) const
         for (DSTreeItemKnobMap::const_iterator knobIt = knobRows.begin(); knobIt != knobRows.end(); ++knobIt) {
             DSKnobPtr dsKnob = (*knobIt).second;
 
-            if (dsKnob && dsKnob->getKnobGui() && dsKnob->getKnobGui()->getKnob() == knob) {
+            if (dsKnob && dsKnob->getInternalKnob() == knob) {
                 return dsNode;
             }
         }
@@ -523,6 +528,44 @@ DSKnobPtr DopeSheet::findDSKnob(const KnobGui* knobGui) const
 
             if (dsKnob->getKnobGui().get() == knobGui) {
                 return dsKnob;
+            }
+        }
+    }
+
+    return DSKnobPtr();
+}
+
+DSKnobPtr
+DopeSheet::findDSKnob(const KnobIPtr& knob, int dimension) const
+{
+    if (!knob) {
+        return DSKnobPtr();
+    }
+    for (DSTreeItemNodeMap::const_iterator it = _imp->treeItemNodeMap.begin(); it != _imp->treeItemNodeMap.end(); ++it) {
+        const DSTreeItemKnobMap& knobRows = it->second->getItemKnobMap();
+
+        for (DSTreeItemKnobMap::const_iterator knobIt = knobRows.begin(); knobIt != knobRows.end(); ++knobIt) {
+            if ((knobIt->second->getInternalKnob() == knob) && (knobIt->second->getDimension() == dimension)) {
+                return knobIt->second;
+            }
+        }
+    }
+
+    return DSKnobPtr();
+}
+
+DSKnobPtr
+DopeSheet::findShapeDSKnob(const Bezier* bezier) const
+{
+    if (!bezier) {
+        return DSKnobPtr();
+    }
+    for (DSTreeItemNodeMap::const_iterator it = _imp->treeItemNodeMap.begin(); it != _imp->treeItemNodeMap.end(); ++it) {
+        const DSTreeItemKnobMap& knobRows = it->second->getItemKnobMap();
+
+        for (DSTreeItemKnobMap::const_iterator knobIt = knobRows.begin(); knobIt != knobRows.end(); ++knobIt) {
+            if (knobIt->second->getBezier().get() == bezier) {
+                return knobIt->second;
             }
         }
     }
@@ -694,18 +737,21 @@ DopeSheet::moveSelectedKeysAndNodes(double dt)
         if (!knobDs) {
             continue;
         }
-        CurvePtr curve = knobDs->getKnobGui()->getCurve( ViewIdx(0), knobDs->getDimension() );
-        assert(curve);
-        KeyFrame prevKey, nextKey;
-        if ( curve->getNextKeyframeTime( (*it)->key.getTime(), &nextKey ) ) {
-            if ( !_imp->selectionModel->keyframeIsSelected(knobDs, nextKey) ) {
-                double diff = nextKey.getTime() - (*it)->key.getTime() - 1;
+        // Read through the row so shape keys clamp the same way as knob keys.
+        const KeyFrameSet keys = knobDs->getKeyFrames(knobDs->getDimension());
+        const KeyFrame thisKey((*it)->key.getTime(), 0.);
+        KeyFrameSet::const_iterator next = keys.upper_bound(thisKey);
+        if (next != keys.end()) {
+            if (!_imp->selectionModel->keyframeIsSelected(knobDs, *next)) {
+                double diff = next->getTime() - (*it)->key.getTime() - 1;
                 maxRight = std::max( 0., std::min(diff, maxRight) );
             }
         }
-        if ( curve->getPreviousKeyframeTime( (*it)->key.getTime(), &prevKey ) ) {
-            if ( !_imp->selectionModel->keyframeIsSelected(knobDs, prevKey) ) {
-                double diff = prevKey.getTime()  - (*it)->key.getTime() + 1;
+        KeyFrameSet::const_iterator prev = keys.lower_bound(thisKey);
+        if (prev != keys.begin()) {
+            --prev;
+            if (!_imp->selectionModel->keyframeIsSelected(knobDs, *prev)) {
+                double diff = prev->getTime() - (*it)->key.getTime() + 1;
                 maxLeft = std::min( 0., std::max(diff, maxLeft) );
             }
         }
@@ -929,48 +975,47 @@ DopeSheet::onNodeNameEditDialogFinished()
 void
 DopeSheet::pasteKeys(bool relative)
 {
-    std::vector<DopeSheetKey> toPaste;
-
-    for (std::vector<DopeSheetKey>::const_iterator it = _imp->keyframesClipboard.begin(); it != _imp->keyframesClipboard.end(); ++it) {
-        DopeSheetKey key = (*it);
-
-        toPaste.push_back(key);
-    }
-
-    if ( !toPaste.empty() ) {
-
-        std::list<DSKnobPtr> dstKnobs;
-        _imp->editor->getHierarchyView()->getSelectedDSKnobs(&dstKnobs);
-        if (dstKnobs.empty()) {
-            Dialogs::warningDialog(tr("Paste").toStdString(), tr("You must select at least one parameter dimension on the left to perform this action").toStdString());
-            return;
-        }
-        UndoScope scope;
-        for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
-            scope.touchKnob((*it)->getInternalKnob());
-        }
-        scope.ownByOnlyTouched();
-        _imp->pushUndoCommand(new DSPasteKeysCommand(toPaste, dstKnobs, relative, _imp->editor), scope);
-    }
+    pasteKeys(_imp->keyframesClipboard, relative);
 }
 
 void
 DopeSheet::pasteKeys(const std::vector<DopeSheetKey>& keys, bool relative)
 {
-    if ( !keys.empty() ) {
-        std::list<DSKnobPtr> dstKnobs;
-        _imp->editor->getHierarchyView()->getSelectedDSKnobs(&dstKnobs);
-        if (dstKnobs.empty()) {
-            Dialogs::warningDialog(tr("Paste").toStdString(), tr("You must select at least one parameter dimension on the left to perform this action").toStdString());
-            return;
+    // Shape keys hold a whole shape, not a value, so they don't paste.
+    std::vector<DopeSheetKey> toPaste;
+    for (std::vector<DopeSheetKey>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (it->bezier.expired()) {
+            toPaste.push_back(*it);
         }
-        UndoScope scope;
-        for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
+    }
+    if (toPaste.empty()) {
+        return;
+    }
+
+    std::list<DSKnobPtr> selectedKnobs;
+    _imp->editor->getHierarchyView()->getSelectedDSKnobs(&selectedKnobs);
+    std::list<DSKnobPtr> dstKnobs;
+    for (std::list<DSKnobPtr>::const_iterator it = selectedKnobs.begin(); it != selectedKnobs.end(); ++it) {
+        if (!(*it)->isShape()) {
+            dstKnobs.push_back(*it);
+        }
+    }
+    if (dstKnobs.empty()) {
+        Dialogs::warningDialog(tr("Paste").toStdString(), tr("You must select at least one parameter dimension on the left to perform this action").toStdString());
+        return;
+    }
+    UndoScope scope;
+    for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
+        RotoDrawableItemPtr item = (*it)->getRotoItem();
+        RotoCurveContextPtr context = item ? item->getContext() : RotoCurveContextPtr();
+        if (context) {
+            scope.touchNode(context->getNode());
+        } else {
             scope.touchKnob((*it)->getInternalKnob());
         }
-        scope.ownByOnlyTouched();
-        _imp->pushUndoCommand(new DSPasteKeysCommand(keys, dstKnobs, relative, _imp->editor), scope);
     }
+    scope.ownByOnlyTouched();
+    _imp->pushUndoCommand(new DSPasteKeysCommand(toPaste, dstKnobs, relative, _imp->editor), scope);
 }
 
 void
@@ -1043,6 +1088,16 @@ DSNodePtr DopeSheet::createDSNode(const NodeGuiPtr &nodeGui,
     connect( node.get(), SIGNAL(labelChanged(QString)),
              this, SLOT(onNodeNameChanged(QString)) );
 
+    RotoCurveContextPtr curveContext = node->getCurveContext();
+    if (curveContext) {
+        connect(curveContext.get(), SIGNAL(itemInserted(int, int)),
+                this, SLOT(onCurveContextItemsChanged()), Qt::UniqueConnection);
+        connect(curveContext.get(), SIGNAL(itemRemoved(RotoItemPtr, int)),
+                this, SLOT(onCurveContextItemsChanged()), Qt::UniqueConnection);
+        connect(curveContext.get(), SIGNAL(itemLabelChanged(RotoItemPtr)),
+                this, SLOT(onCurveContextItemsChanged()), Qt::UniqueConnection);
+    }
+
     return dsNode;
 }
 
@@ -1073,6 +1128,57 @@ DopeSheet::onKeyframeSetOrRemoved()
     Q_EMIT modelChanged();
 }
 
+void
+DopeSheet::onCurveContextItemsChanged()
+{
+    RotoCurveContext* context = qobject_cast<RotoCurveContext*>(sender());
+
+    if (!context) {
+        return;
+    }
+    for (DSTreeItemNodeMap::const_iterator it = _imp->treeItemNodeMap.begin(); it != _imp->treeItemNodeMap.end(); ++it) {
+        NodePtr node = it->second->getInternalNode();
+        if (node && (node->getCurveContext().get() == context)) {
+            DSNodePtr dsNode = it->second;
+            dsNode->rebuildItemRows();
+            _imp->selectionModel->pruneExpiredKeys();
+            Q_EMIT itemRowsRebuilt(dsNode.get());
+            Q_EMIT modelChanged();
+
+            return;
+        }
+    }
+}
+
+void
+DopeSheet::onShapeKeyframesChanged()
+{
+    Bezier* bezier = qobject_cast<Bezier*>(sender());
+    DSKnobPtr dsKnob = findShapeDSKnob(bezier);
+
+    if (dsKnob) {
+        Q_EMIT keyframeSetOrRemoved(dsKnob.get());
+    }
+    Q_EMIT modelChanged();
+}
+
+void
+DopeSheet::onItemKnobKeyframesChanged()
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+    KnobIPtr knob = handler ? handler->getKnob() : KnobIPtr();
+
+    if (!knob) {
+        return;
+    }
+    // The tree reacts per row; a multi-dimension knob's root row stands for all of them.
+    DSKnobPtr dsKnob = findDSKnob(knob, (knob->getDimension() > 1) ? -1 : 0);
+    if (dsKnob) {
+        Q_EMIT keyframeSetOrRemoved(dsKnob.get());
+    }
+    Q_EMIT modelChanged();
+}
+
 ////////////////////////// DSKnob //////////////////////////
 
 class DSKnobPrivate
@@ -1086,13 +1192,17 @@ public:
     QTreeWidgetItem *nameItem;
     KnobGuiWPtr knobGui;
     KnobIWPtr knob;
+    RotoDrawableItemWPtr item;
+    BezierWPtr bezier;
 };
 
 DSKnobPrivate::DSKnobPrivate()
-    : dimension(-2),
-    nameItem(0),
-    knobGui(),
-    knob()
+    : dimension(-2)
+    , nameItem(0)
+    , knobGui()
+    , knob()
+    , item()
+    , bezier()
 {}
 
 DSKnobPrivate::~DSKnobPrivate()
@@ -1130,6 +1240,32 @@ DSKnob::DSKnob(int dimension,
     _imp->nameItem = nameItem;
     _imp->knobGui = knobGui;
     _imp->knob = knobGui->getKnob();
+}
+
+DSKnob::DSKnob(int dimension,
+               QTreeWidgetItem* nameItem,
+               const KnobIPtr& knob,
+               const RotoDrawableItemPtr& item)
+    : _imp(new DSKnobPrivate)
+{
+    assert(knob && item);
+
+    _imp->dimension = dimension;
+    _imp->nameItem = nameItem;
+    _imp->knob = knob;
+    _imp->item = item;
+}
+
+DSKnob::DSKnob(QTreeWidgetItem* nameItem,
+               const BezierPtr& bezier)
+    : _imp(new DSKnobPrivate)
+{
+    assert(bezier);
+
+    _imp->dimension = 0;
+    _imp->nameItem = nameItem;
+    _imp->item = bezier;
+    _imp->bezier = bezier;
 }
 
 DSKnob::~DSKnob()
@@ -1185,6 +1321,74 @@ DSKnob::getInternalKnob() const
  *
  *
  */
+RotoDrawableItemPtr
+DSKnob::getRotoItem() const
+{
+    return _imp->item.lock();
+}
+
+BezierPtr
+DSKnob::getBezier() const
+{
+    return _imp->bezier.lock();
+}
+
+bool
+DSKnob::isShape() const
+{
+    return !_imp->bezier.expired();
+}
+
+CurvePtr
+DSKnob::getCurve(int dimension) const
+{
+    if (dimension < 0) {
+        return CurvePtr();
+    }
+    KnobGuiPtr knobGui = getKnobGui();
+    if (knobGui) {
+        return knobGui->getCurve(ViewIdx(0), dimension);
+    }
+    KnobIPtr knob = getInternalKnob();
+    if (!knob || (dimension >= knob->getDimension())) {
+        return CurvePtr();
+    }
+
+    // A selected item's knobs are slaved to the node's proxies; the keys are the item's own.
+    return knob->getCurve(ViewIdx(0), dimension, true);
+}
+
+KeyFrameSet
+DSKnob::getKeyFrames(int dimension) const
+{
+    KeyFrameSet ret;
+    BezierPtr bezier = getBezier();
+
+    if (bezier) {
+        std::list<std::pair<double, KeyframeTypeEnum>> keys;
+        bezier->getKeyframeTimesAndInterpolation(&keys);
+        for (std::list<std::pair<double, KeyframeTypeEnum>>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+            ret.insert(KeyFrame(it->first, 0., 0., 0., it->second));
+        }
+
+        return ret;
+    }
+    CurvePtr curve = getCurve(dimension);
+    if (curve) {
+        ret = curve->getKeyFrames_mt_safe();
+    }
+
+    return ret;
+}
+
+int
+DSKnob::getDimensionCount() const
+{
+    KnobIPtr knob = getInternalKnob();
+
+    return knob ? knob->getDimension() : 1;
+}
+
 bool
 DSKnob::isMultiDimRoot() const
 {
@@ -1260,7 +1464,8 @@ DopeSheetSelectionModel::makeDopeSheetKeyframesForKnob(const DSKnobPtr &dsKnob,
 
     int dim = dsKnob->getDimension();
     int startDim = 0;
-    int endDim = dsKnob->getInternalKnob()->getDimension();
+    KnobIPtr knob = dsKnob->getInternalKnob();
+    int endDim = knob ? knob->getDimension() : 1;
 
     if (dim > -1) {
         startDim = dim;
@@ -1268,7 +1473,7 @@ DopeSheetSelectionModel::makeDopeSheetKeyframesForKnob(const DSKnobPtr &dsKnob,
     }
 
     for (int i = startDim; i < endDim; ++i) {
-        KeyFrameSet keyframes = dsKnob->getKnobGui()->getCurve(ViewIdx(0), i)->getKeyFrames_mt_safe();
+        KeyFrameSet keyframes = dsKnob->getKeyFrames(i);
         DSKnobPtr context;
         if (dim == -1) {
             QTreeWidgetItem *childItem = dsKnob->findDimTreeItem(i);
@@ -1379,7 +1584,8 @@ bool
 DopeSheetSelectionModel::hasSingleKeyFrameTimeSelected(double* time) const
 {
     bool timeSet = false;
-    KnobGuiPtr knob;
+    KnobIPtr knob;
+    BezierPtr bezier;
 
     if ( _imp->selectedKeyframes.empty() ) {
         return false;
@@ -1389,10 +1595,11 @@ DopeSheetSelectionModel::hasSingleKeyFrameTimeSelected(double* time) const
         assert(knobContext);
         if (!timeSet) {
             *time = (*it)->key.getTime();
-            knob = knobContext->getKnobGui();
+            knob = knobContext->getInternalKnob();
+            bezier = knobContext->getBezier();
             timeSet = true;
         } else {
-            if ( ( (*it)->key.getTime() != *time ) || (knobContext->getKnobGui() != knob) ) {
+            if (((*it)->key.getTime() != *time) || (knobContext->getInternalKnob() != knob) || (knobContext->getBezier() != bezier)) {
                 return false;
             }
         }
@@ -1475,11 +1682,30 @@ DopeSheetSelectionModel::onNodeAboutToBeRemoved(const DSNodePtr &removed)
         DSKnobPtr knobContext = key->context.lock();
         assert(knobContext);
 
-        if (_imp->dopeSheet->findDSNode( knobContext->getInternalKnob() ) == removed) {
+        const DSTreeItemKnobMap& removedRows = removed->getItemKnobMap();
+        if (!knobContext || (removedRows.find(knobContext->getTreeItem()) != removedRows.end())) {
             it = _imp->selectedKeyframes.erase(it);
         } else {
             ++it;
         }
+    }
+}
+
+void
+DopeSheetSelectionModel::pruneExpiredKeys()
+{
+    bool changed = false;
+
+    for (DopeSheetKeyPtrList::iterator it = _imp->selectedKeyframes.begin(); it != _imp->selectedKeyframes.end();) {
+        if ((*it)->context.expired()) {
+            it = _imp->selectedKeyframes.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (changed) {
+        emit_keyframeSelectionChanged(false);
     }
 }
 
@@ -1500,17 +1726,67 @@ public:
     NodeGuiWPtr nodeGui;
     QTreeWidgetItem *nameItem;
     DSTreeItemKnobMap itemKnobMap;
+    // The curve-context item header rows; their subtrees are recreated together
+    std::list<QTreeWidgetItem*> itemRows;
     bool isSelected;
 };
 
 DSNodePrivate::DSNodePrivate()
-    : dopeSheetModel(0),
-    nodeType(),
-    nodeGui(),
-    nameItem(0),
-    itemKnobMap(),
-    isSelected(false)
+    : dopeSheetModel(0)
+    , nodeType()
+    , nodeGui()
+    , nameItem(0)
+    , itemKnobMap()
+    , itemRows()
+    , isSelected(false)
 {}
+
+namespace {
+// One row for a single-dimension knob, else a root row with one row per dimension.
+// A KnobGui-backed row when knobGui is set, else an item knob row.
+void
+addKnobRows(DSTreeItemKnobMap* map,
+            QTreeWidgetItem* parent,
+            const KnobIPtr& knob,
+            const KnobGuiPtr& knobGui,
+            const RotoDrawableItemPtr& item)
+{
+    QString label = QString::fromUtf8(knob->getLabel().c_str());
+
+    if (knob->getDimension() <= 1) {
+        QTreeWidgetItem* nameItem = createKnobNameItem(label, eDopeSheetItemTypeKnobDim, 0, parent);
+        DSKnobPtr dsKnob = knobGui ? std::make_shared<DSKnob>(0, nameItem, knobGui) : std::make_shared<DSKnob>(0, nameItem, knob, item);
+        map->insert(std::make_pair(nameItem, dsKnob));
+
+        return;
+    }
+    QTreeWidgetItem* multiDimRootItem = createKnobNameItem(label, eDopeSheetItemTypeKnobRoot, -1, parent);
+    DSKnobPtr rootDSKnob = knobGui ? std::make_shared<DSKnob>(-1, multiDimRootItem, knobGui) : std::make_shared<DSKnob>(-1, multiDimRootItem, knob, item);
+    map->insert(std::make_pair(multiDimRootItem, rootDSKnob));
+
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        QTreeWidgetItem* dimItem = createKnobNameItem(QString::fromUtf8(knob->getDimensionName(i).c_str()),
+                                                      eDopeSheetItemTypeKnobDim,
+                                                      i,
+                                                      multiDimRootItem);
+        DSKnobPtr dimDSKnob = knobGui ? std::make_shared<DSKnob>(i, dimItem, knobGui) : std::make_shared<DSKnob>(i, dimItem, knob, item);
+        map->insert(std::make_pair(dimItem, dimDSKnob));
+    }
+}
+
+bool
+isUnderItem(QTreeWidgetItem* treeItem,
+            const std::list<QTreeWidgetItem*>& itemRows)
+{
+    for (QTreeWidgetItem* it = treeItem; it; it = it->parent()) {
+        if (std::find(itemRows.begin(), itemRows.end(), it) != itemRows.end()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anon namespace
 
 DSNodePrivate::~DSNodePrivate()
 {}
@@ -1554,6 +1830,8 @@ DSNode::DSNode(DopeSheet *model,
 
     // Create dope sheet knobs
     const std::list<std::pair<KnobIWPtr, KnobGuiPtr> > &knobs = nodeGui->getKnobs();
+    NodePtr node = nodeGui->getNode();
+    RotoCurveContextPtr curveContext = node ? node->getCurveContext() : RotoCurveContextPtr();
 
     for (std::list<std::pair<KnobIWPtr, KnobGuiPtr> >::const_iterator it = knobs.begin();
          it != knobs.end(); ++it) {
@@ -1566,31 +1844,11 @@ DSNode::DSNode(DopeSheet *model,
         if ( !knob->canAnimate() || !knob->isAnimationEnabled() ) {
             continue;
         }
-
-        if (knob->getDimension() <= 1) {
-            QTreeWidgetItem * nameItem = createKnobNameItem(QString::fromUtf8( knob->getLabel().c_str() ),
-                                                            eDopeSheetItemTypeKnobDim,
-                                                            0,
-                                                            _imp->nameItem);
-            DSKnob *dsKnob = new DSKnob(0, nameItem, knobGui);
-            _imp->itemKnobMap.insert( TreeItemAndDSKnob(nameItem, dsKnob) );
-        } else {
-            QTreeWidgetItem *multiDimRootItem = createKnobNameItem(QString::fromUtf8( knob->getLabel().c_str() ),
-                                                                   eDopeSheetItemTypeKnobRoot,
-                                                                   -1,
-                                                                   _imp->nameItem);
-            DSKnob *rootDSKnob = new DSKnob(-1, multiDimRootItem, knobGui);
-            _imp->itemKnobMap.insert( TreeItemAndDSKnob(multiDimRootItem, rootDSKnob) );
-
-            for (int i = 0; i < knob->getDimension(); ++i) {
-                QTreeWidgetItem *dimItem = createKnobNameItem(QString::fromUtf8( knob->getDimensionName(i).c_str() ),
-                                                              eDopeSheetItemTypeKnobDim,
-                                                              i,
-                                                              multiDimRootItem);
-                DSKnob *dimDSKnob = new DSKnob(i, dimItem, knobGui);
-                _imp->itemKnobMap.insert( TreeItemAndDSKnob(dimItem, dimDSKnob) );
-            }
+        if (curveContext && curveContext->isItemProxyKnob(knob)) {
+            continue;
         }
+
+        addKnobRows(&_imp->itemKnobMap, _imp->nameItem, knob, knobGui, RotoDrawableItemPtr());
 
         QObject::connect( knobGui.get(), SIGNAL(keyFrameSet()),
                           _imp->dopeSheetModel, SLOT(onKeyframeSetOrRemoved()) );
@@ -1599,6 +1857,8 @@ DSNode::DSNode(DopeSheet *model,
         QObject::connect( knobGui.get(), SIGNAL(refreshDopeSheet()),
                           _imp->dopeSheetModel, SLOT(onKeyframeSetOrRemoved()) );
     }
+
+    rebuildItemRows();
 
     // If some subnodes are already in the dope sheet, the connections must be set to update
     // the group's clip rect
@@ -1687,14 +1947,80 @@ DSNode::canContainOtherNodeContexts() const
             && _imp->nodeType <= eDopeSheetItemTypeGroup);
 }
 
+void
+DSNode::rebuildItemRows()
+{
+    NodePtr node = getInternalNode();
+    RotoCurveContextPtr context = node ? node->getCurveContext() : RotoCurveContextPtr();
+
+    if (!context) {
+        return;
+    }
+
+    for (DSTreeItemKnobMap::iterator it = _imp->itemKnobMap.begin(); it != _imp->itemKnobMap.end();) {
+        if (isUnderItem(it->first, _imp->itemRows)) {
+            _imp->itemKnobMap.erase(it++);
+        } else {
+            ++it;
+        }
+    }
+    for (std::list<QTreeWidgetItem*>::iterator it = _imp->itemRows.begin(); it != _imp->itemRows.end(); ++it) {
+        delete *it;
+    }
+    _imp->itemRows.clear();
+
+    std::list<RotoDrawableItemPtr> items = context->getCurvesByRenderOrder(false);
+    for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        const RotoDrawableItemPtr& item = *it;
+        QTreeWidgetItem* itemRow = createKnobNameItem(QString::fromUtf8(item->getLabel().c_str()),
+                                                      eDopeSheetItemTypeRotoItem,
+                                                      -1,
+                                                      _imp->nameItem);
+        _imp->itemRows.push_back(itemRow);
+
+        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(item);
+        if (bezier) {
+            QTreeWidgetItem* shapeRow = createKnobNameItem(QObject::tr("Shape"), eDopeSheetItemTypeShape, 0, itemRow);
+            _imp->itemKnobMap.insert(std::make_pair(shapeRow, std::make_shared<DSKnob>(shapeRow, bezier)));
+
+            const char* shapeSignals[] = { SIGNAL(keyframeSet(double)), SIGNAL(keyframeRemoved(double)),
+                                           SIGNAL(cloned()), SIGNAL(animationRemoved()) };
+            for (std::size_t i = 0; i < sizeof(shapeSignals) / sizeof(shapeSignals[0]); ++i) {
+                QObject::connect(bezier.get(), shapeSignals[i], _imp->dopeSheetModel, SLOT(onShapeKeyframesChanged()), Qt::UniqueConnection);
+            }
+        }
+
+        const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
+        for (std::list<KnobIPtr>::const_iterator itK = itemKnobs.begin(); itK != itemKnobs.end(); ++itK) {
+            const KnobIPtr& knob = *itK;
+            if (!knob->canAnimate() || !knob->isAnimationEnabled()) {
+                continue;
+            }
+            addKnobRows(&_imp->itemKnobMap, itemRow, knob, KnobGuiPtr(), item);
+
+            KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+            if (!handler) {
+                continue;
+            }
+            const char* knobSignals[] = { SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                                          SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                                          SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                                          SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                                          SIGNAL(animationRemoved(ViewSpec, int)) };
+            for (std::size_t i = 0; i < sizeof(knobSignals) / sizeof(knobSignals[0]); ++i) {
+                QObject::connect(handler.get(), knobSignals[i], _imp->dopeSheetModel, SLOT(onItemKnobKeyframesChanged()), Qt::UniqueConnection);
+            }
+        }
+    }
+} // DSNode::rebuildItemRows
+
 bool
 DSNode::containsNodeContext() const
 {
     for (int i = 0; i < _imp->nameItem->childCount(); ++i) {
         int childType = _imp->nameItem->child(i)->data(0, QT_ROLE_CONTEXT_TYPE).toInt();
 
-        if ( (childType != eDopeSheetItemTypeKnobDim)
-             && ( childType != eDopeSheetItemTypeKnobRoot) ) {
+        if (childType < eDopeSheetItemTypeKnobRoot) {
             return true;
         }
     }

@@ -117,6 +117,9 @@ DopeSheetEditor::DopeSheetEditor(Gui *gui,
     connect( _imp->model, SIGNAL(keyframeSetOrRemoved(DSKnob*)),
              _imp->hierarchyView, SLOT(onKeyframeSetOrRemoved(DSKnob*)) );
 
+    connect(_imp->model, SIGNAL(itemRowsRebuilt(DSNode*)),
+            _imp->hierarchyView, SLOT(onItemRowsRebuilt(DSNode*)));
+
     connect( _imp->model->getSelectionModel(), SIGNAL(keyframeSelectionChangedFromModel(bool)),
              _imp->hierarchyView, SLOT(onKeyframeSelectionChanged(bool)) );
 

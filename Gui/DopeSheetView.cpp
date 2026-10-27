@@ -128,6 +128,25 @@ running_in_main_thread_and_context(const QOpenGLWidget *glWidget)
     running_in_main_context(glWidget);
 }
 
+bool
+isTreeItemUnder(QTreeWidgetItem* item,
+                const QTreeWidgetItem* ancestor)
+{
+    for (QTreeWidgetItem* it = item; it; it = it->parent()) {
+        if (it == ancestor) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+isRotoItemRow(const QTreeWidgetItem* item)
+{
+    return item && (item->data(0, QT_ROLE_CONTEXT_TYPE).toInt() == eDopeSheetItemTypeRotoItem);
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
@@ -209,7 +228,8 @@ public:
     bool isNearbySelectedKeysBRec(const QPointF& widgetPos) const;
 
     std::vector<DopeSheetKey> isNearByKeyframe(const DSKnobPtr &dsKnob, const QPointF &widgetCoords) const;
-    std::vector<DopeSheetKey> isNearByKeyframe(DSNodePtr dsNode, const QPointF &widgetCoords) const;
+    // With underItem set, only the rows under that tree item (a curve-context item's row)
+    std::vector<DopeSheetKey> isNearByKeyframe(DSNodePtr dsNode, const QPointF& widgetCoords, QTreeWidgetItem* underItem = 0) const;
 
     double clampedMouseOffset(double fromTime, double toTime);
 
@@ -224,6 +244,7 @@ public:
 
     void drawNodeRow(const DSNodePtr dsNode) const;
     void drawKnobRow(const DSKnobPtr dsKnob) const;
+    void drawRotoItemRow(QTreeWidgetItem* itemRow) const;
 
     void drawNodeRowSeparation(const DSNodePtr dsNode) const;
 
@@ -567,8 +588,13 @@ DopeSheetViewPrivate::getCursorDuringHover(const QPointF &widgetCoords) const
                     return getCursorForEventState(DopeSheetView::esPickKeyframe);
                 }
             }
+        } else if (isRotoItemRow(treeItem)) {
+            DSNodePtr dsNode = model->findParentDSNode(treeItem);
+            if (dsNode && !isNearByKeyframe(dsNode, widgetCoords, treeItem).empty()) {
+                return getCursorForEventState(DopeSheetView::esPickKeyframe);
+            }
         } else { // if (foundDsNode != dsNodeItems.end()) {
-            //We may be on a knob row
+            // We may be on a knob row
             DSKnobPtr dsKnob = hierarchyView->getDSKnobAt( widgetCoords.y() );
             if (dsKnob) {
                 std::vector<DopeSheetKey> keysUnderMouse = isNearByKeyframe(dsKnob, widgetCoords);
@@ -708,10 +734,9 @@ std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(const DSKnobPtr
     assert(dsKnob);
 
     std::vector<DopeSheetKey> ret;
-    KnobIPtr knob = dsKnob->getKnobGui()->getKnob();
     int dim = dsKnob->getDimension();
     int startDim = 0;
-    int endDim = knob->getDimension();
+    int endDim = dsKnob->getDimensionCount();
 
     if (dim > -1) {
         startDim = dim;
@@ -719,7 +744,7 @@ std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(const DSKnobPtr
     }
 
     for (int i = startDim; i < endDim; ++i) {
-        KeyFrameSet keyframes = knob->getCurve(ViewIdx(0), i)->getKeyFrames_mt_safe();
+        KeyFrameSet keyframes = dsKnob->getKeyFrames(i);
 
         for (KeyFrameSet::const_iterator kIt = keyframes.begin();
              kIt != keyframes.end();
@@ -744,23 +769,26 @@ std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(const DSKnobPtr
     return ret;
 }
 
-std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(DSNodePtr dsNode,
-                                                                 const QPointF &widgetCoords) const
+std::vector<DopeSheetKey>
+DopeSheetViewPrivate::isNearByKeyframe(DSNodePtr dsNode,
+                                       const QPointF& widgetCoords,
+                                       QTreeWidgetItem* underItem) const
 {
     std::vector<DopeSheetKey> ret;
     const DSTreeItemKnobMap& dsKnobs = dsNode->getItemKnobMap();
 
     for (DSTreeItemKnobMap::const_iterator it = dsKnobs.begin(); it != dsKnobs.end(); ++it) {
         DSKnobPtr dsKnob = (*it).second;
-        KnobGuiPtr knobGui = dsKnob->getKnobGui();
-        assert(knobGui);
         int dim = dsKnob->getDimension();
 
         if (dim == -1) {
             continue;
         }
+        if (underItem && !isTreeItemUnder(it->first, underItem)) {
+            continue;
+        }
 
-        KeyFrameSet keyframes = knobGui->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
+        KeyFrameSet keyframes = dsKnob->getKeyFrames(dim);
 
         for (KeyFrameSet::const_iterator kIt = keyframes.begin();
              kIt != keyframes.end();
@@ -1050,6 +1078,14 @@ DopeSheetViewPrivate::drawRows() const
                 drawKnobRow(dsKnob);
             }
 
+            QTreeWidgetItem* nodeItem = dsNode->getTreeItem();
+            for (int i = 0; i < nodeItem->childCount(); ++i) {
+                QTreeWidgetItem* child = nodeItem->child(i);
+                if (isRotoItemRow(child) && !child->isHidden()) {
+                    drawRotoItemRow(child);
+                }
+            }
+
             {
                 DSNodePtr group = model->getGroupDSNode( dsNode.get() );
                 if (group) {
@@ -1137,6 +1173,24 @@ DopeSheetViewPrivate::drawKnobRow(const DSKnobPtr dsKnob) const
     glVertex2f( rowRect.left(), rowRect.bottom() );
     glVertex2f( rowRect.right(), rowRect.bottom() );
     glVertex2f( rowRect.right(), rowRect.top() );
+    glEnd();
+}
+
+void
+DopeSheetViewPrivate::drawRotoItemRow(QTreeWidgetItem* itemRow) const
+{
+    GLProtectAttrib a(GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+    QRectF rowRect = nameItemRectToRowRect(hierarchyView->visualItemRect(itemRow));
+    double bkR, bkG, bkB, bkA;
+
+    appPTR->getCurrentSettings()->getDopeSheetEditorRootRowBackgroundColor(&bkR, &bkG, &bkB, &bkA);
+    glColor4f(bkR, bkG, bkB, bkA);
+
+    glBegin(GL_POLYGON);
+    glVertex2f(rowRect.left(), rowRect.top());
+    glVertex2f(rowRect.left(), rowRect.bottom());
+    glVertex2f(rowRect.right(), rowRect.bottom());
+    glVertex2f(rowRect.right(), rowRect.top());
     glEnd();
 }
 
@@ -1309,6 +1363,8 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
         int hasSingleKfTimeSelected = model->getSelectionModel()->hasSingleKeyFrameTimeSelected(&kfTimeSelected);
         std::map<double, bool> nodeKeytimes;
         std::map<DSKnob *, std::map<double, bool> > knobsKeytimes;
+        // Summary keys of the curve-context items' rows
+        std::map<QTreeWidgetItem*, std::map<double, bool>> itemsKeytimes;
 
         for (DSTreeItemKnobMap::const_iterator it = knobItems.begin();
              it != knobItems.end();
@@ -1327,7 +1383,14 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                 continue;
             }
 
-            KeyFrameSet keyframes = dsKnob->getKnobGui()->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
+            KeyFrameSet keyframes = dsKnob->getKeyFrames(dim);
+            QTreeWidgetItem* itemRow = 0;
+            for (QTreeWidgetItem* parent = knobTreeItem->parent(); parent; parent = parent->parent()) {
+                if (isRotoItemRow(parent)) {
+                    itemRow = parent;
+                    break;
+                }
+            }
 
             for (KeyFrameSet::const_iterator kIt = keyframes.begin();
                  kIt != keyframes.end();
@@ -1377,6 +1440,11 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                     }
                 }
 
+                if (itemRow) {
+                    bool& itemTimeSelected = itemsKeytimes[itemRow][keyTime];
+                    itemTimeSelected = itemTimeSelected || kfSelected;
+                }
+
                 // Fill the node times map
                 bool nodeTimeExists = ( nodeKeytimes.find(keyTime) != nodeKeytimes.end() );
 
@@ -1416,6 +1484,26 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                     drawTexturedKeyframe(textureType, hasSingleKfTimeSelected && drawSelected,
                                          kfTimeSelected, selectionColor, zoomKfRect);
                 }
+            }
+        }
+
+        // Draw master keys in curve-context item rows
+        for (std::map<QTreeWidgetItem*, std::map<double, bool>>::const_iterator it = itemsKeytimes.begin();
+             it != itemsKeytimes.end();
+             ++it) {
+            QTreeWidgetItem* itemRow = it->first;
+            if (!hierarchyView->itemIsVisibleFromOutside(itemRow)) {
+                continue;
+            }
+            double newCenterY = hierarchyView->visualItemRect(itemRow).center().y();
+            for (std::map<double, bool>::const_iterator mIt = it->second.begin(); mIt != it->second.end(); ++mIt) {
+                RectD zoomKfRect = getKeyFrameBoundingRectZoomCoords(mIt->first, newCenterY);
+                DopeSheetViewPrivate::KeyframeTexture textureType = (mIt->second)
+                    ? DopeSheetViewPrivate::kfTextureMasterSelected
+                    : DopeSheetViewPrivate::kfTextureMaster;
+
+                drawTexturedKeyframe(textureType, hasSingleKfTimeSelected && mIt->second,
+                                     kfTimeSelected, selectionColor, zoomKfRect);
             }
         }
 
@@ -2343,7 +2431,7 @@ DopeSheetViewPrivate::createSelectionFromRect(const RectD &zoomCoordsRect,
                 continue;
             }
 
-            KeyFrameSet keyframes = dsKnob->getKnobGui()->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
+            KeyFrameSet keyframes = dsKnob->getKeyFrames(dim);
 
             for (KeyFrameSet::const_iterator kIt = keyframes.begin();
                  kIt != keyframes.end();
@@ -2678,8 +2766,8 @@ std::pair<double, double> DopeSheetView::getKeyframeRange() const
 
             const DSKnobPtr& dsKnob = (*itKnob).second;
 
-            for (int i = 0; i < dsKnob->getKnobGui()->getKnob()->getDimension(); ++i) {
-                KeyFrameSet keyframes = dsKnob->getKnobGui()->getCurve(ViewIdx(0), i)->getKeyFrames_mt_safe();
+            for (int i = 0; i < dsKnob->getDimensionCount(); ++i) {
+                KeyFrameSet keyframes = dsKnob->getKeyFrames(i);
 
                 if ( keyframes.empty() ) {
                     continue;
@@ -3523,8 +3611,22 @@ DopeSheetView::mousePressEvent(QMouseEvent *e)
                             didSomething = true;
                         }
                     }
+                } else if (isRotoItemRow(treeItem)) {
+                    DSNodePtr dsNode = _imp->model->findParentDSNode(treeItem);
+                    std::vector<DopeSheetKey> keysUnderMouse;
+                    if (dsNode) {
+                        keysUnderMouse = _imp->isNearByKeyframe(dsNode, e->pos(), treeItem);
+                    }
+                    if (!keysUnderMouse.empty()) {
+                        std::vector<DSNodePtr> selectedNodes;
+
+                        sFlags |= DopeSheetSelectionModel::SelectionTypeRecurse;
+                        _imp->model->getSelectionModel()->makeSelection(keysUnderMouse, selectedNodes, sFlags);
+                        _imp->eventState = DopeSheetView::esMoveKeyframeSelection;
+                        didSomething = true;
+                    }
                 } else { // if (foundDsNode != dsNodeItems.end()) {
-                    //We may be on a knob row
+                    // We may be on a knob row
                     DSKnobPtr dsKnob = _imp->hierarchyView->getDSKnobAt( e->pos().y() );
                     if (dsKnob) {
                         std::vector<DopeSheetKey> keysUnderMouse = _imp->isNearByKeyframe( dsKnob, e->pos() );

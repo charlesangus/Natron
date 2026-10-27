@@ -211,6 +211,12 @@ private Q_SLOTS:
     void onNodeAboutToBeRemoved(DSNode *dsNode);
 
     /**
+     * @brief Re-checks the visible state of the node's rows after the dope
+     * sheet model recreated its curve-context item rows.
+     */
+    void onItemRowsRebuilt(DSNode* dsNode);
+
+    /**
      * @brief Checks if the item associated with 'dsKnob' must be shown
      * or hidden. Checks also the visible state of the item associated
      * with its node.

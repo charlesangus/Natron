@@ -221,12 +221,18 @@ private:
     int _dimension; //< which dimension is this curve representing
 };
 
+/**
+ * @brief One coordinate (x for dimension 0, y for 1) of one shape control point over time.
+ * Key times follow the shape's keyframes and cannot be moved here; only the values can.
+ **/
 class BezierCPCurveGui
     : public CurveGui
 {
 public:
     BezierCPCurveGui(CurveWidget* curveWidget,
                      const BezierPtr& bezier,
+                     const BezierCPPtr& cp,
+                     int dimension,
                      const RotoCurveContextPtr& roto,
                      const QString& name,
                      const QColor& color,
@@ -237,24 +243,32 @@ public:
     RotoCurveContextPtr getRotoContext() const { return _rotoContext; }
 
     BezierPtr getBezier() const;
+
+    BezierCPPtr getControlPoint() const;
+
+    // The shape replaces its control points when it is cloned (undo snapshots), so the
+    // editor rebinds the curve to the point at the same index.
+    void setControlPoint(const BezierCPPtr& cp);
+
+    int getDimension() const { return _dimension; }
+
+    virtual CurvePtr getInternalCurve() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual double evaluate(bool useExpr, double x) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual Curve::YRange getCurveYRange() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool areKeyFramesTimeClampedToIntegers() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
 
     virtual bool areKeyFramesValuesClampedToBooleans() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
 
-    virtual bool areKeyFramesValuesClampedToIntegers() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
+    virtual bool areKeyFramesValuesClampedToIntegers() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
 
-    virtual bool isYComponentMovable() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
+    virtual bool isYComponentMovable() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
 
-    virtual KeyFrameSet getKeyFrames() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual int getKeyFrameIndex(double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual KeyFrame setKeyFrameInterpolation(KeyframeTypeEnum interp, int index) OVERRIDE FINAL;
 
 private:
-
-
-    BezierPtr _bezier;
+    BezierWPtr _bezier;
+    BezierCPPtr _cp;
+    int _dimension;
     RotoCurveContextPtr _rotoContext;
 };
 

@@ -40,10 +40,11 @@
 #include "Gui/KnobUndoCommand.h"
 
 #include "Engine/Bezier.h"
-#include "Engine/Knob.h"
+#include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
-#include "Engine/RotoContext.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/RotoContext.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
@@ -104,7 +105,10 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
 {
     for (KeysToAddList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->curveUI.get() );
-        BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( it->curveUI.get() );
+        if (dynamic_cast<BezierCPCurveGui*>(it->curveUI.get())) {
+            // A control point is keyed with its shape, never on its own.
+            continue;
+        }
         KnobIPtr knob = lockUndoKnob(it->knob);
 
         if (!knob && isKnobCurve) {
@@ -129,12 +133,6 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
                     }
                 } else {
                     knob->removeAnimation( ViewIdx(0), isKnobCurve->getDimension() );
-                }
-            } else if (isBezierCurve) {
-                BezierPtr b = isBezierCurve->getBezier();
-                assert(b);
-                if (b) {
-                    b->removeAnimation();
                 }
             }
         }
@@ -182,13 +180,7 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
                             knob->deleteValueAtTime(eCurveChangeReasonCurveEditor, it->keyframes[i].getTime(), ViewIdx(0), isKnobCurve->getDimension(), i == 0);
                         }
                     }
-                } else if (isBezierCurve) {
-                    if (add) {
-                        isBezierCurve->getBezier()->setKeyframe( it->keyframes[i].getTime() );
-                    } else {
-                        isBezierCurve->getBezier()->removeKeyframe( it->keyframes[i].getTime() );
-                    }
-                } // if (isKnobCurve) {
+                } // if (knob) {
             } // for (std::size_t i = 0; i < it->second.size(); ++i) {
         } // if (guiKnob) {
         if (knob) {
@@ -243,8 +235,7 @@ SetKeysCommand::SetKeysCommand(CurveWidget *editor,
 void
 SetKeysCommand::undo()
 {
-    KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( _guiCurve.get() );
-    BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( _guiCurve.get() );
+    KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(_guiCurve.get());
 
     if (isKnobCurve) {
         KnobIPtr knob = lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
@@ -259,8 +250,6 @@ SetKeysCommand::undo()
         } else {
             _guiCurve->getInternalCurve()->clone(*_oldCurve);
         }
-    } else if (isBezierCurve) {
-        // not implemented
     }
 }
 
@@ -287,7 +276,10 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
     std::set<KnobIPtr> knobsSet;
     for (std::map<CurveGuiPtr, std::vector<KeyFrame> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
-        BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>(it->first.get());
+        if (dynamic_cast<BezierCPCurveGui*>(it->first.get())) {
+            // A control point loses keys only with its shape, in the dope sheet.
+            continue;
+        }
         KnobIPtr knob;
 
         if (isKnobCurve) {
@@ -349,14 +341,6 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
                             knob->deleteValueAtTime(eCurveChangeReasonCurveEditor, it->second[i].getTime(), ViewSpec::all(), isKnobCurve->getDimension(), i == 0);
                         }
                     }
-                } else if (isBezierCurve) {
-                    BezierPtr b = isBezierCurve->getBezier();
-                    assert(b);
-                    if (add) {
-                        b->setKeyframe( it->second[i].getTime() );
-                    } else {
-                        b->removeKeyframe( it->second[i].getTime() );
-                    }
                 } // if (isKnobCurve) {
             } // for (std::size_t i = 0; i < it->second.size(); ++i) {
         } // if (guiKnob) {
@@ -409,6 +393,38 @@ MoveKeysCommand::MoveKeysCommand(CurveWidget* widget,
     setText( tr("Move multiple keys") );
 }
 
+// Moves a control point so that one coordinate takes 'value' at the key's time, which must be
+// one of its shape's keyframes. Returns false when the point or the keyframe is gone.
+static bool
+setControlPointValue(BezierCPCurveGui* curve,
+                     KeyFrame* key,
+                     double value)
+{
+    BezierPtr bezier = curve->getBezier();
+    BezierCPPtr cp = curve->getControlPoint();
+
+    if (!bezier || !cp) {
+        return false;
+    }
+    int index = bezier->getControlPointIndex(cp);
+    if (index < 0) {
+        return false;
+    }
+    double x = 0., y = 0.;
+    cp->getPositionAtTime(false, key->getTime(), ViewIdx(0), &x, &y);
+    if (curve->getDimension() == 0) {
+        x = value;
+    } else {
+        y = value;
+    }
+    if (!bezier->setPointPositionAtKeyframe(index, key->getTime(), x, y)) {
+        return false;
+    }
+    key->setValue(value);
+
+    return true;
+}
+
 static void
 moveKeys(CurveGui* curve,
          std::vector<MoveKeysCommand::KeyToMove> &vect,
@@ -422,11 +438,10 @@ moveKeys(CurveGui* curve,
     BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>(curve);
 
     if (isBezierCurve) {
+        // Only the value moves: the key times are the shape's keyframes.
         for (std::size_t i = 0; i < vect.size(); ++i) {
             const MoveKeysCommand::KeyToMove& k = vect[i];
-            double oldTime = k.key->key.getTime();
-            k.key->key.setTime(oldTime + dt);
-            isBezierCurve->getBezier()->moveKeyframe( oldTime, k.key->key.getTime() );
+            setControlPointValue(isBezierCurve, &k.key->key, k.key->key.getValue() + dv);
         }
     } else if (isKnobCurve) {
         KnobIPtr knob = isKnobCurve->getInternalKnob();
@@ -496,6 +511,13 @@ MoveKeysCommand::move(double dt,
                         k->getHolder()->beginChanges();
                     }
                 }
+            }
+        }
+        BezierCPCurveGui* isPointCurve = dynamic_cast<BezierCPCurveGui*>(it->first.get());
+        if (isPointCurve && isPointCurve->getRotoContext()) {
+            RotoCurveContextPtr roto = isPointCurve->getRotoContext();
+            if (std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end()) {
+                rotoToEvaluate.push_back(roto);
             }
         }
         moveKeys(it->first.get(), it->second, dt, dv);
@@ -620,13 +642,6 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
                     k->beginChanges();
                 }
             }
-        } else {
-            BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>( it->key->curve.get() );
-            assert(bezierCurve);
-            if (bezierCurve) {
-                assert( bezierCurve->getBezier() );
-                rotoToEvaluate.push_back( bezierCurve->getBezier()->getContext() );
-            }
         }
     }
 
@@ -654,15 +669,8 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
                     knob->setTangentsAtTime(eCurveChangeReasonCurveEditor, ViewIdx(0), isKnobCurve->getDimension(), it->key->key.getTime(), it->oldTangents, &it->key->key);
                 }
             }
-        } else {
-            ///interpolation for bezier curve is either linear or constant
-            interp = interp == eKeyframeTypeConstant ? eKeyframeTypeConstant :
-                     eKeyframeTypeLinear;
-            int keyframeIndex = it->key->curve->getKeyFrameIndex( it->key->key.getTime() );
-            if (keyframeIndex != -1) {
-                it->key->curve->setKeyFrameInterpolation(interp, keyframeIndex);
-            }
         }
+        // A control point's interpolation is its shape keyframe's, set in the dope sheet.
     }
 
     for (std::list<KnobI*>::iterator it = differentKnobs.begin(); it != differentKnobs.end(); ++it) {
@@ -1083,20 +1091,6 @@ TransformKeysCommand::~TransformKeysCommand()
 }
 
 static void
-transformKeyFrame(KeyFrame* key,
-                  const Transform::Matrix3x3& m)
-{
-    double oldTime = key->getTime();
-    Transform::Point3D p;
-
-    p.x = oldTime;
-    p.y = key->getValue();
-    p.z = 1;
-    p = Transform::matApply(m, p);
-    key->setTime(p.x);
-}
-
-static void
 transform(const Transform::Matrix3x3& matrix,
           CurveGui* curve,
           const std::list<KeyPtr>& keyframes)
@@ -1139,12 +1133,14 @@ transform(const Transform::Matrix3x3& matrix,
             }
         }
     } else if (isBezierCurve) {
+        // Only the values are transformed: the key times are the shape's keyframes.
         for (std::list<KeyPtr>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
-            double oldTime = (*it)->key.getTime();
-            transformKeyFrame(&(*it)->key, matrix);
-            //transformKeyFrame(&(*it)->prevKey,*_matrix);
-            //transformKeyFrame(&(*it)->nextKey,*_matrix);
-            isBezierCurve->getBezier()->moveKeyframe( oldTime, (*it)->key.getTime() );
+            Transform::Point3D p;
+            p.x = (*it)->key.getTime();
+            p.y = (*it)->key.getValue();
+            p.z = 1;
+            p = Transform::matApply(matrix, p);
+            setControlPointValue(isBezierCurve, &(*it)->key, p.y);
         }
     }
 }
@@ -1179,6 +1175,13 @@ TransformKeysCommand::transformKeys(const Transform::Matrix3x3& matrix)
                         k->getHolder()->beginChanges();
                     }
                 }
+            }
+        }
+        BezierCPCurveGui* isPointCurve = dynamic_cast<BezierCPCurveGui*>(it->first.get());
+        if (isPointCurve && isPointCurve->getRotoContext()) {
+            RotoCurveContextPtr roto = isPointCurve->getRotoContext();
+            if (std::find(rotoToEvaluate.begin(), rotoToEvaluate.end(), roto) == rotoToEvaluate.end()) {
+                rotoToEvaluate.push_back(roto);
             }
         }
     }

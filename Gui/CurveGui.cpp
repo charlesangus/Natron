@@ -36,6 +36,7 @@
 #include <QDebug>
 
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RotoContext.h" // Bezier
@@ -738,103 +739,86 @@ KnobCurveGui::setKeyFrameInterpolation(KeyframeTypeEnum interp,
 
 BezierCPCurveGui::BezierCPCurveGui(CurveWidget* curveWidget,
                                    const BezierPtr& bezier,
+                                   const BezierCPPtr& cp,
+                                   int dimension,
                                    const RotoCurveContextPtr& roto,
                                    const QString& name,
                                    const QColor& color,
                                    int thickness)
     : CurveGui(curveWidget, CurvePtr(), name, color, thickness)
     , _bezier(bezier)
+    , _cp(cp)
+    , _dimension(dimension)
     , _rotoContext(roto)
 {
-    // even when there is only one keyframe, there may be tangents!
-    if (bezier->getKeyframesCount() > 0) {
-        setVisible(true);
-    }
 }
 
 BezierPtr
 BezierCPCurveGui::getBezier() const
 {
-    return _bezier;
+    return _bezier.lock();
+}
+
+BezierCPPtr
+BezierCPCurveGui::getControlPoint() const
+{
+    return _cp;
+}
+
+void
+BezierCPCurveGui::setControlPoint(const BezierCPPtr& cp)
+{
+    _cp = cp;
 }
 
 BezierCPCurveGui::~BezierCPCurveGui()
 {
 }
 
+CurvePtr
+BezierCPCurveGui::getInternalCurve() const
+{
+    if (!_cp) {
+        return CurvePtr();
+    }
+
+    return _dimension == 0 ? _cp->getXCurve() : _cp->getYCurve();
+}
+
 double
 BezierCPCurveGui::evaluate(bool /*useExpr*/,
                            double x) const
 {
-    std::list<std::pair<double, KeyframeTypeEnum> > keys;
-
-    _bezier->getKeyframeTimesAndInterpolation(&keys);
-
-    std::list<std::pair<double, KeyframeTypeEnum> >::iterator upb = keys.end();
-    int dist = 0;
-    for (std::list<std::pair<double, KeyframeTypeEnum> >::iterator it = keys.begin(); it != keys.end(); ++it, ++dist) {
-        if (it->first > x) {
-            upb = it;
-            break;
-        }
+    if (!_cp) {
+        return 0.;
     }
+    double px = 0., py = 0.;
+    _cp->getPositionAtTime(false, x, ViewIdx(0), &px, &py);
 
-    if ( upb == keys.end() ) {
-        return keys.size() - 1;
-    } else if ( upb == keys.begin() ) {
-        return 0;
-    } else {
-        std::list<std::pair<double, KeyframeTypeEnum> >::iterator prev = upb;
-        if ( prev != keys.begin() ) {
-            --prev;
-        }
-        if (prev->second == eKeyframeTypeConstant) {
-            return dist - 1;
-        } else {
-            ///Always linear for bezier interpolation
-            assert( (upb->first - prev->first) != 0 );
-
-            return ( (double)(x - prev->first) / (upb->first - prev->first) ) + dist - 1;
-        }
-    }
-}
-
-Curve::YRange
-BezierCPCurveGui::getCurveYRange() const
-{
-    int keys = _bezier->getKeyframesCount();
-
-    return Curve::YRange(0, keys - 1);
-}
-
-KeyFrameSet
-BezierCPCurveGui::getKeyFrames() const
-{
-    KeyFrameSet ret;
-    std::set<double> keys;
-
-    _bezier->getKeyframeTimes(&keys);
-    int i = 0;
-    for (std::set<double>::iterator it = keys.begin(); it != keys.end(); ++it, ++i) {
-        ret.insert( KeyFrame(*it, i) );
-    }
-
-    return ret;
+    return _dimension == 0 ? px : py;
 }
 
 int
 BezierCPCurveGui::getKeyFrameIndex(double time) const
 {
-    return _bezier->getKeyFrameIndex(time);
+    CurvePtr curve = getInternalCurve();
+
+    return curve ? curve->keyFrameIndex(time) : -1;
 }
 
 KeyFrame
-BezierCPCurveGui::setKeyFrameInterpolation(KeyframeTypeEnum interp,
+BezierCPCurveGui::setKeyFrameInterpolation(KeyframeTypeEnum /*interp*/,
                                            int index)
 {
-    _bezier->setKeyFrameInterpolation(interp, index);
+    // The interpolation belongs to the shape's keyframe, shared by all its points.
+    KeyFrame k;
+    CurvePtr curve = getInternalCurve();
+    if (curve) {
+        bool found = curve->getKeyFrameWithIndex(index, &k);
+        Q_UNUSED(found);
+    }
 
-    return KeyFrame();
+    return k;
 }
 
 NATRON_NAMESPACE_EXIT

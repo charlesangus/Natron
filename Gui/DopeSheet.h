@@ -148,6 +148,12 @@ public:
     bool canContainOtherNodeContexts() const;
     bool containsNodeContext() const;
 
+    /**
+     * @brief Recreates the rows of the node's curve-context items (one per drawable, each with
+     * a Shape row for a Bezier and rows for the item's animatable knobs). No-op without a context.
+     **/
+    void rebuildItemRows();
+
 private:
     std::unique_ptr<DSNodePrivate> _imp;
 };
@@ -217,13 +223,40 @@ public:
     DSKnob(int dimension,
            QTreeWidgetItem *nameItem,
            const KnobGuiPtr& knobGui);
+
+    // A curve-context item's knob, which no panel shows
+    DSKnob(int dimension,
+           QTreeWidgetItem* nameItem,
+           const KnobIPtr& knob,
+           const RotoDrawableItemPtr& item);
+
+    // A Bezier's shape keys
+    DSKnob(QTreeWidgetItem* nameItem,
+           const BezierPtr& bezier);
     ~DSKnob();
 
     QTreeWidgetItem * getTreeItem() const;
     QTreeWidgetItem * findDimTreeItem(int dimension) const;
 
+    // Null for rows that have no KnobGui (item knobs and shape rows)
     KnobGuiPtr getKnobGui() const;
     KnobIPtr getInternalKnob() const;
+
+    // The curve-context item the row belongs to, null for a node's own knob
+    RotoDrawableItemPtr getRotoItem() const;
+
+    // Set only for a shape row
+    BezierPtr getBezier() const;
+    bool isShape() const;
+
+    // The curve the row's keys live on; null for a shape row
+    CurvePtr getCurve(int dimension) const;
+
+    // The row's keys; a shape row's keys carry the shape key's time and interpolation only
+    KeyFrameSet getKeyFrames(int dimension) const;
+
+    // The knob's dimension count, 1 for a shape row
+    int getDimensionCount() const;
 
     bool isMultiDimRoot() const;
     int getDimension() const;
@@ -246,6 +279,7 @@ public:
         , key(kf)
         , knob(knob ? knob->getInternalKnob() : KnobIPtr())
         , dimension(knob ? knob->getDimension() : 0)
+        , bezier(knob ? knob->getBezier() : BezierPtr())
     {
         DSKnobPtr knobContext = context.lock();
 
@@ -257,6 +291,7 @@ public:
         , key(other.key)
         , knob(other.knob)
         , dimension(other.dimension)
+        , bezier(other.bezier)
     {}
 
     friend bool operator==(const DopeSheetKey &key,
@@ -285,6 +320,10 @@ public:
             return false;
         }
 
+        if (key.bezier.lock() != other.bezier.lock()) {
+            return false;
+        }
+
         return true;
     }
 
@@ -304,6 +343,9 @@ public:
     // address the key through the knob and dimension instead.
     KnobIWPtr knob;
     int dimension;
+
+    // Set for a shape key, addressed by the Bezier and the key's time for the same reason
+    BezierWPtr bezier;
 };
 
 typedef DopeSheetKeyPtr DopeSheetKeyPtr;
@@ -356,6 +398,8 @@ public:
     DSNodePtr findDSNode(Node *node) const;
     DSNodePtr findDSNode(const KnobIPtr &knob) const;
     DSKnobPtr findDSKnob(const KnobGui* knobGui) const;
+    DSKnobPtr findDSKnob(const KnobIPtr& knob, int dimension) const;
+    DSKnobPtr findShapeDSKnob(const Bezier* bezier) const;
 
     bool isPartOfGroup(DSNode *dsNode) const;
     DSNodePtr getGroupDSNode(DSNode *dsNode) const;
@@ -405,6 +449,9 @@ Q_SIGNALS:
     void nodeRemoved(DSNode *dsNode);
     void keyframeSetOrRemoved(DSKnob *dsKnob);
 
+    // The node's curve-context item rows were recreated; the old DSKnobs are gone
+    void itemRowsRebuilt(DSNode* dsNode);
+
 private: /* functions */
     DSNodePtr createDSNode(const NodeGuiPtr &nodeGui, DopeSheetItemType itemType);
 
@@ -412,6 +459,9 @@ private Q_SLOTS:
     void onNodeNameChanged(const QString &name);
     void onKeyframeSetOrRemoved();
     void onNodeNameEditDialogFinished();
+    void onCurveContextItemsChanged();
+    void onShapeKeyframesChanged();
+    void onItemKnobKeyframesChanged();
 
 private:
     std::unique_ptr<DopeSheetPrivate> _imp;
@@ -468,6 +518,9 @@ public:
     void emit_keyframeSelectionChanged(bool recurse);
 
     void onNodeAboutToBeRemoved(const DSNodePtr &removed);
+
+    // Drops the selected keys whose row no longer exists
+    void pruneExpiredKeys();
 
 Q_SIGNALS:
     void keyframeSelectionChangedFromModel(bool recurse);

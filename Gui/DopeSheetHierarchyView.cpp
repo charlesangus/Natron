@@ -289,6 +289,7 @@ public:
     void checkKnobsVisibleState(DSNode *dsNode);
     void checkNodeVisibleState(DSNode *dsNode);
     void checkKnobVisibleState(DSKnob *dsKnob);
+    bool checkItemRowsVisibleState(DSNode* dsNode);
 
     // item related
     QRect getBranchRect(QTreeWidgetItem *item) const;
@@ -347,6 +348,44 @@ HierarchyViewPrivate::checkKnobsVisibleState(DSNode *dsNode)
             checkKnobVisibleState( knobContext.get() );
         }
     }
+
+    QTreeWidgetItem* nodeItem = dsNode->getTreeItem();
+    for (int i = 0; i < nodeItem->childCount(); ++i) {
+        QTreeWidgetItem* child = nodeItem->child(i);
+        if (child->data(0, QT_ROLE_CONTEXT_TYPE).toInt() == eDopeSheetItemTypeRotoItem) {
+            child->setExpanded(true);
+        }
+    }
+}
+
+/**
+ * @brief Shows a curve-context item's row while any row under it is shown. Returns
+ * whether any item row is shown.
+ */
+bool
+HierarchyViewPrivate::checkItemRowsVisibleState(DSNode* dsNode)
+{
+    bool anyShown = false;
+    QTreeWidgetItem* nodeItem = dsNode->getTreeItem();
+
+    for (int i = 0; i < nodeItem->childCount(); ++i) {
+        QTreeWidgetItem* itemRow = nodeItem->child(i);
+        if (itemRow->data(0, QT_ROLE_CONTEXT_TYPE).toInt() != eDopeSheetItemTypeRotoItem) {
+            continue;
+        }
+        bool showItem = false;
+        for (int j = 0; j < itemRow->childCount(); ++j) {
+            if (!itemRow->child(j)->isHidden()) {
+                showItem = true;
+                break;
+            }
+        }
+        itemRow->setHidden(!showItem);
+        itemRow->setData(0, QT_ROLE_CONTEXT_IS_ANIMATED, showItem);
+        anyShown = anyShown || showItem;
+    }
+
+    return anyShown;
 }
 
 /**
@@ -360,8 +399,9 @@ HierarchyViewPrivate::checkNodeVisibleState(DSNode *dsNode)
     QTreeWidgetItem *nodeItem = dsNode->getTreeItem();
     bool showNode;
 
+    bool itemShown = checkItemRowsVisibleState(dsNode);
     if (nodeType == eDopeSheetItemTypeCommon) {
-        showNode = nodeHasAnimation(nodeGui);
+        showNode = itemShown || nodeHasAnimation(nodeGui);
     } else {
         showNode = true;
     }
@@ -382,14 +422,11 @@ void
 HierarchyViewPrivate::checkKnobVisibleState(DSKnob *dsKnob)
 {
     int dim = dsKnob->getDimension();
-    KnobGuiPtr knobGui = dsKnob->getKnobGui();
-
-    assert(knobGui);
     bool showContext = false;
 
     if ( dsKnob->isMultiDimRoot() ) {
-        for (int i = 0; i < knobGui->getKnob()->getDimension(); ++i) {
-            bool curveIsAnimated = knobGui->getCurve(ViewIdx(0), i)->isAnimated();
+        for (int i = 0; i < dsKnob->getDimensionCount(); ++i) {
+            bool curveIsAnimated = !dsKnob->getKeyFrames(i).empty();
             QTreeWidgetItem *dimItem = dsKnob->findDimTreeItem(i);
             dimItem->setHidden(!curveIsAnimated);
             dimItem->setData(0, QT_ROLE_CONTEXT_IS_ANIMATED, curveIsAnimated);
@@ -399,7 +436,7 @@ HierarchyViewPrivate::checkKnobVisibleState(DSKnob *dsKnob)
             }
         }
     } else {
-        showContext = knobGui->getCurve(ViewIdx(0), dim)->isAnimated();
+        showContext = !dsKnob->getKeyFrames(dim).empty();
     }
 
     QTreeWidgetItem *treeItem = dsKnob->getTreeItem();
@@ -995,6 +1032,13 @@ HierarchyView::onKeyframeSetOrRemoved(DSKnob *dsKnob)
 }
 
 void
+HierarchyView::onItemRowsRebuilt(DSNode* dsNode)
+{
+    _imp->checkKnobsVisibleState(dsNode);
+    _imp->checkNodeVisibleState(dsNode);
+}
+
+void
 HierarchyView::onKeyframeSelectionChanged(bool recurse)
 {
     HierarchyViewSelectionModel *mySelecModel
@@ -1032,10 +1076,8 @@ HierarchyView::onKeyframeSelectionChanged(bool recurse)
              toCheckIt != toCheck.end();
              ++toCheckIt) {
             DSKnobPtr dsKnob = (*toCheckIt);
-            KnobGuiPtr knobGui = dsKnob->getKnobGui();
-            assert(knobGui);
             int dim = dsKnob->getDimension();
-            KeyFrameSet keyframes = knobGui->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
+            KeyFrameSet keyframes = dsKnob->getKeyFrames(dim);
             bool selectItem = true;
 
             for (KeyFrameSet::const_iterator kfIt = keyframes.begin();

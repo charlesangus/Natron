@@ -42,6 +42,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
@@ -243,16 +244,17 @@ CurveEditor::CurveEditor(Gui* gui,
 
 CurveEditor::~CurveEditor()
 {
+    // Item rows hang under their host node's row, so they go before the node contexts.
+    for (std::list<RotoCurveEditorContext*>::iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
+        delete *it;
+    }
+    _imp->rotos.clear();
+
     for (std::list<NodeCurveEditorContext*>::iterator it = _imp->nodes.begin();
          it != _imp->nodes.end(); ++it) {
         delete (*it);
     }
     _imp->nodes.clear();
-
-    for (std::list<RotoCurveEditorContext*>::iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
-        delete *it;
-    }
-    _imp->rotos.clear();
 }
 
 void
@@ -316,10 +318,9 @@ CurveEditor::recursiveSelect(QTreeWidgetItem* cur,
 
     if (inspectRotos) {
         for (std::list<RotoCurveEditorContext*>::const_iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
+            // Each context only answers for its own rows, and a host's node row now also
+            // holds its knob curves, so a non-empty list does not mean the row was found.
             (*it)->recursiveSelectRoto(cur, curves);
-            if (curves->size() > 0) {
-                break;
-            }
         }
     }
 }
@@ -344,12 +345,11 @@ CurveEditor::addNode(NodeGuiPtr node)
         return;
     }
 
-    RotoCurveContextPtr roto = node->getNode()->getCurveContext();
-    if (!roto) {
-        NodeCurveEditorContext* nodeContext = new NodeCurveEditorContext(_imp->tree, this, node);
-        _imp->nodes.push_back(nodeContext);
-    } else {
-        RotoCurveEditorContext* rotoEditorCtx = new RotoCurveEditorContext(this, _imp->tree, node);
+    NodeCurveEditorContext* nodeContext = new NodeCurveEditorContext(_imp->tree, this, node);
+    _imp->nodes.push_back(nodeContext);
+
+    if (node->getNode()->getCurveContext()) {
+        RotoCurveEditorContext* rotoEditorCtx = new RotoCurveEditorContext(this, _imp->tree, node, nodeContext->getItem());
         _imp->rotos.push_back(rotoEditorCtx);
     }
 }
@@ -357,30 +357,26 @@ CurveEditor::addNode(NodeGuiPtr node)
 void
 CurveEditor::removeNode(NodeGui* node)
 {
-    RotoCurveContextPtr roto = node->getNode()->getCurveContext();
-
-    if (!roto) {
-        for (std::list<NodeCurveEditorContext*>::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-            if ( (*it)->getNode().get() == node ) {
-                const NodeCurveEditorContext::Elements& elems = (*it)->getElements();
-                for (NodeCurveEditorContext::Elements::const_iterator it2 = elems.begin(); it2 != elems.end(); ++it2) {
-                    if ( (*it2)->getCurve() == _imp->selectedKnobCurve.lock() ) {
-                        _imp->selectedKnobCurve.reset();
-                        break;
-                    }
-                }
-                delete (*it);
-                _imp->nodes.erase(it);
-                break;
-            }
+    // The item rows hang under the node's row, so they go first.
+    for (std::list<RotoCurveEditorContext*>::iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
+        if ((*it)->getNode().get() == node) {
+            delete *it;
+            _imp->rotos.erase(it);
+            break;
         }
-    } else {
-        for (std::list<RotoCurveEditorContext*>::iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
-            if ( (*it)->getNode().get() == node ) {
-                delete *it;
-                _imp->rotos.erase(it);
-                break;
+    }
+    for (std::list<NodeCurveEditorContext*>::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
+        if ((*it)->getNode().get() == node) {
+            const NodeCurveEditorContext::Elements& elems = (*it)->getElements();
+            for (NodeCurveEditorContext::Elements::const_iterator it2 = elems.begin(); it2 != elems.end(); ++it2) {
+                if ((*it2)->getCurve() == _imp->selectedKnobCurve.lock()) {
+                    _imp->selectedKnobCurve.reset();
+                    break;
+                }
             }
+            delete (*it);
+            _imp->nodes.erase(it);
+            break;
         }
     }
     _imp->curveWidget->centerOn(-10, 500, -10, 10);
@@ -547,8 +543,14 @@ NodeCurveEditorContext::NodeCurveEditorContext(QTreeWidget* tree,
     QObject::connect( node->getNode().get(), SIGNAL(labelChanged(QString)), this, SLOT(onNameChanged(QString)) );
     const std::list<std::pair<KnobIWPtr, KnobGuiPtr> > & knobs = node->getKnobs();
     bool hasAtLeast1KnobWithACurveShown = false;
+    // A curve host's item rows go under this row too, so it stays shown for them.
+    RotoCurveContextPtr curveContext = node->getNode()->getCurveContext();
 
     for (std::list<std::pair<KnobIWPtr, KnobGuiPtr> >::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        // The proxies of the selected item's knobs are shown under that item.
+        if (curveContext && curveContext->isItemProxyKnob(it->first.lock())) {
+            continue;
+        }
         createElementsForKnob(nameItem, it->second, KnobIPtr(),
                               curveWidget, tree, RotoCurveContextPtr(), _nodeElements, &hasAtLeast1KnobWithACurveShown);
     }
@@ -557,10 +559,10 @@ NodeCurveEditorContext::NodeCurveEditorContext(QTreeWidget* tree,
         NodeCurveEditorElement* elem = new NodeCurveEditorElement( tree, curveWidget, KnobGuiPtr(), -1,
                                                                    nameItem, CurveGuiPtr() );
         _nodeElements.push_back(elem);
-        if (!hasAtLeast1KnobWithACurveShown) {
+        if (!hasAtLeast1KnobWithACurveShown && !curveContext) {
             nameItem->setHidden(true);
         }
-    } else {
+    } else if (!curveContext) {
         nameItem->setHidden(true);
     }
     _nameItem = nameItem;
@@ -1084,7 +1086,7 @@ CurveEditor::findCurve(const KnobGuiPtr& knob,
         }
     } else {
         RotoCurveContextPtr roto = effect->getNode()->getCurveContext();
-        if (roto) {
+        if (roto && roto->isItemProxyKnob(internalKnob)) {
             for (std::list<RotoCurveEditorContext*>::const_iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
                 if (roto == (*it)->getNode()->getNode()->getCurveContext()) {
                     std::list<NodeCurveEditorElement*> elems = (*it)->findElement(knob, dimension);
@@ -1216,7 +1218,6 @@ struct RotoItemEditorContextPrivate
     RotoDrawableItemPtr curve;
     QTreeWidgetItem* nameItem;
     std::list<NodeCurveEditorElement*> knobs;
-    bool doDeleteItem;
 
     RotoItemEditorContextPrivate(CurveEditor* widget,
                                  const RotoDrawableItemPtr& curve,
@@ -1226,7 +1227,6 @@ struct RotoItemEditorContextPrivate
         , curve(curve)
         , nameItem(0)
         , knobs()
-        , doDeleteItem(true)
     {
     }
 };
@@ -1254,18 +1254,10 @@ RotoItemEditorContext::RotoItemEditorContext(QTreeWidget* tree,
 
 RotoItemEditorContext::~RotoItemEditorContext()
 {
-    if (_imp->doDeleteItem) {
-        delete _imp->nameItem;
-    }
+    delete _imp->nameItem;
     for (std::list<NodeCurveEditorElement*>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         delete *it;
     }
-}
-
-void
-RotoItemEditorContext::preventItemDeletion()
-{
-    _imp->doDeleteItem = false;
 }
 
 RotoDrawableItemPtr
@@ -1341,27 +1333,14 @@ RotoItemEditorContext::recursiveSelect(QTreeWidgetItem* cur,
                                        bool mustSelect,
                                        std::vector<CurveGuiPtr> *curves)
 {
-    QTreeWidgetItem* curveItem = 0;
-    CurveGuiPtr animCurve;
-
-    getAnimCurveAndItem(&curveItem, &animCurve);
     if (mustSelect) {
         cur->setSelected(true);
     }
     if (_imp->nameItem == cur) {
         cur->setSelected(true);
-        if (curveItem) {
-            curveItem->setSelected(true);
-        }
-        if (animCurve) {
-            curves->push_back(animCurve);
-        }
+        recursiveSelectPoints(cur, true, curves);
         recursiveSelectElement(_imp->knobs, cur, true, curves);
-    } else if ( curveItem && (cur == curveItem) ) {
-        cur->setSelected(true);
-        assert(animCurve);
-        curves->push_back(animCurve);
-    } else {
+    } else if (!recursiveSelectPoints(cur, false, curves)) {
         recursiveSelectElement(_imp->knobs, cur, false,  curves);
     }
 }
@@ -1387,15 +1366,27 @@ RotoItemEditorContext::findElement(const KnobGuiPtr& knob,
     return 0;
 }
 
-struct BezierEditorContextPrivate
-{
-    QTreeWidgetItem* curveItem;
-    BezierCPCurveGuiPtr animCurve;
+namespace {
+struct ControlPointRow {
+    QTreeWidgetItem* item;
+    QTreeWidgetItem* coordItems[2];
+    BezierCPCurveGuiPtr curves[2];
+};
+}
 
+struct BezierEditorContextPrivate {
+    QTreeWidget* tree;
+    BezierWPtr bezier;
+    std::list<ControlPointRow> points;
+    // Point indices recorded before the shape replaces its points on clone, in 'points' order.
+    std::list<int> indicesBeforeClone;
 
-    BezierEditorContextPrivate()
-        : curveItem(0)
-        , animCurve()
+    BezierEditorContextPrivate(QTreeWidget* tree,
+                               const BezierPtr& bezier)
+        : tree(tree)
+        , bezier(bezier)
+        , points()
+        , indicesBeforeClone()
     {
     }
 };
@@ -1405,33 +1396,217 @@ BezierEditorContext::BezierEditorContext(QTreeWidget* tree,
                                          const BezierPtr& curve,
                                          RotoCurveEditorContext* context)
     : RotoItemEditorContext(tree, widget, std::dynamic_pointer_cast<RotoDrawableItem>(curve), context)
-    , _imp( new BezierEditorContextPrivate() )
+    , _imp(new BezierEditorContextPrivate(tree, curve))
 {
-    _imp->curveItem = new QTreeWidgetItem( getItem() );
-    _imp->curveItem->setExpanded(true);
-    _imp->curveItem->setText( 0, QString::fromUtf8("Animation") );
-
-    CurveWidget* cw = widget->getCurveWidget();
     QObject::connect( curve.get(), SIGNAL(keyframeSet(double)), this, SLOT(onKeyframeAdded()) );
     QObject::connect( curve.get(), SIGNAL(keyframeRemoved(double)), this, SLOT(onKeyframeRemoved()) );
-    QObject::connect( curve.get(), SIGNAL(cloned()), this, SLOT(onShapeCloned()) );
-    RotoCurveContextPtr roto = context->getNode()->getNode()->getCurveContext();
-    _imp->animCurve.reset( new BezierCPCurveGui(cw, curve, roto, getName(), QColor(255, 255, 255), 1.) );
-    _imp->animCurve->setVisible(false);
-    cw->addCurveAndSetColor(_imp->animCurve);
-}
-
-void
-BezierEditorContext::getAnimCurveAndItem(QTreeWidgetItem** item,
-                                         CurveGuiPtr* curve) const
-{
-    *item = _imp->curveItem;
-    *curve = _imp->animCurve;
+    QObject::connect(curve.get(), SIGNAL(aboutToClone()), this, SLOT(onShapeAboutToClone()));
+    QObject::connect(curve.get(), SIGNAL(cloned()), this, SLOT(onShapeClonedRebindPoints()));
+    QObject::connect(curve.get(), SIGNAL(controlPointRemoved()), this, SLOT(onControlPointRemoved()));
+    QObject::connect(curve.get(), &Bezier::curveEditorPointsRequested, this, &BezierEditorContext::showControlPoints);
 }
 
 BezierEditorContext::~BezierEditorContext()
 {
-    getWidget()->getCurveWidget()->removeCurve( _imp->animCurve.get() );
+    CurveWidget* cw = getWidget()->getCurveWidget();
+
+    for (std::list<ControlPointRow>::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        cw->removeCurve(it->curves[0].get());
+        cw->removeCurve(it->curves[1].get());
+        // The rows are children of the shape row, which the base class deletes.
+    }
+}
+
+void
+BezierEditorContext::showControlPoints(const std::list<BezierCPPtr>& points,
+                                       bool show)
+{
+    BezierPtr bezier = _imp->bezier.lock();
+
+    if (!bezier) {
+        return;
+    }
+    CurveWidget* cw = getWidget()->getCurveWidget();
+    RotoCurveContextPtr roto = getContext();
+    std::list<QTreeWidgetItem*> shownRows;
+
+    for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it) {
+        if (!*it || (*it)->isFeatherPoint() || (bezier->getControlPointIndex(*it) < 0)) {
+            continue;
+        }
+        std::list<ControlPointRow>::iterator found = _imp->points.begin();
+        for (; found != _imp->points.end(); ++found) {
+            if (found->curves[0]->getControlPoint() == *it) {
+                break;
+            }
+        }
+        if (!show) {
+            if (found != _imp->points.end()) {
+                cw->removeCurve(found->curves[0].get());
+                cw->removeCurve(found->curves[1].get());
+                delete found->item;
+                _imp->points.erase(found);
+            }
+            continue;
+        }
+        if (found != _imp->points.end()) {
+            shownRows.push_back(found->item);
+            continue;
+        }
+        ControlPointRow row;
+        row.item = new QTreeWidgetItem(getItem());
+        row.item->setExpanded(true);
+        for (int d = 0; d < 2; ++d) {
+            const QString coord = QString::fromUtf8(d == 0 ? "x" : "y");
+            row.coordItems[d] = new QTreeWidgetItem(row.item);
+            row.coordItems[d]->setText(0, coord);
+            const QString name = tr("%1 Point %2 %3").arg(getName()).arg(bezier->getControlPointIndex(*it) + 1).arg(coord);
+            row.curves[d] = std::make_shared<BezierCPCurveGui>(cw, bezier, *it, d, roto, name, QColor(255, 255, 255), 1);
+            row.curves[d]->setVisible(false);
+            cw->addCurveAndSetColor(row.curves[d]);
+        }
+        _imp->points.push_back(row);
+        shownRows.push_back(row.item);
+    }
+    refreshPointLabels();
+
+    if (!show) {
+        if (_imp->points.empty()) {
+            checkIfHiddenRecursivly(_imp->tree, getItem());
+        }
+        cw->update();
+
+        return;
+    }
+    if (shownRows.empty()) {
+        return;
+    }
+    for (QTreeWidgetItem* p = getItem(); p; p = p->parent()) {
+        p->setHidden(false);
+        p->setExpanded(true);
+    }
+    // Selecting the rows plots their curves.
+    _imp->tree->clearSelection();
+    for (std::list<QTreeWidgetItem*>::iterator it = shownRows.begin(); it != shownRows.end(); ++it) {
+        (*it)->setSelected(true);
+    }
+    _imp->tree->scrollToItem(shownRows.front());
+}
+
+std::list<BezierCPCurveGuiPtr>
+BezierEditorContext::getControlPointCurves() const
+{
+    std::list<BezierCPCurveGuiPtr> ret;
+
+    for (std::list<ControlPointRow>::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        ret.push_back(it->curves[0]);
+        ret.push_back(it->curves[1]);
+    }
+
+    return ret;
+}
+
+void
+BezierEditorContext::refreshPointLabels()
+{
+    BezierPtr bezier = _imp->bezier.lock();
+
+    if (!bezier) {
+        return;
+    }
+    for (std::list<ControlPointRow>::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        int index = bezier->getControlPointIndex(it->curves[0]->getControlPoint());
+        it->item->setText(0, tr("Point %1").arg(index + 1));
+    }
+}
+
+void
+BezierEditorContext::onShapeAboutToClone()
+{
+    BezierPtr bezier = _imp->bezier.lock();
+
+    _imp->indicesBeforeClone.clear();
+    for (std::list<ControlPointRow>::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        _imp->indicesBeforeClone.push_back(bezier ? bezier->getControlPointIndex(it->curves[0]->getControlPoint()) : -1);
+    }
+}
+
+void
+BezierEditorContext::onShapeClonedRebindPoints()
+{
+    BezierPtr bezier = _imp->bezier.lock();
+    CurveWidget* cw = getWidget()->getCurveWidget();
+
+    if (bezier && (_imp->indicesBeforeClone.size() == _imp->points.size())) {
+        const int count = (int)bezier->getControlPoints().size();
+        std::list<int>::iterator index = _imp->indicesBeforeClone.begin();
+        for (std::list<ControlPointRow>::iterator it = _imp->points.begin(); it != _imp->points.end(); ++index) {
+            if ((*index < 0) || (*index >= count)) {
+                cw->removeCurve(it->curves[0].get());
+                cw->removeCurve(it->curves[1].get());
+                delete it->item;
+                it = _imp->points.erase(it);
+                continue;
+            }
+            BezierCPPtr cp = bezier->getControlPointAtIndex(*index);
+            it->curves[0]->setControlPoint(cp);
+            it->curves[1]->setControlPoint(cp);
+            ++it;
+        }
+    }
+    _imp->indicesBeforeClone.clear();
+    refreshPointLabels();
+    onShapeCloned();
+}
+
+void
+BezierEditorContext::onControlPointRemoved()
+{
+    BezierPtr bezier = _imp->bezier.lock();
+    CurveWidget* cw = getWidget()->getCurveWidget();
+
+    for (std::list<ControlPointRow>::iterator it = _imp->points.begin(); it != _imp->points.end();) {
+        if (!bezier || (bezier->getControlPointIndex(it->curves[0]->getControlPoint()) < 0)) {
+            cw->removeCurve(it->curves[0].get());
+            cw->removeCurve(it->curves[1].get());
+            delete it->item;
+            it = _imp->points.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    refreshPointLabels();
+    cw->update();
+}
+
+bool
+BezierEditorContext::recursiveSelectPoints(QTreeWidgetItem* cur,
+                                           bool all,
+                                           std::vector<CurveGuiPtr>* curves)
+{
+    for (std::list<ControlPointRow>::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        if (all || (cur == it->item)) {
+            it->item->setSelected(true);
+            for (int d = 0; d < 2; ++d) {
+                it->coordItems[d]->setSelected(true);
+                curves->push_back(it->curves[d]);
+            }
+            if (!all) {
+                return true;
+            }
+            continue;
+        }
+        for (int d = 0; d < 2; ++d) {
+            if (cur == it->coordItems[d]) {
+                cur->setSelected(true);
+                curves->push_back(it->curves[d]);
+
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 ////// Stroke
@@ -1480,18 +1655,16 @@ struct RotoCurveEditorContextPrivate
 };
 
 RotoCurveEditorContext::RotoCurveEditorContext(CurveEditor* widget,
-                                               QTreeWidget *tree,
-                                               const NodeGuiPtr& node)
-    : _imp( new RotoCurveEditorContextPrivate(widget, tree, node) )
+                                               QTreeWidget* tree,
+                                               const NodeGuiPtr& node,
+                                               QTreeWidgetItem* nodeItem)
+    : _imp(new RotoCurveEditorContextPrivate(widget, tree, node))
 {
     RotoCurveContextPtr rotoCtx = node->getNode()->getCurveContext();
 
-    assert(rotoCtx);
+    assert(rotoCtx && nodeItem);
 
-    _imp->nameItem = new QTreeWidgetItem(tree);
-    _imp->nameItem->setExpanded(true);
-    _imp->nameItem->setText( 0, QString::fromUtf8( _imp->node->getNode()->getLabel().c_str() ) );
-    QObject::connect( node->getNode().get(), SIGNAL(labelChanged(QString)), this, SLOT(onNameChanged(QString)) );
+    _imp->nameItem = nodeItem;
     QObject::connect( rotoCtx.get(), SIGNAL(itemRemoved(RotoItemPtr,int)), this,
                       SLOT(onItemRemoved(RotoItemPtr,int)) );
     QObject::connect( rotoCtx.get(), SIGNAL(itemInserted(int,int)), this, SLOT(itemInserted(int,int)) );
@@ -1513,9 +1686,7 @@ RotoCurveEditorContext::RotoCurveEditorContext(CurveEditor* widget,
 
 RotoCurveEditorContext::~RotoCurveEditorContext()
 {
-    delete _imp->nameItem;
     for (std::list<RotoItemEditorContext*>::iterator it = _imp->curves.begin(); it != _imp->curves.end(); ++it) {
-        (*it)->preventItemDeletion();
         delete *it;
     }
 }
@@ -1526,6 +1697,8 @@ RotoCurveEditorContext::setVisible(bool visible)
     for (std::list<RotoItemEditorContext*>::iterator it = _imp->curves.begin(); it != _imp->curves.end(); ++it) {
         (*it)->getItem()->setHidden(!visible);
     }
+    // The node row is shared with the host's knob rows, which have already been filtered.
+    _imp->nameItem->setHidden(!visible);
 }
 
 NodeGuiPtr
@@ -1538,12 +1711,6 @@ QTreeWidgetItem*
 RotoCurveEditorContext::getItem() const
 {
     return _imp->nameItem;
-}
-
-void
-RotoCurveEditorContext::onNameChanged(const QString & name)
-{
-    _imp->nameItem->setText(0, name);
 }
 
 void

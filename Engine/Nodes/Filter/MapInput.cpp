@@ -237,7 +237,8 @@ MapInput::createSizeAtBlackKnob(KnobHolder* holder,
 
 void
 MapInput::createKnobs(KnobHolder* holder,
-                      const KnobPagePtr& page)
+                      const KnobPagePtr& page,
+                      const MapKnobHints& hints)
 {
     KnobChannelSelectPtr channel = AppManager::createKnob<KnobChannelSelect>(holder, EffectInstance::tr("Map Channel"));
     channel->setName(kMapInputParamChannel);
@@ -257,16 +258,13 @@ MapInput::createKnobs(KnobHolder* holder,
 
     KnobChoicePtr response = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Map Response"));
     response->setName(kMapInputParamResponse);
-    response->setHintToolTip(EffectInstance::tr("How Map values between 0 and 1, after Map Gamma, become sizes between Size At "
-                                                "Black and Size."));
+    response->setHintToolTip(EffectInstance::tr(hints.response));
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kMapInputParamResponseLinear, EffectInstance::tr("Linear").toStdString(),
-                                       EffectInstance::tr("The size follows the Map value in proportion.").toStdString()));
+                                       EffectInstance::tr(hints.responseLinear).toStdString()));
         options.push_back(ChoiceOption(kMapInputParamResponseSmooth, EffectInstance::tr("Smooth").toStdString(),
-                                       EffectInstance::tr("Smoothstep, 3m^2 - 2m^3: the size eases out of Size At Black and into "
-                                                          "Size.")
-                                           .toStdString()));
+                                       EffectInstance::tr(hints.responseSmooth).toStdString()));
         response->populateChoices(options);
     }
     response->setDefaultValue(0);
@@ -280,9 +278,7 @@ MapInput::createKnobs(KnobHolder* holder,
     gamma->setMinimum(0.01);
     gamma->setDisplayMinimum(0.2);
     gamma->setDisplayMaximum(5.);
-    gamma->setHintToolTip(EffectInstance::tr("Raises the Map, clamped to [0,1], to the power 1/gamma, as the Gamma node does: "
-                                             "above 1 the sizes lean towards Size, below 1 towards Size At Black. 0 and 1 "
-                                             "stay put."));
+    gamma->setHintToolTip(EffectInstance::tr(hints.gamma));
     page->addKnob(gamma);
     _gamma = gamma;
 } // MapInput::createKnobs
@@ -304,7 +300,8 @@ MapInput::bake(const KnobReader& reader) const
     params.invert = reader.value(_invert);
     params.smooth = (reader.value(_response) == 1);
     params.exponent = (float)(1. / std::max(0.01, reader.value(_gamma)));
-    for (int d = 0; d < 2; ++d) {
+    // A node without Size At Black, such as a variable warp, keeps the default.
+    for (int d = 0; (d < 2) && (_sizeDimensions > 0); ++d) {
         params.sizeAtBlack[d] = MapInput::clampSize(reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1)));
     }
 

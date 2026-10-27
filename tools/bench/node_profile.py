@@ -105,6 +105,11 @@ NODES = {
     "checkerboard": ("net.sf.openfx.CheckerBoardPlugin", {}, True),
     "noise": ("Noise", {"type": "simplex", "fractal": "fbm", "octaves": 6, "lacunarity": 2.0, "gain": 0.5,
                         "noiseSize": (64.0, 64.0), "warpType": "perlin", "warpAmount": 0.5}, True),
+    "itransform": ("ITransform", {"translate": (10.5, 7.25), "rotate": 1.0, "center": (1920.0, 1080.0)}, False),
+    "icornerpin": ("ICornerPin", {"to1": (120.0, 90.0), "to2": (3700.0, 60.0),
+                                  "to3": (3760.0, 2100.0), "to4": (80.0, 2040.0)}, False),
+    "idistort_map": ("IDistort", {"uvOffset": (0.5, 0.5), "uvScale": (40.0, 40.0)}, False),
+    "stmap_map": ("STMap", {}, False),
     "lensdistortion": ("LensDistortion", {"model": "Nuke", "k1": 0.1, "k2": 0.02, "direction": "Distort"}, False),
     "merge": ("Merge", {"operation": "over"}, False),
     "merge_plus": ("Merge", {"operation": "plus"}, False),
@@ -125,7 +130,15 @@ TWO_INPUTS = ("dissolve", "merge", "merge_plus")
 
 # Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
 # runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
-MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
+MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2, "itransform": 2, "icornerpin": 2,
+              "idistort_map": 3, "stmap_map": 3}
+
+# Nodes whose input (the number given) is fed a UV ramp: red and green rise from 0 to 1 across the
+# frame diagonal, a displacement for IDistort (with its offset and scale) and a position for STMap.
+UV_INPUTS = {"idistort_map": 1, "stmap_map": 0}
+
+# Nodes whose chain connects to an input other than 0.
+SOURCE_INPUTS = {"stmap_map": 1}
 
 
 def use_ocio_config():
@@ -161,10 +174,6 @@ def first_look(node):
         if option and option.lower() != "none":
             return option
     raise RuntimeError("the OCIO config has no looks")
-
-# Nodes whose Map input (the number given) is fed a ramp whose alpha, the Map's default channel,
-# runs from 0 to 1 across the frame, so the size varies from Size At Black to Size.
-MAP_INPUTS = {"iblur": 2, "ierode": 2, "idilate": 2}
 
 
 def configure(name, index):
@@ -228,11 +237,20 @@ def main():
         if (os.environ.get("NATRON_GPU", "off") != "off") and (CHAIN < 2):
             # Two or more unpriced candidates form a GPU region without a cost judgement; one stays on the CPU.
             raise RuntimeError("NP_CHAIN must be 2 or more with the GPU on, or the node renders on the CPU")
+        uv = None
+        if NODE in UV_INPUTS:
+            uv = make("net.sf.openfx.Ramp", "np_uv")
+            param(uv, "point0").set(0.0, 0.0)
+            param(uv, "point1").set(3840.0, 2160.0)
+            param(uv, "color0").set(0.0, 0.0, 0.0, 1.0)
+            param(uv, "color1").set(1.0, 1.0, 0.0, 1.0)
         last = source
         count = CHAIN
         for i in range(count):
             node = configure(NODE, i)
-            node.connectInput(0, last)
+            node.connectInput(SOURCE_INPUTS.get(NODE, 0), last)
+            if uv is not None:
+                node.connectInput(UV_INPUTS[NODE], uv)
             if other is not None:
                 node.connectInput(1, other)
             if size_map is not None:

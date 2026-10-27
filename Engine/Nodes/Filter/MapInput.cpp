@@ -204,6 +204,16 @@ MapPlane::tileRange(const RectI& rect) const
     return range;
 }
 
+double
+MapInput::clampSize(double size)
+{
+    if (!(size > 0.)) {
+        return 0.;
+    }
+
+    return std::min(size, kMapInputMaxSize);
+}
+
 void
 MapInput::createSizeAtBlackKnob(KnobHolder* holder,
                                 const KnobPagePtr& page,
@@ -214,6 +224,7 @@ MapInput::createSizeAtBlackKnob(KnobHolder* holder,
     for (int d = 0; d < sizeDimensions; ++d) {
         sizeAtBlack->setDefaultValue(0., d);
         sizeAtBlack->setMinimum(0., d);
+        sizeAtBlack->setMaximum(kMapInputMaxSize, d);
         sizeAtBlack->setDisplayMinimum(0., d);
         sizeAtBlack->setDisplayMaximum(100., d);
     }
@@ -294,7 +305,7 @@ MapInput::bake(const KnobReader& reader) const
     params.smooth = (reader.value(_response) == 1);
     params.exponent = (float)(1. / std::max(0.01, reader.value(_gamma)));
     for (int d = 0; d < 2; ++d) {
-        params.sizeAtBlack[d] = reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1));
+        params.sizeAtBlack[d] = MapInput::clampSize(reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1)));
     }
 
     return params;
@@ -373,8 +384,9 @@ MapInput::fill(const Image* image,
                const RectI& window,
                MapPlane* plane)
 {
-    // Beyond the Map's image the Map value is 0, neither remapped nor inverted.
-    plane->reset(window, 0.f);
+    // Beyond the Map's image the Map reads as a black pixel, so an inverted Map gives the full
+    // effect there.
+    plane->reset(window, params.remap(0.f));
     if (!image || window.isNull() || (channel < 0) || (channel >= (int)image->getComponentsCount())) {
         return;
     }

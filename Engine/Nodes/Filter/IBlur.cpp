@@ -70,7 +70,7 @@ constexpr NodeSpec kIBlurNodeSpec = {
                    "\n"
                    "Where the Map is white the blur has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                    "and in between a size in between. Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma "
-                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black. With no Map connected, the blur has the Size everywhere.\n"
+                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the blur has the Size everywhere.\n"
                    "\n"
                    "The blur is a box of the pixel's size applied three times, an approximation of the Gaussian of standard deviation size/2.4 that Blur uses "
                    "(within about 2% at a constant size), whose cost does not depend on the size. It is black outside the image, and the Mask and Mix limit the result as usual.",
@@ -155,8 +155,6 @@ struct VariableBoxState {
 
 using VariableBoxStatePtr = std::shared_ptr<VariableBoxState>;
 
-/// Row y of the radii, from the Map at the matching pixels; a run of equal Map values reuses
-/// the radii of its first.
 std::function<PassRowFn(const PassScratch&)>
 radiusWorker(const VariableBoxStatePtr& state)
 {
@@ -186,7 +184,6 @@ radiusWorker(const VariableBoxStatePtr& state)
     };
 }
 
-/// The row sums of slot `slot` into the table, row 0 zeroed along with the first image row.
 std::function<PassRowFn(const PassScratch&)>
 rowSumWorker(const VariableBoxStatePtr& state,
              int slot)
@@ -212,7 +209,6 @@ rowSumWorker(const VariableBoxStatePtr& state,
     };
 }
 
-/// The column sums that complete the table, one column of one plane per line.
 std::function<PassRowFn(const PassScratch&)>
 columnSumWorker(const VariableBoxStatePtr& state)
 {
@@ -232,7 +228,6 @@ columnSumWorker(const VariableBoxStatePtr& state)
     };
 }
 
-/// One box pass, from slot `from` (for the pixels of radius 0) and the table into slot `to`.
 std::function<PassRowFn(const PassScratch&)>
 boxWorker(const VariableBoxStatePtr& state,
           int from,
@@ -400,7 +395,6 @@ recordIBlurGpu(const PassGpuIO& io,
     const uint64_t pixels = width * height;
     const uint64_t slotFloats = pixels * (uint64_t)nComps;
     const uint64_t workFloats = 2 * slotFloats + 2 * pixels;
-    // The row maxima and the step's exponent come first.
     const uint64_t satOffset = height + 1;
     const uint64_t satWords = satOffset + 2 * (width + 1) * (height + 1);
     if ((workFloats > UINT32_MAX) || (satWords > UINT32_MAX)) {
@@ -416,8 +410,7 @@ recordIBlurGpu(const PassGpuIO& io,
     const OfxPointD rs = context.scale.toOfxPointD();
     const BoxRadii white = radiiAt(params, context, 1.f);
     const BoxRadii black = radiiAt(params, context, 0.f);
-    // Beyond the Map's image the Map value is 0, neither remapped nor inverted.
-    const BoxRadii outside = black;
+    const BoxRadii outside = radiiAt(params, context, params.map.remap(0.f));
     k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
     k.exponent = params.map.exponent;
     k.sizeAtBlackX = (float)params.map.sizeAtBlack[0];
@@ -442,7 +435,6 @@ recordIBlurGpu(const PassGpuIO& io,
     }
 
     IBlurGpuBuffers buffers;
-    // Unread placeholders for a missing source or Map, which the kernels leave alone.
     buffers.source = constants;
     buffers.map = constants;
     buffers.constants = constants;
@@ -502,7 +494,6 @@ recordIBlurGpu(const PassGpuIO& io,
         }
         buffers.source = io.source.buffer;
     }
-    // Both write their own part of the work buffer.
     if (!dispatchIBlur(ctx, gpu::GpuKernelId::iblur_load, buffers, load, base.domWidth, base.domHeight)
         || !dispatchIBlur(ctx, gpu::GpuKernelId::iblur_radii, buffers, base, base.domWidth, base.domHeight)) {
         return eStatusFailed;
@@ -537,7 +528,6 @@ recordIBlurGpu(const PassGpuIO& io,
             if (!dispatchIBlur(ctx, gpu::GpuKernelId::iblur_box, buffers, p, last ? base.outWidth : base.domWidth, last ? base.outHeight : base.domHeight)) {
                 return eStatusFailed;
             }
-            // The next component reuses the table; the next box reads this one's slot.
             if (!last || (c < nComps - 1)) {
                 ctx.computeBarrier();
             }
@@ -612,7 +602,7 @@ IBlur::initializeKnobs()
     sizeKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
         sizeKnob->setMinimum(0., d);
-        sizeKnob->setMaximum(1000., d);
+        sizeKnob->setMaximum(kMapInputMaxSize, d);
         sizeKnob->setDisplayMinimum(0., d);
         sizeKnob->setDisplayMaximum(100., d);
         sizeKnob->setIncrement(0.1, d);
@@ -643,8 +633,8 @@ IBlur::getParams(double time,
     const KnobReader reader(time, view);
     IBlurParams params;
 
-    params.sizeX = reader.value(_size, 0);
-    params.sizeY = reader.value(_size, 1);
+    params.sizeX = MapInput::clampSize(reader.value(_size, 0));
+    params.sizeY = MapInput::clampSize(reader.value(_size, 1));
     params.cropToFormat = reader.value(_cropToFormat);
     params.map = _map.bake(reader);
 
@@ -752,7 +742,6 @@ IBlur::recordGpu(const PassGpuIO& io,
     const bool connected = (bool)getInput(kIBlurInputMap);
     ImageLayerDesc layer;
     int channel = -1;
-    // Resolving only reads the Map knob and the Map's layers.
     if (!connected || !_map.resolveChannel(const_cast<IBlur*>(this), kIBlurInputMap, time, view, &layer, &channel)) {
         channel = -1;
     }

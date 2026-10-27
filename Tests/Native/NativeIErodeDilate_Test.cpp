@@ -636,36 +636,51 @@ TEST_F(NativeIErodeDilateTest, MapZeroIsBitIdentical)
     }
 }
 
-// Invert Map does not reach beyond the Map's image: a black Map over the right half, inverted,
-// filters the right half at Size, and the left half, outside the Map, keeps the input bit for bit.
-TEST_F(NativeIErodeDilateTest, InvertedMapIsZeroOutsideItsImage)
+// A Size At Black far beyond the knob's maximum renders, held to the same maximum as Size.
+TEST_F(NativeIErodeDilateTest, HugeSizeAtBlackRenders)
 {
-    const int half = kParitySourceWidth / 2;
     for (bool dilate : { false, true }) {
         NodePtr source = makeParitySource();
-        NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 0., 0., 0., 0. });
-        NodePtr node = makeNode(dilate, source, map, 5., 5.);
+        NodePtr map = makeConstant(kWindow, { 0., 0., 0., 0. });
+        NodePtr node = makeNode(dilate, source, map, 7., 7.);
         ASSERT_TRUE(bool(source) && bool(map) && bool(node));
-        ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
-
-        RenderedPlane expected, actual;
-        ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
-        ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
-        ASSERT_EQ(expected.pixels.size(), actual.pixels.size());
-        std::size_t differingLeft = 0;
-        std::size_t differingRight = 0;
-        for (int y = 0; y < kWindow.height(); ++y) {
-            for (int x = 0; x < kWindow.width(); ++x) {
-                for (std::size_t c = 0; c < 4; ++c) {
-                    const std::size_t i = ((std::size_t)y * kWindow.width() + x) * 4 + c;
-                    if (expected.pixels[i] != actual.pixels[i]) {
-                        ++((x < half) ? differingLeft : differingRight);
-                    }
-                }
+        for (double huge : { 1e200, 1e300 }) {
+            setKnobValues(node, kMapInputParamSizeAtBlack, { huge, huge });
+            RenderedPlane actual;
+            ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+            for (float v : actual.pixels) {
+                ASSERT_TRUE(std::isfinite(v)) << (dilate ? "IDilate" : "IErode");
             }
         }
-        EXPECT_EQ(0u, differingLeft) << (dilate ? "IDilate" : "IErode");
-        EXPECT_GT(differingRight, 0u) << (dilate ? "IDilate" : "IErode");
+    }
+}
+
+// Outside the Map's image the Map is black before Invert Map: a small black Map, inverted,
+// filters every pixel at Size, inside the Map and out, as with no Map at all.
+TEST_F(NativeIErodeDilateTest, InvertedMapIsFullSizeOutsideItsImage)
+{
+    const RectI small(kParitySourceWidth / 2, kParitySourceHeight / 4, kParitySourceWidth * 3 / 4, kParitySourceHeight / 2);
+    for (bool dilate : { false, true }) {
+        NodePtr source = makeParitySource();
+        NodePtr map = makeConstant(small, { 0., 0., 0., 0. });
+        NodePtr node = makeNode(dilate, source, map, 5., 5.);
+        NodePtr full = makeNode(dilate, source, NodePtr(), 5., 5.);
+        ASSERT_TRUE(bool(source) && bool(map) && bool(node) && bool(full));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+
+        RenderedPlane input, expected, actual;
+        ASSERT_TRUE(renderRGBA(source, kWindow, &input));
+        ASSERT_TRUE(renderRGBA(full, kWindow, &expected));
+        ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+        ASSERT_EQ(expected.pixels.size(), actual.pixels.size());
+        EXPECT_NE(input.pixels, actual.pixels) << (dilate ? "IDilate" : "IErode");
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i < expected.pixels.size(); ++i) {
+            if (expected.pixels[i] != actual.pixels[i]) {
+                ++differing;
+            }
+        }
+        EXPECT_EQ(0u, differing) << (dilate ? "IDilate" : "IErode");
     }
 }
 

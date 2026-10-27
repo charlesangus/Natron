@@ -114,8 +114,6 @@ namespace {
         Entry _entries[kEntries];
     };
 
-    /// The extremum over the element of whole radii (rx, ry) at pixel (x, y), clipped to the plane:
-    /// row by row from the top, each row's span from the table.
     float
     elementExtremum(const float* plane,
                     const float* tables,
@@ -250,7 +248,6 @@ filterRow(const float* plane,
         const int r1x = (tx > 0.f) ? r0x + 1 : r0x;
         const int r1y = (ty > 0.f) ? r0y + 1 : r0y;
 
-        // The four elements of the radii's floors and ceilings, blended in x then in y.
         const float v00 = elementExtremum(plane, tables, width, height, x, y, r0x, r0y, disc, takeMax, halfWidths);
         const float v10 = (r1x != r0x) ? elementExtremum(plane, tables, width, height, x, y, r1x, r0y, disc, takeMax, halfWidths) : v00;
         const float v01 = (r1y != r0y) ? elementExtremum(plane, tables, width, height, x, y, r0x, r1y, disc, takeMax, halfWidths) : v00;
@@ -315,7 +312,6 @@ namespace {
         return isNaN(a) ? b : reduce(a, b, takeMax);
     }
 
-    // The radii of window row r of plan into work, rx first then ry.
     void
     rowRadii(const TilePlan& plan,
              int r,
@@ -332,7 +328,6 @@ namespace {
         *ry = work.data() + n;
     }
 
-    // Whether window column c lies on the plane and has a slot of radius, and which.
     int
     slotOf(const TilePlan& plan,
            int c,
@@ -376,7 +371,6 @@ float
 blendElements(const PixelElements& p,
               const float v[4])
 {
-    // As filterRow(): blended in x then in y.
     const float v00 = v[0];
     const float v10 = p.has(1) ? v[1] : v00;
     const float v01 = p.has(2) ? v[2] : v00;
@@ -427,8 +421,6 @@ planTile(const RectI& window,
     }
     const std::size_t budget = std::max(budgetFloats, (std::size_t)2);
 
-    // One sweep over the radii: the halo, the elements, the rows the definition reduces, and the
-    // horizontal radii of each column.
     std::vector<float> rx((std::size_t)ww);
     std::vector<float> ry((std::size_t)ww);
     std::vector<std::vector<int>> columnRadii((std::size_t)ww);
@@ -461,12 +453,10 @@ planTile(const RectI& window,
     plan.haloY = (int)std::ceil(maxRy);
     plan.levels = levelCount(plan.haloX);
     plan.columnLevels = levelCount(plan.haloY);
-    // The largest plane the tile reads.
     const int width = ww + 2 * plan.haloX;
     const int height = wh + 2 * plan.haloY;
     const double rowTableWork = (double)plan.levels * width;
 
-    // Rows: half the budget for the batch's tables, half for the band's fractional elements.
     const std::size_t rowFloats = plan.rowTableFloats(width);
     plan.batchRows = rowFloats ? (int)std::min<std::size_t>((budget / 2) / rowFloats, (std::size_t)height) : height;
     plan.batchRows = std::max(1, plan.batchRows);
@@ -479,7 +469,6 @@ planTile(const RectI& window,
         rowsCost += (double)rows * rowTableWork;
     }
 
-    // Columns: whole columns per batch, as many as the budget holds.
     plan.slotStart.assign((std::size_t)ww + 1, 0);
     for (int c = 0; c < ww; ++c) {
         std::vector<int>& cr = columnRadii[c];
@@ -513,8 +502,6 @@ planTile(const RectI& window,
             const int cb = plan.columnBatch[b + 1];
             const int slots = plan.slotStart[cb] - plan.slotStart[ca];
             plan.batchSlots = std::max(plan.batchSlots, slots);
-            // The batch's row tables, over its columns and halo, then its slots' spans and
-            // column tables.
             columnsCost += (double)height * plan.levels * ((cb - ca) + 2. * plan.haloX);
             columnsCost += (double)slots * height * (plan.columnLevels + 1.);
         }
@@ -595,7 +582,6 @@ foldRows(const TilePlan& plan,
     if ((count <= 0) || (r < t.r0) || (r >= t.r1)) {
         return;
     }
-    // The half-widths of the disc's rows; the plan's elements share few sizes along a row.
     static thread_local HalfWidths halfWidths;
     const float* rx;
     const float* ry;
@@ -906,7 +892,7 @@ struct IErodeDilateSpec {
                                  "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                                  "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
                                  "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
-                                 "Outside the Map image, the Map reads black. With no Map connected, the element has the Size everywhere.\n"
+                                 "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
                                  "\n"
                                  "The element is a rectangle of 2*size+1 pixels, as Dilate's, or a disc (an ellipse when the two sizes differ). At a whole Size where the Map is white, "
                                  "the rectangle gives Dilate's result. The Mask and Mix limit the result as usual."
@@ -915,7 +901,7 @@ struct IErodeDilateSpec {
                                  "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                                  "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
                                  "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
-                                 "Outside the Map image, the Map reads black. With no Map connected, the element has the Size everywhere.\n"
+                                 "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
                                  "\n"
                                  "The element is a rectangle of 2*size+1 pixels, as Erode's, or a disc (an ellipse when the two sizes differ). At a whole Size where the Map is white, "
                                  "the rectangle gives Erode's result. The Mask and Mix limit the result as usual.",
@@ -949,10 +935,8 @@ struct MorphologyState {
     IErodeDilateKernels::TilePlan plan;
 
     std::mutex mutex;
-    // Rows: the batch's row tables; Columns: the batch's slot columns.
     std::unique_ptr<float[]> tables;
     std::size_t tablesCapacity = 0;
-    // Rows: the band's fractional elements that the plan has, each bandArea() floats per plane.
     std::unique_ptr<float[]> extra;
     std::size_t extraCapacity = 0;
 
@@ -965,7 +949,6 @@ struct MorphologyState {
         return (std::size_t)plan.batchRows * plan.rowTableFloats(scratch.width);
     }
 
-    // A band's pixels on the plane, per fractional element and plane.
     std::size_t bandArea(const IErodeDilateKernels::TilePlane& t) const
     {
         return (std::size_t)plan.bandRows * (std::size_t)(t.c1 - t.c0);
@@ -995,7 +978,6 @@ struct MorphologyState {
         }
     }
 
-    // Where plane p's elements of band ra go: element 0 in slot 1, the others in extra.
     IErodeDilateKernels::TileElements elements(const PassScratch& scratch,
                                                const IErodeDilateKernels::TilePlane& t,
                                                int p,
@@ -1039,8 +1021,6 @@ lineItems(int y,
     *end = (int)(((int64_t)(y + 1) * n + lines - 1) / lines);
 }
 
-/// A pass over the lines of every plane, each line calling fn(p, item, work) for the items it
-/// covers of the count(t) of plane p.
 using TileItemFn = std::function<void(const MorphologyState& s, const PassScratch& scratch, int p, const IErodeDilateKernels::TilePlane& t, int item, std::vector<float>& work)>;
 using TileCountFn = std::function<int(const MorphologyState& s, const IErodeDilateKernels::TilePlane& t)>;
 
@@ -1053,7 +1033,6 @@ tileWorker(const MorphologyStatePtr& state,
         state->reserve(scratch);
         const MorphologyState* s = state.get();
         const PassScratch* buffers = &scratch;
-        // The scratch of the chunk's lines.
         std::shared_ptr<std::vector<float>> work = std::make_shared<std::vector<float>>();
 
         return [s, buffers, count, fn, work](int line) {
@@ -1102,8 +1081,6 @@ copyWorker(const MorphologyStatePtr& state)
     };
 }
 
-/// The passes of state's plan, the first carrying the halo of the whole list, and its growth when
-/// grow, and the last writing slot 1 outside the window.
 void
 tilePasses(const MorphologyStatePtr& state,
            int haloX,
@@ -1126,8 +1103,6 @@ tilePasses(const MorphologyStatePtr& state,
 
     if (plan.strategy == K::TileStrategy::Columns) {
         for (int b = 0; b < plan.columnBatchCount(); ++b) {
-            // The span extrema of every plane row at the batch's slots, then the slots' column
-            // tables, then the batch's pixels.
             add([](const MorphologyState&, const K::TilePlane& t) { return t.height; },
                 [b](const MorphologyState& s, const PassScratch& scratch, int p, const K::TilePlane& t, int y, std::vector<float>& work) {
                     int ca;
@@ -1165,7 +1140,6 @@ tilePasses(const MorphologyStatePtr& state,
                 return rb - ra;
             };
             for (int batch = 0; batch < plan.batchCount(band); ++batch) {
-                // The tables of the batch's rows, then the band's pixels folding those rows.
                 add([band, batch](const MorphologyState& s, const K::TilePlane& t) {
                     int first;
                     int count;
@@ -1355,9 +1329,7 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     IErodeDilateGpuConstants k {};
     k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
     k.exponent = params.map.exponent;
-    // A disconnected Map reads 1 everywhere, a connected one 0 outside its image, neither
-    // remapped nor inverted.
-    k.outside = mapConnected ? 0.f : 1.f;
+    k.outside = mapConnected ? params.map.remap(0.f) : 1.f;
     k.blackRx = axisX.black;
     k.whiteRx = axisX.white;
     k.blackRy = axisY.black;
@@ -1370,7 +1342,6 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     }
 
     IErodeDilateGpuBuffers buffers;
-    // Unread placeholders for a missing source or Map, which the kernels leave alone.
     buffers.source = constants;
     buffers.map = constants;
     buffers.constants = constants;
@@ -1525,7 +1496,7 @@ IErodeDilateNode<MODE>::initializeKnobs()
     sizeKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
         sizeKnob->setMinimum(0., d);
-        sizeKnob->setMaximum(1000., d);
+        sizeKnob->setMaximum(kMapInputMaxSize, d);
         sizeKnob->setDisplayMinimum(0., d);
         sizeKnob->setDisplayMaximum(100., d);
         sizeKnob->setIncrement(0.1, d);
@@ -1574,8 +1545,8 @@ IErodeDilateNode<MODE>::getParams(double time,
     const KnobReader reader(time, view);
     IErodeDilateParams params;
 
-    params.sizeX = reader.value(_size, 0);
-    params.sizeY = reader.value(_size, 1);
+    params.sizeX = MapInput::clampSize(reader.value(_size, 0));
+    params.sizeY = MapInput::clampSize(reader.value(_size, 1));
     params.disc = (reader.value(_shape) == 1);
     params.expandRoD = reader.value(_expandRoD);
     params.map = _map.bake(reader);
@@ -1697,7 +1668,6 @@ IErodeDilateNode<MODE>::recordGpu(const PassGpuIO& io,
     const bool connected = (bool)getInput(kIErodeDilateInputMap);
     ImageLayerDesc layer;
     int channel = -1;
-    // Resolving only reads the Map knob and the Map's layers.
     if (!connected || !_map.resolveChannel(const_cast<IErodeDilateNode*>(this), kIErodeDilateInputMap, time, view, &layer, &channel)) {
         channel = -1;
     }

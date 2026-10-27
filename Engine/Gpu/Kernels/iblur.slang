@@ -308,8 +308,6 @@ void satStore(uint i, uint j, I64 v)
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// fillBuffer() with a zero boundary: the source where it exists, zero elsewhere, into the slot at
-// fromOffset, every component.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void iblur_load(uint3 tid : SV_DispatchThreadID)
@@ -387,8 +385,6 @@ void iblur_radii(uint3 tid : SV_DispatchThreadID)
     workBuf[dst + 1] = ry;
 }
 
-// The largest finite |value| of row tid.x of component comp in the slot at fromOffset, as its bits,
-// which order as the values do.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void iblur_rowmax(uint3 tid : SV_DispatchThreadID)
@@ -448,7 +444,6 @@ void iblur_rows(uint3 tid : SV_DispatchThreadID)
     }
 }
 
-// accumulateColumn() of column tid.x + 1 of the table.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void iblur_columns(uint3 tid : SV_DispatchThreadID)
@@ -546,9 +541,6 @@ FF boxSum(int x, int y, float a, float b)
     return sum;
 }
 
-// boxWorker(): one box of component comp from the slot at fromOffset and the table, into the slot
-// at toOffset over the domain, or with kFinal into outBuf over the output rect, which is zero
-// outside the domain.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void iblur_box(uint3 tid : SV_DispatchThreadID)

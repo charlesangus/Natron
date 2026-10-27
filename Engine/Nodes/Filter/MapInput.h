@@ -46,6 +46,10 @@
 #define kMapInputParamGamma "mapGamma"
 #define kMapInputParamSizeAtBlack "sizeAtBlack"
 
+// The largest Size and Size At Black of a variable-size filter. Radii and halos are derived from
+// sizes held to it, which keeps their integer conversions and the box radius search finite.
+#define kMapInputMaxSize 1000.
+
 NATRON_NAMESPACE_ENTER
 
 class KnobReader;
@@ -173,8 +177,9 @@ public:
 
     /**
      * @brief The Map values over window. A disconnected Map reads 1 everywhere, so the node runs
-     * at its full size. A connected one reads 0 outside its image, and everywhere when the
-     * channel does not resolve, without the remap or invert. Fails on a Map image that is not float.
+     * at its full size. A connected one reads a black pixel, remapped and inverted like any
+     * other, outside its image, and everywhere when the channel does not resolve. Fails on a Map
+     * image that is not float.
      * Runs on the calling thread, which must not be a pool thread: it fetches and locks the image.
      **/
     StatusEnum read(EffectInstance* effect,
@@ -186,9 +191,12 @@ public:
                     const RectI& window,
                     MapPlane* plane) const WARN_UNUSED_RETURN;
 
+    /// A size held to [0, kMapInputMaxSize]; NaN is 0.
+    static double clampSize(double size) WARN_UNUSED_RETURN;
+
     /**
      * @brief Fills plane over window with channel of a float image, remapped by params; a null
-     * image, or a pixel outside its bounds, reads 0, neither remapped nor inverted.
+     * image, or a pixel outside its bounds, reads params.remap(0), as a black pixel inside it does.
      **/
     static void fill(const Image* image,
                      int channel,

@@ -200,13 +200,13 @@ TEST_F(NativeIBlurGpuTest, EligibilityFollowsTheBoxSize)
         q.bitDepth = depth;
         EXPECT_FALSE(effect->canRenderOnGpu(q)) << "bit depth " << (int)depth;
     }
-    // Size tops out at 1000 (a box radius near 240), so the radius is pushed past the GPU's cap of
-    // 512 pixels through Size At Black, which has no maximum: 1000 gives a radius near 240, and
-    // 3000 one near 720 (a standard deviation of size / 2.4, a box radius of about 0.577 of it).
+    // Size and Size At Black top out at 1000, a standard deviation of 1000 / 2.4 and so a box radius
+    // of about 416 (n (n + 1) = the variance), a halo of 417 at render scale 1 and a square pixel:
+    // under the GPU's cap of 512, so the largest size stays on the GPU. Only a pixel aspect ratio
+    // below about 0.81 divides the horizontal size enough to pass the cap.
     ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 1000., 1000. }));
-    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "a box radius below the cap";
-    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 3000., 3000. }));
-    EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "a box radius beyond the cap";
+    ASSERT_TRUE(setKnobValues(iblur, kIBlurParamSize, { 1000., 1000. }));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "the largest size, a box radius below the cap";
 }
 
 // The Map is read over the source's region of interest, and only while its channel resolves.
@@ -270,8 +270,8 @@ TEST_F(NativeIBlurGpuTest, DisconnectedMapMatchesTheCpu)
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "disconnected Map");
 }
 
-// A Map white over the right half only, outside its image on the left, which reads as 0 there,
-// inverted or not.
+// A Map white over the right half only, outside its image on the left, which reads as a black
+// pixel there, inverted and remapped like one.
 TEST_F(NativeIBlurGpuTest, MapOutsideItsImageMatchesTheCpu)
 {
     const int half = kParitySourceWidth / 2;
@@ -282,10 +282,39 @@ TEST_F(NativeIBlurGpuTest, MapOutsideItsImageMatchesTheCpu)
 
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "half Map");
 
-    // Inverted, the Map is still 0 beyond its image: Size At Black there, not Size.
+    // Inverted, the black beyond the Map's image is white: Size there, not Size At Black.
     ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 3., 2. }));
     ASSERT_TRUE(setKnobValues(iblur, kMapInputParamInvert, { 1. }));
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "half Map, inverted");
+}
+
+// A small black Map, inverted, blurs every pixel at Size on the GPU, inside the Map and out, as
+// with no Map at all.
+TEST_F(NativeIBlurGpuTest, InvertedMapIsFullSizeOutsideItsImage)
+{
+    const RectI small(kParitySourceWidth / 2, kParitySourceHeight / 4, kParitySourceWidth * 3 / 4, kParitySourceHeight / 2);
+    NodePtr source = makeParitySource();
+    NodePtr map = makeConstant(small, { 0., 0., 0., 0. });
+    NodePtr iblur = makeIBlur(source, map, 10.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamSizeAtBlack, { 3., 2. }));
+    ASSERT_TRUE(setKnobValues(iblur, kMapInputParamInvert, { 1. }));
+    NodePtr fullSource = makeParitySource();
+    NodePtr full = makeIBlur(fullSource, NodePtr(), 10.);
+    ASSERT_TRUE(bool(fullSource) && bool(full));
+
+    const EndToEndResult inverted = renderEndToEnd(std::vector<NodePtr>({ iblur }), iblur, kWindow, kTime);
+    if (inverted.skipped) {
+        return;
+    }
+    ASSERT_TRUE(inverted.ok) << inverted.error;
+    EXPECT_EQ(1u, inverted.gpuTasksPerNode.count(iblur->getScriptName_mt_safe())) << "the region fell back to the CPU";
+    const EndToEndResult reference = renderEndToEnd(std::vector<NodePtr>({ full }), full, kWindow, kTime);
+    ASSERT_TRUE(reference.ok) << reference.error;
+    const ImageDiff diff = compareImages(inverted.cpu, inverted.gpu, kIBlurTolerance);
+    EXPECT_GT(diff.compared, 0u);
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+    EXPECT_EQ(reference.gpu, inverted.gpu);
 }
 
 // NaN, +Inf and -Inf in the source count as 0 in both summed-area tables, so the CPU and the GPU

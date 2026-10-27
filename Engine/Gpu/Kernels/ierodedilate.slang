@@ -173,8 +173,6 @@ float elementExtremum(int x, int y, int rx, int ry, bool disc, bool takeMax)
     return acc;
 }
 
-// fillBuffer() with a zero boundary: component comp of the source where it exists, zero
-// elsewhere, into level 0.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ierodedilate_load(uint3 tid : SV_DispatchThreadID)
@@ -189,7 +187,6 @@ void ierodedilate_load(uint3 tid : SV_DispatchThreadID)
     workBuf[levelIndex(0u, tid.x, tid.y)] = v;
 }
 
-// buildRowTable(): entry tid.x of level `level` of row tid.y, from the level below.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ierodedilate_level(uint3 tid : SV_DispatchThreadID)

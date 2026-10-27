@@ -412,35 +412,31 @@ TEST_F(NativeIBlurTest, HalfBlackMapLeavesBlackHalfUntouched)
     EXPECT_GT(differingRight, 0u);
 }
 
-// Invert Map does not reach beyond the Map's image: a black Map over the right half, inverted,
-// blurs the right half at Size, and the left half, outside the Map, stays the input bit for bit.
-TEST_F(NativeIBlurTest, InvertedMapIsZeroOutsideItsImage)
+// Outside the Map's image the Map is black before Invert Map: a small black Map, inverted, blurs
+// every pixel at Size, inside the Map and out, as with no Map at all.
+TEST_F(NativeIBlurTest, InvertedMapIsFullSizeOutsideItsImage)
 {
-    const int half = kParitySourceWidth / 2;
+    const RectI small(kParitySourceWidth / 2, kParitySourceHeight / 4, kParitySourceWidth * 3 / 4, kParitySourceHeight / 2);
     NodePtr source = makeParitySource();
-    NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 0., 0., 0., 0. });
+    NodePtr map = makeConstant(small, { 0., 0., 0., 0. });
     NodePtr iblur = makeIBlur(source, map, 10.);
-    ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
+    NodePtr full = makeIBlur(source, NodePtr(), 10.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(iblur) && bool(full));
     ASSERT_TRUE(setKnobValues(iblur, kMapInputParamInvert, { 1. }));
 
-    RenderedPlane expected, actual;
-    ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
+    RenderedPlane input, expected, actual;
+    ASSERT_TRUE(renderRGBA(source, kWindow, &input));
+    ASSERT_TRUE(renderRGBA(full, kWindow, &expected));
     ASSERT_TRUE(renderRGBA(iblur, kWindow, &actual));
     ASSERT_EQ(expected.pixels.size(), actual.pixels.size());
-    std::size_t differingLeft = 0;
-    std::size_t differingRight = 0;
-    for (int y = 0; y < kWindow.height(); ++y) {
-        for (int x = 0; x < kWindow.width(); ++x) {
-            for (std::size_t c = 0; c < 4; ++c) {
-                const std::size_t i = ((std::size_t)y * kWindow.width() + x) * 4 + c;
-                if (expected.pixels[i] != actual.pixels[i]) {
-                    ++((x < half) ? differingLeft : differingRight);
-                }
-            }
+    EXPECT_NE(input.pixels, actual.pixels);
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < expected.pixels.size(); ++i) {
+        if (expected.pixels[i] != actual.pixels[i]) {
+            ++differing;
         }
     }
-    EXPECT_EQ(0u, differingLeft);
-    EXPECT_GT(differingRight, 0u);
+    EXPECT_EQ(0u, differing);
 }
 
 // A constant input stays constant under any Map: here the parity source's alpha bands, with a
@@ -462,6 +458,26 @@ TEST_F(NativeIBlurTest, ConstantStaysConstant)
         worst = std::max(worst, std::fabs((double)actual.pixels[i] - color[i % 4]));
     }
     EXPECT_LE(worst, 1e-6);
+}
+
+// A Size At Black far beyond the knob's maximum renders, held to the same maximum as Size.
+TEST_F(NativeIBlurTest, HugeSizeAtBlackRenders)
+{
+    EXPECT_TRUE(std::isfinite(VariableBlurKernels::boxRadius(1e200)));
+    EXPECT_TRUE(std::isfinite(VariableBlurKernels::boxRadius(std::numeric_limits<double>::infinity())));
+
+    NodePtr source = makeParitySource();
+    NodePtr map = makeConstant(kWindow, { 0., 0., 0., 0. });
+    NodePtr iblur = makeIBlur(source, map, 20.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
+    for (double huge : { 1e200, 1e300 }) {
+        setKnobValues(iblur, kMapInputParamSizeAtBlack, { huge, huge });
+        RenderedPlane actual;
+        ASSERT_TRUE(renderRGBA(iblur, kWindow, &actual));
+        for (float v : actual.pixels) {
+            ASSERT_TRUE(std::isfinite(v));
+        }
+    }
 }
 
 // A disconnected Map posts a warning, which connecting one takes back.

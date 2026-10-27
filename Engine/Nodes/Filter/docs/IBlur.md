@@ -15,8 +15,9 @@ node in the I-variant registry (`IBlur.reg.inc`); every knob they share has the 
   `map = shape(pow(clamp(m, 0, 1), 1 / gamma))`, Map Gamma being gamma (default 1, as the Gamma node: above 1 the
   Map brightens) and Map Response the shape, Linear (identity, the default) or Smooth (smoothstep, `3m² - 2m³`).
   Gamma 1 with Linear leaves the clamped value unchanged. The power is `mapGammaPow()` (`MapInput.cpp`), built from
-  basic float operations so the GPU repeats it exactly. Outside the Map's image the Map value is 0, neither
-  inverted nor remapped, so a pixel there takes Size At Black. The size at a pixel is `lerp(sizeAtBlack, size, map)` per axis.
+  basic float operations so the GPU repeats it exactly. Outside the Map's image, and everywhere when a connected
+  Map's channel is missing, the Map reads as a black pixel and is inverted and remapped like one, so a pixel there
+  takes Size At Black, or Size when Invert Map is on. The size at a pixel is `lerp(sizeAtBlack, size, map)` per axis.
 - **No Map.** With the Map disconnected the node blurs at Size everywhere and shows a warning badge.
 - **Exact zero.** Where the size is 0 on both axes the output is the input bit for bit, with no ringing from the
   blurred pixels around it (`Size At Black` defaults to 0, so a black Map leaves its pixels unchanged).

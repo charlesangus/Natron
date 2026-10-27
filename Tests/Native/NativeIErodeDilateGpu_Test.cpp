@@ -271,8 +271,8 @@ TEST_F(NativeIErodeDilateGpuTest, DisconnectedMapMatchesTheCpu)
     }
 }
 
-// A Map white over the right half only, outside its image on the left, which reads as 0 there,
-// inverted or not.
+// A Map white over the right half only, outside its image on the left, which reads as a black
+// pixel there, inverted and remapped like one.
 TEST_F(NativeIErodeDilateGpuTest, MapOutsideItsImageMatchesTheCpu)
 {
     const int half = kParitySourceWidth / 2;
@@ -285,9 +285,39 @@ TEST_F(NativeIErodeDilateGpuTest, MapOutsideItsImageMatchesTheCpu)
 
         expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, half Map" : "IErode, half Map");
 
-        // Inverted, the Map is still 0 beyond its image: Size At Black there, not Size.
+        // Inverted, the black beyond the Map's image is white: Size there, not Size At Black.
         ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 2., 1.5 }));
         ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
         expectParity(std::vector<NodePtr>({ node }), node, dilate ? "IDilate, half Map, inverted" : "IErode, half Map, inverted");
+    }
+}
+
+// A small black Map, inverted, filters every pixel at Size on the GPU, inside the Map and out, as
+// with no Map at all.
+TEST_F(NativeIErodeDilateGpuTest, InvertedMapIsFullSizeOutsideItsImage)
+{
+    const RectI small(kParitySourceWidth / 2, kParitySourceHeight / 4, kParitySourceWidth * 3 / 4, kParitySourceHeight / 2);
+    for (bool dilate : { false, true }) {
+        NodePtr source = makeParitySource();
+        NodePtr map = makeConstant(small, { 0., 0., 0., 0. });
+        NodePtr node = makeNode(dilate, source, map, 5., 5.);
+        ASSERT_TRUE(bool(source) && bool(map) && bool(node));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 2., 1.5 }));
+        ASSERT_TRUE(setKnobValues(node, kMapInputParamInvert, { 1. }));
+        NodePtr fullSource = makeParitySource();
+        NodePtr full = makeNode(dilate, fullSource, NodePtr(), 5., 5.);
+        ASSERT_TRUE(bool(fullSource) && bool(full));
+        const char* name = dilate ? "IDilate" : "IErode";
+
+        const EndToEndResult inverted = renderEndToEnd(std::vector<NodePtr>({ node }), node, kWindow, kTime);
+        if (inverted.skipped) {
+            return;
+        }
+        ASSERT_TRUE(inverted.ok) << name << ": " << inverted.error;
+        EXPECT_EQ(1u, inverted.gpuTasksPerNode.count(node->getScriptName_mt_safe())) << name << ": the region fell back to the CPU";
+        const EndToEndResult reference = renderEndToEnd(std::vector<NodePtr>({ full }), full, kWindow, kTime);
+        ASSERT_TRUE(reference.ok) << name << ": " << reference.error;
+        EXPECT_EQ(inverted.cpu, inverted.gpu) << name;
+        EXPECT_EQ(reference.gpu, inverted.gpu) << name;
     }
 }

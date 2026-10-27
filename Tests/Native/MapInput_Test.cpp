@@ -192,7 +192,7 @@ TEST(MapInput, FillReadsTheChannelAndRemaps)
     EXPECT_GT(plane.at(1, 1), 0.35f) << "gamma 2 then Smooth lifts 0.35";
 }
 
-TEST(MapInput, FillReadsZeroOutsideTheMap)
+TEST(MapInput, FillReadsABlackPixelOutsideTheMap)
 {
     const RectI bounds(2, 2, 4, 4);
     ImagePtr image = alphaImage(bounds, [](int, int) { return 1.f; });
@@ -213,18 +213,19 @@ TEST(MapInput, FillReadsZeroOutsideTheMap)
     params.smooth = true;
     MapInput::fill(image.get(), 3, params, window, &plane);
     EXPECT_EQ(0.f, plane.at(2, 2)) << "inside, 1 inverts to 0";
-    EXPECT_EQ(0.f, plane.at(0, 0)) << "outside the Map is 0, not the inverted 1";
-    EXPECT_EQ(0.f, plane.at(5, 3));
-    EXPECT_EQ(0.f, plane.at(-10, 3)) << "beyond the window";
-    EXPECT_EQ(0.f, plane.outside());
+    EXPECT_EQ(1.f, plane.at(0, 0)) << "outside the Map, black inverts to 1";
+    EXPECT_EQ(1.f, plane.at(5, 3));
+    EXPECT_EQ(1.f, plane.at(-10, 3)) << "beyond the window";
+    EXPECT_EQ(1.f, plane.outside());
+    EXPECT_EQ(params.remap(0.f), plane.outside());
 
     ImagePtr dark = alphaImage(bounds, [](int, int) { return 0.f; });
     MapInput::fill(dark.get(), 3, params, window, &plane);
     EXPECT_EQ(1.f, plane.at(3, 3)) << "inside, 0 inverts to 1";
-    EXPECT_EQ(0.f, plane.at(1, 1));
+    EXPECT_EQ(plane.at(3, 3), plane.at(1, 1)) << "outside matches a black pixel inside";
 }
 
-TEST(MapInput, FillWithoutImageOrChannelReadsZero)
+TEST(MapInput, FillWithoutImageOrChannelReadsBlack)
 {
     const RectI window(0, 0, 3, 3);
     MapInputParams params;
@@ -239,9 +240,12 @@ TEST(MapInput, FillWithoutImageOrChannelReadsZero)
     EXPECT_EQ(0.f, plane.at(1, 1)) << "no channel";
     params.invert = true;
     MapInput::fill(nullptr, 3, params, window, &plane);
-    EXPECT_EQ(0.f, plane.at(1, 1)) << "inverted, still 0 without an image";
+    EXPECT_EQ(1.f, plane.at(1, 1)) << "inverted black without an image";
+    MapInput::fill(image.get(), 4, params, window, &plane);
+    EXPECT_EQ(1.f, plane.at(1, 1)) << "inverted black for a channel the image lacks";
     MapInput::fill(image.get(), -1, params, window, &plane);
-    EXPECT_EQ(0.f, plane.at(1, 1)) << "inverted, still 0 without a channel";
+    EXPECT_EQ(1.f, plane.at(1, 1)) << "inverted black without a channel";
+    EXPECT_EQ(1.f, plane.outside());
 }
 
 TEST(MapInput, TileRangeIsTheMinAndMax)
@@ -266,6 +270,20 @@ TEST(MapInput, TileRangeIsTheMinAndMax)
     range = plane.tileRange(RectI(20, 20, 24, 24));
     EXPECT_EQ(0.f, range.min);
     EXPECT_EQ(0.f, range.max);
+
+    MapInputParams inverted;
+    inverted.invert = true;
+    ImagePtr small = alphaImage(RectI(2, 2, 4, 4), [](int, int) { return 1.f; });
+    MapInput::fill(small.get(), 3, inverted, window, &plane);
+    range = plane.tileRange(RectI(2, 2, 4, 4));
+    EXPECT_EQ(0.f, range.min) << "inside the Map only";
+    EXPECT_EQ(0.f, range.max);
+    range = plane.tileRange(RectI(0, 0, 4, 4));
+    EXPECT_EQ(0.f, range.min);
+    EXPECT_EQ(1.f, range.max) << "the inverted black around the Map";
+    range = plane.tileRange(RectI(20, 20, 24, 24));
+    EXPECT_EQ(1.f, range.min) << "beyond the window, the inverted black";
+    EXPECT_EQ(1.f, range.max);
 }
 
 TEST(MapInput, TileRangeOfAConstantPlane)

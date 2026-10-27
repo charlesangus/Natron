@@ -11,7 +11,7 @@ The variable-size Erode and Dilate: one template, `IErodeDilateNode<ErodeDilateM
 their base nodes in the I-variant registry; every knob they share has the same name.
 
 - **Map.** As IBlur's ([IBlur.md](IBlur.md)): an aux Map input from `MapInput`, its channel (alpha by default)
-  inverted, clamped to [0, 1] and remapped by Map Gamma and Map Response, 0 outside the Map's image (neither inverted nor remapped), the standard Mask and Mix
+  inverted, clamped to [0, 1] and remapped by Map Gamma and Map Response, a black pixel outside the Map's image (inverted and remapped like any other), the standard Mask and Mix
   still limiting the result. The radius of an axis at a pixel is `lerp(sizeAtBlack, size, map)`, computed in float
   and clamped between the two, so it is monotonic in the Map. A disconnected Map filters at Size everywhere and
   shows a warning badge.

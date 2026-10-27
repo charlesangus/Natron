@@ -76,7 +76,9 @@ boxRadius(double sigma)
     if (!(sigma > 0.)) {
         return 0.;
     }
-    const double target = sigma * sigma / 3.;
+    // The radius search steps by 1, which makes no progress once n + 1 is not representable.
+    const double capped = std::min(sigma, 1e7);
+    const double target = capped * capped / 3.;
     // At a whole radius n the variance is n (n + 1) / 3; n is the largest one not above target.
     double n = std::floor((std::sqrt(1. + 12. * target) - 1.) / 2.);
     while ((n > 0.) && (n * (n + 1.) / 3. > target)) {

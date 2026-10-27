@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -369,6 +370,55 @@ TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
 
     // Identity 1 aliases 2's image; the uploaded identity 3 counts.
     EXPECT_EQ(graph.regions[0].workingSetBytes, kBytes * (1 + 3 + 4));
+}
+
+// Grade 0 (GPU, t) <- time offset 1 (identity at t, of t + 3) <- Grade 2 (GPU, t + 3) <- reader 3 (CPU, t + 3): the
+// identity at another time joins the region, and the Grade at t + 3 feeds it on the device, with no download.
+TEST(GpuPlacement, IdentityAtAnotherTimeKeepsTheRegionResident)
+{
+    const double t = 1.;
+    FrameGraph graph = makeGraph(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
+    graph.tasks[0].key.time = t;
+    graph.tasks[1].key.time = t;
+    graph.tasks[1].isIdentity = true;
+    graph.tasks[2].key.time = t + 3.;
+    graph.tasks[3].key.time = t + 3.;
+
+    placeGraph(graph, gpuTasks(graph, { 0, 2 }));
+
+    ASSERT_EQ(graph.regions.size(), 1u);
+    EXPECT_EQ(graph.regions[0].members, std::vector<int>({ 2, 1, 0 }));
+    EXPECT_EQ(graph.regions[0].externalInputs, std::vector<int>({ 3 }));
+    for (const FrameGraph::Region::Output& output : graph.regions[0].outputs) {
+        if (output.task != 0) {
+            EXPECT_EQ(output.externalConsumers, 0) << "task " << output.task << " leaves the device";
+        }
+    }
+}
+
+// A consumer 0 (GPU, t) reading producer 1 (GPU, t - 1) and producer 2 (GPU, t + 1), each over a reader at its time.
+TEST(GpuPlacement, ConsumerOfTwoTimesSharesTheRegionOfBoth)
+{
+    const double t = 1.;
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 } });
+    graph.tasks[0].key.time = t;
+    graph.tasks[1].key.time = t - 1.;
+    graph.tasks[3].key.time = t - 1.;
+    graph.tasks[2].key.time = t + 1.;
+    graph.tasks[4].key.time = t + 1.;
+
+    placeGraph(graph, gpuTasks(graph, { 0, 1, 2 }));
+
+    ASSERT_EQ(graph.regions.size(), 1u);
+    std::vector<int> members = graph.regions[0].members;
+    std::sort(members.begin(), members.end());
+    EXPECT_EQ(members, std::vector<int>({ 0, 1, 2 }));
+    EXPECT_EQ(graph.regions[0].externalInputs, std::vector<int>({ 3, 4 }));
+    for (const FrameGraph::Region::Output& output : graph.regions[0].outputs) {
+        if (output.task != 0) {
+            EXPECT_EQ(output.externalConsumers, 0) << "task " << output.task << " leaves the device";
+        }
+    }
 }
 
 TEST(GpuPlacement, RejectedRegionStaysOnCpu)

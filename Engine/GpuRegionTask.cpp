@@ -297,12 +297,14 @@ struct Member {
     int externalTask = -1;
     ImageLayerDesc externalLayer;
 
-    // The first nInputs are indexed by input number, -1 for an input the member does not read; the others are the
-    // layers getGpuExtraInputLayers() names, read from input inputSlotInput[k] in inputSlotLayer[k].
+    // The first nInputs are indexed by input number, -1 for an input the member does not read at its own time; the
+    // others are read from input inputSlotInput[k] at inputSlotTime[k] in inputSlotLayer[k]: the layers
+    // getGpuExtraInputLayers() names at the member's time, and the inputs at the other times its query lists.
     int nInputs = 0;
     std::vector<int> inputSlots;
     std::vector<int> inputSlotInput;
     std::vector<ImageLayerDesc> inputSlotLayer;
+    std::vector<double> inputSlotTime;
 
     // Its share of the device time of the submission it is recorded in.
     double weight = 1.;
@@ -699,15 +701,56 @@ private:
         member->inputSlots.assign(member->nInputs, -1);
         member->inputSlotInput.resize(member->nInputs);
         member->inputSlotLayer.assign(member->nInputs, ImageLayerDesc());
+        member->inputSlotTime.assign(member->nInputs, task.key.time);
         std::vector<int> inputTasks(member->nInputs, -1);
         std::vector<bool> unread(member->nInputs, false);
+        std::vector<bool> readAtOtherTimes(member->nInputs, false);
         for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
             member->inputSlotInput[inputNb] = inputNb;
             unread[inputNb] = !effect->readsGpuInput(inputNb, member->plane, task.key.time, task.key.view);
         }
+        // An input at another time than the task's is the task of that time, read in the same layer; makeGpuTaskPlanes()
+        // has checked the request pass planned every time the query lists.
+        std::vector<std::pair<int, double>> timed;
+        for (const GpuInputTimes& input : member->query.inputTimes) {
+            for (double time : input.times) {
+                if (time != task.key.time) {
+                    timed.push_back(std::make_pair(input.inputNb, time));
+                }
+            }
+        }
+        if ((int)timed.size() > kGpuMaxInputTimes) {
+            return fail(member->task, "the node reads its inputs at more times than a region keeps resident");
+        }
         for (std::size_t e = 0; e < edges.size(); ++e) {
             const int inputNb = edges[e].first;
             if ((inputNb < 0) || (inputNb >= member->nInputs) || unread[inputNb]) {
+                continue;
+            }
+            const double edgeTime = _graph.tasks[edges[e].second].key.time;
+            if (edgeTime != task.key.time) {
+                const std::vector<std::pair<int, double>>::iterator wanted = std::find(timed.begin(), timed.end(), std::make_pair(inputNb, edgeTime));
+                if (wanted == timed.end()) {
+                    continue;
+                }
+                timed.erase(wanted);
+                ImageLayerDesc layer;
+                if (!effect->getGpuInputLayer(inputNb, member->plane, task.key.time, task.key.view, &layer)) {
+                    return fail(member->task, "the node cannot read an input on the GPU");
+                }
+                if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
+                    return fail(member->task, "an input renders an empty window");
+                }
+                const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
+                const int slot = readSlot(edges[e].second, layer, needed);
+                if (slot < 0) {
+                    return fail(member->task, "an input produced in the region is not in the layer the node reads");
+                }
+                member->inputSlots.push_back(slot);
+                member->inputSlotInput.push_back(inputNb);
+                member->inputSlotLayer.push_back(layer);
+                member->inputSlotTime.push_back(edgeTime);
+                readAtOtherTimes[inputNb] = true;
                 continue;
             }
             ImageLayerDesc layer;
@@ -727,8 +770,11 @@ private:
             inputTasks[inputNb] = edges[e].second;
         }
 
+        if (!timed.empty()) {
+            return fail(member->task, "an input time the node reads has no task to read");
+        }
         for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
-            if ((member->inputSlots[inputNb] < 0) && !unread[inputNb] && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
+            if ((member->inputSlots[inputNb] < 0) && !readAtOtherTimes[inputNb] && !unread[inputNb] && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
                 return fail(member->task, "a connected input has no task to read");
             }
         }
@@ -750,6 +796,7 @@ private:
                 member->inputSlots.push_back(slot);
                 member->inputSlotInput.push_back(inputNb);
                 member->inputSlotLayer.push_back(layer);
+                member->inputSlotTime.push_back(task.key.time);
             }
         }
 
@@ -1702,6 +1749,7 @@ private:
     {
         args->inputs.assign(member.nInputs, GpuImageView());
         args->layerInputs.clear();
+        args->timedInputs.clear();
         for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
             if (member.inputSlots[k] < 0) {
                 continue;
@@ -1712,6 +1760,14 @@ private:
             }
             if ((int)k < member.nInputs) {
                 args->inputs[k] = view;
+                continue;
+            }
+            if (member.inputSlotTime[k] != member.query.time) {
+                GpuTimedInput timedInput;
+                timedInput.inputNb = member.inputSlotInput[k];
+                timedInput.time = member.inputSlotTime[k];
+                timedInput.view = view;
+                args->timedInputs.push_back(timedInput);
                 continue;
             }
             GpuLayerInput layerInput;

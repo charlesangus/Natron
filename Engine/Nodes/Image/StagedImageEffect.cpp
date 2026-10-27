@@ -693,9 +693,8 @@ FramesNeededMap
 StagedImageEffect::getFramesNeeded(double time,
                                    ViewIdx view)
 {
-    if (imagePipelineSpec().op != OpKind::Route) {
-        return NativeEffectBase::getFramesNeeded(time, view);
-    }
+    // Whatever the op kind, an answer other than None is the identity isIdentity() reports, at
+    // the time route() chose, which is what the scheduler must plan.
     const Route answer = route(time, view);
     if (answer.kind == Route::Kind::None) {
         return NativeEffectBase::getFramesNeeded(time, view);

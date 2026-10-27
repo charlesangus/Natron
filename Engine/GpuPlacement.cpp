@@ -643,6 +643,44 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
     const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
     query->draftMode = frameArgs && frameArgs->draftMode;
 
+    query->inputTimes.clear();
+    if (frameView) {
+        int nOtherViews = 0;
+        for (FramesNeededMap::const_iterator input = frameView->globalData.frameViewsNeeded.begin(); input != frameView->globalData.frameViewsNeeded.end(); ++input) {
+            const FrameRangesMap::const_iterator ranges = input->second.find(task.key.view);
+            if ((input->first < 0) || (ranges == input->second.end()) || !native->getInput(input->first)) {
+                continue;
+            }
+            GpuInputTimes entry;
+            entry.inputNb = input->first;
+            for (const RangeD& range : ranges->second) {
+                if ((range.min == task.key.time) && (range.max == task.key.time)) {
+                    entry.times.push_back(task.key.time);
+                    continue;
+                }
+                // The request pass plans no edge for a range with fractional bounds, so nothing would be resident.
+                if ((range.min != (int)range.min) || (range.max != (int)range.max)) {
+                    return false;
+                }
+                for (double f = range.min; f <= range.max; f += 1.) {
+                    entry.times.push_back(f);
+                }
+            }
+            std::sort(entry.times.begin(), entry.times.end());
+            entry.times.erase(std::unique(entry.times.begin(), entry.times.end()), entry.times.end());
+            if (entry.times.empty() || ((entry.times.size() == 1) && (entry.times.front() == task.key.time))) {
+                continue;
+            }
+            for (double t : entry.times) {
+                nOtherViews += (t == task.key.time) ? 0 : 1;
+            }
+            query->inputTimes.push_back(entry);
+        }
+        if (nOtherViews > kGpuMaxInputTimes) {
+            return false;
+        }
+    }
+
     query->unPremultChannel = stages.divisorChannel;
     query->unPremultInPlane = (stages.divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, stages.divisorLayer, stages.divisorChannel) >= 0);
 
@@ -734,6 +772,18 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
         if (ImageLayerDesc::findEquivalentLayer(plane, outputLayers.begin(), outputLayers.end()) != outputLayers.end()) {
             if (!makeGpuQueryForTaskPlane(task, plane, context, &entry.query) || !native->canRenderOnGpu(entry.query)) {
                 return false;
+            }
+            // A time past the request pass's pre-fetch cap has no edge, so no task would put it on the device.
+            for (const GpuInputTimes& input : entry.query.inputTimes) {
+                for (double time : input.times) {
+                    bool planned = false;
+                    for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
+                        planned = planned || ((edge.inputNb == input.inputNb) && (edge.time == time) && (edge.view == task.key.view) && edge.node.lock());
+                    }
+                    if (!planned) {
+                        return false;
+                    }
+                }
             }
             for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
                 if (!edge.node.lock() || (edge.inputNb < 0) || (edge.inputNb >= nInputs)) {

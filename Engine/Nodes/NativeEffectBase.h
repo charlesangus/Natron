@@ -396,6 +396,25 @@ public:
      **/
     ImageMetadata getOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The image of input inputNb at time, for the render args describes, over roiPixel
+     * when given: getImage() at args' scale and view. time must be one getFramesNeeded() lists
+     * for that input and view at args.time, which is what the scheduler planned; any other time
+     * posts an error naming it and returns null, so that the render fails rather than pulling
+     * an unplanned frame.
+     **/
+    ImagePtr fetchInputAt(int inputNb,
+                          double time,
+                          const RenderActionArgs& args,
+                          const ImageLayerDesc* layer = NULL,
+                          bool mapToClipPrefs = true,
+                          RectI* roiPixel = NULL) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether getFramesNeeded() at time and view lists time needed of input inputNb.
+     **/
+    bool declaresInputTime(int inputNb, double time, ViewIdx view, double needed) WARN_UNUSED_RETURN;
+
 protected:
     /**
      * @brief The metadata of the first connected non-mask input at time and view, or empty if

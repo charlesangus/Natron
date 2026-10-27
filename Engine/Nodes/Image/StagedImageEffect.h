@@ -299,8 +299,8 @@ protected:
                                       RoIMap* ret) OVERRIDE;
 
     /**
-     * @brief For a Route op, only the input route() chooses, at the time it chooses, and no
-     * input for Black; the default for every other op kind.
+     * @brief Where route() chooses an input, whatever the op kind, only that input at the time
+     * it chooses, and no input where it answers Black; the default where it answers None.
      **/
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;

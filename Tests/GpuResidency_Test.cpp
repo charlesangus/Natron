@@ -57,6 +57,7 @@
 #include <QThread>
 
 #include "BaseTest.h"
+#include "MultiTimeTestEffect.h"
 #include "NativeParity.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
@@ -3640,4 +3641,122 @@ TEST(GpuRegionStrips, OverlapStripsMustFitThreeInFlight)
     EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(graph, limits, &strips, &rows, nullptr, &overlapped));
     EXPECT_FALSE(overlapped);
     EXPECT_TRUE(strips.empty());
+}
+
+namespace {
+
+// A native Constant whose colour differs at every frame from 0 to 5, so that reading the wrong time shows.
+NodePtr
+keyConstantPerFrame(const NodePtr& constant)
+{
+    KnobDoubleBase* colour = constant ? dynamic_cast<KnobDoubleBase*>(constant->getKnobByName(kConstantParamColor).get()) : NULL;
+    if (!colour) {
+        return NodePtr();
+    }
+    const double bump[] = { 0., 0.5, 0.1, 0.3, 0.7, 0.2 };
+    for (int frame = 0; frame < 6; ++frame) {
+        for (int d = 0; d < colour->getDimension(); ++d) {
+            colour->setValueAtTime(frame, 0.05 * (d + 1) + bump[frame], ViewSpec::all(), d);
+        }
+    }
+
+    return constant;
+}
+
+} // namespace
+
+// Constant -> Grade -> a node averaging its input at t - 1 and t + 1: the Grade renders on the device at both times and
+// the average reads both there, with one upload per time and the one download of the root.
+TEST_F(GpuResidencyTest, TwoTimeConsumerReadsAResidentProducerAtBothTimes)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    registerMultiTimeTestPluginsOnce();
+    NodePtr source = keyConstantPerFrame(makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT));
+    NodePtr grade = makeGrade(1.5, 0.1);
+    NodePtr average = createNode(QString::fromUtf8(kTestPluginIDNeighbourAverage));
+    ASSERT_TRUE(source && grade && average);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, average, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(average, &run, &error)) << error;
+    const int averageTask = taskOf(run.graph, average);
+    ASSERT_GE(averageTask, 0);
+    std::set<double> gradeTimes;
+    for (const FrameGraph::Task& task : run.graph.tasks) {
+        if (task.key.node == grade) {
+            gradeTimes.insert(task.key.time);
+        }
+    }
+    EXPECT_EQ(std::set<double>({ kTime - 1., kTime + 1. }), gradeTimes);
+
+    GpuQuery query;
+    ASSERT_TRUE(makeGpuQueryForTask(run.graph.tasks[averageTask], *run.context, &query));
+    ASSERT_EQ(1u, query.inputTimes.size());
+    EXPECT_EQ(0, query.inputTimes.front().inputNb);
+    EXPECT_EQ(std::vector<double>({ kTime - 1., kTime + 1. }), query.inputTimes.front().times);
+
+    placeOnGpu(&run, { grade, average });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(3u, run.graph.regions[0].members.size());
+    ASSERT_EQ(2u, run.graph.regions[0].externalInputs.size());
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(2, run.stats->getUploadCount());
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(2, gpuRunsOf(run, grade));
+    EXPECT_EQ(1, gpuRunsOf(run, average));
+    EXPECT_EQ(0, renderRoICallsOf(run, average)) << "the average rendered on the CPU";
+    EXPECT_EQ(0, fallbacksOf(run));
+    expectReleased(run);
+    expectMatchesCpu(average, run);
+}
+
+// Constant -> Grade -> a time offset of +3 -> Grade: the offset is an identity at another time, and the region runs
+// through it, the first Grade at t + 3 feeding the second on the device with no download between.
+TEST_F(GpuResidencyTest, TimeOffsetIdentityKeepsTheRegionResident)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    registerMultiTimeTestPluginsOnce();
+    NodePtr source = keyConstantPerFrame(makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT));
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr offset = createNode(QString::fromUtf8(kTestPluginIDTimeOffsetRoute));
+    NodePtr grade2 = makeGrade(0.75, -0.05);
+    ASSERT_TRUE(source && grade1 && offset && grade2);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, offset, 0, true);
+    connectNodes(offset, grade2, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(grade2, &run, &error)) << error;
+    const int offsetTask = taskOf(run.graph, offset);
+    const int grade1Task = taskOf(run.graph, grade1);
+    ASSERT_GE(offsetTask, 0);
+    ASSERT_GE(grade1Task, 0);
+    EXPECT_TRUE(run.graph.tasks[offsetTask].isIdentity);
+    EXPECT_EQ(kTime + MultiTimeTest::kOffset, run.graph.tasks[grade1Task].key.time);
+
+    placeOnGpu(&run, { grade1, offset, grade2 });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(3u, run.graph.regions[0].members.size());
+    ASSERT_EQ(1u, run.graph.regions[0].externalInputs.size());
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, run.stats->getUploadCount());
+    EXPECT_EQ(1, run.stats->getDownloadCount());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, gpuRunsOf(run, grade1));
+    EXPECT_EQ(1, gpuRunsOf(run, grade2));
+    EXPECT_EQ(0, renderRoICallsOf(run, grade1)) << "the first Grade rendered on the CPU";
+    EXPECT_EQ(0, run.context->getStore().downloadCount());
+    EXPECT_EQ(0, fallbacksOf(run));
+    expectReleased(run);
+    expectMatchesCpu(grade2, run);
 }

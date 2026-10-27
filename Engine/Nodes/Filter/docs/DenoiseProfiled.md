@@ -6,6 +6,8 @@ Tolerance:
 |---|---|---|---|
 | darktable, CR2 crops | AMaZE: mean 0.3 %, max 5 %, no pixel over | `NativeDenoiseProfiledReferenceTest` | Relative to the crop's mean, after RawInputColor (`Tests/fixtures/raw/README.md`, Tolerances). The wavelets and the non-local means weights add float-sensitive steps to RCD. |
 | darktable, RAF crops | Markesteijn: as AMaZE, 36 pixels over | `NativeDenoiseProfiledReferenceTest` | |
+| GPU, non-local means (both colour modes, manual and auto) | mean 1e-5, max 1e-3, no pixel over | `NativeDenoiseProfiledGpuTest` | Relative to the CPU render's mean. Patch distances summed per patch on the device and by running sums on the CPU, and device pow/sqrt/division not correctly rounded; the weights are smooth in the distance. Tiled equals whole bit for bit. |
+| GPU, wavelets (both colour modes, manual and auto) | mean 5e-5, max 2e-3, 3 pixels over | `NativeDenoiseProfiledGpuTest` | Thresholds from float tree sums on the device against double sums on the CPU; the edge weights' truncation to an integer steps, and five levels compound it. Compute Variance runs on the CPU only. |
 
 Port of darktable's denoise (profiled) module (`src/iop/denoiseprofile.c`, darktable
 `release-5.6.2`, commit `20891f6c6fa7`, params version 12), C path only. It is a Custom op. Mix,

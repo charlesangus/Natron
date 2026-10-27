@@ -49,7 +49,9 @@
 #include "DenoiseProfiled.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include <QCoreApplication>
@@ -62,6 +64,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/DenoiseProfiledGpu.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -1101,5 +1104,175 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
 
     return eStatusOK;
 } // DenoiseProfiled::renderOp
+
+bool
+DenoiseProfiled::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > 4) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+        return false;
+    }
+    // Resolving only reads knobs and the source's metadata and region.
+    const std::optional<Resolved> r = const_cast<DenoiseProfiled*>(this)->resolve(query.time, query.view);
+    if (!r || (r->settings.mode == eModeVariance)) {
+        return false;
+    }
+
+    return isWavelets(r->settings.mode) || (nlmGeometry(r->settings, query.mappedScale.toOfxPointD().x).patchRadius <= DenoiseProfiledGpu::kMaxPatchRadius);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+DenoiseProfiled::getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const
+{
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+DenoiseProfiled::getOpGpuInputRoI(int inputNb,
+                                  double time,
+                                  ViewIdx view,
+                                  const RectI& outputRect,
+                                  const RenderScale& scale) const
+{
+    if (inputNb != getSourceInput()) {
+        return outputRect;
+    }
+    DenoiseProfiled* self = const_cast<DenoiseProfiled*>(this);
+    const std::optional<Resolved> r = self->resolve(time, view);
+    if (!r || (r->settings.mode == eModeVariance)) {
+        return outputRect;
+    }
+    if (isWavelets(r->settings.mode)) {
+        // The whole frame, which the wavelets' thresholds depend on.
+        RectI need = outputRect;
+        RectI rodPixel;
+        if (effectRoDPixels(*self, time, scale, view, &rodPixel)) {
+            need.merge(rodPixel);
+        }
+
+        return need;
+    }
+    const int halo = nlmGeometry(r->settings, scale.toOfxPointD().x).halo();
+
+    return RectI(outputRect.x1 - halo, outputRect.y1 - halo, outputRect.x2 + halo, outputRect.y2 + halo);
+}
+
+StatusEnum
+DenoiseProfiled::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    using namespace PassExec;
+
+    const GpuQuery& query = args.query;
+    const StagePlan plan = resolveGpuPlan(query);
+    const int sourceInput = plan.sourceInput;
+    const int nComps = query.nComps;
+    const RectI& rect = args.outputRect;
+    if (!canRenderOpOnGpu(query) || (sourceInput < 0) || (sourceInput >= (int)args.inputs.size())) {
+        return eStatusFailed;
+    }
+    const GpuImageView& src = args.inputs[sourceInput];
+    const GpuImageView& dst = args.output;
+    EffectInstancePtr input = getInput(sourceInput);
+    if (!input || !isUsableGpuView(src, nComps) || !isUsableGpuView(dst, nComps) || isEmptyRect(rect) || !dst.bounds.contains(rect)) {
+        return eStatusFailed;
+    }
+    const std::optional<Resolved> found = resolve(query.time, query.view);
+    if (!found) {
+        return eStatusFailed;
+    }
+    const Resolved& r = *found;
+    const DenoiseProfiledKernels::Settings& s = r.settings;
+    const double time = query.time;
+    const ViewIdx view = query.view;
+    const RenderScale& scale = query.mappedScale;
+    const double renderScale = scale.toOfxPointD().x;
+
+    RectI rodPixel;
+    if (!effectRoDPixels(*this, time, scale, view, &rodPixel)) {
+        return eStatusFailed;
+    }
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD srcRoD;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    // fillBuffer() reads the source as zero outside the input image, as the divide does outside its
+    // view.
+    RectI valid;
+    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput)), &valid);
+    GpuRenderArgs wrapArgs(args);
+    wrapArgs.inputs[sourceInput] = cropGpuView(src, valid);
+
+    // renderOp()'s window and buffer.
+    const std::bitset<4> processed = processedBitsForImage(query.plane, nComps, plan.processChannels);
+    RectI window(0, 0, 0, 0);
+    bool processing = (plan.mix != 0.) && (nComps >= 3) && processed.any() && intersectRects(rect, rodPixel, &window) && !isEmptyRect(window);
+    RectI bufferRect(0, 0, 0, 0);
+    if (processing) {
+        if (isWavelets(s.mode)) {
+            bufferRect = rodPixel;
+        } else {
+            const int halo = nlmGeometry(s, renderScale).halo();
+            processing = intersectRects(RectI(window.x1 - halo, window.y1 - halo, window.x2 + halo, window.y2 + halo), rodPixel, &bufferRect);
+        }
+    }
+    RectI dividedRect = rect;
+    if (processing) {
+        dividedRect.merge(bufferRect);
+    }
+
+    gpu::GpuRecordContext& ctx = args.context;
+    const uint64_t maxFloats = std::min<uint64_t>(UINT32_MAX, ctx.maxScratchBytes() / sizeof(float));
+    GpuImageView divided;
+    divided.bounds = dividedRect;
+    divided.nComps = nComps;
+    divided.rowStrideFloats = dividedRect.width() * nComps;
+    const uint64_t dividedFloats = (uint64_t)dividedRect.area() * nComps;
+    if ((dividedFloats > maxFloats) || !ctx.scratch(dividedFloats * sizeof(float), divided.buffer) || !divided.buffer
+        || (recordStagesGpuDivide(plan, wrapArgs, divided) != eStatusOK)) {
+        return eStatusFailed;
+    }
+    ctx.computeBarrier();
+    if (!processing) {
+        return recordStagesGpuFinish(plan, wrapArgs, divided);
+    }
+
+    GpuImageView filtered;
+    filtered.bounds = rect;
+    filtered.nComps = nComps;
+    filtered.rowStrideFloats = rect.width() * nComps;
+    const uint64_t filteredFloats = (uint64_t)rect.area() * nComps;
+    if ((filteredFloats > maxFloats) || !ctx.scratch(filteredFloats * sizeof(float), filtered.buffer) || !filtered.buffer) {
+        return eStatusFailed;
+    }
+    // The wavelets run over the whole frame for every strip; there is no device frame cache to
+    // share them through, as the CPU path's _frame does.
+    const gpu::GpuStatus status = isWavelets(s.mode) ? DenoiseProfiledGpu::recordWavelets(ctx, divided, bufferRect, r.fullSize, s, renderScale, filtered)
+                                                     : DenoiseProfiledGpu::recordNlm(ctx, divided, bufferRect, window, s, renderScale, filtered);
+    if (!status) {
+        return eStatusFailed;
+    }
+    ctx.computeBarrier();
+
+    return recordStagesGpuFinish(plan, wrapArgs, filtered);
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // DenoiseProfiled::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

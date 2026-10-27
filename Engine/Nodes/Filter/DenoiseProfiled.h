@@ -202,6 +202,23 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
+    /**
+     * @brief Every mode but Compute Variance, whose result the knobs show, so that it stays on the
+     * CPU.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     KnobChoiceWPtr _profile;
     KnobStringWPtr _profileUsed;
     KnobDoubleWPtr _profileA;

@@ -209,6 +209,20 @@ namespace {
     }
 } // namespace
 
+std::vector<std::array<int, 2>>
+nlmPatches(const NlmGeometry& g)
+{
+    int maxShift = 0;
+    const std::vector<Patch> patches = definePatches(g, &maxShift);
+    std::vector<std::array<int, 2>> shifts;
+    shifts.reserve(patches.size());
+    for (const Patch& p : patches) {
+        shifts.push_back({ p.rows, p.cols });
+    }
+
+    return shifts;
+}
+
 NlmGeometry
 nlmGeometry(const Settings& settings,
             double renderScale)

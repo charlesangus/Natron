@@ -4404,7 +4404,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
 
     if (useIdentityCache) {
         double timeF = 0.;
-        bool foundInCache = _imp->actionsCache->getIdentityResult(hash, time, view, inputNb, inputView, &timeF);
+        bool foundInCache = _imp->actionsCache->getIdentityResult(hash, time, view, scale.toMipmapLevel(), inputNb, inputView, &timeF);
         if (foundInCache) {
             *inputTime = timeF;
             if (*inputNb == kIdentityCacheNotIdentity) {
@@ -4459,7 +4459,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
     }
 
     if (useIdentityCache && clean.allowsStoreUnder(hash)) {
-        _imp->actionsCache->setIdentityResult(hash, time, view, ret ? *inputNb : kIdentityCacheNotIdentity, *inputView, *inputTime);
+        _imp->actionsCache->setIdentityResult(hash, time, view, scale.toMipmapLevel(), ret ? *inputNb : kIdentityCacheNotIdentity, *inputView, *inputTime);
     }
 
     return ret;
@@ -6367,6 +6367,15 @@ EffectInstance::abortViewerRendersForEdit()
         // Does not wait: a render in progress may still be running when this returns, and
         // playback restarts once it has stopped.
         (*it)->getRenderEngine()->abortRenderingAutoRestart();
+    }
+}
+
+void
+EffectInstance::notifyValueQueued()
+{
+    NodePtr node = getNode();
+    if (node) {
+        node->notifyActionQueued();
     }
 }
 

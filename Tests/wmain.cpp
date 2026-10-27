@@ -14,6 +14,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
@@ -200,6 +201,16 @@ registerNativeParityTestPlugins()
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
     registerTestBuiltInPlugin<GlHostWrapTestEffect>();
 }
+
+void
+registerCacheStressTestPlugins()
+{
+    // A source whose render remembers a knob value outside every engine cache, so the cache
+    // stress self-test can plant a hole the harness must catch.
+    registerTestBuiltInPlugin<StaleMemoTestEffect>();
+    // A filter whose knob edits queue under a render, for the queued-edit tests.
+    registerTestBuiltInPlugin<QueuedEditTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -251,6 +262,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
+    registerCacheStressTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

@@ -155,7 +155,6 @@ try:
         yield ("sleep", SETTLE_MS)
         default_image = save_shots("m226_hierarchy")
 
-        # 1. hierarchy
         stage = read_stage(merge)
         require(stage is not None, "the merge flattens to a file")
         paths = prim_paths(stage)
@@ -165,13 +164,11 @@ try:
             check("/%s/World/Box" % name in paths, "the stage has /%s/World/Box" % name)
         check("/World" not in paths, "no /World at the root")
 
-        # 2. local transforms
         t1 = local_translation(stage, "/" + names[0])
         t2 = local_translation(stage, "/" + names[1])
         check(near(t1, (-OFFSET, 0, 0)), "/%s local translation follows its knob (%r)" % (names[0], t1))
         check(near(t2, (OFFSET, 0, 0)), "/%s local translation follows its knob (%r)" % (names[1], t2))
 
-        # 3. translate edit re-renders
         set_translate(translates[0], -OFFSET - 4.0, 3.0, 0.0)
         before = default_image
         changed = lambda: (crop() is not None and before is not None and crop() != before)
@@ -185,7 +182,7 @@ try:
         check(near(t1b, (-OFFSET - 4.0, 3.0, 0)), "/%s's xform updated (%r)" % (names[0], t1b))
         check(near(t2b, (OFFSET, 0, 0)), "/%s's xform is untouched (%r)" % (names[1], t2b))
 
-        # 5. layered write and re-read (before the axis changes, with the scene as shown above)
+        # Written before the axis changes, so the file holds the scene as shown above.
         out_path = os.path.join(work_dir, "m226_layered.usda")
         wrote = write_stage(merge, layered, out_path, 0)
         check(wrote, "USDWrite (layered) wrote " + out_path)
@@ -198,7 +195,6 @@ try:
             check(fresh_paths == prim_paths(stage), "a fresh USDRead of the layered file composes the same prim paths")
             fresh_stage = None
 
-        # 4. up axis
         check(UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y, "the stage's upAxis is Y by default (%s)" % UsdGeom.GetStageUpAxis(stage))
         project_up_axis.setValue(1)
         yield ("sleep", 2000)
@@ -216,7 +212,6 @@ try:
         report("NOTE USDRead messages %r" % (messages,))
         check(ok, "a Y-up USDRead warns naming both axes")
 
-        # 4 (cont.). no file loaded
         lone = make("USDXformPrim", 600, 300)
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, lone), "connect the Viewer to a lone USDXformPrim")

@@ -492,6 +492,35 @@ TEST(SceneReparentTest, GraftedSamplesKeepTheirInputsRate)
     }
 }
 
+// One scene output connected to two inputs keeps a graft layer per input across evaluations.
+TEST(SceneReparentTest, OneSourceOnTwoInputsKeepsALayerPerInput)
+{
+    const ScenePayload card = stack({ makeLayer(kCard) });
+    SceneGraftMemo memo;
+    SceneReparentArgs args = graftUnderT1({ card, card });
+    setTranslateOverrides(&args, 1.);
+
+    const std::vector<SceneLayerEntry> first = SceneOps::getLayers(reparent(args, &memo));
+    ASSERT_EQ(4u, first.size());
+    const U64 authored = memo.getGraftLayerAuthorCount();
+    EXPECT_EQ(2u, authored);
+
+    for (double x : { 1., 2., 3. }) {
+        setTranslateOverrides(&args, x);
+        const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(reparent(args, &memo));
+        ASSERT_EQ(4u, layers.size());
+        EXPECT_EQ(first[2].layer, layers[2].layer) << "translate " << x;
+        EXPECT_EQ(first[3].layer, layers[3].layer) << "translate " << x;
+        std::vector<std::string> identifiers;
+        for (const SceneLayerEntry& entry : layers) {
+            identifiers.push_back(entry.layer->GetIdentifier());
+        }
+        std::sort(identifiers.begin(), identifiers.end());
+        EXPECT_EQ(identifiers.end(), std::adjacent_find(identifiers.begin(), identifiers.end())) << "translate " << x;
+    }
+    EXPECT_EQ(authored, memo.getGraftLayerAuthorCount());
+}
+
 TEST(SceneReparentTest, LinkIndexListsTargetsOutOfTheirRoot)
 {
     const PXR_NS::SdfLayerRefPtr file = makeLayer(boundGeo("M") + "def Xform \"inside\"\n{\n    rel own = </inside/child>\n    def Xform \"child\"\n    {\n    }\n}\n");

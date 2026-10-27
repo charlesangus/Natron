@@ -757,14 +757,18 @@ namespace {
         return onlyOvers;
     }
 
+    // The first slot not yet consumed that matches, which it marks consumed, so two inputs
+    // connected to the same stack each keep a slot of their own.
     const GraftSlot*
     findSlot(const std::vector<GraftSlot>& slots,
+             std::vector<bool>* consumed,
              const ScenePayload& input,
              const std::string* destinationPath,
              const std::vector<std::string>* childNames)
     {
-        for (const GraftSlot& slot : slots) {
-            if (!slot.input.isSameStack(input)) {
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            const GraftSlot& slot = slots[i];
+            if ((*consumed)[i] || !slot.input.isSameStack(input)) {
                 continue;
             }
             if (destinationPath && ((slot.destinationPath != *destinationPath) || !slot.graft.layer)) {
@@ -773,6 +777,7 @@ namespace {
             if (childNames && (slot.childNames != *childNames)) {
                 continue;
             }
+            (*consumed)[i] = true;
 
             return &slot;
         }
@@ -819,11 +824,12 @@ reparentRoots(const SceneReparentArgs& args,
 
     // An input seen last time keeps its root names and wrapper: the same stack composes the same.
     std::vector<GraftSlot> slots(args.inputs.size());
+    std::vector<bool> readConsumed(state.slots.size(), false);
     for (std::size_t i = 0; i < args.inputs.size(); ++i) {
         GraftSlot& slot = slots[i];
         slot.input = args.inputs[i];
         slot.destinationPath = args.destinationPath;
-        if (const GraftSlot* previous = findSlot(state.slots, slot.input, NULL, NULL)) {
+        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL)) {
             slot.rootNames = previous->rootNames;
             slot.links = previous->links;
             slot.wrapper = previous->wrapper;
@@ -885,11 +891,13 @@ reparentRoots(const SceneReparentArgs& args,
     }
 
     U64 graftLayersAuthored = 0;
+    std::vector<bool> graftConsumed(state.slots.size(), false);
     for (GraftSlot& slot : slots) {
         if (slot.rootNames.empty()) {
             continue;
         }
-        if (const GraftSlot* previous = findSlot(state.slots, slot.input, &slot.destinationPath, &slot.childNames)) {
+        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.childNames)) {
+            slot.wrapper = previous->wrapper;
             slot.graft = previous->graft;
             continue;
         }

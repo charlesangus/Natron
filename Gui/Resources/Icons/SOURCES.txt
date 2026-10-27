@@ -160,6 +160,7 @@ natron/roi.svg | Natron custom ("roi", square with crop-style tick marks) | GPL-
 natron/select-curves.svg | Natron custom ("select-curves", pointer arrow beside a Bezier arc) | GPL-2.0-or-later
 natron/select-feather.svg | Natron custom ("select-feather", pointer arrow with a dashed-outline point) | GPL-2.0-or-later
 natron/select-points.svg | Natron custom ("select-points", pointer arrow with a solid control point) | GPL-2.0-or-later
+natron/smooth-s.svg | Natron custom ("smooth-s", a stroked letter S) | GPL-2.0-or-later
 natron/track-all-keys.svg | Natron custom ("track-all-keys", two keyframe diamonds in front of play triangles) | GPL-2.0-or-later
 natron/track-current-key.svg | Natron custom ("track-current-key", one keyframe diamond in front of play triangles) | GPL-2.0-or-later
 natron/track-range.svg | Natron custom ("track-range", play triangle with a closing bracket) | GPL-2.0-or-later

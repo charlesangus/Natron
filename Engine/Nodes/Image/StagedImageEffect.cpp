@@ -36,6 +36,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Format.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -89,7 +90,9 @@ StagedImageEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) co
 bool
 StagedImageEffect::wantsHostUnPremultSelector() const
 {
-    return imagePipelineSpec().stages.has(Stage::Premult);
+    const StageSet& stages = imagePipelineSpec().stages;
+
+    return stages.has(Stage::Premult) || stages.has(Stage::Divisor);
 }
 
 bool
@@ -690,6 +693,14 @@ StagedImageEffect::isIdentity(double time,
     const bool maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
     if (maskMix && (getMixValue(time, view) == 0.)) {
         return true;
+    }
+    // A Divisor stage's op multiplies or divides by its divisor, which is 1 when none is picked.
+    if (imagePipelineSpec().stages.has(Stage::Divisor)) {
+        NodePtr node = getNode();
+        KnobChannelSelectPtr divisor = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+        if (!divisor || divisor->isNone()) {
+            return true;
+        }
     }
     if (isOpIdentity(time, scale, roi, view)) {
         return true;

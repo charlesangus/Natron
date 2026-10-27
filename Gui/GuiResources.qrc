@@ -229,6 +229,7 @@
         <file>Resources/Icons/natron/select-curves.svg</file>
         <file>Resources/Icons/natron/select-feather.svg</file>
         <file>Resources/Icons/natron/select-points.svg</file>
+        <file>Resources/Icons/natron/smooth-s.svg</file>
         <file>Resources/Icons/natron/track-all-keys.svg</file>
         <file>Resources/Icons/natron/track-current-key.svg</file>
         <file>Resources/Icons/natron/track-range.svg</file>

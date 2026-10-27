@@ -39,8 +39,6 @@
 #include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QThreadPool>
-#include <QUndoCommand>
-#include <QUndoStack>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -57,8 +55,7 @@
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
-#include "Gui/KnobGuiContainerI.h"
-#include "Gui/KnobGuiValue.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_USING
 
@@ -382,38 +379,6 @@ TEST(SceneGizmo, EachRingTurnsThePrimAboutItselfThroughItsOwnAngle)
 // ---------------------------------------------------------------------------
 
 namespace {
-// A settings panel's undo stack without the panel, as a knob's GUI pushes to it.
-class UndoStackContainer
-    : public KnobGuiContainerI {
-public:
-    virtual Gui* getGui() const OVERRIDE FINAL
-    {
-        return 0;
-    }
-
-    virtual const QUndoCommand* getLastUndoCommand() const OVERRIDE FINAL
-    {
-        return undoStack.index() > 0 ? undoStack.command(undoStack.index() - 1) : 0;
-    }
-
-    virtual void pushUndoCommand(QUndoCommand* cmd) OVERRIDE FINAL
-    {
-        undoStack.push(cmd);
-    }
-
-    virtual KnobGuiPtr getKnobGui(const KnobIPtr& /*knob*/) const OVERRIDE FINAL
-    {
-        return KnobGuiPtr();
-    }
-
-    virtual int getItemsSpacingOnSameLine() const OVERRIDE FINAL
-    {
-        return 0;
-    }
-
-    mutable QUndoStack undoStack;
-};
-
 void
 sendMouse(QWidget* widget,
           QEvent::Type type,
@@ -450,12 +415,9 @@ protected:
         ASSERT_TRUE(_effect != NULL);
         _translate = _effect->getTransformKnobs().translate.lock();
         ASSERT_TRUE(bool(_translate));
-        // The knob's GUI, so that edits from the viewer go through the undo stack.
-        _knobGui = std::make_shared<KnobGuiDouble>(_translate, &_container);
-        _knobGui->initialize();
-
         _viewport.reset(new SceneViewport);
         _viewport->resize(kSize, kSize);
+        _viewport->setUndoHistory(&_history);
         NodePtr transform = _transform;
         _viewport->setTransformNodeProvider([transform]() {
             return transform;
@@ -471,10 +433,7 @@ protected:
     void TearDown() override
     {
         _viewport.reset();
-        if (_translate) {
-            _translate->setKnobGuiPointer(KnobGuiPtr());
-        }
-        _knobGui.reset();
+        _history.clear();
         _translate.reset();
         SceneQueryPool::instance().releaseIdle();
         if (_app) {
@@ -524,8 +483,7 @@ protected:
     NodePtr _prim, _transform;
     USDEditTransform* _effect = NULL;
     KnobDoublePtr _translate;
-    UndoStackContainer _container;
-    KnobGuiPtr _knobGui;
+    UndoHistory _history;
     std::unique_ptr<SceneViewport> _viewport;
 };
 
@@ -549,7 +507,7 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
     EXPECT_DOUBLE_EQ(0., _translate->getValue(1));
     EXPECT_DOUBLE_EQ(0., _translate->getValue(2));
     // Both moves are one edit.
-    ASSERT_EQ(1, _container.undoStack.count());
+    ASSERT_EQ(1, _history.count());
 
     // The drag reaches the scene: the prim moves by the dragged amount.
     ScenePayload payload;
@@ -565,20 +523,21 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
         EXPECT_NEAR(_translate->getValue(0), world.ExtractTranslation()[0], 1e-9);
     }
 
-    _container.undoStack.undo();
+    _history.undo();
     EXPECT_DOUBLE_EQ(0., _translate->getValue(0));
-    _container.undoStack.redo();
+    _history.redo();
     EXPECT_NEAR(moved, _translate->getValue(0), 0.05 * moved);
 
     // A second drag is a second edit.
+    showScene();
     _viewport->refreshTransformHandles();
     const QPointF again = handlePixel(makeHandle(eHandleKindTranslate, 0));
     sendMouse(_viewport.get(), QEvent::MouseButtonPress, again, Qt::LeftButton, Qt::LeftButton);
     sendMouse(_viewport.get(), QEvent::MouseMove, again + QPointF(-10., 0.), Qt::NoButton, Qt::LeftButton);
     sendMouse(_viewport.get(), QEvent::MouseButtonRelease, again + QPointF(-10., 0.), Qt::LeftButton, Qt::NoButton);
-    EXPECT_EQ(2, _container.undoStack.count());
+    EXPECT_EQ(2, _history.count());
     EXPECT_NEAR(10. * kPixel, _translate->getValue(0), 0.1 * moved);
-    _container.undoStack.undo();
+    _history.undo();
     EXPECT_NEAR(moved, _translate->getValue(0), 0.05 * moved);
 }
 
@@ -587,7 +546,7 @@ TEST_F(SceneGizmoDragTest, NoHandlesWithoutAMatchOrANode)
     // A click away from the handles does not edit.
     sendMouse(_viewport.get(), QEvent::MouseButtonPress, QPointF(5., 5.), Qt::LeftButton, Qt::LeftButton);
     sendMouse(_viewport.get(), QEvent::MouseButtonRelease, QPointF(5., 5.), Qt::LeftButton, Qt::NoButton);
-    EXPECT_EQ(0, _container.undoStack.count());
+    EXPECT_EQ(0, _history.count());
 
     // A pattern that matches nothing names no target.
     KnobString* pattern = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());

@@ -283,6 +283,20 @@ USDEditTransform::knobChanged(KnobI* k,
     return true;
 }
 
+void
+USDEditTransform::getMatchedPrims(std::vector<std::string>* primPaths,
+                                  std::vector<std::string>* opNames) const
+{
+    std::lock_guard<std::mutex> l(_imp->lock);
+
+    primPaths->clear();
+    opNames->clear();
+    for (std::size_t i = 0; (i < _imp->matches.size()) && (i < _imp->opNames.size()); ++i) {
+        primPaths->push_back(_imp->matches[i].GetString());
+        opNames->push_back(_imp->opNames[i].GetString());
+    }
+}
+
 bool
 USDEditTransform::getHandleTarget(std::string* primPath,
                                   std::string* opName) const

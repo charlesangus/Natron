@@ -924,6 +924,15 @@ GuiApplicationManager::populateShortcuts()
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DUnshaded, kShortcutDescActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShowGrid, kShortcutDescActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShowGuides, kShortcutDescActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G);
+        // Houdini's transform tool keys. R and Y are the Viewer's Red and Luminance keys, which the
+        // 3D view does not use; it takes them while it has the focus.
+        registerKeybind2(kShortcutGroupViewer3D, kShortcutIDActionViewer3DSelectTool, kShortcutDescActionViewer3DSelectTool, Qt::NoModifier, Qt::Key_Q, Qt::NoModifier, Qt::Key_Escape);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DTranslateTool, kShortcutDescActionViewer3DTranslateTool, Qt::NoModifier, Qt::Key_T);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DRotateTool, kShortcutDescActionViewer3DRotateTool, Qt::NoModifier, Qt::Key_R);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DScaleTool, kShortcutDescActionViewer3DScaleTool, Qt::NoModifier, Qt::Key_E);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DCycleTool, kShortcutDescActionViewer3DCycleTool, Qt::NoModifier, Qt::Key_Y);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DToggleSpace, kShortcutDescActionViewer3DToggleSpace, Qt::NoModifier, Qt::Key_D);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, (Qt::Key)0);
     }
 
     ///Player

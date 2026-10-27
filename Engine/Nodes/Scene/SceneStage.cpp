@@ -128,4 +128,113 @@ SceneStage::getEditCount() const
     return _editCount;
 }
 
+bool
+SceneStage::setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>& deltas,
+                                 double timeCode)
+{
+    if (!_stage) {
+        return false;
+    }
+    std::vector<std::string> requested;
+    requested.reserve(deltas.size());
+    for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
+        requested.push_back(delta.first);
+    }
+    const bool samePrims = !_preview.empty() && (requested == _previewRequested);
+    if (!samePrims) {
+        clearPreviewTransforms();
+
+        // Read everything before the first write, so the stage is not recomposed in between.
+        static const PXR_NS::TfToken kOpName("xformOp:transform:natronPreview");
+        std::vector<PreviewPrim> prims;
+        std::vector<PXR_NS::VtTokenArray> orders;
+        PXR_NS::UsdGeomXformCache xforms((PXR_NS::UsdTimeCode(timeCode)));
+        for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
+            if (!PXR_NS::SdfPath::IsValidPathString(delta.first)) {
+                continue;
+            }
+            const PXR_NS::SdfPath path(delta.first);
+            if (!path.IsAbsolutePath() || !path.IsPrimPath()) {
+                continue;
+            }
+            const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(path);
+            const PXR_NS::UsdGeomXformable xformable(prim);
+            if (!xformable || prim.IsInstanceProxy() || prim.IsInPrototype()) {
+                continue;
+            }
+            PXR_NS::VtTokenArray baseOrder;
+            xformable.GetXformOpOrderAttr().Get(&baseOrder);
+            PreviewPrim preview;
+            preview.path = path;
+            preview.resetsXformStack = !baseOrder.empty() && (baseOrder[0] == PXR_NS::UsdGeomXformOpTypes->resetXformStack);
+            preview.parentToWorld = xforms.GetParentToWorldTransform(prim);
+            preview.worldToParent = preview.parentToWorld.GetInverse();
+            PXR_NS::VtTokenArray order;
+            if (preview.resetsXformStack) {
+                order.push_back(PXR_NS::UsdGeomXformOpTypes->resetXformStack);
+            }
+            order.push_back(kOpName);
+            for (std::size_t i = preview.resetsXformStack ? 1 : 0; i < baseOrder.size(); ++i) {
+                order.push_back(baseOrder[i]);
+            }
+            prims.push_back(preview);
+            orders.push_back(order);
+        }
+        if (prims.empty()) {
+            return false;
+        }
+        _previewRequested = requested;
+        PXR_NS::SdfChangeBlock block;
+        for (std::size_t i = 0; i < prims.size(); ++i) {
+            const PXR_NS::SdfPrimSpecHandle spec = PXR_NS::SdfCreatePrimInLayer(_root, prims[i].path);
+            if (!spec) {
+                continue;
+            }
+            PXR_NS::SdfAttributeSpecHandle orderSpec = PXR_NS::SdfAttributeSpec::New(spec, PXR_NS::UsdGeomTokens->xformOpOrder.GetString(), PXR_NS::SdfValueTypeNames->TokenArray, PXR_NS::SdfVariabilityUniform);
+            prims[i].op = PXR_NS::SdfAttributeSpec::New(spec, kOpName.GetString(), PXR_NS::SdfValueTypeNames->Matrix4d);
+            if (!orderSpec || !prims[i].op) {
+                continue;
+            }
+            orderSpec->SetDefaultValue(PXR_NS::VtValue(orders[i]));
+            _preview.push_back(prims[i]);
+        }
+    }
+
+    PXR_NS::SdfChangeBlock block;
+    for (PreviewPrim& preview : _preview) {
+        for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
+            if (delta.first != preview.path.GetString()) {
+                continue;
+            }
+            // The op goes outside the prim's own ops: W * delta = local * op * parentToWorld.
+            const PXR_NS::GfMatrix4d op = preview.resetsXformStack ? delta.second : preview.parentToWorld * delta.second * preview.worldToParent;
+            if (preview.op) {
+                preview.op->SetDefaultValue(PXR_NS::VtValue(op));
+            }
+            break;
+        }
+    }
+
+    return !_preview.empty();
+} // SceneStage::setPreviewTransforms
+
+void
+SceneStage::clearPreviewTransforms()
+{
+    _previewRequested.clear();
+    if (_preview.empty() || !_root) {
+        _preview.clear();
+
+        return;
+    }
+    _preview.clear();
+    _root->SetRootPrims(PXR_NS::SdfPrimSpecHandleVector());
+}
+
+bool
+SceneStage::hasPreviewTransforms() const
+{
+    return !_preview.empty();
+}
+
 NATRON_NAMESPACE_EXIT

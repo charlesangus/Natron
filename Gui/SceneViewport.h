@@ -55,6 +55,8 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 class UndoHistory;
+class SceneTransformTarget;
+struct SceneTransformDrag;
 
 /**
  * @brief Draws a scene with Storm (UsdImagingGLEngine on HgiGL) into a framebuffer of the GL
@@ -151,9 +153,11 @@ public:
     /**
      * @brief Syncs the renderer's stage to payload, under the viewer lock, on the calling thread.
      * Shows nothing for an empty payload. Returns false with *error set if USD is unusable.
-     * MT-safe; does not move the camera.
+     * MT-safe; does not move the camera. serial, when not 0, is the request the payload answers:
+     * a request later than clearTransformPreviewAfter()'s clears the drag preview in the same
+     * step, so the preview gives way to the scene that has the drag written.
      **/
-    bool syncScene(const ScenePayload& payload, std::string* error);
+    bool syncScene(const ScenePayload& payload, std::string* error, U64 serial = 0);
 
     /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
@@ -307,26 +311,61 @@ public:
     const std::vector<std::string>& getSelectedPrims() const;
 
     // The values of an op whose handles the viewer draws over the scene: a translate, rotate
-    // (degrees, in rotateOrder, a SceneRotateOrderEnum) and pivot, authored as opName on primPath.
+    // (degrees, in rotateOrder, a SceneRotateOrderEnum), scale and pivot, authored as opName on
+    // primPath and on each of the other targets, whose prims a drag previews too.
     struct TransformHandles {
+        struct Target {
+            std::string primPath;
+            std::string opName;
+        };
+
         std::string primPath;
         std::string opName;
         double translate[3] = { 0., 0., 0. };
         double rotate[3] = { 0., 0., 0. };
+        double scale[3] = { 1., 1., 1. };
+        double uniformScale = 1.;
         double pivot[3] = { 0., 0., 0. };
         int rotateOrder = 0;
+        std::vector<Target> otherTargets;
     };
 
     /**
      * @brief Draws the handles of an op over the scene, at the shown time, until
      * clearTransformHandles(). Nothing is drawn while the shown stage has no such op on the prim.
+     * The transform widget on the selection, when its tool shows handles, is drawn instead.
      **/
     void setTransformHandles(const TransformHandles& handles);
 
     void clearTransformHandles();
 
-    // Whether the shown stage has the op of the handles set, so that they are drawn.
+    /**
+     * @brief The transform widget's tool, frame and origin (SceneTransform::ToolEnum, SpaceEnum
+     * and PivotEnum): the handles of the tool on the selected prims.
+     **/
+    void setTransformTool(int tool);
+
+    int getTransformTool() const;
+
+    void setTransformSpace(int space);
+
+    int getTransformSpace() const;
+
+    void setTransformPivot(int pivot);
+
+    int getTransformPivot() const;
+
+    // Whether handles are drawn: the transform widget's on the selection or the op's.
     bool hasTransformHandles() const;
+
+    // Whether the handles drawn are the transform widget's on the selection.
+    bool hasSelectionHandles() const;
+
+    /**
+     * @brief The handles drawn, as pixels to aim at in a width x height view, and the frame they
+     * point along: origin then the three axes, 12 values. False when none are drawn.
+     **/
+    bool getDrawnTransformHandles(int width, int height, std::vector<int>* handles, std::vector<double>* pixels, std::vector<double>* frame) const;
 
     // The handle (a SceneGizmo handle) under the pixel (x, y) of a width x height view, or -1.
     int hitTestTransformHandles(double x, double y, int width, int height) const;
@@ -341,9 +380,13 @@ public:
 
     /**
      * @brief Starts dragging handle from the pixel (x, y): later changes are measured against the
-     * handles as they are now. False if the handle is not drawn.
+     * handles as they are now, and a drag of the selection's widget moves the prims it has now.
+     * Clears any drag preview first. False if the handle is not drawn.
      **/
     bool beginTransformDrag(int handle, double x, double y, int width, int height);
+
+    // Whether the drag under way moves the selection, rather than an op's values.
+    bool isSelectionTransformDrag() const;
 
     /**
      * @brief The change a drag to the pixel (x, y) makes since beginTransformDrag(): the amount
@@ -352,7 +395,28 @@ public:
      **/
     bool getTransformDragChange(double x, double y, int width, int height, double* change) const;
 
+    /**
+     * @brief Draws the prims the drag under way moves as a change of change would leave them,
+     * without editing any node: a transient transform on the renderer's own layer. Returns
+     * whether any prim is drawn moved.
+     **/
+    bool previewTransformDrag(double change);
+
+    /**
+     * @brief The selection drag under way, for a change, as a target writes it. False if the drag
+     * under way does not move the selection.
+     **/
+    bool getTransformDrag(double change, double frame, SceneTransformDrag* drag) const;
+
     void endTransformDrag();
+
+    // Drops the drag preview now.
+    void clearTransformPreview();
+
+    // Drops the drag preview when a scene requested after serial is synced.
+    void clearTransformPreviewAfter(U64 serial);
+
+    bool hasTransformPreview() const;
 
     /**
      * @brief Draws into the framebuffer fbo of the current context, width x height pixels, and
@@ -472,11 +536,31 @@ public:
     QStringList getSelection() const;
 
     /**
-     * @brief Sets the function that names the node whose transform handles are drawn: a
-     * USDEditTransform with its settings panel open, or null for none. Dragging a handle sets the
-     * node's Translate, Rotate or Scale, one undoable edit per drag.
+     * @brief Sets the function that names the node whose transform handles are drawn while the
+     * transform widget shows none on the selection: a USDEditTransform with its settings panel
+     * open, or null for none. Dragging a handle sets the node's Translate, Rotate or Scale once,
+     * at the release, as one undoable edit.
      **/
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
+
+    /**
+     * @brief Where drags of the transform widget on the selection are written. Without one, or
+     * while the natronSceneTransformRecordOnly property is true, they are only recorded into the
+     * natronSceneTransformDelta property.
+     **/
+    void setTransformTarget(const std::shared_ptr<SceneTransformTarget>& target);
+
+    // The transform widget's tool, frame and origin (SceneTransform::ToolEnum, SpaceEnum, PivotEnum).
+    void setTransformTool(int tool);
+
+    int getTransformTool() const;
+
+    // Translate, rotate, scale and back to translate; from the select tool, translate.
+    void cycleTransformTool();
+
+    void setTransformSpace(int space);
+
+    void setTransformPivot(int pivot);
 
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
@@ -554,6 +638,17 @@ private:
     void endHandleDrag();
 
     void highlightHandleAt(const QPoint& pos);
+
+    // Writes the change of the op handle drag under way to its node, as one undo step.
+    bool commitOpHandleDrag(double change);
+
+    /**
+     * @brief Mirrors the handles drawn into natronSceneTransformHandles (handle, x, y in widget
+     * coordinates) and natronSceneTransformFrame (origin and axes). publishState() mirrors the
+     * widget's tool, frame and origin into natronSceneTransformTool, natronSceneTransformSpace and
+     * natronSceneTransformPivot.
+     **/
+    void publishTransformState();
 
     // Forgets the mouse gesture under way.
     void clearGesture();

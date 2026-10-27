@@ -78,6 +78,16 @@ public:
         eViewer3DNavigationCustom
     };
 
+    // Where a drag of the 3D viewer's transform widget writes its change.
+    enum Viewer3DTransformTargetEnum {
+        // The knobs of the node that made the prim, else an edit node.
+        eViewer3DTransformTargetOwner = 0,
+        // The USDEditTransform whose panel is open, else a new one.
+        eViewer3DTransformTargetOpenEdit,
+        // A USDEditTransform after the viewed node, reused while the selection stays the same.
+        eViewer3DTransformTargetAlwaysEdit
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -340,6 +350,9 @@ public:
     void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
 
     bool isViewer3DNavigationKnob(const KnobI* knob) const;
+
+    Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
+    void setViewer3DTransformTarget(Viewer3DTransformTargetEnum target);
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
     ///////////////////////////////////////////////////////
@@ -639,6 +652,7 @@ private:
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
     KnobChoicePtr _viewer3DNavigation;
+    KnobChoicePtr _viewer3DTransformTarget;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

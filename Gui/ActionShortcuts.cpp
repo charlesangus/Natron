@@ -199,6 +199,13 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DUnshaded);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DShowGrid);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DShowGuides);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DSelectTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DTranslateTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DRotateTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DScaleTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DCycleTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DToggleSpace);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DTogglePivot);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);

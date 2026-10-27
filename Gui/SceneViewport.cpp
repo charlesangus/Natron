@@ -114,6 +114,8 @@
 #include "Gui/Menu.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
+#include "Gui/SceneTransformTarget.h"
+#include "Gui/SceneTransformWidget.h"
 #include "Gui/UndoHistory.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -303,10 +305,26 @@ struct SceneViewportRenderer::Implementation {
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
     TransformHandles handles;
+    SceneTransform::ToolEnum transformTool = SceneTransform::eToolSelect;
+    SceneTransform::SpaceEnum transformSpace = SceneTransform::eSpaceWorld;
+    SceneTransform::PivotEnum transformPivot = SceneTransform::ePivotSelectionCentre;
     int highlightedHandle = SceneGizmo::kNoHandle;
     int dragHandle = SceneGizmo::kNoHandle;
     SceneGizmo::Frame dragFrame;
     GfVec2d dragPressPixel;
+    // A drag of the selection's widget moves the prims as they were at the press; a drag of an
+    // op's handles changes the op's values, the op's result placed by dragOpSpace and each other
+    // target's by its own space.
+    bool dragSelection = false;
+    std::vector<SceneTransformPrim> dragPrims;
+    GfMatrix4d dragOpSpace = GfMatrix4d(1.);
+    std::vector<std::pair<std::string, GfMatrix4d>> dragOpTargets;
+    double dragChange = 0.;
+    bool dragChanged = false;
+    // The serial after which a synced scene has the drag written; kNoPreviewClear while none is
+    // awaited. Set on the main thread, read by sync.
+    static const U64 kNoPreviewClear = ~U64(0);
+    std::atomic<U64> previewClearAfter;
 
     Implementation()
         : shown(false)
@@ -315,6 +333,7 @@ struct SceneViewportRenderer::Implementation {
         , timeCodesPerSecond(24.)
         , frame(0.)
         , framesPerSecond(24.)
+        , previewClearAfter(kNoPreviewClear)
     {
         freeCamera.azimuth = 35.;
         freeCamera.elevation = 25.;
@@ -678,28 +697,144 @@ struct SceneViewportRenderer::Implementation {
         return SceneGizmo::View(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
     }
 
-    // Where the handles sit at the shown time. False if they are not drawn. Needs stageMutex.
-    bool computeHandleFrame(SceneGizmo::Frame* frame) const
+    // The selected prims the transform widget moves. Needs stageMutex.
+    std::vector<UsdPrim> transformablePrims() const
     {
-        const UsdStageRefPtr stage = currentStage();
-        if (!hasHandles || !stage || !SdfPath::IsValidPathString(handles.primPath)) {
+        return SceneTransformWidget::getTransformablePrims(currentStage(), selected);
+    }
+
+    // The widget on the selection, while its tool shows handles. Needs stageMutex.
+    bool computeSelectionFrame(SceneGizmo::Frame* frame) const
+    {
+        if ((transformTool == SceneTransform::eToolSelect) || !currentStage()) {
             return false;
         }
-        const SdfPath path(handles.primPath);
+
+        return SceneTransformWidget::computeFrame(transformablePrims(), timeCode(), transformSpace, transformPivot, frame);
+    }
+
+    // The op's values after a drag by change of handle.
+    void changeOpValues(int handle,
+                        double change,
+                        GfVec3d* translate,
+                        GfVec3d* rotate,
+                        GfVec3d* scale) const
+    {
+        *translate = GfVec3d(handles.translate[0], handles.translate[1], handles.translate[2]);
+        *rotate = GfVec3d(handles.rotate[0], handles.rotate[1], handles.rotate[2]);
+        *scale = GfVec3d(handles.scale[0], handles.scale[1], handles.scale[2]);
+        if ((handle < 0) || (handle >= SceneGizmo::kNumHandles)) {
+            return;
+        }
+        const int axis = SceneGizmo::getHandleAxis(handle);
+        switch (SceneGizmo::getHandleKind(handle)) {
+        case SceneGizmo::eHandleKindTranslate:
+            (*translate)[axis] += change;
+            break;
+        case SceneGizmo::eHandleKindRotate:
+            (*rotate)[axis] += change;
+            break;
+        case SceneGizmo::eHandleKindScale:
+            (*scale)[axis] *= change;
+            break;
+        }
+    }
+
+    GfMatrix4d composeOp(const GfVec3d& translate,
+                         const GfVec3d& rotate,
+                         const GfVec3d& scale) const
+    {
+        return SceneNodeAuthoring::composeTransformMatrix(translate, rotate, scale * handles.uniformScale,
+                                                          GfVec3d(handles.pivot[0], handles.pivot[1], handles.pivot[2]),
+                                                          (SceneRotateOrderEnum)handles.rotateOrder);
+    }
+
+    // The space placing the result of opName on primPath. Needs stageMutex.
+    bool computeTargetSpace(const std::string& primPath,
+                            const std::string& opName,
+                            GfMatrix4d* space) const
+    {
+        const UsdStageRefPtr stage = currentStage();
+        if (!stage || !SdfPath::IsValidPathString(primPath)) {
+            return false;
+        }
+        const SdfPath path(primPath);
         if (!path.IsAbsolutePath() || !path.IsPrimPath()) {
             return false;
         }
-        GfMatrix4d space;
-        if (!SceneGizmo::computeOpSpace(stage->GetPrimAtPath(path), handles.opName, timeCode(), &space)) {
+
+        return SceneGizmo::computeOpSpace(stage->GetPrimAtPath(path), opName, timeCode(), space);
+    }
+
+    // Where an op's handles sit at the shown time, moved by a drag of them under way. Needs
+    // stageMutex.
+    bool computeOpFrame(SceneGizmo::Frame* frame) const
+    {
+        if (!hasHandles) {
             return false;
         }
-        *frame = SceneGizmo::computeFrame(space,
-                                          GfVec3d(handles.translate[0], handles.translate[1], handles.translate[2]),
-                                          GfVec3d(handles.rotate[0], handles.rotate[1], handles.rotate[2]),
+        const bool dragged = (dragHandle != SceneGizmo::kNoHandle) && !dragSelection;
+        GfMatrix4d space = dragOpSpace;
+        if (!dragged && !computeTargetSpace(handles.primPath, handles.opName, &space)) {
+            return false;
+        }
+        GfVec3d translate, rotate, scale;
+        changeOpValues(dragged ? dragHandle : SceneGizmo::kNoHandle, dragChange, &translate, &rotate, &scale);
+        *frame = SceneGizmo::computeFrame(space, translate, rotate,
                                           GfVec3d(handles.pivot[0], handles.pivot[1], handles.pivot[2]),
                                           (SceneRotateOrderEnum)handles.rotateOrder);
 
         return true;
+    }
+
+    /**
+     * @brief Where the handles drawn sit at the shown time: the selection's widget, else an op's.
+     * *selection tells which. False if none are drawn. Needs stageMutex.
+     **/
+    bool computeHandleFrame(SceneGizmo::Frame* frame,
+                            bool* selection) const
+    {
+        if (computeSelectionFrame(frame)) {
+            *selection = true;
+
+            return true;
+        }
+        *selection = false;
+
+        return computeOpFrame(frame);
+    }
+
+    bool computeHandleFrame(SceneGizmo::Frame* frame) const
+    {
+        bool selection = false;
+
+        return computeHandleFrame(frame, &selection);
+    }
+
+    // The handles drawn and picked, length world units long. Needs stageMutex.
+    std::vector<SceneGizmo::HandleShape> buildDrawnHandles(const SceneGizmo::Frame& frame,
+                                                           bool selection,
+                                                           double length) const
+    {
+        std::vector<SceneGizmo::HandleShape> shapes = SceneGizmo::buildHandles(frame, length);
+
+        return selection ? SceneTransformWidget::filterHandles(shapes, transformTool) : shapes;
+    }
+
+    bool isDrawnHandle(int handle,
+                       bool selection) const
+    {
+        return selection ? SceneTransformWidget::isToolHandle(transformTool, handle) : ((handle >= 0) && (handle < SceneGizmo::kNumHandles));
+    }
+
+    // Drops the drag preview. Needs stageMutex.
+    void clearPreviewLocked()
+    {
+        previewClearAfter = kNoPreviewClear;
+        if (sceneStage && sceneStage->hasPreviewTransforms()) {
+            sceneStage->clearPreviewTransforms();
+            guidesValid = false;
+        }
     }
 
     // The handles in X red, Y green and Z blue, the highlighted or dragged one yellow, drawn over
@@ -709,8 +844,9 @@ struct SceneViewportRenderer::Implementation {
                               int height) const
     {
         SceneGizmo::Frame frame;
+        bool selection = false;
 
-        if (!computeHandleFrame(&frame)) {
+        if (!computeHandleFrame(&frame, &selection)) {
             return;
         }
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
@@ -736,7 +872,22 @@ struct SceneViewportRenderer::Implementation {
         glEnable(GL_LINE_SMOOTH);
 
         static const float axisColours[3][3] = { { 0.9f, 0.25f, 0.25f }, { 0.3f, 0.8f, 0.3f }, { 0.3f, 0.45f, 0.95f } };
-        std::vector<SceneGizmo::HandleShape> shapes = SceneGizmo::buildHandles(frame, length);
+        if (selection && (transformTool == SceneTransform::eToolScale)) {
+            // Thin stems to the scale boxes, which are not handles themselves.
+            glLineWidth(1.f);
+            for (const SceneGizmo::HandleShape& shape : SceneGizmo::buildHandles(frame, length)) {
+                if (SceneGizmo::getHandleKind(shape.handle) != SceneGizmo::eHandleKindTranslate) {
+                    continue;
+                }
+                const float* colour = axisColours[SceneGizmo::getHandleAxis(shape.handle)];
+                glColor4f(colour[0], colour[1], colour[2], 0.6f);
+                glBegin(GL_LINES);
+                glVertex3d(frame.origin[0], frame.origin[1], frame.origin[2]);
+                glVertex3d(shape.points[1][0], shape.points[1][1], shape.points[1][2]);
+                glEnd();
+            }
+        }
+        std::vector<SceneGizmo::HandleShape> shapes = buildDrawnHandles(frame, selection, length);
         // Rings under arrows under boxes, as hitTest() favours the boxes.
         std::stable_sort(shapes.begin(), shapes.end(), [](const SceneGizmo::HandleShape& a, const SceneGizmo::HandleShape& b) {
             static const int layer[3] = { 1, 0, 2 }; // translate, rotate, scale
@@ -948,7 +1099,8 @@ SceneViewportRenderer::~SceneViewportRenderer()
 
 bool
 SceneViewportRenderer::syncScene(const ScenePayload& payload,
-                                 std::string* error)
+                                 std::string* error,
+                                 U64 serial)
 {
     std::string runtimeError;
 
@@ -974,6 +1126,10 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         }
 
         return false;
+    }
+    if ((serial != 0) && (serial > _imp->previewClearAfter.load())) {
+        // In the same step as the sync, so no frame shows the scene without the drag.
+        _imp->clearPreviewLocked();
     }
     _imp->sceneStage->sync(payload);
     const SceneMetadata& metadata = payload.getMetadata();
@@ -1500,8 +1656,46 @@ void
 SceneViewportRenderer::clearTransformHandles()
 {
     _imp->hasHandles = false;
-    _imp->highlightedHandle = SceneGizmo::kNoHandle;
-    _imp->dragHandle = SceneGizmo::kNoHandle;
+    if (!_imp->dragSelection) {
+        _imp->highlightedHandle = SceneGizmo::kNoHandle;
+        _imp->dragHandle = SceneGizmo::kNoHandle;
+    }
+}
+
+void
+SceneViewportRenderer::setTransformTool(int tool)
+{
+    _imp->transformTool = (SceneTransform::ToolEnum)std::max(0, std::min(tool, (int)SceneTransform::eToolScale));
+}
+
+int
+SceneViewportRenderer::getTransformTool() const
+{
+    return _imp->transformTool;
+}
+
+void
+SceneViewportRenderer::setTransformSpace(int space)
+{
+    _imp->transformSpace = (space == SceneTransform::eSpaceLocal) ? SceneTransform::eSpaceLocal : SceneTransform::eSpaceWorld;
+}
+
+int
+SceneViewportRenderer::getTransformSpace() const
+{
+    return _imp->transformSpace;
+}
+
+void
+SceneViewportRenderer::setTransformPivot(int pivot)
+{
+    _imp->transformPivot = (pivot == SceneTransform::ePivotCurrentPrim) ? SceneTransform::ePivotCurrentPrim : SceneTransform::ePivotSelectionCentre;
+}
+
+int
+SceneViewportRenderer::getTransformPivot() const
+{
+    return _imp->transformPivot;
 }
 
 bool
@@ -1513,6 +1707,51 @@ SceneViewportRenderer::hasTransformHandles() const
     return _imp->computeHandleFrame(&frame);
 }
 
+bool
+SceneViewportRenderer::hasSelectionHandles() const
+{
+    SceneGizmo::Frame frame;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    return _imp->computeSelectionFrame(&frame);
+}
+
+bool
+SceneViewportRenderer::getDrawnTransformHandles(int width,
+                                                int height,
+                                                std::vector<int>* handles,
+                                                std::vector<double>* pixels,
+                                                std::vector<double>* frameValues) const
+{
+    SceneGizmo::Frame frame;
+    bool selection = false;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    handles->clear();
+    pixels->clear();
+    frameValues->clear();
+    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame, &selection)) {
+        return false;
+    }
+    const SceneGizmo::View view = _imp->makeView(width, height);
+    for (int handle = 0; handle < SceneGizmo::kNumHandles; ++handle) {
+        GfVec2d pixel;
+        if (_imp->isDrawnHandle(handle, selection) && SceneGizmo::getHandlePixel(view, frame, handle, &pixel)) {
+            handles->push_back(handle);
+            pixels->push_back(pixel[0]);
+            pixels->push_back(pixel[1]);
+        }
+    }
+    const GfVec3d* vectors[4] = { &frame.origin, &frame.axes[0], &frame.axes[1], &frame.axes[2] };
+    for (const GfVec3d* v : vectors) {
+        for (int i = 0; i < 3; ++i) {
+            frameValues->push_back((*v)[i]);
+        }
+    }
+
+    return true;
+} // SceneViewportRenderer::getDrawnTransformHandles
+
 int
 SceneViewportRenderer::hitTestTransformHandles(double x,
                                                double y,
@@ -1520,14 +1759,15 @@ SceneViewportRenderer::hitTestTransformHandles(double x,
                                                int height) const
 {
     SceneGizmo::Frame frame;
+    bool selection = false;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
 
-    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame)) {
+    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame, &selection)) {
         return SceneGizmo::kNoHandle;
     }
     const SceneGizmo::View view = _imp->makeView(width, height);
 
-    return SceneGizmo::hitTest(view, SceneGizmo::buildHandles(frame, SceneGizmo::getHandleLength(view, frame)), GfVec2d(x, y));
+    return SceneGizmo::hitTest(view, _imp->buildDrawnHandles(frame, selection, SceneGizmo::getHandleLength(view, frame)), GfVec2d(x, y));
 }
 
 void
@@ -1550,9 +1790,10 @@ SceneViewportRenderer::getTransformHandlePixel(int handle,
                                                double* y) const
 {
     SceneGizmo::Frame frame;
+    bool selection = false;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
 
-    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame)) {
+    if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame, &selection) || !_imp->isDrawnHandle(handle, selection)) {
         return false;
     }
     GfVec2d pixel;
@@ -1573,16 +1814,52 @@ SceneViewportRenderer::beginTransformDrag(int handle,
                                           int /*height*/)
 {
     SceneGizmo::Frame frame;
+    bool selection = false;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
 
-    if ((handle < 0) || (handle >= SceneGizmo::kNumHandles) || !_imp->computeHandleFrame(&frame)) {
+    // A preview still waiting for its scene goes now: the new drag measures from the scene shown.
+    _imp->clearPreviewLocked();
+    _imp->dragHandle = SceneGizmo::kNoHandle;
+    _imp->dragSelection = false;
+    if (!_imp->computeHandleFrame(&frame, &selection) || !_imp->isDrawnHandle(handle, selection)) {
         return false;
     }
+    _imp->dragPrims.clear();
+    _imp->dragOpTargets.clear();
+    if (selection) {
+        const double time = _imp->timeCode();
+        UsdGeomXformCache xforms((UsdTimeCode(time)));
+        for (const UsdPrim& prim : _imp->transformablePrims()) {
+            SceneTransformPrim described;
+            SceneTransformWidget::describePrim(prim, &xforms, time, &described);
+            _imp->dragPrims.push_back(described);
+        }
+    } else {
+        if (!_imp->computeTargetSpace(_imp->handles.primPath, _imp->handles.opName, &_imp->dragOpSpace)) {
+            return false;
+        }
+        _imp->dragOpTargets.push_back(std::make_pair(_imp->handles.primPath, _imp->dragOpSpace));
+        for (const TransformHandles::Target& target : _imp->handles.otherTargets) {
+            GfMatrix4d space;
+            if ((target.primPath != _imp->handles.primPath) && _imp->computeTargetSpace(target.primPath, target.opName, &space)) {
+                _imp->dragOpTargets.push_back(std::make_pair(target.primPath, space));
+            }
+        }
+    }
     _imp->dragHandle = handle;
+    _imp->dragSelection = selection;
     _imp->dragFrame = frame;
     _imp->dragPressPixel = GfVec2d(x, y);
+    _imp->dragChange = 0.;
+    _imp->dragChanged = false;
 
     return true;
+} // SceneViewportRenderer::beginTransformDrag
+
+bool
+SceneViewportRenderer::isSelectionTransformDrag() const
+{
+    return (_imp->dragHandle != SceneGizmo::kNoHandle) && _imp->dragSelection;
 }
 
 bool
@@ -1600,10 +1877,91 @@ SceneViewportRenderer::getTransformDragChange(double x,
     return SceneGizmo::computeDragChange(_imp->makeView(width, height), _imp->dragFrame, _imp->dragHandle, _imp->dragPressPixel, GfVec2d(x, y), change);
 }
 
+bool
+SceneViewportRenderer::previewTransformDrag(double change)
+{
+    if (_imp->dragHandle == SceneGizmo::kNoHandle) {
+        return false;
+    }
+    std::vector<std::pair<std::string, GfMatrix4d>> deltas;
+    if (_imp->dragSelection) {
+        const GfMatrix4d delta = SceneTransformWidget::computeDelta(_imp->dragFrame, _imp->dragHandle, change);
+        for (const SceneTransformPrim& prim : _imp->dragPrims) {
+            deltas.push_back(std::make_pair(prim.path, delta));
+        }
+    } else {
+        // W = inner * op * space, so W' = W * space^-1 op^-1 op' space.
+        GfVec3d translate, rotate, scale;
+        _imp->changeOpValues(SceneGizmo::kNoHandle, 0., &translate, &rotate, &scale);
+        const GfMatrix4d opInverse = _imp->composeOp(translate, rotate, scale).GetInverse();
+        _imp->changeOpValues(_imp->dragHandle, change, &translate, &rotate, &scale);
+        const GfMatrix4d changed = _imp->composeOp(translate, rotate, scale);
+        for (const std::pair<std::string, GfMatrix4d>& target : _imp->dragOpTargets) {
+            deltas.push_back(std::make_pair(target.first, target.second.GetInverse() * opInverse * changed * target.second));
+        }
+    }
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    _imp->dragChange = change;
+    _imp->dragChanged = true;
+    if (!_imp->sceneStage || deltas.empty()) {
+        return false;
+    }
+    _imp->guidesValid = false;
+
+    return _imp->sceneStage->setPreviewTransforms(deltas, _imp->timeCode());
+} // SceneViewportRenderer::previewTransformDrag
+
+bool
+SceneViewportRenderer::getTransformDrag(double change,
+                                        double frame,
+                                        SceneTransformDrag* drag) const
+{
+    if ((_imp->dragHandle == SceneGizmo::kNoHandle) || !_imp->dragSelection || _imp->dragPrims.empty()) {
+        return false;
+    }
+    drag->prims = _imp->dragPrims;
+    SceneTransformWidget::storeMatrix(SceneTransformWidget::computeDelta(_imp->dragFrame, _imp->dragHandle, change), drag->delta);
+    drag->tool = _imp->transformTool;
+    drag->frame = frame;
+    for (int i = 0; i < 3; ++i) {
+        drag->pivot[i] = _imp->dragFrame.origin[i];
+    }
+
+    return true;
+}
+
 void
 SceneViewportRenderer::endTransformDrag()
 {
     _imp->dragHandle = SceneGizmo::kNoHandle;
+    _imp->dragSelection = false;
+    _imp->dragPrims.clear();
+    _imp->dragOpTargets.clear();
+    _imp->dragChange = 0.;
+    _imp->dragChanged = false;
+}
+
+void
+SceneViewportRenderer::clearTransformPreview()
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    _imp->clearPreviewLocked();
+}
+
+void
+SceneViewportRenderer::clearTransformPreviewAfter(U64 serial)
+{
+    _imp->previewClearAfter = serial;
+}
+
+bool
+SceneViewportRenderer::hasTransformPreview() const
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    return _imp->sceneStage && _imp->sceneStage->hasPreviewTransforms();
 }
 
 bool
@@ -1859,6 +2217,13 @@ const DefaultKeyBinding kDefaultKeyBindings[] = {
     { kShortcutIDActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6 },
     { kShortcutIDActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G },
     { kShortcutIDActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G },
+    { kShortcutIDActionViewer3DSelectTool, Qt::NoModifier, Qt::Key_Q },
+    { kShortcutIDActionViewer3DSelectTool, Qt::NoModifier, Qt::Key_Escape },
+    { kShortcutIDActionViewer3DTranslateTool, Qt::NoModifier, Qt::Key_T },
+    { kShortcutIDActionViewer3DRotateTool, Qt::NoModifier, Qt::Key_R },
+    { kShortcutIDActionViewer3DScaleTool, Qt::NoModifier, Qt::Key_E },
+    { kShortcutIDActionViewer3DCycleTool, Qt::NoModifier, Qt::Key_Y },
+    { kShortcutIDActionViewer3DToggleSpace, Qt::NoModifier, Qt::Key_D },
 };
 
 const DefaultKeyBinding*
@@ -1881,10 +2246,65 @@ matchesKeyBinding(const char* actionID,
     if (GuiApplicationManager* manager = guiManager()) {
         return manager->matchesKeybind(kShortcutGroupViewer3D, actionID, modifiers, key);
     }
-    const DefaultKeyBinding* binding = defaultKeyBinding(actionID);
     const Qt::KeyboardModifiers relevant = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier;
+    for (const DefaultKeyBinding& binding : kDefaultKeyBindings) {
+        if ((std::string(binding.actionID) == actionID) && (binding.key == key) && ((modifiers & relevant) == binding.modifiers)) {
+            return true;
+        }
+    }
 
-    return binding && (binding->key == key) && ((modifiers & relevant) == binding->modifiers);
+    return false;
+}
+
+// The transform widget's tools, their key actions, script names and menu labels.
+struct TransformToolEntry {
+    SceneTransform::ToolEnum tool;
+    const char* actionID;
+    const char* name;
+    const char* label;
+};
+
+const TransformToolEntry kTransformTools[] = {
+    { SceneTransform::eToolSelect, kShortcutIDActionViewer3DSelectTool, "select", kShortcutDescActionViewer3DSelectTool },
+    { SceneTransform::eToolTranslate, kShortcutIDActionViewer3DTranslateTool, "translate", kShortcutDescActionViewer3DTranslateTool },
+    { SceneTransform::eToolRotate, kShortcutIDActionViewer3DRotateTool, "rotate", kShortcutDescActionViewer3DRotateTool },
+    { SceneTransform::eToolScale, kShortcutIDActionViewer3DScaleTool, "scale", kShortcutDescActionViewer3DScaleTool },
+};
+
+// The tool a key selects, -1 for none.
+int
+transformToolForKey(Qt::KeyboardModifiers modifiers,
+                    int key)
+{
+    for (const TransformToolEntry& entry : kTransformTools) {
+        if (matchesKeyBinding(entry.actionID, modifiers, key)) {
+            return entry.tool;
+        }
+    }
+
+    return -1;
+}
+
+// The script name of a tool, as the natronSceneTransformTool property reports it.
+const char*
+transformToolName(int tool)
+{
+    for (const TransformToolEntry& entry : kTransformTools) {
+        if (entry.tool == tool) {
+            return entry.name;
+        }
+    }
+
+    return "";
+}
+
+// Whether a key is one of the transform widget's.
+bool
+isTransformKey(Qt::KeyboardModifiers modifiers,
+               int key)
+{
+    return (transformToolForKey(modifiers, key) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DCycleTool, modifiers, key)
+        || matchesKeyBinding(kShortcutIDActionViewer3DToggleSpace, modifiers, key) || matchesKeyBinding(kShortcutIDActionViewer3DTogglePivot, modifiers, key);
 }
 
 // Whether a mouse binding of the 3D viewer needs Space held.
@@ -2193,12 +2613,18 @@ struct SceneViewport::Implementation {
     double frame = 0.;
 
     std::function<NodePtr()> transformNodeProvider;
-    // The drag of a transform handle under way: its knob, the handle, the value the knob had at
-    // the press, and the gesture that folds the drag's edits into one undo step.
-    KnobDoubleWPtr handleKnob;
+    // The drag of a transform handle under way: the handle, the node whose op it moves (null
+    // for the widget on the selection), and the last change it made. The renderer draws the
+    // change as a preview; the release writes it once.
     int handle = SceneGizmo::kNoHandle;
-    double handlePressValue = 0.;
-    UndoGesture handleGesture;
+    NodeWPtr handleNode;
+    double handleChange = 0.;
+    bool handleChanged = false;
+    std::shared_ptr<SceneTransformTarget> transformTarget;
+    SceneTransformRecorder transformRecorder;
+    // Drops a preview whose written drag never reaches the scene shown, as when the node written
+    // is not in the viewed branch.
+    QTimer* previewTimer = nullptr;
 
     std::function<NodePtr()> viewedNodeProvider;
     std::function<NodePtr(const std::string&)> cameraNodeProvider;
@@ -2306,6 +2732,15 @@ SceneViewport::SceneViewport(QWidget* parent)
             endCameraLock();
         }
     });
+    _imp->previewTimer = new QTimer(this);
+    _imp->previewTimer->setSingleShot(true);
+    _imp->previewTimer->setInterval(3000);
+    QObject::connect(_imp->previewTimer, &QTimer::timeout, this, [this]() {
+        if (_imp->handle == SceneGizmo::kNoHandle) {
+            _imp->renderer.clearTransformPreview();
+            update();
+        }
+    });
 
     Implementation* imp = _imp.get();
     _imp->worker = std::thread([this, imp]() {
@@ -2324,7 +2759,7 @@ SceneViewport::SceneViewport(QWidget* parent)
                 serial = imp->pendingSerial;
             }
             std::string error;
-            const bool ok = imp->renderer.syncScene(payload, &error);
+            const bool ok = imp->renderer.syncScene(payload, &error, serial);
             const QString qerror = QString::fromStdString(error);
             // Dropped by Qt if the widget is gone by then.
             QMetaObject::invokeMethod(this, [this, serial, ok, qerror]() { onSynced(serial, ok, qerror); }, Qt::QueuedConnection);
@@ -2413,6 +2848,9 @@ SceneViewport::setFrame(double frame,
         _imp->lockedMoveAwaitsSync = false;
         _imp->renderer.clearLookThroughTransform();
     }
+    if ((frame != _imp->frame) && (_imp->handle == SceneGizmo::kNoHandle)) {
+        _imp->renderer.clearTransformPreview();
+    }
     _imp->frame = frame;
     _imp->renderer.setFrame(frame, framesPerSecond);
     update();
@@ -2463,6 +2901,30 @@ SceneViewport::publishState()
     setProperty("natronSceneShowGuides", _imp->renderer.getShowGuides());
     setProperty("natronScenePurposes", QVariantList { _imp->renderer.getShowProxy(), _imp->renderer.getShowRender(), _imp->renderer.getShowGuidePurpose() });
     setProperty("natronSceneLighting", QString::fromUtf8(lightingModeName(_imp->renderer.getLightingMode())));
+    // The transform widget's tool, frame and origin, by script name.
+    setProperty("natronSceneTransformTool", QString::fromUtf8(transformToolName(_imp->renderer.getTransformTool())));
+    setProperty("natronSceneTransformSpace", QString::fromUtf8((_imp->renderer.getTransformSpace() == SceneTransform::eSpaceLocal) ? "local" : "world"));
+    setProperty("natronSceneTransformPivot", QString::fromUtf8((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? "currentPrim" : "selectionCentre"));
+}
+
+// Takes the viewer lock: only from a paint that found the stage idle.
+void
+SceneViewport::publishTransformState()
+{
+    const qreal dpr = devicePixelRatio();
+    std::vector<int> handles;
+    std::vector<double> pixels, frame;
+    _imp->renderer.getDrawnTransformHandles(int(width() * dpr), int(height() * dpr), &handles, &pixels, &frame);
+    QVariantList drawn;
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+        drawn.push_back(QVariantList { handles[i], pixels[2 * i] / dpr, pixels[2 * i + 1] / dpr });
+    }
+    setProperty("natronSceneTransformHandles", drawn);
+    QVariantList frameValues;
+    for (double v : frame) {
+        frameValues.push_back(v);
+    }
+    setProperty("natronSceneTransformFrame", frameValues);
 }
 
 const QString&
@@ -2647,6 +3109,60 @@ void
 SceneViewport::setTransformNodeProvider(const std::function<NodePtr()>& provider)
 {
     _imp->transformNodeProvider = provider;
+    update();
+}
+
+void
+SceneViewport::setTransformTarget(const std::shared_ptr<SceneTransformTarget>& target)
+{
+    _imp->transformTarget = target;
+}
+
+void
+SceneViewport::setTransformTool(int tool)
+{
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        return;
+    }
+    _imp->renderer.setTransformTool(tool);
+    _imp->renderer.setHighlightedTransformHandle(SceneGizmo::kNoHandle);
+    publishState();
+    update();
+}
+
+int
+SceneViewport::getTransformTool() const
+{
+    return _imp->renderer.getTransformTool();
+}
+
+void
+SceneViewport::cycleTransformTool()
+{
+    const int tool = _imp->renderer.getTransformTool();
+
+    setTransformTool(((tool == SceneTransform::eToolSelect) || (tool == SceneTransform::eToolScale)) ? SceneTransform::eToolTranslate : tool + 1);
+}
+
+void
+SceneViewport::setTransformSpace(int space)
+{
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        return;
+    }
+    _imp->renderer.setTransformSpace(space);
+    publishState();
+    update();
+}
+
+void
+SceneViewport::setTransformPivot(int pivot)
+{
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        return;
+    }
+    _imp->renderer.setTransformPivot(pivot);
+    publishState();
     update();
 }
 
@@ -3041,9 +3557,11 @@ SceneViewport::refreshTransformHandles()
     const SceneTransformKnobs& knobs = effect->getTransformKnobs();
     KnobDoublePtr translate = knobs.translate.lock();
     KnobDoublePtr rotate = knobs.rotate.lock();
+    KnobDoublePtr scale = knobs.scale.lock();
+    KnobDoublePtr uniformScale = knobs.uniformScale.lock();
     KnobChoicePtr rotateOrder = knobs.rotateOrder.lock();
     KnobDoublePtr pivot = effect->getPivotKnob();
-    if (!translate || !rotate || !rotateOrder || !pivot) {
+    if (!translate || !rotate || !scale || !uniformScale || !rotateOrder || !pivot) {
         _imp->renderer.clearTransformHandles();
 
         return;
@@ -3054,9 +3572,19 @@ SceneViewport::refreshTransformHandles()
     for (int d = 0; d < 3; ++d) {
         handles.translate[d] = translate->getValueAtTime(_imp->frame, d);
         handles.rotate[d] = rotate->getValueAtTime(_imp->frame, d);
+        handles.scale[d] = scale->getValueAtTime(_imp->frame, d);
         handles.pivot[d] = pivot->getValueAtTime(_imp->frame, d);
     }
+    handles.uniformScale = uniformScale->getValueAtTime(_imp->frame, 0);
     handles.rotateOrder = rotateOrder->getValue();
+    std::vector<std::string> paths, opNames;
+    effect->getMatchedPrims(&paths, &opNames);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        SceneViewportRenderer::TransformHandles::Target target;
+        target.primPath = paths[i];
+        target.opName = opNames[i];
+        handles.otherTargets.push_back(target);
+    }
     _imp->renderer.setTransformHandles(handles);
 } // SceneViewport::refreshTransformHandles
 
@@ -3114,6 +3642,7 @@ SceneViewport::paintGL()
         return;
     }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    publishTransformState();
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
@@ -3371,14 +3900,104 @@ SceneViewport::beginHandleDrag(const QPoint& pos)
     if (handle == SceneGizmo::kNoHandle) {
         return false;
     }
+    const bool selection = _imp->renderer.hasSelectionHandles();
     NodePtr node;
-    USDEditTransform* effect = _imp->getTransformNode(&node);
+    if (!selection && !_imp->getTransformNode(&node)) {
+        return false;
+    }
+    if (!_imp->renderer.beginTransformDrag(handle, pixel[0], pixel[1], w, h)) {
+        return false;
+    }
+    _imp->previewTimer->stop();
+    _imp->handle = handle;
+    _imp->handleNode = node;
+    _imp->handleChange = 0.;
+    _imp->handleChanged = false;
+    update();
+
+    return true;
+} // SceneViewport::beginHandleDrag
+
+void
+SceneViewport::dragHandle(const QPoint& pos)
+{
+    const qreal dpr = devicePixelRatio();
+    const GfVec2d pixel = Implementation::toPixel(this, pos);
+    double change = 0.;
+
+    if ((_imp->handle == SceneGizmo::kNoHandle) || !_imp->renderer.getTransformDragChange(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &change)) {
+        return;
+    }
+    // Only drawn: writing the nodes on every move would evaluate the graph and sync the scene
+    // each time, and the prims would only move as fast as that round trip.
+    _imp->handleChange = change;
+    _imp->handleChanged = true;
+    _imp->renderer.previewTransformDrag(change);
+    update();
+}
+
+void
+SceneViewport::endHandleDrag()
+{
+    if (_imp->handle == SceneGizmo::kNoHandle) {
+        return;
+    }
+    const double change = _imp->handleChange;
+    const bool changed = _imp->handleChanged;
+    // Before any write, which may request the scene that has it before returning.
+    const U64 serial = _imp->requestedSerial;
+    bool written = false;
+
+    if (changed) {
+        if (_imp->renderer.isSelectionTransformDrag()) {
+            SceneTransformDrag drag;
+            if (_imp->renderer.getTransformDrag(change, _imp->frame, &drag)) {
+                _imp->transformRecorder.commit(drag);
+                QVariantList delta;
+                for (int i = 0; i < 16; ++i) {
+                    delta.push_back(drag.delta[i]);
+                }
+                QStringList paths;
+                for (const SceneTransformPrim& prim : drag.prims) {
+                    paths.push_back(QString::fromStdString(prim.path));
+                }
+                setProperty("natronSceneTransformDelta", QVariantList { QString::fromUtf8(transformToolName(drag.tool)), paths, delta });
+                setProperty("natronSceneTransformDrags", _imp->transformRecorder.getCount());
+                if (_imp->transformTarget && !property("natronSceneTransformRecordOnly").toBool()) {
+                    written = _imp->transformTarget->commit(drag);
+                }
+            }
+        } else {
+            written = commitOpHandleDrag(change);
+        }
+    }
+    _imp->renderer.endTransformDrag();
+    _imp->handle = SceneGizmo::kNoHandle;
+    _imp->handleNode.reset();
+    _imp->handleChange = 0.;
+    _imp->handleChanged = false;
+    if (written) {
+        // The preview stays until the scene with the written drag is shown.
+        _imp->renderer.clearTransformPreviewAfter(serial);
+        _imp->previewTimer->start();
+    } else {
+        _imp->renderer.clearTransformPreview();
+    }
+    update();
+} // SceneViewport::endHandleDrag
+
+bool
+SceneViewport::commitOpHandleDrag(double change)
+{
+    NodePtr node = _imp->handleNode.lock();
+    USDEditTransform* effect = node ? dynamic_cast<USDEditTransform*>(node->getEffectInstance().get()) : nullptr;
+
     if (!effect) {
         return false;
     }
     const SceneTransformKnobs& knobs = effect->getTransformKnobs();
     KnobDoublePtr knob;
-    switch (SceneGizmo::getHandleKind(handle)) {
+    switch (SceneGizmo::getHandleKind(_imp->handle)) {
     case SceneGizmo::eHandleKindTranslate:
         knob = knobs.translate.lock();
         break;
@@ -3389,53 +4008,20 @@ SceneViewport::beginHandleDrag(const QPoint& pos)
         knob = knobs.scale.lock();
         break;
     }
-    if (!knob || !_imp->renderer.beginTransformDrag(handle, pixel[0], pixel[1], w, h)) {
+    if (!knob) {
         return false;
     }
-    _imp->handle = handle;
-    _imp->handleKnob = knob;
-    _imp->handlePressValue = knob->getValueAtTime(_imp->frame, SceneGizmo::getHandleAxis(handle));
-    _imp->handleGesture.begin();
-    update();
+    const int axis = SceneGizmo::getHandleAxis(_imp->handle);
+    const double old = knob->getValueAtTime(_imp->frame, axis);
+    const double value = (SceneGizmo::getHandleKind(_imp->handle) == SceneGizmo::eHandleKindScale) ? old * change : old + change;
+    if (value == old) {
+        return false;
+    }
+    applySceneKnobEdits(node, _imp->frame, { makeSceneKnobEdit(knob, axis, _imp->frame, value) }, _imp->undoHistory.data(),
+                        tr("Move %1").arg(QString::fromUtf8(node->getLabel().c_str())));
 
     return true;
-} // SceneViewport::beginHandleDrag
-
-void
-SceneViewport::dragHandle(const QPoint& pos)
-{
-    KnobDoublePtr knob = _imp->handleKnob.lock();
-    const qreal dpr = devicePixelRatio();
-    const GfVec2d pixel = Implementation::toPixel(this, pos);
-    double change = 0.;
-
-    if (!knob || !_imp->renderer.getTransformDragChange(pixel[0], pixel[1], int(width() * dpr), int(height() * dpr), &change)) {
-        return;
-    }
-    const int axis = SceneGizmo::getHandleAxis(_imp->handle);
-    const double value = (SceneGizmo::getHandleKind(_imp->handle) == SceneGizmo::eHandleKindScale) ? _imp->handlePressValue * change : _imp->handlePressValue + change;
-    // Through the knob's GUI, as a slider drag is: the edits of one drag fold into one undo step,
-    // and a later drag is a step of its own.
-    KnobGuiPtr knobGui = std::dynamic_pointer_cast<KnobGui>(knob->getKnobGuiPointer());
-    if (knobGui) {
-        KnobUndoCommand<double>* command = new KnobUndoCommand<double>(knobGui, knob->getValueAtTime(_imp->frame, axis), value, axis, true);
-        command->setGestureKey(_imp->handleGesture.key());
-        knobGui->pushUndoCommand(command);
-    } else {
-        knob->setValue(value, ViewSpec::all(), axis, eValueChangedReasonUserEdited);
-    }
-    update();
-}
-
-void
-SceneViewport::endHandleDrag()
-{
-    _imp->renderer.endTransformDrag();
-    _imp->handle = SceneGizmo::kNoHandle;
-    _imp->handleKnob.reset();
-    _imp->handleGesture.end();
-    update();
-}
+} // SceneViewport::commitOpHandleDrag
 
 void
 SceneViewport::highlightHandleAt(const QPoint& pos)
@@ -3490,7 +4076,8 @@ SceneViewport::event(QEvent* e)
         if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, k->modifiers(), k->key()) || matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DLockView, k->modifiers(), k->key()) || (viewModeForKey(k->modifiers(), k->key()) >= 0)
             || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
-            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
+            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
+            || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
             return true;
@@ -3505,6 +4092,40 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
 {
     if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
         _imp->spaceHeld = true;
+        e->accept();
+
+        return;
+    }
+    if ((e->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) {
+        // Drops the drag under way: nothing is written.
+        _imp->handleChanged = false;
+        endHandleDrag();
+        clearGesture();
+        e->accept();
+
+        return;
+    }
+    const int tool = transformToolForKey(e->modifiers(), e->key());
+    if (tool >= 0) {
+        setTransformTool(tool);
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DCycleTool, e->modifiers(), e->key())) {
+        cycleTransformTool();
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DToggleSpace, e->modifiers(), e->key())) {
+        setTransformSpace((_imp->renderer.getTransformSpace() == SceneTransform::eSpaceLocal) ? SceneTransform::eSpaceWorld : SceneTransform::eSpaceLocal);
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DTogglePivot, e->modifiers(), e->key())) {
+        setTransformPivot((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? SceneTransform::ePivotSelectionCentre : SceneTransform::ePivotCurrentPrim);
         e->accept();
 
         return;
@@ -3756,6 +4377,66 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QObject::connect(frame, &QAction::triggered, this, [this]() {
         frameScene();
     });
+
+    // The transform widget's tool, frame and origin.
+    QMenu* transform = menu.addMenu(tr("Transform"));
+    QActionGroup* tools = new QActionGroup(transform);
+    for (const TransformToolEntry& entry : kTransformTools) {
+        QAction* action = transform->addAction(tr(entry.label));
+        action->setObjectName(QString::fromUtf8(entry.name));
+        action->setCheckable(true);
+        action->setChecked(_imp->renderer.getTransformTool() == entry.tool);
+        action->setShortcut(keySequenceOf(entry.actionID));
+        action->setActionGroup(tools);
+        const int tool = entry.tool;
+        QObject::connect(action, &QAction::triggered, this, [this, tool]() {
+            setTransformTool(tool);
+        });
+    }
+    transform->addSeparator();
+    QActionGroup* spaces = new QActionGroup(transform);
+    const struct
+    {
+        SceneTransform::SpaceEnum space;
+        const char* name;
+        QString label;
+    } spaceItems[] = {
+        { SceneTransform::eSpaceWorld, "world", tr("World Space") },
+        { SceneTransform::eSpaceLocal, "local", tr("Local Space") },
+    };
+    for (const auto& item : spaceItems) {
+        QAction* action = transform->addAction(item.label);
+        action->setObjectName(QString::fromUtf8(item.name));
+        action->setCheckable(true);
+        action->setChecked(_imp->renderer.getTransformSpace() == item.space);
+        action->setActionGroup(spaces);
+        const int space = item.space;
+        QObject::connect(action, &QAction::triggered, this, [this, space]() {
+            setTransformSpace(space);
+        });
+    }
+    transform->addSeparator();
+    QActionGroup* pivots = new QActionGroup(transform);
+    const struct
+    {
+        SceneTransform::PivotEnum pivot;
+        const char* name;
+        QString label;
+    } pivotItems[] = {
+        { SceneTransform::ePivotSelectionCentre, "selectionCentre", tr("Selection Centre Pivot") },
+        { SceneTransform::ePivotCurrentPrim, "currentPrim", tr("Current Prim Pivot") },
+    };
+    for (const auto& item : pivotItems) {
+        QAction* action = transform->addAction(item.label);
+        action->setObjectName(QString::fromUtf8(item.name));
+        action->setCheckable(true);
+        action->setChecked(_imp->renderer.getTransformPivot() == item.pivot);
+        action->setActionGroup(pivots);
+        const int pivot = item.pivot;
+        QObject::connect(action, &QAction::triggered, this, [this, pivot]() {
+            setTransformPivot(pivot);
+        });
+    }
 
     // The purposes and lights Storm draws with, and the overlays drawn over it.
     QMenu* display = menu.addMenu(tr("Display"));

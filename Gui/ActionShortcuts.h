@@ -419,6 +419,27 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DShowGuides "showGuides"
 #define kShortcutDescActionViewer3DShowGuides "Show Guides"
 
+#define kShortcutIDActionViewer3DSelectTool "selectTool"
+#define kShortcutDescActionViewer3DSelectTool "Select Tool"
+
+#define kShortcutIDActionViewer3DTranslateTool "translateTool"
+#define kShortcutDescActionViewer3DTranslateTool "Translate Tool"
+
+#define kShortcutIDActionViewer3DRotateTool "rotateTool"
+#define kShortcutDescActionViewer3DRotateTool "Rotate Tool"
+
+#define kShortcutIDActionViewer3DScaleTool "scaleTool"
+#define kShortcutDescActionViewer3DScaleTool "Scale Tool"
+
+#define kShortcutIDActionViewer3DCycleTool "cycleTransformTool"
+#define kShortcutDescActionViewer3DCycleTool "Cycle Transform Tool"
+
+#define kShortcutIDActionViewer3DToggleSpace "toggleTransformSpace"
+#define kShortcutDescActionViewer3DToggleSpace "Toggle Local/World Space"
+
+#define kShortcutIDActionViewer3DTogglePivot "toggleTransformPivot"
+#define kShortcutDescActionViewer3DTogglePivot "Toggle Selection Centre/Current Prim Pivot"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

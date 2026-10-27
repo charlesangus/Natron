@@ -27,15 +27,15 @@ case "$mode" in
         shell=(--gpu)
         binary=build/debug/Renderer/NatronRenderer
         gpu=auto
-        args=""
+        args=()
         tag="gpu$chain"
         ;;
     cpu | serial)
         shell=()
         binary=build/release/Renderer/NatronRenderer
         gpu=off
-        args=
-        if [ "$mode" = serial ]; then args="--setting noRenderThreads=1"; fi
+        args=()
+        if [ "$mode" = serial ]; then args=(--setting noRenderThreads=1); fi
         tag="$mode"
         ;;
     *)
@@ -56,13 +56,13 @@ for node in "$@"; do
     base="$out/$tag-$node"
     rm -f "$base.jsonl".* "$base.steady.jsonl"
     if [ -n "$external" ]; then
-        (cd "$repo" && env -u LD_LIBRARY_PATH NP_NODE="$node" NP_CHAIN="$chain" NP_WORK=/tmp/np-$tag \
+        (cd "$repo" && env -u LD_LIBRARY_PATH NP_NODE="$node" NP_CHAIN="$chain" NP_WORK=/tmp/np-"$tag" \
             NATRON_GPU=$gpu NATRON_RENDER_PROFILE="$base.jsonl" \
-            xvfb-run -a "$external" $args -b tools/bench/node_profile.py) > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; status=1; continue; }
+            xvfb-run -a "$external" "${args[@]}" -b tools/bench/node_profile.py) > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; status=1; continue; }
     else
         "$repo/tools/ci/local/devshell.sh" "${shell[@]}" bash -lc "cd '$repo' && NP_NODE='$node' NP_CHAIN='$chain' NP_WORK=/tmp/np-$tag \
             NATRON_GPU=$gpu NATRON_RENDER_PROFILE='$base.jsonl' OFX_PLUGIN_PATH='$repo/build/assets/Plugins' \
-            xvfb-run -a $binary $args -b tools/bench/node_profile.py" > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; status=1; continue; }
+            xvfb-run -a $binary ${args[*]} -b tools/bench/node_profile.py" > "$base.log" 2>&1 || { echo "$node: render failed, see $base.log" >&2; status=1; continue; }
     fi
     python3 - "$base" "$mode" "$node" <<'PY' || status=1
 import glob, json, sys

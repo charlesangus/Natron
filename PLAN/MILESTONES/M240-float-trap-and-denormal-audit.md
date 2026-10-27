@@ -45,7 +45,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: the touched suites pass on lavapipe in the build, and on RADV with `NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`.
   - size: M
 
-- [ ] M240.P2.T2 — knobValueAsFloat in the colour nodes
+- [x] M240.P2.T2 — knobValueAsFloat in the colour nodes
   - files: `Engine/Nodes/Color/Grade.cpp`, `Color/Clamp.cpp`, `Color/ColorMathNode.cpp`, `Color/Saturation.cpp`, `Color/ColorCorrect.cpp`
   - approach: Replace each overflowing narrow listed in Decisions (P1.T1 audit) with `knobValueAsFloat` from `Engine/Nodes/KnobReader.h`. Where a double expression can itself overflow or divide by zero before narrowing (Grade's `mul*(wh-bl)/d` and `1./gamma` at gamma 0, ColorCorrect's `invGamma`, Saturation's row blend), make the expression non-trapping with the same result the CPU would give without traps (±inf), without changing finite results.
   - verify: the debug build passes, and the node's tests (goldens included) pass unchanged.
@@ -58,25 +58,25 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - size: L
 
 
-- [ ] M240.P2.T4 — knobValueAsFloat in keyers, filters and OCIO
+- [x] M240.P2.T4 — knobValueAsFloat in keyers, filters and OCIO
   - files: `Engine/Nodes/Keyer/Keyer.cpp`, `Keyer/ChromaKeyer.cpp`, `Filter/EdgeDetect.cpp`, `OCIO/OCIODisplay.cpp`, `OCIO/OcioNodeBase.cpp`
   - approach: As P2.T2, for the sites listed in Decisions, including ChromaKeyer's `keyGain` products and OCIODisplay's `1./gamma`.
   - verify: the debug build passes, and the node's tests (goldens included) pass unchanged.
   - size: M
 
-- [ ] M240.P2.T5 — knobValueAsFloat in the warps and lens nodes
+- [x] M240.P2.T5 — knobValueAsFloat in the warps and lens nodes
   - files: `Engine/Nodes/Transform/IDistort.cpp`, `Transform/STMap.cpp`, `Transform/WarpGpu.h`, `Transform/LensDistortion.cpp`, `Transform/LensModelsGpu.h`
   - approach: As P2.T2. `setWarpGpuDouble` and `setLensModelGpuDouble` split a double into a float pair (hi, lo). Make the split non-trapping for values beyond FLT_MAX (hi = ±inf, lo = 0) so the GPU sees the same as the CPU.
   - verify: the debug build passes; `ctest -R "STMap|IDistort|LensDistortion"` pass.
   - size: M
 
-- [ ] M240.P2.T6 — knobValueAsFloat in the deep and scene nodes
+- [x] M240.P2.T6 — knobValueAsFloat in the deep and scene nodes
   - files: `Engine/Nodes/Deep/DeepCrop.cpp`, `Deep/DeepFromImage.cpp`, `Deep/DeepExpressionEvaluator.cpp`, `Scene/SceneNodeAuthoring.cpp`, `Scene/USDCamera.cpp`, `Scene/USDLight.cpp`, `Scene/USDMaterial.cpp`
   - approach: As P2.T2 (seven files, but each is a one-to-two-line mechanical swap). The deep expression parser narrows `strtod` literals, so use the same helper there.
   - verify: the debug build passes, and `ctest -R "Deep|USD|Scene"` passes.
   - size: M
 
-- [ ] M240.P2.T7 — knobValueAsFloat in the raw and write nodes
+- [x] M240.P2.T7 — knobValueAsFloat in the raw and write nodes
   - files: `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Raw/RawPrepare.cpp`, `Raw/RawInputColor.cpp`, `Raw/RawColorCalibrationCheckerNode.cpp`, `IO/OiioWriteSupport.cpp`, `IO/NativeWrite.cpp`
   - approach: As P2.T2. First settle the audit's unsettled raw sites (RawInputColor `row0..2` through the matrix inversion; checker `corner`; spot `bottomLeft`/`size` in RawColorCalibrationSpot and RawTemperature) and fix those that narrow a ±DBL_MAX value.
   - verify: the debug build passes; `ctest -R "Raw|Write"` pass.
@@ -135,3 +135,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-27 — **Runs in a lane of the E5 - GPU Compute run (user):** the gpu PM's `--parallel 4` run for E5 keeps this milestone in one of its lanes, since it fixes the RADV failures the GPU work keeps meeting.
 
 - 2026-10-27 — **Left alone in P2.T4 (beyond narrowing):** Keyer's `setThresholdsFromKeyColor` squares raw key-colour components in double (a UI edit path, not a render), and EdgeDetect's halo and filter sizes cast a huge `blurSize` to int. Neither is a knob-to-float narrow, so both stay out of scope.
+
+- 2026-10-27 — **P2.T2 and P2.T4–T7 landed as one commit (gpu):** the tasks share the non-trapping helpers, now in one header, `Engine/Nodes/NonTrappingMath.h` (`productOrInfinity`, `quotientOrInfinity`, `sumOrInfinity`, `differenceOrInfinity`, `powOrInfinity`, `reciprocalOrInfinity`). Each returns ±inf exactly where the double operation would overflow, passes NaN through, gives a quiet NaN for inf−inf, 0·inf and inf/inf, and leaves finite results bit-identical (fuzzed with traps on). The first Grade version clamped knobs to ±FLT_MAX and capped ratios, which turned NaN into inf and changed some finite results. The RADV run caught it, and the clamps are gone. Main's `KnobDouble` default range is ±DBL_MAX (`Engine/KnobImpl.h:75`), so every unranged knob counts. Left alone as not knob narrows: Raw spot and temperature `bottomLeft`/`size` (double→int), and general double maths in the matrix and model code.

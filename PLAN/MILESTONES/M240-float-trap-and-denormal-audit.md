@@ -31,7 +31,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: the list is recorded, with each entry's knob range checked against its knob definition.
   - size: M
 
-- [ ] M240.P1.T2 — List parity comparisons exposed to subnormal flush
+- [x] M240.P1.T2 — List parity comparisons exposed to subnormal flush
   - files: `Tests/Native/*Gpu_Test.cpp`, `Tests/Native/NativeGpuParity.h`, `Tests/Gpu/Tolerance.h`, `Tests/Gpu/*` (read only), this milestone file
   - approach: Find comparisons that are bit-exact or tight in ULPs between CPU (or a double reference) and GPU output, and judge whether the tested inputs can produce subnormal results or intermediates (powers, exponentials, products of small values, Dekker splits). Record each exposed test with its reason under `## Decisions`.
   - verify: the list is recorded; each entry names the comparison and the input range that reaches subnormals.
@@ -62,5 +62,12 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-26 — **Started alongside M184 (user):** the user asked for it to be picked up in parallel. P1 is read-only and runs now. P2 starts once M184 - Variable-Size Filter Kit has merged (it brings `knobValueAsFloat`), on a branch rebased onto main.
 
 - 2026-10-26 — **RADV failures inherited from main (gpu, seen on M184 - Variable-Size Filter Kit's branch rebased onto main, which touches neither):** `NativeNoiseGpuTest.MatchesTheCpuRender` has 1-ulp CPU/GPU mismatches on RADV (white per pixel / rotated cells, worst 5.96e-08), and its exact comparison is in P1.T2's scope. `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` reports OCIODisplay and OCIOLookTransform as GPU-capable but not allowlisted. Both pass PR CI on lavapipe. Also in scope: in debug builds, Merge `plus` (`MergeOperators::separable<31>`) traps FE_INVALID on +inf + -inf, so any pixel op that legitimately makes NaN from non-finite input kills a debug render. Decide whether pixel kernels should run with invalid held, or the trap stays and tests avoid it.
+
+- 2026-10-26 — **P1.T2 audit result (subnormal exposure, main at 52d58e736):**
+  - Every non-exact `ParityTolerance` (`Tests/NativeParity.cpp:631`, bound = abs + rel·max(1,|ref|), abs ≥ 1e-6) already absorbs flushed subnormals.
+  - Latent exact sites, safe with their current inputs: Crop softness 0 (`NativeCropGpu_Test.cpp:493,643`), Saturation defaults (`:305,321`), StagedImageEffectGpu point-op (`:689,781`), RuntimeShaderGpu (`:337`), and the divide bounds in `StagedImageEffectGpu_Test.cpp:341-353` and `PixelWrap_Test.cpp:440-443` (relative only, no floor). Grade memcmp outside the mask (`NativeGradeGpu_Test.cpp:323,698`) sweeps denorm_min through a copy path; it should pass but is unverified on hardware.
+  - Local flush helpers already exist (`NativeColorMathGpu_Test.cpp:237` `allowFlushedToZero`, `NativeColorLookupGpu_Test.cpp:258` `isDenormal`), and `CurveSnapshotPrecision_Test.cpp:36` has a FLT_MIN·2^48 floor.
+  - Recommended home: an opt-in `ParityTolerance::flushSubnormals` (`exact().flushing()`) applied in `accepts()`, plus `ErrorStats::flushSubnormals` in `Tests/Gpu/Tolerance.h`, retiring the local helpers. P2.T1 follows this. Flushed *inputs* that change a result (subnormal divisor, negative-exponent pow) still need skip-or-bound handling.
+  - **Contradiction:** the audit judged Noise safe at 1e-5, but `NativeNoiseGpu_Test.cpp:344` uses `ParityTolerance::exact()` for `Match::Exact` cases, and those fail on RADV by 1 ulp of normal values (5.96e-08), which is not a subnormal issue. P2 investigates it as a separate exact-match failure on hardware: the CPU and GPU hash/float paths differ by rounding.
 
 **Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), including the new sweep.

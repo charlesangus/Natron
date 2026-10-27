@@ -78,6 +78,7 @@
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Transform/AutoStraighten.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/ICornerPin.h"
@@ -126,6 +127,7 @@ gpuCapableIds()
         PLUGINID_NATRON_STMAP,
         PLUGINID_NATRON_IDISTORT,
         PLUGINID_NATRON_LENSDISTORTION,
+        PLUGINID_NATRON_AUTOSTRAIGHTEN,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,

@@ -597,7 +597,8 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
                          GpuQuery* query)
 {
     const NodePtr& node = task.key.node;
-    if (!node || !context.getRequest()) {
+    // A task under a context renders on the CPU, where its frame args carry the context.
+    if (!node || !context.getRequest() || (task.key.contextKey != 0)) {
         return false;
     }
     EffectInstancePtr effect = node->getEffectInstance();
@@ -672,8 +673,9 @@ inputCarriesLayer(const FrameRequestMap& request,
 {
     const NodePtr input = edge.node.lock();
     const EffectInstancePtr effect = input ? input->getEffectInstance() : EffectInstancePtr();
-    const FrameRequestMap::const_iterator inputRequest = input ? request.find(input) : request.end();
-    const FrameViewRequest* fvRequest = input ? request.findFrameViewRequest(input, edge.time, edge.view) : 0;
+    const NodeCtxKey inputKey(input, edge.contextKey);
+    const FrameRequestMap::const_iterator inputRequest = input ? request.find(inputKey) : request.end();
+    const FrameViewRequest* fvRequest = input ? request.findFrameViewRequest(inputKey, edge.time, edge.view) : 0;
     if (!effect || (inputRequest == request.end()) || !inputRequest->second || !fvRequest || !containsSameLayer(fvRequest->componentsRequested, layer)) {
         return false;
     }
@@ -701,7 +703,8 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
     planes->clear();
     const NodePtr& node = task.key.node;
     const std::shared_ptr<FrameRequestMap>& request = context.getRequest();
-    if (!node || task.components.empty() || !request) {
+    // A task under a context renders on the CPU, where its frame args carry the context.
+    if (!node || task.components.empty() || !request || (task.key.contextKey != 0)) {
         return false;
     }
     NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
@@ -762,7 +765,7 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
         for (const FrameViewRequest::TaskEdge& edge : fvRequest->dependencies) {
             if ((edge.inputNb == passThroughInput) && (edge.time == passThroughTime) && (edge.view == entry.passThroughView) && edge.node.lock()) {
                 const NodePtr input = edge.node.lock();
-                const FrameViewRequest* inputRequest = request->findFrameViewRequest(input, edge.time, edge.view);
+                const FrameViewRequest* inputRequest = request->findFrameViewRequest(NodeCtxKey(input, edge.contextKey), edge.time, edge.view);
                 resolved = inputRequest && containsSameLayer(inputRequest->componentsRequested, entry.passThroughLayer);
                 break;
             }

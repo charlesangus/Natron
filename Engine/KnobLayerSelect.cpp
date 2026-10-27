@@ -51,6 +51,7 @@ KnobLayerSelect::KnobLayerSelect(KnobHolder* holder,
     , _withChannelButtons(false)
     , _allowNone(false)
     , _allowAll(false)
+    , _allLabel()
     , _cacheMutex()
     , _cacheValid(false)
     , _cachedRaw()
@@ -332,7 +333,7 @@ KnobLayerSelect::getSummary() const
         return std::string("None");
     }
     if (layerID == kNatronLayerSelectAll) {
-        return std::string("All");
+        return getAllLabel();
     }
 
     std::string summary = layerLabelForID(layerID);

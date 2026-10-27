@@ -102,6 +102,7 @@ Knob<T>::Knob(KnobHolder* holder,
     , _guiValues(dimension)
     , _defaultValues(dimension)
     , _exprRes(dimension)
+    , _exprCtxRes(dimension)
     , _exprResGenerations(dimension, 0)
     , _minMaxMutex()
     , _minimums(dimension)
@@ -492,14 +493,28 @@ Knob<T>::getValueFromExpression(double time,
 
     ///Check first if a value was already computed:
 
+    // A knob reading context variables keeps a result per context, its key computed before the
+    // mutex is taken.
+    U64 contextKey = 0;
+    const bool byContext = getExpressionContextKey(&contextKey);
+    const std::tuple<double, int, U64> contextResultKey(time, (int)view, contextKey);
     U64 generation;
     {
         QMutexLocker k(&_valueMutex);
-        typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
-        if ( found != _exprRes[dimension].end() ) {
-            *ret = found->second;
+        if (byContext) {
+            typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
+            if (found != _exprCtxRes[dimension].end()) {
+                *ret = found->second;
 
-            return true;
+                return true;
+            }
+        } else {
+            typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
+            if (found != _exprRes[dimension].end()) {
+                *ret = found->second;
+
+                return true;
+            }
         }
         generation = _exprResGenerations[dimension];
     }
@@ -526,7 +541,11 @@ Knob<T>::getValueFromExpression(double time,
 
     QMutexLocker k(&_valueMutex);
     if (_exprResGenerations[dimension] == generation) {
-        _exprRes[dimension].insert(std::make_pair(time, *ret));
+        if (byContext) {
+            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+        } else {
+            _exprRes[dimension].insert(std::make_pair(time, *ret));
+        }
     }
 
     return true;
@@ -583,14 +602,26 @@ Knob<T>::getValueFromExpression_pod(double time,
 
     // Not held while the expression runs: the clear that moves the generation must be able to land
     // meanwhile, and another thread holding the Python lock may be waiting for this one.
+    U64 contextKey = 0;
+    const bool byContext = getExpressionContextKey(&contextKey);
+    const std::tuple<double, int, U64> contextResultKey(time, (int)view, contextKey);
     U64 generation;
     {
         QMutexLocker k(&_valueMutex);
-        typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
-        if (found != _exprRes[dimension].end()) {
-            *ret = found->second;
+        if (byContext) {
+            typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
+            if (found != _exprCtxRes[dimension].end()) {
+                *ret = found->second;
 
-            return true;
+                return true;
+            }
+        } else {
+            typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
+            if (found != _exprRes[dimension].end()) {
+                *ret = found->second;
+
+                return true;
+            }
         }
         generation = _exprResGenerations[dimension];
     }
@@ -617,7 +648,11 @@ Knob<T>::getValueFromExpression_pod(double time,
 
     QMutexLocker k(&_valueMutex);
     if (_exprResGenerations[dimension] == generation) {
-        _exprRes[dimension].insert(std::make_pair(time, *ret));
+        if (byContext) {
+            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+        } else {
+            _exprRes[dimension].insert(std::make_pair(time, *ret));
+        }
     }
 
     return true;
@@ -2765,18 +2800,24 @@ Knob<T>::cloneExpressionsResults(KnobI* other,
         int dimMin = std::min( getDimension(), other->getDimension() );
         for (int i = 0; i < dimMin; ++i) {
             FrameValueMap results;
+            ContextValueMap contextResults;
             otherKnob->getExpressionResults(i, results);
+            otherKnob->getExpressionContextResults(i, contextResults);
             QMutexLocker k(&_valueMutex);
             _exprRes[i] = results;
+            _exprCtxRes[i] = contextResults;
         }
     } else {
         if (otherDimension == -1) {
             otherDimension = dimension;
         }
         FrameValueMap results;
+        ContextValueMap contextResults;
         otherKnob->getExpressionResults(otherDimension, results);
+        otherKnob->getExpressionContextResults(otherDimension, contextResults);
         QMutexLocker k(&_valueMutex);
         _exprRes[dimension] = results;
+        _exprCtxRes[dimension] = contextResults;
     }
 }
 

@@ -69,7 +69,8 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
-const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
+const char* const kOCIOColorSpacePluginID = "fr.inria.openfx.OCIOColorSpace";
+const char* const kMergePluginID = "Merge";
 
 const char* const kNoOpenGLMessage = "OpenGL did not load, so this test cannot exercise GL rendering. Run it under Xvfb with GLX and Mesa llvmpipe, as "
                                      "Tests/gui/run-gl-tests.sh does: `Xvfb :79 -screen 0 1920x1080x24 +extension GLX` with "

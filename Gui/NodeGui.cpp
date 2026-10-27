@@ -65,6 +65,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
@@ -474,7 +475,7 @@ NodeGui::initialize(NodeGraph* dag,
     }
 
     //Refresh the merge operator icon
-    if (internalNode->getPluginID() == PLUGINID_OFX_MERGE) {
+    if (internalNode->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE) {
         KnobIPtr knob = internalNode->getKnobByName(kNatronOfxParamStringSublabelName);
         assert(knob);
         KnobString* strKnob = dynamic_cast<KnobString*>( knob.get() );
@@ -482,7 +483,6 @@ NodeGui::initialize(NodeGraph* dag,
             refreshNodeText( QString::fromUtf8( strKnob->getValue().c_str() ) );
         }
     }
-
 
     if ( internalNode->makePreviewByDefault() ) {
         ///It calls resize
@@ -3874,8 +3874,8 @@ NodeGui::refreshNodeText(const QString & label)
     replaceLineBreaksWithHtmlParagraph(_nodeLabel); ///< maybe we should do this in the knob itself when the user writes ?
     setNameItemHtml(QString::fromUtf8( node->getLabel().c_str() ), _nodeLabel);
 
-    //For the merge node, set its operator icon
-    if ( node->getPlugin()->getPluginID() == QString::fromUtf8(PLUGINID_OFX_MERGE) ) {
+    // For the merge nodes, set its operator icon
+    if (node->getPlugin()->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE)) {
         QString subLabelContent = KnobGuiString::getNatronHtmlTagContent(label);
         if  ( !subLabelContent.isEmpty() ) {
             //Remove surrounding parenthesis

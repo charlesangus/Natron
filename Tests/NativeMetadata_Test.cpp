@@ -75,7 +75,7 @@ TEST_F(BaseTest, NativeMetadataSurvivesShuffleAndMerge)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(source && shuffle && merge);
 
@@ -145,7 +145,7 @@ TEST_F(BaseTest, NativeMetadataCacheInvalidatedByUpstreamKnobChange)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(source && shuffle && merge);
 

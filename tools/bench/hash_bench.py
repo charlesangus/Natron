@@ -63,7 +63,7 @@ EDITABLE = {
     "net.sf.cimg.CImgBlur": ("size", 2, 3.0),
     "net.sf.openfx.ColorCorrectPlugin": ("MasterSaturation", 4, 1.0),
     "net.sf.openfx.TransformPlugin": ("translate", 2, 0.25),
-    "net.sf.openfx.MergePlugin": ("mix", 1, 0.25),
+    "Merge": ("mix", 1, 0.25),
 }
 
 

@@ -514,7 +514,7 @@ try:
         # ---- (e) Unconnected optional/mask input, and a Reader: must stay visible when
         # deselected and unhovered.
         gt.section("e-unconnected-optional-and-reader")
-        merge_e = create("net.sf.openfx.MergePlugin", 3900, 0)
+        merge_e = create("Merge", 3900, 0)
         a_idx = input_index(merge_e, "A")
         b_idx = input_index(merge_e, "B")
         mask_idx = input_index(merge_e, "Mask")

@@ -197,6 +197,9 @@ if(NATRON_GPU)
     # already owns a target named pixelwrap_scale.
     slang_add_kernel(staged_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
     target_link_libraries(Tests PRIVATE staged_test_pixelwrap_scale)
+    # StagedImageEffectGpu_Test registers this as its alpha-carrying Composite test node's kernel.
+    slang_add_kernel(staged_test_compositealpha_xor ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/compositealpha.slang ENTRY compositealpha_xor)
+    target_link_libraries(Tests PRIVATE staged_test_compositealpha_xor)
     # Gpu/RawRegionGpu_Test registers this at run time to read a raw layout back from the device.
     slang_add_kernel(raw_test_layout_probe ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/rawprepare.slang ENTRY rawlayout_probe)
     target_link_libraries(Tests PRIVATE raw_test_layout_probe)

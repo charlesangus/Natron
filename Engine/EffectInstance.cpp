@@ -4347,7 +4347,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
         *inputView = view;
-    } else if (!isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    } else if (processesNoChannel(time, view)) {
         // The selection is resolved against the pass-through input, so choosing that input
         // cannot depend on the selection: while it is being chosen only the plug-in answers.
         // An unprocessed output then shows that input, not the preferred one: a Switch whose
@@ -4859,6 +4859,33 @@ EffectInstance::isResolvingLayersPassThrough() const
     return tls && tls->resolvingLayersPassThrough;
 }
 
+bool
+EffectInstance::processesNoChannel(double time,
+                                   ViewIdx view) const
+{
+    return !isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view);
+}
+
+bool
+EffectInstance::selectsOnlyLayersWithNoChannel(double time,
+                                               ViewIdx view) const
+{
+    if (isResolvingLayersPassThrough() || !outputFollowsLayerKnob(time, view)) {
+        return false;
+    }
+    std::vector<ResolvedLayer> selected;
+    if (!getNode()->resolveLayerKnob(time, view, &selected) || selected.empty()) {
+        return false;
+    }
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->channels.any()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void
 EffectInstance::getLayersPassThroughInput(double time,
                                           ViewIdx view,
@@ -5044,6 +5071,22 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         }
     }
 
+    std::list<ImageLayerDesc> producedPlanes;
+    {
+        std::list<ImageLayerDesc> declared;
+        addProducedPlanes(time, view, &declared);
+        std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
+        for (std::list<ImageLayerDesc>::const_iterator it = declared.begin(); it != declared.end(); ++it) {
+            if ((it->getNumComponents() > 0) && (ImageLayerDesc::findEquivalentLayer(*it, outputPlanes.begin(), outputPlanes.end()) == outputPlanes.end())) {
+                outputPlanes.push_back(*it);
+                producedPlanes.push_back(*it);
+            }
+        }
+        if (!hasLayerKnob) {
+            addProducedPlanesChannels(time, view, outputPlanes, processChannelsPerPlane);
+        }
+    }
+
     processChannels->set();
     ProcessChannelsPerPlaneMap::const_iterator foundColor = processChannelsPerPlane->find(ImageLayerDesc::getRGBAComponents());
     if (foundColor != processChannelsPerPlane->end()) {
@@ -5101,7 +5144,14 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                 inputPlanes.push_back(divisorLayer);
             }
         }
+
+        for (std::list<ImageLayerDesc>::const_iterator it = producedPlanes.begin(); it != producedPlanes.end(); ++it) {
+            if (ImageLayerDesc::findEquivalentLayer(*it, inputPlanes.begin(), inputPlanes.end()) == inputPlanes.end()) {
+                inputPlanes.push_back(*it);
+            }
+        }
     }
+    addInputLayersNeeded(time, view, producedPlanes, comps);
 } // EffectInstance::getComponentsNeededDefault
 
 void
@@ -5115,9 +5165,12 @@ EffectInstance::computeComponentsNeededAndProduced(double time,
                                                    ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                                    int* passThroughInputNb)
 {
-    // A node disabled at `time`, or one that outputs its pass-through input unchanged there,
-    // produces no layer of its own and every layer of that input passes through.
-    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view)) {
+    // A node disabled at `time`, one that outputs its pass-through input unchanged there, or one
+    // whose selection picks layers but none of their channels (an identity of that input, as
+    // isIdentity_public() answers) produces no layer of its own and every layer of that input
+    // passes through. A target layer the input lacks is then not presented, as nothing would
+    // write it. A selection that picks no layer at all falls back to the metadata planes below.
+    if (getNode()->isNodeDisabled(time) || presentsOnlyPassThroughLayers(time, view) || selectsOnlyLayersWithNoChannel(time, view)) {
         ViewIdx ptView;
         getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
         *passThroughView = ptView;

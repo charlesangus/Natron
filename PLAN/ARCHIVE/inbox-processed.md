@@ -217,3 +217,7 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 - From bosley-native-nodes (PR CI). `Comps/CacheEquivalenceBenchCompTest` runs 372–434 s inside the debug ctest legs against a 450 s timeout (M177's PR CI: 386 s and 434 s; M92's legacy leg timed out at 450 s, then passed alone in 190 s). It flakes under load on every branch. Shrink the comp or its frame count so it runs well under the timeout, keeping what it proves.
 - processed 2026-10-26 by bosley-native-nodes: became M237 - CI Flake Fixes.
 
+
+### 2026-10-27T05:00:00Z — change-request
+- refs: M122, M123, M129, M185
+- From gpu (user decision, 2026-10-26): cost seeds are abolished (`PLAN/DECISIONS/2026-10-26-weight-based-gpu-placement.md`). M239 - Weight-Based GPU Placement deletes `*.costseed.inc`, `Engine/GpuCostSeeds/`, `render-profile-report.py --emit-cost-table` and the measured cost model. Nodes declare `gpuWeight()` instead (Engine/GpuWeight.h). Override it only when cost grows with a knob (`gpuSizeScaledWeight`) or the work always wants the GPU (`GpuWeight::heavy()`). In M122 - Native Colour Utilities, M123 - Native Sharpen And Glow, M129 - Clean-Sheet Noise Node and M185 - Variable Warps, strike any unfinished task or clause that measures or writes cost seeds, and don't add new `*.costseed.inc` files. Seed files already on a branch are deleted when that branch rebases after M239 merges, or by M239's rebase if your milestone merges first.

@@ -238,10 +238,10 @@ TEST_F(CacheStressSelfTest, TheReferenceEqualsAFreshAppLoadOfTheSavedProject)
 
     const NodePtr grade = g.nodes[2];
     const NodePtr blur = g.nodes[3];
-    KnobDoublePtr white = std::dynamic_pointer_cast<KnobDouble>(grade->getKnobByName(kGradeParamWhite));
-    KnobDoublePtr multiply = std::dynamic_pointer_cast<KnobDouble>(grade->getKnobByName(kGradeParamMultiply));
+    std::shared_ptr<KnobDoubleBase> white = std::dynamic_pointer_cast<KnobDoubleBase>(grade->getKnobByName(kGradeParamWhite));
+    std::shared_ptr<KnobDoubleBase> multiply = std::dynamic_pointer_cast<KnobDoubleBase>(grade->getKnobByName(kGradeParamMultiply));
     KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kBlurParamSize));
-    ASSERT_TRUE(white && multiply && size);
+    ASSERT_TRUE(bool(white) && bool(multiply) && bool(size));
     white->setValueAtTime(1, 0.5, ViewSpec::all(), 0);
     white->setValueAtTime(5, 2., ViewSpec::all(), 0);
     ASSERT_NO_THROW(multiply->setExpression(1, blur->getScriptName() + "." kBlurParamSize ".getValue(0)", false, true));

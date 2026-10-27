@@ -221,10 +221,11 @@ knobEdit(std::mt19937& rng,
          const GateGraph& g)
 {
     const bool onGate = (rng() % 2) == 0;
-    KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(onGate ? g.gate->getKnobByName("value") : g.grade->getKnobByName(kGradeParamWhite));
+    std::shared_ptr<KnobDoubleBase> knob = std::dynamic_pointer_cast<KnobDoubleBase>(onGate ? g.gate->getKnobByName("value") : g.grade->getKnobByName(kGradeParamWhite));
     Edit e;
 
     if (!knob) {
+        ADD_FAILURE() << "the knob edit target does not exist or is not a double knob";
         e.name = "no knob";
         e.apply = []() { };
         e.undo = []() { };

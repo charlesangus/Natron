@@ -377,17 +377,15 @@ panel therefore shows the project's value.
   `invalidateRenderContextReads()`.
 - A node that sets variables for its inputs, as the Set node does, overrides
   `EffectInstance::getInputContexts()`.
-- An input's metadata, region of definition and layers are read under the
-  context the node requests that input under. A node calling those actions
-  through `EffectInstance` gets this without extra code.
+- An input's metadata, region of definition, layers and frame range are read
+  under the context the node requests that input under, so a format or frame
+  range an expression drives from `rfv` follows the Set below the node
+  (`Tests/RFVMetadata_Test.cpp`). A node calling those actions through
+  `EffectInstance` gets this without extra code. Outside any Set, such as the
+  timeline asking a bare node, the project's values apply.
 
 ### v1 limits
 
-- **Metadata follows the Set; the frame range does not.** A format, region of
-  definition or layer set that an expression drives from `rfv` follows the Set
-  below the node, in a render and in the request pass. A node's frame range is
-  its time domain, not metadata. It is read with the project's values whatever
-  Set is below the node (`Tests/RFVMetadata_Test.cpp`).
 - A Group node carries no variables of its own.
 - There is no panel that lists the variables a node sees.
 

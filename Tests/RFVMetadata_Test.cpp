@@ -61,9 +61,9 @@ const int kFormatHeight = 48;
 
 } // namespace
 
-// What metadata driven by a variable sees: a format follows the Set below the node, as metadata,
-// regions and layers are read under the context each input is requested under; a frame range is
-// a time domain, not metadata, and reads the project's values.
+// What metadata driven by a variable sees: a format and a frame range follow the Set below the
+// node, as metadata, regions, layers and time domains are read under the context each input is
+// requested under.
 class RFVMetadata
     : public BaseTest {
 protected:
@@ -149,10 +149,10 @@ TEST_F(RFVMetadata, FormatFollowsTheSetAndRendersInBothSchedulers)
     }
 }
 
-// A Checkerboard whose last frame reads rfv.last, with the project's last = 10 and a Set below it
-// setting last = 20: the time domain of the Checkerboard and of the Set is the project's, and the
-// Set renders the same in both schedulers.
-TEST_F(RFVMetadata, FrameRangeReadsTheProjectValues)
+// A Checkerboard whose last frame reads rfv.last, with the project's last = 10, under Set(last = 20)
+// and Set(last = 30): the bare Checkerboard's time domain is the project's, each Set's follows its
+// own value, and each Set renders the same in both schedulers.
+TEST_F(RFVMetadata, FrameRangeFollowsTheSetAndRendersInBothSchedulers)
 {
     ProjectPtr project = getApp()->getProject();
     KnobDoublePtr projectLast = project->createDoubleKnob("last", "last", 1);
@@ -167,21 +167,32 @@ TEST_F(RFVMetadata, FrameRangeReadsTheProjectValues)
     frameRange->setValue(1, ViewSpec::all(), 0);
     ASSERT_NO_THROW(frameRange->setExpression(1, "int(rfv.last)", false, true));
 
-    NodePtr set = createSet(checker);
-    ASSERT_TRUE(bool(set));
-    KnobDoublePtr setLast = set->getEffectInstance()->createDoubleKnob("last", "last", 1);
-    ASSERT_TRUE(declare(set, setLast));
-    setLast->setValue(20.);
+    NodePtr setA = createSet(checker);
+    NodePtr setB = createSet(checker);
+    ASSERT_TRUE(setA && setB);
+    KnobDoublePtr lastA = setA->getEffectInstance()->createDoubleKnob("last", "last", 1);
+    KnobDoublePtr lastB = setB->getEffectInstance()->createDoubleKnob("last", "last", 1);
+    ASSERT_TRUE(declare(setA, lastA));
+    ASSERT_TRUE(declare(setB, lastB));
+    lastA->setValue(20.);
+    lastB->setValue(30.);
 
-    const NodePtr nodes[2] = { checker, set };
-    for (const NodePtr& node : nodes) {
-        EffectInstancePtr effect = node->getEffectInstance();
-        double first = 0., last = 0.;
-        effect->getFrameRange_public(effect->getRenderHash(), &first, &last);
-        EXPECT_EQ(1., first) << node->getScriptName_mt_safe();
-        EXPECT_EQ(10., last) << node->getScriptName_mt_safe();
+    const NodePtr nodes[3] = { checker, setA, setB };
+    const double lasts[3] = { 10., 20., 30. };
+    // Twice: the second pass answers from the actions caches, which must not mix the paths.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int n = 0; n < 3; ++n) {
+            EffectInstancePtr effect = nodes[n]->getEffectInstance();
+            double first = 0., last = 0.;
+            effect->getFrameRange_public(effect->getRenderHash(), &first, &last);
+            EXPECT_EQ(1., first) << nodes[n]->getScriptName_mt_safe() << " pass " << pass;
+            EXPECT_EQ(lasts[n], last) << nodes[n]->getScriptName_mt_safe() << " pass " << pass;
+        }
     }
 
-    const RenderMismatch m = renderBothWaysDirect(set, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kFormatWidth, kFormatHeight), std::vector<int> { 1, 4 });
-    EXPECT_FALSE(m.any) << describe(m);
+    const NodePtr sets[2] = { setA, setB };
+    for (const NodePtr& set : sets) {
+        const RenderMismatch m = renderBothWaysDirect(set, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kFormatWidth, kFormatHeight), std::vector<int> { 1, 4 });
+        EXPECT_FALSE(m.any) << set->getScriptName_mt_safe() << ": " << describe(m);
+    }
 }

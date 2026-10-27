@@ -1897,10 +1897,17 @@ EffectInstance::getFrameRange(double *first,
     // default is infinite if there are no non optional input clips
     *first = std::numeric_limits<int>::min();
     *last = std::numeric_limits<int>::max();
+    const double time = getCurrentTime();
+    const ViewIdx view = getCurrentView();
     for (int i = 0; i < getNInputs(); ++i) {
         EffectInstancePtr input = getInput(i);
         if (input) {
             double inpFirst, inpLast;
+            // Under the context this effect requests the input under, as its metadata is; the
+            // input's render hash then carries that context's key, so its cached range does too.
+            RenderContextPtr inputContext;
+            const bool overlaid = getInputActionContext(i, time, view, &inputContext);
+            ActionContextScope acting(overlaid, inputContext);
             // Through the cached action: a graph whose inputs fan out and rejoin would otherwise be walked once per path.
             input->getFrameRange_public(input->getRenderHash(), &inpFirst, &inpLast);
             if (i == 0) {

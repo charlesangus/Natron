@@ -117,7 +117,7 @@ UAT found that an animated RFV is frozen at the time the request passes the Set 
   - files: plan only
   - approach: DECISIONS/2026-10-08-reverse-flow-variables-design.md line 7 superseded; M190 stub note; M180/M181 note that loop.* stay plain values.
 
-Phase 71.5 shipped at 92d08cbb5: release gate 487/487; Tests/gui/m71_rfv_time_sampling.py passes (RFV-driven Transform motion blur, TimeBlur above and below the Set). UAT round 2 pending.
+Phase 71.5 shipped at 92d08cbb5: release gate 487/487; Tests/gui/m71_rfv_time_sampling.py passes (RFV-driven Transform motion blur, TimeBlur above and below the Set). UAT approved 2026-10-26 (round 2). Merges after M178 - Render Context Core (its base) passes UAT and lands; review of the Phase 71.5 diff in progress.
 
 ## Decisions
 

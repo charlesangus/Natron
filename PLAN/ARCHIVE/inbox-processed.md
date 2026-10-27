@@ -225,3 +225,15 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 ### 2026-10-25T12:00:00Z — change-request
 - refs: none
 - From M168 - NVIDIA Viewer Hand-off Validation (bosley-faux). New milestone suggested ("Startup Pane Paint On NVIDIA"): on NVIDIA GL under KWin (RTX 3070 Ti, driver 580.178.04, :0), a newly started Natron window shows its panes unpainted (#202020) on screen for ~16–18 s after map; only the menu bar and left toolbar draw. Happens with NATRON_GPU=off too, never under Xvfb. Screenshot `.local/m168/diag/run1-live.png`. User-visible startup paint issue, not the GPU hand-off.
+
+### 2026-10-25T12:00:01Z — change-request
+- refs: none
+- From M168 - NVIDIA Viewer Hand-off Validation. Small test fixes for M107 - GPU Viewer Hand-off's UAT: (1) "the viewer shows the comp" in `Tests/gui/m107_viewer_handoff.py` checks only non-black, so an unpainted #202020 viewer passes; use `looks_blank`. (2) The UAT docstring and `Tests/gui/run-gui-test.sh`'s header should say host-display runs (GUI_TEST_HOST_DISPLAY) need a CPU reference taken on the same display. (3) Cosmetic: `tools/gpu-spike/desktop-handoff-check.sh` warns "GL renderer is not radeonsi" on NVIDIA.
+
+### 2026-10-25T15:00:00Z — change-request
+- refs: none
+- From M169 - Pipelined Strip Member Timing (bosley-faux). Two follow-ups: (1) Flake: `GpuResidencyTest.RegionMembersAreTimedOnTheDevice` failed `EXPECT_GT(blurNs, gradeNs)` in whole mode once in 10 NVIDIA runs (Grade 0.260 ms vs Blur 0.209 ms, first region of the process, no transfer overlap). (2) Spike-robust GPU calibration: 2–16× slow member intervals with no transfer overlap appear in every mode on a shared desktop GPU (22–50% utilisation from other programs) and swing `GpuCostModel`'s EMA; consider outlier rejection or a robust estimator. Data: `.local/m169/p1/` on bosley-faux.
+
+### 2026-10-25T17:00:00Z — change-request
+- refs: none
+- From M169 - Pipelined Strip Member Timing (bosley-faux), NVIDIA RTX 3070 Ti gate: (1) `CurveSnapshotPrecisionTest.CurveMulKeepsTheProductError` (M171 - GPU Correctness Fixes' test) fails on NVIDIA in both schedulers and both push-descriptor variants: 25 BelowTiny pairs (`8e-31 × [0.5,1]`), e.g. `|hi+lo-exact| 5.06e-39 > 3.07e-44`. Residuals sit just above FLT_MIN but the Dekker partial products are subnormal and appear flushed to zero; the test's `representable` guard checks only the final residual. Passes on lavapipe. (2) `RenderSchedulerTest.CachedOutputsOfTwoFramesAtOnce` fails consistently on bosley-faux (leaf nodes render twice, with or without GPU) but passes on CI; undiagnosed. (3) The bosley-faux host env lacks git-lfs (raw fixtures are pointers) and has stale `build/assets/Plugins` (fetch-assets --check-pins fails); a host-setup note, not code. Logs: `.local/m169/p3/out/`.

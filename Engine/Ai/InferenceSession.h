@@ -134,7 +134,7 @@ public:
                                                   const AiSessionOptions& options,
                                                   const std::shared_ptr<const OrtLoader>& loader);
 
-    static const std::size_t kCacheCapacity = 8;
+    static constexpr std::size_t kCacheCapacity = 8;
 
     static void clearCache();
     static std::size_t cacheSize();

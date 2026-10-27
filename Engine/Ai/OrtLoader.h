@@ -48,7 +48,7 @@ public:
      * @brief The oldest OrtApi version accepted from a library older than the headers this build
      * uses. Code calling through api() must only use functions that version already has.
      **/
-    static const int kMinimumApiVersion = 18;
+    static constexpr int kMinimumApiVersion = 18;
 
     /**
      * @brief A place to look for the library: a file, or a directory holding libonnxruntime.so.1

@@ -29,7 +29,7 @@ unchanged.
   the Matte over the blur's reach plus the edge detection's. The weight is computed over every pixel the
   blur reads. The region of definition grows by the blur's reach unless
   Crop To Format clips it, as Blur's does. Sizes scale with the render scale.
-- **Knobs.** External Matte, Size, Filter (EdgeDetect's eight filters, Gaussian by default), Crop To
+- **Knobs.** External Matte, Size (0 to 1000), Filter (EdgeDetect's eight filters, Gaussian by default), Crop To
   Format, Edge Mult, and the standard channel, mask and mix knobs. Size is the blur at full edge
   weight; Edge Mult shapes how fast the blur size falls off the edge. Mask, mix and "(Un)premult by" are
   the host's stages.

@@ -518,13 +518,13 @@ sharpenPasses(const SharpenParams& params,
     list.passes.push_back(Pass::point(true, copyWorker()));
     list.passes.push_back(atSlot(passX, kSlotBlur));
     list.passes.push_back(atSlot(passY, kSlotBlur));
-    list.passes.push_back(Pass::point(true, combineWorker(params.mode, (float)params.amount, (float)params.threshold)));
+    list.passes.push_back(Pass::point(true, combineWorker(params.mode, knobValueAsFloat(params.amount), knobValueAsFloat(params.threshold))));
 
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<SharpenGpuPlan> plan = std::make_shared<SharpenGpuPlan>();
     plan->mode = params.mode;
-    plan->amount = (float)params.amount;
-    plan->threshold = (float)params.threshold;
+    plan->amount = knobValueAsFloat(params.amount);
+    plan->threshold = knobValueAsFloat(params.threshold);
     plan->identity = filterX->isIdentity() && filterY->isIdentity();
     plan->fir = fir;
     if (fir) {

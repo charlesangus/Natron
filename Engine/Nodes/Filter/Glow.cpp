@@ -97,12 +97,12 @@ channelSetup(const GlowParams& params,
             continue;
         }
         const int bit = std::min(std::max(bits[i], 0), 3);
-        s.gain[i] = (float)(params.brightness * params.tint[bit]);
+        s.gain[i] = knobValueAsFloat(params.brightness * params.tint[bit]);
         s.invGamma[i] = (float)(1. / params.gamma[bit]);
         if (bit < 3) {
             s.kind[i] = eChannelColour;
             s.colourBit[i] = bit;
-            s.saturation[i] = (float)params.saturation[bit];
+            s.saturation[i] = knobValueAsFloat(params.saturation[bit]);
             sum += params.luma[bit];
             ++nColour;
         } else {
@@ -235,7 +235,7 @@ mapWeight(const GlowParams& params,
                 rgb[setup.colourBit[i]] = v[i];
             }
         }
-        w *= hueKey(hueOf(rgb[0], rgb[1], rgb[2]), (float)params.hue);
+        w *= hueKey(hueOf(rgb[0], rgb[1], rgb[2]), knobValueAsFloat(params.hue));
     }
 
     return w;
@@ -418,8 +418,8 @@ mapWorker(const GlowParams& params)
 
         return [&scratch, params, setup](int r) {
             const int n = std::min(4, scratch.nPlanes);
-            const float threshold = (float)params.threshold;
-            const float knee = (float)params.knee;
+            const float threshold = knobValueAsFloat(params.threshold);
+            const float knee = knobValueAsFloat(params.knee);
             const std::size_t row = (std::size_t)r * scratch.width;
             const float* in[4];
             float* out[4];
@@ -456,8 +456,8 @@ combineWorker(const GlowParams& params)
 
         return [&scratch, params, setup](int r) {
             const int n = std::min(4, scratch.nPlanes);
-            const float threshold = (float)params.threshold;
-            const float knee = (float)params.knee;
+            const float threshold = knobValueAsFloat(params.threshold);
+            const float knee = knobValueAsFloat(params.knee);
             const float mix = (float)params.mix;
             const std::size_t row = (std::size_t)r * scratch.width;
             const float* src[4];
@@ -807,7 +807,7 @@ recordWeights(const GlowParams& params,
     w.dstHeight = w.srcHeight;
     w.channels = (uint32_t)io.nComps;
     w.flags = params.isolateHue ? kGlowFrameHue : 0u;
-    w.hue = (float)params.hue;
+    w.hue = knobValueAsFloat(params.hue);
     for (int c = 0; c < 4; ++c) {
         const uint32_t bit = (setup.colourBit[c] >= 0) ? (uint32_t)setup.colourBit[c] : 3u;
         w.colourBits |= bit << (2 * c);
@@ -942,8 +942,8 @@ glowGpuRecorder(const GlowParams& params,
         p.domHeight = emptyDomain ? 0u : (uint32_t)domain.height();
         p.channels = (uint32_t)nComps;
         p.flags = (params.preview ? kGlowGpuPreview : 0u) | (params.glowOnly ? kGlowGpuGlowOnly : 0u) | (params.screen ? kGlowGpuScreen : 0u) | (params.addInput ? kGlowGpuAddInput : 0u);
-        p.threshold = (float)params.threshold;
-        p.knee = (float)params.knee;
+        p.threshold = knobValueAsFloat(params.threshold);
+        p.knee = knobValueAsFloat(params.knee);
         for (int c = 0; c < 4; ++c) {
             p.kinds |= (uint32_t)setup.kind[c] << (2 * c);
             p.weight[c] = setup.weight[c];
@@ -1223,7 +1223,7 @@ GlowOp::bake(const KnobReader& reader) const
     for (int d = 0; d < 3; ++d) {
         pick[d] = reader.value(pickHue, d);
     }
-    params.hue = hueOf((float)pick[0], (float)pick[1], (float)pick[2]);
+    params.hue = hueOf(knobValueAsFloat(pick[0]), knobValueAsFloat(pick[1]), knobValueAsFloat(pick[2]));
     params.ratio = reader.value(ratio);
     params.count = reader.value(count);
     const int f = reader.value(filter);

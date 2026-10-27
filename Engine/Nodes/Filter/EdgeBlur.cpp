@@ -256,9 +256,10 @@ EdgeBlur::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"));
     sizeKnob->setName(kEdgeBlurParamSize);
-    sizeKnob->setHintToolTip(tr("Size (diameter) of the blur where the edge weight is 1, and of the edge detection's pre-blur, in pixel units (>=0). Each pixel's blur is this Size times its edge weight, three boxes approximating the Gaussian of standard deviation size/2.4."));
+    sizeKnob->setHintToolTip(tr("Size (diameter) of the blur where the edge weight is 1, and of the edge detection's pre-blur, in pixel units (0 to 1000). Each pixel's blur is this Size times its edge weight, three boxes approximating the Gaussian of standard deviation size/2.4."));
     sizeKnob->setSpatial(true);
     sizeKnob->setMinimum(0.);
+    sizeKnob->setMaximum(1000.);
     sizeKnob->setDisplayMinimum(0.);
     sizeKnob->setDisplayMaximum(100.);
     sizeKnob->setDefaultValue(3.);
@@ -315,7 +316,7 @@ EdgeBlur::getParams(double time,
     EdgeBlurParams params;
 
     params.externalMatte = reader.value(_externalMatte);
-    params.size = reader.value(_size);
+    params.size = MapInput::clampSize(reader.value(_size));
     const int f = reader.value(_filter);
     if ((f >= (int)eEdgeDetectFilterSimple) && (f <= (int)eEdgeDetectFilterQuadratic)) {
         params.filter = (EdgeDetectFilterEnum)f;

@@ -49,9 +49,10 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/ActionShortcuts.h" // AppShortcuts
 #include "Gui/GuiApplicationManager.h" // PythonUserCommand
-#include "Gui/NodeClipBoard.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeClipBoard.h"
 #include "Gui/PreviewThread.h"
+#include "Gui/StallMonitor.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -96,7 +97,7 @@ struct GuiApplicationManagerPrivate
     PreviewThread previewRenderThread;
     int dpiX, dpiY;
     std::unique_ptr<DocumentationManager> documentation;
-
+    std::unique_ptr<StallMonitor> stallMonitor;
 
     GuiApplicationManagerPrivate(GuiApplicationManager* publicInterface);
 

@@ -33,13 +33,13 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 
 ## Phase 236.1: Scope substrate
 
-- [ ] M236.P1.T1 — Project Materials Scope setting, in the scene layer key
+- [x] M236.P1.T1 — Project Materials Scope setting, in the scene layer key
   - files: `Engine/Project.{h,cpp}`, `Engine/ProjectPrivate.h`, `Engine/Nodes/Scene/SceneLayerMemo.h`, `Engine/Nodes/NativeEffectBase.cpp` (`getSceneLayerKey`), `Tests/Scene/SceneUpAxis_Test.cpp`
   - approach: a string knob beside Up Axis/Meters Per Unit (Project.cpp ~1842). `getProjectMaterialsScope()` returns the validated root name, or empty. It joins the project digest (~3555) and the up-axis invalidation branch (~2920). `SceneLayerMemo::Key` gets `materialsScope`, filled where `upAxis` is (NativeEffectBase.cpp:938).
   - verify: gtest — the default is `/materials`; changing it re-keys a scene node's layer; `/a/b` and `materials` validate to empty.
   - size: M
 
-- [ ] M236.P1.T2 — `reparentRoots` passes the scope root through
+- [x] M236.P1.T2 — `reparentRoots` passes the scope root through
   - files: `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Engine/Nodes/Scene/SceneReparentNode.cpp`, `Tests/Scene/SceneReparent_Test.cpp`
   - approach: `SceneReparentArgs::passThroughRoot`. In each graft layer that root is defined at its own path, referencing `<wrapper>:/<root>`, and is never auto-renamed. `graftedPathOf` maps it to itself, so the existing link repair re-points relationships into it. The name joins the graft hash. SceneReparentNode fills it from the project and warns when the passed-through root holds a `UsdGeomGprim`.
   - verify: gtest — an input with `/Asset` bound to `/materials/M` grafts to `/T1/Asset`, with `/materials/M` still at the root and `ComputeBoundMaterial` resolving it. Two inputs with `/materials` compose. With the setting empty, M226 behaviour is unchanged.

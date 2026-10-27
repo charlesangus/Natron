@@ -32,7 +32,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M207 - Neural Deno
 
 ## Phase 208.1: Node
 
-- [ ] M208.P1.T1 — NeuralUpscale node
+- [x] M208.P1.T1 — NeuralUpscale node
   - files: new `Engine/Nodes/Transform/NeuralUpscale.h`, `Engine/Nodes/Transform/NeuralUpscale.cpp`, `Engine/Nodes/Transform/NeuralUpscale.reg.inc`
   - approach:
     - Override the format, region-of-definition and region-of-interest methods to scale by the factor. Follow `Reformat.cpp` for how a native node changes its output format.
@@ -42,7 +42,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M207 - Neural Deno
   - verify: P1.T2's tests pass.
   - size: L
 
-- [ ] M208.P1.T2 — Tests, docs and identity
+- [x] M208.P1.T2 — Tests, docs and identity
   - files: new `Tests/Native/NativeNeuralUpscale_Test.cpp`, `Engine/Nodes/Transform/docs/NeuralUpscale.md`, `Gui/Resources/Images/NativeNodes/`
   - approach:
     - Identity checks with `expectNativeIdentity`.

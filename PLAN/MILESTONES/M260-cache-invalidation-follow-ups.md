@@ -73,7 +73,7 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
   - approach: In `InspectorNode::setActiveInputAndRefresh` (:1842-1858), call `onInputChanged(inputNb, isASide)` first, then `computeHash()`. The mark then follows every change to `_activeInputs`.
   - verify: `CacheStressTest.ViewerABSwitch` (CacheStress_Test.cpp:553) plus a concurrent variant `CacheStressConcurrentTest.ViewerABSwitchDuringRender`.
   - size: S
-- [ ] M260.P3.T3 — T5: queued group connection changes count as a change
+- [x] M260.P3.T3 — T5: queued group connection changes count as a change
   - files: Engine/NodeGroup.cpp, Engine/NodeGroup.h, Engine/Node.cpp
   - approach: Make `NodeGroup::dequeueConnexions` (NodeGroup.cpp:1397-1403) return true when `inputs` or `outputs` differ from the gui lists. `dequeueActions` (Node.cpp:8056-8059) ORs that into `hasChanged`.
   - verify: gtest: add a GroupInput to a group during a render, then dequeue, and the group's hash moves. CacheStress: `CacheStressConcurrentTest.GroupConnectionsDuringRender` on the group graph of `GradeBlurTransformInsideAGroup` (CacheStress_Test.cpp:515).
@@ -81,12 +81,12 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Phase 260.4: GPU caches
 
-- [ ] M260.P4.T1 — G1: cache host imports only for memory whose free the cache sees
+- [x] M260.P4.T1 — G1: cache host imports only for memory whose free the cache sees
   - files: Engine/Gpu/GpuTransfer.h, Engine/Gpu/GpuTransfer.cpp, Engine/GpuRegionTask.cpp
   - approach: Add a per-call `cacheImport` flag to the upload and download options. `resolveImports` (GpuTransfer.cpp:800-900) takes the cached path only when the flag is set and otherwise takes the uncached path (:825-840). GpuRegionTask sets it at :1153 and :2258 only when `HostImageMemory::bytesFrom(data) >= bytes` and `bytes >= kMinPooledBytes` (HostImageMemory.cpp:57, :489-491, :547-549). That excludes small mallocs and mmapped disk-cache images (CacheEntry.h:428).
   - verify: Tests/Gpu/GpuTransfer_Test.cpp: upload from a malloc'd page-aligned buffer, free it, reallocate at the same address, and the import cache count (`cachedImports`) never held it. CacheStress: `CacheStressGpuTest` (Tests/Gpu/CacheStressGpu_Test.cpp) adds a DiskCache-backed source case.
   - size: M
-- [ ] M260.P4.T2 — G2: the shader gate keys rejections by device
+- [x] M260.P4.T2 — G2: the shader gate keys rejections by device
   - files: Engine/Nodes/Image/StagePlan.cpp
   - approach: In `StageGpuShaderGate::accept` (:1635-1697), resolve the runtime first and prefix `key` (:1639-1641) with the pipeline cache's device tag (Engine/Gpu/GpuPipelineCache.h:86).
   - verify: gtest with two device tags: a shader rejected on one is still tried on the other. CacheStress: `CacheStressGpuTest.DeviceSwitchRetriesRejectedShader`.
@@ -94,57 +94,57 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Phase 260.5: Keying, expressions and metadata
 
-- [ ] M260.P5.T1 — E3: expression results are stored unclamped
+- [x] M260.P5.T1 — E3: expression results are stored unclamped
   - files: Engine/KnobImpl.h
   - approach: In both `getValueFromExpression` bodies (:482-560, :596-660), store the raw result and clamp on return, both after a cache hit and after evaluating (:543, :655).
   - verify: gtest: an expression outside min/max, read clamped then unclamped and the reverse, returns the right value each time. CacheStress: `CacheStressTest.ExpressionOutsideRange`.
   - size: S
-- [ ] M260.P5.T2 — I4: a colour-layer conversion only from a superset
+- [x] M260.P5.T2 — I4: a colour-layer conversion only from a superset
   - files: Engine/EffectInstance.cpp, Tests/CacheStress_Test.cpp
   - approach: First add `CacheStressTest.RgbThenRgbaRequest` (render RGB, then request RGBA from the same node). If it fails, restrict `convertible` (EffectInstance.cpp:2192-2200) to cached components that contain the requested ones. If it passes, record that I4 holds and change no engine code.
   - verify: the new case passes in Legacy and Task graph.
   - size: M
-- [ ] M260.P5.T3 — E2: rename rewrites listeners identifier-aware
+- [x] M260.P5.T3 — E2: rename rewrites listeners identifier-aware
   - files: Engine/NodeName.cpp, Engine/Knob.cpp, Engine/Knob.h
   - approach: NodeName.cpp:474 calls the plain `replaceNodeNameInExpression` (Knob.cpp:3467-3497, `QString::replace` at :3490). Switch it to `replaceNodeNameInExpressionCode` (:3500) and delete the plain variant (no backward compat). After the rename, call `getApp()->recheckInvalidExpressions()`.
   - verify: Tests/ExpressionFrameVarying_Test.cpp (:202) and a new case: renaming `Blur1` leaves `Blur10.size` untouched. CacheStress: add op `eOpRename` (renames an expression source) to `defaultOps()`.
   - size: M
-- [ ] M260.P5.T4 — A4: a non-abortable render does not write a frame of mixed states
+- [x] M260.P5.T4 — A4: a non-abortable render does not write a frame of mixed states
   - files: Engine/EffectInstance.cpp, Engine/ParallelRenderArgs.h, Engine/Nodes/IO/NativeWrite.cpp
   - approach: M202's `allowsStoreUnder` already keeps the frame out of the caches, so this task covers the frame written to disk. At EffectInstance.cpp:7525-7531, when the render cannot abort, set `frameArgs->stateMoved` instead of silently continuing. NativeWrite re-renders a frame whose args moved, once under fresh args, and fails it with an error if they move again.
   - verify: `CacheStressConcurrentTest.MetadataEditDuringWrite`: the written file equals the pre-edit or post-edit reference, never a mix.
   - size: M
-- [ ] M260.P5.T5 — A5: same-hash metadata changes also drop downstream action results
+- [x] M260.P5.T5 — A5: same-hash metadata changes also drop downstream action results
   - files: Engine/Node.cpp
   - approach: `onMetadataChangedUnderSameHash` (:1893-1921) also calls `clearActionsCache()` on each visited output and on the node itself. Today's callers (NativeRead.cpp:630, NativeWrite.cpp:1587) also move the hash, so the gap is latent.
   - verify: gtest via the RawKindFramework_Test.cpp:132 path: a downstream RoD is recomputed after `invalidateOutputMetadata` with the hash unchanged. CacheStress: a scripted case using that test effect.
   - size: M
-- [ ] M260.P5.T6 — K6: frame-range folding and marking use the same predicate
+- [x] M260.P5.T6 — K6: frame-range folding and marking use the same predicate
   - files: Engine/Node.cpp
   - approach: `dependsOnProjectFrameRange` (:1051-1070) counts any knob with an expression, while `computeContentHash` (:1036) folds the range only for render-hashed ones. Restrict the former to `isRenderHashed()` knobs.
   - verify: gtest: a range edit with an expression only on a non-hashed knob does not mark. Run the existing `eOpFrameRange` walks with `NATRON_CACHE_STRESS_SEEDS=8`.
   - size: S
-- [ ] M260.P5.T7 — K7: render-affecting Settings fold into the project digest
+- [x] M260.P5.T7 — K7: render-affecting Settings fold into the project digest
   - files: Engine/Settings.cpp, Engine/Settings.h, Engine/Project.cpp
   - approach: Add a render-affecting flag on Settings knobs. `Project::getContentDigest` folds a digest of the flagged knobs. `invalidateAllHashes` (Settings.cpp:2402) stays for the unflagged ones. Flag every Settings knob read from Engine render paths (grep `getSettings()->` under Engine/ render code).
   - verify: gtest: changing a flagged knob changes `getContentDigest`. CacheStress: `CacheStressTest.RenderSettingEdit`, if a flagged knob exists.
   - size: M
-- [ ] M260.P5.T8 — K3: CacheStress sweep over non-hashed knobs
+- [x] M260.P5.T8 — K3: CacheStress sweep over non-hashed knobs
   - files: Tests/CacheStress_Test.cpp, Tests/HashPluginSweep_Test.cpp
   - approach: For each native plug-in, change each knob for which `isRenderHashed()` (Knob.cpp:4276-4283) is false, and compare the cached render with an empty-cache render. Fix any knob found by making it persistent or evaluate-on-change.
   - verify: `CacheStressTest.NonHashedKnobSweep` passes.
   - size: M
-- [ ] M260.P5.T9 — K4: dynamic expression reads become dependencies
+- [x] M260.P5.T9 — K4: dynamic expression reads become dependencies
   - files: Engine/Knob.cpp, Engine/KnobImpl.h
   - approach: During `evaluateExpression`, record on the thread every knob read through the Python value getters. After evaluation, register them as listeners and hash dependencies (`getContentHashDependencies`, Knob.cpp ~7117), merged with the parser-found set. The fixed token list (:6774-6781) stays for volatility.
   - verify: gtest: an expression using `getattr(app, "Bl"+"ur1")` moves its node's hash when Blur1 changes. CacheStress: add op `eOpDynamicExpression` to `defaultOps()`.
   - size: L
-- [ ] M260.P5.T10 — K5: audit node state outside knobs
+- [x] M260.P5.T10 — K5: audit node state outside knobs
   - files: Engine/Nodes (audit), the overrides found
   - approach: Walk the 12 `appendNodeContentHash` hits and the node-private grep audit (docs/cache-invalidation/node-private.md). For each node with non-knob state read while rendering, add an override plus `markHashDirty` on change. Record the result in node-private.md.
   - verify: a gtest per new override (changing the state moves the hash). CacheStress: `CacheStressTest.AddLayersRegistryChange` for the existing pattern.
   - size: M
-- [ ] M260.P5.T11 — I3: unique, persisted cache IDs
+- [x] M260.P5.T11 — I3: unique, persisted cache IDs
   - files: Engine/NodePrivate.h, Engine/Node.cpp, Engine/NodeSerialization (save/load)
   - approach: `cacheID` is the first script name (NodePrivate.h:377-381), unique only within a project. Make it a UUID made at creation and serialized. Load needs no fallback.
   - verify: gtest: two projects with same-named nodes have distinct IDs, and removing one holder's entries leaves the other's. CacheStress: extend `TheReferenceEqualsAFreshAppLoadOfTheSavedProject` with a second same-named project on a shared DiskCache.
@@ -152,12 +152,12 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Phase 260.6: Timeline cache line
 
-- [ ] M260.P6.T1 — V2: the line counts only entries the viewer would serve
+- [x] M260.P6.T1 — V2: the line counts only entries the viewer would serve
   - files: Engine/AppManager.cpp, Engine/AppManager.h, Gui/TimeLineGui.cpp
   - approach: `getViewerCachedFrames` (AppManager.cpp:2642-2660) filters only on tree version, mipmap and holder. Pass a filter from the viewer's current view, input name, layer, channels, alpha channel and draft=false (FrameKey.h fields :87-102), and drop non-matching keys. A frame needs tiles covering its texture bounds (`getTexRect`), or it is not counted.
   - verify: `CacheStressTest.TimelineLineMatchesLookups`: after each step, every frame the line marks must hit a viewer-cache lookup under the current settings.
   - size: M
-- [ ] M260.P6.T2 — V3: the line refreshes when a render ends without an upload
+- [x] M260.P6.T2 — V3: the line refreshes when a render ends without an upload
   - files: Gui/ViewerGL.cpp, Gui/ViewerTab40.cpp, Gui/TimeLineGui.cpp
   - approach: Today `refreshTimelineCacheLineIfStale` is called only from uploads (ViewerGL.cpp:1646, :1927). Also call it when a viewer render ends failed, black or aborted, and on pause, through the viewer's render-finished path.
   - verify: extend Tests/gui/m178_timeline_cache_line.py: after an edit whose render fails (a Read of a missing file), the line drops the old frames. A GUI script stands in for CacheStress here because the refresh is GUI-only.

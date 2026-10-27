@@ -175,6 +175,13 @@ int stageMaskInput(const EffectInstance& effect) WARN_UNUSED_RETURN;
 bool isStageMaskApplied(const EffectInstance& effect) WARN_UNUSED_RETURN;
 
 /**
+ * @brief plan's mask fields (applyMask, maskInput, maskLayer, maskChannel) at plan's time and view
+ * for an op that applies its mask itself (PassList::opMask), as the MaskMix stage resolves them,
+ * whether or not the pipeline has that stage.
+ **/
+void resolveStageOpMask(EffectInstance& effect, StagePlan* plan);
+
+/**
  * @brief Whether the region of definition of the effect connected to maskInput misses roi at
  * time, scale and view, so that a non-inverted mask leaves the source unchanged over roi.
  * False when the region cannot be computed.

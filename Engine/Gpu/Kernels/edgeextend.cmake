@@ -1,0 +1,4 @@
+slang_add_kernel(edgeextend_fill Kernels/edgeextend.slang ENTRY edgeextend_fill REGISTRY NatronGpu)
+slang_add_kernel(edgeextend_extend Kernels/edgeextend.slang ENTRY edgeextend_extend REGISTRY NatronGpu)
+slang_add_kernel(edgeextend_over Kernels/edgeextend.slang ENTRY edgeextend_over REGISTRY NatronGpu)
+slang_add_kernel(edgeextend_finish Kernels/edgeextend.slang ENTRY edgeextend_finish REGISTRY NatronGpu)

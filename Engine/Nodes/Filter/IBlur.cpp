@@ -716,11 +716,7 @@ IBlur::opPasses(double time,
     PassList list = passes(params, context, range, std::shared_ptr<const MapPlane>());
 
 #ifdef NATRON_HAVE_GPU
-    bool capped = false;
-    for (const Pass& pass : list.passes) {
-        capped = capped || (pass.haloX > kGpuMaxBoxHalo) || (pass.haloY > kGpuMaxBoxHalo);
-    }
-    if (!list.empty() && !capped) {
+    if (!list.empty() && fitsGpu(list)) {
         const IBlur* self = this;
         list.gpu = [self, time, view, params, context](const PassGpuIO& io) -> StatusEnum {
             return self->recordGpu(io, time, view, params, context);
@@ -729,6 +725,44 @@ IBlur::opPasses(double time,
 #endif
 
     return list;
+}
+
+bool
+IBlur::fitsGpu(const PassList& passes)
+{
+#ifdef NATRON_HAVE_GPU
+    for (const Pass& pass : passes.passes) {
+        if ((pass.haloX > kGpuMaxBoxHalo) || (pass.haloY > kGpuMaxBoxHalo)) {
+            return false;
+        }
+    }
+
+    return true;
+#else
+    Q_UNUSED(passes);
+
+    return false;
+#endif
+}
+
+StatusEnum
+IBlur::recordPassesGpu(const PassGpuIO& io,
+                       const IBlurParams& params,
+                       const PassContext& context,
+                       bool mapConnected,
+                       int mapChannel)
+{
+#ifdef NATRON_HAVE_GPU
+    return recordIBlurGpu(io, params, context, mapConnected, mapChannel);
+#else
+    Q_UNUSED(io);
+    Q_UNUSED(params);
+    Q_UNUSED(context);
+    Q_UNUSED(mapConnected);
+    Q_UNUSED(mapChannel);
+
+    return eStatusFailed;
+#endif
 }
 
 StatusEnum
@@ -746,7 +780,7 @@ IBlur::recordGpu(const PassGpuIO& io,
         channel = -1;
     }
 
-    return recordIBlurGpu(io, params, context, connected, channel);
+    return recordPassesGpu(io, params, context, connected, channel);
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);

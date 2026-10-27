@@ -55,7 +55,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - verify: the build passes, `ctest -R RenderProfileReportSelfTest` passes, and `git grep -n "costseed\|GpuCostSeeds\|emit-cost-table"` is empty outside `docs/decisions/`.
   - size: M
 
-- [ ] M239.P2.T3 — Update tests and docs that used the model
+- [x] M239.P2.T3 — Update tests and docs that used the model
   - files: `Tests/BaseTest.cpp`, `Tests/GpuResidency_Test.cpp`, `Tests/Native/NativeTransformGpu_Test.cpp`, `Tests/Native/NativeCornerPinGpu_Test.cpp`, `Tests/Native/NativeWarpGpu_Test.cpp`, `Tests/Native/ViewerRootOnDevice_Test.cpp`, `Engine/Nodes/README.md`
   - approach: Replace seed or EMA setup in these tests (for example `setGpuSeed` to force a region onto the GPU) with weights or a Heavy test node. Rewrite the README's cost-seed checklist item and the "raw nodes have no cost seed rows" paragraph to describe weights.
   - verify: these suites pass under `ctest`, and the README has no seed references.

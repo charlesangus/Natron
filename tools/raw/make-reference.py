@@ -278,7 +278,7 @@ class Job:
     image's whole frame."""
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None, full_frame=False):
+                 log_line=None, mosaic=None, full_frame=False, half=False):
         self.name = name
         self.source = source
         self.entries = entries
@@ -291,6 +291,8 @@ class Job:
         self.mosaic = mosaic
         # The whole developed frame of a synthetic image, kept as it is.
         self.full_frame = full_frame
+        # Stored as half float, which keeps a parity reference small.
+        self.half = half
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -521,12 +523,13 @@ def colour_calibration_jobs(coeffs):
     return jobs
 
 
-# toneequal runs on a synthetic linear Rec. 709 float TIFF the jobs write next to the references,
-# which NativeToneEqualizer_Test feeds the node unchanged; colorin and colorout are identities
-# around it and the whole frame is kept.
+# toneequal runs on a synthetic linear Rec. 709 half float TIFF the jobs write next to the
+# references, which NativeToneEqualizer_Test feeds the node unchanged; colorin and colorout are
+# identities around it and the whole frame is kept, as half float too. The mask's radius is a
+# share of the larger side and the scene's features scale with the frame.
 TONEEQUAL_SOURCE = "toneequal-source.tif"
-TONEEQUAL_WIDTH = 256
-TONEEQUAL_HEIGHT = 192
+TONEEQUAL_WIDTH = 128
+TONEEQUAL_HEIGHT = 96
 # The band gains of every job, in EV, from -8 EV (blacks) to 0 EV (speculars).
 TONEEQUAL_GAINS = (1.2, 0.9, 0.6, 0.3, 0.0, -0.2, -0.5, -0.8, -1.0)
 TONEEQUAL_DETAILS = {"none": 0, "averaged-guided": 1, "guided": 2, "averaged-eigf": 3, "eigf": 4}
@@ -565,7 +568,7 @@ def toneequal_jobs():
             ("toneequal", 1, 2, toneequal_params(**options)),
         ]
         what = "toneequal %s" % " ".join("%s=%s" % kv for kv in sorted(options.items()))
-        jobs.append(Job("toneequal-%s.tif" % suffix, TONEEQUAL_SOURCE, entries, what.strip(), full_frame=True))
+        jobs.append(Job("toneequal-%s.tif" % suffix, TONEEQUAL_SOURCE, entries, what.strip(), full_frame=True, half=True))
     return jobs
 
 
@@ -574,17 +577,18 @@ def toneequal_scene():
     hard-edged patches 1.5 EV up and a fine texture, tinted by row band so the estimators differ.
     Rows from the top."""
     y, x = np.mgrid[0:TONEEQUAL_HEIGHT, 0:TONEEQUAL_WIDTH].astype(np.float64)
-    ev = -10.0 + 11.0 * x / (TONEEQUAL_WIDTH - 1) + 0.5 * np.sin(2.0 * np.pi * y / 48.0)
-    ev += np.where(((x // 32) + (y // 32)) % 3 == 0, 1.5, 0.0)
+    patch = TONEEQUAL_WIDTH // 8
+    ev = -10.0 + 11.0 * x / (TONEEQUAL_WIDTH - 1) + 0.5 * np.sin(2.0 * np.pi * y / (TONEEQUAL_HEIGHT / 4.0))
+    ev += np.where(((x // patch) + (y // patch)) % 3 == 0, 1.5, 0.0)
     ev += 0.15 * np.sin(1.3 * x) * np.sin(1.7 * y)
     tints = np.array([(1.0, 1.0, 1.0), (1.25, 1.0, 0.7), (0.75, 0.95, 1.3)])
-    tint = tints[(y.astype(int) // 64) % 3]
-    return (np.exp2(ev)[:, :, None] * tint).astype(np.float32)
+    tint = tints[(y.astype(int) // (TONEEQUAL_HEIGHT // 3)) % 3]
+    return (np.exp2(ev)[:, :, None] * tint).astype(np.float16)
 
 
 def write_toneequal_source(path):
     tifffile.imwrite(path, np.ascontiguousarray(toneequal_scene()), photometric="rgb", compression="zlib",
-                     description="synthetic linear Rec. 709 source of the toneequal references", metadata=None)
+                     description="synthetic linear Rec. 709 half float source of the toneequal references", metadata=None)
 
 
 def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0):
@@ -617,9 +621,10 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
     return image[:, :, :3], result.stdout.splitlines()
 
 
-def write_reference(path, image, description):
-    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float32), photometric="rgb" if image.ndim == 3 else "minisblack",
-                     compression="zlib", description=description, metadata=None)
+def write_reference(path, image, description, half=False):
+    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float16 if half else np.float32),
+                     photometric="rgb" if image.ndim == 3 else "minisblack", compression="zlib", description=description,
+                     metadata=None)
 
 
 def probe_coefficients(fixture, scratch):
@@ -765,7 +770,7 @@ def run_job(job, out, scratch):
         os.environ.get("DARKTABLE_REF", "?"), job.source, job.workflow, job.what, where)
     if logged:
         description += "; darktable log: " + " | ".join(logged)
-    write_reference(os.path.join(out, job.name), result, description)
+    write_reference(os.path.join(out, job.name), result, description, job.half)
     print("%s: %s" % (job.name, summary))
 
 

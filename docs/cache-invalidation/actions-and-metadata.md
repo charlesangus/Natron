@@ -175,7 +175,8 @@ summaries in every state, generation++). Metadata frames per state are capped at
   use different scales: the render path (EffectInstanceRenderRoI.cpp:544, `renderMappedScale`), the
   frame graph (ParallelRenderArgs.cpp:903, `mappedScale`) and Node.cpp:6861 (identity scale). An
   ErodeDilate of size 1 asked at mipmap 1 first caches "identity", and a later full-scale render
-  then skips the node. **Not fixed by M202.**
+  then skips the node. **Not fixed by M202.** PM decision: A1 goes on the M242.P4.T3 triage
+  list.
 - **A2 Unchecked stores.** RoD, identity, frames-needed, time-domain and components stores have no
   generation check or snapshot on this branch, and the live-state readers above can store a newer
   graph's answer under an old hash. **Fixed by M202.**

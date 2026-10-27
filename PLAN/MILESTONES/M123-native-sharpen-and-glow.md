@@ -253,3 +253,5 @@ Review round (Claude, PR #116): Bloom overflow caps and Glow's per-channel grade
 2026-10-26: UAT round 1 fixes (0a4b160cf) and goldens; release green. AppImage Natron-m123-sharpen-glow.AppImage for UAT round 2.
 
 UAT round 2 approved by the user 2026-10-26; follow-up M238 - EdgeExtend Options. Merges after M184 - Variable-Size Filter Kit (RADV parity pending).
+
+2026-10-27: M184 - Variable-Size Filter Kit landed (#113) with rewritten history; PR #116 closed with its base. The milestone's own commits were re-applied on main and adapted to M184's final APIs (per-frame metadata, Map reads as a remapped black pixel outside its image); new PR #129. UAT stays approved; goldens re-recorded as CI requires.

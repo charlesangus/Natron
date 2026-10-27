@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <optional>
 
 #include <gtest/gtest.h>
 
@@ -281,4 +282,34 @@ TEST_F(RenderContextMetadata, EditOverlappingADerivationUnderAContextStoresNothi
         ASSERT_TRUE(metadata != NULL);
     }
     EXPECT_EQ(afterClean, formatEffect->derivations()) << "the clean derivation was not kept";
+}
+
+// A native node rendered under two contexts in turn derives its image metadata once for each: the
+// cache keeps both answers instead of replacing one with the other.
+TEST_F(RenderContextMetadata, ImageMetadataOfTwoAlternatingContextsIsDerivedOnceEach)
+{
+    NodePtr format = createFormat(true);
+    ASSERT_TRUE(bool(format));
+    EffectInstancePtr effect = format->getEffectInstance();
+    ContextFormatTestEffect* formatEffect = dynamic_cast<ContextFormatTestEffect*>(effect.get());
+    ASSERT_TRUE(formatEffect != NULL);
+    const RenderContextPtr two = contextWithTestValue(2.);
+    const RenderContextPtr three = contextWithTestValue(3.);
+    const int before = formatEffect->imageMetadataDerivations();
+
+    for (int round = 0; round < 3; ++round) {
+        {
+            ActionContextScope underTwo(true, two);
+            const std::optional<int> v = formatEffect->getOutputMetadata(1., ViewIdx(0)).getInt("test/v");
+            ASSERT_TRUE(v.has_value());
+            EXPECT_EQ(2, *v);
+        }
+        {
+            ActionContextScope underThree(true, three);
+            const std::optional<int> v = formatEffect->getOutputMetadata(1., ViewIdx(0)).getInt("test/v");
+            ASSERT_TRUE(v.has_value());
+            EXPECT_EQ(3, *v);
+        }
+    }
+    EXPECT_EQ(before + 2, formatEffect->imageMetadataDerivations());
 }

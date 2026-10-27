@@ -1232,7 +1232,10 @@ public:
      * @brief As getMetadata(), also giving in hash the node hash the answer belongs to, which a
      * caller that read the hash earlier compares to tell whether the node moved meanwhile. An
      * answer whose derivation raced an edit is derived again, a bounded number of times; if none
-     * could be told to belong to one hash, hash is 0, which no node hash is.
+     * could be told to belong to one hash, hash is 0, which no node hash is. Under an active render
+     * context the node reads, the returned hash is the node hash mixed with that context's key
+     * (see mixRenderContextKey()), so compare it to a hash mixed the same way, not to the bare
+     * node hash.
      **/
     NodeMetadataConstPtr getMetadata(double time, ViewIdx view, U64* hash) WARN_UNUSED_RETURN;
 

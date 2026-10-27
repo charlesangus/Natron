@@ -32,13 +32,13 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - [ ] M240.P2.T4 — knobValueAsFloat in keyers, filters and OCIO
   - files: `Engine/Nodes/Keyer/Keyer.cpp`, `Keyer/ChromaKeyer.cpp`, `Filter/EdgeDetect.cpp`, `OCIO/OCIODisplay.cpp`, `OCIO/OcioNodeBase.cpp`
   - approach: As P2.T2, for the sites listed in Decisions, including ChromaKeyer's `keyGain` products and OCIODisplay's `1./gamma`.
-  - verify: the debug build passes, and the P2.T3 sweep passes for these nodes.
+  - verify: the debug build passes, and the node's tests (goldens included) pass unchanged.
   - size: M
 
 - [ ] M240.P2.T5 — knobValueAsFloat in the warps and lens nodes
   - files: `Engine/Nodes/Transform/IDistort.cpp`, `Transform/STMap.cpp`, `Transform/WarpGpu.h`, `Transform/LensDistortion.cpp`, `Transform/LensModelsGpu.h`
   - approach: As P2.T2. `setWarpGpuDouble` and `setLensModelGpuDouble` split a double into a float pair (hi, lo). Make the split non-trapping for values beyond FLT_MAX (hi = ±inf, lo = 0) so the GPU sees the same as the CPU.
-  - verify: the debug build passes; the P2.T3 sweep and `ctest -R "STMap|IDistort|LensDistortion"` pass.
+  - verify: the debug build passes; `ctest -R "STMap|IDistort|LensDistortion"` pass.
   - size: M
 
 - [ ] M240.P2.T6 — knobValueAsFloat in the deep and scene nodes
@@ -50,7 +50,21 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - [ ] M240.P2.T7 — knobValueAsFloat in the raw and write nodes
   - files: `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Raw/RawPrepare.cpp`, `Raw/RawInputColor.cpp`, `Raw/RawColorCalibrationCheckerNode.cpp`, `IO/OiioWriteSupport.cpp`, `IO/NativeWrite.cpp`
   - approach: As P2.T2. First settle the audit's unsettled raw sites (RawInputColor `row0..2` through the matrix inversion; checker `corner`; spot `bottomLeft`/`size` in RawColorCalibrationSpot and RawTemperature) and fix those that narrow a ±DBL_MAX value.
-  - verify: the debug build passes; the P2.T3 sweep and `ctest -R "Raw|Write"` pass.
+  - verify: the debug build passes; `ctest -R "Raw|Write"` pass.
+  - size: M
+
+## Phase 240.3: RADV failures inherited from main
+
+- [ ] M240.P3.T1 — Noise parity on RADV
+  - files: `Tests/Native/NativeNoiseGpu_Test.cpp`, `Engine/Nodes/Generator/Noise.cpp`, `Engine/Gpu/Kernels/noise*.slang`
+  - approach: `NativeNoiseGpuTest.MatchesTheCpuRender`'s `Match::Exact` cases differ by 1 ulp of normal values on RADV (worst 5.96e-08, e.g. white per pixel, decorrelated, and rotated odd cells far from the origin); lavapipe passes. Find which step rounds differently on hardware (fma contraction, a transcendental, float vs double hash scaling). Either make the CPU and GPU compute it identically, or, if the difference is inherent hardware rounding, move those cases to a 1-ulp tolerance with the reason recorded in the node's doc `Tolerance:` line.
+  - verify: `ctest -R NativeNoiseGpu` passes on RADV and lavapipe.
+  - size: M
+
+- [ ] M240.P3.T2 — OCIO nodes in the GPU capability allowlist
+  - files: `Tests/Native/NativeGpuCapability_Test.cpp`, `Engine/Nodes/OCIO/*`
+  - approach: on RADV, OCIODisplay and OCIOLookTransform report `canRenderOnGpu` true but are not allowlisted, so `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` fails. On lavapipe they report false. Find why the capability differs by device (runtime-shader support?). If GPU rendering is intended (M127 - Native OCIO Nodes), add them to the allowlist with the device condition the test needs; otherwise fix the capability check.
+  - verify: `ctest -R NativeGpuCapability` passes on RADV and lavapipe.
   - size: M
 
 ## Decisions`.
@@ -74,10 +88,10 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - [ ] M240.P2.T2 — knobValueAsFloat in the colour nodes
   - files: `Engine/Nodes/Color/Grade.cpp`, `Color/Clamp.cpp`, `Color/ColorMathNode.cpp`, `Color/Saturation.cpp`, `Color/ColorCorrect.cpp`
   - approach: Replace each overflowing narrow listed in Decisions (P1.T1 audit) with `knobValueAsFloat` from `Engine/Nodes/KnobReader.h`. Where a double expression can itself overflow or divide by zero before narrowing (Grade's `mul*(wh-bl)/d` and `1./gamma` at gamma 0, ColorCorrect's `invGamma`, Saturation's row blend), make the expression non-trapping with the same result the CPU would give without traps (±inf), without changing finite results.
-  - verify: the debug build passes, and the P2.T3 sweep passes for these nodes.
+  - verify: the debug build passes, and the node's tests (goldens included) pass unchanged.
   - size: M
 
-- [ ] M240.P2.T3 — Non-finite knob sweep under debug traps
+- [ ] M240.P2.T3 — ~~Non-finite knob sweep under debug traps~~ — cancelled: debug traps are a test-input contract (2026-10-27 decision), so feeding ±inf/1e300 knobs to every node tests nothing we rely on
   - files: `Tests/Native/NativeKnobNonFiniteSweep_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: For every registered native node (the registry `NativePluginList_Test` enumerates), set each float/double/colour knob in turn to +inf, -inf and ±1e300, render a small window from a constant source on the CPU in a debug build (traps enabled as on render threads), and assert the process doesn't die. A render error is allowed; a signal is not. Run it as one suite that prints the node and knob per case.
   - verify: `ctest -R NativeKnobNonFiniteSweep` passes in the debug build. Reverting one P2.T2 site makes it fail.
@@ -109,4 +123,6 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - **Adjacent traps:** `1./gamma` at gamma 0 in Grade, ColorCorrect and OCIODisplay; Grade's `wh-bl` overflow.
   - Noise already guards with `boundedFloat()` (clamp to ±FLT_MAX, NaN→0). The fixes use M184's `knobValueAsFloat` instead, which keeps ±inf as the user typed it. P2.T2 was split by family into P2.T2, P2.T4, P2.T5, P2.T6 and P2.T7.
 
-**Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), including the new sweep.
+- 2026-10-27 — **Rescoped by the trap policy (user):** see `PLAN/DECISIONS/2026-10-27-debug-float-traps-are-a-test-input-contract.md`. The knob→float narrowing fixes (P2.T2, P2.T4–P2.T7) stay as hygiene, with no trap holds: setup maths narrows first, then computes in double, with guarded reciprocals. The P2.T3 sweep is cancelled. The two RADV-only failures inherited from main get their own tasks (P3.T1, P3.T2).
+
+**Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), with every RADV failure inherited from main fixed.

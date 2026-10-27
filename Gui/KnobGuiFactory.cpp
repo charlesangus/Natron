@@ -53,6 +53,7 @@
 #include "Gui/KnobGuiSeparator.h"
 #include "Gui/KnobGuiShuffleMap.h"
 #include "Gui/KnobGuiString.h"
+#include "Gui/KnobGuiTrapezoid.h"
 #include "Gui/KnobGuiValue.h"
 
 NATRON_NAMESPACE_ENTER
@@ -122,6 +123,11 @@ KnobGuiFactory::createGuiForKnob(KnobIPtr knob,
                                  KnobGuiContainerI *container) const
 {
     assert(knob);
+    // A range knob is a plain KnobDouble, whose typeName() is FINAL, so its hint is checked first.
+    KnobDoublePtr isDouble = std::dynamic_pointer_cast<KnobDouble>(knob);
+    if (isDouble && isDouble->isRangeWidget()) {
+        return KnobGuiTrapezoid::BuildKnobGui(knob, container);
+    }
     std::map<std::string, LibraryBinary *>::const_iterator it = _loadedKnobs.find( knob->typeName() );
     if ( it == _loadedKnobs.end() ) {
         return NULL;

@@ -62,6 +62,8 @@ pixelKernelChannelBit(int nComps,
  * divisorSkipChannel is the channel of the row that is that divisor itself (-1 when none). The
  * stage multiplies back and applies mask and mix after the row function returns, so a point op
  * normally ignores mask and divisor; they are here for a kernel whose maths depends on them.
+ * Under a Divisor stage src is not divided and nothing is multiplied back: the op uses divisor
+ * itself.
  *
  * dst receives the result: the row function must write every channel whose bit is set in `channels`
  * and may leave the others untouched.

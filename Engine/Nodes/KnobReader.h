@@ -22,7 +22,9 @@
 
 #include "Global/Macros.h"
 
+#include <cfloat>
 #include <concepts>
+#include <limits>
 #include <memory>
 #include <type_traits>
 
@@ -107,6 +109,27 @@ private:
     ViewIdx _view;
     mutable int _reads;
 };
+
+/**
+ * @brief value as a float, rounded to nearest, and the infinity of its sign past the float range.
+ * That is what a cast gives, but a cast past the range also raises the overflow exception, which
+ * debug builds trap on render threads, and knobs ranging over every double reach past it.
+ **/
+inline float
+knobValueAsFloat(double value)
+{
+    // FLT_MAX plus half its spacing is the first double a cast rounds up to infinity.
+    constexpr double roundsToInfinity = (double)FLT_MAX + 0x1p103;
+
+    if (value >= roundsToInfinity) {
+        return std::numeric_limits<float>::infinity();
+    }
+    if (value <= -roundsToInfinity) {
+        return -std::numeric_limits<float>::infinity();
+    }
+
+    return (float)value;
+}
 
 /**
  * @brief A type that bakes its knobs into Params: a node, or anything computing on its behalf.

@@ -612,7 +612,10 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
 
             return new Int3DParam(isInt);
         default:
-            break;
+            // Wider knobs have no tuple type; getValue(dimension) and setValue(value, dimension)
+            // reach every dimension.
+
+            return new IntParam(isInt);
         }
     } else if (isDouble) {
         switch (dims) {
@@ -626,7 +629,10 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
 
             return new Double3DParam(isDouble);
         default:
-            break;
+            // Wider knobs, such as the 4-point range knobs, have no tuple type;
+            // getValue(dimension) and setValue(value, dimension) reach every dimension.
+
+            return new DoubleParam(isDouble);
         }
     } else if (isBool) {
         return new BooleanParam(isBool);

@@ -67,7 +67,7 @@ ConstantOp::bake(const KnobReader& reader) const
     params.rgba[0] = params.rgba[1] = params.rgba[2] = 0.f;
     params.rgba[3] = opaque ? 1.f : 0.f;
     for (int i = 0; i < dims; ++i) {
-        params.rgba[i] = (float)reader.valueOr(color, 0., i);
+        params.rgba[i] = knobValueAsFloat(reader.valueOr(color, 0., i));
     }
 
     return params;

@@ -1077,7 +1077,7 @@ def createInstance(app,group):
     # End of node "Keyer1"
 
     # Start of node "Premult1"
-    lastNode = app.createNode("net.sf.openfx.Premult", 2, group)
+    lastNode = app.createNode("Premult", 1, group)
     lastNode.setScriptName("Premult1")
     lastNode.setLabel("Premult1")
     lastNode.setPosition(752, 252)
@@ -1167,7 +1167,7 @@ def createInstance(app,group):
     # End of node "Shufflecopy1"
 
     # Start of node "Premult2"
-    lastNode = app.createNode("net.sf.openfx.Premult", 2, group)
+    lastNode = app.createNode("Premult", 1, group)
     lastNode.setScriptName("Premult2")
     lastNode.setLabel("Premult2")
     lastNode.setPosition(970, 380)

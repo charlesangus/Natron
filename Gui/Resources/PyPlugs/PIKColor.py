@@ -417,7 +417,7 @@ def createInstance(app,group):
     # End of node "Dot3"
 
     # Start of node "Premult3"
-    lastNode = app.createNode("net.sf.openfx.Premult", 2, group)
+    lastNode = app.createNode("Premult", 1, group)
     lastNode.setScriptName("Premult3")
     lastNode.setLabel("Premult3")
     lastNode.setPosition(272, 99)
@@ -429,7 +429,7 @@ def createInstance(app,group):
     # End of node "Premult3"
 
     # Start of node "Unpremult4"
-    lastNode = app.createNode("net.sf.openfx.Unpremult", 2, group)
+    lastNode = app.createNode("Unpremult", 1, group)
     lastNode.setScriptName("Unpremult4")
     lastNode.setLabel("Unpremult4")
     lastNode.setPosition(272, 227)
@@ -548,7 +548,7 @@ def createInstance(app,group):
     # End of node "ShuffleCopy2"
 
     # Start of node "Unpremult1"
-    lastNode = app.createNode("net.sf.openfx.Unpremult", 2, group)
+    lastNode = app.createNode("Unpremult", 1, group)
     lastNode.setScriptName("Unpremult1")
     lastNode.setLabel("Unpremult1")
     lastNode.setPosition(413, 423)
@@ -609,7 +609,7 @@ def createInstance(app,group):
     # End of node "Switch1"
 
     # Start of node "Premult1"
-    lastNode = app.createNode("net.sf.openfx.Premult", 2, group)
+    lastNode = app.createNode("Premult", 1, group)
     lastNode.setScriptName("Premult1")
     lastNode.setLabel("Premult1")
     lastNode.setPosition(411, 727)
@@ -926,7 +926,7 @@ def createInstance(app,group):
     # End of node "BlurBox2"
 
     # Start of node "Unpremult2"
-    lastNode = app.createNode("net.sf.openfx.Unpremult", 2, group)
+    lastNode = app.createNode("Unpremult", 1, group)
     lastNode.setScriptName("Unpremult2")
     lastNode.setLabel("Unpremult2")
     lastNode.setPosition(272, 803)

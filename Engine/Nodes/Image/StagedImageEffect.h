@@ -137,8 +137,8 @@ public:
     /**
      * @brief When inputNb is the source, at time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
-     * resampleGpuSourceRoI(). For a Custom op, getOpGpuInputRoI() for any input. outputRect
-     * otherwise.
+     * resampleGpuSourceRoI(). For an Aux input of a Passes op, opPassesInputRoI(). For a Custom
+     * op, getOpGpuInputRoI() for any input. outputRect otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  double time,
@@ -165,9 +165,9 @@ public:
     /**
      * @brief For a Point, Composite or Passes op, or a Resample op that opts into the GPU, the layer
      * its plane is read in, except for the mask input, which is read in the layer its mask channel
-     * resolves in, and a Composite input read in a selected colour layer of another colour layout,
-     * read in that layer (stageGpuSourceInputLayer()). For a Custom op, getOpGpuInputLayer(). False
-     * for every other op.
+     * resolves in, a Composite input read in a selected colour layer of another colour layout, which
+     * is read in that layer (stageGpuSourceInputLayer()), and an Aux input of a Passes op, which
+     * opPassesInputLayer() chooses. For a Custom op, getOpGpuInputLayer(). False for every other op.
      **/
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
@@ -408,6 +408,42 @@ protected:
     virtual bool opResamplesOnGpu() const WARN_UNUSED_RETURN
     {
         return false;
+    }
+
+    /**
+     * @brief False for a Passes op that has no GPU path, which then stays on the CPU even when its
+     * pass list is empty.
+     **/
+    virtual bool opPassesOnGpu() const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
+     * @brief For a Passes op, the layer its GPU recorder reads Aux input inputNb in, which
+     * PassGpuIO::inputs then holds. False when the recorder cannot read it, which keeps the node on
+     * the CPU; plane by default.
+     **/
+    virtual bool opPassesInputLayer(int /*inputNb*/,
+                                    const ImageLayerDesc& plane,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    ImageLayerDesc* layer) const WARN_UNUSED_RETURN
+    {
+        *layer = plane;
+
+        return true;
+    }
+
+    /**
+     * @brief For a Passes op, the pixels of Aux input inputNb its GPU recorder reads to fill
+     * outputRect, at the current time and view. outputRect by default.
+     **/
+    virtual RectI opPassesInputRoI(int /*inputNb*/,
+                                   const RectI& outputRect,
+                                   const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
+    {
+        return outputRect;
     }
 
     virtual bool opCanConcatenate() const WARN_UNUSED_RETURN

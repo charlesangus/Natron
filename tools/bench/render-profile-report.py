@@ -784,7 +784,7 @@ def self_test(args):
     assert nodes["Merge"] == NODES_DIR + "/Merge/Merge", nodes
     assert nodes["fr.inria.built-in.Write"] == NODES_DIR + "/IO/NativeWrite", nodes
     assert nodes[KEYER_PLUGIN_ID] == NODES_DIR + "/Keyer/Keyer", nodes
-    assert "net.sf.openfx.Despill" not in nodes, nodes
+    assert "net.sf.openfx.Radial" not in nodes, nodes
 
     tables = parse_cost_fragments(SEED_ROOT)
     checked_in = {path: read_text(os.path.join(SEED_ROOT, path)) for path in seed_fragment_paths(SEED_ROOT)}

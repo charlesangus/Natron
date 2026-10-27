@@ -1,0 +1,1 @@
+slang_add_kernel(posterize_wrapped Kernels/posterize.slang ENTRY posterize_wrapped REGISTRY NatronGpu)

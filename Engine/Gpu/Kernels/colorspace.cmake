@@ -1,0 +1,1 @@
+slang_add_kernel(colorspace_wrapped Kernels/colorspace.slang ENTRY colorspace_wrapped REGISTRY NatronGpu)

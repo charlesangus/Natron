@@ -1152,13 +1152,18 @@ def createInstance(app,group):
     # End of node "Shuffle1"
 
     # Start of node "HSVTool1"
-    lastNode = app.createNode("net.sf.openfx.HSVToolPlugin", 1, group)
+    lastNode = app.createNode("HSVTool", 1, group)
     lastNode.setScriptName("HSVTool1")
     lastNode.setLabel("HSVTool1")
     lastNode.setPosition(1294, -302)
     lastNode.setSize(104, 32)
     lastNode.setColor(0.48, 0.66, 1)
     groupHSVTool1 = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setChannels(["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("bottomLeft")
     if param is not None:
@@ -1189,6 +1194,11 @@ def createInstance(app,group):
     param = lastNode.getParam("brightnessRange")
     if param is not None:
         param.setValue(0, 1)
+        del param
+
+    param = lastNode.getParam("brightnessRangeOpen")
+    if param is not None:
+        param.setValue(False)
         del param
 
     param = lastNode.getParam("brightnessRangeRolloff")

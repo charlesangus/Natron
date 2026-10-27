@@ -19,3 +19,7 @@
 ### 2026-10-25T17:00:00Z — change-request
 - refs: none
 - From M169 - Pipelined Strip Member Timing (bosley-faux), NVIDIA RTX 3070 Ti gate: (1) `CurveSnapshotPrecisionTest.CurveMulKeepsTheProductError` (M171 - GPU Correctness Fixes' test) fails on NVIDIA in both schedulers and both push-descriptor variants: 25 BelowTiny pairs (`8e-31 × [0.5,1]`), e.g. `|hi+lo-exact| 5.06e-39 > 3.07e-44`. Residuals sit just above FLT_MIN but the Dekker partial products are subnormal and appear flushed to zero; the test's `representable` guard checks only the final residual. Passes on lavapipe. (2) `RenderSchedulerTest.CachedOutputsOfTwoFramesAtOnce` fails consistently on bosley-faux (leaf nodes render twice, with or without GPU) but passes on CI; undiagnosed. (3) The bosley-faux host env lacks git-lfs (raw fixtures are pointers) and has stale `build/assets/Plugins` (fetch-assets --check-pins fails); a host-setup note, not code. Logs: `.local/m169/p3/out/`.
+
+### 2026-10-26T23:00:00Z — change-request
+- refs: M101
+- From gpu (user decision, 2026-10-26): cost seeds are void (`PLAN/DECISIONS/2026-10-26-weight-based-gpu-placement.md`). Strike any unfinished M101 - Clean-Sheet Merge Node task or clause that measures or writes a `*.costseed.inc`, and don't add the README cost-seed checklist step. M239 - Weight-Based GPU Placement deletes the seed machinery; if M101 lands first, its already-committed seed file is removed in M239's rebase.

@@ -109,6 +109,7 @@ public:
 
     /**
      * @brief The Source's frame range moved by the offset; unbounded with an unbounded Source.
+     * With an animated offset each end is the output frame that shows that end of the Source.
      **/
     virtual void getFrameRange(double* first,
                                double* last) OVERRIDE FINAL;

@@ -31,6 +31,8 @@
 #include <list>
 #include <string>
 
+#include <QtCore/QMutex>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -49,6 +51,11 @@ inline constexpr InputSpec kLoopBeginInputs[] = {
  * @brief Marks where a loop body starts. An identity on its input: the body is whatever lies
  * between it and the LoopEnd that pairs with it. Its name is what outer loops are seen as from
  * inside nested ones (`loops.<name>.*`), so it is unique within its group.
+ *
+ * When the LoopEnd is in Feedback mode, each iteration after the first outputs what the body
+ * output at the iteration before it instead, conformed to its input's components and depth. Its
+ * hash then folds in the body's state, hashed as if it read a fixed image, and the LoopEnd's
+ * knobs that decide the iterations: what it outputs moves with them, its inputs' hashes do not.
  **/
 class LoopBegin
     : public NativeEffectBase {
@@ -83,8 +90,10 @@ private:
                        "below it are rendered once per iteration, each time with the loop variables "
                        "loop.iteration, loop.count, loop.t (0 to 1) and loop.frame set, which knob "
                        "drivers in the body read. A body node that reads no loop variable renders only "
-                       "once. The image passes through LoopBegin unchanged. Name is how a nested loop "
-                       "sees this one, as loops.<name>.*, and is unique within the group.",
+                       "once. The image passes through LoopBegin unchanged, except when the LoopEnd is "
+                       "in Feedback mode: each iteration after the first then starts from the output of "
+                       "the iteration before it. Name is how a nested loop sees this one, as "
+                       "loops.<name>.*, and is unique within the group.",
         .grouping = PLUGIN_GROUP_LOOP,
         .majorVersion = PLUGIN_MAJOR_NATRON_LOOPBEGIN,
         .minorVersion = 0,
@@ -112,10 +121,47 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL;
+
+    virtual FramesNeededMap getFramesNeeded(double time,
+                                            ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void getContextNodeRequests(double time,
+                                        ViewIdx view,
+                                        const RenderContextPtr& context,
+                                        const RectD& roi,
+                                        std::vector<ContextNodeRequest>* requests) const OVERRIDE FINAL;
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
+    virtual void appendExtraHashSources(std::vector<NodePtr>* sources) const OVERRIDE FINAL;
+
+    virtual void appendExtraContextReadSuccessors(std::vector<NodePtr>* successors,
+                                                  std::vector<RenderContextReadSet>* overridden) const OVERRIDE FINAL;
+
     void refreshNameMessage();
+
+    // Shows, or clears when empty, the warning that the iteration before had other components.
+    void refreshConformMessage(const std::string& message);
 
     KnobStringWPtr _name;
     std::string _postedMessage;
+
+    QMutex _conformMutex;
+    std::string _conformPosted;
 };
 
 /**

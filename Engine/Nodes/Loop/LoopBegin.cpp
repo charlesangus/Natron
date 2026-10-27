@@ -30,9 +30,14 @@
 #include <QtCore/QString>
 
 #include "Engine/AppInstance.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
 
@@ -173,7 +178,278 @@ Route
 LoopBegin::route(double time,
                  ViewIdx /*view*/)
 {
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    if (end && end->feedbackStepBefore(getCurrentRenderContext(), time, &previous)) {
+        return Route::none();
+    }
+
     return Route::input(0, time);
+}
+
+RenderContextReadSet
+LoopBegin::getExtraContextReads() const
+{
+    RenderContextReadSet reads;
+
+    // Under Feedback, whether it passes its input through or the iteration before it.
+    if (LoopEnd::feedbackEndOf(getNode())) {
+        const std::string name = getLoopName();
+        reads.add(RenderContextName::loops(name, "t"));
+        reads.add(RenderContextName::loops(name, "count"));
+        reads.add(RenderContextName::loops(name, "frame"));
+    }
+
+    return reads;
+}
+
+FramesNeededMap
+LoopBegin::getFramesNeeded(double time,
+                           ViewIdx view)
+{
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    if (end && end->feedbackStepBefore(getCurrentRenderContext(), time, &previous)) {
+        return FramesNeededMap();
+    }
+
+    return NativeEffectBase::getFramesNeeded(time, view);
+}
+
+void
+LoopBegin::getContextNodeRequests(double time,
+                                  ViewIdx view,
+                                  const RenderContextPtr& context,
+                                  const RectD& roi,
+                                  std::vector<ContextNodeRequest>* requests) const
+{
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    if (!end || !end->feedbackStepBefore(context, time, &previous)) {
+        return;
+    }
+    const EffectInstancePtr tail = previous.tail->getEffectInstance();
+    if (!tail) {
+        return;
+    }
+    ContextNodeRequest request;
+    request.node = previous.tail;
+    request.context = previous.context;
+    request.time = previous.time;
+    request.view = view;
+    request.roi = roi;
+    // Every node of the body at this iteration may widen what it reads of this one: the iteration
+    // before is planned once, for all of it.
+    request.afterConsumers = true;
+    // The layer the tail stores, which is the one render() looks up.
+    {
+        ActionContextScope actions(true, previous.context);
+        NodeMetadataConstPtr metadata = tail->getRenderMetadata(previous.time, view);
+        if (metadata) {
+            ImageLayerDesc layer, pairedLayer;
+            getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
+            if (layer.getNumComponents() > 0) {
+                request.comps.push_back(layer);
+            }
+        }
+    }
+    requests->push_back(request);
+}
+
+StatusEnum
+LoopBegin::getRegionOfDefinition(U64 hash,
+                                 double time,
+                                 const RenderScale& scale,
+                                 ViewIdx view,
+                                 RectD* rod)
+{
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    if (!end || !end->feedbackStepBefore(getCurrentRenderContext(), time, &previous)) {
+        return NativeEffectBase::getRegionOfDefinition(hash, time, scale, view, rod);
+    }
+    const EffectInstancePtr tail = previous.tail->getEffectInstance();
+    if (!tail) {
+        return eStatusFailed;
+    }
+    // The region of the iteration before asks this node's at the one before it, and so on: asked
+    // first at the last iteration, that recursion would run through every body of the chain.
+    // The regions of the iterations not cached yet are asked from the earliest up, so each of
+    // those asks goes one body deep.
+    std::vector<LoopEnd::FeedbackStep> uncached;
+    LoopEnd::FeedbackStep at = previous;
+    LoopEnd::FeedbackStep before;
+    while (end->feedbackStepBefore(at.context, at.time, &before)) {
+        ActionContextScope actions(true, at.context);
+        RectD cached;
+        bool isProjectFormat = false;
+        if (getRegionOfDefinitionFromCache(getRenderHash(), at.time, scale, view, &cached, &isProjectFormat) == eStatusOK) {
+            break;
+        }
+        uncached.push_back(at);
+        at = before;
+    }
+    for (std::vector<LoopEnd::FeedbackStep>::const_reverse_iterator it = uncached.rbegin(); it != uncached.rend(); ++it) {
+        ActionContextScope actions(true, it->context);
+        RectD earlier;
+        bool isProjectFormat = false;
+        if (getRegionOfDefinition_public(getRenderHash(), it->time, scale, view, &earlier, &isProjectFormat) == eStatusFailed) {
+            return eStatusFailed;
+        }
+    }
+    ActionContextScope actions(true, previous.context);
+    bool isProjectFormat = false;
+
+    return tail->getRegionOfDefinition_public(tail->getRenderHash(), previous.time, scale, view, rod, &isProjectFormat);
+} // LoopBegin::getRegionOfDefinition
+
+StatusEnum
+LoopBegin::render(const RenderActionArgs& args)
+{
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    // Not under a Feedback iteration after the first, the node is an identity.
+    if (!end || !end->feedbackStepBefore(getCurrentRenderContext(), args.time, &previous)) {
+        return eStatusFailed;
+    }
+    const EffectInstancePtr tail = previous.tail->getEffectInstance();
+    if (!tail) {
+        return eStatusFailed;
+    }
+    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
+    ImagePtr src;
+    {
+        InputContextScope scope(this, previous.context);
+        InputContextArgs tailContext(this, tail, -1, previous.time, args.view);
+        src = end->findFeedbackImage(tailContext.contextKey(), previous.time, args.view, mipmapLevel, args.roi);
+        if (!src) {
+            ImageLayerDesc layer, pairedLayer;
+            ImageBitDepthEnum depth = eImageBitDepthFloat;
+            {
+                ActionContextScope actions(true, previous.context);
+                NodeMetadataConstPtr metadata = tail->getRenderMetadata(previous.time, args.view);
+                if (metadata) {
+                    getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
+                    depth = metadata->getBitDepth(-1);
+                }
+            }
+            if ((layer.getNumComponents() == 0) && !args.outputLayers.empty()) {
+                layer = args.outputLayers.front().first;
+            }
+            RenderRoIArgs tailArgs(previous.time,
+                                   args.mappedScale,
+                                   mipmapLevel,
+                                   args.view,
+                                   args.byPassCache,
+                                   args.roi,
+                                   RectD(),
+                                   std::list<ImageLayerDesc>(1, layer),
+                                   depth,
+                                   false,
+                                   this,
+                                   eStorageModeRAM,
+                                   args.time);
+            std::map<ImageLayerDesc, ImagePtr> images;
+            const RenderRoIRetCode code = renderInputOrTakeFromStore(tail, -1, &tailArgs, &images, this, &tailContext);
+            if (code == eRenderRoIRetCodeAborted) {
+                return eStatusOK;
+            }
+            if (code == eRenderRoIRetCodeFailed) {
+                return eStatusFailed;
+            }
+            if (!images.empty()) {
+                src = images.begin()->second;
+            }
+        }
+    }
+
+    std::string conformMessage;
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        const ImagePtr& dst = it->second;
+        if (!dst) {
+            return eStatusFailed;
+        }
+        const RectI covered = src ? args.roi.intersect(src->getBounds()) : RectI();
+        if (covered != args.roi) {
+            dst->fillZero(args.roi);
+        }
+        if (covered.isNull()) {
+            continue;
+        }
+        if ((src->getComponents() == dst->getComponents()) && (src->getBitDepth() == dst->getBitDepth())) {
+            dst->pasteFrom(*src, covered, false);
+            continue;
+        }
+        if (src->getComponents() != dst->getComponents()) {
+            conformMessage = tr("The iteration before outputs %1 where the loop's input has %2: it is converted.")
+                                 .arg(QString::fromUtf8(src->getComponents().getChannelsLabel().c_str()))
+                                 .arg(QString::fromUtf8(dst->getComponents().getChannelsLabel().c_str()))
+                                 .toStdString();
+        }
+        const int srcComps = (int)src->getComponentsCount();
+        src->convertToFormat(covered, (srcComps == 4) ? 3 : ((srcComps == 1) ? 0 : -1), false, dst.get());
+    }
+    refreshConformMessage(conformMessage);
+
+    return eStatusOK;
+} // LoopBegin::render
+
+void
+LoopBegin::appendNodeContentHash(ContentHasher& h) const
+{
+    const NodePtr self = getNode();
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(self);
+
+    h.appendBool(bool(end));
+    if (!end) {
+        return;
+    }
+    // Not the body's stored hashes, which fold this node's in: the body as if it read a fixed
+    // image, which moves with every edit in it and with what feeds it from outside.
+    const NodePtr endNode = end->getNode();
+    U64 digest = 0;
+    Node::walkLoopBody(self, endNode->getInput(0), endNode, &digest, 0);
+    h.appendU64(digest);
+    end->appendFeedbackKnobsHash(h);
+}
+
+void
+LoopBegin::appendExtraHashSources(std::vector<NodePtr>* sources) const
+{
+    const NodePtr self = getNode();
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(self);
+
+    if (end) {
+        const NodePtr endNode = end->getNode();
+        Node::walkLoopBody(self, endNode->getInput(0), endNode, 0, sources);
+    }
+}
+
+void
+LoopBegin::appendExtraContextReadSuccessors(std::vector<NodePtr>* successors,
+                                            std::vector<RenderContextReadSet>* overridden) const
+{
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    const NodePtr tail = end ? end->getNode()->getInput(0) : NodePtr();
+
+    // Its output is the tail's under the iteration before: whatever the tail reads.
+    if (tail) {
+        successors->push_back(tail);
+        overridden->push_back(RenderContextReadSet());
+    }
+}
+
+void
+LoopBegin::refreshConformMessage(const std::string& message)
+{
+    QMutexLocker locker(&_conformMutex);
+
+    refreshLoopMessage(getNode(), eMessageTypeWarning, message, &_conformPosted);
 }
 
 bool

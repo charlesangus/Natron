@@ -87,10 +87,42 @@ M259 - GPU Placement Under Render Contexts.
 - The fold runs from iteration 0 to the last; `reverseOrder` runs it from the last to 0, so
   with over the first iteration ends on top. Mean, sum, min and max give the same result in
   either order, up to rounding.
-- `mode` Single Pass outputs iteration `singlePassIteration` (counted from 0) alone,
-  unfolded, with the variables it has in the whole loop: its `loop.t` is
-  `singlePassIteration / (n - 1)`. Past the last iteration is an error. `operation`,
-  `reverseOrder` and `stopCondition` do not apply.
+- `mode` Feedback: see [Feedback](#feedback).
+- `singlePass` outputs iteration `singlePassIteration` (counted from 0) alone, unfolded,
+  with the variables it has in the whole loop: its `loop.t` is
+  `singlePassIteration / (n - 1)`. Under Feedback it is that iteration's output, after the
+  iterations before it. Past the last iteration is an error. `operation`, `reverseOrder` and
+  `stopCondition` do not apply.
+
+## Feedback
+
+- `mode` Feedback chains the iterations instead of folding them: iteration 0 renders the body
+  on the loop's input, and each later iteration renders it on the output of the one before,
+  which the LoopBegin outputs in place of its input. The LoopEnd outputs the last iteration.
+  Five iterations of a 1 px Erode give a 5 px Erode; ten 1 px translates, a 10 px one.
+- The variables are those of Accumulate. A body that reads none of them still renders once
+  per iteration: each iteration reads a different image.
+- `stopCondition` applies: the output is the last iteration before the one it is true for.
+  `operation` and `reverseOrder` do not apply.
+- The LoopBegin keeps its input's format, layers and bit depth. A body whose output has other
+  layers or components is converted to them on the way back to the LoopBegin, with a warning
+  on the LoopBegin.
+- Region of interest: each iteration asks the one before it for what the body needs, so the
+  region asked of the loop's input grows by every iteration. n iterations of a body reading r
+  pixels around each pixel ask the input for n·r pixels around the output region, as one
+  n·r filter would. The region of definition follows the body from iteration to iteration.
+- Memory: an iteration's output is held only until the next iteration has read it, so the
+  memory in use does not grow with the number of iterations, within the render's bytes
+  budget. The render time does: every iteration renders the whole body. Nodes inside the
+  body cache per iteration; a cached render of the loop is reused until the body, a node
+  feeding it, a parameter one of its expressions reads, or a LoopEnd iteration parameter
+  changes.
+- Frames: with `iterateOver` Frames, iteration k renders the body at its own frame and reads
+  the previous iteration's output, rendered at the frame before it by `frameStep`. A body
+  adding the frame's image onto the LoopBegin's leaves a trail of the frames from
+  `frameStart` to `frameEnd`. A time offset in the body offsets each iteration again: a node
+  reading the LoopBegin one frame back, over three iterations, reads the loop's input three
+  frames back. Feedback from one output frame to the next is not supported.
 
 ## Stop condition
 
@@ -119,7 +151,7 @@ M259 - GPU Placement Under Render Contexts.
 
 - Images only: a deep or scene input is refused at connection time.
 - The region of definition is the union of the body's over the iterations, each at its
-  frame.
+  frame; under Feedback, the last iteration's.
 - Metadata stays at its base values: the format, layers and other metadata are the body's
   outside the loop, not per iteration. A body whose format or layers change with a loop
   variable is folded as if they did not.

@@ -93,6 +93,11 @@ def _path_element(text):
 
 _COLOR_PROPERTY = "natronCategoryColor"
 _SHORTCUT_PROPERTY = "natronShortcut"
+_INPUT_KIND_PROPERTY = "natronInputKind"
+_PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
+
+# A first input of this kind takes any kind.
+_ANY_KIND = "polymorphic"
 
 _MNEMONIC = re.compile(r"&(&?)")
 
@@ -144,6 +149,20 @@ def _node_items():
     return _walk_menu(menu, [])
 
 
+def _accepts(action, context):
+    """Whether the node type of `action` fits a launch `context`: its first
+    input takes context['inputKind'], and it declares a prim path knob when
+    context['needsPrimPathKnob'] says so."""
+    kind = context.get('inputKind')
+    if kind:
+        accepted = _string_property(action, _INPUT_KIND_PROPERTY)
+        if accepted not in (kind, _ANY_KIND):
+            return False
+    if context.get('needsPrimPathKnob') and not _string_property(action, _PRIM_PATH_KNOB_PROPERTY):
+        return False
+    return True
+
+
 def _command_items(window):
     if window is None:
         return []
@@ -189,12 +208,16 @@ class NatronPlugin(TabTabTabPlugin):
         self._window = None
         self._storage_dir = None
         self._pending = []
+        self._context = None
 
     def set_app(self, app):
         self._app = app
 
     def set_window(self, window):
         self._window = window
+
+    def set_context(self, context):
+        self._context = context
 
     def main_window(self):
         # The popup itself becomes the active window once shown, so the
@@ -208,6 +231,10 @@ class NatronPlugin(TabTabTabPlugin):
         self._storage_dir = path
 
     def get_items(self):
+        if self._context:
+            # A filtered launch lists node types only.
+            nodes = [item for item in _node_items() if _accepts(item['menuobj'], self._context)]
+            return _make_menupaths_unique(nodes)
         return _make_menupaths_unique(_node_items() + _command_items(self.main_window()))
 
     def get_weights_file(self):
@@ -277,10 +304,16 @@ def _attach_popup_to(window):
         pass
 
 
-def launch(app):
-    """Open the tab menu for `app`, the GuiApp whose node graph has focus."""
+def launch(app, context=None):
+    """Open the tab menu for `app`, the GuiApp whose node graph has focus.
+
+    `context`, when given, lists only the node types that fit it, see
+    _accepts(): a dict with 'inputKind' (a kind name such as "scene") and
+    'needsPrimPathKnob'.
+    """
     window = _find_natron_main_window()
     _plugin.set_app(app)
+    _plugin.set_context(dict(context) if context else None)
     _plugin.set_window(window)
     _attach_popup_to(window)
     space_mode_order, scroll_enabled = _read_preferences()

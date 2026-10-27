@@ -31,6 +31,7 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -60,6 +61,7 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = SceneReparentNode::kInputs,
+        .primPathKnob = kSceneParamPrimPath,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

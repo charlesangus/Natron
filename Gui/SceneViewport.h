@@ -595,6 +595,18 @@ public:
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
 
+    /**
+     * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
+     * paths now, or nothing when it can.
+     **/
+    struct SelectionActions {
+        std::function<QString(const QStringList& paths)> setOnNodeBlocker;
+        std::function<void(const QStringList& paths)> setOnNode;
+        std::function<void(const QStringList& paths)> createFromSelection;
+    };
+
+    void setSelectionActions(const SelectionActions& actions);
+
     // The Camera node that made the camera prim at a path of the shown scene, null for none.
     void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
 

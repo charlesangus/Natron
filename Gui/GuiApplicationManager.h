@@ -73,6 +73,10 @@
 #define kNodesMenuPropPluginMajor "natronPluginMajor"
 #define kNodesMenuPropCategoryColor "natronCategoryColor"
 #define kNodesMenuPropShortcut "natronShortcut"
+// What the plug-in's first input takes (see TabMenuBridge::dataKindKey()), empty without inputs,
+// and the script name of its prim path or pattern knob, empty for none.
+#define kNodesMenuPropInputKind "natronInputKind"
+#define kNodesMenuPropPrimPathKnob "natronPrimPathKnob"
 
 // On grouping submenus' menu actions: the grouping's name, unescaped, and the icon the
 // toolbar draws for it.

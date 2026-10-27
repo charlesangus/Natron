@@ -73,6 +73,7 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
+        .primPathKnob = kUSDPruneParamPrimPattern,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

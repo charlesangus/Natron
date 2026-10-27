@@ -66,6 +66,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
@@ -1182,6 +1183,19 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
             return getSceneViewedNode();
         });
+        {
+            SceneViewport::SelectionActions actions;
+            actions.setOnNodeBlocker = [this](const QStringList& paths) -> QString {
+                return SceneSelectionActions::setOnNodeBlocker(getGui(), paths);
+            };
+            actions.setOnNode = [this](const QStringList& paths) {
+                SceneSelectionActions::setOnCurrentNode(getGui(), paths);
+            };
+            actions.createFromSelection = [this](const QStringList& paths) {
+                SceneSelectionActions::createFromSelection(getGui(), getSceneViewedNode(), paths);
+            };
+            _imp->sceneViewport->setSelectionActions(actions);
+        }
         {
             SceneTransformPolicyTarget::Context context;
             context.viewedNode = [this]() -> NodePtr {

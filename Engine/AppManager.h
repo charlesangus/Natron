@@ -750,7 +750,7 @@ protected:
     template <typename PLUGIN>
     void registerNativePlugin();
 
-    void registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
+    Plugin* registerBuiltInEffect(const EffectInstancePtr& node, void (*buildEffect)(), const QString& iconPath, bool isDeprecated, bool internalUseOnly);
 
     virtual AppInstancePtr makeNewInstance(int appID) const;
     virtual void registerGuiMetaTypes() const

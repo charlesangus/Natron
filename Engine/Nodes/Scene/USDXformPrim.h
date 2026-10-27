@@ -63,6 +63,7 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = SceneReparentNode::kInputs,
+        .primPathKnob = kSceneParamPrimPath,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

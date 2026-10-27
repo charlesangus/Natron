@@ -28,8 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
+
 #include <QString>
 
+#include "Engine/EngineFwd.h"
+#include "Global/Enums.h"
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -40,6 +44,24 @@ NATRON_NAMESPACE_ENTER
  * GUI thread only; at most one menu is open at a time.
  **/
 namespace TabMenuBridge {
+/**
+ * @brief A launch that lists only the node types that can take some data, and inserts the one
+ * chosen after a node.
+ **/
+struct LaunchContext {
+    // Only node types whose first input takes this kind are listed, and no commands.
+    DataKindEnum inputKind = eDataKindScene;
+    // Only node types that declare a prim path or pattern knob are listed.
+    bool needsPrimPathKnob = false;
+    // The node the created node is inserted after, taking its outputs as the graph's insert does.
+    NodeWPtr insertAfter;
+    // Called with the node created, in the undo step that creates it.
+    std::function<void(const NodePtr& created)> created;
+};
+
+// The name the tab menu's adapter knows kind by: "image", "deep", "scene", "polymorphic" or "raw".
+QString dataKindKey(DataKindEnum kind);
+
 /**
  * @brief Triggers action with a node creation context on the graph that last called launch(): nodes
  * the action creates with no collection go into that graph, and the first one with no position lands
@@ -53,6 +75,13 @@ void triggerAction(QAction* action);
  * A Python failure is reported in the Script Editor and on stderr.
  **/
 void launch(NodeGraph* graph);
+
+/**
+ * @brief Opens the tab menu filtered by context over graph, which holds context.insertAfter. The
+ * action chosen is triggered as one undo step, with insertAfter alone selected in graph so that
+ * the node it creates is inserted after it; context.created is then called with that node.
+ **/
+void launch(NodeGraph* graph, const LaunchContext& context);
 
 /**
  * @brief Puts the bundled tabtabtab folder (<bin>/../Resources/tabtabtab) on sys.path and imports the adapter.

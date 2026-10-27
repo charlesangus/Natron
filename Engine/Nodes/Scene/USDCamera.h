@@ -77,6 +77,7 @@ public:
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDCamera.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
+        .primPathKnob = kSceneParamPrimPath,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

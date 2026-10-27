@@ -933,6 +933,8 @@ GuiApplicationManager::populateShortcuts()
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DCycleTool, kShortcutDescActionViewer3DCycleTool, Qt::NoModifier, Qt::Key_Y);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DToggleSpace, kShortcutDescActionViewer3DToggleSpace, Qt::NoModifier, Qt::Key_D);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, (Qt::Key)0);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab);
     }
 
     ///Player

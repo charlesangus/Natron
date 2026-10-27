@@ -31,7 +31,7 @@ Scouted facts (2026-10-25; re-check at promotion):
 
 ## Phase 196.1: Measure
 
-- [ ] M196.P1.T1 — Bench copy rate against concurrent compute per queue configuration
+- [x] M196.P1.T1 — Bench copy rate against concurrent compute per queue configuration
   - files: `tools/gpu-spike/bench/GpuBench_main.cpp`
   - approach: Add modes that run host-import up and down copies alone, beside a compute load, and with the compute load on a different queue, for each queue configuration the device exposes (shared queue, second compute-family queue, transfer family with and without `RADV_PERFTEST=transfer_queue`). Print one row per configuration with the rate and the queue family and index used.
   - verify: On the GPU host, the isolated rows reproduce about 16.1 down / 10.4 up and the overlap rows reproduce about 10 / 9.9; the build compiles under the existing spike target.
@@ -68,3 +68,8 @@ Scouted facts (2026-10-25; re-check at promotion):
 **Verification gate:** ctest green on both scheduler legs (lavapipe, `NATRON_TEST_REQUIRE_GPU`); on the GPU host, keying_grade, cg_multipass and defocus_retime at UHD and 8K show exposed transfer no worse than M156's shipped numbers and, if a fix landed, in-app copy rates within 10% of the same-boot GpuBench overlap-off rates; or the Decisions entry shows why the residual cannot be closed and the user accepts it.
 
 ## Decisions
+
+- 2026-10-27 — **P1.T1 queue bench (gpu, AMD Radeon AI PRO R9700, RADV GFX1201, PCIe 5; 256 MB host-import copies, wall time submit to fence):** the host changed since M156 (RX 7900 XTX), so its 16.1 / 10.4 GB/s figures don't carry over.
+  - Without `RADV_PERFTEST`: no transfer-only family. Compute-family copies run 10.6 up and 11.7–12.1 down alone. Beside a compute load on another compute queue they fall to 0.3–3.6 up and 4.8 down. On the same queue as the load they keep 9.6–10.9 up and 11.9 down (serialised).
+  - With `RADV_PERFTEST=transfer_queue`: a 2-queue transfer-only family appears. Copies on it run **44.7 up and 44.8 down alone, and 44.8 up and 41.5 down beside compute**.
+  - So contention on the compute queues is real, and the SDMA queue is about 4× faster than any compute-queue copy and barely slowed by compute. Candidate (a) in P1.T3 is the lead. Its catch is that RADV exposes the queue only behind `RADV_PERFTEST`, so the fix has to decide whether Natron sets it (before instance creation) or documents it.

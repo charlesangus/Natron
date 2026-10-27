@@ -38,7 +38,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 
 ## Phase 212.1: Node
 
-- [ ] M212.P1.T1 — Knobs, mask and gain (CPU)
+- [x] M212.P1.T1 — Knobs, mask and gain (CPU)
   - files: new `Engine/Nodes/Color/ToneEqualizer.h`, `Engine/Nodes/Color/ToneEqualizer.cpp`, `Engine/Nodes/Color/ToneEqualizer.reg.inc`
   - approach:
     - Port `compute_luminance_mask`, the estimators, the guided-filter and EIGF variants (on M209's `GuidedFilter` and `Eigf`), `compute_correction` with the RBF band interpolation, and the mask compensation from `toneequal.c`.
@@ -54,13 +54,13 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
   - verify: P1.T5's GUI script passes.
   - size: L
 
-- [ ] M212.P1.T3 — GPU path
+- [x] M212.P1.T3 — GPU path
   - files: new `Engine/Gpu/Kernels/toneequal.slang`, `toneequal.cmake`, `Engine/Nodes/Color/ToneEqualizer.cpp`, new `Tests/Native/NativeToneEqualizerGpu_Test.cpp`
   - approach: port from darktable's `data/kernels/toneequal.cl`, with the mask smoothing on M209's GPU guided filter and EIGF.
   - verify: `ctest -R NativeToneEqualizerGpu` passes on lavapipe within the doc's tolerance.
   - size: L
 
-- [ ] M212.P1.T4 — Reference parity, knob audit and docs
+- [x] M212.P1.T4 — Reference parity, knob audit and docs
   - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeToneEqualizer_Test.cpp`, `Engine/Nodes/Color/docs/ToneEqualizer.md`
   - approach:
     - darktable-cli jobs on a developed fixture: each estimator, each detail mode, band edits, and the compensations.
@@ -70,7 +70,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
   - verify: `ctest -R NativeToneEqualizer` passes within the doc's `Tolerance:`.
   - size: L
 
-- [ ] M212.P1.T5 — Xvfb GUI script for the viewer interaction
+- [x] M212.P1.T5 — Xvfb GUI script for the viewer interaction
   - files: new `Tests/gui/test_tone_equalizer.py`
   - approach: create ToneEqualizer on a fixture, hover over a known zone, check the overlay readout, scroll, and check that the matching band knob changed by one step. Take screenshots of the Result and Mask outputs.
   - verify: the script passes under Xvfb.
@@ -81,3 +81,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 - The Xvfb script passes.
 - Screenshots of a plate relit by zone, with its Mask output, are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — All 7 darktable luminance estimators ported (plan's list was short). GPU kernel is original (darktable has no OpenCL tone equalizer). References use linear Rec.709 on a synthetic source (the node is space-agnostic). Scroll-to-edit is ported via a new generic viewer wheel hook for native overlays (PM). GUI script named m212_tone_equalizer.py.

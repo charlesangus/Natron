@@ -159,6 +159,12 @@ OrtLoader::load(const std::vector<Candidate>& candidates)
     return loader;
 }
 
+void*
+OrtLoader::symbol(const char* name) const
+{
+    return _handle ? dlsym(_handle, name) : nullptr;
+}
+
 bool
 OrtLoader::loadLibrary(const std::string& file,
                        std::string* error)

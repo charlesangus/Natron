@@ -62,6 +62,22 @@ list always ends with the CPU:
 - **OpenVINO** is attached with `device_type` set to `GPU`, or to `GPU.<index>` for a nonzero GPU
   index.
 
+EPs are attached without ORT's provider option structs (`OrtCUDAProviderOptions`,
+`OrtROCMProviderOptions`, `OrtMIGraphXProviderOptions`), because a library older than Natron's
+headers may lay them out differently. Only calls already in OrtApi version
+`OrtLoader::kMinimumApiVersion` (18) are used:
+
+- **CUDA:** `CreateCUDAProviderOptions`, then `UpdateCUDAProviderOptions` with `device_id`, then
+  `SessionOptionsAppendExecutionProvider_CUDA_V2`.
+- **ROCm:** `CreateROCMProviderOptions`, then `UpdateROCMProviderOptions` with `device_id`, then
+  `SessionOptionsAppendExecutionProvider_ROCM`. The library allocates and fills the struct itself,
+  so Natron never reads or writes its fields.
+- **MIGraphX:** the key/value `SessionOptionsAppendExecutionProvider("MIGraphX", device_id)`. If the
+  library's generic append doesn't know MIGraphX, Natron falls back to the exported
+  `OrtSessionOptionsAppendExecutionProvider_MIGraphX(options, device_id)`. That function leaves every
+  other option at the library's default.
+- **OpenVINO:** the key/value `SessionOptionsAppendExecutionProvider("OpenVINO", device_type)`.
+
 `session->device()` reports the EP the session actually runs on.
 
 ## Sessions and the cache
@@ -90,11 +106,14 @@ Every run first passes a per-device gate, so parallel renders queue up rather th
 device:
 
 - **A GPU** allows one run at a time.
-- **The CPU** allows `max(1, cores / threads)` runs at once. When threads is 0, ORT takes every core
-  for each run, so the CPU allows one run at a time.
+- **The CPU** shares its cores. Each run reserves as many cores as its session's thread count, or
+  every core when threads is 0, since ORT then takes them all. A run waits while it would push the
+  reservations past the core count, unless nothing else is running. With one thread count in use,
+  that is `max(1, cores / threads)` runs at once.
 
-The CPU gate is created with the thread count of the first session that runs on the CPU, and that
-count holds for the rest of the process.
+Each run reserves its own session's count, so changing "AI Threads" in Preferences applies to
+sessions opened after the change (the count is part of the cache key). Runs already in flight keep
+their reservation until they finish.
 
 ## Tiled inference
 

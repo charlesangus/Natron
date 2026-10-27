@@ -119,6 +119,80 @@ ortOptimizationLevel(AiGraphOptimization level)
     return ORT_ENABLE_ALL;
 }
 
+// Appends a GPU execution provider through key/value options, or functions taking plain
+// arguments, never through a provider options struct: a library older than these headers may lay
+// its structs out differently. Every function used here is in OrtApi version
+// OrtLoader::kMinimumApiVersion. Null on success or for the CPU, which needs no append.
+OrtStatus*
+appendProvider(const OrtLoader& loader,
+               OrtSessionOptions* sessionOptions,
+               AiDeviceEnum device,
+               int gpuIndex)
+{
+    const OrtApi* api = loader.api();
+    const std::string deviceId = std::to_string(gpuIndex);
+    const char* deviceIdKeys[] = { "device_id" };
+    const char* deviceIdValues[] = { deviceId.c_str() };
+    OrtStatus* status = nullptr;
+
+    switch (device) {
+    case eAiDeviceCuda: {
+        OrtCUDAProviderOptionsV2* cuda = nullptr;
+        status = api->CreateCUDAProviderOptions(&cuda);
+        if (!status) {
+            status = api->UpdateCUDAProviderOptions(cuda, deviceIdKeys, deviceIdValues, 1);
+        }
+        if (!status) {
+            status = api->SessionOptionsAppendExecutionProvider_CUDA_V2(sessionOptions, cuda);
+        }
+        api->ReleaseCUDAProviderOptions(cuda);
+        break;
+    }
+    case eAiDeviceRocm: {
+        // Created and filled by the library itself, so only its own layout is ever read.
+        OrtROCMProviderOptions* rocm = nullptr;
+        status = api->CreateROCMProviderOptions(&rocm);
+        if (!status) {
+            status = api->UpdateROCMProviderOptions(rocm, deviceIdKeys, deviceIdValues, 1);
+        }
+        if (!status) {
+            status = api->SessionOptionsAppendExecutionProvider_ROCM(sessionOptions, rocm);
+        }
+        api->ReleaseROCMProviderOptions(rocm);
+        break;
+    }
+    case eAiDeviceMigraphx: {
+        // Libraries whose generic append does not know MIGraphX still export the device-id-only
+        // append, which leaves every other option at the library's own default.
+        status = api->SessionOptionsAppendExecutionProvider(sessionOptions, "MIGraphX", deviceIdKeys, deviceIdValues, 1);
+        if (status) {
+            typedef OrtStatus*(ORT_API_CALL * AppendMigraphxFn)(OrtSessionOptions*, int);
+            AppendMigraphxFn appendMigraphx = reinterpret_cast<AppendMigraphxFn>(loader.symbol("OrtSessionOptionsAppendExecutionProvider_MIGraphX"));
+            if (appendMigraphx) {
+                const std::string genericError = statusMessage(api, status);
+                status = appendMigraphx(sessionOptions, gpuIndex);
+                if (status) {
+                    status = api->CreateStatus(ORT_FAIL, (genericError + "; " + statusMessage(api, status)).c_str());
+                }
+            }
+        }
+        break;
+    }
+    case eAiDeviceOpenvino: {
+        const std::string deviceType = gpuIndex > 0 ? "GPU." + deviceId : std::string("GPU");
+        const char* keys[] = { "device_type" };
+        const char* values[] = { deviceType.c_str() };
+        status = api->SessionOptionsAppendExecutionProvider(sessionOptions, "OpenVINO", keys, values, 1);
+        break;
+    }
+    case eAiDeviceAuto:
+    case eAiDeviceCpu:
+        break;
+    }
+
+    return status;
+}
+
 // Creates a session on one execution provider. Null, with ONNX Runtime's message in *error, when
 // the provider cannot be appended or the session cannot be created on it.
 OrtSession*
@@ -148,37 +222,7 @@ createOn(const OrtLoader& loader,
         status = api->SetSessionGraphOptimizationLevel(sessionOptions, ortOptimizationLevel(options.optimization));
     }
     if (!status) {
-        switch (device) {
-        case eAiDeviceCuda: {
-            OrtCUDAProviderOptions cuda;
-            cuda.device_id = options.gpuIndex;
-            status = api->SessionOptionsAppendExecutionProvider_CUDA(sessionOptions, &cuda);
-            break;
-        }
-        case eAiDeviceRocm: {
-            OrtROCMProviderOptions rocm;
-            rocm.device_id = options.gpuIndex;
-            status = api->SessionOptionsAppendExecutionProvider_ROCM(sessionOptions, &rocm);
-            break;
-        }
-        case eAiDeviceMigraphx: {
-            OrtMIGraphXProviderOptions migraphx {};
-            migraphx.device_id = options.gpuIndex;
-            migraphx.migraphx_mem_limit = SIZE_MAX;
-            status = api->SessionOptionsAppendExecutionProvider_MIGraphX(sessionOptions, &migraphx);
-            break;
-        }
-        case eAiDeviceOpenvino: {
-            const std::string deviceType = options.gpuIndex > 0 ? "GPU." + std::to_string(options.gpuIndex) : std::string("GPU");
-            const char* keys[] = { "device_type" };
-            const char* values[] = { deviceType.c_str() };
-            status = api->SessionOptionsAppendExecutionProvider(sessionOptions, "OpenVINO", keys, values, 1);
-            break;
-        }
-        case eAiDeviceAuto:
-        case eAiDeviceCpu:
-            break;
-        }
+        status = appendProvider(loader, sessionOptions, device, options.gpuIndex);
     }
     OrtSession* session = nullptr;
     if (!status) {
@@ -259,53 +303,66 @@ readTensorInfos(const OrtApi* api,
 }
 
 /**
- * @brief Caps how many runs one device does at once, so parallel renders queue instead of
- * exhausting its memory. Waiting is abortable.
+ * @brief Caps what one device runs at once, so parallel renders queue instead of exhausting its
+ * memory or oversubscribing its cores. Each run reserves a cost out of the device's capacity, and
+ * one run is always let through when nothing else holds any. Waiting is abortable.
  **/
 class DeviceGate {
 public:
-    explicit DeviceGate(int limit)
-        : _limit(std::max(1, limit))
+    explicit DeviceGate(int capacity)
+        : _capacity(std::max(1, capacity))
     {
     }
 
-    void acquire(const AiAbortPredicate& abort)
+    void acquire(int cost,
+                 const AiAbortPredicate& abort)
     {
+        cost = std::min(std::max(1, cost), _capacity);
         std::unique_lock<std::mutex> lock(_mutex);
+        auto blocked = [this, cost]() {
+            return (_used > 0) && (_used + cost > _capacity);
+        };
 
-        while (_used >= _limit) {
+        while (blocked()) {
             if (abort) {
                 _cond.wait_for(lock, kAbortPollInterval);
-                if ((_used >= _limit) && abort()) {
+                if (blocked() && abort()) {
                     throw AiAborted();
                 }
             } else {
                 _cond.wait(lock);
             }
         }
-        ++_used;
+        _used += cost;
     }
 
-    void release()
+    void release(int cost)
     {
+        cost = std::min(std::max(1, cost), _capacity);
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            --_used;
+            _used -= cost;
         }
-        _cond.notify_one();
+        // Waiters ask for different costs, so any of them may now fit.
+        _cond.notify_all();
     }
 
 private:
     std::mutex _mutex;
     std::condition_variable _cond;
-    const int _limit;
+    const int _capacity;
     int _used = 0;
 };
 
+int
+cpuCores()
+{
+    return std::max<int>(1, (int)std::thread::hardware_concurrency());
+}
+
 DeviceGate&
 deviceGate(AiDeviceEnum device,
-           int gpuIndex,
-           int threads)
+           int gpuIndex)
 {
     static std::mutex mutex;
     static std::map<std::string, std::unique_ptr<DeviceGate>>* gates = new std::map<std::string, std::unique_ptr<DeviceGate>>();
@@ -315,34 +372,46 @@ deviceGate(AiDeviceEnum device,
     std::unique_ptr<DeviceGate>& gate = (*gates)[key];
 
     if (!gate) {
-        // A GPU runs one inference at a time. CPU runs share the cores: with a thread count set,
-        // as many run at once as fit in the machine; left to ONNX Runtime, each takes them all.
-        int limit = 1;
-        if (cpu && (threads > 0)) {
-            limit = std::max<int>(1, (int)std::thread::hardware_concurrency() / threads);
-        }
-        gate.reset(new DeviceGate(limit));
+        // A GPU runs one inference at a time. The CPU's capacity is its cores.
+        gate.reset(new DeviceGate(cpu ? cpuCores() : 1));
     }
 
     return *gate;
 }
 
+// The share of a device's capacity one run takes. A CPU run takes as many cores as its session's
+// thread count, so a change to the AI Threads preference applies to the sessions opened after it
+// while runs already in flight keep their own; left to ONNX Runtime, a run takes them all.
+int
+runCost(AiDeviceEnum device,
+        int threads)
+{
+    if (device != eAiDeviceCpu) {
+        return 1;
+    }
+
+    return threads > 0 ? threads : cpuCores();
+}
+
 class GateLock {
 public:
     GateLock(DeviceGate& gate,
+             int cost,
              const AiAbortPredicate& abort)
         : _gate(gate)
+        , _cost(cost)
     {
-        _gate.acquire(abort);
+        _gate.acquire(_cost, abort);
     }
 
     ~GateLock()
     {
-        _gate.release();
+        _gate.release(_cost);
     }
 
 private:
     DeviceGate& _gate;
+    const int _cost;
 };
 
 class ValueList {
@@ -790,7 +859,7 @@ InferenceSession::runNamed(const std::map<std::string, const Tensor*>& inputs,
     OrtStatus* status = nullptr;
     std::atomic<bool> terminated(false);
     {
-        GateLock gate(deviceGate(_device, _options.gpuIndex, _options.threads), abort);
+        GateLock gate(deviceGate(_device, _options.gpuIndex), runCost(_device, _options.threads), abort);
 
         std::mutex watchMutex;
         std::condition_variable watchCond;

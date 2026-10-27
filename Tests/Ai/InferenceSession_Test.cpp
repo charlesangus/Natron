@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cstdint>
 #include <future>
+#include <iostream>
 #include <map>
 #include <string>
 #include <thread>
@@ -296,6 +297,68 @@ TEST_F(AiInferenceSession, TwoThreadsSharingASessionGetIdenticalResults)
             ASSERT_EQ(expected.values(), r.values());
         }
     }
+}
+
+TEST_F(AiInferenceSession, CpuRunsShareTheCoresByEachSessionsThreadCount)
+{
+    typedef std::chrono::steady_clock Clock;
+    const int cores = (int)std::thread::hardware_concurrency();
+    if (cores < 2) {
+        std::cout << "skipped: needs two or more cores, this machine reports " << cores << std::endl;
+
+        return;
+    }
+    // Runs the model once, giving up after patience if it has not finished by then.
+    auto runFor = [](const std::shared_ptr<InferenceSession>& session,
+                     const Tensor& in,
+                     std::chrono::milliseconds patience) {
+        const Clock::time_point deadline = Clock::now() + patience;
+        try {
+            session->run(in, [deadline]() { return Clock::now() >= deadline; });
+        } catch (const AiAborted&) {
+            return std::string("aborted");
+        } catch (const std::exception& e) {
+            return std::string("failed: ") + e.what();
+        }
+
+        return std::string("finished");
+    };
+
+    // A run on one core that never finishes on its own holds its share for the whole test.
+    std::shared_ptr<InferenceSession> holder = openCpu("slow-loop.onnx", 1);
+    const Tensor loopIn(std::vector<int64_t> { 4 }, std::vector<float> { 1.f, 2.f, 3.f, 4.f });
+    std::atomic<bool> release(false);
+    std::atomic<bool> started(false);
+    std::future<std::string> held = std::async(std::launch::async, [&]() {
+        started = true;
+        try {
+            holder->run(loopIn, [&release]() { return release.load(); });
+        } catch (const AiAborted&) {
+            return std::string("aborted");
+        } catch (const std::exception& e) {
+            return std::string("failed: ") + e.what();
+        }
+
+        return std::string("finished");
+    });
+    while (!started) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_EQ(std::future_status::timeout, held.wait_for(std::chrono::seconds(0))) << held.get();
+
+    const Tensor in = rampImage(4, 4);
+    // Another one-thread run fits beside it.
+    EXPECT_EQ("finished", runFor(openCpu("identity.onnx", 1), in, std::chrono::milliseconds(5000)));
+    // A run wanting every core queues behind it.
+    std::shared_ptr<InferenceSession> wide = openCpu("identity.onnx", cores);
+    EXPECT_EQ("aborted", runFor(wide, in, std::chrono::milliseconds(300)));
+
+    release = true;
+    ASSERT_EQ(std::future_status::ready, held.wait_for(std::chrono::seconds(10)));
+    EXPECT_EQ("aborted", held.get());
+    // Released, the cores take the wide run.
+    EXPECT_EQ("finished", runFor(wide, in, std::chrono::milliseconds(5000)));
 }
 
 TEST_F(AiInferenceSession, OutOfMemoryMessagesAreRecognised)

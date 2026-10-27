@@ -142,6 +142,9 @@ public:
         return _env;
     }
 
+    // A function the library exports, by name, or null when it has none.
+    void* symbol(const char* name) const;
+
 private:
     OrtLoader() = default;
 

@@ -60,6 +60,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -559,7 +560,7 @@ TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)
         const std::string suffix = std::to_string(i);
         NodePtr left = createNamedNode(app, PLUGINID_OFX_GRADE, "LadderLeft" + suffix);
         NodePtr right = createNamedNode(app, PLUGINID_OFX_GRADE, "LadderRight" + suffix);
-        NodePtr join = createNamedNode(app, PLUGINID_OFX_MERGE, "LadderJoin" + suffix);
+        NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "LadderJoin" + suffix);
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));
         ASSERT_TRUE(bool(join));
@@ -762,7 +763,7 @@ TEST_F(FrameGraphBuild, MergeMaskInputIsAnEdge)
     NodePtr background = createNamedNode(app, PLUGINID_OFX_CONSTANT, "MaskBackground");
     NodePtr foreground = createNamedNode(app, PLUGINID_OFX_CONSTANT, "MaskForeground");
     NodePtr matte = createNamedNode(app, PLUGINID_OFX_CONSTANT, "MaskMatte");
-    NodePtr merge = createNamedNode(app, PLUGINID_OFX_MERGE, "MaskMerge");
+    NodePtr merge = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "MaskMerge");
     ASSERT_TRUE(bool(background));
     ASSERT_TRUE(bool(foreground));
     ASSERT_TRUE(bool(matte));

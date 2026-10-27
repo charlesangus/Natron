@@ -621,7 +621,7 @@ def createInstance(app,group):
     # End of node "Premult1"
 
     # Start of node "Merge1"
-    lastNode = app.createNode("net.sf.openfx.MergePlugin", 1, group)
+    lastNode = app.createNode("Merge", 1, group)
     lastNode.setScriptName("Merge1")
     lastNode.setLabel("Merge1")
     lastNode.setPosition(272, 717)

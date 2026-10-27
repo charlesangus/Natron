@@ -204,13 +204,13 @@ protected:
     {
         NodePtr black = makeConstant(kWindow, { 0., 0., 0., 0. });
         NodePtr white = makeConstant(box, { 1., 1., 1., 1. });
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
         EXPECT_TRUE(bool(black) && bool(white) && bool(merge));
         if (!black || !white || !merge) {
             return NodePtr();
         }
-        EXPECT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string("over")));
+        EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
         connectNodes(black, merge, 0, true);
         connectNodes(white, merge, 1, true);
 

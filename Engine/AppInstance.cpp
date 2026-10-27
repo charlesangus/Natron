@@ -1146,10 +1146,9 @@ isEntitledForInspector(Plugin* plugin,
     if ((plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_DISSOLVE)) || (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_SWITCH))) {
         return true;
     }
-    for (int preset = eMergePresetMerge; preset <= eMergePresetDifference; ++preset) {
-        if (plugin->getPluginID() == QString::fromUtf8(MergeNode::presetPluginID((MergePresetEnum)preset).c_str())) {
-            return true;
-        }
+    // The Merge node, whose A inputs unfold one after another.
+    if (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE)) {
+        return true;
     }
 
     if (!ofxDesc) {

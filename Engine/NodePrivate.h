@@ -94,9 +94,9 @@ struct LayerKnobSource {
     int inputNb;
     LayerKnobSpec::RoleEnum role;
 
-    // Set by Node::retargetLayerKnob(): the knob's layer follows a container node's
-    // selection (RotoPaint's internal per-item and global-merge nodes), so it is not an
-    // independent reference to the project layer registry.
+    // Set by Node::retargetLayerKnob() and Node::setLayerKnobDrivenByContainer(): the knob's
+    // layer follows a container node's selection (RotoPaint's internal per-item and
+    // global-merge nodes), so it is not an independent reference to the project layer registry.
     bool drivenByContainer;
 
     LayerKnobSource()

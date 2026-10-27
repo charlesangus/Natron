@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <mutex>
 #include <string>
 
 #include <QPointF>
 
 #include "Engine/EngineFwd.h"
+#include "Global/KeySymbols.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -73,6 +75,24 @@ public:
      **/
     static std::string bandLabel(int band) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief darktable's scroll step: 1 EV with Shift alone, 0.1 EV with Control alone, else 0.25 EV.
+     **/
+    static float wheelStepEv(KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Adds a wheel turn, in notches, and returns the whole notches to apply, keeping the
+     * remainder of a smooth scroll for the next turn. editedBurst tells whether the turn continues
+     * a burst of scrolling that already edited the bands, so that the burst is one undo step.
+     **/
+    int takeWheelSteps(double notches,
+                       bool* editedBurst) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Records that the current burst edited the bands.
+     **/
+    void markWheelEdit();
+
     void setCursor(const QPointF& canonical);
     void clearCursor();
     bool cursor(QPointF* canonical) const WARN_UNUSED_RETURN;
@@ -87,6 +107,10 @@ private:
     mutable std::mutex _mutex;
     bool _hasCursor = false;
     QPointF _cursor;
+    double _wheelRemainder = 0.;
+    bool _hasWheel = false;
+    bool _wheelEdited = false;
+    std::chrono::steady_clock::time_point _lastWheel;
 };
 
 NATRON_NAMESPACE_EXIT

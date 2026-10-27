@@ -5,8 +5,8 @@ the HSV Value estimator and no detail preservation the mask is exactly those val
 the centre of each half must write -4.0 EV (Midtones) and -1.0 EV (Whites), and the corrections
 the Midtones and Whites knobs set, into the Cursor Readout knob.
 
-darktable's scroll-over-image band edit is not checked: Natron's viewer has no wheel hook for node
-overlays, so ToneEqualizer does not port it.
+A wheel notch up over the red half must raise the Midtones gain by about darktable's 0.25 EV step and
+leave the viewer's zoom alone; over the empty viewer outside the image the wheel still zooms.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     NATRON_GUI_TEST_OUT=build/m212-shots GUI_TEST_TIMEOUT=300 \
@@ -26,6 +26,8 @@ WATCHDOG_S = 280
 SETTLE_MS = 400
 RENDER_MS = 2000
 EV_TOL = 0.05
+WHEEL_NOTCH = 120
+WHEEL_STEP_EV = 0.25
 
 INSIDE = (0.0625, 0.0, 0.0)
 OUTSIDE = (0.0, 0.0, 0.5)
@@ -35,7 +37,7 @@ WHITES_GAIN = -0.5
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-    from PySide6.QtGui import QGuiApplication, QMouseEvent
+    from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     import guitest as gt
@@ -56,6 +58,12 @@ try:
 
     def move(widget, pos):
         QApplication.sendEvent(widget, QMouseEvent(QEvent.MouseMove, QPointF(pos), Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+        QApplication.processEvents()
+
+    def wheel(widget, pos, notches, modifiers=Qt.NoModifier):
+        glob = QPointF(widget.mapToGlobal(pos.toPoint()))
+        QApplication.sendEvent(widget, QWheelEvent(pos, glob, QPoint(0, 0), QPoint(0, notches * WHEEL_NOTCH),
+                                                   Qt.NoButton, modifiers, Qt.NoScrollPhase, False))
         QApplication.processEvents()
 
     def set_rgba(param, rgb):
@@ -184,10 +192,27 @@ try:
                   "the blue half reads -1.0 EV, Whites (got %.2f, %s)" % (exposure, band))
             check(abs(correction - WHITES_GAIN) <= EV_TOL,
                   "the blue half's correction is the Whites gain %+.2f EV (got %+.2f)" % (WHITES_GAIN, correction))
+        gt.section("scroll")
+        midtones = te.getParam("midtones")
+        before = yield from hover(gl, readout, red_at, "red before scroll")
+        before_gain = midtones.getValue()
+        before_boxes = coloured_boxes(gl)
+        wheel(gl, red_at, 1)
+        after_gain = midtones.getValue()
+        after = parse_readout(readout.getValue())
+        report("NOTE Midtones knob %+.3f -> %+.3f EV; readout %r -> %r" % (before_gain, after_gain, before, after))
+        check(after_gain != before_gain, "a wheel notch over the red half edits the Midtones band")
+        if before and after:
+            raised = after[2] - before[2]
+            check(abs(raised - WHEEL_STEP_EV) <= EV_TOL,
+                  "the correction under the cursor rises by darktable's %.2f EV step (got %+.3f)" % (WHEEL_STEP_EV, raised))
+        yield ("sleep", RENDER_MS)
+        after_boxes = coloured_boxes(gl)
+        check(after_boxes is not None and after_boxes == before_boxes,
+              "the wheel over the image does not zoom the viewer (boxes %r -> %r)" % (before_boxes, after_boxes))
         move(gl, red_at)
         yield ("sleep", SETTLE_MS)
         gt.shot("m212-result.png")
-        report("NOTE scroll over the image is not ported: the viewer has no wheel hook for node overlays")
 
         gt.section("mask")
         te.getParam("output").setValue(1)
@@ -199,6 +224,25 @@ try:
               "the Mask output is grey in both halves (got %r, %r)" % (dark, light))
         check(light[1] > dark[1] + 40, "the brighter half's mask is lighter on screen (got %r, %r)" % (dark, light))
         gt.shot("m212-mask.png")
+
+        gt.section("scroll off the image")
+        te.getParam("output").setValue(0)
+        yield ("sleep", RENDER_MS)
+        image = coloured_boxes(gl)
+        require(image is not None, "both halves are on screen again", "no red/blue pixels found in the viewer")
+        x0 = min(b[0] for b in image.values())
+        y0 = min(b[2] for b in image.values())
+        if x0 > 20 or y0 > 20:
+            off = QPointF(x0 / 2.0 if x0 > 20 else red_at.x(), y0 / 2.0 if y0 > 20 else red_at.y())
+            gain = midtones.getValue()
+            wheel(gl, off, 1)
+            yield ("sleep", RENDER_MS)
+            zoomed = coloured_boxes(gl)
+            report("NOTE off-image wheel at %r: boxes %r -> %r" % (off, image, zoomed))
+            check(zoomed != image, "the wheel outside the image still zooms the viewer (boxes %r -> %r)" % (image, zoomed))
+            check(midtones.getValue() == gain, "the wheel outside the image leaves Midtones alone")
+        else:
+            report("NOTE the image fills the viewer; the off-image zoom check is skipped")
 
         faulthandler.cancel_dump_traceback_later()
 

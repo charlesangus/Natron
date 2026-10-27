@@ -88,5 +88,6 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
 
 ## Decisions
 
+- 2026-10-27 — **Colour space is the user's (user, supersedes the OCIO range-wrapper decision):** the node has an OCIO colourspace knob. It converts from the working space into that space, runs the model, and converts back. No automatic range wrapper, clamp, residue or exposure: choosing a space that suits the model and managing range/variance is the user's job. Default: "sRGB Encoded Rec.709 (sRGB)" (measured: exact round trip, 0.18 → 0.46 as the models were trained). Measurements behind it are in the 2026-10-27 consultant report (ACES 2.0 SDR is not invertible on saturated colours).
 - 2026-10-27 — **Range (user):** 1e4 is unrealistic; camera values rarely exceed 50–70. Measure invertibility of the config's ACES/sRGB-ish views and log spaces over 0–50 and pick from that. **ModelKnob may take several tasks (user)** — extend M204's ModelKnob.
 - 2026-10-27 — The range wrapper compresses through OCIO, not a custom soft-knee: an invertible sRGB display-referred OCIO space takes most working spaces to sRGB [0,1] in one transform (user, inbox 2026-10-27).

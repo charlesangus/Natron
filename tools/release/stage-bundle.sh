@@ -433,6 +433,20 @@ else
     echo "warning: Run tools/ci/local/fetch-assets.sh and stage again." >&2
 fi
 
+# Engine/Ai dlopen()s ONNX Runtime from <bin>/../lib/onnxruntime by path, so
+# nothing links it and the ldd walk alone would never stage it. It ships as
+# published, like the GPU builds the loader accepts in its place.
+ORT_ASSETS="$ASSETS_DIR/onnxruntime"
+if ! compgen -G "$ORT_ASSETS/lib/libonnxruntime.so.*.*" > /dev/null; then
+    echo "error: no ONNX Runtime library under $ORT_ASSETS/lib" >&2
+    echo "error: Run tools/ci/local/fetch-assets.sh and stage again." >&2
+    exit 1
+fi
+echo "==> Staging ONNX Runtime from $ORT_ASSETS"
+mkdir -p "$STAGE_DIR/lib/onnxruntime"
+cp -a "$ORT_ASSETS"/lib/libonnxruntime.so* "$STAGE_DIR/lib/onnxruntime/"
+cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onnxruntime/"
+
 resolve_deps() {
     local binary="$1"
     ldd "$binary" 2>/dev/null | while read -r line; do

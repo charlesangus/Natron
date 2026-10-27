@@ -1919,6 +1919,17 @@ public:
     }
 
     /**
+     * @brief Whether getInputContexts() names a single context for input inputNb at time/view
+     * under the context this effect's actions answer for on this thread, and if so that context:
+     * the one the input's region of definition, metadata and layers are read under, through an
+     * ActionContextScope, as the input renders under it.
+     **/
+    bool getInputActionContext(int inputNb,
+                               double time,
+                               ViewIdx view,
+                               RenderContextPtr* context) const;
+
+    /**
      * @brief The output of a node, possibly this effect's own, under a context the effect names.
      * comps defaults to RGBA; roi is in canonical coordinates.
      **/
@@ -2207,6 +2218,10 @@ public:
         double identityTime;
         bool isIdentity;
         ViewIdx identityView;
+        // The context identityInput is pulled under when a node on the walk to it requests its
+        // input under a context of its own; identityContextSet is false when none does.
+        RenderContextPtr identityContext;
+        bool identityContextSet = false;
     };
 
     struct ImageLayersToRender {
@@ -2775,6 +2790,8 @@ public:
         double identityTime;
         ViewIdx identityView; //< the view of identityInput the identity area is taken from
         EffectInstancePtr identityInput;
+        RenderContextPtr identityContext; //< see RectToRender::identityContext
+        bool identityContextSet;
         EffectInstance::InputImagesMap inputImages;
         std::map<ImageLayerDesc, LayerToRender> outputLayers;
 

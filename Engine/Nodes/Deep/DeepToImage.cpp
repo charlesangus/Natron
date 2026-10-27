@@ -40,6 +40,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
@@ -273,6 +274,9 @@ DeepToImage::render(const RenderActionArgs& args)
                                this,
                                args.time);
     DeepImagePtr deepImage;
+    // The deep input renders under the context this node requests it under, as an image input does.
+    InputContextArgs inputContext(this, input, 0, args.time, args.view);
+    inputContext.install();
     const RenderRoIRetCode deepCode = input->renderDeepRoI(deepArgs, &deepImage);
     if ((deepCode != eRenderRoIRetCodeOk) || !deepImage) {
         return eStatusFailed;

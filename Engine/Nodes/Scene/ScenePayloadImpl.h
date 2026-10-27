@@ -30,15 +30,39 @@
 
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What a layer composes from outside the stack it sits in: anonymous layers its references
+ * name by identifier, and the stacks those sublayer. An anonymous layer lives only while something
+ * holds it, and a reference to a dead one composes an empty prim without any error, so the entry
+ * holding the referencing layer holds these too.
+ **/
+struct SceneLayerDependencies {
+    std::vector<PXR_NS::SdfLayerRefPtr> layers;
+    std::vector<ScenePayload> stacks;
+};
+
+/**
+ * @brief The relationships and attribute connections a layer authors with a target outside the
+ * root prim they sit under, by property path, sorted and unique. A reference to that root drops
+ * such targets, so code that re-roots prims repairs the properties listed. An index may list more
+ * than the composed stage has: the composed targets decide what is repaired.
+ **/
+typedef std::vector<PXR_NS::SdfPath> SceneLinkIndex;
+
 struct SceneLayerEntry {
     PXR_NS::SdfLayerRefPtr layer;
     U64 hash = 0;
+    // Null for a layer that composes nothing outside its stack.
+    std::shared_ptr<const SceneLayerDependencies> dependencies;
+    // Null for a layer that authors no link out of its root.
+    std::shared_ptr<const SceneLinkIndex> links;
 };
 
 /**

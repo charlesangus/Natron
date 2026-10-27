@@ -25,7 +25,10 @@
 
 #include "Settings.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 
@@ -45,6 +48,7 @@
 
 #include "Global/StrUtils.h"
 
+#include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/GpuDeviceList.h"
@@ -184,6 +188,7 @@ Settings::initializeKnobs()
     initializeKnobsThreading();
     initializeKnobsRendering();
     initializeKnobsGPU();
+    initializeKnobsAi();
     initializeKnobsProjectSetup();
     initializeKnobsDocumentation();
     initializeKnobsUserInterface();
@@ -533,6 +538,100 @@ void
 Settings::setGpuStatus(const std::string& status)
 {
     _gpuStatus->setValue(status);
+}
+
+namespace {
+// Indexed by AiDeviceEnum.
+const char* const kAiDeviceIDs[] = { "auto", "cpu", "cuda", "migraphx", "rocm", "openvino" };
+}
+
+void
+Settings::initializeKnobsAi()
+{
+    _aiPage = AppManager::createKnob<KnobPage>(this, tr("AI"));
+
+    _aiEnabled = AppManager::createKnob<KnobBool>(this, tr("AI Enabled"));
+    _aiEnabled->setName("aiEnabled");
+    _aiEnabled->setHintToolTip(tr("Whether the AI nodes may run. While this is off, ONNX Runtime is never loaded and the AI "
+                                  "nodes report that AI is disabled in Preferences."));
+    _aiPage->addKnob(_aiEnabled);
+
+    _aiDevice = AppManager::createKnob<KnobChoice>(this, tr("AI Device"));
+    _aiDevice->setName("aiDevice");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption(kAiDeviceIDs[eAiDeviceAuto], tr("Auto").toStdString(),
+                                       tr("The first of CUDA, MIGraphX, ROCm and CPU that ONNX Runtime offers.").toStdString()));
+        entries.push_back(ChoiceOption(kAiDeviceIDs[eAiDeviceCpu], tr("CPU").toStdString(), std::string()));
+        entries.push_back(ChoiceOption(kAiDeviceIDs[eAiDeviceCuda], tr("CUDA").toStdString(),
+                                       tr("NVIDIA GPUs. Needs an ONNX Runtime CUDA build.").toStdString()));
+        entries.push_back(ChoiceOption(kAiDeviceIDs[eAiDeviceMigraphx], tr("MIGraphX").toStdString(),
+                                       tr("AMD GPUs. Needs an ONNX Runtime MIGraphX build.").toStdString()));
+        entries.push_back(ChoiceOption(kAiDeviceIDs[eAiDeviceRocm], tr("ROCm").toStdString(),
+                                       tr("AMD GPUs. Needs an ONNX Runtime ROCm build.").toStdString()));
+        entries.push_back(ChoiceOption(kAiDeviceIDs[eAiDeviceOpenvino], tr("OpenVINO").toStdString(),
+                                       tr("Intel CPUs and GPUs. Needs an ONNX Runtime OpenVINO build.").toStdString()));
+        assert(entries.size() == sizeof(kAiDeviceIDs) / sizeof(kAiDeviceIDs[0]));
+        _aiDevice->populateChoices(entries);
+    }
+    _aiDevice->setHintToolTip(tr("The ONNX Runtime execution provider the AI nodes run on. A provider the loaded ONNX Runtime "
+                                 "does not offer falls back to the CPU. The NATRON_AI_DEVICE environment variable (auto, cpu, "
+                                 "cuda, migraphx, rocm or openvino) takes precedence over this setting."));
+    _aiPage->addKnob(_aiDevice);
+
+    _aiGpuIndex = AppManager::createKnob<KnobInt>(this, tr("AI GPU Index"));
+    _aiGpuIndex->setName("aiGpuIndex");
+    _aiGpuIndex->setHintToolTip(tr("The index, as the GPU's own driver counts them, of the GPU the AI nodes run on."));
+    _aiGpuIndex->setMinimum(0);
+    _aiGpuIndex->disableSlider();
+    _aiPage->addKnob(_aiGpuIndex);
+
+    _aiThreads = AppManager::createKnob<KnobInt>(this, tr("AI Threads"));
+    _aiThreads->setName("aiThreads");
+    _aiThreads->setHintToolTip(tr("The number of CPU threads ONNX Runtime uses for each inference on the CPU. 0 lets ONNX Runtime "
+                                  "choose."));
+    _aiThreads->setMinimum(0);
+    _aiThreads->disableSlider();
+    _aiPage->addKnob(_aiThreads);
+
+    _aiOrtLibraryPath = AppManager::createKnob<KnobPath>(this, tr("AI ORT Library Path"));
+    _aiOrtLibraryPath->setName("aiOrtLibraryPath");
+    _aiOrtLibraryPath->setMultiPath(false);
+    _aiOrtLibraryPath->setHintToolTip(tr("An ONNX Runtime library to use instead of the one %1 finds itself: the library file, or "
+                                         "the directory of an unpacked ONNX Runtime release. When empty, %1 uses the one installed "
+                                         "in %2, then the one it ships with. A library that has loaded stays in use until %1 is "
+                                         "restarted.")
+                                          .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
+                                          .arg(StandardPaths::writableLocation(StandardPaths::eStandardLocationData) + QString::fromUtf8("/onnxruntime")));
+    _aiPage->addKnob(_aiOrtLibraryPath);
+
+    _aiDetectedProviders = AppManager::createKnob<KnobString>(this, tr("AI Detected Providers"));
+    _aiDetectedProviders->setName("aiDetectedProviders");
+    _aiDetectedProviders->setHintToolTip(tr("The ONNX Runtime in use and the execution providers it offers, or why the AI nodes "
+                                            "cannot run."));
+    _aiDetectedProviders->setIsPersistent(false);
+    _aiDetectedProviders->setAsLabel();
+    _aiPage->addKnob(_aiDetectedProviders);
+}
+
+void
+Settings::refreshAiDetectedProviders()
+{
+    const std::shared_ptr<const OrtLoader> ort = OrtLoader::process();
+    std::string text;
+
+    if (ort->available()) {
+        text = "ONNX Runtime " + ort->versionString() + ": ";
+        for (std::size_t i = 0; i < ort->providers().size(); ++i) {
+            text += (i == 0 ? "" : ", ") + ort->providers()[i];
+        }
+    } else {
+        text = ort->unavailableReason();
+    }
+    // A Settings knob change invalidates every node's hash, so an unchanged line is not rewritten.
+    if (_aiDetectedProviders->getValue() != text) {
+        _aiDetectedProviders->setValue(text);
+    }
 }
 
 void
@@ -2334,6 +2433,10 @@ Settings::onKnobValueChanged(KnobI* k,
         QString path = QString::fromUtf8(_diskCachePath->getValue().c_str());
         qputenv(NATRON_DISK_CACHE_PATH_ENV_VAR, path.toUtf8());
         appPTR->refreshDiskCacheLocation();
+    } else if ((k == _aiEnabled.get()) || (k == _aiOrtLibraryPath.get())) {
+        if (!_restoringSettings) {
+            refreshAiDetectedProviders();
+        }
     } else if (k == _wipeDiskCache.get()) {
         appPTR->wipeAndCreateDiskCacheStructure();
     } else if (k == _numberOfThreads.get()) {
@@ -3360,6 +3463,55 @@ bool
 Settings::isDevelopRawOnReadEnabled() const
 {
     return _developRawOnRead->getValue();
+}
+
+bool
+Settings::isAiEnabled() const
+{
+    return _aiEnabled->getValue();
+}
+
+AiDeviceEnum
+Settings::resolveAiDevice(AiDeviceEnum setting,
+                          const char* env)
+{
+    if (env) {
+        std::string v(env);
+        for (char& c : v) {
+            c = (char)std::tolower((unsigned char)c);
+        }
+        for (std::size_t i = 0; i < sizeof(kAiDeviceIDs) / sizeof(kAiDeviceIDs[0]); ++i) {
+            if (v == kAiDeviceIDs[i]) {
+                return (AiDeviceEnum)i;
+            }
+        }
+    }
+
+    return setting;
+}
+
+AiDeviceEnum
+Settings::getAiDevice() const
+{
+    return resolveAiDevice((AiDeviceEnum)_aiDevice->getValue(), std::getenv("NATRON_AI_DEVICE"));
+}
+
+int
+Settings::getAiGpuIndex() const
+{
+    return std::max(0, _aiGpuIndex->getValue());
+}
+
+int
+Settings::getAiThreads() const
+{
+    return std::max(0, _aiThreads->getValue());
+}
+
+std::string
+Settings::getAiOrtLibraryPath() const
+{
+    return _aiOrtLibraryPath->getValue();
 }
 
 bool

@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_USDTransform_h
-#define Engine_Nodes_Scene_USDTransform_h
+#ifndef Engine_Nodes_Scene_USDEditTransform_h
+#define Engine_Nodes_Scene_USDEditTransform_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -38,12 +38,12 @@
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
-#define PLUGINID_NATRON_USDTRANSFORM "USDTransform"
+#define PLUGINID_NATRON_USDEDITTRANSFORM "USDEditTransform"
 
-#define kUSDTransformParamPrimPattern "primPattern"
-#define kUSDTransformParamMode "mode"
-#define kUSDTransformParamPivot "pivot"
-#define kUSDTransformParamCentrePivot "centrePivot"
+#define kUSDEditTransformParamPrimPattern "primPattern"
+#define kUSDEditTransformParamMode "mode"
+#define kUSDEditTransformParamPivot "pivot"
+#define kUSDEditTransformParamCentrePivot "centrePivot"
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,7 +58,7 @@ struct SceneLayerEdit;
  * op's input space; nothing is authored to the XformCommonAPI pivot. A pattern that matches no
  * prim leaves the scene as it is and sets a node warning.
  **/
-class USDTransform
+class USDEditTransform
     : public NativeEffectBase {
 public:
     enum ModeEnum {
@@ -71,8 +71,8 @@ public:
     };
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_USDTRANSFORM,
-        .label = "USDTransform",
+        .id = PLUGINID_NATRON_USDEDITTRANSFORM,
+        .label = "USDEditTransform",
         .description = "Transform the prims a pattern names (paths, with * and ? wildcards) in the input scene. "
                        "Append adds the transform after each prim's existing ops, in its local space; Replace discards "
                        "the existing ops and the parent transform. The transform turns and scales about a pivot. "
@@ -80,7 +80,7 @@ public:
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/USDTransform.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/USDEditTransform.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
@@ -88,12 +88,12 @@ public:
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new USDTransform(node);
+        return new USDEditTransform(node);
     }
 
-    explicit USDTransform(NodePtr node);
+    explicit USDEditTransform(NodePtr node);
 
-    virtual ~USDTransform();
+    virtual ~USDEditTransform();
 
     /**
      * @brief What the viewer's handles act on, from the last evaluation: the first matched prim
@@ -144,4 +144,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_USDTransform_h
+#endif // Engine_Nodes_Scene_USDEditTransform_h

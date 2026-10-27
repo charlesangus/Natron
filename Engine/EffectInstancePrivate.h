@@ -495,6 +495,8 @@ public:
                      double identityTime,
                      ViewIdx identityView,
                      const EffectInstancePtr& identityInput,
+                     const RenderContextPtr& identityContext,
+                     bool identityContextSet,
                      const ComponentsNeededMapPtr& compsNeeded,
                      const EffectInstance::InputImagesMap& inputImages,
                      const RoIMap& roiMap,

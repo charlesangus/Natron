@@ -11,7 +11,7 @@ Two modes:
         BENCH_SCENE   chain (default) or file
         BENCH_FILE    the USD file USDRead reads (file mode; default Tests/fixtures/scene-reference.usda)
         BENCH_N       chain length (chain mode, default 30)
-        BENCH_OP      plug-in ID of the scene op chained (default USDTransform; falls back to Dot,
+        BENCH_OP      plug-in ID of the scene op chained (default USDEditTransform; falls back to Dot,
                       which authors nothing, when the build has no such plug-in)
         BENCH_KNOB    the knob edited: on the chain's head op (chain mode, default translate),
                       or on USDRead (file mode, default frameOffset)
@@ -88,7 +88,7 @@ try:
     knob_name = os.environ.get("BENCH_KNOB", "frameOffset")
     op_id = None
     if scene == "chain":
-        op_id = os.environ.get("BENCH_OP", "USDTransform")
+        op_id = os.environ.get("BENCH_OP", "USDEditTransform")
         previous = usd
         for i in range(n):
             op = app.createNode(op_id)

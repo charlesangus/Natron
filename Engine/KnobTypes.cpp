@@ -1703,6 +1703,18 @@ KnobGroup::isTab() const
     return _isTab;
 }
 
+namespace {
+
+// The holder's declarations follow the children of its RFV groups: retaken after each change.
+void
+refreshRFVDeclarations(const KnobGroup& group)
+{
+    if (group.isRFVGroup()) {
+        RFV::refreshDeclarationSnapshot(group.getHolder());
+    }
+}
+} // anonymous namespace
+
 bool
 KnobGroup::setAsRFVGroup(bool rfv)
 {
@@ -1715,6 +1727,7 @@ KnobGroup::setAsRFVGroup(bool rfv)
         }
     }
     _isRFVGroup = rfv;
+    RFV::refreshDeclarationSnapshot(getHolder());
 
     return true;
 }
@@ -1789,6 +1802,7 @@ KnobGroup::addKnob(const KnobIPtr& k)
 
     _children.push_back(k);
     k->setParentKnob( shared_from_this() );
+    refreshRFVDeclarations(*this);
 
     return true;
 }
@@ -1799,6 +1813,7 @@ KnobGroup::removeKnob(KnobI* k)
     for (std::vector<KnobIWPtr>::iterator it = _children.begin(); it != _children.end(); ++it) {
         if (it->lock().get() == k) {
             _children.erase(it);
+            refreshRFVDeclarations(*this);
 
             return;
         }
@@ -1816,6 +1831,7 @@ KnobGroup::moveOneStepUp(KnobI* k)
             KnobIWPtr tmp = _children[i - 1];
             _children[i - 1] = _children[i];
             _children[i] = tmp;
+            refreshRFVDeclarations(*this);
 
             return true;
         }
@@ -1834,6 +1850,7 @@ KnobGroup::moveOneStepDown(KnobI* k)
             KnobIWPtr tmp = _children[i + 1];
             _children[i + 1] = _children[i];
             _children[i] = tmp;
+            refreshRFVDeclarations(*this);
 
             return true;
         }
@@ -1869,6 +1886,7 @@ KnobGroup::insertKnob(int index,
         _children.insert(it, k);
     }
     k->setParentKnob( shared_from_this() );
+    refreshRFVDeclarations(*this);
 
     return true;
 }

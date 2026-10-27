@@ -509,7 +509,7 @@ Knob<T>::getValueFromExpression(double time,
                 return true;
             }
         } else {
-            typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
+            typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
             if (found != _exprRes[dimension].end()) {
                 *ret = found->second;
 
@@ -544,7 +544,7 @@ Knob<T>::getValueFromExpression(double time,
         if (byContext) {
             _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
         } else {
-            _exprRes[dimension].insert(std::make_pair(time, *ret));
+            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
         }
     }
 
@@ -616,7 +616,7 @@ Knob<T>::getValueFromExpression_pod(double time,
                 return true;
             }
         } else {
-            typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
+            typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
             if (found != _exprRes[dimension].end()) {
                 *ret = found->second;
 
@@ -651,7 +651,7 @@ Knob<T>::getValueFromExpression_pod(double time,
         if (byContext) {
             _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
         } else {
-            _exprRes[dimension].insert(std::make_pair(time, *ret));
+            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
         }
     }
 
@@ -759,7 +759,7 @@ Knob<T>::getValue(int dimension,
     if ( !hasExpr.empty() ) {
         T ret;
         double time = getCurrentTime();
-        if ( getValueFromExpression(time, /*view*/ ViewIdx(0), dimension, clamp, &ret) ) {
+        if (getValueFromExpression(time, expressionView(view), dimension, clamp, &ret)) {
             return ret;
         }
     }
@@ -878,7 +878,7 @@ Knob<T>::getValueAtTime(double time,
     std::string hasExpr = getExpression(dimension);
     if ( !hasExpr.empty() ) {
         T ret;
-        if ( getValueFromExpression(time, /*view*/ ViewIdx(0), dimension, clamp, &ret) ) {
+        if (getValueFromExpression(time, expressionView(view), dimension, clamp, &ret)) {
             return ret;
         }
     }
@@ -954,7 +954,7 @@ Knob<T>::getValueAtWithExpression(double time,
 
     if (!expr.empty() && exprValid) {
         double ret;
-        if ( getValueFromExpression_pod(time, /*view*/ ViewIdx(0), dimension, false, &ret) ) {
+        if (getValueFromExpression_pod(time, expressionView(view), dimension, false, &ret)) {
             return ret;
         }
     }

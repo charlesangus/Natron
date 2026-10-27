@@ -289,7 +289,7 @@ docstring), and appends one JSON line per run to `$NATRON_GUI_TEST_OUT/scene_edi
 # Once: a 1M-prim file (the natron-dev image's python3 has pxr).
 docker exec natron-dev python3 tools/bench/scene_edit_bench.py make-file build/bench/prims1m.usdc --prims 1000000
 
-# A 30-node chain, editing the head (needs a scene op such as USDTransform; without one it chains
+# A 30-node chain, editing the head (needs a scene op such as USDEditTransform; without one it chains
 # Dots and edits USDRead's frame offset).
 docker exec -e BENCH_SCENE=chain -e BENCH_N=30 -e BENCH_LABEL=after natron-dev \
     Tests/gui/run-gui-test.sh tools/bench/scene_edit_bench.py build/release/App/Natron

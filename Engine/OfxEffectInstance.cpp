@@ -1399,10 +1399,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.TimeBufferRead",
         "net.sf.openfx.TimeBufferWrite",
         // Filter
-        "net.sf.cimg.CImgLaplacian",
-        "net.sf.cimg.CImgSharpen",
-        "net.sf.cimg.CImgSoften",
-        "net.sf.cimg.CImgBloom",
         "net.sf.cimg.CImgMedian",
         "net.sf.cimg.CImgErodeSmooth",
         "net.sf.cimg.CImgBilateral",
@@ -1444,7 +1440,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.TrackerPM",
         "net.sf.cimg.CImgExpression",
         "net.sf.cimg.CImgChromaBlur",
-        "eu.cimg.EdgeExtend",
     };
 
     const std::string pluginID = getPluginID();

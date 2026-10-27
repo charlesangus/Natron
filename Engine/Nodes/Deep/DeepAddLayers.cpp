@@ -202,7 +202,7 @@ DeepAddLayers::getDeepLayers(double time,
 }
 
 StatusEnum
-DeepAddLayers::getRegionOfDefinition(U64 hash,
+DeepAddLayers::getRegionOfDefinition(U64 /*hash*/,
                                      double time,
                                      const RenderScale& scale,
                                      ViewIdx view,
@@ -215,7 +215,7 @@ DeepAddLayers::getRegionOfDefinition(U64 hash,
     }
     bool isProjectFormat = false;
 
-    return input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    return input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 }
 
 Route

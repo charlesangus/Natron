@@ -26,8 +26,11 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
+#include <functional>
 #include <list>
 #include <map>
+#include <optional>
 #include <random>
 #include <string>
 #include <thread>
@@ -40,20 +43,24 @@
 #include <ofxImageEffect.h>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
@@ -708,4 +715,370 @@ TEST_F(PerFrameMetadataTest, PixelAspectRatioWarningFollowsTheFrame)
         merge->getStreamWarnings(&warnings);
         EXPECT_EQ(frame == 2, !warnings[Node::eStreamWarningPixelAspectRatio].isEmpty()) << "frame=" << frame;
     }
+}
+
+namespace {
+
+// Renders roi through renderRoI on this thread and reads the red channel at (x, y), after
+// installing the frame's render args and request pass and then calling `beforeRender`. A failed or
+// aborted render returns false.
+bool
+renderRedAt(const NodePtr& node,
+            const RectI& roi,
+            int x,
+            int y,
+            bool byPassCache,
+            float* red,
+            const std::function<void()>& beforeRender = std::function<void()>(),
+            double time = 1.)
+{
+    const ViewIdx view(0);
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    ParallelRenderArgsSetter frameRenderArgs(time,
+                                             view,
+                                             true /*isRenderUserInteraction*/,
+                                             false /*isSequential*/,
+                                             abortInfo,
+                                             node,
+                                             0 /*textureIndex*/,
+                                             node->getApp()->getTimeLine().get(),
+                                             NodePtr(),
+                                             false /*isAnalysis*/,
+                                             false /*draftMode*/,
+                                             RenderStatsPtr());
+    EffectInstancePtr effect = node->getEffectInstance();
+    const RectD canonicalWindow = roi.toCanonical_noClipping(0, 1.);
+    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+    if (EffectInstance::computeRequestPass(time, view, 0, canonicalWindow, node, *request) == eStatusFailed) {
+        return false;
+    }
+    frameRenderArgs.updateNodesRequest(*request);
+    if (beforeRender) {
+        beforeRender();
+    }
+
+    std::list<ImageLayerDesc> components;
+    components.push_back(ImageLayerDesc::getRGBAComponents());
+    EffectInstance::RenderRoIArgs args(time,
+                                       RenderScale::fromMipmapLevel(0),
+                                       0,
+                                       view,
+                                       byPassCache,
+                                       roi,
+                                       RectD(),
+                                       components,
+                                       eImageBitDepthFloat,
+                                       false /*calledFromGetImage*/,
+                                       0 /*caller*/,
+                                       eStorageModeRAM,
+                                       time);
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    try {
+        if (effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) {
+            return false;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (layers.empty() || !layers.begin()->second || (layers.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
+        return false;
+    }
+    Image::ReadAccess access = layers.begin()->second->getReadRights();
+    *red = reinterpret_cast<const float*>(access.pixelAt(x, y))[0];
+
+    return true;
+}
+
+// Renders on this thread's renderRoI path, and restores the scheduler mode and empties the caches
+// on the way out, so no image cached here outlives the test.
+class LegacyRenderScope {
+public:
+    LegacyRenderScope()
+        : _saved(appPTR->getRenderSchedulerMode())
+    {
+        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
+        appPTR->clearAllCaches();
+    }
+
+    ~LegacyRenderScope()
+    {
+        appPTR->setRenderSchedulerMode(_saved);
+        appPTR->clearAllCaches();
+    }
+
+    LegacyRenderScope(const LegacyRenderScope&) = delete;
+    LegacyRenderScope& operator=(const LegacyRenderScope&) = delete;
+
+private:
+    RenderSchedulerModeEnum _saved;
+};
+
+// A Constant whose colour is edited, below a Blur that caches its output. The Constant fills the
+// format, so the blurred red at any pixel well inside it is the red of the colour.
+struct CachedConstantBlur {
+    NodePtr constant;
+    NodePtr blur;
+    KnobColorPtr color;
+};
+} // anon namespace
+
+class CleanHashCacheTest
+    : public PerFrameMetadataTest {
+protected:
+    bool createConstantBlur(CachedConstantBlur* graph)
+    {
+        graph->constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        if (!graph->constant) {
+            return false;
+        }
+        graph->color = std::dynamic_pointer_cast<KnobColor>(graph->constant->getKnobByName(kConstantParamColor));
+        graph->blur = createBlurBelow(graph->constant);
+        if (!graph->color || !graph->blur) {
+            return false;
+        }
+        KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(graph->blur->getKnobByName("forceCaching"));
+        if (!forceCaching) {
+            return false;
+        }
+        forceCaching->setValue(true);
+        graph->color->setValue(0.25, ViewSpec::all(), 0);
+
+        return true;
+    }
+};
+
+namespace {
+const RectI kProbeRoI(100, 100, 132, 132);
+const int kProbeX = 116;
+const int kProbeY = 116;
+}
+
+// A render whose frame was set up before an edit renders the edited colour under the hash of the
+// state before it. Going back to that state brings its hash back, and must not find that image.
+TEST_F(CleanHashCacheTest, RenderOverlappingAnEditCachesNothingUnderTheOldHash)
+{
+    LegacyRenderScope scope;
+    CachedConstantBlur graph;
+    ASSERT_TRUE(createConstantBlur(&graph));
+
+    float red = -1.f;
+    // The outcome of the overlapped render does not matter: aborting it caches nothing either.
+    (void)renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red, [&graph]() {
+        graph.color->setValue(0.75, ViewSpec::all(), 0);
+    });
+    graph.color->setValue(0.25, ViewSpec::all(), 0);
+
+    ASSERT_TRUE(renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red));
+    EXPECT_NEAR(0.25f, red, 1e-5f);
+    ASSERT_TRUE(renderRedAt(graph.constant, kProbeRoI, kProbeX, kProbeY, false, &red));
+    EXPECT_NEAR(0.25f, red, 1e-5f);
+}
+
+namespace {
+const int kWaitMs = 10000;
+
+// Polls `done` until it holds or kWaitMs pass.
+bool
+waitUntil(const std::function<bool()>& done)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitMs);
+
+    while (!done()) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return true;
+}
+
+KnobDoublePtr
+countingValueKnob(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("value"));
+}
+
+// Clears the render hook, which refers to the test's locals, however the test leaves.
+struct RenderHookScope {
+    RenderHookScope() = default;
+    ~RenderHookScope()
+    {
+        CountingTestRegistry::reset();
+    }
+
+    RenderHookScope(const RenderHookScope&) = delete;
+    RenderHookScope& operator=(const RenderHookScope&) = delete;
+};
+
+bool
+setCountingBool(const NodePtr& node,
+                const char* knobName)
+{
+    KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(knobName));
+    if (!knob) {
+        return false;
+    }
+    knob->setValue(true);
+
+    return true;
+}
+} // anon namespace
+
+// An upstream value goes A -> B -> A while a render of the node below is under way: the upstream
+// node renders B, and the node below renders over it, under the hashes of A. A second render set up
+// at A looks the node below up while the first is still publishing. Neither it nor any later lookup
+// may see B, and the clean entry the node cached at another frame under the same node hash stays.
+// The nodes vary with the frame so that frame's entry is not the one frame 1 looks up: a hit there
+// would skip the renders the edits must overlap.
+TEST_F(CleanHashCacheTest, EditDuringARenderLeavesNoStaleImageForAConcurrentLookup)
+{
+    const float kUpstreamA = 0.25f;
+    const float kUpstreamB = 0.75f;
+    const float kDownstream = 0.5f;
+    const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
+    const int probe = kCountingTestSize / 2;
+
+    LegacyRenderScope scope;
+    CountingTestRegistry::reset();
+    RenderHookScope hookScope;
+    NodePtr upstream = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr downstream = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(upstream && downstream);
+    connectNodes(upstream, downstream, 0, true);
+    KnobDoublePtr upstreamValue = countingValueKnob(upstream);
+    KnobDoublePtr downstreamValue = countingValueKnob(downstream);
+    ASSERT_TRUE(upstreamValue && downstreamValue);
+    ASSERT_TRUE(setCountingBool(upstream, "cacheOutput") && setCountingBool(downstream, "cacheOutput"));
+    ASSERT_TRUE(setCountingBool(upstream, "frameVarying") && setCountingBool(downstream, "frameVarying"));
+    ASSERT_TRUE(downstream->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+    upstreamValue->setValue(kUpstreamA, ViewSpec::all(), 0);
+    downstreamValue->setValue(kDownstream, ViewSpec::all(), 0);
+
+    float red = -1.f;
+    ASSERT_TRUE(renderRedAt(downstream, roi, probe, probe, false, &red, std::function<void()>(), 2.));
+    EXPECT_NEAR(kUpstreamA + kDownstream, red, 1e-5f);
+
+    // 0: none yet; 1: the upstream render asked for B; 2: B set; 3: the downstream render asked
+    // for A; 4: A set; 5: the second render released.
+    std::atomic<int> stage(0);
+    std::atomic<bool> lookupReady(false);
+    std::atomic<bool> lookupEntered(false);
+    std::atomic<bool> hookTimedOut(false);
+    const Node* upstreamNode = upstream.get();
+    const Node* downstreamNode = downstream.get();
+    CountingTestRegistry::setRenderHook([&](const Node* node) {
+        if ((node == upstreamNode) && (stage.load() < 2)) {
+            int expected = 0;
+            (void)stage.compare_exchange_strong(expected, 1);
+            if (!waitUntil([&]() { return stage.load() >= 2; })) {
+                hookTimedOut = true;
+            }
+        } else if ((node == downstreamNode) && (stage.load() >= 2) && (stage.load() < 5)) {
+            int expected = 2;
+            if (stage.compare_exchange_strong(expected, 3)) {
+                if (!waitUntil([&]() { return stage.load() >= 4; })) {
+                    hookTimedOut = true;
+                }
+                stage = 5;
+                // Gives the lookup time to reach this render's pending regions; no hook marks that
+                // point, and a lookup arriving after publication must see no stale image either.
+                if (!waitUntil([&]() { return lookupEntered.load(); })) {
+                    hookTimedOut = true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            } else if (!waitUntil([&]() { return stage.load() >= 5; })) {
+                hookTimedOut = true;
+            }
+        }
+    });
+
+    float lookupRed = -1.f;
+    bool lookupRendered = false;
+    std::thread lookup([&]() {
+        lookupRendered = renderRedAt(downstream, roi, probe, probe, false, &lookupRed, [&]() {
+            lookupReady = true;
+            if (!waitUntil([&]() { return stage.load() >= 5; })) {
+                hookTimedOut = true;
+            }
+            lookupEntered = true;
+        });
+    });
+    if (!waitUntil([&]() { return lookupReady.load(); })) {
+        stage = 5;
+        lookup.join();
+        FAIL() << "the lookup was never set up";
+    }
+
+    std::thread overlapped([&]() {
+        float overlappedRed;
+        (void)renderRedAt(downstream, roi, probe, probe, false, &overlappedRed);
+    });
+    const bool editedToB = waitUntil([&]() { return stage.load() >= 1; });
+    if (editedToB) {
+        upstreamValue->setValue(kUpstreamB, ViewSpec::all(), 0);
+    }
+    stage = 2;
+    const bool revertedToA = waitUntil([&]() { return stage.load() >= 3; });
+    if (revertedToA) {
+        upstreamValue->setValue(kUpstreamA, ViewSpec::all(), 0);
+    }
+    stage = 4;
+    overlapped.join();
+    lookup.join();
+    CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    ASSERT_TRUE(editedToB && revertedToA);
+    ASSERT_FALSE(hookTimedOut.load());
+
+    ASSERT_TRUE(lookupRendered);
+    EXPECT_NEAR(kUpstreamA + kDownstream, lookupRed, 1e-5f) << "the lookup saw the image rendered from B";
+
+    // The lookup rendered A cleanly, so it serves this lookup, as frame 2's entry serves its own.
+    int downstreamRenders = CountingTestRegistry::renders(downstream);
+    ASSERT_TRUE(renderRedAt(downstream, roi, probe, probe, false, &red));
+    EXPECT_NEAR(kUpstreamA + kDownstream, red, 1e-5f);
+    EXPECT_EQ(downstreamRenders, CountingTestRegistry::renders(downstream));
+    ASSERT_TRUE(renderRedAt(upstream, roi, probe, probe, false, &red));
+    EXPECT_NEAR(kUpstreamA, red, 1e-5f);
+
+    downstreamRenders = CountingTestRegistry::renders(downstream);
+    ASSERT_TRUE(renderRedAt(downstream, roi, probe, probe, false, &red, std::function<void()>(), 2.));
+    EXPECT_NEAR(kUpstreamA + kDownstream, red, 1e-5f);
+    EXPECT_EQ(downstreamRenders, CountingTestRegistry::renders(downstream)) << "frame 2's entry was retracted with the stale one";
+}
+
+// A derive that reads a knob edited to B and back to A around the read answers for B under the
+// hash A comes back to. Nothing may keep that answer under it, here or downstream.
+TEST_F(PerFrameMetadataTest, EditAndRevertDuringDeriveCachesNoStaleMetadata)
+{
+    NodePtr source = createSource(3);
+    ASSERT_TRUE(bool(source));
+    NodePtr blur = createBlurBelow(source);
+    ASSERT_TRUE(bool(blur));
+    MetadataSourceTestEffect* sourceEffect = metadataSourceOf(source);
+    NativeEffectBase* blurEffect = dynamic_cast<NativeEffectBase*>(blur->getEffectInstance().get());
+    ASSERT_TRUE(sourceEffect && blurEffect);
+    KnobIntPtr tag = sourceEffect->getTagKnob();
+    ASSERT_TRUE(bool(tag));
+    tag->setValue(1, ViewSpec::all(), 0);
+    ASSERT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
+
+    const auto editAndRevert = [&tag](bool afterRead) {
+        tag->setValue(afterRead ? 1 : 2, ViewSpec::all(), 0);
+    };
+
+    // Derived on the source itself.
+    sourceEffect->setTagReadHook(editAndRevert);
+    (void)sourceEffect->getOutputMetadata(2., ViewIdx(0));
+    int derivations = sourceEffect->derivationCount();
+    EXPECT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(2., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_EQ(derivations + 1, sourceEffect->derivationCount());
+
+    // Derived on the source while the node below derives its own.
+    sourceEffect->setTagReadHook(editAndRevert);
+    (void)blurEffect->getOutputMetadata(3., ViewIdx(0));
+    derivations = sourceEffect->derivationCount();
+    EXPECT_EQ(std::optional<int>(1), blurEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_GT(sourceEffect->derivationCount(), derivations);
 }

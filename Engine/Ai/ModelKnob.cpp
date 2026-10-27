@@ -25,6 +25,8 @@
 
 #include "ModelKnob.h"
 
+#include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 #include <QObject>
@@ -61,10 +63,10 @@ researchOnlyTrainingData(const AiModelEntry& entry)
 } // namespace
 
 ModelKnob::ModelKnob(EffectInstance* effect,
-                     AiModelTask task,
+                     const std::vector<AiModelTask>& tasks,
                      ModelDownloader* downloader)
     : _effect(effect)
-    , _task(task)
+    , _tasks(tasks)
     , _downloader(downloader)
     , _context(new QObject)
 {
@@ -92,10 +94,22 @@ ModelKnob::create(EffectInstance* effect,
                   AiModelTask task,
                   ModelDownloader* downloader)
 {
+    return create(effect, page, std::vector<AiModelTask> { task }, downloader);
+}
+
+std::unique_ptr<ModelKnob>
+ModelKnob::create(EffectInstance* effect,
+                  const KnobPagePtr& page,
+                  const std::vector<AiModelTask>& tasks,
+                  ModelDownloader* downloader)
+{
+    if (tasks.empty()) {
+        throw std::invalid_argument("ModelKnob::create: no task");
+    }
     if (!downloader) {
         downloader = ModelDownloader::process();
     }
-    std::unique_ptr<ModelKnob> helper(new ModelKnob(effect, task, downloader));
+    std::unique_ptr<ModelKnob> helper(new ModelKnob(effect, tasks, downloader));
 
     KnobChoicePtr model = AppManager::createKnob<KnobChoice>(effect, std::string("Model"));
     model->setName("model");
@@ -105,8 +119,8 @@ ModelKnob::create(EffectInstance* effect,
     page->addKnob(model);
     helper->_model = model;
     helper->refreshEntries();
-    if (const AiModelEntry* registryDefault = downloader->registry()->defaultFor(task)) {
-        model->setDefaultValueFromID(registryDefault->id);
+    if (const AiModelEntry* knobDefault = registryDefault(*downloader->registry(), tasks)) {
+        model->setDefaultValueFromID(knobDefault->id);
     }
 
     KnobButtonPtr download = AppManager::createKnob<KnobButton>(effect, std::string("Download Model"));
@@ -123,16 +137,38 @@ const AiModelEntry*
 ModelKnob::defaultModel(const ModelRegistry& registry,
                         AiModelTask task)
 {
-    const SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+    return defaultModel(registry, std::vector<AiModelTask> { task });
+}
 
-    if (settings) {
-        const AiModelEntry* picked = registry.find(settings->getAiDefaultModel(task));
-        if (picked && (picked->task == task)) {
-            return picked;
+const AiModelEntry*
+ModelKnob::registryDefault(const ModelRegistry& registry,
+                           const std::vector<AiModelTask>& tasks)
+{
+    for (AiModelTask task : tasks) {
+        if (const AiModelEntry* entry = registry.defaultFor(task)) {
+            return entry;
         }
     }
 
-    return registry.defaultFor(task);
+    return nullptr;
+}
+
+const AiModelEntry*
+ModelKnob::defaultModel(const ModelRegistry& registry,
+                        const std::vector<AiModelTask>& tasks)
+{
+    const SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+
+    if (settings) {
+        for (AiModelTask task : tasks) {
+            const AiModelEntry* picked = registry.find(settings->getAiDefaultModel(task));
+            if (picked && (picked->task == task)) {
+                return picked;
+            }
+        }
+    }
+
+    return registryDefault(registry, tasks);
 }
 
 std::string
@@ -186,7 +222,7 @@ ModelKnob::onEffectCreated(const CreateNodeArgs& args)
         return;
     }
     KnobChoicePtr model = _model.lock();
-    const AiModelEntry* picked = defaultModel(*_downloader->registry(), _task);
+    const AiModelEntry* picked = defaultModel(*_downloader->registry(), _tasks);
     if (model && picked && (picked->id != modelId())) {
         model->setValueFromID(picked->id, 0);
     }
@@ -296,12 +332,14 @@ ModelKnob::refreshEntries()
     }
     const ModelRegistry& registry = *_downloader->registry();
     std::vector<ChoiceOption> options;
-    for (const std::string& id : registry.byTask(_task)) {
-        const AiModelResolution resolution = registry.resolve(id);
-        const bool installed = (resolution.status == AiModelStatus::eInstalled);
-        options.emplace_back(id,
-                             resolution.entry->name + (installed ? std::string() : std::string(" (not installed)")),
-                             resolution.entry->id);
+    for (AiModelTask task : _tasks) {
+        for (const std::string& id : registry.byTask(task)) {
+            const AiModelResolution resolution = registry.resolve(id);
+            const bool installed = (resolution.status == AiModelStatus::eInstalled);
+            options.emplace_back(id,
+                                 resolution.entry->name + (installed ? std::string() : std::string(" (not installed)")),
+                                 resolution.entry->id);
+        }
     }
     model->populateChoices(options);
 }
@@ -311,7 +349,7 @@ ModelKnob::onModelsChanged(const std::string& id)
 {
     const AiModelEntry* entry = _downloader->registry()->find(id);
 
-    if (!entry || (entry->task != _task)) {
+    if (!entry || !listsTask(entry->task)) {
         return;
     }
     {
@@ -320,6 +358,12 @@ ModelKnob::onModelsChanged(const std::string& id)
     }
     refreshEntries();
     _effect->incrHashAndEvaluate(true, false);
+}
+
+bool
+ModelKnob::listsTask(AiModelTask task) const
+{
+    return std::find(_tasks.begin(), _tasks.end(), task) != _tasks.end();
 }
 
 void

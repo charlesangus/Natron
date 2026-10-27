@@ -1135,6 +1135,17 @@ succeeded. `Engine/Ai` never interprets pixel values; the conversion lives in
 the node, beside the model it serves. Remember that tensor row 0 is the top of
 the image, `y2 - 1`.
 
+A node whose model wants a colour space other than the working space can let
+the user pick it with `ModelColourspaceKnobs` (`Engine/Nodes/OCIO/ModelColourspace.h`).
+It adds the `modelColourspace` menu of the project config's spaces, built on the
+OCIO nodes' `OcioNodeKnobs`. Until the user picks a space, it follows the
+model's colour space (`ModelConfig::colourSpace`, or whatever the node maps it to), through
+the config's name for it. `conversion()` returns the processors to and from the
+chosen space, and `apply()` runs one on interleaved RGB. Use it in `pack` and
+`unpack`, and post its `error` when the config lacks the space. It converts and
+nothing more: range handling, if any, belongs to the user. NeuralDenoise is the
+example.
+
 ### The GPU side of an op
 
 A Point op names its GPU work with a `GpuOpRef` returned from `gpu()`:

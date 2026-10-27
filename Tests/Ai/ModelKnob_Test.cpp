@@ -66,17 +66,20 @@ namespace {
 const char* const kFixturePackage = "test-identity";
 const char* const kFixtureSha256 = "eb95dd0d3cfecc9a713799210f0f9fdcb29b1745a8adbf846ddc1b7ad20a92b8";
 const int kFixtureSize = 602;
-// Two denoise models of the fixture package; neither is marked default, so the first is.
+// Two denoise models and a linear denoise model of the fixture package; none is marked default,
+// so the first of each task is.
 const char* const kModelA = "test-identity";
 const char* const kModelB = "test-identity-b";
+const char* const kModelLinear = "test-identity-linear";
 
 QJsonObject
 fixtureEntry(const char* id,
-             const char* name)
+             const char* name,
+             const char* task = "denoise")
 {
     return QJsonObject {
         { QStringLiteral("id"), QString::fromLatin1(id) },
-        { QStringLiteral("task"), QStringLiteral("denoise") },
+        { QStringLiteral("task"), QString::fromLatin1(task) },
         { QStringLiteral("name"), QString::fromLatin1(name) },
         { QStringLiteral("package"), QString::fromLatin1(kFixturePackage) },
         { QStringLiteral("files"), QJsonArray { QStringLiteral("model.onnx") } },
@@ -97,7 +100,8 @@ protected:
     {
         BaseTest::SetUp();
         ASSERT_TRUE(_models.isValid());
-        const QJsonArray models { fixtureEntry(kModelA, "Identity A"), fixtureEntry(kModelB, "Identity B") };
+        const QJsonArray models { fixtureEntry(kModelA, "Identity A"), fixtureEntry(kModelB, "Identity B"),
+                                  fixtureEntry(kModelLinear, "Identity Linear", "denoise-linear") };
         const QJsonObject root { { QStringLiteral("schema"), 1 }, { QStringLiteral("models"), models } };
         _downloader.reset(new ModelDownloader(std::make_shared<const ModelRegistry>(QJsonDocument(root).toJson().toStdString(),
                                                                                     _models.path().toStdString())));
@@ -112,9 +116,11 @@ protected:
             getApp()->getProject()->reset(false, true);
         }
         AiModelTestEffect::downloader() = nullptr;
+        AiModelTestEffect::tasks() = std::vector<AiModelTask> { AiModelTask::eDenoise };
         _downloader.reset();
         setAiEnabled(false);
         appPTR->getCurrentSettings()->setAiDefaultModel(AiModelTask::eDenoise, std::string());
+        appPTR->getCurrentSettings()->setAiDefaultModel(AiModelTask::eDenoiseLinear, std::string());
         BaseTest::TearDown();
     }
 
@@ -123,9 +129,24 @@ protected:
         appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("aiEnabled")->setValue(enabled);
     }
 
-    NodePtr createModelNode()
+    NodePtr createModelNode(const std::vector<AiModelTask>& tasks = std::vector<AiModelTask> { AiModelTask::eDenoise })
     {
+        AiModelTestEffect::tasks() = tasks;
+
         return createNode(QString::fromUtf8(kTestPluginIDAiModel));
+    }
+
+    static std::vector<std::string> entryIds(const NodePtr& node)
+    {
+        std::vector<std::string> ids;
+        KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("model"));
+        if (model) {
+            for (const ChoiceOption& option : model->getEntries_mt_safe()) {
+                ids.push_back(option.id);
+            }
+        }
+
+        return ids;
     }
 
     static ModelKnob* modelKnobOf(const NodePtr& node)
@@ -267,4 +288,79 @@ TEST_F(ModelKnobTest, NewNodesStartOnTheUserDefault)
     // The stored default must name a model of the task to count.
     appPTR->getCurrentSettings()->setAiDefaultModel(AiModelTask::eDenoise, "not-a-model");
     EXPECT_EQ(ModelKnob::defaultModel(*_downloader->registry(), AiModelTask::eDenoise)->id, kModelA);
+}
+
+TEST_F(ModelKnobTest, SeveralTasksListTheirModelsTaskByTask)
+{
+    const std::vector<AiModelTask> linearFirst { AiModelTask::eDenoiseLinear, AiModelTask::eDenoise };
+    NodePtr node = createModelNode(linearFirst);
+    ASSERT_TRUE(bool(node));
+    ModelKnob* modelKnob = modelKnobOf(node);
+    ASSERT_NE(modelKnob, nullptr);
+    EXPECT_EQ(modelKnob->tasks(), linearFirst);
+    EXPECT_EQ(entryIds(node), (std::vector<std::string> { kModelLinear, kModelA, kModelB }));
+    // The first task's default is the knob's.
+    EXPECT_EQ(modelKnob->modelId(), kModelLinear);
+
+    NodePtr other = createModelNode(std::vector<AiModelTask> { AiModelTask::eDenoise, AiModelTask::eDenoiseLinear });
+    ASSERT_TRUE(bool(other));
+    EXPECT_EQ(entryIds(other), (std::vector<std::string> { kModelA, kModelB, kModelLinear }));
+    EXPECT_EQ(modelKnobOf(other)->modelId(), kModelA);
+
+    // A task without models gives no default, so the next task's applies.
+    const std::vector<AiModelTask> upscaleFirst { AiModelTask::eUpscale2x, AiModelTask::eDenoise };
+    EXPECT_EQ(ModelKnob::registryDefault(*_downloader->registry(), upscaleFirst)->id, kModelA);
+    EXPECT_EQ(ModelKnob::registryDefault(*_downloader->registry(), std::vector<AiModelTask> { AiModelTask::eUpscale2x }), nullptr);
+}
+
+TEST_F(ModelKnobTest, SeveralTasksTakeTheUserDefaultOfTheFirstTaskThatHasOne)
+{
+    const std::vector<AiModelTask> tasks { AiModelTask::eDenoiseLinear, AiModelTask::eDenoise };
+
+    appPTR->getCurrentSettings()->setAiDefaultModel(AiModelTask::eDenoise, kModelB);
+    EXPECT_EQ(ModelKnob::defaultModel(*_downloader->registry(), tasks)->id, kModelB);
+    NodePtr node = createModelNode(tasks);
+    ASSERT_TRUE(bool(node));
+    EXPECT_EQ(modelKnobOf(node)->modelId(), kModelB);
+    // The knob's own default stays the registry's.
+    KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("model"));
+    ASSERT_TRUE(bool(model));
+    EXPECT_EQ(model->getEntry(model->getDefaultValue(0)).id, kModelLinear);
+
+    appPTR->getCurrentSettings()->setAiDefaultModel(AiModelTask::eDenoiseLinear, kModelLinear);
+    EXPECT_EQ(ModelKnob::defaultModel(*_downloader->registry(), tasks)->id, kModelLinear);
+    NodePtr second = createModelNode(tasks);
+    ASSERT_TRUE(bool(second));
+    EXPECT_EQ(modelKnobOf(second)->modelId(), kModelLinear);
+
+    // A stored default naming a model of another task does not count for its task.
+    appPTR->getCurrentSettings()->setAiDefaultModel(AiModelTask::eDenoiseLinear, kModelA);
+    EXPECT_EQ(ModelKnob::defaultModel(*_downloader->registry(), tasks)->id, kModelB);
+}
+
+TEST_F(ModelKnobTest, SeveralTasksRefreshOnAnInstallOfAnyOfTheirModels)
+{
+    NodePtr node = createModelNode(std::vector<AiModelTask> { AiModelTask::eDenoiseLinear, AiModelTask::eDenoise });
+    ASSERT_TRUE(bool(node));
+    KnobChoicePtr model = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("model"));
+    ASSERT_TRUE(bool(model));
+    EXPECT_EQ(model->getEntries_mt_safe()[0].label, "Identity Linear (not installed)");
+
+    std::string error;
+    EXPECT_FALSE(render(node, &error));
+    EXPECT_NE(persistentError(node).find(kModelLinear), std::string::npos) << persistentError(node);
+
+    // A model of the second task shares the package, so installing it installs the selected one.
+    ASSERT_TRUE(_downloader->download(kModelA, &error)) << error;
+    const std::vector<ChoiceOption> entries = model->getEntries_mt_safe();
+    ASSERT_EQ(entries.size(), 3u);
+    EXPECT_EQ(entries[0].label, "Identity Linear");
+    EXPECT_EQ(entries[1].label, "Identity A");
+
+    EXPECT_TRUE(render(node, &error)) << error;
+    EXPECT_EQ(persistentError(node), std::string());
+    std::optional<ModelKnob::Resolved> resolved = modelKnobOf(node)->resolve();
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(resolved->entry->id, kModelLinear);
+    EXPECT_EQ(resolved->entry->task, AiModelTask::eDenoiseLinear);
 }

@@ -396,6 +396,14 @@ OcioNodeKnobs::refreshMenus()
 }
 
 void
+OcioNodeKnobs::sourceChanged()
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->sourceChanged();
+    }
+}
+
+void
 OcioNodeKnobs::addMenuRefresher(const std::function<void()>& refresher)
 {
     _menuRefreshers.push_back(refresher);

@@ -19,6 +19,7 @@ AI node runs on the CPU as far as the scheduler is concerned (see "AI nodes" in
 | `ModelRegistry.*` | the model manifest, models by task, and where a model is installed |
 | `ModelPackage.*` | `.dtmodel` unpacking, `config.json` parsing into `ModelConfig`, sha256 |
 | `ModelDownloader.*` | downloading, checking and installing a model's package |
+| `ModelKnob.*` | the node-side `model` menu, Download Model button and model resolution |
 | `data/ai_models.json` | the pinned manifest, compiled in as `:/Ai/ai_models.json` |
 
 ## Loading the library
@@ -181,6 +182,14 @@ request for a package being downloaded joins the first.
 input kind and colour space from it, looking up a model's attributes by its file stem
 (`model_x4`) over the package-wide ones. Tensor names and shapes are not in it; the session reads
 them from the model.
+
+A node picks its model with `ModelKnob::create()`, which takes one task or a list of them. The
+`model` menu lists the models of each task in the order given, so a node that runs both
+`denoise-linear` and `denoise` models shows the linear ones first. The default is the Preferences
+default of the first task that has one, else the registry's default for the first task that lists
+a model. The menu refreshes when a model of any of its tasks is installed or removed.
+`ModelKnob::resolve()` returns the selected model's files and `ModelConfig`, or posts why it
+can't and returns nothing.
 
 ## Testing
 

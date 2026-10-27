@@ -46,8 +46,8 @@ NATRON_NAMESPACE_ENTER
 class ModelDownloader;
 
 /**
- * @brief The model picker of an AI node: a "model" choice listing the models of one task and a
- * "downloadModel" button. The node owns it, forwards knobChanged() to it and calls resolve() when
+ * @brief The model picker of an AI node: a "model" choice listing the models of one or more tasks
+ * and a "downloadModel" button. The node owns it, forwards knobChanged() to it and calls resolve() when
  * it renders.
  **/
 class ModelKnob {
@@ -68,6 +68,15 @@ public:
     static std::unique_ptr<ModelKnob> create(EffectInstance* effect,
                                              const KnobPagePtr& page,
                                              AiModelTask task,
+                                             ModelDownloader* downloader = nullptr);
+
+    /**
+     * @brief As above, listing the models of every task in tasks, which must not be empty, task by
+     * task in that order. The first task with a default in the registry gives the knob's default.
+     **/
+    static std::unique_ptr<ModelKnob> create(EffectInstance* effect,
+                                             const KnobPagePtr& page,
+                                             const std::vector<AiModelTask>& tasks,
                                              ModelDownloader* downloader = nullptr);
 
     ~ModelKnob();
@@ -99,6 +108,23 @@ public:
     std::optional<Resolved> resolve();
 
     /**
+     * @brief The model the knob defaults to for tasks: the registry default of the first task
+     * that has one, or null.
+     **/
+    static const AiModelEntry* registryDefault(const ModelRegistry& registry, const std::vector<AiModelTask>& tasks);
+
+    /**
+     * @brief The model a node the user creates starts on: the Preferences default of the first
+     * task in tasks the user chose one for, else registryDefault().
+     **/
+    static const AiModelEntry* defaultModel(const ModelRegistry& registry, const std::vector<AiModelTask>& tasks);
+
+    const std::vector<AiModelTask>& tasks() const
+    {
+        return _tasks;
+    }
+
+    /**
      * @brief Selects the user's default model (see defaultModel()) on a node the user creates.
      * The knob's own default stays the registry's, so that a project saved without touching the
      * knob opens on the same model everywhere. Call from the node's onEffectCreated().
@@ -112,7 +138,9 @@ public:
     bool knobChanged(KnobI* k);
 
 private:
-    ModelKnob(EffectInstance* effect, AiModelTask task, ModelDownloader* downloader);
+    ModelKnob(EffectInstance* effect, const std::vector<AiModelTask>& tasks, ModelDownloader* downloader);
+
+    bool listsTask(AiModelTask task) const;
 
     void refreshEntries();
     void onModelsChanged(const std::string& id);
@@ -120,7 +148,7 @@ private:
     void clearOwnError();
 
     EffectInstance* const _effect;
-    const AiModelTask _task;
+    const std::vector<AiModelTask> _tasks;
     ModelDownloader* const _downloader;
     std::unique_ptr<QObject> _context;
     KnobChoiceWPtr _model;

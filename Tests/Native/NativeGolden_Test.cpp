@@ -889,7 +889,8 @@ TEST_F(NativeGoldenTest, FrameRange)
     const Apply range = [](const GoldenGraph& g) { return num(g, kFrameRangeParamFirstFrame, { 5 }) && num(g, kFrameRangeParamLastFrame, { 9 }); };
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
-    const char* const modes[] = { kFrameRangeOriginal, kFrameRangeHold, kFrameRangeLoop, kFrameRangeBounce, kFrameRangeBlack };
+    // Black renders an empty output, which has no golden; NativeFrameRangeTest.BlackIsEmptyOutsideTheRange covers it.
+    const char* const modes[] = { kFrameRangeOriginal, kFrameRangeHold, kFrameRangeLoop, kFrameRangeBounce };
     for (const char* mode : modes) {
         const std::string id(mode);
         v.push_back(variant(std::string("before") + id, [range, id](const GoldenGraph& g) { return range(g) && choice(g, kFrameRangeParamBefore, id); }));

@@ -25,9 +25,35 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 ## Phase 240.1: Audit
 
-- [ ] M240.P1.T1 — List overflowing knob-to-float conversions
+- [x] M240.P1.T1 — List overflowing knob-to-float conversions
   - files: `Engine/Nodes/**` (read only), this milestone file
-  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `## Decisions`.
+  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `
+
+- [ ] M240.P2.T4 — knobValueAsFloat in keyers, filters and OCIO
+  - files: `Engine/Nodes/Keyer/Keyer.cpp`, `Keyer/ChromaKeyer.cpp`, `Filter/EdgeDetect.cpp`, `OCIO/OCIODisplay.cpp`, `OCIO/OcioNodeBase.cpp`
+  - approach: As P2.T2, for the sites listed in Decisions, including ChromaKeyer's `keyGain` products and OCIODisplay's `1./gamma`.
+  - verify: the debug build passes, and the P2.T3 sweep passes for these nodes.
+  - size: M
+
+- [ ] M240.P2.T5 — knobValueAsFloat in the warps and lens nodes
+  - files: `Engine/Nodes/Transform/IDistort.cpp`, `Transform/STMap.cpp`, `Transform/WarpGpu.h`, `Transform/LensDistortion.cpp`, `Transform/LensModelsGpu.h`
+  - approach: As P2.T2. `setWarpGpuDouble` and `setLensModelGpuDouble` split a double into a float pair (hi, lo). Make the split non-trapping for values beyond FLT_MAX (hi = ±inf, lo = 0) so the GPU sees the same as the CPU.
+  - verify: the debug build passes; the P2.T3 sweep and `ctest -R "STMap|IDistort|LensDistortion"` pass.
+  - size: M
+
+- [ ] M240.P2.T6 — knobValueAsFloat in the deep and scene nodes
+  - files: `Engine/Nodes/Deep/DeepCrop.cpp`, `Deep/DeepFromImage.cpp`, `Deep/DeepExpressionEvaluator.cpp`, `Scene/SceneNodeAuthoring.cpp`, `Scene/USDCamera.cpp`, `Scene/USDLight.cpp`, `Scene/USDMaterial.cpp`
+  - approach: As P2.T2 (seven files, but each is a one-to-two-line mechanical swap). The deep expression parser narrows `strtod` literals, so use the same helper there.
+  - verify: the debug build passes, and `ctest -R "Deep|USD|Scene"` passes.
+  - size: M
+
+- [ ] M240.P2.T7 — knobValueAsFloat in the raw and write nodes
+  - files: `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Raw/RawPrepare.cpp`, `Raw/RawInputColor.cpp`, `Raw/RawColorCalibrationCheckerNode.cpp`, `IO/OiioWriteSupport.cpp`, `IO/NativeWrite.cpp`
+  - approach: As P2.T2. First settle the audit's unsettled raw sites (RawInputColor `row0..2` through the matrix inversion; checker `corner`; spot `bottomLeft`/`size` in RawColorCalibrationSpot and RawTemperature) and fix those that narrow a ±DBL_MAX value.
+  - verify: the debug build passes; the P2.T3 sweep and `ctest -R "Raw|Write"` pass.
+  - size: M
+
+## Decisions`.
   - verify: the list is recorded, with each entry's knob range checked against its knob definition.
   - size: M
 
@@ -45,9 +71,9 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: the touched suites pass on lavapipe in the build, and on RADV with `NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`.
   - size: M
 
-- [ ] M240.P2.T2 — Use knobValueAsFloat at the audited sites
-  - files: the sites listed in P1.T1 (split into a second task by node family if the list exceeds about five files)
-  - approach: Replace each overflowing narrow with `knobValueAsFloat` from `Engine/Nodes/KnobReader.h`. No behaviour change beyond not trapping: values still round to nearest, overflow to ±inf, and NaN passes through.
+- [ ] M240.P2.T2 — knobValueAsFloat in the colour nodes
+  - files: `Engine/Nodes/Color/Grade.cpp`, `Color/Clamp.cpp`, `Color/ColorMathNode.cpp`, `Color/Saturation.cpp`, `Color/ColorCorrect.cpp`
+  - approach: Replace each overflowing narrow listed in Decisions (P1.T1 audit) with `knobValueAsFloat` from `Engine/Nodes/KnobReader.h`. Where a double expression can itself overflow or divide by zero before narrowing (Grade's `mul*(wh-bl)/d` and `1./gamma` at gamma 0, ColorCorrect's `invGamma`, Saturation's row blend), make the expression non-trapping with the same result the CPU would give without traps (±inf), without changing finite results.
   - verify: the debug build passes, and the P2.T3 sweep passes for these nodes.
   - size: M
 
@@ -69,5 +95,18 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - Local flush helpers already exist (`NativeColorMathGpu_Test.cpp:237` `allowFlushedToZero`, `NativeColorLookupGpu_Test.cpp:258` `isDenormal`), and `CurveSnapshotPrecision_Test.cpp:36` has a FLT_MIN·2^48 floor.
   - Recommended home: an opt-in `ParityTolerance::flushSubnormals` (`exact().flushing()`) applied in `accepts()`, plus `ErrorStats::flushSubnormals` in `Tests/Gpu/Tolerance.h`, retiring the local helpers. P2.T1 follows this. Flushed *inputs* that change a result (subnormal divisor, negative-exponent pow) still need skip-or-bound handling.
   - **Contradiction:** the audit judged Noise safe at 1e-5, but `NativeNoiseGpu_Test.cpp:344` uses `ParityTolerance::exact()` for `Match::Exact` cases, and those fail on RADV by 1 ulp of normal values (5.96e-08), which is not a subnormal issue. P2 investigates it as a separate exact-match failure on hardware: the CPU and GPU hash/float paths differ by rounding.
+
+- 2026-10-26 — **P1.T1 audit result (overflowing knob→float narrows, main at 52d58e736; table in this session's audit):**
+  - About 28 files narrow a ±DBL_MAX (or [0,DBL_MAX]) knob to float on a render path.
+  - **Colour:** Grade, Clamp, ColorMathNode (Add/Multiply/Gamma), Saturation, ColorCorrect.
+  - **Generator:** Constant and CheckerBoard, both fixed in M184.
+  - **Keyers, filters and OCIO:** Keyer and ChromaKeyer `keyColor`/`keyGain`, EdgeDetect `blurSize`, OCIODisplay `gain`/`gamma` and OcioNodeBase.
+  - **Warps:** IDistort and STMap `uvOffset`/`uvScale` through `WarpGpu.h`, and LensDistortion through `LensModelsGpu.h`.
+  - **Deep:** DeepCrop `zRange`, DeepFromImage `depth`, and DeepExpressionEvaluator literals.
+  - **Scene:** SceneNodeAuthoring, USDCamera, USDLight, USDMaterial.
+  - **Raw:** RawColorCalibration `x`/`y` (±1e300) and RawPrepare black/white levels. RawInputColor and the checker/spot knobs are unsettled.
+  - **IO (indirect):** OiioWriteSupport metadata doubles and NativeWrite `formatPar`.
+  - **Adjacent traps:** `1./gamma` at gamma 0 in Grade, ColorCorrect and OCIODisplay; Grade's `wh-bl` overflow.
+  - Noise already guards with `boundedFloat()` (clamp to ±FLT_MAX, NaN→0). The fixes use M184's `knobValueAsFloat` instead, which keeps ±inf as the user typed it. P2.T2 was split by family into P2.T2, P2.T4, P2.T5, P2.T6 and P2.T7.
 
 **Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), including the new sweep.

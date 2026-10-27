@@ -965,19 +965,16 @@ Bezier::isOpenBezier() const
 bool
 Bezier::dequeueGuiActions()
 {
-    bool mustCopy;
-    {
-        QMutexLocker k2(&_imp->guiCopyMutex);
-        mustCopy = _imp->mustCopyGui;
-        if (mustCopy) {
-            _imp->mustCopyGui = false;
-        }
+    bool all = false;
+    std::set<double> times;
+    std::set<BezierCPPtr> dirtyPoints;
+    if (!_imp->takeGuiDirty(&all, &times, &dirtyPoints)) {
+        return false;
     }
+
     QMutexLocker k(&itemMutex);
 
-    if (mustCopy) {
-        BezierPtr this_shared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
-        assert(this_shared);
+    if (all) {
         BezierCPs::iterator fit = _imp->featherPoints.begin();
         for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it, ++fit) {
             (*it)->cloneGuiCurvesToInternalCurves();
@@ -986,10 +983,29 @@ Bezier::dequeueGuiActions()
 
         _imp->isClockwiseOriented = _imp->guiIsClockwiseOriented;
         _imp->isClockwiseOrientedStatic = _imp->guiIsClockwiseOrientedStatic;
-        invalidateContentHash();
+        _imp->isClockwiseOrientedStaticDirty = _imp->guiIsClockwiseOrientedStaticDirty;
+    } else {
+        for (std::set<BezierCPPtr>::iterator it = dirtyPoints.begin(); it != dirtyPoints.end(); ++it) {
+            (*it)->cloneGuiCurvesToInternalCurves();
+        }
+        if (!dirtyPoints.empty()) {
+            eraseOrientation(false);
+        }
+        for (std::set<double>::iterator t = times.begin(); t != times.end(); ++t) {
+            for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+                (*it)->cloneGuiCurvesToInternalCurvesAtTime(*t);
+            }
+            for (BezierCPs::iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+                (*it)->cloneGuiCurvesToInternalCurvesAtTime(*t);
+            }
+            copyOrientationAroundTime(false, *t);
+        }
+        _imp->isClockwiseOrientedStatic = _imp->guiIsClockwiseOrientedStatic;
+        _imp->isClockwiseOrientedStaticDirty = _imp->guiIsClockwiseOrientedStaticDirty;
     }
+    invalidateContentHash();
 
-    return mustCopy;
+    return true;
 }
 
 void
@@ -1005,6 +1021,109 @@ Bezier::copyInternalPointsToGuiPoints()
     }
     _imp->guiIsClockwiseOriented = _imp->isClockwiseOriented;
     _imp->guiIsClockwiseOrientedStatic = _imp->isClockwiseOrientedStatic;
+    _imp->guiIsClockwiseOrientedStaticDirty = _imp->isClockwiseOrientedStaticDirty;
+}
+
+void
+Bezier::copyInternalPointsToGuiAtTime(double time)
+{
+    assert(!itemMutex.tryLock());
+    for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        (*it)->cloneInternalCurvesToGuiCurvesAtTime(time);
+    }
+    for (BezierCPs::iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+        (*it)->cloneInternalCurvesToGuiCurvesAtTime(time);
+    }
+    copyOrientationAroundTime(true, time);
+}
+
+void
+Bezier::copyInternalPointToGui(BezierCP* cp,
+                               BezierCP* fp)
+{
+    assert(!itemMutex.tryLock());
+    if (cp) {
+        cp->cloneInternalCurvesToGuiCurves();
+    }
+    if (fp && (fp != cp)) {
+        fp->cloneInternalCurvesToGuiCurves();
+    }
+}
+
+void
+Bezier::copyInternalPointToGuiAtTime(BezierCP* cp,
+                                     BezierCP* fp,
+                                     double time)
+{
+    assert(!itemMutex.tryLock());
+    if (cp) {
+        cp->cloneInternalCurvesToGuiCurvesAtTime(time);
+    }
+    if (fp && (fp != cp)) {
+        fp->cloneInternalCurvesToGuiCurvesAtTime(time);
+    }
+}
+
+void
+Bezier::copyOrientationAroundTime(bool toGui,
+                                  double time)
+{
+    assert(!itemMutex.tryLock());
+    const std::map<double, bool>& src = toGui ? _imp->isClockwiseOriented : _imp->guiIsClockwiseOriented;
+    std::map<double, bool>& dst = toGui ? _imp->guiIsClockwiseOriented : _imp->isClockwiseOriented;
+
+    double from, to;
+    getOrientationSpan(!toGui, time, &from, &to);
+    dst.erase(dst.lower_bound(from), dst.upper_bound(to));
+    dst.insert(src.lower_bound(from), src.upper_bound(to));
+
+    if (toGui) {
+        _imp->guiIsClockwiseOrientedStatic = _imp->isClockwiseOrientedStatic;
+        _imp->guiIsClockwiseOrientedStaticDirty = _imp->isClockwiseOrientedStaticDirty;
+    } else {
+        _imp->isClockwiseOrientedStatic = _imp->guiIsClockwiseOrientedStatic;
+        _imp->isClockwiseOrientedStaticDirty = _imp->guiIsClockwiseOrientedStaticDirty;
+    }
+}
+
+void
+Bezier::syncGuiAfterEdit(bool useGuiCurve,
+                         const BezierCPPtr& cp,
+                         const BezierCPPtr& fp,
+                         double time,
+                         bool allTimes,
+                         bool keyedAllPoints)
+{
+    if (useGuiCurve) {
+        if (allTimes) {
+            _imp->markGuiDirtyPoint(cp);
+            _imp->markGuiDirtyPoint(fp);
+            QMutexLocker k(&itemMutex);
+            if (_imp->autoRecomputeOrientation) {
+                eraseOrientation(true);
+            }
+        }
+        _imp->markGuiDirtyAtTime(time);
+
+        return;
+    }
+
+    QMutexLocker k(&itemMutex);
+    if (allTimes) {
+        copyInternalPointToGui(cp.get(), fp.get());
+        if (_imp->autoRecomputeOrientation) {
+            eraseOrientation(false);
+            eraseOrientation(true);
+        }
+    }
+    if (keyedAllPoints) {
+        copyInternalPointsToGuiAtTime(time);
+    } else {
+        if (!allTimes) {
+            copyInternalPointToGuiAtTime(cp.get(), fp.get(), time);
+        }
+        copyOrientationAroundTime(true, time);
+    }
 }
 
 bool
@@ -1020,7 +1139,8 @@ Bezier::clearAllPoints()
     QMutexLocker k(&itemMutex);
     _imp->points.clear();
     _imp->featherPoints.clear();
-    _imp->isClockwiseOriented.clear();
+    eraseOrientation(false);
+    eraseOrientation(true);
     _imp->finished = false;
     invalidateContentHash();
 }
@@ -1069,7 +1189,7 @@ Bezier::clone(const RotoItem* other)
 
         bool useGuiCurve = !canSetInternalPoints();
         if (useGuiCurve) {
-            _imp->setMustCopyGuiBezier(true);
+            _imp->markGuiDirtyAll();
         }
 
         _imp->featherPoints.clear();
@@ -1090,6 +1210,8 @@ Bezier::clone(const RotoItem* other)
         if (!useGuiCurve) {
             copyInternalPointsToGuiPoints();
         }
+        eraseOrientation(false);
+        eraseOrientation(true);
 
         _imp->isOpenBezier = otherBezier->_imp->isOpenBezier;
         _imp->finished = otherBezier->_imp->finished && !_imp->isOpenBezier;
@@ -1115,11 +1237,7 @@ Bezier::addControlPoint(double x,
         return BezierCPPtr();
     }
 
-
     bool useGuiCurve = !canSetInternalPoints();
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
 
     double keyframeTime;
     ///if the curve is empty make a new keyframe at the current timeline's time
@@ -1166,9 +1284,18 @@ Bezier::addControlPoint(double x,
             _imp->featherPoints.insert(_imp->featherPoints.end(), fp);
         }
 
-        if (!useGuiCurve) {
-            copyInternalPointsToGuiPoints();
+        // The other points are untouched: the new ones only have to be copied whole.
+        BezierCP* newFp = useFeatherPoints() ? _imp->featherPoints.back().get() : 0;
+        if (useGuiCurve) {
+            _imp->markGuiDirtyPoint(p);
+            if (newFp) {
+                _imp->markGuiDirtyPoint(_imp->featherPoints.back());
+            }
+        } else {
+            copyInternalPointToGui(p.get(), newFp);
         }
+        eraseOrientation(false);
+        eraseOrientation(true);
     }
 
     invalidateContentHash();
@@ -1189,9 +1316,6 @@ Bezier::addControlPointAfterIndex(int index,
     BezierCPPtr p = std::make_shared<BezierCP>(this_shared);
     BezierCPPtr fp;
     bool useGuiCurve = !canSetInternalPoints();
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
 
     if ( useFeatherPoints() ) {
         fp = std::make_shared<FeatherPoint>(this_shared);
@@ -1364,17 +1488,47 @@ Bezier::addControlPointAfterIndex(int index,
             }
         }
 
+        // The new point and the tangents of its neighbours changed at every keyframe.
+        std::list<BezierCPPtr> changed;
+        changed.push_back(p);
+        changed.push_back(*prev);
+        changed.push_back(*next);
+        if (useFeatherPoints()) {
+            changed.push_back(fp);
+            if ((prevF != _imp->featherPoints.end()) && *prevF) {
+                changed.push_back(*prevF);
+            }
+            if ((nextF != _imp->featherPoints.end()) && *nextF) {
+                changed.push_back(*nextF);
+            }
+        }
 
         ///If auto-keying is enabled, set a new keyframe
         int currentTime = getContext()->getTimelineCurrentTime();
+        bool keyedAllPoints = false;
         if ( !_imp->hasKeyframeAtTime(useGuiCurve, currentTime) && getContext()->isAutoKeyingEnabled() ) {
+            keyedAllPoints = !_imp->hasKeyframeAtTime(true, currentTime);
             l.unlock();
-            setKeyframe(currentTime);
+            setKeyframeInternal(currentTime, false);
             l.relock();
         }
-        if (!useGuiCurve) {
-            copyInternalPointsToGuiPoints();
+
+        for (std::list<BezierCPPtr>::iterator it = changed.begin(); it != changed.end(); ++it) {
+            if (useGuiCurve) {
+                _imp->markGuiDirtyPoint(*it);
+            } else {
+                copyInternalPointToGui(it->get(), 0);
+            }
         }
+        if (keyedAllPoints) {
+            if (useGuiCurve) {
+                _imp->markGuiDirtyAtTime(currentTime);
+            } else {
+                copyInternalPointsToGuiAtTime(currentTime);
+            }
+        }
+        eraseOrientation(false);
+        eraseOrientation(true);
     }
 
     invalidateContentHash();
@@ -1490,7 +1644,7 @@ Bezier::setCurveFinished(bool finished)
     resetTransformCenter();
 
     invalidateContentHash();
-    refreshPolygonOrientation(false);
+    invalidatePolygonOrientation();
 }
 
 bool
@@ -1528,7 +1682,7 @@ Bezier::removeControlPointByIndex(int index)
     }
 
     invalidateContentHash();
-    refreshPolygonOrientation(false);
+    invalidatePolygonOrientation();
 
     Q_EMIT controlPointRemoved();
 }
@@ -1548,6 +1702,8 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool fLinkEnabled = ( onlyFeather ? true : getContext()->isFeatherLinkEnabled() );
     bool keySet = false;
+    bool keyedAllPoints = false;
+    BezierCPPtr editedCp, editedFp;
     Transform::Matrix3x3 trans, invTrans;
     getTransformAtTime(time, &trans);
     invTrans = Transform::matInverse(trans);
@@ -1700,17 +1856,17 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                 }
             }
         }
+        editedCp = cp;
+        editedFp = fp;
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
     invalidateContentHash();
-    refreshPolygonOrientation(useGuiCurve, time);
+    invalidatePolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
-    if (!useGuiCurve) {
-        QMutexLocker k(&itemMutex);
-        copyInternalPointsToGuiPoints();
-    }
+    syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
         Q_EMIT keyframeSet(time);
     }
@@ -1765,9 +1921,6 @@ Bezier::movePointByIndex(int index,
 {
     bool useGuiCurve = !canSetInternalPoints();
 
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
     movePointByIndexInternal(useGuiCurve, index, time, dx, dy, false);
 } // movePointByIndex
 
@@ -1779,9 +1932,6 @@ Bezier::setPointByIndex(int index,
 {
     bool useGuiCurve = !canSetInternalPoints();
 
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
     setPointByIndexInternal(useGuiCurve, index, time, x, y);
 } // setPointByIndex
 
@@ -1793,9 +1943,6 @@ Bezier::moveFeatherByIndex(int index,
 {
     bool useGuiCurve = !canSetInternalPoints();
 
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
     movePointByIndexInternal(useGuiCurve, index, time, dx, dy, true);
 } // moveFeatherByIndex
 
@@ -1828,12 +1975,10 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
     invTrans = Transform::matInverse(trans);
 
     bool useGuiCurve = !canSetInternalPoints();
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
-
 
     bool keySet = false;
+    bool keyedAllPoints = false;
+    BezierCPPtr editedCp, editedFp;
     {
         QMutexLocker l(&itemMutex);
         BezierCP* cp = 0;
@@ -2012,17 +2157,17 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                 }
             }
         }
+        editedCp = _imp->findOwnedPoint(cp);
+        editedFp = _imp->findOwnedPoint(fp);
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
     invalidateContentHash();
-    refreshPolygonOrientation(useGuiCurve, time);
-    if (!useGuiCurve) {
-        QMutexLocker k(&itemMutex);
-        copyInternalPointsToGuiPoints();
-    }
+    invalidatePolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
+    syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
         Q_EMIT keyframeSet(time);
     }
@@ -2084,10 +2229,9 @@ Bezier::setPointAtIndexInternal(bool setLeft,
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool rippleEdit = getContext()->isRippleEditEnabled();
     bool keySet = false;
+    bool keyedAllPoints = false;
+    BezierCPPtr editedCp, editedFp;
     bool useGuiCurve = !canSetInternalPoints();
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
 
     {
         QMutexLocker l(&itemMutex);
@@ -2155,17 +2299,20 @@ Bezier::setPointAtIndexInternal(bool setLeft,
                 }
             }
         }
+        editedFp = *fp;
+        if (featherAndCp) {
+            editedCp = *cp;
+        }
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
     invalidateContentHash();
-    refreshPolygonOrientation(useGuiCurve, time);
-    if (!useGuiCurve) {
-        QMutexLocker k(&itemMutex);
-        copyInternalPointsToGuiPoints();
-    }
+    invalidatePolygonOrientation(useGuiCurve, time);
+    // After the auto-key, which keys the other points' internal curves only.
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
+    syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
         Q_EMIT keyframeSet(time);
     }
@@ -2206,7 +2353,7 @@ Bezier::setPointAtIndex(bool feather,
 void
 Bezier::onTransformSet(double time)
 {
-    refreshPolygonOrientation(true, time);
+    invalidatePolygonOrientation(true, time);
 }
 
 void
@@ -2217,10 +2364,6 @@ Bezier::transformPoint(const BezierCPPtr & point,
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool keySet = false;
     bool useGuiCurve = !canSetInternalPoints();
-
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
 
     {
         QMutexLocker l(&itemMutex);
@@ -2253,11 +2396,8 @@ Bezier::transformPoint(const BezierCPPtr & point,
     }
 
     invalidateContentHash();
-    refreshPolygonOrientation(useGuiCurve, time);
-    if (!useGuiCurve) {
-        QMutexLocker k(&itemMutex);
-        copyInternalPointsToGuiPoints();
-    }
+    invalidatePolygonOrientation(useGuiCurve, time);
+    syncGuiAfterEdit(useGuiCurve, point, BezierCPPtr(), time, false, false);
     if (keySet) {
         Q_EMIT keyframeSet(time);
     }
@@ -2301,9 +2441,8 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool rippleEdit = getContext()->isRippleEditEnabled();
     bool useGuiCurve = !canSetInternalPoints();
-    if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
-    }
+    bool keyedAllPoints = false;
+    BezierCPPtr editedCp, editedFp;
 
     {
         QMutexLocker l(&itemMutex);
@@ -2332,17 +2471,19 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
                 (*fp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
             }
         }
+        editedCp = *cp;
+        if (useFeather) {
+            editedFp = *fp;
+        }
+        keyedAllPoints = autoKeying && !_imp->hasKeyframeAtTime(true, time);
     }
 
     invalidateContentHash();
-    refreshPolygonOrientation(useGuiCurve, time);
+    invalidatePolygonOrientation(useGuiCurve, time);
     if (autoKeying) {
-        setKeyframe(time);
+        setKeyframeInternal(time, false);
     }
-    if (!useGuiCurve) {
-        QMutexLocker k(&itemMutex);
-        copyInternalPointsToGuiPoints();
-    }
+    syncGuiAfterEdit(useGuiCurve, editedCp, editedFp, time, rippleEdit, keyedAllPoints);
     if (keySet) {
         Q_EMIT keyframeSet(time);
     }
@@ -2366,6 +2507,13 @@ Bezier::cuspPointAtIndex(int index,
 
 void
 Bezier::setKeyframe(double time)
+{
+    setKeyframeInternal(time, true);
+}
+
+void
+Bezier::setKeyframeInternal(double time,
+                            bool copyToGui)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
@@ -2407,9 +2555,12 @@ Bezier::setKeyframe(double time)
                 (*it)->setRightBezierPointAtTime(false, time, rightDerivX, rightDerivY);
             }
         }
+        eraseOrientationAroundTime(false, time);
+        if (copyToGui) {
+            copyInternalPointsToGuiAtTime(time);
+        }
     }
     invalidateContentHash();
-    // _imp->setMustCopyGuiBezier(true);
     Q_EMIT keyframeSet(time);
 }
 
@@ -2436,12 +2587,8 @@ Bezier::removeKeyframe(double time)
             }
         }
 
-        std::map<double, bool>::iterator found = _imp->isClockwiseOriented.find(time);
-        if ( found != _imp->isClockwiseOriented.end() ) {
-            _imp->isClockwiseOriented.erase(found);
-        }
-
-        copyInternalPointsToGuiPoints();
+        eraseOrientationAroundTime(false, time);
+        copyInternalPointsToGuiAtTime(time);
     }
 
     invalidateContentHash();
@@ -2471,8 +2618,7 @@ Bezier::removeAnimation()
             }
         }
 
-        _imp->isClockwiseOriented.clear();
-
+        eraseOrientation(false);
         copyInternalPointsToGuiPoints();
     }
 
@@ -2518,18 +2664,10 @@ Bezier::moveKeyframe(double oldTime,
 
     {
         QMutexLocker k(&itemMutex);
-        bool foundOld;
-        bool oldValue;
-        std::map<double, bool>::iterator foundOldIt = _imp->isClockwiseOriented.find(oldTime);
-        foundOld = foundOldIt != _imp->isClockwiseOriented.end();
-        if (foundOld) {
-            oldValue = foundOldIt->first;
-        } else {
-            oldValue = 0;
-        }
-        _imp->isClockwiseOriented[newTime] = oldValue;
-
-        copyInternalPointsToGuiPoints();
+        eraseOrientationAroundTime(false, oldTime);
+        eraseOrientationAroundTime(false, newTime);
+        copyInternalPointsToGuiAtTime(oldTime);
+        copyInternalPointsToGuiAtTime(newTime);
     }
 
     invalidateContentHash();
@@ -3429,29 +3567,27 @@ bool
 Bezier::isFeatherPolygonClockwiseOrientedInternal(bool useGuiCurve,
                                                   double time) const
 {
-    std::map<double, bool>::iterator it = _imp->isClockwiseOriented.find(time);
+    assert(!itemMutex.tryLock());
+    const int kfCount = _imp->points.empty() ? 0 : _imp->points.front()->getKeyframesCount(useGuiCurve);
 
-    if ( it != _imp->isClockwiseOriented.end() ) {
-        return it->second;
-    } else {
-        int kfCount;
-        if ( _imp->points.empty() ) {
-            kfCount = 0;
-        } else {
-            kfCount = _imp->points.front()->getKeyframesCount(useGuiCurve);
+    if (kfCount == 0) {
+        bool& dirty = useGuiCurve ? _imp->guiIsClockwiseOrientedStaticDirty : _imp->isClockwiseOrientedStaticDirty;
+        if (dirty) {
+            computePolygonOrientation(useGuiCurve, 0, true);
+            dirty = false;
         }
-        if ( (kfCount > 0) && _imp->finished ) {
-            computePolygonOrientation(useGuiCurve, time, false);
-            it = _imp->isClockwiseOriented.find(time);
-            if ( it != _imp->isClockwiseOriented.end() ) {
-                return it->second;
-            } else {
-                return false;
-            }
-        } else {
-            return _imp->isClockwiseOrientedStatic;
-        }
+
+        return useGuiCurve ? _imp->guiIsClockwiseOrientedStatic : _imp->isClockwiseOrientedStatic;
     }
+
+    const std::map<double, bool>& cache = useGuiCurve ? _imp->guiIsClockwiseOriented : _imp->isClockwiseOriented;
+    std::map<double, bool>::const_iterator it = cache.find(time);
+    if (it == cache.end()) {
+        computePolygonOrientation(useGuiCurve, time, false);
+        it = cache.find(time);
+    }
+
+    return (it != cache.end()) ? it->second : false;
 }
 
 bool
@@ -3471,39 +3607,72 @@ Bezier::setAutoOrientationComputation(bool autoCompute)
 }
 
 void
-Bezier::refreshPolygonOrientation(bool useGuiCurve,
-                                  double time)
+Bezier::invalidatePolygonOrientation(bool useGuiCurve,
+                                     double time)
 {
     if (useGuiCurve) {
-        _imp->setMustCopyGuiBezier(true);
+        _imp->markGuiDirtyAtTime(time);
     }
     QMutexLocker k(&itemMutex);
     if (!_imp->autoRecomputeOrientation) {
         return;
     }
-    computePolygonOrientation(useGuiCurve, time, false);
+    eraseOrientationAroundTime(useGuiCurve, time);
 }
 
 void
-Bezier::refreshPolygonOrientation(bool useGuiCurve)
+Bezier::invalidatePolygonOrientation()
 {
-    {
-        QMutexLocker k(&itemMutex);
-        if (!_imp->autoRecomputeOrientation) {
-            return;
-        }
-    }
-    std::set<double> kfs;
-
-    getKeyframeTimes(&kfs);
-
     QMutexLocker k(&itemMutex);
-    if ( kfs.empty() ) {
-        computePolygonOrientation(useGuiCurve, 0, true);
+
+    if (!_imp->autoRecomputeOrientation) {
+        return;
+    }
+    eraseOrientation(false);
+    eraseOrientation(true);
+}
+
+void
+Bezier::getOrientationSpan(bool useGuiCurve,
+                           double time,
+                           double* from,
+                           double* to) const
+{
+    if (_imp->points.empty()) {
+        *from = -std::numeric_limits<double>::infinity();
+        *to = std::numeric_limits<double>::infinity();
+
+        return;
+    }
+    _imp->points.front()->getKeyframeTimesAround(useGuiCurve, time, 2, from, to);
+}
+
+void
+Bezier::eraseOrientationAroundTime(bool useGuiCurve,
+                                   double time)
+{
+    assert(!itemMutex.tryLock());
+    double from, to;
+    getOrientationSpan(useGuiCurve, time, &from, &to);
+    std::map<double, bool>& cache = useGuiCurve ? _imp->guiIsClockwiseOriented : _imp->isClockwiseOriented;
+    cache.erase(cache.lower_bound(from), cache.upper_bound(to));
+    if (useGuiCurve) {
+        _imp->guiIsClockwiseOrientedStaticDirty = true;
     } else {
-        for (std::set<double>::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-            computePolygonOrientation(useGuiCurve, *it, false);
-        }
+        _imp->isClockwiseOrientedStaticDirty = true;
+    }
+}
+
+void
+Bezier::eraseOrientation(bool useGuiCurve)
+{
+    assert(!itemMutex.tryLock());
+    if (useGuiCurve) {
+        _imp->guiIsClockwiseOriented.clear();
+        _imp->guiIsClockwiseOrientedStaticDirty = true;
+    } else {
+        _imp->isClockwiseOriented.clear();
+        _imp->isClockwiseOrientedStaticDirty = true;
     }
 }
 

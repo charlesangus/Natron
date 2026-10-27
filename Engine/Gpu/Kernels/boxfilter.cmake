@@ -1,0 +1,5 @@
+slang_add_kernel(box_rows Kernels/boxfilter.slang ENTRY box_rows REGISTRY NatronGpu)
+slang_add_kernel(box_columns Kernels/boxfilter.slang ENTRY box_columns REGISTRY NatronGpu)
+slang_add_kernel(box_copy Kernels/boxfilter.slang ENTRY box_copy REGISTRY NatronGpu)
+slang_add_kernel(box_moments Kernels/boxfilter.slang ENTRY box_moments REGISTRY NatronGpu)
+slang_add_kernel(box_meanvar Kernels/boxfilter.slang ENTRY box_meanvar REGISTRY NatronGpu)

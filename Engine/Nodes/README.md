@@ -1102,6 +1102,41 @@ model does not price them: a region of two or more connected GPU candidates with
 goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
 (`PlacementInputs::isPriced`).
 
+### Edge-aware library
+
+`Engine/Nodes/Filter/EdgeAware/` holds darktable's edge-aware filters as plain functions over
+tightly packed, top-down, interleaved float buffers, in `namespace EdgeAware`. They are not
+nodes: node code calls them, passing a `ParallelFor` (`serialFor`, or the raw nodes' one). They
+follow darktable's C paths (release-5.6.2), GPL-3.0-or-later, and treat a non-finite sample
+as 0 where darktable would let it spread.
+
+| Function | darktable origin |
+| --- | --- |
+| `boxMean`, `boxMeanRow`, `boxMeanColumns`, `boxMeanVariance` | `src/common/box_filters.cc` |
+| `guidedFilter`, `guidedFilterGrey` | `src/common/guided_filter.c` |
+| `fastGuidedFilterGrey`, `fastSurfaceBlur`, `interpolateBilinear`, `quantize` | `src/common/fast_guided_filter.h` |
+| `recursiveGaussianBlur`, `dericheCoefficients` | `dt_gaussian_blur()` (order 0) in `src/common/gaussian.c` |
+| `eigfSurfaceBlur` | `src/common/eigf.h` |
+| `dwtDecompose`, `dwtDecomposeScales`, `dwtMaxScale`, `dwtFirstScaleVisible`, `waveletRecompose` | `src/common/dwt.c` |
+| `bsplineDecomposeScales`, `blur2DBspline`, `decompose2DBspline`, `equivalentSigmaAtStep`, `numStepsToReachEquivalentSigma` | `src/common/bspline.h` |
+| `poissonHeal` | `src/common/heal.c` |
+
+`EdgeAwareGpu.h` has a `record*` counterpart of each, except `dwtDecompose` with its per-layer
+callback and the single-line box passes. Each records into a `GpuRecordContext` over device buffers
+with the CPU function's sizes and parameters, using scratch buffers from the context's pool. The
+kernels are `Engine/Gpu/Kernels/boxfilter.slang`, `guidedfilter.slang`, `eigf.slang`,
+`wavelets.slang` and `heal.slang`. Results match the CPU to rounding, as
+`Tests/Native/EdgeAwareGpu_Test.cpp` checks (1e-4 relative, 1e-3 for the heal). A few points
+differ by design:
+
+- The colour guided filter runs as one tile. The CPU cuts images over 512 pixels into tiles,
+  which changes only the rounding.
+- `recordQuantize` at a sampling other than 0 or 1 may put a sample within a few ulps of a step on
+  the other side.
+- `recordPoissonHeal` relaxes the whole image red/black and records all `maxIter` iterations;
+  the ones after convergence return at once. On a device without push descriptors it refuses more
+  than `kPoissonHealGpuMaxIterationsWithoutPushDescriptors`.
+
 ### AI nodes
 
 An AI node runs a neural network through `Engine/Ai` (see `Engine/Ai/README.md`),

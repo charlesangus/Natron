@@ -88,6 +88,36 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
 
 **Verification gate:** full ctest passes, including the new RFV tests and the existing `SchedulerEquivalence`, `FrameGraphBuild` and `GraphScalingTLS` suites unchanged; `tools/bench` shows no regression on a graph with no RFVs (context key 0 path); `git clang-format` against the merge base is clean.
 
+## Phase 71.5: RFVs are read at the reader's time (UAT round 1)
+
+UAT found that an animated RFV is frozen at the time the request passes the Set node: a Transform whose translate reads an animated RFV does not motion-blur, and a TimeBlur above the Set does nothing. An animated or expression-driven variable becomes a binding (the Set's knob plus the restricted context the Set received), evaluated at the reading expression's time. Constants stay values.
+
+- [ ] M71.P5.T1 — `RenderContextBinding` value alternative
+  - size: L
+  - files: Engine/RenderContext.{h,cpp}, Tests/RenderContext_Test.cpp
+  - approach: add `{KnobIPtr knob; RenderContextPtr captured; U64 identity}` to the value variant (RenderContext.h:81). identity mixes the knob's content digest (the per-knob entries behind Node::getKnobsContentDigest), the variable name and captured->hash(). hash()/equality use identity; restriction keeps bindings.
+  - verify: tests for identity changing on a curve/expression edit and a constant collapsing to a value.
+- [ ] M71.P5.T2 — Sets store bindings for animated or expression variables
+  - size: M
+  - files: Engine/RFV.cpp (overlayDeclaredVariables), Engine/Nodes/RFV/ReverseFlowVariableSet.cpp
+  - approach: a knob with animation or an expression (any expression counts as time-varying, user 2026-10-26) stores a binding capturing the incoming context restricted to the read-set of the Set's own knobs; otherwise the value at the request time as now.
+  - verify: RFVRender tests below.
+- [ ] M71.P5.T3 — Expressions resolve RFVs at their own time
+  - size: L
+  - files: Engine/PyRFV.{h,cpp}, Engine/Knob.cpp (~3762, 2971, 3090)
+  - approach: ExpressionEntry/ExpressionScope carry the expression time; PyRFV::getVariable evaluates a binding at that time under ActionContextScope(true, captured) via RFV::getVariableValue; the project-variable fallback (PyRFV.cpp:~323) uses the expression time too. Nested bindings recurse; the isEvaluating guard catches self-reads.
+  - verify: RFVRender tests below.
+- [ ] M71.P5.T4 — Time-sampling behaviour tests
+  - size: M
+  - files: Tests/RFVRender_Test.cpp
+  - approach: through renderBothWays: Transform translate.x = rfv.v with v keyed 0→100, motionBlur 1, shutter 1 differs from motion blur off; fr.natron.test.FrameWindow timeOffset 2 above the Set reads v at the shifted frame, below it as before; a nested Set reading an animated outer variable at a fractional time; DiamondRendersTheReaderOncePerSet still renders once with constant Sets.
+  - verify: remote release gate green; GUI repro (Checkerboard → Transform ← animated RFV, motion blur on) shows blur.
+- [ ] M71.P5.T5 — Revise the design records
+  - size: S
+  - files: plan only
+  - approach: DECISIONS/2026-10-08-reverse-flow-variables-design.md line 7 superseded; M190 stub note; M180/M181 note that loop.* stay plain values.
+
 ## Decisions
 
+- 2026-10-26: RFVs are read at the reader's time (user, UAT round 1). An animated or expression-driven Set variable is stored in the context as a binding to the Set's knob and its captured context, and resolved at the reading expression's time, so in-node motion blur and TimeBlur/TimeOffset/FrameHold above the Set re-sample it. No "hold at the Set's frame" option. Any expression counts as time-varying (loses cache sharing; accepted). Cache keys use the binding identity, and time separates entries. Supersedes line 7 of DECISIONS/2026-10-08-reverse-flow-variables-design.md.
 - 2026-10-26 — **Metadata follows the context (bosley-native-nodes):** input metadata, region-of-definition and layer reads run under each input's context, so a format or RoD driven by an rfv expression follows the Set below it (RFVRender.MetadataAndRoDFollowTheSetBelowThem). This goes beyond the 2026-10-08 design's v1 note that RFV-dependent metadata is unsupported; the M178 context machinery made it cheap and leaving it out gave wrong formats under a Set.

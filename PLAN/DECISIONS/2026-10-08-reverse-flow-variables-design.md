@@ -10,3 +10,6 @@ Decided 2026-10-08 with the user. Reverse-Flow Variables (RFVs) are Nuke "graph-
 - **Cache keying.** Each node's context key is the hash of only the variables in its upstream read-set (variables named in expressions on the node or anything it depends on), found by scanning expression text. A dynamic access (`getattr(rfv, ...)`, a computed name) marks the node as reading everything. Nodes that read no RFV collapse to one context, so they share caches exactly as today. The key is folded into the render node hash, which feeds `ImageKey`, `ActionsCache`, `DeepImageKey`, the viewer texture cache and the scheduler's keys. The expression result cache `_exprRes` is bypassed for expressions that read RFVs.
 - **Outside a render** (parameter panel, `instanceChanged`) `rfv` returns the project's base values at the timeline frame.
 - **Not supported in v1:** metadata that depends on an RFV (format, frame range, layers). It is cached per node, so it uses the base values. Group nodes carry no RFVs and there is no global listing panel (user scope cut).
+
+
+**Superseded 2026-10-26 (user, M71 UAT):** the "evaluated at the time the request passes through the Set node ... then frozen" rule (line 7) is replaced: animated or expression-driven variables are bindings resolved at the reading expression's time. See M71 Decisions.

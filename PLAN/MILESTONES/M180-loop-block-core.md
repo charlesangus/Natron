@@ -86,6 +86,7 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Decisions
 
+- 2026-10-26: `loop.*` context variables stay plain values, never RFV bindings (M71 Phase 71.5 introduced time-resolved bindings for animated Set variables).
 - 2026-10-25 — **Houdini-style loop block on render contexts (user):** chosen over hidden clones (no cache sharing, graph edits mid-render, O(N²) graph hotspots) and over knob-override args (the same core without read-sets); see M178 - Render Context Core.
 - 2026-10-25 — **Native drivers, no Python on the hot path:** every Python expression takes the GIL on render threads (`Engine/KnobImpl.h:401`) and the tree has no exprtk.
 - 2026-10-25 — **Stop condition is an expression per iteration (user):** Houdini's model; evaluated in the request pass, never per pixel.

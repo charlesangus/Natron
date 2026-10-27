@@ -58,6 +58,7 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
 
 ## Decisions
 
+- 2026-10-26: `loop.*` context variables stay plain values, never RFV bindings (M71 Phase 71.5).
 - 2026-10-25 — **Inline row and LoopEnd table (user):** drivers are edited where the knob is and listed together on LoopEnd.
 - 2026-10-25 — **No preview knob:** driven values display at LoopEnd's single-pass iteration, one control instead of two.
 - 2026-10-25 — **Copy Houdini's block visuals (user).**

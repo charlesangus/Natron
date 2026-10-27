@@ -19,4 +19,5 @@ Acceptance sketch:
 
 ## Decisions
 
+- 2026-10-26: RFVs bind to Set knobs and evaluate at the requested frame (M71 Phase 71.5); cross-frame results are keyed by binding identity and frame, so rendering N-1 from N carries RFV(N-1).
 - 2026-10-25 — **Design for trails and simulations equally (user).**

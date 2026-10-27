@@ -258,7 +258,7 @@ future core work has solid ground to build on.
 | M170 | Engine Render Races | done | - | bosley-native-nodes | E14 | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
 | M162 | OFX CUDA And OpenCL Suites | todo | M86 |  | E5 | [M162-ofx-cuda-and-opencl-suites.md](PLAN/MILESTONES/M162-ofx-cuda-and-opencl-suites.md) |
 | M171 | GPU Correctness Fixes | done | - | gpu | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
-| M163 | Incremental Bezier Edits | doing | - | bosley-native-nodes | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
+| M163 | Incremental Bezier Edits | done | - | bosley-native-nodes | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
 | M164 | Viewer Node Knobs | todo | M16, M107 |  | E3 | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
 | M165 | Rich Viewer Overlays | todo | M80 |  | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
 | M166 | Non-Float Plane Model | todo | - |  | E14 | [M166-non-float-plane-model.md](PLAN/MILESTONES/M166-non-float-plane-model.md) |

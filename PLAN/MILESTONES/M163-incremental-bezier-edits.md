@@ -94,3 +94,5 @@ Building M16 - Project Format Redesign's heavy benchmark project (30 beziers × 
 ## Decisions
 
 - 2026-10-27 — **UAT passed (user).** Pre-existing roto-keys-in-editors issue filed as M261.
+
+Shipped 2026-10-27: PR #134, squash 50ee71b60 on main.

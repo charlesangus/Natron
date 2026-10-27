@@ -129,9 +129,53 @@ public:
 
     virtual ~KeybindRecorder();
 
+    /**
+     * @brief In mouse mode the editor records a mouse binding instead of typed keys: a press of a
+     * button (or, for a wheel action, a turn of the wheel) with the modifiers and Space held.
+     **/
+    void setMouseMode(bool mouse, bool wheel);
+
+    bool isMouseMode() const
+    {
+        return _mouseMode;
+    }
+
+    void setMouseBinding(bool hasBinding, Qt::KeyboardModifiers modifiers, Qt::MouseButton button);
+
+    bool hasMouseBinding() const
+    {
+        return _hasBinding;
+    }
+
+    Qt::KeyboardModifiers getMouseModifiers() const
+    {
+        return _modifiers;
+    }
+
+    Qt::MouseButton getMouseButton() const
+    {
+        return _button;
+    }
+
 private:
+    void recordMouseBinding(Qt::KeyboardModifiers modifiers, Qt::MouseButton button);
 
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
+    virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
+    virtual void focusOutEvent(QFocusEvent* e) OVERRIDE FINAL;
+    virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
+    virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE FINAL;
+    virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL;
+    virtual void mouseDoubleClickEvent(QMouseEvent* e) OVERRIDE FINAL;
+    virtual void wheelEvent(QWheelEvent* e) OVERRIDE FINAL;
+    virtual void contextMenuEvent(QContextMenuEvent* e) OVERRIDE FINAL;
+
+    bool _mouseMode;
+    bool _wheel;
+    bool _spaceHeld;
+    bool _hasBinding;
+    Qt::KeyboardModifiers _modifiers;
+    Qt::MouseButton _button;
 };
 
 NATRON_NAMESPACE_EXIT

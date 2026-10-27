@@ -37,7 +37,9 @@
 
 #include <QOpenGLWidget>
 #include <QtCore/QPoint>
+#include <QtCore/QRect>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
@@ -150,6 +152,13 @@ public:
     // Frames the free camera on the bounds of the scene at the shown time, and looks through it.
     void frameScene();
 
+    /**
+     * @brief Frames the free camera on the union of the selected prims' bounds at the shown time,
+     * and looks through it. A prim without extent counts as its world origin, and a selection
+     * without extent is framed with a radius of one unit. Frames the scene if nothing is selected.
+     **/
+    void frameSelection();
+
     // Turns the free camera by degrees.
     void tumble(double azimuthDegrees, double elevationDegrees);
 
@@ -170,10 +179,10 @@ public:
 
     const std::string& getLookThroughCamera() const;
 
-    // The highlighted prim, empty for none.
-    void setSelectedPrim(const std::string& path);
+    // The highlighted prims, in selection order: the last is the current one.
+    void setSelectedPrims(const std::vector<std::string>& paths);
 
-    const std::string& getSelectedPrim() const;
+    const std::vector<std::string>& getSelectedPrims() const;
 
     // The values of an op whose handles the viewer draws over the scene: a translate, rotate
     // (degrees, in rotateOrder, a SceneRotateOrderEnum) and pivot, authored as opName on primPath.
@@ -242,6 +251,13 @@ public:
      **/
     std::string pick(int x, int y, int width, int height);
 
+    /**
+     * @brief The paths of the prims drawn in the rectangle with corners (x0, y0) and (x1, y1),
+     * pixels of a width x height view counted from the top left, sorted. Needs the context of
+     * render() current.
+     **/
+    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height);
+
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
@@ -301,12 +317,27 @@ public:
 
     void frameScene();
 
-    // Picks the prim drawn at pos (widget coordinates) and selects it, or clears the selection.
+    void frameSelection();
+
+    // The prim drawn at pos (widget coordinates), empty for none.
     QString pickPrimAt(const QPoint& pos);
 
-    void setSelectedPrim(const QString& path);
+    // The prims drawn in rect (widget coordinates).
+    QStringList pickPrimsIn(const QRect& rect);
 
-    QString getSelectedPrim() const;
+    // How a click or marquee combines its prims with the selection.
+    enum SelectionModeEnum {
+        eSelectionModeReplace,
+        eSelectionModeAdd,
+        eSelectionModeToggle
+    };
+
+    void select(const QStringList& paths, SelectionModeEnum mode);
+
+    // The selected prims, the current one last.
+    void setSelection(const QStringList& paths);
+
+    QStringList getSelection() const;
 
     /**
      * @brief Sets the function that names the node whose transform handles are drawn: a
@@ -327,7 +358,7 @@ public:
 
 Q_SIGNALS:
 
-    void selectedPrimChanged(const QString& path);
+    void selectionChanged(const QStringList& paths);
 
 protected:
     void initializeGL() override;
@@ -337,7 +368,10 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    bool event(QEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
+    void focusOutEvent(QFocusEvent* e) override;
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
@@ -355,6 +389,11 @@ private:
     void endHandleDrag();
 
     void highlightHandleAt(const QPoint& pos);
+
+    // Forgets the mouse gesture under way.
+    void clearGesture();
+
+    void showContextMenu(const QPoint& globalPos);
 
     // Queues payload for the worker; the error shown once it is synced.
     void requestSync(const ScenePayload& payload, const QString& error);

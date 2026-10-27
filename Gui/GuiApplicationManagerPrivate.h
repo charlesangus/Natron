@@ -139,6 +139,10 @@ struct GuiApplicationManagerPrivate
                           const std::string & description,
                           const Qt::KeyboardModifiers & modifiers, Qt::MouseButton button);
 
+    // An editable mouse action of the 3D viewer, bound to the given preset's bindings.
+    void addViewer3DMouseShortcut(const std::string& id, const std::string& description,
+                                  MouseGestureEnum gesture, int preset);
+
     PluginGroupNodePtr  findPluginToolButtonInternal(const std::list<PluginGroupNodePtr>& children,
                                                                      const PluginGroupNodePtr& parent,
                                                                      const QStringList & grouping,

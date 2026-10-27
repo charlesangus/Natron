@@ -1202,6 +1202,23 @@ Settings::initializeKnobsViewers()
                                             "displayed only for the render path for the current viewer "
                                             "inputs.") );
     _viewersTab->addKnob(_viewerOverlaysPath);
+
+    _viewer3DNavigation = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Navigation"));
+    _viewer3DNavigation->setName("viewer3DNavigation");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("nuke", "Nuke", tr("Ctrl+Left drag tumbles, Alt+Left or Middle drag pans, Alt+Middle drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("maya", "Maya", tr("Alt+Left drag tumbles, Alt+Middle drag pans, Alt+Right drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("blender", "Blender", tr("Middle drag tumbles, Shift+Middle drag pans, Ctrl+Middle drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("houdini", "Houdini", tr("Space or Alt held: Left drag tumbles, Middle drag pans, Right drag dollies.").toStdString()));
+        entries.push_back(ChoiceOption("custom", "Custom", tr("The bindings set in the shortcut editor's 3DViewer group.").toStdString()));
+        _viewer3DNavigation->populateChoices(entries);
+    }
+    _viewer3DNavigation->setHintToolTip(tr("The mouse bindings of the viewer's 3D view. In every preset the wheel dollies, "
+                                           "a left click selects, Shift adds and Ctrl toggles, and a left drag from empty space "
+                                           "draws a selection marquee. Choosing a preset rewrites the bindings in the shortcut "
+                                           "editor's 3DViewer group; editing one there switches this to Custom."));
+    _viewersTab->addKnob(_viewer3DNavigation);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1644,6 +1661,7 @@ Settings::setDefaultValues()
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
+    _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2310,6 +2328,10 @@ Settings::onKnobValueChanged(KnobI* k,
                              ViewSpec /*view*/,
                              bool /*originatedFromMainThread*/)
 {
+    // Rewritten before settingChanged, so the shortcut editor shows the preset's bindings.
+    if ((k == _viewer3DNavigation.get()) && !_restoringSettings) {
+        appPTR->onViewer3DNavigationChanged((int)getViewer3DNavigation());
+    }
     Q_EMIT settingChanged(k);
     bool ret = true;
 
@@ -2478,6 +2500,24 @@ int
 Settings::getMaxOpenedNodesViewerContext() const
 {
     return _maximumNodeViewerUIOpened->getValue();
+}
+
+Settings::Viewer3DNavigationEnum
+Settings::getViewer3DNavigation() const
+{
+    return (Viewer3DNavigationEnum)_viewer3DNavigation->getValue();
+}
+
+void
+Settings::setViewer3DNavigation(Viewer3DNavigationEnum navigation)
+{
+    _viewer3DNavigation->setValue((int)navigation);
+}
+
+bool
+Settings::isViewer3DNavigationKnob(const KnobI* knob) const
+{
+    return knob == _viewer3DNavigation.get();
 }
 
 bool

@@ -35,7 +35,9 @@
 #include <QActionGroup>
 #include <QContextMenuEvent>
 #include <QDateTime>
+#include <QFocusEvent>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
@@ -51,6 +53,7 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
@@ -75,7 +78,9 @@
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/tokens.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
 #ifdef NATRON_SCENEVIEWPORT_RESTORE_EMIT
@@ -83,7 +88,9 @@
 #define emit
 #endif
 
+#include "Gui/ActionShortcuts.h"
 #include "Gui/GLContextLoss.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
@@ -104,6 +111,8 @@ const float kBackgroundDisplay = 0.2478f;
 const int kMaxRenderPasses = 8;
 
 const double kMinElevation = -89.;
+// The radius framed around a selection without extent, in scene units.
+const double kDefaultFrameRadius = 1.;
 const double kMaxElevation = 89.;
 
 double
@@ -238,7 +247,8 @@ struct SceneViewportRenderer::Implementation {
     FreeCamera freeCamera;
     bool framedOnce = false;
     std::string lookThrough;
-    std::string selected;
+    // The selected prims, the current one last.
+    std::vector<std::string> selected;
     std::unique_ptr<UsdImagingGLEngine> engine;
     U64 engineCount = 0;
 
@@ -368,10 +378,16 @@ struct SceneViewportRenderer::Implementation {
         if (!engine) {
             return;
         }
-        if (selected.empty() || !SdfPath::IsValidPathString(selected)) {
+        SdfPathVector paths;
+        for (const std::string& path : selected) {
+            if (SdfPath::IsValidPathString(path)) {
+                paths.push_back(SdfPath(path));
+            }
+        }
+        if (paths.empty()) {
             engine->ClearSelected();
         } else {
-            engine->SetSelected(SdfPathVector(1, SdfPath(selected)));
+            engine->SetSelected(paths);
         }
     }
 
@@ -789,6 +805,57 @@ SceneViewportRenderer::frameScene()
 }
 
 void
+SceneViewportRenderer::frameSelection()
+{
+    if (_imp->selected.empty()) {
+        frameScene();
+
+        return;
+    }
+    GfRange3d range;
+    {
+        std::lock_guard<std::mutex> lock(_imp->stageMutex);
+        const UsdStageRefPtr stage = _imp->currentStage();
+        if (!stage) {
+            return;
+        }
+        const UsdTimeCode time(_imp->timeCode());
+        UsdGeomBBoxCache bboxes(time, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
+        UsdGeomXformCache xforms(time);
+        for (const std::string& path : _imp->selected) {
+            if (!SdfPath::IsValidPathString(path)) {
+                continue;
+            }
+            const UsdPrim prim = stage->GetPrimAtPath(SdfPath(path));
+            if (!prim) {
+                continue;
+            }
+            const GfRange3d bound = bboxes.ComputeWorldBound(prim).ComputeAlignedRange();
+            if (bound.IsEmpty()) {
+                // A camera, light or empty transform has no extent: frame where it is.
+                range.UnionWith(xforms.GetLocalToWorldTransform(prim).Transform(GfVec3d(0.)));
+            } else {
+                range.UnionWith(bound);
+            }
+        }
+    }
+    if (range.IsEmpty()) {
+        return;
+    }
+    _imp->lookThrough.clear();
+    const GfVec3d centre = range.GetMidpoint();
+    double radius = range.GetSize().GetLength() * 0.5;
+    if (radius < 1e-6) {
+        radius = kDefaultFrameRadius;
+    }
+    _imp->freeCamera.pivot[0] = centre[0];
+    _imp->freeCamera.pivot[1] = centre[1];
+    _imp->freeCamera.pivot[2] = centre[2];
+    _imp->freeCamera.distance = radius / std::sin(degreesToRadians(_imp->freeCamera.fovY) * 0.5) * 1.05;
+    _imp->framedOnce = true;
+}
+
+void
 SceneViewportRenderer::tumble(double azimuthDegrees,
                               double elevationDegrees)
 {
@@ -856,15 +923,15 @@ SceneViewportRenderer::getLookThroughCamera() const
 }
 
 void
-SceneViewportRenderer::setSelectedPrim(const std::string& path)
+SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
 {
-    _imp->selected = path;
+    _imp->selected = paths;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     _imp->applySelection();
 }
 
-const std::string&
-SceneViewportRenderer::getSelectedPrim() const
+const std::vector<std::string>&
+SceneViewportRenderer::getSelectedPrims() const
 {
     return _imp->selected;
 }
@@ -1015,7 +1082,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
                                     int width,
                                     int height)
 {
-    if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
+    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
         return true;
     }
     StormGLStateGuard guard;
@@ -1066,7 +1133,7 @@ SceneViewportRenderer::pick(int x,
                             int width,
                             int height)
 {
-    if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
+    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
         return std::string();
     }
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
@@ -1093,6 +1160,58 @@ SceneViewportRenderer::pick(int x,
     return results.front().hitPrimPath.GetString();
 }
 
+std::vector<std::string>
+SceneViewportRenderer::pickRect(int x0,
+                                int y0,
+                                int x1,
+                                int y1,
+                                int width,
+                                int height)
+{
+    std::vector<std::string> paths;
+    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
+        return paths;
+    }
+    const int left = std::max(0, std::min(x0, x1));
+    const int right = std::min(width - 1, std::max(x0, x1));
+    const int top = std::max(0, std::min(y0, y1));
+    const int bottom = std::min(height - 1, std::max(y0, y1));
+    if ((left > right) || (top > bottom)) {
+        return paths;
+    }
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    StormGLStateGuard guard;
+
+    if (!_imp->ensureEngine()) {
+        return paths;
+    }
+    const UsdStageRefPtr stage = _imp->currentStage();
+    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    // The rectangle's centre in normalized device coordinates, y up, and its size as a fraction
+    // of the view, whole pixels included.
+    const GfVec2d centre((left + right + 1.) / width - 1., 1. - (top + bottom + 1.) / height);
+    const GfVec2d size(double(right - left + 1) / width, double(bottom - top + 1) / height);
+    const GfFrustum pickFrustum = frustum.ComputeNarrowedFrustum(centre, size);
+
+    UsdImagingGLEngine::PickParams pickParams;
+    pickParams.resolveMode = HdxPickTokens->resolveUnique;
+    UsdImagingGLEngine::IntersectionResultVector results;
+    if (!_imp->engine->TestIntersection(pickParams, pickFrustum.ComputeViewMatrix(), pickFrustum.ComputeProjectionMatrix(),
+                                        stage->GetPseudoRoot(), _imp->renderParams(), &results)) {
+        return paths;
+    }
+    for (const UsdImagingGLEngine::IntersectionResult& result : results) {
+        const std::string path = result.hitPrimPath.GetString();
+        if (!path.empty() && (std::find(paths.begin(), paths.end(), path) == paths.end())) {
+            paths.push_back(path);
+        }
+    }
+    // Hits come in hash order; sorted, a marquee's selection does not depend on it.
+    std::sort(paths.begin(), paths.end());
+
+    return paths;
+}
+
 void
 SceneViewportRenderer::releaseGL()
 {
@@ -1109,16 +1228,132 @@ SceneViewportRenderer::getBackgroundColor(float rgb[3])
 
 // ---------------------------------------------------------------------------
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// The application's bindings, or null in a process without the GUI application manager.
+GuiApplicationManager*
+guiManager()
+{
+    return dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+}
+
+bool
+matchesMouseBinding(const char* actionID,
+                    Qt::KeyboardModifiers modifiers,
+                    Qt::MouseButton button)
+{
+    if (GuiApplicationManager* manager = guiManager()) {
+        return manager->matchesMouseShortcut(kShortcutGroupViewer3D, actionID, modifiers, button);
+    }
+    // Without the application, the default preset's bindings.
+    MouseAction action;
+    if (std::string(actionID) == kShortcutIDMouseViewer3DDollyWheel) {
+        action.gesture = eMouseGestureWheel;
+    }
+    std::vector<MouseBinding> bindings;
+    getViewer3DNavigationPresetBindings((int)Settings::eViewer3DNavigationNuke, QString::fromUtf8(actionID), &bindings);
+    action.setBindings(bindings);
+
+    return action.matches(modifiers, button);
+}
+
+bool
+matchesKeyBinding(const char* actionID,
+                  Qt::KeyboardModifiers modifiers,
+                  int key)
+{
+    if (GuiApplicationManager* manager = guiManager()) {
+        return manager->matchesKeybind(kShortcutGroupViewer3D, actionID, modifiers, key);
+    }
+    if ((modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier)) != Qt::NoModifier) {
+        return false;
+    }
+    const std::string id(actionID);
+
+    return ((id == kShortcutIDActionViewer3DFrameSelection) && (key == Qt::Key_F)) || ((id == kShortcutIDActionViewer3DFrameAll) && (key == Qt::Key_A));
+}
+
+// Whether a mouse binding of the 3D viewer needs Space held.
+bool
+bindingsUseSpace()
+{
+    GuiApplicationManager* manager = guiManager();
+    if (!manager) {
+        return false;
+    }
+    const AppShortcuts& shortcuts = manager->getAllShortcuts();
+    AppShortcuts::const_iterator group = shortcuts.find(QString::fromUtf8(kShortcutGroupViewer3D));
+    if (group == shortcuts.end()) {
+        return false;
+    }
+    for (GroupShortcuts::const_iterator it = group->second.begin(); it != group->second.end(); ++it) {
+        if (!dynamic_cast<const MouseAction*>(it->second)) {
+            continue;
+        }
+        for (std::list<Qt::KeyboardModifiers>::const_iterator m = it->second->modifiers.begin(); m != it->second->modifiers.end(); ++m) {
+            if (*m & kShortcutModifierSpace) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+QKeySequence
+keySequenceOf(const char* actionID,
+              Qt::Key fallback)
+{
+    if (GuiApplicationManager* manager = guiManager()) {
+        std::list<QKeySequence> sequences = manager->getKeySequenceForAction(QString::fromUtf8(kShortcutGroupViewer3D), QString::fromUtf8(actionID));
+
+        return sequences.empty() ? QKeySequence() : sequences.front();
+    }
+
+    return QKeySequence(fallback);
+}
+
+QStringList
+toStringList(const std::vector<std::string>& paths)
+{
+    QStringList ret;
+    for (const std::string& path : paths) {
+        ret.push_back(QString::fromStdString(path));
+    }
+
+    return ret;
+}
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
     QString error;
     bool glInitialized = false;
 
-    // The mouse gesture under way.
+    // What a drag of the pressed button does.
+    enum DragRoleEnum {
+        eDragRoleNone,
+        eDragRoleTumble,
+        eDragRolePan,
+        eDragRoleDolly,
+        eDragRoleMarquee
+    };
+
+    // The mouse gesture under way: the button, where it was pressed, whether it has moved past
+    // the drag threshold, what the drag does, and whether a release without a drag selects the
+    // prim under the press (in selectionMode, which a marquee uses too) or opens the context menu.
     Qt::MouseButton button = Qt::NoButton;
     QPoint pressPos;
     QPoint lastPos;
     bool dragging = false;
+    DragRoleEnum dragRole = eDragRoleNone;
+    bool clickSelects = false;
+    SelectionModeEnum selectionMode = eSelectionModeReplace;
+    QString pressPrim;
+    bool menuOnRelease = false;
+
+    // Space is down, while a binding of the 3D viewer uses it as a modifier.
+    bool spaceHeld = false;
 
     // The project frame shown.
     double frame = 0.;
@@ -1175,6 +1410,8 @@ SceneViewport::SceneViewport(QWidget* parent)
     // Hovering highlights the transform handle under the pointer.
     setMouseTracking(true);
     setObjectName(QString::fromUtf8("SceneViewport"));
+    // The selected prims, the current one last, for scripts.
+    setProperty("natronSceneSelection", QStringList());
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
     // framebuffer's content between paints; not checked against Qt's source.
@@ -1343,6 +1580,13 @@ SceneViewport::frameScene()
     update();
 }
 
+void
+SceneViewport::frameSelection()
+{
+    _imp->renderer.frameSelection();
+    update();
+}
+
 QString
 SceneViewport::pickPrimAt(const QPoint& pos)
 {
@@ -1354,35 +1598,84 @@ SceneViewport::pickPrimAt(const QPoint& pos)
         path = _imp->renderer.pick(int(pos.x() * dpr), int(pos.y() * dpr), int(width() * dpr), int(height() * dpr));
         doneCurrent();
     }
-    setSelectedPrim(QString::fromStdString(path));
 
     return QString::fromStdString(path);
 }
 
-void
-SceneViewport::setSelectedPrim(const QString& path)
+QStringList
+SceneViewport::pickPrimsIn(const QRect& rect)
 {
-    const std::string p = path.toStdString();
+    std::vector<std::string> paths;
 
-    if (p == _imp->renderer.getSelectedPrim()) {
+    if (_imp->glInitialized && _imp->renderer.hasScene() && context()) {
+        const qreal dpr = devicePixelRatio();
+        const QRect r = rect.normalized();
+        makeCurrent();
+        paths = _imp->renderer.pickRect(int(r.left() * dpr), int(r.top() * dpr), int((r.right() + 1) * dpr) - 1, int((r.bottom() + 1) * dpr) - 1,
+                                        int(width() * dpr), int(height() * dpr));
+        doneCurrent();
+    }
+
+    return toStringList(paths);
+}
+
+void
+SceneViewport::select(const QStringList& paths,
+                      SelectionModeEnum mode)
+{
+    QStringList selection = getSelection();
+
+    switch (mode) {
+    case eSelectionModeReplace:
+        selection = paths;
+        break;
+    case eSelectionModeAdd:
+        // An added prim already selected becomes the current one.
+        for (const QString& path : paths) {
+            selection.removeAll(path);
+            selection.push_back(path);
+        }
+        break;
+    case eSelectionModeToggle:
+        for (const QString& path : paths) {
+            if (selection.contains(path)) {
+                selection.removeAll(path);
+            } else {
+                selection.push_back(path);
+            }
+        }
+        break;
+    }
+    setSelection(selection);
+}
+
+void
+SceneViewport::setSelection(const QStringList& paths)
+{
+    if (paths == getSelection()) {
         return;
+    }
+    std::vector<std::string> p;
+    for (const QString& path : paths) {
+        p.push_back(path.toStdString());
     }
     if (_imp->glInitialized && context()) {
         // The engine may exist, and selection changes reach its GL resources.
         makeCurrent();
-        _imp->renderer.setSelectedPrim(p);
+        _imp->renderer.setSelectedPrims(p);
         doneCurrent();
     } else {
-        _imp->renderer.setSelectedPrim(p);
+        _imp->renderer.setSelectedPrims(p);
     }
+    setProperty("natronSceneSelection", paths);
     update();
-    Q_EMIT selectedPrimChanged(path);
+    Q_EMIT selectionChanged(paths);
 }
 
-QString
-SceneViewport::getSelectedPrim() const
+QStringList
+SceneViewport::getSelection() const
 {
-    return QString::fromStdString(_imp->renderer.getSelectedPrim());
+    return toStringList(_imp->renderer.getSelectedPrims());
 }
 
 void
@@ -1503,12 +1796,19 @@ SceneViewport::paintGL()
                           .arg(mode)
                           .arg(camera.empty() ? tr("Free camera") : QString::fromStdString(camera))
                           .arg(_imp->renderer.getTimeCode(), 0, 'g', 6);
-        const std::string& selected = _imp->renderer.getSelectedPrim();
-        if (!selected.empty()) {
-            hud += tr(" | %1").arg(QString::fromStdString(selected));
+        const std::vector<std::string>& selected = _imp->renderer.getSelectedPrims();
+        if (selected.size() == 1) {
+            hud += tr(" | %1").arg(QString::fromStdString(selected.back()));
+        } else if (selected.size() > 1) {
+            hud += tr(" | %1 (+%2)").arg(QString::fromStdString(selected.back())).arg(selected.size() - 1);
         }
         painter.setPen(QColor(200, 200, 200));
         painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, hud);
+    }
+    if (_imp->dragging && (_imp->dragRole == Implementation::eDragRoleMarquee)) {
+        painter.setPen(QPen(QColor(230, 230, 230), 1., Qt::DashLine));
+        painter.setBrush(QColor(255, 255, 255, 30));
+        painter.drawRect(QRect(_imp->pressPos, _imp->lastPos).normalized());
     }
     painter.end();
     if (converged) {
@@ -1522,22 +1822,63 @@ SceneViewport::paintGL()
 void
 SceneViewport::mousePressEvent(QMouseEvent* e)
 {
-    if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && beginHandleDrag(e->position().toPoint())) {
+    if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && !_imp->spaceHeld && beginHandleDrag(e->position().toPoint())) {
         e->accept();
 
         return;
     }
-    // Only a press that starts a camera drag records its button: a plain right press opens the
-    // context menu, which takes the release, so a recorded button would never be cleared.
-    if ((e->button() == Qt::LeftButton) || (e->button() == Qt::MiddleButton) || ((e->button() == Qt::RightButton) && (e->modifiers() & Qt::AltModifier))) {
-        _imp->button = e->button();
-        _imp->pressPos = e->position().toPoint();
-        _imp->lastPos = _imp->pressPos;
-        _imp->dragging = false;
-        e->accept();
-    } else {
-        QOpenGLWidget::mousePressEvent(e);
+    clearGesture();
+    const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), _imp->spaceHeld);
+    const Qt::MouseButton button = e->button();
+    Implementation::DragRoleEnum role = Implementation::eDragRoleNone;
+    if (matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, button)) {
+        role = Implementation::eDragRoleTumble;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, button)) {
+        role = Implementation::eDragRolePan;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, button)) {
+        role = Implementation::eDragRoleDolly;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DMarquee, modifiers, button)) {
+        role = Implementation::eDragRoleMarquee;
     }
+    bool clickSelects = true;
+    SelectionModeEnum mode = eSelectionModeReplace;
+    if (matchesMouseBinding(kShortcutIDMouseViewer3DSelect, modifiers, button)) {
+        mode = eSelectionModeReplace;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DAddToSelection, modifiers, button)) {
+        mode = eSelectionModeAdd;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DToggleSelection, modifiers, button)) {
+        mode = eSelectionModeToggle;
+    } else {
+        clickSelects = false;
+    }
+    // Adding or toggling by drag is a marquee of that mode, unless the drag is bound to another role.
+    if (clickSelects && (mode != eSelectionModeReplace) && (role == Implementation::eDragRoleNone)) {
+        role = Implementation::eDragRoleMarquee;
+    }
+    if ((role == Implementation::eDragRoleNone) && !clickSelects) {
+        // A right press with no binding opens the context menu.
+        QOpenGLWidget::mousePressEvent(e);
+
+        return;
+    }
+    const QPoint pos = e->position().toPoint();
+    if (clickSelects || (role == Implementation::eDragRoleMarquee)) {
+        _imp->pressPrim = pickPrimAt(pos);
+        // A marquee starts on empty space; a drag from a prim is a click on it.
+        if (!_imp->pressPrim.isEmpty() && (role == Implementation::eDragRoleMarquee)) {
+            role = Implementation::eDragRoleNone;
+        }
+    }
+    _imp->button = button;
+    _imp->pressPos = pos;
+    _imp->lastPos = pos;
+    _imp->dragging = false;
+    _imp->dragRole = role;
+    _imp->clickSelects = clickSelects;
+    _imp->selectionMode = mode;
+    // A plain right press bound to a gesture defers the context menu to a release without a drag.
+    _imp->menuOnRelease = (button == Qt::RightButton) && (modifiers == Qt::NoModifier);
+    e->accept();
 }
 
 void
@@ -1553,8 +1894,7 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
     }
     // A release that went to a popup or another window never reaches this widget.
     if ((_imp->button != Qt::NoButton) && !(e->buttons() & _imp->button)) {
-        _imp->button = Qt::NoButton;
-        _imp->dragging = false;
+        clearGesture();
     }
     if (_imp->button == Qt::NoButton) {
         highlightHandleAt(pos);
@@ -1569,13 +1909,19 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
     const QPoint delta = pos - _imp->lastPos;
     _imp->lastPos = pos;
 
-    const bool panning = (_imp->button == Qt::MiddleButton) || ((_imp->button == Qt::LeftButton) && (e->modifiers() & Qt::ShiftModifier));
-    if (panning) {
-        _imp->renderer.pan(delta.x(), delta.y(), height());
-    } else if (_imp->button == Qt::LeftButton) {
+    switch (_imp->dragRole) {
+    case Implementation::eDragRoleTumble:
         _imp->renderer.tumble(-delta.x() * 0.4, delta.y() * 0.4);
-    } else if (_imp->button == Qt::RightButton) {
+        break;
+    case Implementation::eDragRolePan:
+        _imp->renderer.pan(delta.x(), delta.y(), height());
+        break;
+    case Implementation::eDragRoleDolly:
         _imp->renderer.dolly(std::exp(-(delta.x() + delta.y()) * 0.01));
+        break;
+    case Implementation::eDragRoleMarquee:
+    case Implementation::eDragRoleNone:
+        break;
     }
     update();
     e->accept();
@@ -1590,14 +1936,47 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
 
         return;
     }
-    const bool click = (_imp->button == Qt::LeftButton) && !_imp->dragging && (e->button() == Qt::LeftButton);
+    if ((_imp->button == Qt::NoButton) || (e->button() != _imp->button)) {
+        e->accept();
+
+        return;
+    }
+    const bool dragged = _imp->dragging;
+    const Implementation::DragRoleEnum role = _imp->dragRole;
+    const bool clickSelects = _imp->clickSelects;
+    const SelectionModeEnum mode = _imp->selectionMode;
+    const QString pressPrim = _imp->pressPrim;
+    const bool menu = _imp->menuOnRelease;
+    const QRect marquee = QRect(_imp->pressPos, e->position().toPoint()).normalized();
+    clearGesture();
+
+    if (dragged && (role == Implementation::eDragRoleMarquee)) {
+        select(pickPrimsIn(marquee), mode);
+    } else if (!dragged && clickSelects) {
+        select(pressPrim.isEmpty() ? QStringList() : QStringList(pressPrim), mode);
+    } else if (dragged && clickSelects && (role == Implementation::eDragRoleNone) && !pressPrim.isEmpty()) {
+        // A drag from a prim, where a drag from empty space would be a marquee.
+        select(QStringList(pressPrim), mode);
+    } else if (!dragged && menu) {
+        showContextMenu(e->globalPosition().toPoint());
+    }
+    e->accept();
+}
+
+void
+SceneViewport::clearGesture()
+{
+    const bool marquee = _imp->dragging && (_imp->dragRole == Implementation::eDragRoleMarquee);
 
     _imp->button = Qt::NoButton;
     _imp->dragging = false;
-    if (click) {
-        pickPrimAt(e->position().toPoint());
+    _imp->dragRole = Implementation::eDragRoleNone;
+    _imp->clickSelects = false;
+    _imp->pressPrim.clear();
+    _imp->menuOnRelease = false;
+    if (marquee) {
+        update();
     }
-    e->accept();
 }
 
 bool
@@ -1694,9 +2073,11 @@ SceneViewport::highlightHandleAt(const QPoint& pos)
 void
 SceneViewport::wheelEvent(QWheelEvent* e)
 {
-    const double steps = e->angleDelta().y() / 120.;
+    // X11 turns a vertical wheel horizontal while Alt is held.
+    const QPoint angle = e->angleDelta();
+    const double steps = ((angle.y() != 0) ? angle.y() : angle.x()) / 120.;
 
-    if (steps == 0.) {
+    if ((steps == 0.) || !matchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), _imp->spaceHeld), Qt::NoButton)) {
         e->ignore();
 
         return;
@@ -1706,10 +2087,38 @@ SceneViewport::wheelEvent(QWheelEvent* e)
     e->accept();
 }
 
+bool
+SceneViewport::event(QEvent* e)
+{
+    // The 3D viewer's keys win over the window shortcuts of the viewer tab around it.
+    if (e->type() == QEvent::ShortcutOverride) {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, k->modifiers(), k->key()) || matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, k->modifiers(), k->key()) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
+            e->accept();
+
+            return true;
+        }
+    }
+
+    return QOpenGLWidget::event(e);
+}
+
 void
 SceneViewport::keyPressEvent(QKeyEvent* e)
 {
-    if ((e->key() == Qt::Key_F) && (e->modifiers() == Qt::NoModifier)) {
+    if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
+        _imp->spaceHeld = true;
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, e->modifiers(), e->key())) {
+        frameSelection();
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, e->modifiers(), e->key())) {
         frameScene();
         e->accept();
 
@@ -1720,17 +2129,49 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
 }
 
 void
-SceneViewport::contextMenuEvent(QContextMenuEvent* e)
+SceneViewport::keyReleaseEvent(QKeyEvent* e)
 {
-    // Alt+right drag dollies.
-    if (e->modifiers() & Qt::AltModifier) {
+    if ((e->key() == Qt::Key_Space) && _imp->spaceHeld) {
+        if (!e->isAutoRepeat()) {
+            _imp->spaceHeld = false;
+        }
         e->accept();
 
         return;
     }
+    e->ignore();
+}
+
+void
+SceneViewport::focusOutEvent(QFocusEvent* e)
+{
+    // A release or key release that goes elsewhere never comes back.
+    if (_imp->handle != SceneGizmo::kNoHandle) {
+        endHandleDrag();
+    }
+    clearGesture();
+    _imp->spaceHeld = false;
+    QOpenGLWidget::focusOutEvent(e);
+}
+
+void
+SceneViewport::contextMenuEvent(QContextMenuEvent* e)
+{
+    // A right press bound to a gesture is that gesture's.
+    if ((e->reason() == QContextMenuEvent::Mouse) && (_imp->button != Qt::NoButton)) {
+        e->accept();
+
+        return;
+    }
+    showContextMenu(e->globalPos());
+    e->accept();
+}
+
+void
+SceneViewport::showContextMenu(const QPoint& globalPos)
+{
     // The menu takes the release, so no drag may outlive it.
-    _imp->button = Qt::NoButton;
-    _imp->dragging = false;
+    clearGesture();
     Menu menu(this);
 
     QActionGroup* modes = new QActionGroup(&menu);
@@ -1770,8 +2211,14 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
         });
     }
 
+    menu.addSeparator();
+    QAction* frameSelected = menu.addAction(tr("Frame Selection"));
+    frameSelected->setShortcut(keySequenceOf(kShortcutIDActionViewer3DFrameSelection, Qt::Key_F));
+    QObject::connect(frameSelected, &QAction::triggered, this, [this]() {
+        frameSelection();
+    });
     QAction* frame = menu.addAction(tr("Frame All"));
-    frame->setShortcut(QKeySequence(Qt::Key_F));
+    frame->setShortcut(keySequenceOf(kShortcutIDActionViewer3DFrameAll, Qt::Key_A));
     QObject::connect(frame, &QAction::triggered, this, [this]() {
         frameScene();
     });
@@ -1784,9 +2231,9 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
         update();
     });
 
-    menu.exec(e->globalPos());
-    e->accept();
-} // contextMenuEvent
+    menu.exec(globalPos);
+    clearGesture();
+} // showContextMenu
 
 NATRON_NAMESPACE_EXIT
 

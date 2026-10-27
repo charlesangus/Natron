@@ -27,6 +27,8 @@
 
 #include <stdexcept>
 
+#include <QCoreApplication>
+#include <QKeySequence>
 #include <QWidget>
 
 #include "Gui/GuiApplicationManager.h"
@@ -190,6 +192,8 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionScriptExecScript);
     (void)QT_TR_NOOP(kShortcutDescActionScriptClearOutput);
     (void)QT_TR_NOOP(kShortcutDescActionScriptShowOutput);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DFrameSelection);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DFrameAll);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -329,6 +333,327 @@ ToolTipActionShortcut::setShortcutWrapper(const QString& actionID,
         }
     }
     setToolTipFromOriginalToolTip();
+}
+
+static const Qt::KeyboardModifiers kMouseBindingModifierMask = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier | kShortcutModifierSpace;
+
+bool
+MouseAction::matches(Qt::KeyboardModifiers mods,
+                     Qt::MouseButton button) const
+{
+    mods &= kMouseBindingModifierMask;
+    std::list<Qt::MouseButton>::const_iterator bit = buttons.begin();
+    for (std::list<Qt::KeyboardModifiers>::const_iterator it = modifiers.begin(); it != modifiers.end(); ++it) {
+        Qt::MouseButton b = (bit != buttons.end()) ? *bit : Qt::NoButton;
+        if (bit != buttons.end()) {
+            ++bit;
+        }
+        if ((*it & kMouseBindingModifierMask) != mods) {
+            continue;
+        }
+        if ((gesture == eMouseGestureWheel) || ((b != Qt::NoButton) && (b == button))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<MouseBinding>
+MouseAction::getBindings() const
+{
+    std::vector<MouseBinding> ret;
+    std::list<Qt::MouseButton>::const_iterator bit = buttons.begin();
+    for (std::list<Qt::KeyboardModifiers>::const_iterator it = modifiers.begin(); it != modifiers.end(); ++it) {
+        MouseBinding b;
+        b.modifiers = *it;
+        b.button = (bit != buttons.end()) ? *bit : Qt::NoButton;
+        if (bit != buttons.end()) {
+            ++bit;
+        }
+        ret.push_back(b);
+    }
+
+    return ret;
+}
+
+void
+MouseAction::setBindings(const std::vector<MouseBinding>& bindings)
+{
+    modifiers.clear();
+    buttons.clear();
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        modifiers.push_back(bindings[i].modifiers);
+        buttons.push_back((gesture == eMouseGestureWheel) ? Qt::NoButton : bindings[i].button);
+    }
+}
+
+bool
+mouseGesturesOverlap(MouseGestureEnum a,
+                     MouseGestureEnum b)
+{
+    if ((a == eMouseGestureWheel) || (b == eMouseGestureWheel)) {
+        return a == b;
+    }
+
+    return (a == eMouseGestureAny) || (b == eMouseGestureAny) || (a == b);
+}
+
+Qt::KeyboardModifiers
+mouseBindingModifiers(Qt::KeyboardModifiers modifiers,
+                      bool spaceHeld)
+{
+    Qt::KeyboardModifiers ret = modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier);
+    if (spaceHeld) {
+        ret |= kShortcutModifierSpace;
+    }
+
+    return ret;
+}
+
+QString
+mouseBindingToString(const MouseBinding& binding,
+                     bool wheel)
+{
+    QString ret;
+    if (binding.modifiers & kShortcutModifierSpace) {
+        ret.append(QCoreApplication::translate("ShortCutEditor", "Space"));
+        ret.append(QLatin1Char('+'));
+    }
+    Qt::KeyboardModifiers keyMods = binding.modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier);
+    ret.append(makeKeySequence(keyMods, (Qt::Key)0).toString(QKeySequence::NativeText));
+    if (wheel) {
+        ret.append(QCoreApplication::translate("ShortCutEditor", "Wheel"));
+
+        return ret;
+    }
+    switch (binding.button) {
+    case Qt::LeftButton:
+        ret.append(QCoreApplication::translate("ShortCutEditor", "LeftButton"));
+        break;
+    case Qt::MiddleButton:
+        ret.append(QCoreApplication::translate("ShortCutEditor", "MiddleButton"));
+        break;
+    case Qt::RightButton:
+        ret.append(QCoreApplication::translate("ShortCutEditor", "RightButton"));
+        break;
+    default:
+        break;
+    }
+
+    return ret;
+}
+
+static void
+pushBinding(std::vector<MouseBinding>* bindings,
+            Qt::KeyboardModifiers modifiers,
+            Qt::MouseButton button)
+{
+    MouseBinding b;
+    b.modifiers = modifiers;
+    b.button = button;
+    bindings->push_back(b);
+}
+
+bool
+getViewer3DNavigationPresetBindings(int preset,
+                                    const QString& actionID,
+                                    std::vector<MouseBinding>* bindings)
+{
+    // The values of Settings::Viewer3DNavigationEnum; this file does not depend on Engine/Settings.h.
+    enum { eNuke = 0,
+           eMaya,
+           eBlender,
+           eHoudini };
+    if ((preset < eNuke) || (preset > eHoudini)) {
+        return false;
+    }
+    bindings->clear();
+    const Qt::KeyboardModifiers none = Qt::NoModifier;
+    const Qt::KeyboardModifiers space = kShortcutModifierSpace;
+    const std::string id = actionID.toStdString();
+
+    // Selection is the same in every preset.
+    if (id == kShortcutIDMouseViewer3DSelect) {
+        pushBinding(bindings, none, Qt::LeftButton);
+    } else if (id == kShortcutIDMouseViewer3DAddToSelection) {
+        pushBinding(bindings, Qt::ShiftModifier, Qt::LeftButton);
+    } else if (id == kShortcutIDMouseViewer3DToggleSelection) {
+        pushBinding(bindings, Qt::ControlModifier, Qt::LeftButton);
+    } else if (id == kShortcutIDMouseViewer3DMarquee) {
+        pushBinding(bindings, none, Qt::LeftButton);
+    } else if (id == kShortcutIDMouseViewer3DDollyWheel) {
+        pushBinding(bindings, none, Qt::NoButton);
+    } else if (id == kShortcutIDMouseViewer3DTumble) {
+        switch (preset) {
+        case eNuke:
+            pushBinding(bindings, Qt::ControlModifier, Qt::LeftButton);
+            break;
+        case eMaya:
+            pushBinding(bindings, Qt::AltModifier, Qt::LeftButton);
+            break;
+        case eBlender:
+            pushBinding(bindings, none, Qt::MiddleButton);
+            break;
+        case eHoudini:
+            pushBinding(bindings, space, Qt::LeftButton);
+            pushBinding(bindings, Qt::AltModifier, Qt::LeftButton);
+            break;
+        }
+    } else if (id == kShortcutIDMouseViewer3DPan) {
+        switch (preset) {
+        case eNuke:
+            pushBinding(bindings, Qt::AltModifier, Qt::LeftButton);
+            pushBinding(bindings, none, Qt::MiddleButton);
+            break;
+        case eMaya:
+            pushBinding(bindings, Qt::AltModifier, Qt::MiddleButton);
+            break;
+        case eBlender:
+            pushBinding(bindings, Qt::ShiftModifier, Qt::MiddleButton);
+            break;
+        case eHoudini:
+            pushBinding(bindings, space, Qt::MiddleButton);
+            pushBinding(bindings, Qt::AltModifier, Qt::MiddleButton);
+            break;
+        }
+    } else if (id == kShortcutIDMouseViewer3DDolly) {
+        switch (preset) {
+        case eNuke:
+            pushBinding(bindings, Qt::AltModifier, Qt::MiddleButton);
+            break;
+        case eMaya:
+            pushBinding(bindings, Qt::AltModifier, Qt::RightButton);
+            break;
+        case eBlender:
+            pushBinding(bindings, Qt::ControlModifier, Qt::MiddleButton);
+            break;
+        case eHoudini:
+            pushBinding(bindings, space, Qt::RightButton);
+            pushBinding(bindings, Qt::AltModifier, Qt::RightButton);
+            break;
+        }
+    } else {
+        return false;
+    }
+
+    return true;
+}
+
+void
+writeShortcutSettings(QSettings& settings,
+                      const QString& actionID,
+                      const BoundAction& action)
+{
+    const MouseAction* mAction = dynamic_cast<const MouseAction*>(&action);
+    const KeyBoundAction* kAction = dynamic_cast<const KeyBoundAction*>(&action);
+
+    settings.setValue(actionID + QString::fromUtf8("_nbShortcuts"), QVariant((int)action.modifiers.size()));
+
+    int c = 0;
+    for (std::list<Qt::KeyboardModifiers>::const_iterator it = action.modifiers.begin(); it != action.modifiers.end(); ++it, ++c) {
+        settings.setValue(actionID + QString::fromUtf8("_Modifiers") + QString::number(c), (int)*it);
+    }
+
+    if (mAction) {
+        c = 0;
+        for (std::list<Qt::MouseButton>::const_iterator it = mAction->buttons.begin(); it != mAction->buttons.end(); ++it, ++c) {
+            settings.setValue(actionID + QString::fromUtf8("_Button") + QString::number(c), (int)*it);
+        }
+    } else if (kAction) {
+        assert(action.modifiers.size() == kAction->currentShortcut.size());
+        c = 0;
+        for (std::list<Qt::Key>::const_iterator it = kAction->currentShortcut.begin(); it != kAction->currentShortcut.end(); ++it, ++c) {
+            settings.setValue(actionID + QString::fromUtf8("_Symbol") + QString::number(c), (int)*it);
+        }
+    }
+}
+
+bool
+readShortcutSettings(QSettings& settings,
+                     const QString& actionID,
+                     BoundAction* action)
+{
+    MouseAction* mAction = dynamic_cast<MouseAction*>(action);
+    KeyBoundAction* kAction = dynamic_cast<KeyBoundAction*>(action);
+    const QString nbKey = actionID + QString::fromUtf8("_nbShortcuts");
+
+    if (mAction) {
+        if (!settings.contains(nbKey)) {
+            return false;
+        }
+        // An empty list is a binding the user cleared.
+        int nbShortcuts = settings.value(nbKey).toInt();
+        std::vector<MouseBinding> bindings;
+        for (int i = 0; i < nbShortcuts; ++i) {
+            QString idm = actionID + QString::fromUtf8("_Modifiers") + QString::number(i);
+            QString idb = actionID + QString::fromUtf8("_Button") + QString::number(i);
+            if (!settings.contains(idm) || !settings.contains(idb)) {
+                continue;
+            }
+            MouseBinding b;
+            b.modifiers = Qt::KeyboardModifiers(settings.value(idm).toInt());
+            b.button = (Qt::MouseButton)settings.value(idb).toInt();
+            bindings.push_back(b);
+        }
+        mAction->setBindings(bindings);
+
+        return false;
+    }
+
+    int nbShortcuts = 1;
+    bool nbShortcutsSet = false;
+    if (settings.contains(nbKey)) {
+        nbShortcuts = settings.value(nbKey).toInt();
+        nbShortcutsSet = true;
+    }
+
+    bool hasNonNullKeybind = false;
+
+    if (!nbShortcutsSet) {
+        if (kAction) {
+            if (settings.contains(actionID + QString::fromUtf8("_Symbol"))) {
+                Qt::Key key = (Qt::Key)settings.value(actionID + QString::fromUtf8("_Symbol")).toInt();
+                if (key != (Qt::Key)0) {
+                    kAction->currentShortcut.clear();
+                    kAction->currentShortcut.push_back(key);
+                    hasNonNullKeybind = true;
+                }
+            }
+        }
+        if (hasNonNullKeybind && settings.contains(actionID + QString::fromUtf8("_Modifiers"))) {
+            action->modifiers.clear();
+            action->modifiers.push_back(Qt::KeyboardModifiers(settings.value(actionID + QString::fromUtf8("_Modifiers")).toInt()));
+        }
+    } else {
+        for (int i = 0; i < nbShortcuts; ++i) {
+            QString idm = actionID + QString::fromUtf8("_Modifiers") + QString::number(i);
+
+            if (kAction) {
+                QString ids = actionID + QString::fromUtf8("_Symbol") + QString::number(i);
+                if (settings.contains(ids)) {
+                    Qt::Key key = (Qt::Key)settings.value(ids).toInt();
+                    if (key != (Qt::Key)0) {
+                        if (i == 0) {
+                            kAction->currentShortcut.clear();
+                        }
+                        kAction->currentShortcut.push_back(key);
+                        hasNonNullKeybind = true;
+                    } else {
+                        continue;
+                    }
+                }
+            }
+            if (settings.contains(idm)) {
+                if (i == 0) {
+                    action->modifiers.clear();
+                }
+                action->modifiers.push_back(Qt::KeyboardModifiers(settings.value(idm).toInt()));
+            }
+        }
+    }
+
+    return hasNonNullKeybind;
 }
 
 NATRON_NAMESPACE_EXIT

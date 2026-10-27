@@ -48,6 +48,7 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
+#include <QPoint>
 #include <QSurfaceFormat>
 
 #include "Engine/AppManager.h"
@@ -300,7 +301,7 @@ TEST_F(SceneViewportStorm, PicksThePrimDrawnAtAPixel)
     EXPECT_EQ(std::string(), _renderer.pick(221, 66, kSize, kSize));
 
     // The picked prim is highlighted.
-    _renderer.setSelectedPrim("/World/Box");
+    _renderer.setSelectedPrims({ "/World/Box" });
     const QImage selected = render();
     const Rgb before = pixel(unselected, 128, 128);
     const Rgb after = pixel(selected, 128, 128);
@@ -308,11 +309,69 @@ TEST_F(SceneViewportStorm, PicksThePrimDrawnAtAPixel)
         << "highlight left the box unchanged: " << before << " -> " << after;
     EXPECT_LE(std::abs(pixel(unselected, 221, 128).b - pixel(selected, 221, 128).b), 3) << "the ball is not selected";
 
-    _renderer.setSelectedPrim(std::string());
+    _renderer.setSelectedPrims({});
     const QImage cleared = render();
     const Rgb back = pixel(cleared, 128, 128);
     EXPECT_LE(std::abs(back.r - before.r) + std::abs(back.g - before.g) + std::abs(back.b - before.b), 6)
         << "clearing the selection left the highlight: " << before << " -> " << back;
+}
+
+TEST_F(SceneViewportStorm, PicksThePrimsInARectangleAndHighlightsThemAll)
+{
+    if (_skip) {
+        return;
+    }
+    const QImage unselected = render();
+    EXPECT_EQ(std::vector<std::string>({ "/World/Ball", "/World/Box" }), _renderer.pickRect(0, 0, kSize - 1, kSize - 1, kSize, kSize));
+    // Corners in any order.
+    EXPECT_EQ(std::vector<std::string>({ "/World/Box" }), _renderer.pickRect(150, 150, 100, 100, kSize, kSize));
+    EXPECT_EQ(std::vector<std::string>({ "/World/Ball" }), _renderer.pickRect(200, 110, 240, 140, kSize, kSize));
+    EXPECT_TRUE(_renderer.pickRect(2, 2, 20, 20, kSize, kSize).empty());
+
+    _renderer.setSelectedPrims({ "/World/Box", "/World/Ball" });
+    const QImage selected = render();
+    for (const QPoint& p : { QPoint(128, 128), QPoint(221, 128) }) {
+        const Rgb before = pixel(unselected, p.x(), p.y());
+        const Rgb after = pixel(selected, p.x(), p.y());
+        EXPECT_GT(std::abs(after.r - before.r) + std::abs(after.g - before.g) + std::abs(after.b - before.b), 30)
+            << "highlight left (" << p.x() << ", " << p.y() << ") unchanged: " << before << " -> " << after;
+    }
+}
+
+TEST_F(SceneViewportStorm, FramesTheSelection)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+
+    // The ball, off to the right, ends up at the centre of the view.
+    _renderer.setSelectedPrims({ "/World/Ball" });
+    _renderer.frameSelection();
+    (void)render();
+    EXPECT_EQ(std::string("/World/Ball"), _renderer.pick(kSize / 2, kSize / 2, kSize, kSize));
+    EXPECT_GT(_renderer.getFreeCamera().pivot[0], 1.);
+
+    // A camera has no extent: its position is framed with a radius of one unit.
+    _renderer.setSelectedPrims({ "/World/Cam" });
+    _renderer.frameSelection();
+    const SceneViewportRenderer::FreeCamera onCamera = _renderer.getFreeCamera();
+    EXPECT_NEAR(1., onCamera.pivot[0], 1e-9);
+    EXPECT_NEAR(1., onCamera.pivot[1], 1e-9);
+    EXPECT_NEAR(10., onCamera.pivot[2], 1e-9);
+    EXPECT_NEAR(1. / std::sin(onCamera.fovY * M_PI / 360.) * 1.05, onCamera.distance, 1e-9);
+
+    // With nothing selected it frames everything.
+    _renderer.frameScene();
+    const SceneViewportRenderer::FreeCamera all = _renderer.getFreeCamera();
+    _renderer.setSelectedPrims({ "/World/Ball" });
+    _renderer.frameSelection();
+    _renderer.setSelectedPrims({});
+    _renderer.frameSelection();
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_DOUBLE_EQ(all.pivot[i], _renderer.getFreeCamera().pivot[i]);
+    }
+    EXPECT_DOUBLE_EQ(all.distance, _renderer.getFreeCamera().distance);
 }
 
 // /World/Cam sits at (1, 1, 10) with the fallback aperture (vertical 15.2908 mm) and a 35 mm lens:
@@ -599,7 +658,7 @@ TEST_F(SceneViewportStorm, FiftyEditsReuseOneEngineAndMatchFreshRenders)
         return;
     }
     const ScenePayload reference = referenceScene();
-    _renderer.setSelectedPrim("/World/Box");
+    _renderer.setSelectedPrims({ "/World/Box" });
     (void)render();
     ASSERT_EQ(U64(1), _renderer.getEngineCount());
     const SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
@@ -617,7 +676,7 @@ TEST_F(SceneViewportStorm, FiftyEditsReuseOneEngineAndMatchFreshRenders)
         fresh.setFreeCamera(camera);
         fresh.setDrawMode(SceneViewportRenderer::eDrawModeUnshaded);
         fresh.setShowGrid(false);
-        fresh.setSelectedPrim("/World/Box");
+        fresh.setSelectedPrims({ "/World/Box" });
         bool converged = false;
         for (int i = 0; i < 4 && !converged; ++i) {
             converged = fresh.render(_fbo->handle(), kSize, kSize);
@@ -635,7 +694,7 @@ TEST_F(SceneViewportStorm, FiftyEditsReuseOneEngineAndMatchFreshRenders)
     }
 
     EXPECT_EQ(U64(1), _renderer.getEngineCount());
-    EXPECT_EQ(std::string("/World/Box"), _renderer.getSelectedPrim());
+    EXPECT_EQ(std::vector<std::string>({ "/World/Box" }), _renderer.getSelectedPrims());
     EXPECT_DOUBLE_EQ(camera.distance, _renderer.getFreeCamera().distance);
     EXPECT_DOUBLE_EQ(camera.azimuth, _renderer.getFreeCamera().azimuth);
 

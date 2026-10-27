@@ -12,9 +12,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <fstream>
+#include <functional>
 #include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <thread>
@@ -685,6 +689,11 @@ struct Config {
     int coldCopies = 8;
     int coldReps = 3;
     int coldSettleMs = 500;
+    bool queueModes = false;
+    bool queueOnly = false;
+    std::string queueCsv;
+    int queueMb = 256;
+    int queueReps = 10;
 };
 
 std::vector<SizeSpec>
@@ -1045,42 +1054,53 @@ memAvailableBytes()
 // duration of run(); two submissions stay in flight so the queue is non-empty between fence waits.
 class BusyLoad {
 public:
+    using SubmitFn = std::function<bool(const VkSubmitInfo2&, VkFence)>;
+    static constexpr VkDeviceSize kBytes = VkDeviceSize(16) << 20;
+
     ~BusyLoad()
     {
         for (VkFence f : fence_) {
             if (f) {
-                vkDestroyFence(dev_->device(), f, nullptr);
+                vkDestroyFence(device_, f, nullptr);
             }
         }
         if (pool_) {
-            vkDestroyCommandPool(dev_->device(), pool_, nullptr);
+            vkDestroyCommandPool(device_, pool_, nullptr);
         }
     }
 
     bool init(GpuDevice& dev, std::string& err)
     {
-        dev_ = &dev;
-        constexpr VkDeviceSize kBytes = VkDeviceSize(16) << 20;
         if (!makeStorage(dev, kBytes, a_, err) || !makeStorage(dev, kBytes, b_, err)) {
             return false;
         }
+        return init(dev.device(), dev.queueFamily(QueueKind::Compute), a_.buffer, b_.buffer,
+                    [&dev](const VkSubmitInfo2& si, VkFence f) { return bool(dev.submit(QueueKind::Compute, { &si, 1 }, f)); }, err);
+    }
+
+    // For a load on a queue GpuDevice does not route to: the caller owns the two kBytes buffers and serializes the
+    // submit against its other users of that queue.
+    bool init(VkDevice device, uint32_t family, VkBuffer a, VkBuffer b, SubmitFn submit, std::string& err)
+    {
+        device_ = device;
+        submit_ = std::move(submit);
         VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-        pci.queueFamilyIndex = dev.queueFamily(QueueKind::Compute);
-        if (GpuStatus st = dev.check(vkCreateCommandPool(dev.device(), &pci, nullptr, &pool_), "vkCreateCommandPool"); !st) {
-            err = st.message;
+        pci.queueFamilyIndex = family;
+        if (vkCreateCommandPool(device_, &pci, nullptr, &pool_) != VK_SUCCESS) {
+            err = "vkCreateCommandPool failed";
             return false;
         }
         VkCommandBufferAllocateInfo cai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         cai.commandPool = pool_;
         cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cai.commandBufferCount = 2;
-        if (vkAllocateCommandBuffers(dev.device(), &cai, cmd_.data()) != VK_SUCCESS) {
+        if (vkAllocateCommandBuffers(device_, &cai, cmd_.data()) != VK_SUCCESS) {
             err = "vkAllocateCommandBuffers failed";
             return false;
         }
         VkFenceCreateInfo fci { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         for (VkFence& f : fence_) {
-            if (vkCreateFence(dev.device(), &fci, nullptr, &f) != VK_SUCCESS) {
+            if (vkCreateFence(device_, &fci, nullptr, &f) != VK_SUCCESS) {
                 err = "vkCreateFence failed";
                 return false;
             }
@@ -1100,16 +1120,16 @@ public:
             dep.pMemoryBarriers = &mb;
             for (int i = 0; i < 4; ++i) {
                 vkCmdPipelineBarrier2(cmd, &dep);
-                vkCmdCopyBuffer(cmd, a_.buffer, b_.buffer, 1, &r);
+                vkCmdCopyBuffer(cmd, a, b, 1, &r);
                 vkCmdPipelineBarrier2(cmd, &dep);
-                vkCmdCopyBuffer(cmd, b_.buffer, a_.buffer, 1, &r);
+                vkCmdCopyBuffer(cmd, b, a, 1, &r);
             }
             vkEndCommandBuffer(cmd);
         }
         return true;
     }
 
-    bool run(double ms)
+    bool run(double ms, const std::atomic<bool>* stop = nullptr)
     {
         using clock = std::chrono::steady_clock;
         const auto end = clock::now() + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double, std::milli>(ms));
@@ -1119,31 +1139,32 @@ public:
             VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
             si.commandBufferInfoCount = 1;
             si.pCommandBufferInfos = &csi;
-            vkResetFences(dev_->device(), 1, &fence_[i]);
-            return bool(dev_->submit(QueueKind::Compute, { &si, 1 }, fence_[i]));
+            vkResetFences(device_, 1, &fence_[i]);
+            return submit_(si, fence_[i]);
         };
         if (!submit(0)) {
             return false;
         }
         if (!submit(1)) {
-            vkWaitForFences(dev_->device(), 1, &fence_[0], VK_TRUE, UINT64_MAX);
+            vkWaitForFences(device_, 1, &fence_[0], VK_TRUE, UINT64_MAX);
             return false;
         }
         int i = 0;
         bool ok = true;
         for (;;) {
-            vkWaitForFences(dev_->device(), 1, &fence_[i], VK_TRUE, UINT64_MAX);
-            if (clock::now() >= end || !(ok = submit(i))) {
+            vkWaitForFences(device_, 1, &fence_[i], VK_TRUE, UINT64_MAX);
+            if (clock::now() >= end || (stop && stop->load()) || !(ok = submit(i))) {
                 break;
             }
             i ^= 1;
         }
-        vkWaitForFences(dev_->device(), 1, &fence_[i ^ 1], VK_TRUE, UINT64_MAX);
+        vkWaitForFences(device_, 1, &fence_[i ^ 1], VK_TRUE, UINT64_MAX);
         return ok;
     }
 
 private:
-    GpuDevice* dev_ = nullptr;
+    VkDevice device_ = VK_NULL_HANDLE;
+    SubmitFn submit_;
     DevBuf a_, b_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     std::array<VkCommandBuffer, 2> cmd_ {};
@@ -1383,6 +1404,423 @@ runColdModes(GpuDevice& dev, const Config& cfg)
     return true;
 }
 
+// Host-import copy rate per queue configuration. GpuDevice picks one layout and creates only those queues, so this
+// opens its own VkDevice on the same physical device with up to two queues in the compute family and in a
+// transfer-only family, and routes copies and the compute load onto whichever pair each configuration names.
+struct QueueSlot {
+    uint32_t family = 0, index = 0;
+    VkQueue queue = VK_NULL_HANDLE;
+    std::mutex lock;
+};
+
+struct RigBuf {
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+
+    RigBuf() = default;
+    RigBuf(RigBuf&& o) noexcept { *this = std::move(o); }
+    RigBuf& operator=(RigBuf&& o) noexcept
+    {
+        reset();
+        device = o.device;
+        buffer = std::exchange(o.buffer, VK_NULL_HANDLE);
+        memory = std::exchange(o.memory, VK_NULL_HANDLE);
+        return *this;
+    }
+    ~RigBuf() { reset(); }
+    void reset()
+    {
+        if (buffer) {
+            vkDestroyBuffer(device, buffer, nullptr);
+        }
+        if (memory) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        buffer = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+    }
+};
+
+class QueueRig {
+public:
+    ~QueueRig()
+    {
+        if (device_) {
+            vkDeviceWaitIdle(device_);
+            slots_.clear();
+            vkDestroyDevice(device_, nullptr);
+        }
+    }
+
+    bool init(GpuDevice& base, std::string& err)
+    {
+        phys_ = base.physicalDevice();
+        computeFamily_ = base.info().computeFamily;
+        transferFamily_ = base.info().transferFamily == computeFamily_ ? UINT32_MAX : base.info().transferFamily;
+        hostImport_ = base.info().externalMemoryHost && base.info().minImportedHostPointerAlignment != 0;
+        importAlign_ = base.info().minImportedHostPointerAlignment;
+        vkGetPhysicalDeviceMemoryProperties(phys_, &mem_);
+        uint32_t nf = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(phys_, &nf, nullptr);
+        fams_.resize(nf);
+        vkGetPhysicalDeviceQueueFamilyProperties(phys_, &nf, fams_.data());
+
+        const float prios[2] = { 1.0f, 1.0f };
+        std::vector<VkDeviceQueueCreateInfo> qcis;
+        auto add = [&](uint32_t family) {
+            VkDeviceQueueCreateInfo q { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
+            q.queueFamilyIndex = family;
+            q.queueCount = std::min<uint32_t>(std::max<uint32_t>(fams_[family].queueCount, 1), 2);
+            q.pQueuePriorities = prios;
+            created_[family] = q.queueCount;
+            qcis.push_back(q);
+        };
+        add(computeFamily_);
+        if (transferFamily_ != UINT32_MAX) {
+            add(transferFamily_);
+        }
+        VkPhysicalDeviceVulkan13Features f13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        f13.synchronization2 = VK_TRUE;
+        const char* ext = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+        VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+        dci.pNext = &f13;
+        dci.queueCreateInfoCount = uint32_t(qcis.size());
+        dci.pQueueCreateInfos = qcis.data();
+        dci.enabledExtensionCount = hostImport_ ? 1 : 0;
+        dci.ppEnabledExtensionNames = &ext;
+        if (VkResult r = vkCreateDevice(phys_, &dci, nullptr, &device_); r != VK_SUCCESS) {
+            err = "vkCreateDevice VkResult " + std::to_string(r);
+            return false;
+        }
+        for (const auto& [family, count] : created_) {
+            for (uint32_t i = 0; i < count; ++i) {
+                QueueSlot& s = slots_[key(family, i)];
+                s.family = family;
+                s.index = i;
+                vkGetDeviceQueue(device_, family, i, &s.queue);
+            }
+        }
+        return true;
+    }
+
+    VkDevice device() const { return device_; }
+    uint32_t computeFamily() const { return computeFamily_; }
+    uint32_t transferFamily() const { return transferFamily_; }
+    bool hostImport() const { return hostImport_; }
+    uint64_t importAlign() const { return importAlign_; }
+    uint32_t queueCount(uint32_t family) const
+    {
+        const auto it = created_.find(family);
+        return it == created_.end() ? 0 : it->second;
+    }
+    const std::vector<VkQueueFamilyProperties>& families() const { return fams_; }
+    QueueSlot* slot(uint32_t family, uint32_t index)
+    {
+        const auto it = slots_.find(key(family, index));
+        return it == slots_.end() ? nullptr : &it->second;
+    }
+
+    bool submit(QueueSlot& q, const VkSubmitInfo2& si, VkFence fence)
+    {
+        std::lock_guard<std::mutex> g(q.lock);
+        return vkQueueSubmit2(q.queue, 1, &si, fence) == VK_SUCCESS;
+    }
+
+    bool deviceBuffer(VkDeviceSize bytes, RigBuf& out, std::string& err)
+    {
+        return make(bytes, nullptr, out, err);
+    }
+    bool importedBuffer(void* host, VkDeviceSize bytes, RigBuf& out, std::string& err)
+    {
+        return make(bytes, host, out, err);
+    }
+
+private:
+    static uint64_t key(uint32_t family, uint32_t index) { return (uint64_t(family) << 32) | index; }
+
+    bool make(VkDeviceSize bytes, void* host, RigBuf& out, std::string& err)
+    {
+        out.device = device_;
+        VkExternalMemoryBufferCreateInfo ext { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+        ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+        VkBufferCreateInfo bi { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bi.pNext = host ? &ext : nullptr;
+        bi.size = bytes;
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (vkCreateBuffer(device_, &bi, nullptr, &out.buffer) != VK_SUCCESS) {
+            err = "vkCreateBuffer failed";
+            return false;
+        }
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(device_, out.buffer, &req);
+        uint32_t allowed = req.memoryTypeBits;
+        VkImportMemoryHostPointerInfoEXT imp { VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT };
+        if (host) {
+            auto getProps = reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
+                vkGetDeviceProcAddr(device_, "vkGetMemoryHostPointerPropertiesEXT"));
+            VkMemoryHostPointerPropertiesEXT hp { VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT };
+            if (!getProps || getProps(device_, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host, &hp) != VK_SUCCESS) {
+                err = "vkGetMemoryHostPointerPropertiesEXT failed";
+                return false;
+            }
+            allowed &= hp.memoryTypeBits;
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+            imp.pHostPointer = host;
+        }
+        // Imported memory cannot be flushed here, so it has to be coherent.
+        const VkMemoryPropertyFlags want = host ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        uint32_t type = UINT32_MAX;
+        for (uint32_t i = 0; i < mem_.memoryTypeCount; ++i) {
+            if ((allowed & (1u << i)) && (mem_.memoryTypes[i].propertyFlags & want) == want) {
+                type = i;
+                break;
+            }
+        }
+        if (type == UINT32_MAX) {
+            err = "no suitable memory type";
+            return false;
+        }
+        VkMemoryAllocateInfo mai { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        mai.pNext = host ? &imp : nullptr;
+        mai.allocationSize = std::max<VkDeviceSize>(req.size, bytes);
+        mai.memoryTypeIndex = type;
+        if (vkAllocateMemory(device_, &mai, nullptr, &out.memory) != VK_SUCCESS
+            || vkBindBufferMemory(device_, out.buffer, out.memory, 0) != VK_SUCCESS) {
+            err = "vkAllocateMemory/vkBindBufferMemory failed";
+            return false;
+        }
+        return true;
+    }
+
+    VkPhysicalDevice phys_ = VK_NULL_HANDLE;
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkPhysicalDeviceMemoryProperties mem_ {};
+    std::vector<VkQueueFamilyProperties> fams_;
+    std::map<uint32_t, uint32_t> created_;
+    std::map<uint64_t, QueueSlot> slots_;
+    uint32_t computeFamily_ = 0;
+    uint32_t transferFamily_ = UINT32_MAX;
+    bool hostImport_ = false;
+    uint64_t importAlign_ = 0;
+};
+
+struct QueueRow {
+    std::string config, direction, load, note;
+    uint32_t copyFamily = 0, copyIndex = 0;
+    uint32_t loadFamily = UINT32_MAX, loadIndex = 0;
+    double median = kNaN, lo = kNaN, hi = kNaN;
+};
+
+const char* kQueueCsvHeader = "config,direction,load,copy_family,copy_queue,load_family,load_queue,mb,reps,median_gbps,min_gbps,max_gbps,"
+                              "radv_perftest,note";
+
+void
+writeQueueRow(std::ofstream& csv, const QueueRow& r, size_t bytes, int reps)
+{
+    const char* env = std::getenv("RADV_PERFTEST");
+    std::string n = r.note;
+    std::replace(n.begin(), n.end(), ',', ';');
+    std::string perf = env ? env : "";
+    std::replace(perf.begin(), perf.end(), ',', ';');
+    const bool loaded = r.loadFamily != UINT32_MAX;
+    csv << r.config << ',' << r.direction << ',' << r.load << ',' << r.copyFamily << ',' << r.copyIndex << ','
+        << (loaded ? std::to_string(r.loadFamily) : "-") << ',' << (loaded ? std::to_string(r.loadIndex) : "-") << ','
+        << num(bytes / 1e6) << ',' << reps << ',' << num(r.median) << ',' << num(r.lo) << ',' << num(r.hi) << ',' << perf << ',' << n << '\n';
+    csv.flush();
+    const std::string loadQ = loaded ? std::to_string(r.loadFamily) + "/" + std::to_string(r.loadIndex) : std::string("-");
+    std::printf("  %-18s %-4s load %-11s copy q %u/%u load q %-5s %7.2f GB/s (min %6.2f max %6.2f)%s%s\n", r.config.c_str(),
+                r.direction.c_str(), r.load.c_str(), r.copyFamily, r.copyIndex, loadQ.c_str(), r.median, r.lo, r.hi,
+                n.empty() ? "" : " | ", n.c_str());
+}
+
+// Wall time from submit to fence, so a copy queued behind the load pays for the wait as it would in the app.
+bool
+timeQueueCopy(QueueRig& rig, QueueSlot& q, VkBuffer src, VkBuffer dst, VkDeviceSize bytes, int reps, std::vector<double>& ms,
+              std::string& err)
+{
+    VkDevice d = rig.device();
+    VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    pci.queueFamilyIndex = q.family;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    if (vkCreateCommandPool(d, &pci, nullptr, &pool) != VK_SUCCESS) {
+        err = "vkCreateCommandPool failed";
+        return false;
+    }
+    VkFence fence = VK_NULL_HANDLE;
+    bool ok = false;
+    do {
+        VkCommandBufferAllocateInfo cai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        cai.commandPool = pool;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        VkCommandBuffer cmd;
+        VkFenceCreateInfo fci { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        if (vkAllocateCommandBuffers(d, &cai, &cmd) != VK_SUCCESS || vkCreateFence(d, &fci, nullptr, &fence) != VK_SUCCESS
+            || vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+            err = "command buffer setup failed";
+            break;
+        }
+        const VkBufferCopy r { 0, 0, bytes };
+        vkCmdCopyBuffer(cmd, src, dst, 1, &r);
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+            err = "vkEndCommandBuffer failed";
+            break;
+        }
+        VkCommandBufferSubmitInfo csi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        csi.commandBuffer = cmd;
+        VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        si.commandBufferInfoCount = 1;
+        si.pCommandBufferInfos = &csi;
+        ok = true;
+        for (int i = -2; i < reps && ok; ++i) {
+            vkResetFences(d, 1, &fence);
+            const auto t0 = std::chrono::steady_clock::now();
+            if (!rig.submit(q, si, fence) || vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+                err = "copy submit failed";
+                ok = false;
+                break;
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            if (i >= 0) {
+                ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+        }
+    } while (false);
+    if (fence) {
+        vkDestroyFence(d, fence, nullptr);
+    }
+    vkDestroyCommandPool(d, pool, nullptr);
+    return ok;
+}
+
+struct QueueConfig {
+    const char* name;
+    std::pair<uint32_t, uint32_t> up, down, load;
+    std::string skip;
+};
+
+bool
+runQueueModes(GpuDevice& dev, const Config& cfg)
+{
+    const char* perf = std::getenv("RADV_PERFTEST");
+    QueueRig rig;
+    std::string err;
+    if (!rig.init(dev, err)) {
+        std::fprintf(stderr, "queue modes: %s\n", err.c_str());
+        return false;
+    }
+    std::printf("queue modes: RADV_PERFTEST=%s | compute family %u (%u queues opened) | transfer-only family %s\n",
+                perf ? perf : "(unset)", rig.computeFamily(), rig.queueCount(rig.computeFamily()),
+                rig.transferFamily() == UINT32_MAX ? "none" : std::to_string(rig.transferFamily()).c_str());
+    for (uint32_t i = 0; i < rig.families().size(); ++i) {
+        const VkQueueFamilyProperties& f = rig.families()[i];
+        std::printf("  family %u: %u queues |%s%s%s%s | timestampValidBits %u\n", i, f.queueCount,
+                    f.queueFlags & VK_QUEUE_GRAPHICS_BIT ? " graphics" : "", f.queueFlags & VK_QUEUE_COMPUTE_BIT ? " compute" : "",
+                    f.queueFlags & VK_QUEUE_TRANSFER_BIT ? " transfer" : "", f.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT ? " sparse" : "",
+                    f.timestampValidBits);
+    }
+    std::ofstream csv(cfg.queueCsv);
+    csv << kQueueCsvHeader << '\n';
+
+    const size_t bytes = std::max<size_t>(1, cfg.queueMb) * (size_t(1) << 20);
+    const int reps = cfg.queueReps;
+    if (!rig.hostImport() || rig.importAlign() > kAlign || kAlign % rig.importAlign() != 0) {
+        std::printf("  skip all: host import unavailable or needs alignment above %zu\n", kAlign);
+        QueueRow r;
+        r.config = "all";
+        r.direction = "-";
+        r.load = "-";
+        r.note = "no host import";
+        writeQueueRow(csv, r, bytes, reps);
+        return true;
+    }
+    HostBuf host = alignedBuf(bytes);
+    if (!host) {
+        std::fprintf(stderr, "queue modes: host allocation of %zu MB failed\n", bytes >> 20);
+        return false;
+    }
+    fillImage(host.get(), bytes, 7);
+    RigBuf imported, device, loadA, loadB;
+    if (!rig.importedBuffer(host.get(), bytes, imported, err) || !rig.deviceBuffer(bytes, device, err)
+        || !rig.deviceBuffer(BusyLoad::kBytes, loadA, err) || !rig.deviceBuffer(BusyLoad::kBytes, loadB, err)) {
+        std::fprintf(stderr, "queue modes: %s\n", err.c_str());
+        return false;
+    }
+
+    const uint32_t cf = rig.computeFamily(), tf = rig.transferFamily();
+    std::vector<QueueConfig> configs;
+    configs.push_back({ "shared-compute-q0", { cf, 0 }, { cf, 0 }, { cf, 0 }, "" });
+    configs.push_back({ "compute-q1", { cf, 1 }, { cf, 1 }, { cf, 0 },
+                        rig.queueCount(cf) >= 2 ? "" : "compute family has a single queue" });
+    const uint32_t tLast = tf == UINT32_MAX ? 0 : rig.queueCount(tf) - 1;
+    configs.push_back({ "transfer-family", { tf, 0 }, { tf, tLast }, { cf, 0 },
+                        tf == UINT32_MAX ? "no transfer-only queue family (RADV_PERFTEST=transfer_queue exposes one on RADV)" : "" });
+
+    std::printf("queue modes: %zu MB host-import copies, %d reps (+2 warm-up), wall time submit to fence -> %s\n", bytes >> 20, reps,
+                cfg.queueCsv.c_str());
+    for (const QueueConfig& c : configs) {
+        if (!c.skip.empty()) {
+            std::printf("  skip %-18s %s\n", c.name, c.skip.c_str());
+            QueueRow r;
+            r.config = c.name;
+            r.direction = "-";
+            r.load = "-";
+            r.note = "skipped: " + c.skip;
+            writeQueueRow(csv, r, bytes, reps);
+            continue;
+        }
+        for (const bool up : { true, false }) {
+            const auto copyQ = up ? c.up : c.down;
+            QueueSlot* cs = rig.slot(copyQ.first, copyQ.second);
+            QueueSlot* ls = rig.slot(c.load.first, c.load.second);
+            for (const bool loaded : { false, true }) {
+                QueueRow r;
+                r.config = c.name;
+                r.direction = up ? "up" : "down";
+                r.copyFamily = copyQ.first;
+                r.copyIndex = copyQ.second;
+                r.load = !loaded ? "none" : cs == ls ? "same-queue" : "other-queue";
+                if (loaded) {
+                    r.loadFamily = c.load.first;
+                    r.loadIndex = c.load.second;
+                }
+                BusyLoad busy;
+                std::atomic<bool> stop { false };
+                std::thread loadThread;
+                bool loadOk = true;
+                if (loaded) {
+                    const bool init = busy.init(rig.device(), ls->family, loadA.buffer, loadB.buffer,
+                                                [&](const VkSubmitInfo2& si, VkFence f) { return rig.submit(*ls, si, f); }, err);
+                    if (!init) {
+                        std::fprintf(stderr, "queue modes: busy load: %s\n", err.c_str());
+                        return false;
+                    }
+                    loadThread = std::thread([&] { loadOk = busy.run(600000.0, &stop); });
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                std::vector<double> ms;
+                const bool ok = timeQueueCopy(rig, *cs, up ? imported.buffer : device.buffer, up ? device.buffer : imported.buffer,
+                                              bytes, reps, ms, err);
+                stop = true;
+                if (loadThread.joinable()) {
+                    loadThread.join();
+                }
+                if (!ok || !loadOk) {
+                    std::fprintf(stderr, "queue modes: %s\n", ok ? "busy load submit failed" : err.c_str());
+                    return false;
+                }
+                r.median = gbps(bytes, median(ms));
+                r.lo = gbps(bytes, *std::max_element(ms.begin(), ms.end()));
+                r.hi = gbps(bytes, *std::min_element(ms.begin(), ms.end()));
+                writeQueueRow(csv, r, bytes, reps);
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int
@@ -1413,6 +1851,16 @@ main(int argc, char** argv)
             cfg.coldReps = std::max(1, std::atoi(next().c_str()));
         } else if (a == "--cold-settle-ms") {
             cfg.coldSettleMs = std::max(0, std::atoi(next().c_str()));
+        } else if (a == "--queue-modes") {
+            cfg.queueModes = true;
+        } else if (a == "--queue-only") {
+            cfg.queueModes = cfg.queueOnly = true;
+        } else if (a == "--queue-csv") {
+            cfg.queueCsv = next();
+        } else if (a == "--queue-mb") {
+            cfg.queueMb = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--queue-reps") {
+            cfg.queueReps = std::max(1, std::atoi(next().c_str()));
         } else if (a == "--sizes") {
             cfg.sizes.clear();
             const std::string v = next();
@@ -1426,7 +1874,8 @@ main(int argc, char** argv)
             }
         } else {
             std::fprintf(stderr, "usage: GpuBench [--sizes uhd,8k,16k,24k,24k-single] [--iters N] [--csv path] [--note text]\n"
-                                 "               [--cold-modes | --cold-only] [--cold-csv path] [--cold-copies N] [--cold-reps N] [--cold-settle-ms MS]\n");
+                                 "               [--cold-modes | --cold-only] [--cold-csv path] [--cold-copies N] [--cold-reps N] [--cold-settle-ms MS]\n"
+                                 "               [--queue-modes | --queue-only] [--queue-csv path] [--queue-mb N] [--queue-reps N]\n");
             return 2;
         }
     }
@@ -1452,6 +1901,12 @@ main(int argc, char** argv)
     if (cfg.coldCsv.empty()) {
         cfg.coldCsv = cfg.csv.size() > 4 && cfg.csv.ends_with(".csv") ? cfg.csv.substr(0, cfg.csv.size() - 4) + "-cold.csv" : cfg.csv + "-cold.csv";
     }
+    if (cfg.queueCsv.empty()) {
+        cfg.queueCsv = cfg.csv.size() > 4 && cfg.csv.ends_with(".csv") ? cfg.csv.substr(0, cfg.csv.size() - 4) + "-queue.csv" : cfg.csv + "-queue.csv";
+    }
+    if (cfg.queueOnly) {
+        return runQueueModes(*dev, cfg) ? 0 : 1;
+    }
     if (cfg.coldOnly) {
         return runColdModes(*dev, cfg) ? 0 : 1;
     }
@@ -1473,6 +1928,9 @@ main(int argc, char** argv)
         }
     }
     if (cfg.coldModes && !runColdModes(*dev, cfg)) {
+        return 1;
+    }
+    if (cfg.queueModes && !runQueueModes(*dev, cfg)) {
         return 1;
     }
     return 0;

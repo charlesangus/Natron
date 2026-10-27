@@ -65,7 +65,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 ## Phase 240.2: Fixes
 
-- [ ] M240.P2.T1 — Shared flush-aware comparison
+- [x] M240.P2.T1 — Shared flush-aware comparison
   - files: `Tests/Native/NativeGpuParity.h`, `Tests/Gpu/Tolerance.h`, `Tests/Native/MapRemapGpu_Test.cpp`, the tests from P1.T2
   - approach: Move `flushedBitsOf()` from `MapRemapGpu_Test.cpp` into the shared parity helpers as an option of the image comparison (|x| < FLT_MIN counts as signed zero on both sides; everything else exact or under the existing tolerance). Make the tests listed in P1.T2 use it, and add the matching treatment to `tol::` for the double-reference tests.
   - verify: the touched suites pass on lavapipe in the build, and on RADV with `NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`.

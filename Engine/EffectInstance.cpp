@@ -4322,7 +4322,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
 
     if (useIdentityCache) {
         double timeF = 0.;
-        bool foundInCache = _imp->actionsCache->getIdentityResult(hash, time, view, inputNb, inputView, &timeF);
+        bool foundInCache = _imp->actionsCache->getIdentityResult(hash, time, view, scale.toMipmapLevel(), inputNb, inputView, &timeF);
         if (foundInCache) {
             *inputTime = timeF;
             if (*inputNb == kIdentityCacheNotIdentity) {
@@ -4377,7 +4377,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
     }
 
     if (useIdentityCache) {
-        _imp->actionsCache->setIdentityResult(hash, time, view, ret ? *inputNb : kIdentityCacheNotIdentity, *inputView, *inputTime);
+        _imp->actionsCache->setIdentityResult(hash, time, view, scale.toMipmapLevel(), ret ? *inputNb : kIdentityCacheNotIdentity, *inputView, *inputTime);
     }
 
     return ret;

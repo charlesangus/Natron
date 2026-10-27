@@ -1977,9 +1977,15 @@ void
 InspectorNode::setInputA(int inputNb)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    bool changed;
     {
         QMutexLocker l(&_activeInputsMutex);
+        changed = _activeInputs[0] != inputNb;
         _activeInputs[0] = inputNb;
+    }
+    // The viewer's content hash folds the active inputs.
+    if (changed) {
+        computeHash();
     }
     Q_EMIT refreshOptionalState();
 }
@@ -1988,9 +1994,15 @@ void
 InspectorNode::setInputB(int inputNb)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    bool changed;
     {
         QMutexLocker l(&_activeInputsMutex);
+        changed = _activeInputs[1] != inputNb;
         _activeInputs[1] = inputNb;
+    }
+    // The viewer's content hash folds the active inputs.
+    if (changed) {
+        computeHash();
     }
     Q_EMIT refreshOptionalState();
 }

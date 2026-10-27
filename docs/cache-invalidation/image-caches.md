@@ -85,22 +85,17 @@ A node is frame-varying if any of these holds, or any input's does (6371-6379):
    `curve->isAnimated()` (Knob.cpp:1952-1961): keyframes only. Nodes that set it themselves:
    NativeRead.cpp:1072, USDRender.cpp:240, DeepRead.cpp:184, Posterize.cpp:457, and OFX through
    `kOfxImageEffectFrameVarying` (OfxImageEffectInstance.cpp:1339).
-2. `getHasAnimation()` (Knob.cpp:8785). It is set to true only when a keyframe is added
-   (KnobImpl.h:1664, 3082, 3109). `updateHasAnimation` (Knob.cpp:8801) recomputes it from
-   `KnobHelper::hasAnimation` (Knob.cpp:2367-2379), which does count expressions. It runs only on
-   key deletion, animation removal and clone (Knob.cpp:1166, 1240, 1780; KnobImpl.h:2847, 2869,
-   2901, 2970, 2998). Setting an expression (`setExpressionInternal` Knob.cpp:3340) calls neither.
+2. `KnobHolder::getHasAnimation()`. It walks the holder's knobs on every call: a dimension
+   varies with time if it has an expression, keyframes, or a master (followed recursively) that
+   does. There is no stored flag, so the answer does not depend on edit history.
 3. `getNode()->getCurveContext()` (roto).
 
 The answer is computed once per frame per node (ParallelRenderArgs.cpp:2012-2013) and walks the
 render-side inputs (`getInput`).
 
-**Does an expression on `frame` with no keyframes make a node frame-varying? No**, by the code
-above. Test 1 counts keyframes only. Test 2 is not updated when an expression is set. The content
-hash is time-independent (keys.md). The `ImageKey` therefore drops time, and `Node::shouldCacheOutput`
-caches such a node unconditionally ("This image never changes", Node.cpp:8153-8155). There is one
-exception that depends on history: after any key deletion, animation removal or clone on that
-node, `updateHasAnimation` sees the expression and flips test 2 to true. See hole I1.
+**Does an expression on `frame` with no keyframes make a node frame-varying? Yes**, through
+test 2. Any expression counts, whether or not it reads the time: an expression's dependencies are
+not known well enough to rule time out. See hole I1 for what it was before.
 
 ## Invalidated by
 
@@ -159,12 +154,15 @@ node, `updateHasAnimation` sees the expression and flips test 2 to true. See hol
 
 ## Suspected holes
 
-- **I1 Expression on frame/time without keyframes is not frame-varying.** Evidence above
-  (EffectInstance.cpp:6370, 6684; Knob.cpp:1952-1961, 8785; KnobImpl.h:1664, 3082, 3109;
-  Node.cpp:8153-8155; ImageKey.cpp:72-73). A Grade whose `white` is `frame / 10`, over a static
-  Constant, would be stored once and served at every frame. The result also depends on history
-  (`updateHasAnimation`). The plan's test in M242.P4 should confirm it. **Not fixed by M202.**
-  Stress case: `CacheStressTest.DISABLED_FrameExpression_P4T2` (a `frame*0.1` expression, then two seeks); `eOpFrameExpression` is out of `defaultOps()` until it passes.
+- **I1 Expression on frame/time without keyframes is not frame-varying.** **Fixed in M242.**
+  Test 2 used a stored flag. Setting an expression did update it (`expressionChanged` called
+  `updateHasAnimation`), but a slave whose master gained keys or an expression never did, and
+  link-group and key copies set it from the copied knob only. Such a node dropped time from its
+  `ImageKey` and was served the same image at every frame. The flag is now computed live from the
+  knobs (see test 2 above). Tests: `CacheStressTest.FrameExpression` (a `frame*0.1` expression,
+  then two seeks; `eOpFrameExpression` is now in `defaultOps()`) and
+  `Tests/ExpressionFrameVarying_Test.cpp` (expression, slave of an expression, static again once
+  the expression and keys are gone).
 - **I2 Stores from a render whose graph moved.** The key's hash is captured before render while knobs
   and inputs are read live (keys.md K1, topology.md T1). The entry is then served to the old
   state's hash. **Fixed by M202.**

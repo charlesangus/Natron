@@ -143,9 +143,11 @@ images are keyed per time is a separate question: see I1 in [image-caches.md](im
   wrongly; the new expression string then moves the hash, so no cache serves stale content, but
   the value is wrong. `NodeName.cpp` does not call `recheckInvalidExpressions` (callers are
   Node.cpp:4581, Knob.cpp:860, ProjectPrivate.cpp:263, NodeMain.cpp:716, NodeInputs.cpp:852,
-  AppInstance.cpp:2777). Also, the function returns early for an empty expression after
-  `beginChanges()` without the matching `endChanges` (Knob.cpp:3439-3443). Correctness notes, not
-  cache holes.
+  AppInstance.cpp:2777). Correctness notes, not cache holes. The early return for an empty
+  expression that left `beginChanges()` unmatched, blocking every later evaluation of the node, is
+  **fixed in M242** (the check now comes first); test:
+  `ExpressionFrameVaryingTest.RenameWithoutAnExpressionLeavesNoBracketOpen`. The plain string
+  replace stays on the follow-up list.
 - **E3 Clamped and unclamped results share entries.** The stored result is clamped or not by the
   caller's `clamp` (KnobImpl.h:538-539); the pod path passes `false` (KnobImpl.h:957). A value
   outside min and max read both ways returns whichever was stored first. Minor. **Not fixed by

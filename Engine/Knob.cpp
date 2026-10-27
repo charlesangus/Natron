@@ -1161,12 +1161,6 @@ KnobHelper::deleteValuesAtTime(CurveChangeReason curveChangeReason,
         keyframeRemoved_virtual(dimension, *it);
     }
 
-
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
-
     ValueChangedReasonEnum reason = eValueChangedReasonNatronInternalEdited;
 
     if (!useGuiCurve) {
@@ -1234,12 +1228,6 @@ KnobHelper::deleteValueAtTime(CurveChangeReason curveChangeReason,
 
     //virtual portion
     keyframeRemoved_virtual(dimension, time);
-
-
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
 
     ValueChangedReasonEnum reason = eValueChangedReasonNatronInternalEdited;
 
@@ -1776,11 +1764,6 @@ KnobHelper::removeAnimationWithReason(ViewSpec view,
 
     animationRemoved_virtual(dimension);
 
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
-
     if (!useGuiCurve) {
         //virtual portion
         evaluateValueChange(dimension, getCurrentTime(), view, reason);
@@ -1837,11 +1820,9 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
         return;
     }
 
-    bool hasChanged = false;
     QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
     for (int i = 0; i < getDimension(); ++i) {
         if (_imp->mustCloneGuiCurves[i]) {
-            hasChanged = true;
             CurvePtr curve = _imp->curves[i];
             assert(curve);
             KnobGuiIPtr hasGui = getKnobGuiPointer();
@@ -1859,9 +1840,6 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
             _imp->guiCurveChangedOutsideLink[i] = false;
             modifiedDimensions.insert(std::make_pair(i, reason));
         }
-    }
-    if (hasChanged && _imp->holder) {
-        _imp->holder->updateHasAnimation();
     }
 }
 
@@ -3436,11 +3414,11 @@ KnobHelper::replaceNodeNameInExpression(int dimension,
         return;
     }
 
-    isEffect->beginChanges();
     std::string hasExpr = getExpression(dimension);
     if ( hasExpr.empty() ) {
         return;
     }
+    isEffect->beginChanges();
     bool hasRetVar = isExpressionUsingRetVariable(dimension);
     try {
         //Change in expressions the script-name
@@ -3792,10 +3770,6 @@ void
 KnobHelper::expressionChanged(int dimension)
 {
     invalidateContentHash();
-    if (_imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
-
     if (_signalSlotHandler) {
         _signalSlotHandler->s_expressionChanged(dimension);
     }
@@ -5957,9 +5931,6 @@ KnobHelper::writeLinkCurveFrom(KnobI* state,
         ignore_result(setKeyFrame(key, ViewSpec::all(), dimension, reason));
         changed = true;
     }
-    if (changed && _imp->holder) {
-        _imp->holder->updateHasAnimation();
-    }
 
     return changed;
 } // KnobHelper::writeLinkCurveFrom
@@ -7292,8 +7263,6 @@ struct KnobHolder::KnobHolderPrivate
     bool abortAtEndOfChanges = false;
     QMutex knobsFrozenMutex;
     bool knobsFrozen;
-    mutable QMutex hasAnimationMutex;
-    bool hasAnimation;
     DockablePanelI* settingsPanel;
     std::atomic<U64> knobsContentGeneration { 0 };
 
@@ -7317,8 +7286,6 @@ struct KnobHolder::KnobHolderPrivate
         , nbChangesRequiringMetadataRefresh(0)
         , knobsFrozenMutex()
         , knobsFrozen(false)
-        , hasAnimationMutex()
-        , hasAnimation(false)
         , settingsPanel(0)
 
     {
@@ -7344,8 +7311,6 @@ struct KnobHolder::KnobHolderPrivate
         , nbChangesRequiringMetadataRefresh(0)
         , knobsFrozenMutex()
         , knobsFrozen(false)
-        , hasAnimationMutex()
-        , hasAnimation(other.hasAnimation)
         , settingsPanel(other.settingsPanel)
     {
 
@@ -8781,39 +8746,43 @@ KnobHolder::getPageIndex(const KnobPage* page) const
     return -1;
 }
 
+namespace {
+bool
+knobDimensionVariesWithTime(const KnobIPtr& knob,
+                            int dimension,
+                            int depth)
+{
+    // The depth bound only guards against a master cycle.
+    if (!knob || (depth > 64)) {
+        return false;
+    }
+    if (!knob->getExpression(dimension).empty()) {
+        return true;
+    }
+    // Follows the master's curve when the dimension is slaved.
+    if (knob->canAnimate() && (knob->getKeyFramesCount(ViewIdx(0), dimension) > 0)) {
+        return true;
+    }
+    const std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+
+    return master.second && knobDimensionVariesWithTime(master.second, master.first, depth + 1);
+}
+} // namespace
+
 bool
 KnobHolder::getHasAnimation() const
 {
-    QMutexLocker k(&_imp->hasAnimationMutex);
+    const KnobsVec knobs = getKnobs_mt_safe();
 
-    return _imp->hasAnimation;
-}
-
-void
-KnobHolder::setHasAnimation(bool hasAnimation)
-{
-    QMutexLocker k(&_imp->hasAnimationMutex);
-
-    _imp->hasAnimation = hasAnimation;
-}
-
-void
-KnobHolder::updateHasAnimation()
-{
-    bool hasAnimation = false;
-    {
-        QMutexLocker l(&_imp->knobsMutex);
-
-        for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            if ( (*it)->hasAnimation() ) {
-                hasAnimation = true;
-                break;
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int d = 0; d < (*it)->getDimension(); ++d) {
+            if (knobDimensionVariesWithTime(*it, d, 0)) {
+                return true;
             }
         }
     }
-    QMutexLocker k(&_imp->hasAnimationMutex);
 
-    _imp->hasAnimation = hasAnimation;
+    return false;
 }
 
 /***************************STRING ANIMATION******************************************/

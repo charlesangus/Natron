@@ -129,8 +129,14 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   (Node.cpp:7848) covers only a dequeue that has already started. A render started in the window
   stores new-topology pixels under the old hash. **Fixed by M202** for its gated stores: the
   dequeue's `computeHash()` moves the mark count and the recomputed hash, so
-  `CleanHashSnapshot::allowsStoreUnder` refuses or retracts. On this branch, nothing guards it.
-  Stress case: `CacheStressConcurrentTest.DISABLED_DequeueUnderARestartedRender_P4T1`.
+  `CleanHashSnapshot::allowsStoreUnder` refuses or retracts. **Fixed in M242** for queued edits:
+  `dequeueActions` returns without applying while the node is rendering, and the render's
+  `unsetNodeIsRendering` emits the dequeue again when the count reaches 0. A render waits for a
+  dequeue in progress, and the count goes up under the dequeuing lock, so a dequeue either sees the
+  render or finishes before it starts. Stress case:
+  `CacheStressConcurrentTest.DequeueUnderARestartedRender`; unit test:
+  `Tests/QueuedInputEdit_Test.cpp`. An edit made while the node never stops rendering waits until
+  it does. The direct path (T7) is not covered.
 - **T2. Viewer A/B selection doesn't mark the viewer.** The viewer's content hash folds its
   active inputs (Node.cpp:976-980), but `InspectorNode::setInputA`/`setInputB`
   (NodeInputs.cpp:1977-1995) leave the hash as it was. The viewer's `FrameKey` also names the input
@@ -140,10 +146,9 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   2. Edit Y, so the viewer rehashes to H(X,Y'). Switch B back to X: no mark.
   3. Edit and revert X, so the viewer rehashes to H(X,X).
   4. Switch B to Y: no mark. The lookup (Y, H(X,X)) serves Y's v1, which is stale.
-  Stress case: `CacheStressTest.DISABLED_ViewerABSwitch_P4T3`, the four-step sequence above; `eOpViewerB` is out of `defaultOps()`.
-
-  Not fixed by M202: the viewer isn't dirty, so its snapshot agrees. Also cross-referenced in
-  viewer-and-timeline.md (P2.T1). A Phase 242.3 stress candidate.
+  **Fixed in M242:** `setInputA`/`setInputB` recompute the hash when the selection changes.
+  Stress case: `CacheStressTest.ViewerABSwitch`, the four-step sequence above; `eOpViewerB` runs
+  only there.
 - **T3. `setActiveInputAndRefresh` marks before it changes.** `InspectorNode::setActiveInputAndRefresh`
   (NodeInputs.cpp:1837) calls `computeHash()` (:1847) before `onInputChanged` updates
   `_activeInputs` (:1850 → :1636 → `refreshActiveInputs` :1865). A render thread that reads the
@@ -167,8 +172,11 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   `NodeGroup::dequeueConnexions` (NodeGroup.cpp:1397) swaps the group's GroupInput/Output lists
   without setting `hasChanged` in `dequeueActions`. Whether a GroupInput or GroupOutput added
   during a render marks the group some other way (node creation) is not verified here.
-- **T6. Background renders never dequeue.** `unsetNodeIsRendering` doesn't emit in background mode
-  (Node.cpp:7914), so an input edit queued during a background render (from Python) is never
-  applied. This is a correctness question, not cache staleness. The hash stays consistent with the
-  real inputs.
-  The stress tests call `Node::dequeueActions` themselves for this reason.
+- **T6. Background renders never dequeue.** `unsetNodeIsRendering` didn't emit in background mode,
+  so an input edit queued during a background render (from Python) was never applied. **Fixed in
+  M242:** the last render to end emits in every mode. The stress tests still call
+  `Node::dequeueActions` themselves, so they don't wait on the event loop.
+- **T7. A direct edit races a render that starts after the check.** An input edit applies at once
+  when `isNodeRendering()` is false, and nothing stops a render from starting between that check
+  and the write of the inputs. The render then reads the new inputs under the old hash. Narrow
+  window; on the follow-up list.

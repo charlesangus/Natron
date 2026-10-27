@@ -85,8 +85,9 @@ opBit(OpKind kind)
     return OpMask(1) << unsigned(kind);
 }
 
-// Ops whose holes are known open on this branch stay out of the default mask; each has a
-// DISABLED_ case that names its fix task.
+// The whole-value expression op stays out of the default mask while its hole is open (see
+// DISABLED_WholeValueExpression_M72). The viewer B and mipmap ops are only exercised by their
+// scripted cases, ViewerABSwitch and IdentityAcrossScales.
 OpMask defaultOps();
 OpMask allOps();
 

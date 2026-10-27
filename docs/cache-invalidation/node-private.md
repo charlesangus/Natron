@@ -124,5 +124,8 @@ members (RawColorCalibration.h:509-511; knob UI state used in `knobChanged`, Raw
   and re-read a changed file. The node hash keeps the stamp from first use until Reload
   (FileStampRegistry.h:40-47). New tiles of a changed file are stored beside old ones under one
   hash and mix until Reload. Their keys also omit the inode, which the stamp includes.
-  **Not fixed by M202.**
+  **Not fixed by M202. Deferred from M242:** keying the reader caches on the stamp alone would leave
+  an old header beside pixels read live from the changed file, which is worse. A fix needs a
+  decision between the reader pinning the file to its stamp (refusing or re-stamping on a change)
+  and the node noticing the change and moving its hash. On the follow-up list.
 - **G2** (shader gate ignores the device) is recorded in [gpu.md](gpu.md).

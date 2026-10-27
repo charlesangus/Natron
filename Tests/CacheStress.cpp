@@ -1162,7 +1162,7 @@ namespace {
 OpMask
 defaultOps()
 {
-    return allOps() & ~(opBit(eOpFrameExpression) | opBit(eOpWholeValueExpression) | opBit(eOpViewerB) | opBit(eOpMipmap));
+    return allOps() & ~(opBit(eOpWholeValueExpression) | opBit(eOpViewerB) | opBit(eOpMipmap));
 }
 
 OpMask

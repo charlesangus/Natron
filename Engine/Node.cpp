@@ -7842,20 +7842,18 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         }
     }
 
-    ///Wait for the main-thread to be done dequeuing the connect actions queue
-    if ( QThread::currentThread() != qApp->thread() ) {
-        QMutexLocker k(&_imp->nodeIsDequeuingMutex);
-        while ( _imp->nodeIsDequeuing && !aborted() ) {
-            _imp->nodeIsDequeuingCond.wait(k.mutex());
-        }
-    }
-
-    ///Increment the node is rendering counter
+    // The count goes up under the dequeuing lock, so dequeueActions either sees this render and
+    // defers, or finishes applying the queue before the render starts.
     {
+        QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+        if (QThread::currentThread() != qApp->thread()) {
+            while (_imp->nodeIsDequeuing && !aborted()) {
+                _imp->nodeIsDequeuingCond.wait(k.mutex());
+            }
+        }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
         ++_imp->nodeIsRendering;
     }
-
 
     ///mark this
     markedNodes.push_back( shared_from_this() );
@@ -7910,8 +7908,8 @@ Node::unsetNodeIsRendering()
         }
         nodeIsRendering = _imp->nodeIsRendering;
 
-
-        mustDequeue = nodeIsRendering == 0 && !appPTR->isBackground();
+        // Background renders dequeue too, or an edit queued during one would never apply.
+        mustDequeue = nodeIsRendering == 0;
     }
 
     if (mustDequeue) {
@@ -7932,10 +7930,19 @@ Node::dequeueActions()
 {
     assert( QThread::currentThread() == qApp->thread() );
 
-    ///Flag that the node is dequeuing.
+    // A render that started after mustDequeueActions was emitted still holds the node: its hash
+    // names the inputs it started with, so the queue waits. Its unsetNodeIsRendering emits again.
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
-        assert(!_imp->nodeIsDequeuing);
+        if (_imp->nodeIsDequeuing) {
+            return;
+        }
+        {
+            QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
+            if (_imp->nodeIsRendering > 0) {
+                return;
+            }
+        }
         _imp->nodeIsDequeuing = true;
     }
     bool hasChanged = false;

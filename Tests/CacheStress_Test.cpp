@@ -523,9 +523,8 @@ TEST_F(CacheStressTest, ViewerABProbe)
     EXPECT_EQ(0, expectClean(getApp(), buildViewer, kSeeds, defaults()));
 }
 
-// An expression on frame, on a knob with no keyframes, leaves the node not frame-varying, so a
-// render at another time is served the first time's image.
-TEST_F(CacheStressTest, DISABLED_FrameExpression_P4T2)
+// An expression on frame, on a knob with no keyframes, keys the node's images on time.
+TEST_F(CacheStressTest, FrameExpression)
 {
     Options options = defaults();
     options.ops |= opBit(eOpFrameExpression);
@@ -538,6 +537,7 @@ TEST_F(CacheStressTest, DISABLED_FrameExpression_P4T2)
 
 // A whole-value expression (getValue() with no dimension) records a dimension -1 dependency that
 // adds nothing to the reader's hash, so editing the source leaves the reader's image in place.
+// Fixed by M72 - Expression Dependencies (E1); enable it there.
 TEST_F(CacheStressTest, DISABLED_WholeValueExpression_M72)
 {
     // Knob targets of buildChain: white 0, multiply 1, gamma 2, size 3, translate 4, rotate 5.
@@ -548,9 +548,9 @@ TEST_F(CacheStressTest, DISABLED_WholeValueExpression_M72)
     EXPECT_EQ(0, expectClean(getApp(), buildChain, kSeeds, options));
 }
 
-// setInputA/setInputB leave the viewer hash alone, so after an edit and a revert upstream the
-// (shown input, viewer hash) key of an earlier step answers with that step's stale image.
-TEST_F(CacheStressTest, DISABLED_ViewerABSwitch_P4T3)
+// An A/B switch moves the viewer hash, so after an edit and a revert upstream the key of an
+// earlier step cannot answer with that step's image.
+TEST_F(CacheStressTest, ViewerABSwitch)
 {
     Options options = defaults();
     options.ops |= opBit(eOpViewerB);
@@ -563,9 +563,9 @@ TEST_F(CacheStressTest, DISABLED_ViewerABSwitch_P4T3)
     EXPECT_EQ(0, expectClean(getApp(), buildViewer, kSeeds, options));
 }
 
-// The identity answer is cached without the mipmap level: a one-pixel erode is an identity at
-// mipmap 1 and not at mipmap 0, and whichever level asks first answers for both.
-TEST_F(CacheStressTest, DISABLED_IdentityAcrossScales_P4T3)
+// A one-pixel erode is an identity at mipmap 1 and not at mipmap 0, so the identity answer of one
+// level must not answer for the other.
+TEST_F(CacheStressTest, IdentityAcrossScales)
 {
     Options options;
     options.ops = opBit(eOpMipmap);

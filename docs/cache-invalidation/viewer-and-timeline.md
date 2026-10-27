@@ -169,9 +169,11 @@ transform, so skipping them in that mode is correct.
   (ViewerGL.cpp:1581). `getLastRenderedImage` returns the first level that holds an image, starting
   at level 0 (ViewerGL.cpp:4583-4606). `getLastRenderedImageByMipmapLevel` falls back to other
   levels (:4640-4656). After an edit rendered at level 1, a level-0 image of the pre-edit graph
-  can be returned to their callers (picker, histogram). The texture-only path resets every level
-  (:1598-1610); the CPU render path does not.
+  can be returned to their callers (picker, histogram). **Fixed in M242:** a new image or device
+  root clears the other levels, as the texture-only path already did. No automated test: the
+  stored levels are only reachable through the GUI.
 - **V5. A/B switch and the line.** Changing the A/B selection does not mark the viewer hash
   (topology.md T2). `_inputName` keeps the texture lookup right, but the line filters by hash
-  only, so it keeps listing the old input's frames.
-  Stress case: `CacheStressTest.DISABLED_ViewerABSwitch_P4T3`.
+  only, so it keeps listing the old input's frames. **Fixed in M242** for the hash: the switch
+  now recomputes it (topology.md T2). That the line redraws on the switch is not checked in the
+  GUI. Stress case: `CacheStressTest.ViewerABSwitch`.

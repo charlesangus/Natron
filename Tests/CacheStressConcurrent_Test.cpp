@@ -378,8 +378,8 @@ raceRound(const AppInstancePtr& app,
         edit.apply();
         first.finish();
         if (kind == eRaceRestarted) {
-            // The queue is still pending: a second render starts on the old inputs and the
-            // dequeue lands under it.
+            // The queue is still pending: a second render starts on the old inputs, and a
+            // dequeue attempted under it must wait for it to end.
             clearEverything(app);
             GatedRender second(gate, g, mode);
             if (!second.waitHeld()) {
@@ -387,6 +387,7 @@ raceRound(const AppInstancePtr& app,
             }
             dequeueAll(app);
             second.finish();
+            dequeueAll(app);
             if (!second.ok()) {
                 workerMismatch = "the restarted render failed: " + second.error();
             } else {
@@ -499,14 +500,15 @@ TEST_F(CacheStressConcurrentTest, InputEditsDuringARender)
 
 // A background app applies knob edits at once, so the held render reads the new values while its
 // hash was taken from the old ones, and stores the new state's pixels under the old key.
+// Fixed by the render-time hash snapshot of M202 (PR #131); enable it there.
 TEST_F(CacheStressConcurrentTest, DISABLED_KnobEditsDuringRender_M202)
 {
     EXPECT_EQ(0, runRaces(getApp(), eRaceKnobs));
 }
 
-// dequeueActions does not wait for renders that started after the edit was queued, so the inputs
-// change under a running render.
-TEST_F(CacheStressConcurrentTest, DISABLED_DequeueUnderARestartedRender_P4T1)
+// A render that starts after the edit was queued but before the queue is applied keeps the
+// inputs it started with; the queue applies once it ends.
+TEST_F(CacheStressConcurrentTest, DequeueUnderARestartedRender)
 {
     EXPECT_EQ(0, runRaces(getApp(), eRaceRestarted));
 }

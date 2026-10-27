@@ -56,6 +56,7 @@ set(Tests_SOURCES
     DeepReadWrite_Test.cpp
     DeepRenderPipeline_Test.cpp
     DefaultChannelSet_Test.cpp
+    ExpressionFrameVarying_Test.cpp
     FileSystemModel_Test.cpp
     FrameGraphBuild_Test.cpp
     FrameRenderContext_Test.cpp
@@ -114,6 +115,7 @@ set(Tests_SOURCES
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
     ProjectColorManagement_Test.cpp
+    QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp

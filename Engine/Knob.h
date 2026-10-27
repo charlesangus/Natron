@@ -3146,19 +3146,11 @@ public:
     bool isDequeueingValuesSet() const;
 
     /**
-     * @brief Returns true if at least a parameter is animated
+     * @brief Returns true if a parameter can take another value at another time: it has
+     * keyframes or an expression, or it is slaved to a parameter that does. Computed from the
+     * live parameters on every call, so the answer never depends on the edit history.
      **/
     bool getHasAnimation() const;
-
-    /**
-     * @brief Set the hasAnimation flag
-     **/
-    void setHasAnimation(bool hasAnimation);
-
-    /**
-     * @brief Auto-compute the animation flag by checking the animation state of all curves of all parameters held
-     **/
-    void updateHasAnimation();
 
     //////////////////////////////////////////////////////////////////////////////////////////
     /**

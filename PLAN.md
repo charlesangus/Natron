@@ -319,6 +319,7 @@ future core work has solid ground to build on.
 | M223 | Read And Write Knob Cleanup | todo | M167 |  | E3 | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
 | M224 | Fluid Roto And RotoPaint Interaction | todo | M146 |  | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
+| M260 | Cache Invalidation Follow-ups | todo | M242 |  | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 
 # Epics
 

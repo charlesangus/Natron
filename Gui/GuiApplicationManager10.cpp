@@ -909,6 +909,15 @@ GuiApplicationManager::populateShortcuts()
         _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DMarquee, kShortcutDescMouseViewer3DMarquee, eMouseGestureDrag, preset);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DFrameSelection, kShortcutDescActionViewer3DFrameSelection, Qt::NoModifier, Qt::Key_F);
         registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DFrameAll, kShortcutDescActionViewer3DFrameAll, Qt::NoModifier, Qt::Key_A);
+        // Nuke's view keys.
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DPerspective, kShortcutDescActionViewer3DPerspective, Qt::NoModifier, Qt::Key_V);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DFront, kShortcutDescActionViewer3DFront, Qt::NoModifier, Qt::Key_Z);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DBack, kShortcutDescActionViewer3DBack, Qt::ShiftModifier, Qt::Key_Z);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DRight, kShortcutDescActionViewer3DRight, Qt::NoModifier, Qt::Key_X);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DLeft, kShortcutDescActionViewer3DLeft, Qt::ShiftModifier, Qt::Key_X);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DTop, kShortcutDescActionViewer3DTop, Qt::NoModifier, Qt::Key_C);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DBottom, kShortcutDescActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DLockView, kShortcutDescActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L);
     }
 
     ///Player

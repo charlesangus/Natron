@@ -380,6 +380,30 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DFrameAll "frameAll"
 #define kShortcutDescActionViewer3DFrameAll "Frame All"
 
+#define kShortcutIDActionViewer3DPerspective "perspectiveView"
+#define kShortcutDescActionViewer3DPerspective "Perspective View"
+
+#define kShortcutIDActionViewer3DFront "frontView"
+#define kShortcutDescActionViewer3DFront "Front View"
+
+#define kShortcutIDActionViewer3DBack "backView"
+#define kShortcutDescActionViewer3DBack "Back View"
+
+#define kShortcutIDActionViewer3DRight "rightView"
+#define kShortcutDescActionViewer3DRight "Right View"
+
+#define kShortcutIDActionViewer3DLeft "leftView"
+#define kShortcutDescActionViewer3DLeft "Left View"
+
+#define kShortcutIDActionViewer3DTop "topView"
+#define kShortcutDescActionViewer3DTop "Top View"
+
+#define kShortcutIDActionViewer3DBottom "bottomView"
+#define kShortcutDescActionViewer3DBottom "Bottom View"
+
+#define kShortcutIDActionViewer3DLockView "lockView"
+#define kShortcutDescActionViewer3DLockView "Lock View to Camera"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

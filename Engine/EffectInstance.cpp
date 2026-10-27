@@ -453,6 +453,14 @@ EffectInstance::getParallelRenderArgsTLS() const
 }
 
 bool
+EffectInstance::isRenderingTLS() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && !args->isInstanceChangedAction;
+}
+
+bool
 EffectInstance::isRenderingOwnSequence() const
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
@@ -532,10 +540,12 @@ EffectInstance::getInputActionContext(int inputNb,
         return false;
     }
     std::vector<RenderContextPtr> inputContexts;
-    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || (inputContexts.size() != 1)) {
+    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || inputContexts.empty()) {
         return false;
     }
-    *context = inputContexts.front();
+    // Of several, the last pulled: the input is read under variables it renders under, as it is
+    // where a scheduler splitting the pulls into steps asks the last step's.
+    *context = inputContexts.back();
 
     return true;
 }
@@ -5928,6 +5938,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
                                                                 RenderStatsPtr(),
                                                                 false); // setUpstreamArgs
 #endif
+            const std::map<NodePtr, ParallelRenderArgsPtr>& installed = setter->getInstalledArgs();
+            const std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator own = installed.find(node);
+            if ((own != installed.end()) && own->second) {
+                own->second->isInstanceChangedAction = true;
+            }
         }
         {
             RECURSIVE_ACTION();

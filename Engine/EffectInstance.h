@@ -1054,6 +1054,13 @@ public:
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
     /**
+     * @brief Whether the calling thread renders this node: its frame args are installed and are not
+     * the ones the instance-changed action installs around knobChanged, which renders nothing.
+     * Outside a render, expressions read the enclosing loops' preview iterations.
+     **/
+    bool isRenderingTLS() const;
+
+    /**
      * @brief Whether the frame the calling thread renders belongs to a sequence render started by
      * this node's own RenderEngine. For a writer that is a render to disk (the Render button,
      * Render Selected, app.render, the -w command line); a frame a viewer or another node pulls
@@ -1971,9 +1978,9 @@ public:
     }
 
     /**
-     * @brief Whether getInputContexts() names a single context for input inputNb at time/view
-     * under the context this effect's actions answer for on this thread, and if so that context:
-     * the one the input's region of definition, metadata and layers are read under, through an
+     * @brief Whether getInputContexts() names contexts for input inputNb at time/view under the
+     * context this effect's actions answer for on this thread, and if so the last of them: the one
+     * the input's region of definition, metadata and layers are read under, through an
      * ActionContextScope, as the input renders under it.
      **/
     bool getInputActionContext(int inputNb,

@@ -294,6 +294,25 @@ SHA-256 of every file in `reference/`:
 | `canon-eos-5d-mark-iii-temperature-camera-reference.tif` | 407250 | `0894ec8397e692b84caa6803e91af62a97d54c539b6932aff531d7e5802fcece` |
 | `canon-eos-5d-mark-iii-temperature-user.tif` | 406253 | `2ed9a12f8cb7e4cba2d9196b8f541e6d7445babae68b02e759f2c6b56ff4f730` |
 | `canon-eos-5d-mark-iii-vng4.tif` | 401640 | `5c127ca2bb6542cde2d06e89d6229ed1c07f4dfcee4fa694175ea8688813ab2f` |
+| `contrastntexture-coarse-1.tif` | 223760 | `be0419ab9ebf82a359b5bede0ee8aced966d019e01c6a7992f9d66da60cfbbd8` |
+| `contrastntexture-coarse-minus-0.5.tif` | 220846 | `10c688f5a1b44fa6f0ba28a827af752d89ec3d6329cff1e870a1c9ccf97cbb64` |
+| `contrastntexture-combined.tif` | 222532 | `6933645b841f4646d54f1f53878f2211712fbb5bdfd62132357972f0e5eb22ab` |
+| `contrastntexture-default.tif` | 221009 | `92636820e55063a6b80538456330c94fb7c7ff40618e98c6638db52999ad4270` |
+| `contrastntexture-detail-level-2.tif` | 225877 | `7050a3592d0a2512de8f1b35fb8e81dcc9cdbedc5a91d3c9a9130e4192aea788` |
+| `contrastntexture-detail-level-9.tif` | 221009 | `d1fb2301bef2e3b2b85e72fe7c624ec0c326bad9779d93a0e4c8b18070a6dfbf` |
+| `contrastntexture-fine-1.tif` | 222790 | `bb0785ad61e860a8a2d7f6929bcf72c1341dfc689f016c631932243fab05be36` |
+| `contrastntexture-fine-3.tif` | 225665 | `4bf7ff463ee8d1be8ca2ca689a02b3ecbec0654495c06adaaaf08b17206947ef` |
+| `contrastntexture-halo-3.tif` | 222240 | `025eb4af8d2cd99a6cecf3e42ec16a3b207fa89986426634d7ddb20cc824a221` |
+| `contrastntexture-halo-minus-3.tif` | 223414 | `de0298eac34b5778f1cea5f7f17f8fb82fe2288ae89d42dd689b58bb28d715b0` |
+| `contrastntexture-highlights-1.tif` | 223887 | `2f91e9debe244ded012d1c1a2f3fcf35ede87fc5e17f42a26da9bb00e9acb8de` |
+| `contrastntexture-highlights-minus-1.tif` | 219693 | `73db6eb1238f7d5a95f24ba43d342a3bbb8c010909ebd7548cea54cc690f40b3` |
+| `contrastntexture-medium-1.tif` | 223431 | `c52b4973ef961b3999c24b316f23be636622a034c29ab1c99f8b4d2e0ad3901a` |
+| `contrastntexture-medium-minus-0.5.tif` | 220806 | `93317cd930c704a9a581f3f0f7caaca5869f9ff2359a23d26814f04e25ad1187` |
+| `contrastntexture-noise-bias-0.05.tif` | 222332 | `424abc74e63d18bc5230c7261ca90d252e62e680502a49f8fb088bdd550e9bf0` |
+| `contrastntexture-noise-bias-0.tif` | 222802 | `8839c42e14be0c8f1fc5f7a9b6bcb34eb60c005ba0cb9cf0ef15f138fe65b5e8` |
+| `contrastntexture-plate.tif` | 221073 | `805cb3ac59e3d0ea7bbe0949d9045c1338c905d36d0c58a7c451099c506db57b` |
+| `contrastntexture-shadows-1.tif` | 217408 | `c3f2fd3c0d8745996d3e64d7a1c748694fa1ed8ca4bb8c4a399777b56facb1d5` |
+| `contrastntexture-shadows-minus-1.tif` | 228764 | `80e16c70f5eff7bcabc3e3e42209a8cc7a8a054568a7014fbf037dcdb0e5b7b9` |
 | `fujifilm-x-pro2-capture-sharpen-auto-t0.3.tif` | 392199 | `2ae370e21b535954e560350abeb14350beb7350d020c46224679b05d39b58e1e` |
 | `fujifilm-x-pro2-capture-sharpen-r0.7-t0.3.tif` | 391500 | `7f4bab88e9633c2848fc8d5222b58d5d529bb1a6ac6506d824ec73af6c4f72a6` |
 | `fujifilm-x-pro2-colorcal-adaptation-bradford.tif` | 391086 | `7f17981bdcea8ec6718b3ddb25c37dfa176d54ad5ff445641800bee2e9edc82a` |
@@ -444,13 +463,14 @@ master, so its jobs render with a second `darktable-cli` at `DARKTABLE_MASTER_RE
 when a selected job needs it; `tools/raw/make-reference.sh --only contrastntexture` renders just
 these. The module's radii and detail levels follow the size of the whole image it is given, so
 these jobs are whole images, not crops. First a plate: the CR2 with highlights opposed, RCD,
-exposure +0.7 EV and the standard matrix into linear Rec. 2020, exported at 384 px on the long
-side. Then each job reads the plate back with linear Rec. 2020 as both the input and the working
-profile, so the module's input is the plate, and exports in linear Rec. 2020.
+exposure +0.7 EV and the standard matrix into linear Rec. 2020, exported at 256 px on the long
+side (256x170). Then each job reads the plate back with linear Rec. 2020 as both the input and the working
+profile, so the module's input is the plate, and exports in linear Rec. 2020. Every file is RGB
+half float, ~220 KB, so darktable reads back the same half plate the test feeds the kernels.
 
 | Reference | Settings |
 | --- | --- |
-| `contrastntexture-plate.tif` | The plate, 384 px on the long side, RGB float, LFS |
+| `contrastntexture-plate.tif` | The plate, 256x170, RGB half float, LFS |
 | `contrastntexture-default.tif` | All controls at their defaults |
 | `contrastntexture-{coarse,medium}-{1,minus-0.5}.tif`, `contrastntexture-fine-{1,3}.tif` | One detail gain |
 | `contrastntexture-detail-level-{2,9}.tif` | Medium 1, base detail level 2 and 9 |
@@ -461,7 +481,7 @@ profile, so the module's input is the plate, and exports in linear Rec. 2020.
 
 `NativeContrastTextureTest.MatchesDarktableReferences` runs the node's kernels on the plate and
 compares each job as `RawReference_Test` compares a crop, mean and largest error relative to the
-reference's mean level, at 0.1 % and 1 % (`Engine/Nodes/Filter/docs/ContrastTexture.md`). It
+reference's mean level, each sample's beyond the half float reference's rounding, at 0.1 % and 1 % (`Engine/Nodes/Filter/docs/ContrastTexture.md`). It
 skips, with a notice, while the plate is missing or an LFS pointer.
 
 ## Memory bounds on the 100 MP mosaic

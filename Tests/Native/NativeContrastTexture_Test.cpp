@@ -67,7 +67,8 @@ namespace {
 const double kTime = 1.;
 
 // Against darktable's export, relative to the reference's mean level, as RawReference compares:
-// the mean error and the largest one. Engine/Nodes/Filter/docs/ContrastTexture.md quotes them.
+// the mean error and the largest one, each sample's beyond the half float reference's rounding.
+// Engine/Nodes/Filter/docs/ContrastTexture.md quotes them.
 const RawReference::Tolerance kDarktableClass = { 1e-3, 1e-2, 0 };
 
 // The node against ContrastTextureKernels run directly on its source: the same float code, on
@@ -474,7 +475,7 @@ TEST_F(NativeContrastTextureTest, MatchesDarktableReferences)
         int worstX = 0;
         int worstY = 0;
         for (std::size_t i = 0; i < got.size(); ++i) {
-            const double diff = std::fabs((double)got[i] - expected[i]);
+            const double diff = RawReference::halfFloatError(got[i], expected[i]);
             sum += diff;
             level += std::fabs(expected[i]);
             if (diff > worst) {

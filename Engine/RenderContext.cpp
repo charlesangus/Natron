@@ -165,14 +165,12 @@ RenderContextName::loops(const std::string& loopName,
     return RenderContextName("loops." + loopName, name);
 }
 
-RenderContextBinding
-RenderContextBinding::create(const KnobIPtr& knob,
-                             const std::string& name,
-                             const RenderContextPtr& captured)
+namespace {
+U64
+bindingIdentity(const KnobIPtr& knob,
+                const std::string& name,
+                const RenderContextPtr& captured)
 {
-    RenderContextBinding binding;
-    binding.knob = knob;
-    binding.captured = captured ? captured : RenderContext::empty();
     ContentHasher h;
     U64 contentHash = 0;
     std::string owner;
@@ -191,10 +189,90 @@ RenderContextBinding::create(const KnobIPtr& knob,
     h.appendString(owner);
     h.appendU64(contentHash);
     h.appendString(name);
-    h.appendU64(binding.captured->hash());
-    binding.identity = h.finalize();
+    h.appendU64(captured->hash());
+
+    return h.finalize();
+}
+} // anonymous namespace
+
+RenderContextBinding
+RenderContextBinding::create(const KnobIPtr& knob,
+                             const std::string& name,
+                             const RenderContextPtr& captured)
+{
+    RenderContextBinding binding;
+    binding.knob = knob;
+    binding.captured = captured ? captured : RenderContext::empty();
+    binding.identity = bindingIdentity(knob, name, binding.captured);
 
     return binding;
+}
+
+RenderContextBindingsSnapshot::RenderContextBindingsSnapshot(const RenderContextPtr& context)
+{
+    collect(context);
+    if (!_bound.empty()) {
+        _context = context;
+    }
+}
+
+void
+RenderContextBindingsSnapshot::collect(const RenderContextPtr& context)
+{
+    if (!context) {
+        return;
+    }
+    for (const RenderContext::Entry& entry : context->entries()) {
+        const RenderContextBinding* binding = std::get_if<RenderContextBinding>(&entry.second);
+        if (!binding) {
+            continue;
+        }
+        Bound bound;
+        bound.binding = binding;
+        bound.name = entry.first.name;
+        const KnobIPtr knob = binding->knob.lock();
+        const EffectInstance* effect = knob ? dynamic_cast<const EffectInstance*>(knob->getHolder()) : 0;
+        bound.node = effect ? effect->getNode() : NodePtr();
+        bound.marks = bound.node ? bound.node->getHashMarkCount() : 0;
+        _bound.push_back(bound);
+        // The bound knob's value reads the captured context's bindings live in turn.
+        collect(binding->captured);
+    }
+}
+
+bool
+RenderContextBindingsSnapshot::identitiesCurrent() const
+{
+    for (const Bound& bound : _bound) {
+        const KnobIPtr knob = bound.binding->knob.lock();
+        if (!knob || (bindingIdentity(knob, bound.name, bound.binding->captured) != bound.binding->identity)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+RenderContextBindingsSnapshot::marksUnmoved() const
+{
+    for (const Bound& bound : _bound) {
+        if (bound.node && (bound.node->getHashMarkCount() != bound.marks)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+RenderContextBindingsSnapshot::isCurrent() const
+{
+    if (_bound.empty()) {
+        return true;
+    }
+
+    return identitiesCurrent() && KnobContentWrite::noneInFlight() && marksUnmoved();
 }
 
 bool

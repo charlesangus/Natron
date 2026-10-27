@@ -53,6 +53,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
 
 #define EXPR_RECURSION_LEVEL() KnobHelper::ExprRecursionLevel_RAII __recursionLevelIncrementer__(this)
@@ -496,7 +497,8 @@ Knob<T>::getValueFromExpression(double time,
     // A knob reading context variables keeps a result per context, its key computed before the
     // mutex is taken.
     U64 contextKey = 0;
-    const bool byContext = getExpressionContextKey(&contextKey);
+    RenderContextPtr keyContext;
+    const bool byContext = getExpressionContextKey(&contextKey, &keyContext);
     const std::tuple<double, int, U64> contextResultKey(time, (int)view, contextKey);
     U64 generation;
     {
@@ -518,6 +520,9 @@ Knob<T>::getValueFromExpression(double time,
         }
         generation = _exprResGenerations[dimension];
     }
+    // A binding in the key is read live from its knob, so an edit of that knob during the
+    // evaluation must not leave its result under the key of the content before it.
+    const RenderContextBindingsSnapshot bindings(keyContext);
 
     bool exprWasValid = isExpressionValid(dimension, 0);
     {
@@ -539,8 +544,9 @@ Knob<T>::getValueFromExpression(double time,
         *ret =  clampToMinMax(*ret, dimension);
     }
 
+    const bool bindingsCurrent = bindings.isCurrent();
     QMutexLocker k(&_valueMutex);
-    if (_exprResGenerations[dimension] == generation) {
+    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
         if (byContext) {
             _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
         } else {
@@ -603,7 +609,8 @@ Knob<T>::getValueFromExpression_pod(double time,
     // Not held while the expression runs: the clear that moves the generation must be able to land
     // meanwhile, and another thread holding the Python lock may be waiting for this one.
     U64 contextKey = 0;
-    const bool byContext = getExpressionContextKey(&contextKey);
+    RenderContextPtr keyContext;
+    const bool byContext = getExpressionContextKey(&contextKey, &keyContext);
     const std::tuple<double, int, U64> contextResultKey(time, (int)view, contextKey);
     U64 generation;
     {
@@ -625,6 +632,9 @@ Knob<T>::getValueFromExpression_pod(double time,
         }
         generation = _exprResGenerations[dimension];
     }
+    // A binding in the key is read live from its knob, so an edit of that knob during the
+    // evaluation must not leave its result under the key of the content before it.
+    const RenderContextBindingsSnapshot bindings(keyContext);
 
     bool exprWasValid = isExpressionValid(dimension, 0);
     {
@@ -646,8 +656,9 @@ Knob<T>::getValueFromExpression_pod(double time,
         *ret =  clampToMinMax(*ret, dimension);
     }
 
+    const bool bindingsCurrent = bindings.isCurrent();
     QMutexLocker k(&_valueMutex);
-    if (_exprResGenerations[dimension] == generation) {
+    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
         if (byContext) {
             _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
         } else {

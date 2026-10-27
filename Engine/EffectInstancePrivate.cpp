@@ -609,6 +609,7 @@ EffectInstance::RenderArgs::RenderArgs()
     , lastFrame(0)
     , transformRedirections()
     , isDoingOpenGLRender(false)
+    , onTheFlyPlanes()
 {
 }
 
@@ -635,6 +636,7 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     , lastFrame(o.lastFrame)
     , transformRedirections(o.transformRedirections)
     , isDoingOpenGLRender(o.isDoingOpenGLRender)
+    , onTheFlyPlanes(o.onTheFlyPlanes)
 {
 }
 
@@ -664,6 +666,7 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     lastFrame = o.lastFrame;
     transformRedirections = o.transformRedirections;
     isDoingOpenGLRender = o.isDoingOpenGLRender;
+    onTheFlyPlanes = o.onTheFlyPlanes;
     //}
     return *this;
 }
@@ -915,9 +918,11 @@ EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<Imag
 }
 
 bool
-EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI & roi,
-                                                                            const ImagePtr & img)
+EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI& roi,
+                                                                   const ImagePtr& img,
+                                                                   bool* retracted)
 {
+    *retracted = false;
     if ( !img->usesBitMap() ) {
         return true;
     }
@@ -948,13 +953,16 @@ EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI &
         ab = _publicInterface->aborted();
     }
     ///Everything should be rendered now unless we are aborted
+    *retracted = ibr->retracted;
+
     return restToRender.empty() && !ibr->failed && !ab;
 }
 
 void
-EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
+EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr& img,
                                                            const std::list<RectI>& rects,
-                                                           bool renderFailed)
+                                                           bool renderFailed,
+                                                           bool retracted)
 {
     if ( !img->usesBitMap() ) {
         return;
@@ -973,6 +981,9 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr & img,
     QMutexLocker kk(&ibr->lock);
     if (renderFailed) {
         ibr->failed = true;
+    }
+    if (retracted) {
+        ibr->retracted = true;
     }
     for (std::list<RectI>::const_iterator it = rects.begin(); it!=rects.end();++it) {
         if (renderFailed) {
@@ -1017,7 +1028,8 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
                                                                    const RoIMap& roiMap,
                                                                    int firstFrame,
                                                                    int lastFrame,
-                                                                   bool isDoingOpenGLRender)
+                                                                   bool isDoingOpenGLRender,
+                                                                   const EffectInstance::OnTheFlyCachedPlanesPtr& onTheFlyPlanes)
     : tlsData(tlsData)
 {
     tlsData->currentRenderArgs.rod = rod;
@@ -1036,6 +1048,7 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.firstFrame = firstFrame;
     tlsData->currentRenderArgs.lastFrame = lastFrame;
     tlsData->currentRenderArgs.isDoingOpenGLRender = isDoingOpenGLRender;
+    tlsData->currentRenderArgs.onTheFlyPlanes = onTheFlyPlanes;
     tlsData->currentRenderArgs.outputLayerBeingRendered = ImageLayerDesc();
     tlsData->currentRenderArgs.unPremultDivisorImage.reset();
     tlsData->currentRenderArgs.unPremultDivisorLayer = ImageLayerDesc();
@@ -1057,6 +1070,7 @@ EffectInstance::Implementation::ScopedRenderArgs::~ScopedRenderArgs()
     tlsData->currentRenderArgs.outputLayers.clear();
     tlsData->currentRenderArgs.inputImages.clear();
     tlsData->currentRenderArgs.unPremultDivisorImage.reset();
+    tlsData->currentRenderArgs.onTheFlyPlanes.reset();
     tlsData->currentRenderArgs.validArgs = false;
 }
 

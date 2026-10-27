@@ -389,9 +389,14 @@ public:
         QMutex lock;
         int refCount;
         bool failed;
+        bool retracted; //< failed because the image left the cache, not because its render failed
 
         ImageBeingRendered()
-            : cond(), lock(), refCount(0), failed(false)
+            : cond()
+            , lock()
+            , refCount(0)
+            , failed(false)
+            , retracted(false)
         {
         }
     };
@@ -444,9 +449,10 @@ public:
      **/
     void markImagesAsBeingRendered(const std::vector<ImagePtr>& imgs, const RectI& roi, std::list<RectI>* restToRender, bool* renderedElsewhere);
 
-    bool waitForImageBeingRenderedElsewhere(const RectI & roi, const ImagePtr & img);
+    /// False if roi could not be completed; retracted then tells whether a render was retracted from the cache.
+    bool waitForImageBeingRenderedElsewhere(const RectI& roi, const ImagePtr& img, bool* retracted);
 
-    void unmarkImageAsBeingRendered(const ImagePtr & img, const std::list<RectI>& rects, bool renderFailed);
+    void unmarkImageAsBeingRendered(const ImagePtr& img, const std::list<RectI>& rects, bool renderFailed, bool retracted);
 #endif
 
     /**
@@ -502,7 +508,8 @@ public:
                      const RoIMap& roiMap,
                      int firstFrame,
                      int lastFrame,
-                     bool isDoingOpenGLRender);
+                     bool isDoingOpenGLRender,
+                     const EffectInstance::OnTheFlyCachedPlanesPtr& onTheFlyPlanes);
 
     ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
                      const EffectTLSDataPtr& otherThreadData);

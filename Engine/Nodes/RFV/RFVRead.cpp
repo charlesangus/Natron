@@ -187,7 +187,7 @@ RFVRead::refreshVariablesBelow(const NodePtr& output,
     const RFV::ResolvedContext resolved = RFV::resolveContextBelow(output, node, time, ViewIdx(0));
     std::string text = "from ";
     text += resolved.outputName.empty() ? std::string("the project") : resolved.outputName;
-    text += ", frame " + formatFrame(time);
+    text += ", frame " + formatFrame(resolved.time);
     for (const RenderContext::Entry& entry : resolved.context->entries()) {
         text += "\n";
         text += entry.first.ns.empty() ? entry.first.name : (entry.first.ns + "." + entry.first.name);

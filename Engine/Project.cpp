@@ -2873,7 +2873,7 @@ Project::onKnobValueChanged(KnobI* knob,
 
     // Nodes that read a project variable outside an expression hash its value themselves.
     if (knob && (RFV::findDeclaredVariable(this, knob->getName()).get() == knob)) {
-        RFV::rehashExtraContextReaders(*this, knob->getName());
+        RFV::rehashExtraContextReaders(*this, knob->getName(), reason != eValueChangedReasonTimeChanged);
         RFV::scheduleReaderRefresh(getApp());
     }
 

@@ -1,5 +1,5 @@
 """Declaring Reverse-Flow Variables from the GUI: the user-parameter dialog on a
-ReverseFlowVariableSet node and the project settings' "Edit variables..." dialog.
+RFVSet node and the project settings' "Edit variables..." dialog.
 
 Sections:
   - set node: the node's RFV group and its page are pinned (no Delete, Edit, Up or Down); a Double
@@ -52,7 +52,7 @@ DIALOG_TIMEOUT_S = 20.0
 LOAD_TIMEOUT_S = 60.0
 SETTLE_MS = 500
 
-SET_PLUGIN = "ReverseFlowVariableSet"
+SET_PLUGIN = "RFVSet"
 RFV_GROUP = "rfvVariables"
 RFV_PAGE = "rfvPage"
 GLOBAL_LABEL = "Global Variables"
@@ -544,7 +544,7 @@ try:
         gt.section("set node")
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         node = app.createNode(SET_PLUGIN, -1, None, props)
-        require(node is not None, "created a ReverseFlowVariableSet node", gt.plugin_problem(SET_PLUGIN))
+        require(node is not None, "created a RFVSet node", gt.plugin_problem(SET_PLUGIN))
         node_name = node.getScriptName()
         ok = yield ("until", lambda: node_panel(app.getNode(node_name)) is not None, DIALOG_TIMEOUT_S)
         require(ok, "the Set node's panel is open")
@@ -736,7 +736,7 @@ try:
         gt.section("existing")
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         third = app.createNode(SET_PLUGIN, -1, None, props)
-        require(third is not None, "created a third ReverseFlowVariableSet node")
+        require(third is not None, "created a third RFVSet node")
         third_name = third.getScriptName()
         third = None
         ok = yield ("until", lambda: node_panel(app.getNode(third_name)) is not None, DIALOG_TIMEOUT_S)

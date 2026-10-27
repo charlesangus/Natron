@@ -44,7 +44,7 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Reverse-Flow Variables (RFVs): declaration. A variable is a direct child of a group knob
  * flagged with KnobGroup::setAsRFVGroup(); its script name is the variable name. Only the
- * ReverseFlowVariableSet node and the project carry such a group. These are pure functions over
+ * RFVSet node and the project carry such a group. These are pure functions over
  * the knobs; they hold no render state.
  **/
 namespace RFV {
@@ -122,14 +122,14 @@ RFVDeclarationsConstPtr getDeclarationSnapshot(const KnobHolder* holder);
 
 /**
  * @brief Whether the knob is a variable of a node: a direct child of an RFV group of an effect,
- * such as a ReverseFlowVariableSet node, rather than of the project's, and not a plug-in control.
+ * such as a RFVSet node, rather than of the project's, and not a plug-in control.
  **/
 bool isNodeVariable(const KnobIPtr& knob);
 
 /**
- * @brief Has every ReverseFlowVariableSet node of the project sort its variables between its
+ * @brief Has every RFVSet node of the project sort its variables between its
  * Variables and Global Variables groups by the names the project now declares (see
- * ReverseFlowVariableSet::refreshVariableGroups()), and rebuilds the user knobs of those whose
+ * RFVSet::refreshVariableGroups()), and rebuilds the user knobs of those whose
  * variables moved.
  **/
 void refreshNodeVariableGroups(const Project& project);
@@ -151,7 +151,7 @@ std::vector<VariableDeclaration> getExistingVariables(const KnobHolder* holder);
 /**
  * @brief Adds to the holder's first RFV group a variable named after one getExistingVariables()
  * lists, with the type, dimensions, label, hint and defaults of that declaration, then calls
- * recreateUserKnobs(), which has a ReverseFlowVariableSet node move it to its Global Variables
+ * recreateUserKnobs(), which has a RFVSet node move it to its Global Variables
  * group when the project declares the name. It starts with the declaration's value at the
  * current time, without animation, and is not linked to it. This records nothing in the undo
  * history.
@@ -213,9 +213,10 @@ void appendProjectVariableReads(const Project& project, RenderContextReadSet* re
  * @brief Marks the hash of every node of the project whose EffectInstance::getExtraContextReads()
  * names the variable, or names any when name is empty. A node reads such a variable outside any
  * expression, so no listener links it to the project's knob; it hashes the project's value itself
- * (see RFVSwitch::appendNodeContentHash()). Main thread.
+ * (see RFVSwitch::appendNodeContentHash()). With renderAgain, each such node also renders its
+ * viewers again, as an edit of a knob it listens to would. Main thread.
  **/
-void rehashExtraContextReaders(const Project& project, const std::string& name);
+void rehashExtraContextReaders(const Project& project, const std::string& name, bool renderAgain = false);
 
 /**
  * @brief The value of the variable knob at time and view, as a render context holds it: a bool
@@ -254,6 +255,9 @@ struct ResolvedContext {
     std::vector<std::pair<std::string, std::string>> errors;
     /// The script name of the output node whose path reaches the node, empty when none does.
     std::string outputName;
+    /// The time the node is read at: the time resolved for, moved by every node on the path that
+    /// reads its input at another time.
+    double time = 0.;
 };
 
 /**
@@ -267,10 +271,13 @@ NodePtr getActiveViewer(const AppInstancePtr& app);
  * inputs output displays (a viewer's A input, and its B input while it composites them; every
  * input of any other node) up to target, each consumer's EffectInstance::getInputContexts() is
  * applied to the context its own consumer gave it, starting from the empty context of a render's
- * root, so the Set node nearest to target wins. Every node on the path is asked at time and view.
- * The result is then evaluated at time and view: a Set's time-varying variable under the context
- * it captured, and a project variable no Set on the path overrides under the path's context, as
- * rfv reads them. With no output, or no path from it to target, the project's variables alone.
+ * root, so the Set node nearest to target wins. Every node on the path is asked at the time its
+ * consumer reads it at: a consumer passing an input through at another time (a time offset or a
+ * frame hold) moves it to that time, any other to the first frame its getFramesNeeded() lists for
+ * that input. The result is then evaluated at the time and view target is read at: a Set's
+ * time-varying variable under the context it captured, and a project variable no Set on the path
+ * overrides under the path's context, as rfv reads them. With no output, or no path from it to
+ * target, the project's variables alone, at time.
  * Main thread.
  **/
 ResolvedContext resolveContextBelow(const NodePtr& output, const NodePtr& target, double time, ViewIdx view);

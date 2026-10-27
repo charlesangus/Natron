@@ -120,14 +120,14 @@ TEST(RFVPatternMatch, InvalidRegexNeverMatchesAndIsReported)
 {
     std::string error;
     EXPECT_EQ(-1, RFV::firstMatch("sh010", std::vector<std::string> { "re:sh0[1" }, &error));
-    EXPECT_EQ(0u, error.find("line 1: "));
+    EXPECT_EQ(0u, error.find("Input 0: "));
 
     EXPECT_EQ(1, RFV::firstMatch("sh010", std::vector<std::string> { "re:(", "sh010" }, &error));
-    EXPECT_EQ(0u, error.find("line 1: "));
+    EXPECT_EQ(0u, error.find("Input 0: "));
 
     // Reported past the matching line too, so the node shows it whichever input is chosen.
     EXPECT_EQ(0, RFV::firstMatch("sh010", std::vector<std::string> { "sh010", "", "re:)" }, &error));
-    EXPECT_EQ(0u, error.find("line 3: "));
+    EXPECT_EQ(0u, error.find("Input 2: "));
 
     EXPECT_EQ(0, RFV::firstMatch("sh010", std::vector<std::string> { "re:sh010" }, &error));
     EXPECT_TRUE(error.empty());

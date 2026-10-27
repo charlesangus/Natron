@@ -6032,8 +6032,9 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
 
     ret |= node->onEffectKnobValueChanged(k, reason);
 
-    // Variables are user knobs, which never reach knobChanged(): what RFVRead nodes list follows them.
-    if (k && (reason != eValueChangedReasonTimeChanged) && (QThread::currentThread() == qApp->thread()) && (RFV::findDeclaredVariable(this, k->getName()).get() == k)) {
+    // What RFVRead nodes list follows the variables, and the time a parameter of a time node on
+    // their path moves them to.
+    if (k && (reason != eValueChangedReasonTimeChanged) && (QThread::currentThread() == qApp->thread()) && (k->getEvaluateOnChange() || (RFV::findDeclaredVariable(this, k->getName()).get() == k))) {
         RFV::scheduleReaderRefresh(getApp());
     }
 

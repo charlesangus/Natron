@@ -10,14 +10,14 @@ RFVRead passes its input through unchanged, whatever its data kind, and lists th
 
 ## Which values are listed
 
-The list is what `rfv` would give an expression of this node at the timeline's frame, worked out without rendering:
+The list is what `rfv` would give an expression of this node when the active viewer renders the timeline's frame, worked out without rendering:
 
 - The path is the one from this node down to the active viewer's displayed inputs: input A, and input B while a wipe or other compositing operator is on. The active viewer is the one last clicked or typed in.
 - The Set nodes on that path are folded with the same function a render uses, so the nearest Set below wins.
-- An animated or expression-driven variable is evaluated at the timeline's frame.
+- Time nodes on the path (TimeOffset, FrameHold, Retime and the like) move the frame as they do in a render: each node below asks this one for the frame it reads its input at, so the header's frame and every value are those at the frame this node is read at. A node reading a range of frames counts as reading the first. An animated or expression-driven variable is evaluated at that frame.
 - Off every path to the active viewer, or with no viewer, the header reads `from the project` and the project's variables are listed.
 
-Time remapping along the path (TimeOffset, FrameHold) is not followed: every node is asked at the timeline's frame. Only the first view is shown.
+Only the first view is shown.
 
 ## When it refreshes
 

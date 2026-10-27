@@ -305,10 +305,13 @@ Variables are set in two places:
 - **The project.** Variables on the project settings' Variables page are the
   base values, seen wherever no Set node overrides them. A project variable is
   also `app.<name>` in Python.
-- **The `ReverseFlowVariableSet` node** (Set). It passes its input through
+- **The `RFVSet` node** (Set). It passes its input through
   unchanged and sets its variables for everything upstream of it. Its
   Variables tab and the Python API are documented in
-  `Engine/Nodes/RFV/docs/ReverseFlowVariableSet.md`.
+  `Engine/Nodes/RFV/docs/RFVSet.md`.
+
+The RFV nodes, `RFVSet`, `RFVSwitch` and `RFVRead`, are in the toolbar's
+Reverse Flow Variable category.
 
 A variable is a child of a group flagged as an RFV group, and its name is the
 child's script name. Only the project and the Set node carry such a group, so
@@ -342,11 +345,11 @@ context, so they render and cache exactly as they would without RFVs.
 
 ### Switching on a variable: `RFVSwitch`
 
-The `RFVSwitch` node passes through the input whose line in its Patterns
-parameter first matches the value of one variable, read as `rfv` would read it
-in an expression of the switch. Lines are globs, or ECMAScript regular
-expressions after a `re:` prefix, matched against the whole value. Under two
-Set nodes setting different values, one switch picks a different input on each
+The `RFVSwitch` node passes through the input whose pattern row (Input 0,
+Input 1, ...) first matches the value of one variable, read as `rfv` would read
+it in an expression of the switch, as text. Patterns are globs, or ECMAScript
+regular expressions after a `re:` prefix, matched against the whole value. Under
+two RFVSet nodes setting different values, one switch picks a different input on each
 path, and only the picked inputs render (`Tests/RFVSwitch_Test.cpp`). See
 `Engine/Nodes/RFV/docs/RFVSwitch.md`.
 
@@ -354,7 +357,8 @@ path, and only the picked inputs render (`Tests/RFVSwitch_Test.cpp`). See
 
 The `RFVRead` node passes its input through and lists, in its read-only
 Variables parameter, every variable that reaches it with its value at the
-timeline's frame. It resolves them without rendering, along the path to the
+frame it is read at for the timeline's frame, time nodes on the path moving
+that frame as they do in a render. It resolves them without rendering, along the path to the
 active viewer's displayed inputs, folding the Set nodes with the same function
 the render uses (`RFV::resolveContextAt`). Off every viewer path it lists the
 project's variables (`Tests/RFVRead_Test.cpp`). See

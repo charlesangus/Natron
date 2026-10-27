@@ -11,7 +11,9 @@ Sections:
   - set edit: changing SetB's var to 'c' updates the list to var = 'c';
   - graph edit: reconnecting SetB to the CheckerBoard takes RFVRead off every viewer path, so the
     list falls back to the project's variables ("from the project", shot listed, var gone);
-  - timeline: seeking to another frame updates the header's frame.
+  - timeline: seeking to another frame updates the header's frame;
+  - switch rows: an RFVSwitch's panel shows one row per pattern, labelled Input N, with + and -
+    buttons; + inserts an empty row and moves the inputs below it, and the panel fits 1920x1080.
 Each check polls both the knob's value and the text the panel shows, so an update that reaches the
 knob but not the widget fails. Nothing waits for a render: the list must change on its own.
 
@@ -34,7 +36,8 @@ SCREEN = (1920, 1080)
 
 PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
 PLUGIN_READ = "RFVRead"
-PLUGIN_SET = "ReverseFlowVariableSet"
+PLUGIN_SET = "RFVSet"
+PLUGIN_SWITCH = "RFVSwitch"
 PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
 VARIABLES = "variables"
 
@@ -210,6 +213,43 @@ try:
         yield from wait_for(reader, "seeking to frame 7 updates the header",
                             lambda t: t.split("\n")[0].endswith(", frame 7"))
         gt.shot("m72-rfvread-frame7.png")
+
+        gt.section("switch rows")
+        gt.close_all_panels()
+        rfv_switch = create(PLUGIN_SWITCH, 400, 150)
+        rfv_switch.getParam("variable").setValue("var")
+        rfv_switch.getParam("patternCount").setValue(2)
+        rfv_switch.getParam("input0").setValue("a")
+        rfv_switch.getParam("input1").setValue("re:[bc]")
+        connect(rfv_switch, 0, checker)
+        connect(rfv_switch, 1, reader)
+        rfv_switch.getParam("addAfter0").trigger()
+        check(rfv_switch.getParam("patternCount").getValue() == 3, "+ on Input 0 adds a row")
+        check(rfv_switch.getParam("input1").getValue() == "" and rfv_switch.getParam("input2").getValue() == "re:[bc]",
+              "the new row is empty and the rows below move down")
+        check(rfv_switch.getInput(1) is None and rfv_switch.getInput(2) is not None
+              and rfv_switch.getInput(2).getScriptName() == reader.getScriptName(),
+              "the inputs below move down with their rows")
+        rfv_switch.getParam("input1").setValue("sh0[1-3]0")
+        for i in range(3):
+            check(rfv_switch.getParam("input%d" % i).getIsVisible(), "row Input %d is shown" % i)
+        check(not rfv_switch.getParam("input3").getIsVisible(), "row Input 3 is hidden")
+        app.selectNode(rfv_switch, True)
+        QMetaObject.invokeMethod(graph_view(), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: node_panel(rfv_switch) is not None, POLL_TIMEOUT_S)
+        require(ok, "RFVSwitch's panel opens")
+        yield ("sleep", SETTLE_MS)
+        panel = node_panel(rfv_switch)
+        top_left = panel.mapToGlobal(panel.rect().topLeft())
+        check(top_left.x() >= 0 and top_left.y() >= 0
+              and top_left.x() + panel.width() <= SCREEN[0] and top_left.y() + panel.height() <= SCREEN[1],
+              "the switch panel lies within %dx%d (at %d,%d size %dx%d)"
+              % (SCREEN[0], SCREEN[1], top_left.x(), top_left.y(), panel.width(), panel.height()))
+        labels = [w.text() for w in panel.findChildren(QLabel) if w.isVisible()]
+        for i in range(3):
+            check(any(t.startswith("Input %d" % i) for t in labels), "the panel labels row Input %d" % i)
+        check(not any(t.startswith("Input 3") for t in labels), "the panel hides row Input 3")
+        gt.shot("m72-rfvswitch-rows.png")
 
         faulthandler.cancel_dump_traceback_later()
 

@@ -45,7 +45,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
@@ -83,7 +83,7 @@ protected:
     // A Set node over input, with no variable yet.
     NodePtr createSet(const NodePtr& input)
     {
-        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
         if (!set) {
             ADD_FAILURE() << "no Set node";
 
@@ -98,7 +98,7 @@ protected:
     bool declare(const NodePtr& set,
                  const KnobIPtr& knob)
     {
-        KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+        KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kRFVSetParamVariables));
         if (!variables || !variables->addKnob(knob)) {
             return false;
         }

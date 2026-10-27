@@ -42,10 +42,11 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/RFV/RFVRead.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderContext.h"
 #include "Engine/UndoKnobRef.h"
 #include "Engine/ViewerInstance.h"
@@ -447,7 +448,7 @@ refreshNodeVariableGroups(const Project& project)
     project.getNodes_recursive(nodes, false);
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         EffectInstancePtr effect = (*it)->getEffectInstance();
-        ReverseFlowVariableSet* setNode = dynamic_cast<ReverseFlowVariableSet*>(effect.get());
+        RFVSet* setNode = dynamic_cast<RFVSet*>(effect.get());
         if (setNode && setNode->refreshVariableGroups()) {
             setNode->recreateUserKnobs(true);
         }
@@ -726,7 +727,8 @@ appendProjectVariableReads(const Project& project,
 
 void
 rehashExtraContextReaders(const Project& project,
-                          const std::string& name)
+                          const std::string& name,
+                          bool renderAgain)
 {
     NodesList nodes;
     project.getNodes_recursive(nodes, false);
@@ -740,6 +742,10 @@ rehashExtraContextReaders(const Project& project,
         }
         if (name.empty() || reads.readsAll() || reads.contains(RenderContextName::plain(name))) {
             node->markHashDirty();
+            EffectInstancePtr effect = renderAgain ? node->getEffectInstance() : EffectInstancePtr();
+            if (effect) {
+                effect->incrHashAndEvaluate(true, true);
+            }
         }
     }
 }
@@ -946,6 +952,40 @@ namespace {
         return false;
     }
 
+    // The time consumer, acting under context at time, reads input inputNb at: the time it passes
+    // through as an identity of that input, otherwise the first frame getFramesNeeded() lists for
+    // it, otherwise time. A time node between a reader and the output thus moves the reader's time.
+    double
+    inputTimeOf(const EffectInstancePtr& consumer,
+                int inputNb,
+                double time,
+                ViewIdx view,
+                const RenderContextPtr& context)
+    {
+        ActionContextScope acting(true, context);
+        const U64 hash = consumer->getRenderHash();
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityInput = -1;
+        if (consumer->isIdentity_public(false, hash, time, RenderScale::identity, RectI(0, 0, 1, 1), view, &identityTime, &identityView, &identityInput) && (identityInput == inputNb)) {
+            return identityTime;
+        }
+        const FramesNeededMap needed = consumer->getFramesNeeded_public(hash, time, view, 0);
+        const FramesNeededMap::const_iterator input = needed.find(inputNb);
+        if (input == needed.end()) {
+            return time;
+        }
+        FrameRangesMap::const_iterator ranges = input->second.find(view);
+        if (ranges == input->second.end()) {
+            ranges = input->second.begin();
+        }
+        if ((ranges == input->second.end()) || ranges->second.empty()) {
+            return time;
+        }
+
+        return ranges->second.front().min;
+    }
+
     std::string
     displayName(const RenderContextName& name)
     {
@@ -993,15 +1033,19 @@ resolveContextBelow(const NodePtr& output,
                 continue;
             }
             std::vector<RenderContextPtr> contexts;
+            double inputTime = time;
             try {
+                inputTime = inputTimeOf(effect, edge.inputNb, time, view, pathContext);
                 if (effect->getInputContexts(edge.inputNb, time, view, pathContext, &contexts) && !contexts.empty()) {
                     pathContext = contexts.front();
                 }
             } catch (const std::exception& e) {
                 resolved.errors.push_back(std::make_pair(edge.consumer->getScriptName_mt_safe(), std::string(e.what())));
             }
+            time = inputTime;
         }
     }
+    resolved.time = time;
 
     RenderContext::Builder builder;
     AppInstancePtr app = target ? target->getApp() : (output ? output->getApp() : AppInstancePtr());

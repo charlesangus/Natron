@@ -217,7 +217,7 @@ firstMatch(const std::string& value,
                 }
             } catch (const std::regex_error& e) {
                 if (error && error->empty()) {
-                    *error = "line " + std::to_string(i + 1) + ": " + e.what();
+                    *error = "Input " + std::to_string(i) + ": " + e.what();
                 }
             }
         } else if ((found < 0) && matchesGlob(value, line)) {

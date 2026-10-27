@@ -59,7 +59,7 @@ bool matchesGlob(const std::string& value, const std::string& glob);
  * kPatternRegexPrefix is an ECMAScript regular expression after the prefix; any other line is a
  * glob (see matchesGlob()). An empty line never matches but keeps its index. A regular
  * expression that does not compile never matches; error, when given, receives the first such
- * line's 1-based number and why, or is cleared when every regular expression compiles. Every
+ * line's input, as "Input <index>: ", and why, or is cleared when every regular expression compiles. Every
  * line is checked for errors, those after the matching one included.
  **/
 int firstMatch(const std::string& value, const std::vector<std::string>& lines, std::string* error = nullptr);

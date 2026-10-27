@@ -38,7 +38,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/TimeLine.h"
@@ -250,10 +250,10 @@ TEST_F(RFVPythonTest, RefusesTheNameOfANodeOrOfAnotherAppAttribute)
     EXPECT_TRUE(run("assert " + a + "." + dotName + ".getScriptName() == '" + dotName + "'\n", &error)) << error;
 
     // Nor can a Set node's variable of that name be added to the project variables.
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     EffectInstancePtr effect = setNode->getEffectInstance();
-    KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(setNode->getKnobByName(kReverseFlowVariableSetParamVariables));
+    KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(setNode->getKnobByName(kRFVSetParamVariables));
     ASSERT_TRUE(group != nullptr);
     KnobDoublePtr variable = effect->createDoubleKnob(dotName, "Named after a node", 1);
     ASSERT_TRUE(group->addKnob(variable));
@@ -280,7 +280,7 @@ TEST_F(RFVPythonTest, AddsAVariableToASetNode)
     const std::string a = app();
     std::string error;
 
-    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr setNode = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(setNode));
     const std::string n = a + "." + setNode->getScriptName();
     ASSERT_TRUE(run("gain = " + n + ".createDoubleParam('gain', 'Gain')\n"
@@ -294,7 +294,7 @@ TEST_F(RFVPythonTest, AddsAVariableToASetNode)
     KnobIPtr gain = setNode->getKnobByName("gain");
     ASSERT_TRUE(bool(gain));
     ASSERT_TRUE(bool(gain->getParentKnob()));
-    EXPECT_EQ(std::string(kReverseFlowVariableSetParamVariables), gain->getParentKnob()->getName());
+    EXPECT_EQ(std::string(kRFVSetParamVariables), gain->getParentKnob()->getName());
     EXPECT_TRUE(RFV::isNodeVariable(gain));
     EXPECT_FALSE(bool(setNode->getEffectInstance()->getUserPageKnob()));
     // A node variable is not declared on the app.

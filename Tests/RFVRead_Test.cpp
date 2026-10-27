@@ -36,6 +36,7 @@
 
 #include "BaseTest.h"
 #include "Native/NativePluginIdentity.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -43,7 +44,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/RFV/RFVRead.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
@@ -56,7 +57,7 @@ namespace {
 KnobGroupPtr
 variablesGroupOf(const NodePtr& node)
 {
-    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamVariables));
+    return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kRFVSetParamVariables));
 }
 
 // The value name has in resolved, formatted as RFVRead lists it, or "<unset>".
@@ -110,7 +111,7 @@ protected:
     NodePtr createStringSet(const std::string& name,
                             const std::string& value)
     {
-        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
         if (!set) {
             ADD_FAILURE() << "no Set node";
 
@@ -133,7 +134,7 @@ protected:
     NodePtr createDoubleSet(const std::string& name,
                             KnobDoublePtr* variable)
     {
-        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
         if (!set) {
             ADD_FAILURE() << "no Set node";
 
@@ -162,6 +163,36 @@ protected:
         knob->setValue(value);
 
         return knob;
+    }
+
+    // A FrameWindow reading source over frameRange around the time minus offset: a one-frame
+    // range is a time offset, a wider one a frame blend.
+    NodePtr createFrameWindow(const NodePtr& source,
+                              int offset,
+                              int first = 0,
+                              int last = 0)
+    {
+        NodePtr node = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID), kNatronTestFrameWindowMajor);
+        if (!node) {
+            ADD_FAILURE() << "no FrameWindow node";
+
+            return node;
+        }
+        connectNodes(source, node, 0, true);
+        KnobInt* range = dynamic_cast<KnobInt*>(node->getKnobByName(kNatronTestFrameWindowParamFrameRange).get());
+        KnobBool* absolute = dynamic_cast<KnobBool*>(node->getKnobByName(kNatronTestFrameWindowParamAbsolute).get());
+        KnobInt* timeOffset = dynamic_cast<KnobInt*>(node->getKnobByName(kNatronTestFrameWindowParamTimeOffset).get());
+        if (!range || !absolute || !timeOffset) {
+            ADD_FAILURE() << "FrameWindow knobs missing";
+
+            return NodePtr();
+        }
+        range->setValue(first, ViewSpec::all(), 0);
+        range->setValue(last, ViewSpec::all(), 1);
+        absolute->setValue(false);
+        timeOffset->setValue(offset);
+
+        return node;
     }
 
     static RFVRead* readEffectOf(const NodePtr& node)
@@ -335,4 +366,61 @@ TEST_F(RFVReadTest, EditingASetVariableRefreshesVariables)
     variable->setValue(std::string("c"), ViewSpec::current(), 0);
     QCoreApplication::processEvents();
     EXPECT_TRUE(listsLine(effect->getVariablesText(), "var = 'c'")) << effect->getVariablesText();
+}
+
+// read -> offset(3) -> Set(v animated) -> view: viewed at frame 5 the read is read at frame 2,
+// where the Set's variable is evaluated, and Variables says so.
+TEST_F(RFVReadTest, TimeOffsetMovesTheFrameRead)
+{
+    NodePtr read = createRead();
+    KnobDoublePtr v;
+    NodePtr set = createDoubleSet("v", &v);
+    NodePtr view = createDot();
+    ASSERT_TRUE(read && set && view && v);
+    v->setValueAtTime(2., 20., ViewSpec::all(), 0);
+    v->setValueAtTime(5., 50., ViewSpec::all(), 0);
+    NodePtr offset = createFrameWindow(read, 3);
+    ASSERT_TRUE(bool(offset));
+    connectNodes(offset, set, 0, true);
+    connectNodes(set, view, 0, true);
+
+    const RFV::ResolvedContext resolved = RFV::resolveContextBelow(view, read, 5., ViewIdx(0));
+    EXPECT_DOUBLE_EQ(2., resolved.time);
+    EXPECT_EQ("20.0", valueOf(resolved, "v"));
+    EXPECT_TRUE(resolved.errors.empty());
+
+    RFVRead* effect = readEffectOf(read);
+    ASSERT_TRUE(effect != nullptr);
+    effect->refreshVariablesBelow(view, 5.);
+    EXPECT_EQ("from " + view->getScriptName_mt_safe() + ", frame 2\nv = 20.0", effect->getVariablesText());
+
+    // Two offsets add up, and a Set below the read but above the offset is read at the moved
+    // frame too.
+    NodePtr second = createFrameWindow(set, -1);
+    ASSERT_TRUE(bool(second));
+    disconnectNodes(set, view, true);
+    connectNodes(second, view, 0, true);
+    const RFV::ResolvedContext twice = RFV::resolveContextBelow(view, read, 5., ViewIdx(0));
+    EXPECT_DOUBLE_EQ(3., twice.time);
+    EXPECT_EQ("30.0", valueOf(twice, "v"));
+}
+
+// A consumer reading several frames of its input moves the reader to the first of them.
+TEST_F(RFVReadTest, FrameBlendMovesTheFrameReadToItsFirstFrame)
+{
+    NodePtr read = createRead();
+    KnobDoublePtr v;
+    NodePtr set = createDoubleSet("v", &v);
+    NodePtr view = createDot();
+    ASSERT_TRUE(read && set && view && v);
+    v->setValueAtTime(0., 0., ViewSpec::all(), 0);
+    v->setValueAtTime(10., 100., ViewSpec::all(), 0);
+    NodePtr blend = createFrameWindow(read, 0, -2, 2);
+    ASSERT_TRUE(bool(blend));
+    connectNodes(blend, set, 0, true);
+    connectNodes(set, view, 0, true);
+
+    const RFV::ResolvedContext resolved = RFV::resolveContextBelow(view, read, 5., ViewIdx(0));
+    EXPECT_DOUBLE_EQ(3., resolved.time);
+    EXPECT_EQ("30.0", valueOf(resolved, "v"));
 }

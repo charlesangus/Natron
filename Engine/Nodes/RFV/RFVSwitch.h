@@ -28,7 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <set>
 #include <string>
+#include <vector>
+
+#include <QtCore/QMutex>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -40,16 +44,27 @@
 #define kRFVSwitchParamVariableLabel "Variable"
 #define kRFVSwitchParamVariableHint "The name of the Reverse-Flow Variable whose value chooses the input, as rfv reads it: " \
                                     "the value the nearest Set node below sets on the path being rendered, otherwise the project's."
-#define kRFVSwitchParamPatterns "patterns"
-#define kRFVSwitchParamPatternsLabel "Patterns"
-#define kRFVSwitchParamPatternsHint "One pattern per line; line 1 chooses input 0, line 2 input 1, and so on. The first line "     \
-                                    "matching the variable's whole value wins. A line starting with re: is an ECMAScript regular " \
-                                    "expression; any other line is a glob, where * matches any characters, ? one, [abc] one of "   \
-                                    "those and [!abc] one not among them. An empty line never matches. A value that is not a "     \
-                                    "string is matched as Python's str() gives it; a list never matches."
+#define kRFVSwitchParamPatternCount "patternCount"
+#define kRFVSwitchParamPatternCountLabel "Pattern Count"
+#define kRFVSwitchParamPatternCountHint "How many pattern rows the node shows."
+#define kRFVSwitchParamPattern "input"
+#define kRFVSwitchParamPatternLabel "Input"
+#define kRFVSwitchParamPatternHint "The pattern choosing this input. The first row matching the variable's whole value wins. A "  \
+                                   "pattern starting with re: is an ECMAScript regular expression; any other is a glob, where * " \
+                                   "matches any characters, ? one, [abc] one of those and [!abc] one not among them. An empty "   \
+                                   "pattern never matches. The value is matched as text: True or False, a whole number as its "   \
+                                   "digits (5.0 as 5), any other number in its shortest exact form, and a list as its items "     \
+                                   "joined by \", \"."
+#define kRFVSwitchParamAddAfter "addAfter"
+#define kRFVSwitchParamAddAfterLabel "Add After"
+#define kRFVSwitchParamAddAfterHint "Inserts an empty pattern below this one. The rows and the inputs below it move down one."
+#define kRFVSwitchParamRemove "remove"
+#define kRFVSwitchParamRemoveLabel "Remove"
+#define kRFVSwitchParamRemoveHint "Removes this pattern and disconnects its input. The rows and the inputs below it move up " \
+                                  "one. The last remaining pattern is emptied instead."
 #define kRFVSwitchParamIfNoMatch "ifNoMatch"
 #define kRFVSwitchParamIfNoMatchLabel "If No Match"
-#define kRFVSwitchParamIfNoMatchHint "What the node outputs when the variable is unset, is a list, or matches no line."
+#define kRFVSwitchParamIfNoMatchHint "What the node outputs when the variable is unset or matches no pattern."
 #define kRFVSwitchIfNoMatchError "Error"
 #define kRFVSwitchIfNoMatchErrorHint "Fail the render, naming the variable and its value."
 #define kRFVSwitchIfNoMatchFirstInput "First Input"
@@ -69,11 +84,11 @@ inline constexpr InputSpec kRFVSwitchInputs[] = {
 };
 
 /**
- * @brief Passes through, unchanged and whatever its data kind, the input whose pattern line first
+ * @brief Passes through, unchanged and whatever its data kind, the input whose pattern first
  * matches the value of a Reverse-Flow Variable. The value is read when a render asks the node for
- * its route, under the context the render reached it with, so two paths through Set nodes setting
- * different values can choose different inputs from one RFVSwitch. Input i is shown while
- * Patterns has a line i or the input is connected; input 0 always is.
+ * its route, under the context the render reached it with, so two paths through RFVSet nodes
+ * setting different values can choose different inputs from one RFVSwitch. Pattern row i chooses
+ * input i; input i is shown while row i exists or the input is connected, and input 0 always is.
  **/
 class RFVSwitch
     : public NativeEffectBase {
@@ -86,8 +101,16 @@ public:
     explicit RFVSwitch(NodePtr node)
         : NativeEffectBase(node)
         , _variable()
+        , _patternCount()
         , _patterns()
+        , _addAfter()
+        , _remove()
         , _ifNoMatch()
+        , _messageMutex()
+        , _messageSequence(0)
+        , _messageErrors()
+        , _messageWarnings()
+        , _postedMessage()
     {
     }
 
@@ -95,11 +118,11 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_RFVSWITCH,
         .label = "RFVSwitch",
-        .description = "Passes through the input whose line in Patterns first matches the value of a Reverse-Flow "
-                       "Variable on the path being rendered. Line 1 chooses input 0, line 2 input 1, and so on; a line "
-                       "starting with re: is a regular expression, any other a glob, both matched against the whole "
-                       "value. With no match the render fails, or input 0 is passed through.",
-        .grouping = PLUGIN_GROUP_OTHER,
+        .description = "Passes through the input whose pattern first matches the value of a Reverse-Flow "
+                       "Variable on the path being rendered. The pattern in row Input 0 chooses input 0, Input 1 input 1, "
+                       "and so on; a pattern starting with re: is a regular expression, any other a glob, both matched "
+                       "against the whole value as text. With no match the render fails, or input 0 is passed through.",
+        .grouping = PLUGIN_GROUP_RFV,
         .majorVersion = PLUGIN_MAJOR_NATRON_RFVSWITCH,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.switchPlugin.png",
@@ -126,10 +149,10 @@ private:
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
     /**
-     * @brief The input the first matching line chooses, at time under the context the calling
+     * @brief The input the first matching pattern chooses, at time under the context the calling
      * thread queries this node under (see EffectInstance::getCurrentRenderContext()). Black when
-     * that input is not connected. With no match, input 0 or, under Error, None with an error
-     * posted, which render() then fails.
+     * that input is not connected. With no match, input 0 or, under Error, None, which render()
+     * then fails. In a render other than a preview, reports its outcome (see reportOutcome()).
      **/
     virtual Route route(double time,
                         ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -148,10 +171,20 @@ private:
      **/
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
+    struct Outcome {
+        // The chosen input, or -1 when the render must fail.
+        int input = -1;
+        std::string error;
+        std::string warning;
+    };
+
+    // What route() decides at time and view, under the calling thread's context.
+    Outcome evaluate(double time, ViewIdx view) const;
+
     /**
-     * @brief The variable as rfv gives it to an expression of this node at time and view, as
-     * Python's str() gives it. False when it is unset or a list; error then receives why, if the
-     * read failed.
+     * @brief The variable as rfv gives it to an expression of this node at time and view, as the
+     * text patterns are matched against (see kRFVSwitchParamPatternHint). False when it is unset;
+     * error then receives why, if the read failed.
      **/
     bool readVariable(const std::string& name,
                       double time,
@@ -159,12 +192,47 @@ private:
                       std::string* value,
                       std::string* error) const;
 
-    // Shows the inputs Patterns has a line for, and those connected.
+    /**
+     * @brief Shows what the latest render reaching this node decided, outside previews: the errors
+     * of every path that failed in it, else the pattern warnings, else nothing. An older render's
+     * outcome is ignored. Takes back only a message this node posted. Posting an error drops the
+     * node's cached actions, so the paths that succeeded run route() again and report.
+     **/
+    void reportOutcome(const Outcome& outcome);
+
+    // Takes back the message reportOutcome() posted, if the node still shows it.
+    void clearPostedMessage();
+
+    int patternCount() const;
+
+    // The patterns of the shown rows, at most one per input.
+    std::vector<std::string> patterns() const;
+
+    // Secret rows past the count, and the add buttons when every row is shown.
+    void refreshRows();
+
+    // Inserts an empty row after row, or removes it, moving the rows and inputs below.
+    void insertRowAfter(int row);
+    void removeRow(int row);
+
+    // Reconnects input i to inputs[i], for every input that changes.
+    void reconnectInputs(const std::vector<NodePtr>& inputs);
+
+    // Shows the inputs with a pattern row, and those connected.
     void refreshInputsVisibility();
 
     KnobStringWPtr _variable;
-    KnobStringWPtr _patterns;
+    KnobIntWPtr _patternCount;
+    std::vector<KnobStringWPtr> _patterns;
+    std::vector<KnobButtonWPtr> _addAfter;
+    std::vector<KnobButtonWPtr> _remove;
     KnobChoiceWPtr _ifNoMatch;
+
+    mutable QMutex _messageMutex;
+    U64 _messageSequence;
+    std::set<std::string> _messageErrors;
+    std::set<std::string> _messageWarnings;
+    std::string _postedMessage;
 };
 
 NATRON_NAMESPACE_EXIT

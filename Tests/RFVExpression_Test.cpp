@@ -41,7 +41,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
@@ -306,9 +306,9 @@ TEST_F(RFVPythonObject, ProjectVariableEditRefreshesTheReaderAndItsNodeHash)
 // depends on the path a render takes, so an edit of the Set's variable leaves the reader alone.
 TEST_F(RFVPythonObject, SetNodeVariableIsNotADependencyOfItsReader)
 {
-    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(set));
-    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kRFVSetParamVariables));
     ASSERT_TRUE(bool(variables));
     KnobDoublePtr s = set->getEffectInstance()->createDoubleKnob("s", "s", 1);
     ASSERT_TRUE(variables->addKnob(s));

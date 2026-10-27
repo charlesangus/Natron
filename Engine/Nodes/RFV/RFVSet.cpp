@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "ReverseFlowVariableSet.h"
+#include "RFVSet.h"
 
 #include <set>
 #include <string>
@@ -45,25 +45,25 @@
 NATRON_NAMESPACE_ENTER
 
 void
-ReverseFlowVariableSet::initializeKnobs()
+RFVSet::initializeKnobs()
 {
     // The page and groups are user knobs: a page or group that is not refuses user-knob children,
     // and only user pages are saved with their children's layout. Being declared by the plug-in,
     // they survive undoing a change to the user knobs, and so does the drop-down inside.
-    KnobPagePtr page = createKnob<KnobPage>(tr(kReverseFlowVariableSetParamPageLabel));
-    page->setName(kReverseFlowVariableSetParamPage);
+    KnobPagePtr page = createKnob<KnobPage>(tr(kRFVSetParamPageLabel));
+    page->setName(kRFVSetParamPage);
     page->setAsUserKnob(true);
 
-    KnobGroupPtr variables = createKnob<KnobGroup>(tr(kReverseFlowVariableSetParamVariablesLabel));
-    variables->setName(kReverseFlowVariableSetParamVariables);
+    KnobGroupPtr variables = createKnob<KnobGroup>(tr(kRFVSetParamVariablesLabel));
+    variables->setName(kRFVSetParamVariables);
     variables->setAsUserKnob(true);
     variables->setDefaultValue(true);
     variables->setAsRFVGroup(true);
     page->addKnob(variables);
     _variables = variables;
 
-    KnobGroupPtr globalVariables = createKnob<KnobGroup>(tr(kReverseFlowVariableSetParamGlobalVariablesLabel));
-    globalVariables->setName(kReverseFlowVariableSetParamGlobalVariables);
+    KnobGroupPtr globalVariables = createKnob<KnobGroup>(tr(kRFVSetParamGlobalVariablesLabel));
+    globalVariables->setName(kRFVSetParamGlobalVariables);
     globalVariables->setAsUserKnob(true);
     globalVariables->setDefaultValue(true);
     globalVariables->setAsRFVGroup(true);
@@ -71,9 +71,9 @@ ReverseFlowVariableSet::initializeKnobs()
     _globalVariables = globalVariables;
 
     // Not a user knob, so neither saved in the page layout nor taken for a variable.
-    KnobChoicePtr existing = createKnob<KnobChoice>(tr(kReverseFlowVariableSetParamExistingVariableLabel));
-    existing->setName(kReverseFlowVariableSetParamExistingVariable);
-    existing->setHintToolTip(tr(kReverseFlowVariableSetParamExistingVariableHint));
+    KnobChoicePtr existing = createKnob<KnobChoice>(tr(kRFVSetParamExistingVariableLabel));
+    existing->setName(kRFVSetParamExistingVariable);
+    existing->setHintToolTip(tr(kRFVSetParamExistingVariableHint));
     existing->setAnimationEnabled(false);
     existing->setIsPersistent(false);
     existing->setEvaluateOnChange(false);
@@ -81,13 +81,13 @@ ReverseFlowVariableSet::initializeKnobs()
     existing->setCanUndo(false);
     // Each pick adds a variable, so scrolling or arrowing through the entries must not.
     existing->setMenuOnlySelection(true);
-    existing->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kReverseFlowVariableSetExistingVariablePrompt)));
+    existing->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kRFVSetExistingVariablePrompt)));
     globalVariables->addKnob(existing);
     _existingVariable = existing;
 }
 
 bool
-ReverseFlowVariableSet::refreshVariableGroups()
+RFVSet::refreshVariableGroups()
 {
     KnobGroupPtr variables = _variables.lock();
     KnobGroupPtr globalVariables = _globalVariables.lock();
@@ -120,7 +120,7 @@ ReverseFlowVariableSet::refreshVariableGroups()
 }
 
 void
-ReverseFlowVariableSet::onUserKnobsChanged()
+RFVSet::onUserKnobsChanged()
 {
     refreshVariableGroups();
     // Adding, removing or renaming a variable changes what this node overrides.
@@ -129,14 +129,14 @@ ReverseFlowVariableSet::onUserKnobsChanged()
 }
 
 void
-ReverseFlowVariableSet::refreshExistingVariables()
+RFVSet::refreshExistingVariables()
 {
     KnobChoicePtr existing = _existingVariable.lock();
     if (!existing) {
         return;
     }
     const std::vector<RFV::VariableDeclaration> variables = RFV::getExistingVariables(this);
-    std::vector<ChoiceOption> entries(1, ChoiceOption(kReverseFlowVariableSetExistingVariablePrompt));
+    std::vector<ChoiceOption> entries(1, ChoiceOption(kRFVSetExistingVariablePrompt));
     for (std::size_t i = 0; i < variables.size(); ++i) {
         ChoiceOption entry(variables[i].name);
         KnobHolder* holder = variables[i].knob->getHolder();
@@ -155,11 +155,11 @@ ReverseFlowVariableSet::refreshExistingVariables()
 }
 
 bool
-ReverseFlowVariableSet::knobChanged(KnobI* k,
-                                    ValueChangedReasonEnum /*reason*/,
-                                    ViewSpec /*view*/,
-                                    double /*time*/,
-                                    bool /*originatedFromMainThread*/)
+RFVSet::knobChanged(KnobI* k,
+                    ValueChangedReasonEnum /*reason*/,
+                    ViewSpec /*view*/,
+                    double /*time*/,
+                    bool /*originatedFromMainThread*/)
 {
     KnobChoicePtr existing = _existingVariable.lock();
     if (!existing || (k != existing.get())) {
@@ -181,7 +181,7 @@ ReverseFlowVariableSet::knobChanged(KnobI* k,
 }
 
 void
-ReverseFlowVariableSet::addExistingVariableNow(const std::string& name)
+RFVSet::addExistingVariableNow(const std::string& name)
 {
     std::string error;
     {
@@ -197,13 +197,13 @@ ReverseFlowVariableSet::addExistingVariableNow(const std::string& name)
 }
 
 void
-ReverseFlowVariableSet::onSettingsPanelOpened()
+RFVSet::onSettingsPanelOpened()
 {
     refreshExistingVariables();
 }
 
 void
-ReverseFlowVariableSet::refreshChoiceEntries(KnobChoice* knob)
+RFVSet::refreshChoiceEntries(KnobChoice* knob)
 {
     // Variables come and go on the project and on other nodes while this panel stays open.
     if (knob && (knob == _existingVariable.lock().get())) {
@@ -212,18 +212,18 @@ ReverseFlowVariableSet::refreshChoiceEntries(KnobChoice* knob)
 }
 
 Route
-ReverseFlowVariableSet::route(double time,
-                              ViewIdx /*view*/)
+RFVSet::route(double time,
+              ViewIdx /*view*/)
 {
     return Route::input(0, time);
 }
 
 bool
-ReverseFlowVariableSet::getInputContexts(int inputNb,
-                                         double time,
-                                         ViewIdx view,
-                                         const RenderContextPtr& context,
-                                         std::vector<RenderContextPtr>* contexts) const
+RFVSet::getInputContexts(int inputNb,
+                         double time,
+                         ViewIdx view,
+                         const RenderContextPtr& context,
+                         std::vector<RenderContextPtr>* contexts) const
 {
     if (inputNb != 0) {
         return false;
@@ -236,7 +236,7 @@ ReverseFlowVariableSet::getInputContexts(int inputNb,
 }
 
 RenderContextReadSet
-ReverseFlowVariableSet::getOverriddenContextVariables(int inputNb) const
+RFVSet::getOverriddenContextVariables(int inputNb) const
 {
     RenderContextReadSet overridden;
     if (inputNb != 0) {

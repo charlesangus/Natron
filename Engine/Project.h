@@ -526,7 +526,7 @@ public:
     void refreshVariablesAfterTimeChange(bool isPlayback, double time);
 
     /**
-     * @brief The project's variables may have changed: every ReverseFlowVariableSet node re-sorts
+     * @brief The project's variables may have changed: every RFVSet node re-sorts
      * its variables by the names the project declares (see RFV::refreshNodeVariableGroups()).
      **/
     virtual void onUserKnobsChanged() OVERRIDE FINAL;

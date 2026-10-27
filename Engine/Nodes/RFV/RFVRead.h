@@ -38,9 +38,10 @@
 
 #define kRFVReadParamVariables "variables"
 #define kRFVReadParamVariablesLabel "Variables"
-#define kRFVReadParamVariablesHint "Every Reverse-Flow Variable that reaches this node, with its value as rfv gives it here at the " \
-                                   "timeline's frame: the project's variables, with the values of the Set nodes on the path from "   \
-                                   "this node to the active viewer over them. A node on no viewer's path lists the project's."
+#define kRFVReadParamVariablesHint "Every Reverse-Flow Variable that reaches this node, with its value as rfv gives it here: "    \
+                                   "the project's variables, with the values of the Set nodes on the path from this node to the " \
+                                   "active viewer over them, at the frame this node is read at for the timeline's frame (a time " \
+                                   "node on the path moves it). A node on no viewer's path lists the project's."
 
 NATRON_NAMESPACE_ENTER
 
@@ -98,9 +99,10 @@ private:
                        "frame, along the path from this node to the active viewer: the project's variables, with "
                        "the values the Set nodes on that path set over them, the nearest winning. A node on no "
                        "viewer's path lists the project's. The node passes its input through unchanged.",
-        .grouping = PLUGIN_GROUP_OTHER,
+        .grouping = PLUGIN_GROUP_RFV,
         .majorVersion = PLUGIN_MAJOR_NATRON_RFVREAD,
         .minorVersion = 0,
+        .icon = NATRON_ICONS_PATH "natron/rfv.svg",
         .outputKind = eDataKindPolymorphic,
         .inputs = kRFVReadInputs,
     };

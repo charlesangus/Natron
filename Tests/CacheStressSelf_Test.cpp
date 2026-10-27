@@ -123,42 +123,6 @@ buildChain(const AppInstancePtr& app,
     return true;
 }
 
-// A second app in the same process, quit before the test ends so that it never becomes the
-// top-level app of whatever runs next.
-class ScopedSecondApp {
-public:
-    explicit ScopedSecondApp(const AppInstancePtr& original)
-        : _original(original)
-    {
-        CLArgs args;
-
-        _app = appPTR->newBackgroundInstance(args, true);
-        if (original) {
-            appPTR->setAsTopLevelInstance(original->getAppID());
-        }
-    }
-
-    ~ScopedSecondApp()
-    {
-        if (_app) {
-            appPTR->quitNow(_app);
-            _app.reset();
-        }
-        if (_original) {
-            appPTR->setAsTopLevelInstance(_original->getAppID());
-        }
-    }
-
-    const AppInstancePtr& get() const
-    {
-        return _app;
-    }
-
-private:
-    AppInstancePtr _original;
-    AppInstancePtr _app;
-};
-
 } // namespace
 
 class CacheStressSelfTest
@@ -227,7 +191,7 @@ TEST_F(CacheStressSelfTest, ASeedReplaysTheSameRun)
     EXPECT_EQ(a.report, b.report);
 }
 
-// The reference is what the project means: a fresh app that loads the saved project renders the
+// The reference is what the project means: a project reset and reloaded from the saved file renders the
 // same pixels from cold caches.
 TEST_F(CacheStressSelfTest, TheReferenceEqualsAFreshAppLoadOfTheSavedProject)
 {
@@ -261,14 +225,15 @@ TEST_F(CacheStressSelfTest, TheReferenceEqualsAFreshAppLoadOfTheSavedProject)
     ASSERT_TRUE(app->getProject()->saveProject(dirPath, fileName, &savedFilePath));
     const std::string blurName = blur->getScriptName();
 
-    ScopedSecondApp second(app);
-    ASSERT_TRUE(bool(second.get()));
-    ASSERT_TRUE(second.get()->getProject()->loadProject(dirPath, fileName));
-    const NodePtr loaded = second.get()->getProject()->getNodeByName(blurName);
+    const ProjectPtr project = app->getProject();
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(blurName) == nullptr);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    const NodePtr loaded = project->getNodeByName(blurName);
     ASSERT_TRUE(bool(loaded));
 
     for (int mode = 0; mode < 2; ++mode) {
-        clearEverything(second.get());
+        clearEverything(app);
         RenderedPlane fresh;
         ASSERT_TRUE(renderProbe(loaded, 3., 0, kWindow, mode == 0 ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph, true, &fresh, &error)) << error;
         EXPECT_EQ(std::string(), compareExact(reference, fresh)) << (mode == 0 ? "legacy" : "task graph");

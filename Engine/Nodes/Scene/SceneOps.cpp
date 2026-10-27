@@ -29,8 +29,10 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -389,17 +391,17 @@ namespace {
 }
 
 PXR_NS::UsdStageRefPtr
-openStage(const PXR_NS::SdfLayerRefPtr& root)
+openStage(const PXR_NS::SdfLayerRefPtr& root,
+          const PXR_NS::SdfLayerHandle& session)
 {
     if (!root) {
         return PXR_NS::UsdStageRefPtr();
     }
     ++stageOpenCount;
 
-    // The session layer is passed explicitly as null: the Open overload without one creates an
-    // anonymous session layer (stage.h). Nothing edits these stages but their owner, through the
-    // root layer.
-    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
+    // The session layer is always passed, null when there is none: the Open overload without one
+    // creates an anonymous session layer (stage.h). Nothing edits these stages but their owner.
+    return PXR_NS::UsdStage::Open(root, session, PXR_NS::UsdStage::LoadAll);
 }
 
 U64
@@ -524,6 +526,123 @@ frameToTimeCode(const ScenePayload& payload,
     }
 
     return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
+}
+
+namespace {
+    struct LayerOwner {
+        // Expired once the layer is gone, so an entry outliving its layer never answers for
+        // another layer allocated at the same address.
+        PXR_NS::SdfLayerHandle layer;
+        NodeWPtr owner;
+    };
+
+    struct LayerOwnerRegistry {
+        std::mutex mutex;
+        std::unordered_map<const PXR_NS::SdfLayer*, LayerOwner> owners;
+        std::size_t sweepAt = 1024;
+    };
+
+    LayerOwnerRegistry&
+    layerOwnerRegistry()
+    {
+        static LayerOwnerRegistry registry;
+
+        return registry;
+    }
+
+    void
+    recordLayerOwner(LayerOwnerRegistry& registry,
+                     const PXR_NS::SdfLayerHandle& layer,
+                     const NodePtr& owner)
+    {
+        if (!layer) {
+            return;
+        }
+        LayerOwner& entry = registry.owners[PXR_NS::get_pointer(layer)];
+        entry.layer = layer;
+        entry.owner = owner;
+        if (registry.owners.size() >= registry.sweepAt) {
+            for (auto it = registry.owners.begin(); it != registry.owners.end();) {
+                if (!it->second.layer || it->second.owner.expired()) {
+                    it = registry.owners.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            registry.sweepAt = std::max<std::size_t>(1024, registry.owners.size() * 2);
+        }
+    }
+} // anonymous namespace
+
+void
+setLayerOwner(const ScenePayload& payload,
+              const NodePtr& owner,
+              bool topOnly)
+{
+    if (payload.isEmpty() || !owner) {
+        return;
+    }
+    LayerOwnerRegistry& registry = layerOwnerRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (topOnly) {
+        const std::shared_ptr<const ScenePayloadImpl>& impl = payload.getImpl();
+        if (impl) {
+            recordLayerOwner(registry, impl->top.layer, owner);
+        }
+
+        return;
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        recordLayerOwner(registry, entry.layer, owner);
+    }
+}
+
+NodePtr
+getLayerOwner(const PXR_NS::SdfLayerHandle& layer)
+{
+    if (!layer) {
+        return NodePtr();
+    }
+    LayerOwnerRegistry& registry = layerOwnerRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.owners.find(PXR_NS::get_pointer(layer));
+
+    if ((found == registry.owners.end()) || (found->second.layer != layer)) {
+        return NodePtr();
+    }
+
+    return found->second.owner.lock();
+}
+
+NodePtr
+authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
+                PXR_NS::UsdTimeCode time,
+                std::string* layerIdentifier)
+{
+    if (layerIdentifier) {
+        layerIdentifier->clear();
+    }
+    if (!attribute) {
+        return NodePtr();
+    }
+    for (const PXR_NS::SdfPropertySpecHandle& spec : attribute.GetPropertyStack(time)) {
+        if (!spec) {
+            continue;
+        }
+        const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
+        const PXR_NS::SdfAttributeSpecHandle attributeSpec = PXR_NS::TfDynamic_cast<PXR_NS::SdfAttributeSpecHandle>(spec);
+        const bool holdsValue = spec->HasDefaultValue() || (layer && (layer->GetNumTimeSamplesForPath(spec->GetPath()) > 0)) || (attributeSpec && attributeSpec->HasSpline());
+        if (!holdsValue) {
+            continue;
+        }
+        if (layerIdentifier && layer) {
+            *layerIdentifier = layer->GetIdentifier();
+        }
+
+        return getLayerOwner(layer);
+    }
+
+    return NodePtr();
 }
 
 namespace {
@@ -1025,6 +1144,7 @@ struct SceneLayerMemo::Implementation {
     U64 layerHash = 0;
     ScenePayload output;
     U64 authorCount = 0;
+    NodeWPtr owner;
 };
 
 SceneLayerMemo::SceneLayerMemo()
@@ -1131,6 +1251,7 @@ SceneLayerMemo::produce(const Key& key,
     _imp->layerHash = layerHash;
     _imp->valid = true;
     *output = _imp->output;
+    SceneOps::setLayerOwner(_imp->output, _imp->owner.lock(), true);
 
     return true;
 } // SceneLayerMemo::produce
@@ -1142,6 +1263,14 @@ SceneLayerMemo::invalidate()
 
     _imp->valid = false;
     _imp->output = ScenePayload();
+}
+
+void
+SceneLayerMemo::setOwner(const NodePtr& owner)
+{
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+
+    _imp->owner = owner;
 }
 
 U64

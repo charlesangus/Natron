@@ -196,6 +196,8 @@ SceneReparentNode::renderScene(const SceneRenderActionArgs& args,
 
         return eStatusFailed;
     }
+    // Every layer of the result is this node's: its inputs come in through references.
+    SceneOps::setLayerOwner(*outputScene, getNode(), false);
     if (unmapped.empty()) {
         clearPersistentMessage(false);
 

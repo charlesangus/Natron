@@ -531,6 +531,12 @@ Gui::getProgressPanel() const
     return _imp->_progressPanel;
 }
 
+SceneGraphPanel*
+Gui::getSceneGraphPanel() const
+{
+    return _imp->_sceneGraphPanel;
+}
+
 PropertiesBinWrapper*
 Gui::getPropertiesBin() const
 {

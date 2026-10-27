@@ -180,6 +180,7 @@ USDEditTransform::initializeKnobs()
 
     KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
     primPattern->setName(kUSDEditTransformParamPrimPattern);
+    primPattern->setPrimPathHint(KnobString::ePrimPathHintPattern);
     primPattern->setHintToolTip(tr("The prims to transform: absolute prim paths separated by spaces, whose names may use * "
                                    "(any run of characters) and ? (any one character), such as /World/Geo/*. "
                                    "Only prims that can hold a transform match."));

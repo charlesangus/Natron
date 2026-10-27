@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -54,6 +55,7 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class SceneStage;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -173,6 +175,31 @@ public:
     void clearScene();
 
     bool hasScene() const;
+
+    /**
+     * @brief Calls read under the lock that keeps syncs and paints out of the stage, with the
+     * stage shown, or null when no scene is. read must not call back into the renderer.
+     **/
+    void readStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    // The shown stage's edit count, without the lock: 0 before the first sync.
+    U64 getStageEditCount() const;
+
+    /**
+     * @brief Folds exactly paths: each is drawn as its bounding box and the payloads below it stay
+     * unloaded (SceneStage::setFoldedPrims). The next sync applies them before it composes;
+     * applyNow applies them at once as well, waiting for a sync under way.
+     **/
+    void setFoldedPrims(const std::vector<std::string>& paths, bool applyNow);
+
+    // The prims folded, or to be folded by the next sync.
+    std::vector<std::string> getFoldedPrims() const;
+
+    // How many prims the shown stage has, counting no further than cap + 1.
+    std::size_t countPrims(std::size_t cap) const;
+
+    // The paths of the shown stage's root prims.
+    std::vector<std::string> getRootPrims() const;
 
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
@@ -454,6 +481,9 @@ public:
 private:
     bool renderLocked(unsigned int fbo, int width, int height);
 
+    // Brings the stage's folds to the wanted ones. Needs stageMutex.
+    bool applyFoldsLocked();
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };
@@ -604,9 +634,24 @@ public:
      **/
     void releaseEngine();
 
+    /**
+     * @brief The prims drawn as their bounding boxes. Folds are kept per viewed node for the
+     * session; the first time a node is shown, a scene over the Viewer 3D Prim Budget preference
+     * has its root prims folded.
+     **/
+    QStringList getFoldedPrims() const;
+
+    void setFolded(const QStringList& paths, bool folded);
+
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
+
+    // The folded prims changed (main thread).
+    void foldsChanged();
+
+    // The renderer's stage holds the latest requested scene, or none (main thread).
+    void sceneSynced();
 
 protected:
     void initializeGL() override;

@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -226,10 +227,11 @@ void writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
                        const SceneMetadata* applied);
 
 /**
- * @brief Opens a stage on root with no session layer and every payload loaded. Every stage Natron
- * composes is opened here, so getStageOpenCount() counts them all.
+ * @brief Opens a stage on root with every payload loaded, and session as its session layer, none
+ * by default. Every stage Natron composes is opened here, so getStageOpenCount() counts them all.
  **/
-PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root);
+PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root,
+                                 const PXR_NS::SdfLayerHandle& session = PXR_NS::SdfLayerHandle());
 
 /**
  * @brief How many stages openStage() has opened in this process.
@@ -279,6 +281,28 @@ std::uint64_t getFileLayerReloadCount();
 double frameToTimeCode(const ScenePayload& payload,
                        double frame,
                        double framesPerSecond);
+
+/**
+ * @brief Records the node that authored the layers of payload, its top layer alone when topOnly,
+ * for authoringNodeOf(). Holds neither the layers nor the node; a layer re-recorded keeps its
+ * latest owner. MT-safe.
+ **/
+void setLayerOwner(const ScenePayload& payload,
+                   const NodePtr& owner,
+                   bool topOnly);
+
+// The node recorded as layer's author, or null.
+NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
+
+/**
+ * @brief The node whose layer holds the opinion attribute resolves to at time: the strongest spec
+ * with a default value, time samples or a spline. Null when no recorded layer holds it, a file
+ * read in by a node or a schema fallback; *layerIdentifier is then that spec's layer, or empty
+ * for a fallback.
+ **/
+NodePtr authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
+                        PXR_NS::UsdTimeCode time,
+                        std::string* layerIdentifier);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

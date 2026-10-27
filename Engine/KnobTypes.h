@@ -1051,6 +1051,26 @@ public:
         return _isCustom;
     }
 
+    // What dropping scene prims on the knob's field puts in it.
+    enum PrimPathHintEnum {
+        // Prims are not dropped on it.
+        ePrimPathHintNone = 0,
+        // The first prim's path.
+        ePrimPathHintPath,
+        // Every prim's path, separated by spaces.
+        ePrimPathHintPattern
+    };
+
+    void setPrimPathHint(PrimPathHintEnum hint)
+    {
+        _primPathHint = hint;
+    }
+
+    PrimPathHintEnum getPrimPathHint() const
+    {
+        return _primPathHint;
+    }
+
     virtual bool supportsInViewerContext() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return !_multiLine;
@@ -1075,6 +1095,7 @@ private:
     bool _customHtmlText;
     bool _isLabel;
     bool _isCustom;
+    PrimPathHintEnum _primPathHint = ePrimPathHintNone;
 };
 
 /******************************KnobGroup**************************************/

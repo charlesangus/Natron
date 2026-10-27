@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,8 +57,12 @@ NATRON_NAMESPACE_ENTER
  **/
 class SceneStage {
 public:
-    // Opens the stage on an empty root. isValid() is false when OpenUSD is unusable.
-    SceneStage();
+    /**
+     * @brief Opens the stage on an empty root. isValid() is false when OpenUSD is unusable. A
+     * foldable stage has a session layer of its own, where setFoldedPrims() writes; render and
+     * query stages are not foldable, so folding never reaches them.
+     **/
+    explicit SceneStage(bool foldable = false);
 
     ~SceneStage();
 
@@ -99,6 +104,19 @@ public:
 
     bool hasPreviewTransforms() const;
 
+    bool isFoldable() const;
+
+    /**
+     * @brief Makes exactly paths folded: each is drawn as its bounding box (a GeomModelAPI over in
+     * the session layer, model:applyDrawMode true and model:drawMode bounds) and the payloads at
+     * and below it are unloaded; unfolding removes the over and loads them again. The folds are
+     * kept across sync(), whatever prims the scene has. Returns whether anything changed; false
+     * on a stage that is not foldable.
+     **/
+    bool setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths);
+
+    const std::set<PXR_NS::SdfPath>& getFoldedPrims() const;
+
 private:
     struct PreviewPrim {
         PXR_NS::SdfPath path;
@@ -109,6 +127,8 @@ private:
     };
 
     PXR_NS::SdfLayerRefPtr _root;
+    PXR_NS::SdfLayerRefPtr _session;
+    std::set<PXR_NS::SdfPath> _folded;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;
     std::vector<std::string> _subLayerPaths;

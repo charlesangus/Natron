@@ -121,6 +121,7 @@ Gui::setupUi()
     _imp->createDopeSheetGui();
     _imp->createScriptEditorGui();
     _imp->createProgressPanelGui();
+    _imp->createSceneGraphPanelGui();
     ///Must be absolutely called once _nodeGraphArea has been initialized.
     _imp->createPropertiesBinGui();
 
@@ -304,7 +305,11 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    if (_imp->_activeViewer == viewer) {
+        return;
+    }
     _imp->_activeViewer = viewer;
+    Q_EMIT activeViewerChanged();
 }
 
 ViewerTab*

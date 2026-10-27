@@ -30,6 +30,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #include <QActionGroup>
@@ -260,9 +261,14 @@ struct SceneViewportRenderer::Implementation {
     // stage it renders for good (v26.08 usdImagingGL/engine.cpp, PrepareBatch populates once).
     std::unique_ptr<SceneStage> sceneStage;
     SceneWriteBarrier::ParticipantId participant = 0;
+    // The prims to fold, which every sync applies before it composes. Needs foldMutex, which may
+    // be taken under stageMutex.
+    mutable std::mutex foldMutex;
+    std::set<SdfPath> foldWanted;
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
+    std::atomic<U64> stageEditCount { 0 };
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -1117,7 +1123,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     SceneWriteBarrier::ReadScope read;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     if (!_imp->sceneStage) {
-        _imp->sceneStage.reset(new SceneStage);
+        _imp->sceneStage.reset(new SceneStage(true));
     }
     if (!_imp->sceneStage->isValid()) {
         _imp->shown = false;
@@ -1131,12 +1137,15 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         // In the same step as the sync, so no frame shows the scene without the drag.
         _imp->clearPreviewLocked();
     }
+    // Folds first, so payloads under them are never loaded by this sync.
+    applyFoldsLocked();
     _imp->sceneStage->sync(payload);
     const SceneMetadata& metadata = payload.getMetadata();
     _imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
     _imp->metersPerUnit = metadata.metersPerUnit;
     _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
     _imp->shown = !payload.isEmpty();
+    _imp->stageEditCount = _imp->sceneStage->getEditCount();
 
     return true;
 }
@@ -1177,6 +1186,111 @@ bool
 SceneViewportRenderer::hasScene() const
 {
     return _imp->shown;
+}
+
+void
+SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stage)>& read) const
+{
+    SceneWriteBarrier::ReadScope readScope;
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
+    read(shown ? _imp->sceneStage.get() : nullptr);
+}
+
+U64
+SceneViewportRenderer::getStageEditCount() const
+{
+    return _imp->stageEditCount;
+}
+
+bool
+SceneViewportRenderer::applyFoldsLocked()
+{
+    if (!_imp->sceneStage) {
+        return false;
+    }
+    std::set<SdfPath> wanted;
+    {
+        std::lock_guard<std::mutex> foldLock(_imp->foldMutex);
+        wanted = _imp->foldWanted;
+    }
+    if (!_imp->sceneStage->setFoldedPrims(wanted)) {
+        return false;
+    }
+    // Unloading drops prims, the guides' among them.
+    _imp->guidePrimsValid = false;
+    _imp->guidesValid = false;
+
+    return true;
+}
+
+void
+SceneViewportRenderer::setFoldedPrims(const std::vector<std::string>& paths,
+                                      bool applyNow)
+{
+    {
+        std::lock_guard<std::mutex> foldLock(_imp->foldMutex);
+        _imp->foldWanted.clear();
+        for (const std::string& path : paths) {
+            if (SdfPath::IsValidPathString(path)) {
+                _imp->foldWanted.insert(SdfPath(path));
+            }
+        }
+    }
+    if (applyNow) {
+        SceneWriteBarrier::ReadScope readScope;
+        std::lock_guard<std::mutex> lock(_imp->stageMutex);
+        applyFoldsLocked();
+    }
+}
+
+std::vector<std::string>
+SceneViewportRenderer::getFoldedPrims() const
+{
+    std::lock_guard<std::mutex> foldLock(_imp->foldMutex);
+    std::vector<std::string> paths;
+    for (const SdfPath& path : _imp->foldWanted) {
+        paths.push_back(path.GetString());
+    }
+
+    return paths;
+}
+
+std::size_t
+SceneViewportRenderer::countPrims(std::size_t cap) const
+{
+    std::size_t count = 0;
+
+    readStage([&count, cap](const SceneStage* stage) {
+        if (!stage) {
+            return;
+        }
+        for (const UsdPrim& prim : stage->getStage()->Traverse()) {
+            (void)prim;
+            if (++count > cap) {
+                break;
+            }
+        }
+    });
+
+    return count;
+}
+
+std::vector<std::string>
+SceneViewportRenderer::getRootPrims() const
+{
+    std::vector<std::string> paths;
+
+    readStage([&paths](const SceneStage* stage) {
+        if (!stage) {
+            return;
+        }
+        for (const UsdPrim& prim : stage->getStage()->GetPseudoRoot().GetChildren()) {
+            paths.push_back(prim.GetPath().GetString());
+        }
+    });
+
+    return paths;
 }
 
 double
@@ -2581,6 +2695,58 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
+
+    // The folds of each node this viewer showed in the session; foldNode's entry follows each
+    // change.
+    std::vector<std::pair<NodeWPtr, std::vector<std::string>>> foldStates;
+    NodeWPtr foldNode;
+    bool foldNodeSet = false;
+    // foldNode is new to this viewer: its scene is folded once synced if it is over the budget.
+    bool foldBudgetPending = false;
+
+    void rememberFolds()
+    {
+        const NodePtr node = foldNode.lock();
+        foldStates.erase(std::remove_if(foldStates.begin(), foldStates.end(),
+                                        [](const std::pair<NodeWPtr, std::vector<std::string>>& state) { return state.first.expired(); }),
+                         foldStates.end());
+        if (!node) {
+            return;
+        }
+        const std::vector<std::string> folded = renderer.getFoldedPrims();
+        for (std::pair<NodeWPtr, std::vector<std::string>>& state : foldStates) {
+            if (state.first.lock() == node) {
+                state.second = folded;
+
+                return;
+            }
+        }
+        foldStates.push_back(std::make_pair(NodeWPtr(node), folded));
+    }
+
+    // Before a scene is requested: switches to the viewed node's folds when it is another node.
+    void followViewedNode()
+    {
+        const NodePtr viewed = viewedNodeProvider ? viewedNodeProvider() : NodePtr();
+        if (foldNodeSet && (viewed == foldNode.lock())) {
+            return;
+        }
+        foldNodeSet = true;
+        foldNode = viewed;
+        foldBudgetPending = false;
+        if (viewed) {
+            for (const std::pair<NodeWPtr, std::vector<std::string>>& state : foldStates) {
+                if (state.first.lock() == viewed) {
+                    renderer.setFoldedPrims(state.second, false);
+
+                    return;
+                }
+            }
+        }
+        renderer.setFoldedPrims(std::vector<std::string>(), false);
+        foldBudgetPending = bool(viewed);
+    }
+
     QString error;
     bool glInitialized = false;
 
@@ -2817,10 +2983,24 @@ SceneViewport::onSynced(U64 serial,
     if (ok && _imp->renderer.hasScene() && !_imp->renderer.isFramed()) {
         _imp->renderer.frameScene();
     }
+    bool folded = false;
+    if (ok && _imp->foldBudgetPending && _imp->renderer.hasScene()) {
+        _imp->foldBudgetPending = false;
+        const int budget = appPTR->getCurrentSettings()->getViewer3DPrimBudget();
+        if ((budget > 0) && (_imp->renderer.countPrims((std::size_t)budget) > (std::size_t)budget)) {
+            _imp->renderer.setFoldedPrims(_imp->renderer.getRootPrims(), true);
+            _imp->rememberFolds();
+            folded = true;
+        }
+    }
     // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
     publishState();
     update();
+    Q_EMIT sceneSynced();
+    if (folded) {
+        Q_EMIT foldsChanged();
+    }
 }
 
 bool
@@ -2836,6 +3016,7 @@ SceneViewport::setScene(const ScenePayload& payload,
 {
     _imp->frame = frame;
     _imp->renderer.setFrame(frame, framesPerSecond);
+    _imp->followViewedNode();
     requestSync(payload, QString());
 }
 
@@ -3587,6 +3768,41 @@ SceneViewport::refreshTransformHandles()
     }
     _imp->renderer.setTransformHandles(handles);
 } // SceneViewport::refreshTransformHandles
+
+QStringList
+SceneViewport::getFoldedPrims() const
+{
+    QStringList paths;
+    for (const std::string& path : _imp->renderer.getFoldedPrims()) {
+        paths.push_back(QString::fromStdString(path));
+    }
+
+    return paths;
+}
+
+void
+SceneViewport::setFolded(const QStringList& paths,
+                         bool folded)
+{
+    const std::vector<std::string> current = _imp->renderer.getFoldedPrims();
+    std::set<std::string> wanted(current.begin(), current.end());
+    for (const QString& path : paths) {
+        if (folded) {
+            wanted.insert(path.toStdString());
+        } else {
+            wanted.erase(path.toStdString());
+        }
+    }
+    if (wanted == std::set<std::string>(current.begin(), current.end())) {
+        return;
+    }
+    // A fold made before the node's first sync replaces the budget's.
+    _imp->foldBudgetPending = false;
+    _imp->renderer.setFoldedPrims(std::vector<std::string>(wanted.begin(), wanted.end()), true);
+    _imp->rememberFolds();
+    update();
+    Q_EMIT foldsChanged();
+}
 
 void
 SceneViewport::releaseEngine()

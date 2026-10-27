@@ -43,7 +43,9 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QScrollArea>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
+#include <QDropEvent>
 #include <QKeyEvent>
+#include <QMimeData>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QDebug>
 #include <QFontComboBox>
@@ -75,6 +77,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NewLayerDialog.h"
 #include "Gui/ProjectGui.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneGraphModel.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TabGroup.h"
 
@@ -262,8 +265,17 @@ KnobLineEdit::KnobLineEdit(const KnobGuiPtr& knob,
                            int dimension,
                            QWidget* parent)
     : LineEdit(parent)
-    , _dnd( KnobWidgetDnD::create(knob, dimension, this) )
+    , _knobGui(knob)
+    , _dnd(KnobWidgetDnD::create(knob, dimension, this))
 {}
+
+bool
+KnobLineEdit::acceptsPrimPaths(const QMimeData* mime) const
+{
+    KnobGuiString* knobGui = dynamic_cast<KnobGuiString*>(_knobGui.lock().get());
+
+    return mime && mime->hasFormat(SceneGraphModel::primPathsMimeType()) && knobGui && isEnabled() && !isReadOnly() && knobGui->acceptsPrimPaths();
+}
 
 KnobLineEdit::~KnobLineEdit()
 {
@@ -323,6 +335,11 @@ KnobLineEdit::mouseReleaseEvent(QMouseEvent* e)
 void
 KnobLineEdit::dragEnterEvent(QDragEnterEvent* e)
 {
+    if (acceptsPrimPaths(e->mimeData())) {
+        e->acceptProposedAction();
+
+        return;
+    }
     if ( !_dnd->dragEnter(e) ) {
         LineEdit::dragEnterEvent(e);
     }
@@ -331,6 +348,11 @@ KnobLineEdit::dragEnterEvent(QDragEnterEvent* e)
 void
 KnobLineEdit::dragMoveEvent(QDragMoveEvent* e)
 {
+    if (acceptsPrimPaths(e->mimeData())) {
+        e->acceptProposedAction();
+
+        return;
+    }
     if ( !_dnd->dragMove(e) ) {
         LineEdit::dragMoveEvent(e);
     }
@@ -339,6 +361,17 @@ KnobLineEdit::dragMoveEvent(QDragMoveEvent* e)
 void
 KnobLineEdit::dropEvent(QDropEvent* e)
 {
+    if (acceptsPrimPaths(e->mimeData())) {
+        const QString text = QString::fromUtf8(e->mimeData()->data(SceneGraphModel::primPathsMimeType()));
+        const QStringList paths = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        KnobGuiString* knobGui = dynamic_cast<KnobGuiString*>(_knobGui.lock().get());
+        if (knobGui && !paths.isEmpty()) {
+            knobGui->dropPrimPaths(paths);
+        }
+        e->acceptProposedAction();
+
+        return;
+    }
     if ( !_dnd->drop(e) ) {
         LineEdit::dropEvent(e);
     }
@@ -537,6 +570,30 @@ KnobGuiString::getDescriptionLabel() const
         return k->getValue();
     } else {
         return k->getLabel();
+    }
+}
+
+bool
+KnobGuiString::acceptsPrimPaths() const
+{
+    KnobStringPtr knob = _knob.lock();
+
+    return knob && (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) && knob->isEnabled(0) && !knob->isSlave(0);
+}
+
+void
+KnobGuiString::dropPrimPaths(const QStringList& paths)
+{
+    KnobStringPtr knob = _knob.lock();
+
+    if (!knob || paths.isEmpty() || !acceptsPrimPaths()) {
+        return;
+    }
+    const QString text = (knob->getPrimPathHint() == KnobString::ePrimPathHintPath) ? paths.front() : paths.join(QLatin1Char(' '));
+    const std::string oldText = knob->getValue(0);
+    const std::string newText = text.trimmed().toStdString();
+    if (oldText != newText) {
+        pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldText, newText));
     }
 }
 

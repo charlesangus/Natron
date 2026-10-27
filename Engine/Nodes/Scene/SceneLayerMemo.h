@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -106,6 +107,9 @@ public:
      * key does not see.
      **/
     void invalidate();
+
+    // The node produce() records as the author of its layer, for SceneOps::authoringNodeOf().
+    void setOwner(const NodePtr& owner);
 
     // How many layers produce() has authored.
     U64 getAuthorCount() const;

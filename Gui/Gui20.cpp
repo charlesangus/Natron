@@ -549,6 +549,9 @@ Gui::removeViewerTab(ViewerTab* tab,
         }
     }
     Q_EMIT viewersChanged();
+    if (!_imp->_activeViewer) {
+        Q_EMIT activeViewerChanged();
+    }
 } // Gui::removeViewerTab
 
 Histogram*

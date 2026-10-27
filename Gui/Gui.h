@@ -349,6 +349,8 @@ public:
     DopeSheetEditor * getDopeSheetEditor() const;
     ScriptEditor* getScriptEditor() const;
     ProgressPanel* getProgressPanel() const;
+
+    SceneGraphPanel* getSceneGraphPanel() const;
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;
@@ -536,6 +538,9 @@ Q_SIGNALS:
 
     ///emitted when a viewer changes its name or is deleted/added
     void viewersChanged();
+
+    // The viewer getActiveViewer() returns changed.
+    void activeViewerChanged();
 
     void s_doProgressStartOnMainThread(KnobHolder* effect, const QString &message, const QString &messageid, bool canCancel);
 

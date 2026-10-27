@@ -46,6 +46,7 @@
 NATRON_NAMESPACE_ENTER
 
 struct GpuDeviceSummary;
+enum class AiModelTask;
 
 /*The current settings in the preferences menu.*/
 class Settings
@@ -310,6 +311,10 @@ public:
      **/
     void refreshAiDetectedProviders();
 
+    // The model the user made the default for task in Preferences > AI Models, empty when none.
+    std::string getAiDefaultModel(AiModelTask task) const;
+    void setAiDefaultModel(AiModelTask task, const std::string& id);
+
     bool isAutoFixRelativeFilePathEnabled() const;
 
     ///////////////////////////////////////////////////////
@@ -544,6 +549,7 @@ private:
     KnobIntPtr _aiThreads;
     KnobPathPtr _aiOrtLibraryPath;
     KnobStringPtr _aiDetectedProviders;
+    KnobStringPtr _aiDefaultModels;
 
     // General/Projects setup
     KnobPagePtr _projectsPage;

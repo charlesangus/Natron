@@ -34,6 +34,8 @@
 
 #include <QDebug>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutex>
 #include <QSettings>
 #include <QTextStream>
@@ -48,6 +50,7 @@
 
 #include "Global/StrUtils.h"
 
+#include "Engine/Ai/ModelRegistry.h"
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -549,6 +552,7 @@ void
 Settings::initializeKnobsAi()
 {
     _aiPage = AppManager::createKnob<KnobPage>(this, tr("AI"));
+    _aiPage->setName("aiPage");
 
     _aiEnabled = AppManager::createKnob<KnobBool>(this, tr("AI Enabled"));
     _aiEnabled->setName("aiEnabled");
@@ -612,6 +616,12 @@ Settings::initializeKnobsAi()
     _aiDetectedProviders->setIsPersistent(false);
     _aiDetectedProviders->setAsLabel();
     _aiPage->addKnob(_aiDetectedProviders);
+
+    // Edited from the AI Models page, as a JSON object from task name to model id.
+    _aiDefaultModels = AppManager::createKnob<KnobString>(this, tr("AI Default Models"));
+    _aiDefaultModels->setName("aiDefaultModels");
+    _aiDefaultModels->setSecretByDefault(true);
+    _aiPage->addKnob(_aiDefaultModels);
 }
 
 void
@@ -3512,6 +3522,29 @@ std::string
 Settings::getAiOrtLibraryPath() const
 {
     return _aiOrtLibraryPath->getValue();
+}
+
+std::string
+Settings::getAiDefaultModel(AiModelTask task) const
+{
+    const QJsonObject defaults = QJsonDocument::fromJson(QByteArray::fromStdString(_aiDefaultModels->getValue())).object();
+
+    return defaults.value(QString::fromUtf8(aiModelTaskName(task).data(), (int)aiModelTaskName(task).size())).toString().toStdString();
+}
+
+void
+Settings::setAiDefaultModel(AiModelTask task,
+                            const std::string& id)
+{
+    QJsonObject defaults = QJsonDocument::fromJson(QByteArray::fromStdString(_aiDefaultModels->getValue())).object();
+    const QString key = QString::fromUtf8(aiModelTaskName(task).data(), (int)aiModelTaskName(task).size());
+
+    if (id.empty()) {
+        defaults.remove(key);
+    } else {
+        defaults.insert(key, QString::fromStdString(id));
+    }
+    _aiDefaultModels->setValue(QJsonDocument(defaults).toJson(QJsonDocument::Compact).toStdString());
 }
 
 bool

@@ -14,6 +14,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Ai/AiModelTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
@@ -200,6 +201,14 @@ registerNativeParityTestPlugins()
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
     registerTestBuiltInPlugin<GlHostWrapTestEffect>();
 }
+
+void
+registerAiTestPlugins()
+{
+    // An AI node needs a model knob; none ships before the AI nodes, so ModelKnob_Test.cpp has
+    // a constant generator that carries one.
+    registerTestBuiltInPlugin<AiModelTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -251,6 +260,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
+    registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

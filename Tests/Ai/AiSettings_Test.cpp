@@ -117,7 +117,7 @@ TEST(AiSettings, AiPageHoldsTheAiKnobs)
     for (const KnobIPtr& child : page->getChildren()) {
         children.push_back(child->getName());
     }
-    const std::vector<std::string> expected { "aiEnabled", "aiDevice", "aiGpuIndex", "aiThreads", "aiOrtLibraryPath", "aiDetectedProviders" };
+    const std::vector<std::string> expected { "aiEnabled", "aiDevice", "aiGpuIndex", "aiThreads", "aiOrtLibraryPath", "aiDetectedProviders", "aiDefaultModels" };
     EXPECT_EQ(expected, children);
 
     KnobStringPtr detected = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobString>("aiDetectedProviders");

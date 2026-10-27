@@ -40,6 +40,7 @@
 #include <QUrl>
 #include <QtConcurrentRun>
 
+#include "Engine/Ai/InferenceSession.h"
 #include "Engine/Ai/ModelPackage.h"
 #include "Engine/FileDownloader.h"
 
@@ -326,6 +327,44 @@ ModelDownloader::isDownloading(const std::string& id) const
     const AiModelEntry* entry = _registry->find(id);
 
     return entry && findJob(entry->package);
+}
+
+bool
+ModelDownloader::remove(const std::string& id,
+                        std::string* error)
+{
+    const AiModelEntry* entry = _registry->find(id);
+    if (!entry) {
+        if (error) {
+            *error = "unknown model \"" + id + "\"";
+        }
+
+        return false;
+    }
+    if (findJob(entry->package)) {
+        if (error) {
+            *error = "model \"" + id + "\" is downloading";
+        }
+
+        return false;
+    }
+
+    const std::filesystem::path directory(_registry->packageDirectory(*entry));
+    std::error_code ec;
+    std::filesystem::remove_all(directory, ec);
+    InferenceSession::clearCache();
+    for (const AiModelEntry* model : _registry->packageModels(*entry)) {
+        Q_EMIT removed(QString::fromStdString(model->id));
+    }
+    if (ec) {
+        if (error) {
+            *error = "model \"" + id + "\": cannot delete " + directory.string() + ": " + ec.message();
+        }
+
+        return false;
+    }
+
+    return true;
 }
 
 bool

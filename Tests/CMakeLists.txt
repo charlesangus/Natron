@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -104,6 +104,7 @@ set(Tests_SOURCES
     Ai/TiledInference_Test.cpp
     Ai/ModelRegistry_Test.cpp
     Ai/ModelDownloader_Test.cpp
+    Ai/ModelKnob_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp

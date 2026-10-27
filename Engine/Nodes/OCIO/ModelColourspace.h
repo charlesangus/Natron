@@ -93,6 +93,18 @@ public:
     Conversion conversion(double time) const;
 
     /**
+     * @brief The processors from the space from into the space to (toModel) and back
+     * (fromModel). An empty from is the working space and an empty to the model space, so
+     * conversion() is conversionBetween("", "", time).
+     **/
+    Conversion conversionBetween(const std::string& from,
+                                 const std::string& to,
+                                 double time) const;
+
+    // defaultSpace() in the project's config.
+    std::string configSpace(AiColourSpace space) const;
+
+    /**
      * @brief The name in config of the space a model trained in space expects, or empty when the
      * config has none of the names it is known by, and for camera RGB.
      **/

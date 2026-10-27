@@ -28,11 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <array>
+#include <cstddef>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/Ai/ModelKnob.h"
 #include "Engine/EngineFwd.h"
@@ -48,6 +51,14 @@
 #define PLUGIN_MAJOR_NATRON_NEURALDENOISE 1
 
 #define kNeuralDenoiseParamStrength "strength"
+#define kNeuralDenoiseParamPreserveWideGamut "preserveWideGamut"
+#define kNeuralDenoiseParamShadowBoost "shadowBoost"
+#define kNeuralDenoiseParamShadowBoostAuto "auto"
+#define kNeuralDenoiseParamShadowBoostOn "on"
+#define kNeuralDenoiseParamShadowBoostOff "off"
+#define kNeuralDenoiseParamDetailRecovery "detailRecovery"
+// Followed by the band, 1 (finest) to 5.
+#define kNeuralDenoiseParamDetailBand "detailBand"
 #define kNeuralDenoiseParamTileSize "tileSize"
 
 #define kNeuralDenoiseInputSource 0
@@ -69,8 +80,10 @@ inline constexpr NodeSpec kNeuralDenoiseNodeSpec = {
                    "overlapping tiles, and its output is converted back. Pick the space the model was trained in: "
                    "sRGB Encoded Rec.709 for the sRGB models (NIND UNet, NAFNet-SIDD), Linear Rec.2020 for RawNIND "
                    "linear. Nothing else is done to the values; the sRGB models expect them roughly within 0 to 1.\n"
-                   "Strength mixes the result with the input. Each frame is denoised on its own, so the result may "
-                   "flicker over time.\n"
+                   "Strength works as darktable's: for the sRGB models, lowering it brings luminance texture back "
+                   "through a wavelet filter that keeps the noise out; for RawNIND linear it mixes the result with the "
+                   "input. Preserve Wide Gamut and Shadow Boost are darktable's too. Each frame is denoised on its own, "
+                   "so the result may flicker over time.\n"
                    "The models are downloaded on demand; see Preferences > AI Models.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_NEURALDENOISE,
@@ -107,6 +120,47 @@ public:
     static constexpr int kOverlap = 64;
     // The tile edge when Tile Size is 0 and the model takes any size.
     static constexpr int kDefaultTile = 512;
+    // Preserve Wide Gamut's neighbourhood: the 5x5 window around an out-of-gamut pixel.
+    static constexpr int kGamutRadius = 2;
+    // The wavelet bands of Strength's detail recovery, finest first, and their default thresholds
+    // as multiples of the residual's standard deviation.
+    static constexpr int kDetailBands = 5;
+    static constexpr std::array<double, kDetailBands> kDetailBandDefaults = { 0.25, 0.15, 0.05, 0.02, 0.01 };
+
+    enum ShadowBoostEnum {
+        eShadowBoostAuto = 0,
+        eShadowBoostOn,
+        eShadowBoostOff,
+    };
+
+    /**
+     * @brief Whether a frame has enough deep shadow for Auto Shadow Boost: count packed RGB
+     * samples, of which at least 10% have a Rec.709 luminance under 0.005.
+     **/
+    static bool hasDeepShadows(const float* rgb,
+                               std::size_t count);
+
+    /**
+     * @brief Strength's detail: the luminance of original minus denoised, both packed RGB of
+     * width by height, filtered by darktable's wavelet denoise with each band's threshold
+     * bandMultipliers times the residual's standard deviation. Non-finite residuals count as 0.
+     **/
+    static std::vector<float> filteredLuminanceResidual(const float* original,
+                                                        const float* denoised,
+                                                        int width,
+                                                        int height,
+                                                        const std::array<double, kDetailBands>& bandMultipliers);
+
+    /**
+     * @brief Preserve Wide Gamut: each pixel of denoised whose inGamut is 0 takes original's
+     * colour, shifted by the mean luminance of the denoised in-gamut pixels in the 5x5 window
+     * around it less its own. Packed RGB of width by height.
+     **/
+    static void passThroughOutOfGamut(const float* original,
+                                      const std::vector<unsigned char>& inGamut,
+                                      float* denoised,
+                                      int width,
+                                      int height);
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -131,6 +185,9 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    // Drops the whole frame kept for Strength's detail recovery, as Clear Caches does.
+    virtual void purgeCaches() OVERRIDE FINAL;
+
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
@@ -148,7 +205,7 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
-    // An identity at a strength of 0.
+    // An identity at a strength of 0 for a linear model, whose strength is a mix.
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -157,8 +214,31 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The task of the selected model, when the registry lists it.
+    std::optional<AiModelTask> selectedModelTask() const;
+
     // The space the selected model was trained in, from its task.
     std::optional<AiColourSpace> selectedModelSpace() const;
+
+    // Enables the knobs only the sRGB models use.
+    void refreshKnobsForModel();
+
+    // Whether a render at time needs the whole Source: for detail recovery, or to measure Auto
+    // Shadow Boost.
+    bool needsWholeSource(double time,
+                          ViewIdx view);
+
+    // Whether the model's config.json declares darktable's shadow_boost attribute.
+    static bool declaresShadowBoost(const ModelConfig& config);
+
+    struct WholeFrame {
+        U64 key = 0;
+        RectI frame;
+        // Packed RGB over frame, rows from frame.y1, in the working space.
+        std::vector<float> denoised;
+        // One value per pixel, as denoised.
+        std::vector<float> detail;
+    };
 
     void postError(const std::string& message);
     void clearError();
@@ -167,7 +247,13 @@ private:
     std::unique_ptr<ModelKnob> _model;
     ModelColourspaceKnobs _colourspace;
     KnobDoubleWPtr _strength;
+    KnobBoolWPtr _preserveWideGamut;
+    KnobChoiceWPtr _shadowBoost;
+    KnobGroupWPtr _detailRecovery;
+    std::array<KnobDoubleWPtr, kDetailBands> _detailBands;
     KnobIntWPtr _tileSize;
+    std::mutex _frameMutex;
+    std::shared_ptr<const WholeFrame> _frame;
     // The error of the node's own it last posted, rather than one of the model knob's.
     std::mutex _errorMutex;
     std::string _postedError;

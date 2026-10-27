@@ -126,22 +126,40 @@ ModelColourspaceKnobs::space() const
 ModelColourspaceKnobs::Conversion
 ModelColourspaceKnobs::conversion(double time) const
 {
-    Conversion result;
-    const std::string working = _ocio.workingSpace();
-    const std::string model = _ocio.spaceOrWorking(0);
+    return conversionBetween(std::string(), std::string(), time);
+}
 
-    result.toModel = _ocio.processor(_ocio.spaceTransform(working, model), time);
+ModelColourspaceKnobs::Conversion
+ModelColourspaceKnobs::conversionBetween(const std::string& from,
+                                         const std::string& to,
+                                         double time) const
+{
+    Conversion result;
+    const std::string source = from.empty() ? _ocio.workingSpace() : from;
+    const std::string target = to.empty() ? _ocio.spaceOrWorking(0) : to;
+
+    result.toModel = _ocio.processor(_ocio.spaceTransform(source, target), time);
     if (result.toModel.error.empty()) {
-        result.fromModel = _ocio.processor(_ocio.spaceTransform(model, working), time);
+        result.fromModel = _ocio.processor(_ocio.spaceTransform(target, source), time);
     }
     const std::string& error = result.toModel.error.empty() ? result.fromModel.error : result.toModel.error;
     if (!error.empty()) {
-        result.error = QCoreApplication::translate("ModelColourspaceKnobs", "Model Colourspace \"%1\": %2")
-                           .arg(QString::fromStdString(model), QString::fromStdString(error))
-                           .toStdString();
+        // The model space is the one the user picks; name it as the knob does.
+        const QString named = to.empty() ? QCoreApplication::translate("ModelColourspaceKnobs", "Model Colourspace \"%1\": %2")
+                                         : QCoreApplication::translate("ModelColourspaceKnobs", "Colourspace \"%1\": %2");
+        result.error = named.arg(QString::fromStdString(to.empty() ? target : (from.empty() ? to : from)), QString::fromStdString(error)).toStdString();
     }
 
     return result;
+}
+
+std::string
+ModelColourspaceKnobs::configSpace(AiColourSpace space) const
+{
+    ProjectColorManagementPtr colorManagement = _ocio.colorManagement();
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = colorManagement ? colorManagement->getConfig() : OCIO_NAMESPACE::ConstConfigRcPtr();
+
+    return defaultSpace(config, space);
 }
 
 std::string

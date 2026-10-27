@@ -351,11 +351,12 @@ LoopEnd::initializeKnobs()
     KnobStringPtr stopCondition = createKnob<KnobString>(tr("Stop Condition"));
     stopCondition->setName(kLoopEndParamStopCondition);
     stopCondition->setAnimationEnabled(false);
-    stopCondition->setHintToolTip(tr("A Python expression evaluated before each iteration, with loop.iteration, "
-                                     "loop.count, loop.t and loop.frame of that iteration and frame (the current "
-                                     "frame) set: the loop ends before the first iteration it is true for. It may "
-                                     "read parameters, never pixels. An exception ends the loop at that iteration "
-                                     "and shows the error. Empty runs every iteration."));
+    stopCondition->setHintToolTip(tr("A Python expression, written as a parameter expression is, evaluated before "
+                                     "each iteration: node names, thisNode, frame and rfv (context variables) are "
+                                     "available, with loop.iteration, loop.count, loop.t and loop.frame of that "
+                                     "iteration, also as loops.<name>.*. The loop ends before the first iteration it "
+                                     "is true for. It may read parameters, never pixels. An exception ends the loop "
+                                     "at that iteration and shows the error. Empty runs every iteration."));
     stopCondition->setDefaultValue(std::string());
     page->addKnob(stopCondition);
     _stopCondition = stopCondition;
@@ -537,19 +538,15 @@ LoopEnd::evaluateStop(const Resolved& resolved,
 
     int stopAt = resolved.count;
     error->clear();
+    KnobStringPtr stopCondition = _stopCondition.lock();
     {
         PythonGILLocker pgl;
-        PyObject* code = Py_CompileString(expression.c_str(), "<stopCondition>", Py_eval_input);
-        PyObject* globals = code ? PyDict_Copy(PyModule_GetDict(NATRON_PYTHON_NAMESPACE::getMainModule())) : NULL;
-        PyObject* types = globals ? PyImport_ImportModule("types") : NULL;
+        std::string failure;
+        PyObject* function = stopCondition ? stopCondition->compileExpressionSource(expression, { "loop", "loops" }, &failure) : NULL;
+        PyObject* types = function ? PyImport_ImportModule("types") : NULL;
         PyObject* simpleNamespace = types ? PyObject_GetAttrString(types, "SimpleNamespace") : NULL;
         PyObject* noArgs = simpleNamespace ? PyTuple_New(0) : NULL;
         bool ok = (noArgs != NULL);
-        if (ok) {
-            PyObject* frame = PyFloat_FromDouble(time);
-            ok = frame && (PyDict_SetItemString(globals, "frame", frame) == 0);
-            Py_XDECREF(frame);
-        }
         int k = 0;
         for (; ok && (k < resolved.count); ++k) {
             const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
@@ -566,46 +563,43 @@ LoopEnd::evaluateStop(const Resolved& resolved,
             Py_XDECREF(frameValue);
             PyObject* loop = ok ? PyObject_Call(simpleNamespace, noArgs, variables) : NULL;
             Py_XDECREF(variables);
-            ok = loop && (PyDict_SetItemString(globals, "loop", loop) == 0);
+            // loops.<name> is this loop under its name.
+            PyObject* loopsVariables = loop ? PyDict_New() : NULL;
+            ok = loopsVariables && (resolved.loopName.empty() || (PyDict_SetItemString(loopsVariables, resolved.loopName.c_str(), loop) == 0));
+            PyObject* loops = ok ? PyObject_Call(simpleNamespace, noArgs, loopsVariables) : NULL;
+            Py_XDECREF(loopsVariables);
+            PyObject* arguments = loops ? PyTuple_Pack(2, loop, loops) : NULL;
             Py_XDECREF(loop);
-            if (!ok) {
+            Py_XDECREF(loops);
+            if (!arguments) {
+                ok = false;
                 break;
             }
-            PyObject* result = PyEval_EvalCode(code, globals, globals);
-            const int truth = result ? PyObject_IsTrue(result) : -1;
+            PyObject* result = NULL;
+            const bool evaluated = stopCondition->callExpressionFunction(function, time, ViewIdx(0), arguments, &result, &failure);
+            Py_DECREF(arguments);
+            const int truth = evaluated ? PyObject_IsTrue(result) : -1;
             Py_XDECREF(result);
             if (truth != 0) {
                 ok = (truth == 1);
+                if (!ok && evaluated) {
+                    failure = "the result is not a truth value";
+                }
                 break;
             }
         }
         stopAt = std::min(k, resolved.count);
-        if (!ok) {
-            std::string what = "the expression could not be evaluated";
-            if (PyErr_Occurred()) {
-                PyObject* type = NULL;
-                PyObject* value = NULL;
-                PyObject* traceback = NULL;
-                PyErr_Fetch(&type, &value, &traceback);
-                PyErr_NormalizeException(&type, &value, &traceback);
-                PyObject* text = value ? PyObject_Str(value) : NULL;
-                PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
-                PyErr_Clear();
-                what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
-                Py_XDECREF(typeName);
-                Py_XDECREF(text);
-                Py_XDECREF(type);
-                Py_XDECREF(value);
-                Py_XDECREF(traceback);
-                PyErr_Clear();
+        if (!function || !ok) {
+            if (failure.empty()) {
+                failure = "the expression could not be evaluated";
             }
-            *error = tr("Stop Condition failed at iteration %1, where the loop stops: %2").arg(stopAt).arg(QString::fromUtf8(what.c_str())).toStdString();
+            PyErr_Clear();
+            *error = tr("Stop Condition failed at iteration %1, where the loop stops: %2").arg(stopAt).arg(QString::fromUtf8(failure.c_str())).toStdString();
         }
         Py_XDECREF(noArgs);
         Py_XDECREF(simpleNamespace);
         Py_XDECREF(types);
-        Py_XDECREF(globals);
-        Py_XDECREF(code);
+        Py_XDECREF(function);
     }
 
     if (render) {

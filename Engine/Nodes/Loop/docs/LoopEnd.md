@@ -48,17 +48,22 @@ M259 - GPU Placement Under Render Contexts.
 
 ## Stop condition
 
-- `stopCondition`: a Python expression evaluated before each iteration `k`, in order, with
-  `loop.iteration`, `loop.count`, `loop.t` and `loop.frame` of that iteration and `frame`
-  (the current frame) set, and the project's globals (`app1`, ...) visible. The loop ends
-  before the first iteration it is true for: only the iterations before it are folded, and
-  mean divides by their number. Empty runs every iteration.
+- `stopCondition`: a Python expression evaluated before each iteration `k`, in order, in the
+  environment of a parameter expression on the LoopEnd: bare node names of its group
+  (`Grade1.multiply.get()`), `thisNode`, `app` and the project's globals, `frame` (the current
+  frame) and `rfv`. `rfv.<name>` reads the render context variables the LoopEnd receives from
+  the Sets below it, at the evaluated frame and view, falling back to the project's variables.
+  `loop.iteration`, `loop.count`, `loop.t` and `loop.frame` are those of the iteration, and
+  `loops.<name>` is the same under the loop's name. The loop ends before the first iteration it
+  is true for: only the iterations before it are folded, and mean divides by their number.
+  Empty runs every iteration.
 - It decides which iterations render, once per render and frame, and is never evaluated per
-  pixel. It may read parameters; it cannot read the body's pixels.
+  pixel. It may read parameters; it cannot read the body's pixels. The
+  variables of the loops enclosing this one are not available to it.
 - Ending before the first iteration outputs black with a warning. An exception, a syntax
   error among them, ends the loop at the iteration it was raised for and shows the error on
   the LoopEnd; the iterations before it still render.
-- The parameters and project variables the stop condition reads are part of the LoopEnd's
+- The parameters, `rfv` variables and project variables the stop condition reads are part of the LoopEnd's
   hash, as for an expression: editing one re-renders it. Its output is cached per frame, since
   the condition may read the frame. A node created after the condition was typed is only
   tracked once the condition is edited or the project reloaded.

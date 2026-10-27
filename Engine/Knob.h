@@ -2314,6 +2314,23 @@ public:
     /// The Python GIL must be held before calling this, so the the PyObject remains valid.
     static bool executeExpression(const std::string& expr, PyObject** ret, std::string* error);
 
+    /**
+     * @brief Compiles source, a single Python expression, into a function with the environment of an
+     * expression of this knob: bare node names, thisNode, thisParam, rfv and app. It takes (frame, view)
+     * then the parameters named, and returns the expression's value. The result is a new reference, null
+     * with error set when the source or the environment cannot be compiled. Call it with
+     * callExpressionFunction(). The Python GIL must be held.
+     **/
+    PyObject* compileExpressionSource(const std::string& source, const std::vector<std::string>& parameters, std::string* error) const;
+
+    /**
+     * @brief Calls a function from compileExpressionSource() the way an expression of this knob is
+     * evaluated at time and view: the knobs it reads without a time read at time, and rfv reads the
+     * context of this knob's node. arguments, a tuple, follow the frame and the view. The result is a new
+     * reference, null with error set when the call raised. The Python GIL must be held.
+     **/
+    bool callExpressionFunction(PyObject* function, double time, ViewIdx view, PyObject* arguments, PyObject** ret, std::string* error) const;
+
     virtual std::pair<int, KnobIPtr> getMaster(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isSlave(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual Natron::AnimationLevelEnum getAnimationLevel(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;

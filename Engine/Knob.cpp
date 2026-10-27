@@ -4188,6 +4188,121 @@ KnobHelper::executeExpression(const std::string& expr,
     return true;
 }
 
+static std::string
+fetchPythonError()
+{
+    std::string what = "the expression could not be evaluated";
+    if (PyErr_Occurred()) {
+        PyObject* type = NULL;
+        PyObject* value = NULL;
+        PyObject* traceback = NULL;
+        PyErr_Fetch(&type, &value, &traceback);
+        PyErr_NormalizeException(&type, &value, &traceback);
+        PyObject* text = value ? PyObject_Str(value) : NULL;
+        PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
+        PyErr_Clear();
+        what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
+        Py_XDECREF(typeName);
+        Py_XDECREF(text);
+        Py_XDECREF(type);
+        Py_XDECREF(value);
+        Py_XDECREF(traceback);
+        PyErr_Clear();
+    }
+
+    return what;
+}
+
+PyObject*
+KnobHelper::compileExpressionSource(const std::string& source,
+                                    const std::vector<std::string>& parameters,
+                                    std::string* error) const
+{
+    PythonGILLocker pgl;
+
+    if (source.find('\n') != std::string::npos) {
+        *error = "unexpected new line character";
+
+        return NULL;
+    }
+    std::string declarations;
+    try {
+        declarations = _imp->declarePythonVariables(true, 0);
+    } catch (const std::exception& e) {
+        *error = e.what();
+
+        return NULL;
+    }
+    static const char* const kFunctionName = "NatronKnobExpressionSource";
+    std::stringstream ss;
+    ss << "def " << kFunctionName << "(frame, view";
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+        ss << ", " << parameters[i];
+    }
+    ss << "):\n"
+       << declarations << "    return (" << source << "\n    )\n";
+
+    PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
+    PyObject* globalDict = PyModule_GetDict(mainModule);
+    PyErr_Clear();
+    PyObject* v = PyRun_String(ss.str().c_str(), Py_file_input, globalDict, 0);
+    if (!v) {
+        *error = fetchPythonError();
+
+        return NULL;
+    }
+    Py_DECREF(v);
+    PyObject* function = PyDict_GetItemString(globalDict, kFunctionName); // borrowed
+    if (!function) {
+        *error = "the expression could not be compiled";
+
+        return NULL;
+    }
+    Py_INCREF(function);
+    PyDict_DelItemString(globalDict, kFunctionName);
+
+    return function;
+}
+
+bool
+KnobHelper::callExpressionFunction(PyObject* function,
+                                   double time,
+                                   ViewIdx view,
+                                   PyObject* arguments,
+                                   PyObject** ret,
+                                   std::string* error) const
+{
+    *ret = 0;
+    PyObject* frameValue = PyFloat_FromDouble(time);
+    PyObject* viewValue = PyLong_FromLong((long)view);
+    PyObject* head = (frameValue && viewValue) ? PyTuple_Pack(2, frameValue, viewValue) : NULL;
+    Py_XDECREF(frameValue);
+    Py_XDECREF(viewValue);
+    PyObject* all = head ? (arguments ? PySequence_Concat(head, arguments) : head) : NULL;
+    if (all != head) {
+        Py_XDECREF(head);
+    }
+    if (!all) {
+        *error = fetchPythonError();
+
+        return false;
+    }
+    {
+        const ExpressionTimeScope timeScope(time);
+        PyRFV::ExpressionScope rfvScope(this, time, view);
+        PyErr_Clear();
+        *ret = PyObject_CallObject(function, all);
+    }
+    Py_DECREF(all);
+    if (!*ret) {
+        *error = fetchPythonError();
+
+        return false;
+    }
+
+    return true;
+}
+
 std::string
 KnobHelper::getExpression(int dimension) const
 {

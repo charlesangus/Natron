@@ -58,6 +58,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -1047,4 +1048,71 @@ TEST_F(NativeLoopBlockTest, AStopConditionsOutputIsCachedUntilWhatItReadsChanges
     EXPECT_NEAR(1. + 2. / 9., value, 1e-5);
 
     appPTR->clearAllCaches();
+}
+
+// The stop condition reads a context variable as a knob expression does: rfv.n comes from a Set
+// below the LoopEnd, and changing it moves where the loop stops.
+TEST_F(NativeLoopBlockTest, AStopConditionReadsContextVariablesFromASetBelow)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createDrivenCounter();
+    NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    ASSERT_TRUE(constant && begin && body && end && set);
+    EffectInstancePtr setEffect = set->getEffectInstance();
+    KnobDoublePtr variable = setEffect->createDoubleKnob("n", "n", 1);
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+    ASSERT_TRUE(bool(variables));
+    ASSERT_TRUE(variables->addKnob(variable));
+    setEffect->recreateUserKnobs(false);
+    variable->setValue(3.);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+    ASSERT_TRUE(set->connectInput(end, 0));
+    ASSERT_TRUE(setStopCondition(end, "loop.iteration >= rfv.n"));
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(set, &value));
+    EXPECT_EQ(3, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 1. / 9., value, 1e-5);
+
+    QString message;
+    int type = -1;
+    end->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+
+    CountingTestRegistry::reset();
+    variable->setValue(5.);
+    ASSERT_TRUE(renderedValue(set, &value));
+    EXPECT_EQ(5, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 2. / 9., value, 1e-5);
+}
+
+// A node is named bare in the stop condition, as in a knob expression.
+TEST_F(NativeLoopBlockTest, AStopConditionReadsAParameterByBareNodeName)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createDrivenCounter();
+    NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
+    NodePtr control = createConstant(4.);
+    ASSERT_TRUE(constant && begin && body && end && control);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+    ASSERT_TRUE(setStopCondition(end, "loop.iteration >= " + control->getScriptName_mt_safe() + ".color.getValue(0)"));
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_EQ(4, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 1.5 / 9., value, 1e-5);
+
+    QString message;
+    int type = -1;
+    end->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }

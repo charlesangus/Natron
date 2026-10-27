@@ -33,7 +33,7 @@ STARTUP_TIMEOUT_S = 60.0
 PRIMITIVES = [
     ("USDCard", "Card", -4.5, 8 * 8),
     ("USDSphere", "Sphere", -1.5, 30 * 30),
-    ("USDCube", "Cube", 1.5, 6),
+    ("USDCube", "Cube", 1.5, 24),
     ("USDCylinder", "Cylinder", 4.5, 30 * 30 + 2 * 30),
 ]
 

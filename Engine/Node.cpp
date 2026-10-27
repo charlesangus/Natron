@@ -7770,6 +7770,9 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
                 }
             }
         }
+        if (const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get())) {
+            helper->getDriverKeyTimes(keyframes);
+        }
     }
 }
 

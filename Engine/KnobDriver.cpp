@@ -186,6 +186,35 @@ KnobDriver::getEndAt(double time) const
     return _endCurve ? _endCurve->getValueAt(time, false) : _end;
 }
 
+KnobDriverPtr
+KnobDriver::withRangeCurve(bool end,
+                           const Curve& curve,
+                           double time) const
+{
+    const bool keyed = curve.getKeyFramesCount() > 0;
+    const double start = (!end && !keyed) ? getStartAt(time) : _start;
+    const double endValue = (end && !keyed) ? getEndAt(time) : _end;
+    const Curve* startCurve = end ? _startCurve.get() : &curve;
+    const Curve* endCurve = end ? &curve : _endCurve.get();
+
+    return std::make_shared<const KnobDriver>(_variable, start, endValue, _easing, _curve.get(), startCurve, endCurve);
+}
+
+void
+KnobDriver::appendRangeKeyTimes(std::list<double>* times) const
+{
+    const Curve* curves[2] = { _startCurve.get(), _endCurve.get() };
+    for (int i = 0; i < 2; ++i) {
+        if (!curves[i]) {
+            continue;
+        }
+        const KeyFrameSet keys = curves[i]->getKeyFrames_mt_safe();
+        for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+            times->push_back(it->getTime());
+        }
+    }
+}
+
 double
 KnobDriver::ease(double t) const
 {

@@ -2132,6 +2132,21 @@ public:
     RenderContextReadSet getDriverReadSet() const;
 
     /**
+     * @brief The times of every dimension's driver start and end keys, for the timeline.
+     **/
+    void getDriverKeyTimes(std::list<SequenceTime>* times) const;
+
+    /**
+     * @brief Whether the node's timeline marks show this knob's keys.
+     **/
+    bool showsKeysOnTimeline() const;
+
+private:
+    void updateDriverKeysOnTimeline(const KnobDriverPtr& previous, const KnobDriverPtr& driver);
+    static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
+
+public:
+    /**
      * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
      * them: its own read sources' and, transitively, those of what its expressions and links read.
      * Walks them all even when called while such a gathering runs.

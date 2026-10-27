@@ -39,6 +39,7 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
+#include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheet.h"
 #include "Gui/Gui.h"
@@ -398,8 +399,18 @@ HierarchyViewPrivate::checkKnobVisibleState(DSKnob *dsKnob)
                 showContext = true;
             }
         }
+    } else if (DriverCurveGuiPtr driverCurve = dsKnob->getDriverCurve()) {
+        showContext = driverCurve->isShown();
     } else {
         showContext = knobGui->getCurve(ViewIdx(0), dim)->isAnimated();
+    }
+
+    const std::list<DSKnob*>& driverRows = dsKnob->getDriverRows();
+    for (std::list<DSKnob*>::const_iterator it = driverRows.begin(); it != driverRows.end(); ++it) {
+        const bool shown = (*it)->getDriverCurve()->isShown();
+        (*it)->getTreeItem()->setHidden(!shown);
+        (*it)->getTreeItem()->setData(0, QT_ROLE_CONTEXT_IS_ANIMATED, shown);
+        showContext = showContext || shown;
     }
 
     QTreeWidgetItem *treeItem = dsKnob->getTreeItem();
@@ -1035,7 +1046,7 @@ HierarchyView::onKeyframeSelectionChanged(bool recurse)
             KnobGuiPtr knobGui = dsKnob->getKnobGui();
             assert(knobGui);
             int dim = dsKnob->getDimension();
-            KeyFrameSet keyframes = knobGui->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
+            KeyFrameSet keyframes = dsKnob->getCurve(dim)->getKeyFrames_mt_safe();
             bool selectItem = true;
 
             for (KeyFrameSet::const_iterator kfIt = keyframes.begin();

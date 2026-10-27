@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <string>
 
@@ -123,6 +124,17 @@ public:
 
     double getStartAt(double time) const;
     double getEndAt(double time) const;
+
+    /**
+     * @brief A copy with the start (or end) curve replaced. When the curve has no keys the
+     * constant becomes this driver's value at time, as removing a knob's last key keeps its value.
+     */
+    KnobDriverPtr withRangeCurve(bool end, const Curve& curve, double time) const;
+
+    /**
+     * @brief Appends the times of the start and end keys.
+     */
+    void appendRangeKeyTimes(std::list<double>* times) const;
 
     /**
      * @brief Whether start or end is keyed, so the driven value changes with the time.

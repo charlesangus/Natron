@@ -25,7 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <string>
 
@@ -407,4 +409,66 @@ TEST_F(BaseTest, KnobDriverKeysRoundTripThroughAProject)
     EXPECT_FALSE(constant->isAnimated());
     EXPECT_DOUBLE_EQ(0.25, constant->getStart());
     EXPECT_DOUBLE_EQ(3., constant->getEnd());
+}
+
+TEST_F(BaseTest, KnobDriverRangeKeysAreEditedThroughNewDrivers)
+{
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(bool(grade));
+    KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+    Curve start;
+    fillRangeCurve(&start);
+    const KnobDriverPtr keyed = std::make_shared<const KnobDriver>(kKnobDriverDefaultVariable, 0., 2., KnobDriver::eEasingLinear, (const Curve*)NULL, &start);
+    ASSERT_TRUE(multiply->setDriver(0, keyed));
+
+    // The timeline shows the keys of the start and end curves.
+    std::list<SequenceTime> times;
+    multiply->getDriverKeyTimes(&times);
+    ASSERT_EQ(2u, times.size());
+    EXPECT_EQ(1, times.front());
+    EXPECT_EQ(11, times.back());
+    std::list<SequenceTime> nodeTimes;
+    grade->getAllKnobsKeyframes(&nodeTimes);
+    EXPECT_EQ(1, (int)std::count(nodeTimes.begin(), nodeTimes.end(), 11));
+
+    // Moving a key gives a new driver; the old one is unchanged.
+    Curve moved(*keyed->getStartCurve());
+    moved.setKeyFrameValueAndTime(21., 1., moved.keyFrameIndex(11.));
+    const KnobDriverPtr movedDriver = keyed->withRangeCurve(false, moved, 1.);
+    ASSERT_TRUE(bool(movedDriver));
+    ASSERT_TRUE(multiply->setDriver(0, movedDriver));
+    ASSERT_TRUE(multiply->getDriver(0)->getStartCurve() != NULL);
+    EXPECT_EQ(2, multiply->getDriver(0)->getStartCurve()->getKeyFramesCount());
+    EXPECT_NEAR(0.5, multiply->getDriver(0)->getStartAt(11.), 1e-9);
+    EXPECT_DOUBLE_EQ(1., keyed->getStartAt(11.));
+    EXPECT_DOUBLE_EQ(2., movedDriver->getEndAt(11.));
+    times.clear();
+    multiply->getDriverKeyTimes(&times);
+    ASSERT_EQ(2u, times.size());
+    EXPECT_EQ(21, times.back());
+
+    // An end curve edits the end only.
+    Curve end;
+    end.addKeyFrame(KeyFrame(5., 4., 0., 0., eKeyframeTypeConstant));
+    const KnobDriverPtr withEnd = movedDriver->withRangeCurve(true, end, 1.);
+    ASSERT_TRUE(withEnd->getEndCurve() != NULL);
+    EXPECT_DOUBLE_EQ(4., withEnd->getEndAt(30.));
+    ASSERT_TRUE(withEnd->getStartCurve() != NULL);
+    EXPECT_EQ(2, withEnd->getStartCurve()->getKeyFramesCount());
+
+    // Removing the last key leaves the constant the curve had at the given time.
+    const KnobDriverPtr unkeyed = withEnd->withRangeCurve(false, Curve(), 21.);
+    EXPECT_TRUE(unkeyed->getStartCurve() == NULL);
+    EXPECT_DOUBLE_EQ(1., unkeyed->getStart());
+    EXPECT_DOUBLE_EQ(1., unkeyed->getStartAt(50.));
+    EXPECT_TRUE(unkeyed->isAnimated());
+    const KnobDriverPtr constant = unkeyed->withRangeCurve(true, Curve(), 5.);
+    EXPECT_FALSE(constant->isAnimated());
+    EXPECT_DOUBLE_EQ(4., constant->getEnd());
+    ASSERT_TRUE(multiply->setDriver(0, constant));
+    EXPECT_FALSE(multiply->hasAnimatedDriver());
+    times.clear();
+    multiply->getDriverKeyTimes(&times);
+    EXPECT_TRUE(times.empty());
 }

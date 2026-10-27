@@ -304,7 +304,8 @@ CurveEditor::recursiveSelect(QTreeWidgetItem* cur,
         NodeCurveEditorElement* elem = (*it)->findElement(cur);
         if ( elem && !elem->getTreeItem()->isHidden() ) {
             CurveGuiPtr curve = elem->getCurve();
-            if (curve /*&& curve->getInternalCurve()->isAnimated()*/) {
+            // A knob item shown only for the driver rows under it has no curve of its own to draw.
+            if (curve && ((cur->childCount() == 0) || elem->showsOwnCurve())) {
                 curves->push_back(curve);
             }
             break;
@@ -516,6 +517,33 @@ createElementsForKnob(QTreeWidgetItem* parent,
         }
     }
 
+    // The start and end of the knob's loop drivers, for all the driven dimensions while their
+    // curves agree and for each one otherwise.
+    std::vector<NodeCurveEditorElement*> driverElements;
+    if (!rotoctx && helper->canHaveDriver()) {
+        const QString knobLabel = QString::fromUtf8(k->getLabel().c_str());
+        const int nDims = k->getDimension();
+        for (int end = 0; end < 2; ++end) {
+            const QString rowLabel = end ? CurveEditor::tr("Driver End") : CurveEditor::tr("Driver Start");
+            for (int d = -1; d < ((nDims > 1) ? nDims : 0); ++d) {
+                const QString label = (d < 0) ? rowLabel : rowLabel + QLatin1Char('.') + QString::fromUtf8(k->getDimensionName(d).c_str());
+                QTreeWidgetItem* driverItem = new QTreeWidgetItem(knobItem);
+                driverItem->setText(0, label);
+                DriverCurveGuiPtr driverCurve = std::make_shared<DriverCurveGui>(curveWidget, k, d, (bool)end, knobLabel + QLatin1Char(' ') + label, QColor(255, 255, 255), 1);
+                curveWidget->addCurveAndSetColor(driverCurve);
+                driverCurve->setVisible(false);
+                NodeCurveEditorElement* driverElem = new NodeCurveEditorElement(tree, curveEditor, k, d, driverItem, driverCurve);
+                elements.push_back(driverElem);
+                driverElements.push_back(driverElem);
+                if (driverCurve->isShown()) {
+                    *hasCurveVisible = true;
+                    hideKnob = false;
+                } else {
+                    driverItem->setHidden(true);
+                }
+            }
+        }
+    }
 
     if (hideKnob) {
         knobItem->setHidden(true);
@@ -527,6 +555,9 @@ createElementsForKnob(QTreeWidgetItem* parent,
         elem = new NodeCurveEditorElement(tree, curveEditor, k, 0, knobItem, knobCurve);
     }
     elements.push_back(elem);
+    for (std::size_t i = 0; i < driverElements.size(); ++i) {
+        driverElements[i]->setDriverOwner(elem);
+    }
     if (!dimElements.empty()) {
         elem->setKnobDimensionElements(dimElements);
     }
@@ -662,8 +693,15 @@ NodeCurveEditorElement::setVisible(bool visible)
         // depends on the item's siblings visibility
         if (_curveDisplayed || (_curve && !_treeItem->isHidden())) {
             _curveDisplayed = false;
-            _treeItem->setHidden(true);
-            checkIfHiddenRecursivly( _treeWidget, _treeItem->parent() );
+            // A knob item stays while a driver row under it is shown.
+            bool childShown = false;
+            for (int i = 0; i < _treeItem->childCount(); ++i) {
+                childShown = childShown || !_treeItem->child(i)->isHidden();
+            }
+            _treeItem->setHidden(!childShown);
+            if (!childShown && !(_driverOwner && _driverOwner->isCurveVisible())) {
+                checkIfHiddenRecursivly(_treeWidget, _treeItem->parent());
+            }
             _curve->setVisibleAndRefresh(false);
         }
     }
@@ -688,11 +726,7 @@ NodeCurveEditorElement::checkVisibleState(bool autoSelectOnShow)
         return;
     }
 
-    CurvePtr curve =  _curve->getInternalCurve();
-    KnobIPtr knob = getInternalKnob();
-    std::string expr = knob ? knob->getExpression(_dimension) : std::string();
-    // even when there is only one keyframe, there may be tangents!
-    if ( curve && ( (curve->getKeyFramesCount() > 0) || !expr.empty() ) ) {
+    if (showsOwnCurve()) {
         setVisible(true);
 
         if (autoSelectOnShow) {
@@ -733,6 +767,23 @@ NodeCurveEditorElement::checkVisibleState(bool autoSelectOnShow)
         setVisible(false);
     }
 } // NodeCurveEditorElement::checkVisibleState
+
+bool
+NodeCurveEditorElement::showsOwnCurve() const
+{
+    if (!_curve) {
+        return false;
+    }
+    if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(_curve.get())) {
+        return isDriverCurve->isShown();
+    }
+    CurvePtr curve = _curve->getInternalCurve();
+    KnobIPtr knob = getInternalKnob();
+    std::string expr = knob ? knob->getExpression(_dimension) : std::string();
+
+    // even when there is only one keyframe, there may be tangents!
+    return curve && ((curve->getKeyFramesCount() > 0) || !expr.empty());
+}
 
 void
 NodeCurveEditorElement::checkVisibleState()
@@ -840,6 +891,7 @@ NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget* tree,
     , _knobFolded(false)
     , _hiddenByFold(false)
     , _foldedKnobDimensionZero(false)
+    , _driverOwner(NULL)
 {
     if (knob) {
         QObject::connect( knob.get(), SIGNAL(keyFrameSet()), this, SLOT(checkVisibleState()) );
@@ -874,14 +926,21 @@ NodeCurveEditorElement::NodeCurveEditorElement(QTreeWidget* tree,
     , _knobFolded(false)
     , _hiddenByFold(false)
     , _foldedKnobDimensionZero(false)
+    , _driverOwner(NULL)
 {
     if (internalKnob) {
         KnobSignalSlotHandlerPtr handler = internalKnob->getSignalSlotHandler();
         QObject::connect( handler.get(), SIGNAL(keyFrameSet(double,ViewSpec,int,int,bool)), this, SLOT(checkVisibleState()) );
         QObject::connect( handler.get(), SIGNAL(keyFrameRemoved(double,ViewSpec,int,int)), this, SLOT(checkVisibleState()) );
         QObject::connect( handler.get(), SIGNAL(animationRemoved(ViewSpec,int)), this, SLOT(checkVisibleState()) );
+        if (dynamic_cast<DriverCurveGui*>(curve.get())) {
+            // Queued, so that a change to several dimensions is seen once all are made.
+            QObject::connect(handler.get(), SIGNAL(driverChanged(int)), this, SLOT(checkVisibleState()), Qt::QueuedConnection);
+        }
     }
-    if (curve) {
+    if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(curve.get())) {
+        _curveDisplayed = isDriverCurve->isShown();
+    } else if (curve) {
         // even when there is only one keyframe, there may be tangents!
         if (curve->getInternalCurve()->getKeyFramesCount() > 0) {
             _curveDisplayed = true;

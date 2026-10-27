@@ -161,6 +161,45 @@ private:
     bool _snapshotsTaken;
 };
 
+/**
+ * @brief Wraps a command that edits the start or end curves of knobs' loop drivers. Drivers are
+ * swapped whole, so undo puts back the drivers each knob had before the first redo, and a later
+ * redo the ones the first left, after the wrapped command has run either way.
+ **/
+class DriverCurveEditCommand
+    : public QUndoCommand {
+public:
+    DriverCurveEditCommand(QUndoCommand* inner,
+                           const std::list<KnobIPtr>& knobs,
+                           QUndoCommand* parent = 0);
+
+    virtual ~DriverCurveEditCommand() OVERRIDE;
+
+    /**
+     * @brief The knobs whose drivers the curves stand for, each once.
+     **/
+    static std::list<KnobIPtr> driverKnobsOf(const std::list<CurveGuiPtr>& curves);
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+    virtual int id() const OVERRIDE FINAL;
+    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL;
+
+private:
+    struct DrivenKnob {
+        KnobIWPtr knob;
+        std::vector<KnobDriverPtr> before;
+        std::vector<KnobDriverPtr> after;
+    };
+
+    static std::vector<KnobDriverPtr> driversOf(const KnobIPtr& knob);
+    void apply(bool after);
+
+    std::unique_ptr<QUndoCommand> _inner;
+    std::list<DrivenKnob> _knobs;
+    bool _redone;
+};
+
 //////////////////////////////ADD MULTIPLE KEYS COMMAND//////////////////////////////////////////////
 
 class AddKeysCommand

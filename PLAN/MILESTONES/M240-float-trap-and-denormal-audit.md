@@ -84,7 +84,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 ## Phase 240.3: RADV failures inherited from main
 
-- [ ] M240.P3.T1 — Noise parity on RADV
+- [x] M240.P3.T1 — Noise parity on RADV
   - files: `Tests/Native/NativeNoiseGpu_Test.cpp`, `Engine/Nodes/Generator/Noise.cpp`, `Engine/Gpu/Kernels/noise*.slang`
   - approach: `NativeNoiseGpuTest.MatchesTheCpuRender`'s `Match::Exact` cases differ by 1 ulp of normal values on RADV (worst 5.96e-08, e.g. white per pixel, decorrelated, and rotated odd cells far from the origin); lavapipe passes. Find which step rounds differently on hardware (fma contraction, a transcendental, float vs double hash scaling). Either make the CPU and GPU compute it identically, or, if the difference is inherent hardware rounding, move those cases to a 1-ulp tolerance with the reason recorded in the node's doc `Tolerance:` line.
   - verify: `ctest -R NativeNoiseGpu` passes on RADV and lavapipe.
@@ -137,3 +137,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-27 — **Left alone in P2.T4 (beyond narrowing):** Keyer's `setThresholdsFromKeyColor` squares raw key-colour components in double (a UI edit path, not a render), and EdgeDetect's halo and filter sizes cast a huge `blurSize` to int. Neither is a knob-to-float narrow, so both stay out of scope.
 
 - 2026-10-27 — **P2.T2 and P2.T4–T7 landed as one commit (gpu):** the tasks share the non-trapping helpers, now in one header, `Engine/Nodes/NonTrappingMath.h` (`productOrInfinity`, `quotientOrInfinity`, `sumOrInfinity`, `differenceOrInfinity`, `powOrInfinity`, `reciprocalOrInfinity`). Each returns ±inf exactly where the double operation would overflow, passes NaN through, gives a quiet NaN for inf−inf, 0·inf and inf/inf, and leaves finite results bit-identical (fuzzed with traps on). The first Grade version clamped knobs to ±FLT_MAX and capped ratios, which turned NaN into inf and changed some finite results. The RADV run caught it, and the clamps are gone. Main's `KnobDouble` default range is ±DBL_MAX (`Engine/KnobImpl.h:75`), so every unranged knob counts. Left alone as not knob narrows: Raw spot and temperature `bottomLeft`/`size` (double→int), and general double maths in the matrix and model code.
+
+- 2026-10-27 — **P3.T1 root cause (gpu):** the white cases run through Noise's default 4-octave fBm, which ends with `sum / bound`. RADV lowers that to `v_rcp_f32` and a multiply, which isn't correctly rounded, while the CPU divide is. It isn't fma contraction (every op carries `NoContraction`). `noisecore.slang` now corrects the quotient with an exact remainder (`divideRounded`, using fma-free exact products), so the cases stay exact.

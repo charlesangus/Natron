@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +36,7 @@
 #include <iostream>
 #include <limits>
 #include <list>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -43,7 +45,13 @@
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "Engine/EffectInstance.h"
@@ -55,6 +63,7 @@
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
@@ -84,6 +93,22 @@ const char* const kRenderCamera = "/World/Rig/RenderCam";
 const char* const kGoldenGroup = "USDRender";
 const char* const kGoldenCase = "StormReference";
 const char* const kGoldenCasePrimitives = "StormPrimitives";
+// A crop, not the whole frame: <dir>/USDRender/StormAssignMaterial.exr, half float, zip.
+const char* const kGoldenCaseAssignMaterial = "StormAssignMaterial";
+
+// An asset whose box is bound directly to a grey material of its own.
+const char* const kGreyAsset = "#usda 1.0\n"
+                               "def Xform \"Asset\"\n{\n"
+                               "    def Cube \"Box\" (\n        prepend apiSchemas = [\"MaterialBindingAPI\"]\n    )\n    {\n"
+                               "        double size = 2\n"
+                               "        rel material:binding = </Asset/Looks/Grey>\n    }\n"
+                               "    def Scope \"Looks\"\n    {\n"
+                               "        def Material \"Grey\"\n        {\n"
+                               "            token outputs:surface.connect = </Asset/Looks/Grey/Surface.outputs:surface>\n"
+                               "            def Shader \"Surface\"\n            {\n"
+                               "                uniform token info:id = \"UsdPreviewSurface\"\n"
+                               "                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+                               "                token outputs:surface\n            }\n        }\n    }\n}\n";
 
 /**
  * How far the colour may drift from the reference: GL drivers rasterise and shade with their own
@@ -254,6 +279,81 @@ checkAgainstReference(const RenderedPlane& rgba,
     EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from " << path << "; " << where;
     EXPECT_LE(mean, kMeanTolerance) << "mean difference from " << path << "; " << where;
 } // checkAgainstReference
+
+// Records the crop of the colour plane under NATRON_GOLDEN_RECORD_DIR as a half-float, zip
+// compressed EXR, or compares it with the committed one within the tolerances above. Rows are
+// kept in the plane's order, bottom first, both ways.
+void
+checkCropAgainstReference(const RenderedPlane& rgba,
+                          const RectI& crop,
+                          const char* goldenCase)
+{
+    const int nComps = (int)rgba.channels.size();
+    const int width = crop.width();
+    const int height = crop.height();
+    ASSERT_EQ(4, nComps);
+    ASSERT_TRUE((crop.x1 >= rgba.window.x1) && (crop.y1 >= rgba.window.y1) && (crop.x2 <= rgba.window.x2) && (crop.y2 <= rgba.window.y2));
+    ASSERT_LE(width, 256);
+    ASSERT_LE(height, 256);
+    std::vector<float> pixels;
+    pixels.reserve((std::size_t)width * (std::size_t)height * (std::size_t)nComps);
+    for (int y = crop.y1; y < crop.y2; ++y) {
+        const std::size_t row = (std::size_t)(y - rgba.window.y1) * (std::size_t)rgba.window.width();
+        for (int x = crop.x1; x < crop.x2; ++x) {
+            const std::size_t i = (row + (std::size_t)(x - rgba.window.x1)) * (std::size_t)nComps;
+            pixels.insert(pixels.end(), rgba.pixels.begin() + i, rgba.pixels.begin() + i + nComps);
+        }
+    }
+
+    const std::string name = std::string(kGoldenGroup) + "/" + goldenCase + ".exr";
+    const std::string recordDir = goldenRecordDir();
+    if (!recordDir.empty()) {
+        const QString path = QDir(QString::fromStdString(recordDir)).filePath(QString::fromStdString(name));
+        ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath())) << path.toStdString();
+        std::unique_ptr<OIIO::ImageOutput> out = OIIO::ImageOutput::create(path.toStdString());
+        ASSERT_TRUE(out != nullptr) << OIIO::geterror();
+        OIIO::ImageSpec spec(width, height, nComps, OIIO::TypeDesc::HALF);
+        spec.attribute("compression", "zip");
+        ASSERT_TRUE(out->open(path.toStdString(), spec)) << out->geterror();
+        EXPECT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
+        EXPECT_TRUE(out->close()) << out->geterror();
+        std::cout << "[ golden ] recorded " << path.toStdString() << std::endl;
+
+        return;
+    }
+
+    const std::string path = goldenReferenceDir() + "/" + name;
+    std::unique_ptr<OIIO::ImageInput> in = OIIO::ImageInput::open(path);
+    if (!in) {
+        ADD_FAILURE() << goldenCase << ": no golden reference " << path << " (" << OIIO::geterror() << "). Record it from a build that renders the scene "
+                      << "with NATRON_GOLDEN_RECORD_DIR set.";
+
+        return;
+    }
+    const OIIO::ImageSpec& spec = in->spec();
+    ASSERT_EQ(width, spec.width) << path;
+    ASSERT_EQ(height, spec.height) << path;
+    ASSERT_EQ(nComps, spec.nchannels) << path;
+    std::vector<float> reference(pixels.size());
+    ASSERT_TRUE(in->read_image(0, 0, 0, nComps, OIIO::TypeDesc::FLOAT, reference.data())) << in->geterror();
+    in->close();
+
+    std::size_t differing = 0;
+    double sum = 0.;
+    float worst = 0.;
+    for (std::size_t p = 0; p < pixels.size() / (std::size_t)nComps; ++p) {
+        bool differs = false;
+        for (int k = 0; k < nComps; ++k) {
+            const float d = std::fabs(pixels[p * nComps + k] - reference[p * nComps + k]);
+            sum += d;
+            worst = std::max(worst, d);
+            differs = differs || (d > kChannelTolerance);
+        }
+        differing += differs ? 1 : 0;
+    }
+    EXPECT_LE((double)differing, kDifferingFraction * (double)(pixels.size() / (std::size_t)nComps)) << goldenCase << ": worst difference " << worst;
+    EXPECT_LT(sum / (double)pixels.size(), kMeanTolerance) << goldenCase << ": worst difference " << worst;
+} // checkCropAgainstReference
 
 class USDRenderStormTest
     : public BaseTest {
@@ -444,6 +544,88 @@ protected:
         return render;
     } // createPrimitivesGraph
 
+    /**
+     * The shared-material graph of USDWrite's round trip, rendered: an asset whose box is bound
+     * directly to a grey material, a USDAssignMaterial binding a red USDMaterial to /Asset with
+     * strength, optionally a second binding a blue one to /Asset/Box, the result moved under a
+     * USDXformPrim /T1, and a camera at (0, 0, 10) looking down -Z with a key light. Returns the
+     * USDRender, kWidth x kHeight, null after a gtest failure.
+     **/
+    NodePtr createAssignMaterialGraph(const QString& assetPath,
+                                      USDAssignMaterial::StrengthEnum strength,
+                                      bool secondAssign)
+    {
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr red = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        NodePtr blue = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL)) : NodePtr();
+        NodePtr assignOver = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL)) : NodePtr();
+        NodePtr moved = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!reader || !red || !assign || (secondAssign && (!blue || !assignOver)) || !moved || !camera || !light || !merge || !render) {
+            ADD_FAILURE() << "a 3D node is not registered";
+
+            return NodePtr();
+        }
+
+        KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+        KnobColor* redDiffuse = knob<KnobColor>(red, kUSDMaterialParamDiffuseColor);
+        KnobChoice* strengthKnob = knob<KnobChoice>(assign, kUSDAssignMaterialParamStrength);
+        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
+        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+        if (!file || !redDiffuse || !strengthKnob || !renderCamera || !size || !par) {
+            return NodePtr();
+        }
+        file->setValue(assetPath.toStdString());
+        redDiffuse->setValue(0.8, ViewSpec::all(), 0);
+        redDiffuse->setValue(0.1, ViewSpec::all(), 1);
+        redDiffuse->setValue(0.1, ViewSpec::all(), 2);
+        strengthKnob->setValue((int)strength);
+
+        bool ok = true;
+        ok = ok && setString(red, kSceneParamPrimPath, "/Red");
+        ok = ok && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Asset");
+        ok = ok && setString(moved, kSceneParamPrimPath, "/T1");
+        ok = ok && setTriple(moved, kSceneParamTranslate, 0., 0., 0.);
+        ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
+        ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 10.);
+        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
+        if (!ok) {
+            return NodePtr();
+        }
+        connectNodes(reader, assign, kUSDAssignMaterialInputScene, true);
+        connectNodes(red, assign, kUSDAssignMaterialInputMaterial, true);
+        NodePtr last = assign;
+        if (secondAssign) {
+            KnobColor* blueDiffuse = knob<KnobColor>(blue, kUSDMaterialParamDiffuseColor);
+            if (!blueDiffuse || !setString(blue, kSceneParamPrimPath, "/Blue") || !setString(assignOver, kUSDAssignMaterialParamPrimPattern, "/Asset/Box")) {
+                return NodePtr();
+            }
+            blueDiffuse->setValue(0.1, ViewSpec::all(), 0);
+            blueDiffuse->setValue(0.1, ViewSpec::all(), 1);
+            blueDiffuse->setValue(0.8, ViewSpec::all(), 2);
+            connectNodes(assign, assignOver, kUSDAssignMaterialInputScene, true);
+            connectNodes(blue, assignOver, kUSDAssignMaterialInputMaterial, true);
+            last = assignOver;
+        }
+        connectNodes(last, moved, 0, true);
+        connectNodes(moved, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(light, merge, 2, true);
+        connectNodes(merge, render, 0, true);
+
+        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+        size->setValue(kWidth, ViewSpec::all(), 0);
+        size->setValue(kHeight, ViewSpec::all(), 1);
+        par->setValue(1.);
+
+        return render;
+    } // createAssignMaterialGraph
+
     static std::list<ImageLayerDesc> allPlanes()
     {
         std::list<ImageLayerDesc> layers;
@@ -613,4 +795,59 @@ TEST_F(USDRenderStormTest, PrimitivesRenderWhereTheirTransformsPlaceThem)
         }
     }
     EXPECT_EQ(2u, ids.size());
+} // TEST_F
+
+TEST_F(USDRenderStormTest, ASharedMaterialAssignedByPatternRendersAsBound)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString assetPath = tmp.filePath(QString::fromUtf8("asset.usda"));
+    {
+        QFile f(assetPath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(kGreyAsset);
+    }
+
+    struct Case {
+        USDAssignMaterial::StrengthEnum strength;
+        bool secondAssign;
+        int dominant; // the channel the box's colour is led by, or -1 for grey
+    };
+    // Stronger overrides the box's own grey binding; Weaker leaves it; a later assign wins.
+    const Case cases[] = {
+        { USDAssignMaterial::eStrengthStrongerThanDescendants, false, 0 },
+        { USDAssignMaterial::eStrengthWeakerThanDescendants, false, -1 },
+        { USDAssignMaterial::eStrengthStrongerThanDescendants, true, 2 },
+    };
+    for (const Case& c : cases) {
+        NodePtr node = createAssignMaterialGraph(assetPath, c.strength, c.secondAssign);
+        ASSERT_TRUE(node != nullptr);
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+        EXPECT_FALSE(node->hasPersistentMessage());
+        ASSERT_EQ(3u, planes.size());
+
+        const Coverage box = coverageOf("/T1/Asset/Box", planes[0].pixels, planes[1].pixels, planes[2].pixels);
+        ASSERT_GT(box.count, 100) << "case " << c.dominant;
+        const std::string colour = "box colour " + std::to_string(box.rgb[0]) + ", " + std::to_string(box.rgb[1]) + ", " + std::to_string(box.rgb[2]);
+        if (c.dominant < 0) {
+            EXPECT_GT(box.rgb[0], 0.1) << colour;
+            EXPECT_NEAR(box.rgb[0], box.rgb[1], 0.05) << colour;
+            EXPECT_NEAR(box.rgb[0], box.rgb[2], 0.05) << colour;
+        } else {
+            for (int k = 0; k < 3; ++k) {
+                if (k != c.dominant) {
+                    EXPECT_GT(box.rgb[c.dominant], 3. * box.rgb[k]) << colour;
+                }
+            }
+        }
+        if ((c.strength == USDAssignMaterial::eStrengthStrongerThanDescendants) && !c.secondAssign) {
+            // The middle of the frame, where the box stands.
+            checkCropAgainstReference(planes[0], RectI(kWidth / 2 - 32, kHeight / 2 - 32, kWidth / 2 + 32, kHeight / 2 + 32), kGoldenCaseAssignMaterial);
+        }
+    }
 } // TEST_F

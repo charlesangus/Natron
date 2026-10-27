@@ -607,6 +607,87 @@ def colour_balance_rgb_jobs():
     return jobs
 
 
+
+# dt_iop_colorequal_params_t, version 4, in field order, with darktable's defaults; use_filter is a
+# gboolean (int), every other field a float.
+COLOREQUAL_NODES = ["red", "orange", "yellow", "green", "cyan", "blue", "lavender", "magenta"]
+COLOREQUAL_FIELDS = ([("threshold", 0.1), ("smoothing_hue", 1.0), ("contrast", 0.0), ("white_level", 1.0),
+                      ("chroma_size", 1.5), ("param_size", 1.0), ("use_filter", 1)]
+                     + [("sat_" + n, 1.0) for n in COLOREQUAL_NODES]
+                     + [("hue_" + n, 0.0) for n in COLOREQUAL_NODES]
+                     + [("bright_" + n, 1.0) for n in COLOREQUAL_NODES]
+                     + [("hue_shift", 0.0)])
+
+
+def colorequal_nodes(kind, values):
+    return {"%s_%s" % (kind, n): v for n, v in zip(COLOREQUAL_NODES, values)}
+
+
+# init_presets() in src/iop/colorequal.c: every other field at its default.
+COLOREQUAL_PRESETS = [
+    ("bleach-bypass", dict(threshold=0.0, smoothing_hue=1.0, contrast=0.0, param_size=1.0, hue_shift=0.0,
+                           **colorequal_nodes("sat", [1 - .2215, 1 - .1772, 1 - .3861, 1 - .3924, 1 - .4557, 1 - .4177,
+                                                      1 - .2468, 1 - .2532]),
+                           **colorequal_nodes("hue", [15.46, 0.0, -2.21, 28.72, 16.57, 0.0, 0.0, 0.0]),
+                           **colorequal_nodes("bright", [.75, .75, .75, .65, .65, .75, .75, .75]))),
+    ("kodachrome-64-like", dict(threshold=0.193, smoothing_hue=1.0, contrast=-0.345, param_size=19.0, hue_shift=0.0,
+                                **colorequal_nodes("sat", [1.2390, 1.0377, 1 - .1761, 1 - .1635, 1 - .0126, 1.0126, 1.0,
+                                                           1.1384]),
+                                **colorequal_nodes("hue", [-2.20, -17.56, -3.29, 32.93, 14.27, 6.59, -7.68, 0.0]),
+                                **colorequal_nodes("bright", [1 - .0063, 1.1824, 1 - .1950, 1 - .2390, 1 - .2453,
+                                                              1.0377, 1 - .1572, 1 - .1384]))),
+    ("kodak-portra-400-like", dict(threshold=0.199, smoothing_hue=1.0, contrast=-0.375, param_size=1.0, hue_shift=-23.0,
+                                   **colorequal_nodes("sat", [1.0692, 1.0503, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+                                   **colorequal_nodes("hue", [9.88, -4.39, 15.37, 8.78, 2.20, -19.76, -3.29, 0.0]),
+                                   **colorequal_nodes("bright", [1.0881, 1.0629, 1.0629, 1 - .1069, 1 - .1069,
+                                                                 1 - .1006, 1 - .0189, 1.0]))),
+    ("teal-and-orange", dict(threshold=0.184, smoothing_hue=0.52, contrast=-0.3, param_size=1.0, hue_shift=0.0,
+                             **colorequal_nodes("sat", [1.1572, 1 - .0063, 1 - .3270, 1 - .0377, 1.0, 1.0126, 1.0, 1.0]),
+                             **colorequal_nodes("hue", [15.37, -24.15, 75.74, 42.81, 2.20, -36.22, 2.20, 42.81]),
+                             **colorequal_nodes("bright", [1.0] * 8))),
+]
+# Every node moved, the settings the option jobs start from.
+COLOREQUAL_BUSY = dict(**colorequal_nodes("hue", [20.0, -15.0, 10.0, 35.0, -25.0, 12.0, -8.0, 30.0]),
+                       **colorequal_nodes("sat", [1.3, 0.7, 1.1, 0.6, 1.4, 0.9, 1.2, 0.8]),
+                       **colorequal_nodes("bright", [1.2, 0.85, 1.1, 0.75, 1.15, 0.9, 1.05, 0.8]))
+
+
+def colorequal_params(**fields):
+    unknown = set(fields) - {name for name, _ in COLOREQUAL_FIELDS}
+    if unknown:
+        raise ValueError("unknown colorequal fields %s" % sorted(unknown))
+    values = [fields.get(name, default) for name, default in COLOREQUAL_FIELDS]
+    return struct.pack("<6fi25f", *[float(v) for v in values[:6]], int(values[6]), *[float(v) for v in values[7:]])
+
+
+def colour_equalizer_jobs():
+    """Color equalizer on the CR2's crop, in darktable's linear Rec. 2020 working space.
+
+    NativeColorEqualizer_Test feeds colour balance rgb's "base" job (the same develop without the
+    module) to ColorEqualizer in a linear Rec. 2020 project and compares the result with each job
+    away from the crop's edges, where darktable's guided filters saw the rest of the image. Stored
+    as half float.
+    """
+    def equalized(suffix, what, **params):
+        entry = ("colorequal", 1, 4, colorequal_params(**params))
+        develop = develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=[entry])
+        return camera_job(CR2, "colorequal-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
+                          "equalizer %s" % (BASE_DEMOSAIC[CR2], what), develop, icc_type="LIN_REC2020", half=True)
+
+    jobs = [equalized("defaults", "defaults")]
+    for i, node in enumerate(COLOREQUAL_NODES):
+        params = {"hue_" + node: 30.0 if i % 2 == 0 else -30.0, "sat_" + node: 1.4, "bright_" + node: 1.25}
+        jobs.append(equalized("node-" + node, "%s" % sorted(params.items()), **params))
+    options = [("busy", {}), ("filter-off", {"use_filter": 0}), ("node-placement", {"hue_shift": 15.0}),
+               ("hue-smoothing", {"smoothing_hue": 0.3}), ("threshold-contrast", {"threshold": 0.2, "contrast": 0.5}),
+               ("white-level", {"white_level": 4.0}), ("sizes", {"chroma_size": 6.0, "param_size": 12.0})]
+    for suffix, extra in options:
+        params = dict(COLOREQUAL_BUSY, **extra)
+        jobs.append(equalized(suffix, "every node moved, %s" % sorted(extra.items()), **params))
+    for name, fields in COLOREQUAL_PRESETS:
+        jobs.append(equalized("preset-" + name, "preset %s" % name, **fields))
+    return jobs
+
 def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc_type="LIN_REC709"):
     if os.path.exists(output):
         os.remove(output)
@@ -788,7 +869,7 @@ def run_job(job, out, scratch):
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs) + colour_balance_rgb_jobs())
+            + colour_calibration_jobs(coeffs) + colour_balance_rgb_jobs() + colour_equalizer_jobs())
 
 
 def main():

@@ -1,0 +1,8 @@
+slang_add_kernel(ce_prepare Kernels/colorequal.slang ENTRY ce_prepare REGISTRY NatronGpu)
+slang_add_kernel(ce_covariance Kernels/colorequal.slang ENTRY ce_covariance REGISTRY NatronGpu)
+slang_add_kernel(ce_prefilter_ab Kernels/colorequal.slang ENTRY ce_prefilter_ab REGISTRY NatronGpu)
+slang_add_kernel(ce_prefilter_apply Kernels/colorequal.slang ENTRY ce_prefilter_apply REGISTRY NatronGpu)
+slang_add_kernel(ce_corrections Kernels/colorequal.slang ENTRY ce_corrections REGISTRY NatronGpu)
+slang_add_kernel(ce_guide_init Kernels/colorequal.slang ENTRY ce_guide_init REGISTRY NatronGpu)
+slang_add_kernel(ce_guide_ab Kernels/colorequal.slang ENTRY ce_guide_ab REGISTRY NatronGpu)
+slang_add_kernel(ce_final Kernels/colorequal.slang ENTRY ce_final REGISTRY NatronGpu)

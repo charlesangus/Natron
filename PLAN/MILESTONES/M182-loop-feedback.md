@@ -40,6 +40,7 @@ Feedback mode for M180 - Loop Block Core (user, 2026-10-24): iteration k's LoopB
 
 ## Decisions
 
+- 2026-10-27 — PM: Houdini's knob model — LoopEnd `mode` = {Accumulate, Feedback}; Single Pass becomes a separate toggle (keeps `singlePassIteration`), reworking M180's knob (no backward compat). Feedback's LoopBegin hashing/caching design under consultant review.
 - 2026-10-25 — **Cross-frame feedback is its own milestone (user):** M190 - Cross-Frame Feedback, blocked on this one.
 
 **Verification gate:** the full build and ctest pass, including `NativeLoopFeedback`; `tools/ci/remote/build.sh debug --tests` passes; under Xvfb an iterated-erode and a smear-trail project are rendered and screenshots shared with the user before sign-off.

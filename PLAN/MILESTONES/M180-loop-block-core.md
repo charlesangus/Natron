@@ -65,13 +65,13 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Phase 180.3: Frame iteration, single pass and stop
 
-- [ ] M180.P3.T1 — Iterate over a relative frame range
+- [x] M180.P3.T1 — Iterate over a relative frame range
   - files: `Engine/Nodes/Loop/LoopEnd.cpp`, `Tests/Native/NativeLoopBlock_Test.cpp`
   - approach: An `iterateOver` choice (Count, Frames). Frames requests the body at `time + offset` per iteration with `loop.frame` set; time is already in every key, so iterations that read no loop variable share caches with ordinary renders of those frames. Frames needed for the body are reported through the frames-needed action.
   - verify: a test with a frame-numbered Constant body and frames −2..2 Accumulate mean gives the mean of the five frame numbers; `ctest -R NativeLoopBlock` passes.
   - size: M
 
-- [ ] M180.P3.T2 — Single pass and stop condition
+- [x] M180.P3.T2 — Single pass and stop condition
   - files: `Engine/Nodes/Loop/LoopEnd.cpp`, `Tests/Native/NativeLoopBlock_Test.cpp`
   - approach: `singlePass` (bool) plus `singlePassIteration` output only that iteration, unfolded. `stopCondition` is a Python boolean expression knob, evaluated in the request pass before each iteration k with `loop.iteration`, `loop.t`, `loop.frame` injected; the first true ends iteration before k. Both change the context list LoopEnd requests.
   - verify: single pass at k=2 equals the body rendered at `t`=2/(n−1); `loop.iteration >= 3` with 10 iterations renders 3 (counter); a raising expression stops with its error shown; tests pass.

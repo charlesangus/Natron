@@ -100,9 +100,9 @@ fillEasingCurve(Curve* curve)
 TEST_F(BaseTest, KnobDriverReadsTheEasedLerpUnderItsVariable)
 {
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    ASSERT_TRUE(grade);
+    ASSERT_TRUE(bool(grade));
     KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
-    ASSERT_TRUE(multiply);
+    ASSERT_TRUE(bool(multiply));
     multiply->setValue(0.75, ViewSpec::all(), 0);
 
     ASSERT_TRUE(multiply->setDriver(0, makeDriver(kKnobDriverDefaultVariable, 1., 2., KnobDriver::eEasingLinear)));
@@ -154,7 +154,7 @@ TEST_F(BaseTest, KnobDriverReadsTheEasedLerpUnderItsVariable)
 TEST_F(BaseTest, KnobDriverRoundsForIntKnobsAndIsRefusedByOthers)
 {
     NodePtr loopEnd = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPEND));
-    ASSERT_TRUE(loopEnd);
+    ASSERT_TRUE(bool(loopEnd));
     KnobIntPtr iterations = std::dynamic_pointer_cast<KnobInt>(loopEnd->getKnobByName(kLoopEndParamIterations));
     KnobChoicePtr operation = std::dynamic_pointer_cast<KnobChoice>(loopEnd->getKnobByName(kLoopEndParamOperation));
     ASSERT_TRUE(iterations && operation);
@@ -166,22 +166,22 @@ TEST_F(BaseTest, KnobDriverRoundsForIntKnobsAndIsRefusedByOthers)
 
     EXPECT_FALSE(operation->canHaveDriver());
     EXPECT_FALSE(operation->setDriver(0, makeDriver(kKnobDriverDefaultVariable, 0., 1., KnobDriver::eEasingLinear)));
-    EXPECT_FALSE(operation->getDriver(0));
+    EXPECT_FALSE(bool(operation->getDriver(0)));
     EXPECT_FALSE(iterations->setDriver(1, makeDriver(kKnobDriverDefaultVariable, 0., 1., KnobDriver::eEasingLinear)));
 
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    ASSERT_TRUE(grade);
+    ASSERT_TRUE(bool(grade));
     KnobBoolPtr clampBlack = std::dynamic_pointer_cast<KnobBool>(grade->getKnobByName(kGradeParamClampBlack));
-    ASSERT_TRUE(clampBlack);
+    ASSERT_TRUE(bool(clampBlack));
     EXPECT_FALSE(clampBlack->setDriver(0, makeDriver(kKnobDriverDefaultVariable, 0., 1., KnobDriver::eEasingLinear)));
 }
 
 TEST_F(BaseTest, KnobDriverIsAReadSourceInTheContentHash)
 {
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    ASSERT_TRUE(grade);
+    ASSERT_TRUE(bool(grade));
     KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
-    ASSERT_TRUE(multiply);
+    ASSERT_TRUE(bool(multiply));
     EXPECT_FALSE(multiply->hasContextReadSources());
     const U64 undriven = multiply->getContentHash();
 
@@ -204,9 +204,9 @@ TEST_F(BaseTest, KnobDriverIsAReadSourceInTheContentHash)
 TEST_F(BaseTest, KnobDriverRoundTripsThroughAProject)
 {
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    ASSERT_TRUE(grade);
+    ASSERT_TRUE(bool(grade));
     KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
-    ASSERT_TRUE(multiply);
+    ASSERT_TRUE(bool(multiply));
     Curve easing;
     fillEasingCurve(&easing);
     ASSERT_TRUE(multiply->setDriver(0, makeDriver(kKnobDriverDefaultVariable, 1., 2., KnobDriver::eEasingLinear)));
@@ -227,12 +227,12 @@ TEST_F(BaseTest, KnobDriverRoundTripsThroughAProject)
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
 
     grade = project->getNodeByName(gradeName);
-    ASSERT_TRUE(grade);
+    ASSERT_TRUE(bool(grade));
     multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
-    ASSERT_TRUE(multiply);
+    ASSERT_TRUE(bool(multiply));
 
     const KnobDriverPtr first = multiply->getDriver(0);
-    ASSERT_TRUE(first);
+    ASSERT_TRUE(bool(first));
     EXPECT_EQ(std::string(kKnobDriverDefaultVariable), first->getVariable());
     EXPECT_DOUBLE_EQ(1., first->getStart());
     EXPECT_DOUBLE_EQ(2., first->getEnd());
@@ -240,7 +240,7 @@ TEST_F(BaseTest, KnobDriverRoundTripsThroughAProject)
     EXPECT_FALSE(multiply->getDriver(1));
     EXPECT_FALSE(multiply->getDriver(2));
     const KnobDriverPtr last = multiply->getDriver(3);
-    ASSERT_TRUE(last);
+    ASSERT_TRUE(bool(last));
     EXPECT_EQ(std::string("loops.outer.t"), last->getVariable());
     EXPECT_DOUBLE_EQ(0.25, last->getStart());
     EXPECT_DOUBLE_EQ(4., last->getEnd());

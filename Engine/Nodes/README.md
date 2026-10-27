@@ -349,6 +349,16 @@ Set nodes setting different values, one switch picks a different input on each
 path, and only the picked inputs render (`Tests/RFVSwitch_Test.cpp`). See
 `Engine/Nodes/RFV/docs/RFVSwitch.md`.
 
+### Inspecting variables: `RFVRead`
+
+The `RFVRead` node passes its input through and lists, in its read-only
+Variables parameter, every variable that reaches it with its value at the
+timeline's frame. It resolves them without rendering, along the path to the
+active viewer's displayed inputs, folding the Set nodes with the same function
+the render uses (`RFV::resolveContextAt`). Off every viewer path it lists the
+project's variables (`Tests/RFVRead_Test.cpp`). See
+`Engine/Nodes/RFV/docs/RFVRead.md`.
+
 ### Resolution time
 
 A variable is read at the time of the expression that reads it, not at the time

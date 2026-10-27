@@ -421,6 +421,13 @@ public:
 
     virtual ViewerInstance* getLastViewerUsingTimeline() const { return 0; }
 
+    /**
+     * @brief The viewer the user works in: the last one to use the timeline, otherwise the first
+     * viewer of the project's top level, or null. The GUI prefers the viewer last clicked or typed
+     * in. Main thread.
+     **/
+    virtual NodePtr getActiveViewerNode() const;
+
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}
 

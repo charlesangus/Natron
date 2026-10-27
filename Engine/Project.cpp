@@ -2793,6 +2793,7 @@ Project::onKnobValueChanged(KnobI* knob,
     // Nodes that read a project variable outside an expression hash its value themselves.
     if (knob && (RFV::findDeclaredVariable(this, knob->getName()).get() == knob)) {
         RFV::rehashExtraContextReaders(*this, knob->getName());
+        RFV::scheduleReaderRefresh(getApp());
     }
 
     if ( knob == _imp->viewsList.get() ) {
@@ -3931,6 +3932,7 @@ Project::onUserKnobsChanged()
     // An expression reading rfv may name a variable the project declares only from here on.
     RFV::refreshExpressionListeners(*this);
     RFV::rehashExtraContextReaders(*this, std::string());
+    RFV::scheduleReaderRefresh(getApp());
     // Such an expression failed while the variable was undeclared and is applied again.
     AppInstancePtr app = getApp();
     if (app) {

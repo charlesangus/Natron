@@ -123,6 +123,7 @@ set(Tests_SOURCES
     RFVMetadata_Test.cpp
     RFVPatternMatch_Test.cpp
     RFVPython_Test.cpp
+    RFVRead_Test.cpp
     RFVRender_Test.cpp
     RFVSetNode_Test.cpp
     RFVSwitch_Test.cpp

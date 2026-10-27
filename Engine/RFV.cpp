@@ -26,9 +26,13 @@
 #include "RFV.h"
 
 #include <algorithm>
+#include <charconv>
+#include <cstdint>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -37,10 +41,14 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/RFV/RFVRead.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/OpenGLViewerI.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
 #include "Engine/UndoKnobRef.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/KnobSerialization.h"
 
@@ -848,6 +856,289 @@ overlayDeclaredVariables(const KnobHolder* holder,
     }
 
     return builder.build();
+}
+
+NodePtr
+getActiveViewer(const AppInstancePtr& app)
+{
+    return app ? app->getActiveViewerNode() : NodePtr();
+}
+
+namespace {
+
+    // The inputs a render of output pulls: a viewer's A input, and its B input while it composites
+    // the two; every input of any other node.
+    std::vector<int>
+    displayedInputs(const NodePtr& output)
+    {
+        std::vector<int> inputs;
+        ViewerInstance* viewer = output->isEffectViewer();
+        if (!viewer) {
+            for (int i = 0, n = output->getNInputs(); i < n; ++i) {
+                inputs.push_back(i);
+            }
+
+            return inputs;
+        }
+        int a = -1;
+        int b = -1;
+        viewer->getActiveInputs(a, b);
+        if (a >= 0) {
+            inputs.push_back(a);
+        }
+        OpenGLViewerI* ui = viewer->getUiContext();
+        if ((b >= 0) && (b != a) && ui && (ui->getCompositingOperator() != eViewerCompositingOperatorNone)) {
+            inputs.push_back(b);
+        }
+
+        return inputs;
+    }
+
+    struct PathEdge {
+        NodePtr consumer;
+        int inputNb;
+    };
+
+    // The edges of the first path found from output's displayed inputs up to target, nearest to
+    // output first. Iterative and visiting each node once, so deep and wide graphs stay linear.
+    bool
+    findPathUpTo(const NodePtr& output,
+                 const NodePtr& target,
+                 std::vector<PathEdge>* path)
+    {
+        if (output == target) {
+            return true;
+        }
+        struct Step {
+            NodePtr node;
+            std::vector<int> inputs;
+            std::size_t next;
+        };
+        std::vector<Step> stack;
+        std::set<const Node*> visited;
+        stack.push_back(Step { output, displayedInputs(output), 0 });
+        visited.insert(output.get());
+        while (!stack.empty()) {
+            Step& top = stack.back();
+            if (top.next >= top.inputs.size()) {
+                stack.pop_back();
+                continue;
+            }
+            const int inputNb = top.inputs[top.next++];
+            NodePtr input = top.node->getInput(inputNb);
+            if (!input || !visited.insert(input.get()).second) {
+                continue;
+            }
+            if (input == target) {
+                for (const Step& step : stack) {
+                    path->push_back(PathEdge { step.node, step.inputs[step.next - 1] });
+                }
+
+                return true;
+            }
+            std::vector<int> inputs;
+            for (int i = 0, n = input->getNInputs(); i < n; ++i) {
+                inputs.push_back(i);
+            }
+            stack.push_back(Step { input, std::move(inputs), 0 });
+        }
+
+        return false;
+    }
+
+    std::string
+    displayName(const RenderContextName& name)
+    {
+        return name.ns.empty() ? name.name : (name.ns + "." + name.name);
+    }
+
+    // The variable knob's value at time and view under context, as rfv reads it there.
+    void
+    evaluateVariable(const RenderContextName& name,
+                     const KnobIPtr& knob,
+                     const RenderContextPtr& context,
+                     double time,
+                     ViewIdx view,
+                     RenderContext::Builder* builder,
+                     ResolvedContext* resolved)
+    {
+        try {
+            ActionContextScope acting(true, context);
+            RenderContextValue value;
+            if (getVariableValue(knob, time, view, &value)) {
+                builder->set(name, value);
+            }
+        } catch (const std::exception& e) {
+            resolved->errors.push_back(std::make_pair(displayName(name), std::string(e.what())));
+        }
+    }
+
+} // namespace
+
+ResolvedContext
+resolveContextBelow(const NodePtr& output,
+                    const NodePtr& target,
+                    double time,
+                    ViewIdx view)
+{
+    ResolvedContext resolved;
+    std::vector<PathEdge> path;
+    // A render's root starts from the empty context.
+    RenderContextPtr pathContext;
+    if (output && target && findPathUpTo(output, target, &path)) {
+        resolved.outputName = output->getScriptName_mt_safe();
+        for (const PathEdge& edge : path) {
+            EffectInstancePtr effect = edge.consumer->getEffectInstance();
+            if (!effect) {
+                continue;
+            }
+            std::vector<RenderContextPtr> contexts;
+            try {
+                if (effect->getInputContexts(edge.inputNb, time, view, pathContext, &contexts) && !contexts.empty()) {
+                    pathContext = contexts.front();
+                }
+            } catch (const std::exception& e) {
+                resolved.errors.push_back(std::make_pair(edge.consumer->getScriptName_mt_safe(), std::string(e.what())));
+            }
+        }
+    }
+
+    RenderContext::Builder builder;
+    AppInstancePtr app = target ? target->getApp() : (output ? output->getApp() : AppInstancePtr());
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project) {
+        const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(project.get());
+        for (const VariableDeclaration& declaration : *declared) {
+            const RenderContextName name = RenderContextName::plain(declaration.name);
+            if (pathContext && pathContext->find(name)) {
+                continue;
+            }
+            evaluateVariable(name, declaration.knob, pathContext, time, view, &builder, &resolved);
+        }
+    }
+    if (pathContext) {
+        for (const RenderContext::Entry& entry : pathContext->entries()) {
+            const RenderContextBinding* binding = std::get_if<RenderContextBinding>(&entry.second);
+            if (!binding) {
+                builder.set(entry.first, entry.second);
+                continue;
+            }
+            // As rfv reads a binding: a knob deleted since, or off its node, is unset.
+            const KnobIPtr knob = binding->knob.lock();
+            const KnobHolder* holder = knob ? knob->getHolder() : NULL;
+            const EffectInstance* effect = dynamic_cast<const EffectInstance*>(holder);
+            if (!holder || (effect && !effect->getNode())) {
+                continue;
+            }
+            evaluateVariable(entry.first, knob, binding->captured, time, view, &builder, &resolved);
+        }
+    }
+    resolved.context = builder.build();
+
+    return resolved;
+} // resolveContextBelow
+
+ResolvedContext
+resolveContextAt(const NodePtr& target,
+                 double time,
+                 ViewIdx view)
+{
+    return resolveContextBelow(getActiveViewer(target ? target->getApp() : AppInstancePtr()), target, time, view);
+}
+
+namespace {
+
+    std::string
+    formatDouble(double value)
+    {
+        char buffer[64];
+        const std::to_chars_result result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+        std::string text(buffer, result.ptr);
+        // Python writes an integral float with a fractional part.
+        if (text.find_first_of(".eni") == std::string::npos) {
+            text += ".0";
+        }
+
+        return text;
+    }
+
+    std::string
+    formatString(const std::string& value)
+    {
+        // Python's choice of quotes: single unless only double ones avoid escaping.
+        const char quote = ((value.find('\'') != std::string::npos) && (value.find('"') == std::string::npos)) ? '"' : '\'';
+        std::string text(1, quote);
+        for (const char c : value) {
+            if ((c == quote) || (c == '\\')) {
+                text += '\\';
+                text += c;
+            } else if (c == '\n') {
+                text += "\\n";
+            } else if (c == '\r') {
+                text += "\\r";
+            } else if (c == '\t') {
+                text += "\\t";
+            } else {
+                text += c;
+            }
+        }
+        text += quote;
+
+        return text;
+    }
+
+    template <typename T, typename Format>
+    std::string
+    formatList(const std::vector<T>& values,
+               Format format)
+    {
+        std::string text = "[";
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            if (i > 0) {
+                text += ", ";
+            }
+            text += format(values[i]);
+        }
+
+        return text + "]";
+    }
+
+} // namespace
+
+std::string
+formatValue(const RenderContextValue& value)
+{
+    if (const bool* b = std::get_if<bool>(&value)) {
+        return *b ? "True" : "False";
+    }
+    if (const std::int64_t* i = std::get_if<std::int64_t>(&value)) {
+        return std::to_string(*i);
+    }
+    if (const double* d = std::get_if<double>(&value)) {
+        return formatDouble(*d);
+    }
+    if (const std::string* s = std::get_if<std::string>(&value)) {
+        return formatString(*s);
+    }
+    if (const std::vector<double>* ds = std::get_if<std::vector<double>>(&value)) {
+        return formatList(*ds, formatDouble);
+    }
+    if (const std::vector<std::int64_t>* is = std::get_if<std::vector<std::int64_t>>(&value)) {
+        return formatList(*is, [](std::int64_t i) { return std::to_string(i); });
+    }
+    if (const std::vector<std::string>* ss = std::get_if<std::vector<std::string>>(&value)) {
+        return formatList(*ss, formatString);
+    }
+
+    return "<binding>";
+}
+
+void
+scheduleReaderRefresh(const AppInstancePtr& app)
+{
+    if (app) {
+        RFVRead::scheduleRefreshAll(app.get());
+    }
 }
 
 } // namespace RFV

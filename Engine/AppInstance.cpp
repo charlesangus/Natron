@@ -87,6 +87,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/UndoRecorder.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -265,6 +266,25 @@ AppInstance::getNodesBeingCreated() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_creatingNodeQueue;
+}
+
+NodePtr
+AppInstance::getActiveViewerNode() const
+{
+    ViewerInstance* last = getLastViewerUsingTimeline();
+    NodePtr node = last ? last->getNode() : NodePtr();
+    if (node) {
+        return node;
+    }
+    ProjectPtr project = getProject();
+    const NodesList nodes = project ? project->getNodes() : NodesList();
+    for (const NodePtr& candidate : nodes) {
+        if (candidate && candidate->isEffectViewer() && candidate->isActivated()) {
+            return candidate;
+        }
+    }
+
+    return NodePtr();
 }
 
 bool

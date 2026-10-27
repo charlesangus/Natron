@@ -125,6 +125,7 @@ ReverseFlowVariableSet::onUserKnobsChanged()
     refreshVariableGroups();
     // Adding, removing or renaming a variable changes what this node overrides.
     invalidateRenderContextReads();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 void
@@ -162,6 +163,9 @@ ReverseFlowVariableSet::knobChanged(KnobI* k,
 {
     KnobChoicePtr existing = _existingVariable.lock();
     if (!existing || (k != existing.get())) {
+        // A variable's value: what RFVRead nodes above this one list.
+        RFV::scheduleReaderRefresh(getApp());
+
         return false;
     }
     const int index = existing->getValue();

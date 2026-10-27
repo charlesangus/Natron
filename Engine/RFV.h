@@ -30,6 +30,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -240,6 +241,57 @@ bool isTimeVarying(const KnobIPtr& knob);
  * time and view (see getVariableValue()), evaluated on the calling thread.
  **/
 RenderContextPtr overlayDeclaredVariables(const KnobHolder* holder, double time, ViewIdx view, const RenderContextPtr& base);
+
+/**
+ * @brief The variables a node is reached with from downstream, resolved without rendering (see
+ * resolveContextAt()).
+ **/
+struct ResolvedContext {
+    /// Every variable rfv gives the node a value for, as that value at the time resolved for: the
+    /// project's variables, with those the Set nodes on the path set over them. Never null.
+    RenderContextPtr context;
+    /// The variables whose value could not be evaluated, with why.
+    std::vector<std::pair<std::string, std::string>> errors;
+    /// The script name of the output node whose path reaches the node, empty when none does.
+    std::string outputName;
+};
+
+/**
+ * @brief The viewer whose displayed inputs RFVRead nodes resolve along: the app's active viewer
+ * (see AppInstance::getActiveViewerNode()), or null. Main thread.
+ **/
+NodePtr getActiveViewer(const AppInstancePtr& app);
+
+/**
+ * @brief The context target is reached with from output: along the first path found from the
+ * inputs output displays (a viewer's A input, and its B input while it composites them; every
+ * input of any other node) up to target, each consumer's EffectInstance::getInputContexts() is
+ * applied to the context its own consumer gave it, starting from the empty context of a render's
+ * root, so the Set node nearest to target wins. Every node on the path is asked at time and view.
+ * The result is then evaluated at time and view: a Set's time-varying variable under the context
+ * it captured, and a project variable no Set on the path overrides under the path's context, as
+ * rfv reads them. With no output, or no path from it to target, the project's variables alone.
+ * Main thread.
+ **/
+ResolvedContext resolveContextBelow(const NodePtr& output, const NodePtr& target, double time, ViewIdx view);
+
+/**
+ * @brief resolveContextBelow() from the active viewer (see getActiveViewer()). Main thread.
+ **/
+ResolvedContext resolveContextAt(const NodePtr& target, double time, ViewIdx view = ViewIdx(0));
+
+/**
+ * @brief The value as Python's repr() writes it: a string quoted, a list as [1, 2, 3], a bool as
+ * True or False. A binding, which a ResolvedContext never holds, as <binding>.
+ **/
+std::string formatValue(const RenderContextValue& value);
+
+/**
+ * @brief Has every RFVRead node of the app recompute its Variables once control returns to the
+ * event loop, for an edit that may change what reaches one: a connection, the active viewer or
+ * its displayed inputs, a Set node or a project variable. Main thread.
+ **/
+void scheduleReaderRefresh(const AppInstancePtr& app);
 
 /**
  * @brief promoteToProject() as one undo step. The first redo() promotes the node's variable; undo()

@@ -90,6 +90,30 @@ struct KnobLinkGroupSerialization {
 };
 
 /**
+ * @brief A driver on one knob dimension: under a render context holding variable, the dimension
+ * reads start + (end - start) * ease(t), t being the variable's value. easing is "linear",
+ * "smooth" or "curve"; curve, the easing curve over [0, 1], is present only for "curve".
+ **/
+struct KnobDriverSerialization {
+    std::string variable;
+    double start;
+    double end;
+    std::string easing;
+    std::optional<CurveSerialization> curve;
+
+    KnobDriverSerialization()
+        : variable()
+        , start(0.)
+        , end(1.)
+        , easing()
+        , curve()
+    {
+    }
+
+    bool operator==(const KnobDriverSerialization&) const = default;
+};
+
+/**
  * @brief The saved state of one knob dimension.
  **/
 struct KnobDimensionSerialization {
@@ -112,6 +136,9 @@ struct KnobDimensionSerialization {
     std::string expression;
     bool expressionHasReturnVariable;
 
+    // Present when a driver sets the dimension from a render context variable.
+    std::optional<KnobDriverSerialization> driver;
+
     KnobDimensionSerialization()
         : enabled(true)
         , curve()
@@ -121,6 +148,7 @@ struct KnobDimensionSerialization {
         , linkGroup()
         , expression()
         , expressionHasReturnVariable(false)
+        , driver()
     {
     }
 

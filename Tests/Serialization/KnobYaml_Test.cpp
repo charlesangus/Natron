@@ -403,6 +403,49 @@ TEST(KnobYaml, FoldedKnobKeepsOneSavedDimension)
     expectKnobsEqual(YamlTest::canonicalKnob(color), decoded);
 }
 
+TEST(KnobYaml, DriverRoundTripsAndKeepsTheOwnValue)
+{
+    KnobSerialization gain = makeKnob(kKnobTypes[2], eKnobVariantStatic);
+    gain.name = "gain";
+    gain.dimensions[0].value = KnobValueSerialization(std::in_place_type<double>, 0.5);
+    Serialization::KnobDriverSerialization linear;
+    linear.variable = "loop.t";
+    linear.start = 1.;
+    linear.end = 2.;
+    linear.easing = "linear";
+    gain.dimensions[0].driver = linear;
+    Serialization::KnobDriverSerialization curved;
+    curved.variable = "loops.outer.t";
+    curved.start = -0.25;
+    curved.end = 4.;
+    curved.easing = "curve";
+    curved.curve.emplace();
+    for (int i = 0; i < 3; ++i) {
+        KeyFrameSerialization key;
+        key.time = 0.5 * i;
+        key.value = (i == 1) ? 0.8 : 0.5 * i;
+        key.interpolation = 1;
+        curved.curve->keyframes.push_back(key);
+    }
+    gain.dimensions[1].driver = curved;
+
+    const std::string text = Serialization::encodeKnobsYaml({ gain });
+    EXPECT_NE(text.find("driver: {variable: \"loop.t\""), std::string::npos) << text;
+    EXPECT_NE(text.find("value: 0.5"), std::string::npos) << text;
+    YamlWarnings warnings;
+    KnobSerialization decoded = decodeOne(text, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    Serialization::completeKnobSerialization(&decoded, "Double", 2);
+    expectKnobsEqual(YamlTest::canonicalKnob(gain), decoded);
+    EXPECT_EQ(text, Serialization::encodeKnobsYaml({ decoded }));
+
+    // An unknown key in a driver is skipped with a warning.
+    KnobSerialization unknownKey = decodeOne("gain: {driver: {variable: \"loop.t\", start: 0, end: 1, easing: \"linear\", wobble: 1}}\n", &warnings);
+    ASSERT_EQ(1u, unknownKey.dimensions.size());
+    ASSERT_TRUE(unknownKey.dimensions[0].driver);
+    EXPECT_FALSE(warnings.empty());
+}
+
 TEST(KnobYaml, ChoiceWhoseIndexDoesNotMatchItsOptionKeepsBoth)
 {
     KnobSerialization choice = makeKnob(kKnobTypes[3], eKnobVariantStatic);

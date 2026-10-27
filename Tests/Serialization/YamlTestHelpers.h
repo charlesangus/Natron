@@ -218,6 +218,17 @@ expectKnobsEqual(const NATRON_NAMESPACE::Serialization::KnobSerialization& expec
         EXPECT_EQ(e.linkGroup, a.linkGroup);
         EXPECT_EQ(e.expression, a.expression);
         EXPECT_EQ(e.expressionHasReturnVariable, a.expressionHasReturnVariable);
+        ASSERT_EQ(e.driver.has_value(), a.driver.has_value());
+        if (e.driver) {
+            EXPECT_EQ(e.driver->variable, a.driver->variable);
+            EXPECT_EQ(e.driver->start, a.driver->start);
+            EXPECT_EQ(e.driver->end, a.driver->end);
+            EXPECT_EQ(e.driver->easing, a.driver->easing);
+            ASSERT_EQ(e.driver->curve.has_value(), a.driver->curve.has_value());
+            if (e.driver->curve) {
+                expectCurvesBitIdentical(*e.driver->curve, *a.driver->curve);
+            }
+        }
     }
     ASSERT_EQ(expected.parametricCurves.has_value(), actual.parametricCurves.has_value());
     if (expected.parametricCurves) {

@@ -1,0 +1,198 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef Engine_Nodes_Loop_LoopEnd_h
+#define Engine_Nodes_Loop_LoopEnd_h
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <string>
+#include <vector>
+
+#include <QtCore/QMutex>
+
+#include "Engine/EngineFwd.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/RenderContext.h"
+
+#define PLUGINID_NATRON_LOOPEND "fr.natron.LoopEnd"
+#define PLUGIN_MAJOR_NATRON_LOOPEND 1
+
+#define kLoopEndParamIterations "iterations"
+#define kLoopEndParamStart "start"
+#define kLoopEndParamStep "step"
+#define kLoopEndParamMode "mode"
+#define kLoopEndParamModeAccumulate "accumulate"
+#define kLoopEndParamOperation "operation"
+#define kLoopEndParamOperationMean "mean"
+#define kLoopEndParamOperationSum "sum"
+#define kLoopEndParamOperationMin "min"
+#define kLoopEndParamOperationMax "max"
+#define kLoopEndParamMaxIterations "maxIterations"
+
+#define kLoopEndDefaultMaxIterations 1024
+
+NATRON_NAMESPACE_ENTER
+
+inline constexpr InputSpec kLoopEndInputs[] = {
+    InputSpec { .label = "Source", .kind = eDataKindImage },
+};
+
+/**
+ * @brief Ends a loop body: renders its input once per iteration, each under a render context
+ * holding that iteration's loop variables, and folds the iterations together. The body starts at
+ * the LoopBegin found walking up from its input. Nodes of the body that read no loop variable
+ * keep their context key and render once.
+ **/
+class LoopEnd
+    : public NativeEffectBase {
+public:
+    enum OperationEnum {
+        eOperationMean = 0,
+        eOperationSum,
+        eOperationMin,
+        eOperationMax
+    };
+
+    static EffectInstance* BuildEffect(NodePtr node)
+    {
+        return new LoopEnd(node);
+    }
+
+    explicit LoopEnd(NodePtr node);
+
+    static bool isLoopEnd(const NodePtr& node) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The loop variables of iteration k of count, as LoopEnd sets them under loop.* and
+     * loops.<loopName>.*.
+     **/
+    static RenderContextPtr iterationContext(const RenderContextPtr& base,
+                                             const std::string& loopName,
+                                             int k,
+                                             int count,
+                                             int start,
+                                             int step,
+                                             double frame) WARN_UNUSED_RETURN;
+
+private:
+    struct Resolved {
+        NodePtr begin;
+        std::string loopName;
+        int count = 0;
+        int start = 0;
+        int step = 1;
+        MessageTypeEnum messageType = eMessageTypeError;
+        // Empty when the loop can render.
+        std::string message;
+    };
+
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return LayerKnobSpec();
+    }
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_LOOPEND,
+        .label = "LoopEnd",
+        .description = "Ends a loop body started by a LoopBegin above it. The body is rendered once per "
+                       "iteration, each time with the loop variables loop.iteration (Start plus the "
+                       "iteration number times Step), loop.count (Iterations), loop.t (0 at the first "
+                       "iteration, 1 at the last) and loop.frame (the current frame) set; knob drivers "
+                       "in the body read them. Accumulate folds the iterations together with the "
+                       "Operation: their mean, sum, minimum or maximum. A loop nested in another sees "
+                       "the outer loop's variables as loops.<name>.*, where name is the outer "
+                       "LoopBegin's Name. More iterations than Max Iterations is an error rather than "
+                       "a truncated loop.",
+        .grouping = PLUGIN_GROUP_LOOP,
+        .majorVersion = PLUGIN_MAJOR_NATRON_LOOPEND,
+        .minorVersion = 0,
+        .inputs = kLoopEndInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual Route route(double time,
+                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL;
+
+    virtual bool getInputContexts(int inputNb,
+                                  double time,
+                                  ViewIdx view,
+                                  const RenderContextPtr& context,
+                                  std::vector<RenderContextPtr>* contexts) const OVERRIDE FINAL;
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    Resolved resolve() const WARN_UNUSED_RETURN;
+
+    // The LoopBegin the walk up from input 0 pairs with, or why there is none.
+    NodePtr findLoopBegin(std::string* error) const WARN_UNUSED_RETURN;
+
+    void refreshMessage(const Resolved& resolved);
+
+    KnobIntWPtr _iterations;
+    KnobIntWPtr _start;
+    KnobIntWPtr _step;
+    KnobChoiceWPtr _mode;
+    KnobChoiceWPtr _operation;
+    KnobIntWPtr _maxIterations;
+
+    mutable QMutex _messageMutex;
+    std::string _postedMessage;
+};
+
+NATRON_NAMESPACE_EXIT
+
+#endif // Engine_Nodes_Loop_LoopEnd_h

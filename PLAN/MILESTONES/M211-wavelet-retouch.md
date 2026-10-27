@@ -55,7 +55,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.1: Host and per-shape settings
 
-- [ ] M211.P1.T1 — Retouch node as a geometry curve host, with per-shape knobs
+- [x] M211.P1.T1 — Retouch node as a geometry curve host, with per-shape knobs
   - files: new `Engine/Nodes/Filter/Retouch.h`, `Engine/Nodes/Filter/Retouch.cpp`, `Engine/Nodes/Filter/Retouch.reg.inc`, new `Engine/Nodes/Filter/RetouchShapes.{h,cpp}`
   - approach:
     - Declare the geometry context through M146's capability gate.
@@ -65,7 +65,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - verify: P3.T3's tests for knob creation and removal, rename and save/load round trip pass.
   - size: L
 
-- [ ] M211.P1.T2 — Panel column and scale actions
+- [x] M211.P1.T2 — Panel column and scale actions
   - files: `Engine/Nodes/Filter/Retouch.cpp`, new `Gui/RetouchPanelHooks.{h,cpp}`, `Gui/CMakeLists.txt`
   - approach:
     - Implement M146's panel host hook to add a "Scale / Algorithm" column.
@@ -75,7 +75,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.2: Algorithms (CPU)
 
-- [ ] M211.P2.T1 — Scale decomposition, mask rasterisation and recompose
+- [x] M211.P2.T1 — Scale decomposition, mask rasterisation and recompose
   - files: `Engine/Nodes/Filter/Retouch.cpp`, new `Engine/Nodes/Filter/RetouchRender.cpp`
   - approach:
     - Decompose with M209's `Wavelets` to `numScales`.
@@ -85,7 +85,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - verify: with no shapes, the output equals the input within 1e-6 (P3.T3).
   - size: L
 
-- [ ] M211.P2.T2 — Clone, heal, fill and blur
+- [x] M211.P2.T2 — Clone, heal, fill and blur
   - files: `Engine/Nodes/Filter/RetouchRender.cpp`, new `Engine/Nodes/Filter/RetouchAlgorithms.cpp`
   - approach:
     - Port `retouch_clone`, `retouch_heal` (on M209's `PoissonHeal`), `retouch_fill` and `retouch_blur` (Gaussian, and bilateral via darktable's `bilateral.c` path or M130's if it has landed) from `retouch.c`.
@@ -95,19 +95,19 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.3: Viewer, GPU and parity
 
-- [ ] M211.P3.T1 — Source-shape overlay and drag
+- [x] M211.P3.T1 — Source-shape overlay and drag
   - files: `Engine/Nodes/Filter/Retouch.cpp`, `Engine/RotoCurveInteract.{h,cpp}` (only the extension point M146 provides)
   - approach: for selected clone and heal shapes, draw the shape outline translated by `sourceOffset` with a connecting line. Dragging that outline sets a keyframe on `sourceOffset` when auto-key is on, else sets its value.
   - verify: the P4.T2 GUI script passes.
   - size: M
 
-- [ ] M211.P3.T2 — GPU path
+- [x] M211.P3.T2 — GPU path
   - files: new `Engine/Gpu/Kernels/retouch.slang`, `retouch.cmake`, `Engine/Nodes/Filter/RetouchRender.cpp`, new `Tests/Native/NativeRetouchGpu_Test.cpp`
   - approach: use M209's GPU wavelets and heal, plus a kernel for clone, fill and blur per scale. Masks are uploaded from the CPU rasteriser.
   - verify: `ctest -R NativeRetouchGpu` passes on lavapipe within the doc's tolerance.
   - size: L
 
-- [ ] M211.P3.T3 — Reference parity, knob audit and tests
+- [x] M211.P3.T3 — Reference parity, knob audit and tests
   - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeRetouch_Test.cpp`
   - approach:
     - darktable-cli jobs with XMP-authored circle, ellipse and path masks for each algorithm, on two scales and the residual, with opacity and feather.
@@ -119,13 +119,13 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.4: Docs and UAT
 
-- [ ] M211.P4.T1 — Doc and icon
+- [x] M211.P4.T1 — Doc and icon
   - files: `Engine/Nodes/Filter/docs/Retouch.md`, `Gui/Resources/Images/NativeNodes/`
   - approach: the doc explains scales, the algorithms, source offsets, the `output` modes and the tolerance.
   - verify: `ctest -R NativePluginList` passes.
   - size: S
 
-- [ ] M211.P4.T2 — Xvfb GUI script
+- [x] M211.P4.T2 — Xvfb GUI script
   - files: new `Tests/gui/test_retouch.py`
   - approach: create Retouch on a fixture, draw a heal ellipse on scale 2, drag its source, check `sourceOffset`, use "Move to scale 3", and check the panel column. Take screenshots.
   - verify: the script passes under Xvfb.
@@ -136,3 +136,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 - The Xvfb script passes.
 - Screenshots of a skin and blemish cleanup across two scales are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — PM: kept darktable's behaviour for shapes above Scales+1 (no effect), cropped (not mirrored) out-of-image sources, Roto's feather falloff (differs from darktable's quadratic — documented), Max Heal Iterations visible, a Residual output; darktable's unused 'none' algorithm dropped. Source drag made undoable (one step per drag). References: 16 whole 64x48 synthetic half-float images, ~0.3 MB plain git.

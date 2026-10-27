@@ -40,13 +40,13 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Phase 214.1: Node
 
-- [ ] M214.P1.T1 — Shared darktable colour-space helpers
+- [x] M214.P1.T1 — Shared darktable colour-space helpers
   - files: new `Engine/Nodes/Color/DtColorSpaces.h`, new `Tests/Native/DtColorSpaces_Test.cpp`
   - approach: port the inline conversions the module uses (XYZ↔JzAzBz, darktable UCS 22 forward and inverse, Rec.2020↔XYZ↔LMS) as constexpr inline functions shared by CPU code, plus a Slang twin `Engine/Gpu/Kernels/dtcolorspaces.slang` for the GPU kernels.
   - verify: `ctest -R DtColorSpaces` round-trips each forward and inverse pair within 1e-5, and matches darktable's published test values where they exist.
   - size: M
 
-- [ ] M214.P1.T2 — ColorBalanceRGB node (CPU)
+- [x] M214.P1.T2 — ColorBalanceRGB node (CPU)
   - files: new `Engine/Nodes/Color/ColorBalanceRGB.h`, `Engine/Nodes/Color/ColorBalanceRGB.cpp`, `Engine/Nodes/Color/ColorBalanceRGB.reg.inc`
   - approach:
     - Port `process` and `commit_params` (the derived matrices and mask weights) from `colorbalancergb.c`, on `DtColorSpaces.h`.
@@ -61,13 +61,13 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: a gtest sets a wheel's trackball value through its knob API and checks the hue and chroma knobs. The gate's Xvfb screenshot shows the four wheels.
   - size: M
 
-- [ ] M214.P1.T4 — GPU path
+- [x] M214.P1.T4 — GPU path
   - files: new `Engine/Gpu/Kernels/colorbalancergb.slang`, `colorbalancergb.cmake`, `Engine/Nodes/Color/ColorBalanceRGB.cpp`, new `Tests/Native/NativeColorBalanceRGBGpu_Test.cpp`
   - approach: a point op from darktable's `data/kernels/colorbalancergb.cl`, with the OCIO conversion as a matrix when the working space is a matrix space. Otherwise the node runs CPU-only.
   - verify: `ctest -R NativeColorBalanceRGBGpu` passes on lavapipe within 1e-4 relative.
   - size: M
 
-- [ ] M214.P1.T5 — Reference parity, knob audit and docs
+- [x] M214.P1.T5 — Reference parity, knob audit and docs
   - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeColorBalanceRGB_Test.cpp`, `Engine/Nodes/Color/docs/ColorBalanceRGB.md`
   - approach:
     - darktable-cli jobs: each preset, each 4-way, saturation and brilliance per range under both formulas, contrast and vibrance.

@@ -253,3 +253,7 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 ### 2026-10-27T05:22:05+00:00 — change-request
 - refs: M187
 - Hold on this til my say-so.
+
+### 2026-10-27T05:22:20+00:00 — change-request
+- refs: M188
+- Hold on this until my say-so.

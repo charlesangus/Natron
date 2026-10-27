@@ -293,6 +293,23 @@ try:
               "dragging the dashed outline moves the source")
         screen_crop("retouch_viewer_dragged.png", visible_viewer())
 
+        undo = edit_menu_action("undo")
+        if check(undo is not None and undo.isEnabled(), "Edit > Undo is enabled after the source drag"):
+            undo.trigger()
+            QApplication.processEvents()
+            yield ("sleep", SETTLE_MS)
+            back = (offset.getValue(0), offset.getValue(1))
+            check(abs(back[0] - OFFSET_X) <= 0.5 and abs(back[1]) <= 0.5,
+                  "one undo puts the source offset back (%r)" % (back,))
+            redo = edit_menu_action("redo")
+            if check(redo is not None and redo.isEnabled(), "Edit > Redo is enabled after the undo"):
+                redo.trigger()
+                QApplication.processEvents()
+                yield ("sleep", SETTLE_MS)
+                again = (offset.getValue(0), offset.getValue(1))
+                check(abs(again[0] - got[0]) <= 0.5 and abs(again[1] - got[1]) <= 0.5,
+                      "redo moves the source again (%r)" % (again,))
+
         gt.section("move-to-scale")
         node.getParam("currentScale").setValue(3)
         yield ("sleep", SETTLE_MS)

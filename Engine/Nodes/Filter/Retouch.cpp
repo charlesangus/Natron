@@ -262,6 +262,66 @@ private:
     }
 };
 
+/**
+ * @brief A source drag, undone as one step. The drag has already written the new offset.
+ **/
+class RetouchSourceDragCommand
+    : public UndoCommand {
+    RotoCurveContextPtr _context;
+    RotoDrawableItemPtr _item;
+    double _time;
+    double _oldValues[2];
+    double _newValues[2];
+    bool _keyframe[2];
+
+public:
+    RetouchSourceDragCommand(const RotoCurveContextPtr& context,
+                             const RotoDrawableItemPtr& item,
+                             double time,
+                             const double* oldValues,
+                             const double* newValues,
+                             const bool* keyframe)
+        : UndoCommand()
+        , _context(context)
+        , _item(item)
+        , _time(time)
+    {
+        for (int d = 0; d < 2; ++d) {
+            _oldValues[d] = oldValues[d];
+            _newValues[d] = newValues[d];
+            _keyframe[d] = keyframe[d];
+        }
+        setText("Move Retouch Source");
+    }
+
+    virtual ~RetouchSourceDragCommand()
+    {
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        apply(_newValues);
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        apply(_oldValues);
+    }
+
+private:
+    void apply(const double* values)
+    {
+        KnobIPtr offset = _item->getKnobByName(kRetouchShapeParamSourceOffset);
+        if (!offset) {
+            return;
+        }
+        for (int d = 0; d < 2; ++d) {
+            setItemKnobValue<double>(offset, d, values[d], _time, _keyframe[d]);
+        }
+        _context->evaluateChange();
+    }
+};
+
 Retouch::Retouch(NodePtr node)
     : StagedImageEffect(node)
     // Built here, as RotoPaint does: Node::load() creates the curve context before initializeKnobs()
@@ -1040,6 +1100,8 @@ Retouch::onOverlayPenDown(double time,
         if (item) {
             _draggedSource = item;
             _lastDragPos = pos;
+            _dragTime = time;
+            readShapeSourceOffset(item, time, &_dragStart[0], &_dragStart[1]);
             redrawOverlayInteract();
 
             return true;
@@ -1081,8 +1143,21 @@ Retouch::onOverlayPenUp(double /*time*/,
                         double /*pressure*/,
                         double /*timestamp*/)
 {
-    if (_draggedSource.lock()) {
+    RotoDrawableItemPtr dragged = _draggedSource.lock();
+    if (dragged) {
         _draggedSource.reset();
+        double end[2];
+        readShapeSourceOffset(dragged, _dragTime, &end[0], &end[1]);
+        RotoCurveContextPtr context = getNode()->getCurveContext();
+        KnobIPtr offset = dragged->getKnobByName(kRetouchShapeParamSourceOffset);
+        if (context && offset && ((end[0] != _dragStart[0]) || (end[1] != _dragStart[1]))) {
+            bool keyframe[2];
+            for (int d = 0; d < 2; ++d) {
+                keyframe[d] = context->isAutoKeyingEnabled() || offset->isAnimated(d, ViewSpec::all())
+                    || (offset->isSlave(d) && offset->getMaster(d).second && offset->getMaster(d).second->isAnimated(d, ViewSpec::all()));
+            }
+            pushUndoCommand(new RetouchSourceDragCommand(context, dragged, _dragTime, _dragStart, end, keyframe));
+        }
         redrawOverlayInteract();
 
         return true;

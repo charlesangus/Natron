@@ -317,6 +317,8 @@ private:
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
     QPointF _lastDragPos;
+    double _dragTime = 0.;
+    double _dragStart[2] = { 0., 0. };
 };
 
 NATRON_NAMESPACE_EXIT

@@ -33,7 +33,7 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
 
 ## Phase 204.1: Registry and downloads
 
-- [ ] M204.P1.T1 — Manifest schema, pinned manifest and registry
+- [x] M204.P1.T1 — Manifest schema, pinned manifest and registry
   - files: new `Engine/Ai/data/ai_models.json`, new `Engine/Ai/ModelRegistry.h`, `Engine/Ai/ModelRegistry.cpp`, new `tools/ai/update-manifest.py`, `Engine/CMakeLists.txt`
   - approach:
     - Each manifest entry holds: `id`, `task` (`mask-object`, `denoise`, `denoise-raw-bayer`, `denoise-linear`, `upscale-2x`, `upscale-4x`), `name`, `url`, `sha256`, `size`, `weightsLicence`, `trainingDataLicence`, `osaid` (darktable-ai's classification), `cardUrl` and `default`.
@@ -46,7 +46,7 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
     - The script run at the pinned tag reproduces the committed file.
   - size: M
 
-- [ ] M204.P1.T2 — Downloader and installer
+- [x] M204.P1.T2 — Downloader and installer
   - files: new `Engine/Ai/ModelDownloader.h`, `Engine/Ai/ModelDownloader.cpp`, new `Engine/Ai/ModelPackage.h`, `Engine/Ai/ModelPackage.cpp`
   - approach:
     - Wrap `FileDownloader` (`Engine/FileDownloader.h:62`) with progress and cancel signals.
@@ -88,3 +88,8 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
 - Under Xvfb, the AI Models page downloads a real darktable-ai model, SegNext, over the network, or the fixture where the sandbox blocks the network, with a screenshot shared before sign-off.
 - `NatronRenderer --download-model` works.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — Packages, not models, are what darktable-ai ships (release-5.6.0, pinned): RealPLKSR and BSRGAN carry 2x and 4x in one `.dtmodel`, RawNIND carries Bayer and linear. The manifest keeps one entry per model and adds `package` and `files`; models of one package share a download and install to `models/<package>/`. Split ids get `-x2`/`-x4`/`-bayer`/`-linear`.
+- 2026-10-27 — `config.json` has no tensor names, multiple-of, scale or optimisation level: tensor names/shapes come from `InferenceSession`, the optimisation level is the caller's (as darktable), and `ModelConfig` holds only what the file carries (tiling, input sizes and kind, colour space, attributes, licences).

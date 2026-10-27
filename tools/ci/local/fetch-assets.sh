@@ -21,10 +21,13 @@
 #                                           for openfx-arena)
 #   build/assets/rawspeed/                 (rawspeed, linked statically into
 #                                           Natron itself, with cameras.xml)
+#   build/assets/onnxruntime/              (the official ONNX Runtime CPU
+#                                           release: headers for the build,
+#                                           the library for the bundle)
 #
 # A second run does no network or compile work if the plugin bundles already look
 # complete and the plugin stamp matches the pins below, and rawspeed's install
-# is complete and its own stamp matches its pin.
+# and the ONNX Runtime unpack are complete and their own stamps match their pins.
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
 #
@@ -258,6 +261,16 @@ RAWSPEED_REF="c835b05aecfacb7343f7c424abd620aa12116c3f"
 DARKTABLE_REPO="https://github.com/darktable-org/darktable.git"
 DARKTABLE_REF="20891f6c6fa7be995e5bf9dff9d1ee5062051773"
 
+# ONNXRUNTIME_VERSION: microsoft/onnxruntime's official Linux x64 CPU release,
+# downloaded prebuilt and checked against the sha256 below. Natron never links
+# it: Engine/Ai includes onnxruntime_c_api.h and dlopen()s the library at run
+# time, so the bundled CPU build and a GPU build the user installs later are
+# interchangeable. Its newest glibc symbol is GLIBC_2.28 and its newest
+# libstdc++ symbol GLIBCXX_3.4.22, both within the EL9 baseline.
+ONNXRUNTIME_VERSION="1.31.1"
+ONNXRUNTIME_SHA256="c849e36a1ef3e22d4ff217b9d1ce4a3cf5b9467b975610913ae959ad5b16bdc9"
+ONNXRUNTIME_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 TEST_PLUGINS_TARGET="${ASSETS_DIR}/TestPlugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
@@ -274,6 +287,10 @@ RAWSPEED_STAMP="${RAWSPEED_PREFIX}/.natron-rawspeed-pin"
 # rebuilds even though the ref did not move.
 RAWSPEED_WANT="rawspeed=${RAWSPEED_REF} recipe=1"
 
+ONNXRUNTIME_PREFIX="${ASSETS_DIR}/onnxruntime"
+ONNXRUNTIME_STAMP="${ONNXRUNTIME_PREFIX}/.natron-onnxruntime-pin"
+ONNXRUNTIME_WANT="onnxruntime=${ONNXRUNTIME_VERSION} sha256=${ONNXRUNTIME_SHA256}"
+
 if [[ "${CHECK_PINS}" -eq 1 ]]; then
     pins_ok=1
     if [ ! -f "${PLUGINS_STAMP}" ] || [ "$(cat "${PLUGINS_STAMP}")" != "${PLUGINS_WANT}" ]; then
@@ -286,6 +303,12 @@ if [[ "${CHECK_PINS}" -eq 1 ]]; then
         echo "fetch-assets.sh: ${RAWSPEED_PREFIX} was not built at the pinned ref." >&2
         echo "  built:  $(cat "${RAWSPEED_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
         echo "  pinned: ${RAWSPEED_WANT}" >&2
+        pins_ok=0
+    fi
+    if [ ! -f "${ONNXRUNTIME_STAMP}" ] || [ "$(cat "${ONNXRUNTIME_STAMP}")" != "${ONNXRUNTIME_WANT}" ]; then
+        echo "fetch-assets.sh: ${ONNXRUNTIME_PREFIX} was not unpacked at the pinned version." >&2
+        echo "  unpacked: $(cat "${ONNXRUNTIME_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
+        echo "  pinned:   ${ONNXRUNTIME_WANT}" >&2
         pins_ok=0
     fi
     if [[ "${pins_ok}" -eq 1 ]]; then
@@ -797,6 +820,44 @@ CONFIG
     rm -rf "${RAWSPEED_PREFIX}"
     mv "${RAWSPEED_STAGE}" "${RAWSPEED_PREFIX}"
     echo "[rawspeed] done -> ${RAWSPEED_PREFIX}"
+fi
+
+# ---------------------------------------------------------------------------
+# ONNX Runtime (the official CPU release, unpacked as published)
+# ---------------------------------------------------------------------------
+ONNXRUNTIME_LIB="${ONNXRUNTIME_PREFIX}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION}"
+ONNXRUNTIME_HEADER="${ONNXRUNTIME_PREFIX}/include/onnxruntime_c_api.h"
+
+if [ -f "${ONNXRUNTIME_STAMP}" ] && [ "$(cat "${ONNXRUNTIME_STAMP}")" = "${ONNXRUNTIME_WANT}" ] \
+    && [ -f "${ONNXRUNTIME_LIB}" ] && [ -f "${ONNXRUNTIME_HEADER}" ]; then
+    echo "[onnxruntime] already unpacked at the pinned version -- skipping."
+    echo "[onnxruntime]   ${ONNXRUNTIME_WANT}"
+else
+    echo "[onnxruntime] downloading ONNX Runtime ${ONNXRUNTIME_VERSION}..."
+    ONNXRUNTIME_STAGE="${ONNXRUNTIME_PREFIX}.partial"
+    ONNXRUNTIME_TARBALL="${ASSETS_DIR}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+    rm -rf "${ONNXRUNTIME_STAGE}"
+    curl -fsSL --retry 3 -o "${ONNXRUNTIME_TARBALL}" "${ONNXRUNTIME_URL}"
+    if ! echo "${ONNXRUNTIME_SHA256}  ${ONNXRUNTIME_TARBALL}" | sha256sum -c --quiet -; then
+        echo "[onnxruntime] ERROR: ${ONNXRUNTIME_URL} does not match the pinned sha256" >&2
+        rm -f "${ONNXRUNTIME_TARBALL}"
+        exit 1
+    fi
+    mkdir -p "${ONNXRUNTIME_STAGE}"
+    tar -xzf "${ONNXRUNTIME_TARBALL}" -C "${ONNXRUNTIME_STAGE}" --strip-components=1
+    rm -f "${ONNXRUNTIME_TARBALL}"
+    for f in "${ONNXRUNTIME_STAGE}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION}" \
+        "${ONNXRUNTIME_STAGE}/include/onnxruntime_c_api.h" \
+        "${ONNXRUNTIME_STAGE}/LICENSE" "${ONNXRUNTIME_STAGE}/ThirdPartyNotices.txt"; do
+        if [ ! -f "${f}" ]; then
+            echo "[onnxruntime] ERROR: the release archive has no ${f#"${ONNXRUNTIME_STAGE}"/}" >&2
+            exit 1
+        fi
+    done
+    echo "${ONNXRUNTIME_WANT}" > "${ONNXRUNTIME_STAGE}/.natron-onnxruntime-pin"
+    rm -rf "${ONNXRUNTIME_PREFIX}"
+    mv "${ONNXRUNTIME_STAGE}" "${ONNXRUNTIME_PREFIX}"
+    echo "[onnxruntime] done -> ${ONNXRUNTIME_PREFIX}"
 fi
 
 # ---------------------------------------------------------------------------

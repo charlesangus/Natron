@@ -46,7 +46,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
 
 ## Phase 207.1: Wrapper and node
 
-- [ ] M207.P1.T1 — Scene-linear range wrapper
+- [x] M207.P1.T1 — Scene-linear range wrapper
   - files: new `Engine/Ai/SceneLinearWrapper.h`, `Engine/Ai/SceneLinearWrapper.cpp`, new `Tests/Ai/SceneLinearWrapper_Test.cpp`
   - approach:
     - `prepare(frameStats, cfg)` returns the wrapper parameters: the exposure gain and the OCIO forward and inverse `CPUProcessor`s from working space to the chosen sRGB display-referred space (M50's project config). It rejects a space whose transform has no inverse.
@@ -56,7 +56,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
   - verify: the gtest round-trips forward then inverse without the model on HDR data (values up to 1e4 and negatives) through the default config's sRGB space, within a tolerance measured once and recorded in the test. The compressed output lies in [0,1]. A non-invertible space is rejected by `prepare`.
   - size: M
 
-- [ ] M207.P1.T2 — NeuralDenoise node
+- [x] M207.P1.T2 — NeuralDenoise node
   - files: new `Engine/Nodes/Filter/NeuralDenoise.h`, `Engine/Nodes/Filter/NeuralDenoise.cpp`, `Engine/Nodes/Filter/NeuralDenoise.reg.inc`
   - approach:
     - The node is CPU-only per the README "AI nodes" section.
@@ -67,7 +67,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
   - verify: P1.T3's tests pass.
   - size: L
 
-- [ ] M207.P1.T3 — Tests, docs and identity
+- [x] M207.P1.T3 — Tests, docs and identity
   - files: new `Tests/Native/NativeNeuralDenoise_Test.cpp`, `Engine/Nodes/Filter/docs/NeuralDenoise.md`, `Gui/Resources/Images/NativeNodes/`
   - approach:
     - Identity checks with `expectNativeIdentity`.
@@ -88,6 +88,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
 
 ## Decisions
 
+- 2026-10-27 — Gate green. UAT: build/appimages/Natron-m207-neural-denoise.AppImage, M207-uat.md.
 - 2026-10-27 — PM: Strength follows darktable — detail recovery for sRGB `denoise` models (so 0 is full recovery, not the input), a linear mix for the linear model. Shadow Boost is exposed (Auto default, On/Off) though darktable has no GUI for it. Full-frame denoise below strength 1 is cached (memory/time cost accepted). darktable's raw-path exposure/gain/white-balance steps are not ported (user's no-exposure decision).
 - 2026-10-27 — Model Colourspace follows the selected model (Linear Rec.2020 / sRGB) until the user picks one (PM). Strength and the other darktable controls are ported as darktable does them, not as a linear mix (PM, per "a port means every control"). Crops of real models aren't bit-identical to full frames (tile layout follows the request); documented. `gpuWeight` waits for M239.
 - 2026-10-27 — **Colour space is the user's (user, supersedes the OCIO range-wrapper decision):** the node has an OCIO colourspace knob. It converts from the working space into that space, runs the model, and converts back. No automatic range wrapper, clamp, residue or exposure: choosing a space that suits the model and managing range/variance is the user's job. Default: "sRGB Encoded Rec.709 (sRGB)" (measured: exact round trip, 0.18 → 0.46 as the models were trained). Measurements behind it are in the 2026-10-27 consultant report (ACES 2.0 SDR is not invertible on saturated colours).

@@ -295,9 +295,9 @@ future core work has solid ground to build on.
 | M199 | Remove Legacy Scheduler | todo | - |  | E14 | [M199-remove-legacy-scheduler.md](PLAN/MILESTONES/M199-remove-legacy-scheduler.md) |
 | M200 | Folded Knob Shared Storage | todo | - |  | E14 | [M200-folded-knob-shared-storage.md](PLAN/MILESTONES/M200-folded-knob-shared-storage.md) |
 | M201 | Trimap Removal | todo | M199 |  | E14 | [M201-trimap-removal.md](PLAN/MILESTONES/M201-trimap-removal.md) |
-| M202 | Clean-Hash Cache Stores | doing | M167 | bosley-native-nodes | E14 | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |
+| M202 | Clean-Hash Cache Stores | done | M167 | bosley-native-nodes | E14 | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |
 | M203 | ONNX Inference Backend | done | - |  | E16 | [M203-onnx-inference-backend.md](PLAN/MILESTONES/M203-onnx-inference-backend.md) |
-| M204 | AI Model Manager | todo | M203 |  | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
+| M204 | AI Model Manager | doing | M203 | bosley-native-nodes | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
 | M205 | Object Mask To Roto | todo | M203, M204, M146 |  | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
 | M206 | Neural Raw Denoise | todo | M203, M204 |  | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | todo | M203, M204 |  | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |

@@ -29,10 +29,14 @@
 
 #include <QAbstractItemView>
 #include <QButtonGroup>
+#include <QColor>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QLocale>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QRadioButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -55,8 +59,7 @@ enum Column {
     eColumnName = 0,
     eColumnTask,
     eColumnSize,
-    eColumnWeightsLicence,
-    eColumnTrainingDataLicence,
+    eColumnLicence,
     eColumnStatus,
     eColumnDefault,
     eColumnCount
@@ -83,19 +86,46 @@ taskLabel(AiModelTask task)
     return QString();
 }
 
-// Badge colours by darktable-ai's OSAID class, open-source first.
-QString
-osaidBadge(const std::string& osaid)
+// Chip colours by darktable-ai's OSAID class, open-source first.
+QColor
+osaidColour(const std::string& osaid)
 {
-    QString colour = QString::fromUtf8("#5a5a5a");
     if (osaid == "Open Source AI") {
-        colour = QString::fromUtf8("#2f6b35");
+        return QColor(0x3f, 0x9a, 0x48);
     } else if (osaid == "Open Weights") {
-        colour = QString::fromUtf8("#7a5c14");
+        return QColor(0xc0, 0x90, 0x20);
     }
 
-    return QString::fromUtf8("<span style=\"background-color:%1; color:#ffffff;\">&nbsp;%2&nbsp;</span>")
-        .arg(colour, QString::fromStdString(osaid).toHtmlEscaped());
+    return QColor(0x80, 0x80, 0x80);
+}
+
+QIcon
+osaidChip(const std::string& osaid,
+          int size)
+{
+    QPixmap pixmap(size, size);
+
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(osaidColour(osaid));
+    painter.drawEllipse(QRectF(1, 1, size - 2, size - 2));
+
+    return QIcon(pixmap);
+}
+
+QString
+licenceToolTip(const AiModelEntry& entry)
+{
+    QString text = AiModelsPage::tr("Weights licence: %1\nTraining-data licence: %2\nOSAID class: %3")
+                       .arg(QString::fromStdString(entry.weightsLicence), QString::fromStdString(entry.trainingDataLicence),
+                            QString::fromStdString(entry.osaid));
+    if (!entry.cardUrl.empty()) {
+        text += QString::fromUtf8("\n") + AiModelsPage::tr("Model card: %1").arg(QString::fromStdString(entry.cardUrl));
+    }
+
+    return text;
 }
 
 QTableWidgetItem*
@@ -121,7 +151,8 @@ AiModelsPage::AiModelsPage(QWidget* parent)
     QVBoxLayout* layout = new QVBoxLayout(this);
 
     Label* intro = new Label(tr("Models the AI nodes run. Downloads go to your user data folder; "
-                                "Default picks the model new nodes start with."),
+                                "Default picks the model new nodes start with. The dot by a name is its "
+                                "OSAID class: green Open Source AI, amber Open Weights. Hover a row for its licences."),
                              this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -129,20 +160,29 @@ AiModelsPage::AiModelsPage(QWidget* parent)
     _table = new QTableWidget(this);
     _table->setObjectName(QString::fromUtf8("aiModelsTable"));
     _table->setColumnCount(eColumnCount);
-    _table->setHorizontalHeaderLabels(QStringList() << tr("Name") << tr("Task") << tr("Size") << tr("Weights Licence")
-                                                    << tr("Training-Data Licence") << tr("Status") << tr("Default"));
+    _table->setHorizontalHeaderLabels(QStringList() << tr("Name") << tr("Task") << tr("Size") << tr("Licence")
+                                                    << tr("Status") << tr("Default"));
     _table->setSelectionBehavior(QAbstractItemView::SelectRows);
     _table->setSelectionMode(QAbstractItemView::SingleSelection);
     _table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     _table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    _table->setWordWrap(true);
+    _table->setWordWrap(false);
+    _table->setTextElideMode(Qt::ElideRight);
+    const int chipSize = _table->fontMetrics().height() * 2 / 3;
+    _table->setIconSize(QSize(chipSize, chipSize));
     _table->verticalHeader()->hide();
-    _table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    _table->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    _table->verticalHeader()->setDefaultSectionSize(_table->fontMetrics().height() + 8);
     QHeaderView* header = _table->horizontalHeader();
+    header->setStretchLastSection(false);
+    header->setTextElideMode(Qt::ElideRight);
     for (int c = 0; c < eColumnCount; ++c) {
         header->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     }
-    header->setSectionResizeMode(eColumnTrainingDataLicence, QHeaderView::Stretch);
+    header->setSectionResizeMode(eColumnName, QHeaderView::Stretch);
+    // Licence names vary in length: a fixed width keeps the row on screen, and the tooltip has the full text.
+    header->setSectionResizeMode(eColumnLicence, QHeaderView::Fixed);
+    header->resizeSection(eColumnLicence, _table->fontMetrics().horizontalAdvance(QString::fromUtf8("Apache-2.0")) + 16);
     layout->addWidget(_table, 1);
 
     _message = new Label(this);
@@ -197,21 +237,16 @@ AiModelsPage::buildRows()
         const int row = (int)i;
         _ids.push_back(entry.id);
 
+        const QString licences = licenceToolTip(entry);
         QTableWidgetItem* name = readOnlyItem(QString::fromStdString(entry.name));
-        name->setToolTip(QString::fromStdString(entry.id));
+        name->setIcon(osaidChip(entry.osaid, _table->iconSize().width()));
+        name->setToolTip(QString::fromStdString(entry.name + " (" + entry.id + ")") + QString::fromUtf8("\n") + licences);
         _table->setItem(row, eColumnName, name);
         _table->setItem(row, eColumnTask, readOnlyItem(taskLabel(entry.task)));
         _table->setItem(row, eColumnSize, readOnlyItem(QLocale().formattedDataSize((qint64)entry.size, 0)));
-        _table->setItem(row, eColumnWeightsLicence, readOnlyItem(QString::fromStdString(entry.weightsLicence)));
-
-        // A label so that the OSAID badge can be drawn; the empty item keeps the row selectable.
-        _table->setItem(row, eColumnTrainingDataLicence, readOnlyItem(QString()));
-        Label* licence = new Label(osaidBadge(entry.osaid) + QString::fromUtf8(" ") + QString::fromStdString(entry.trainingDataLicence).toHtmlEscaped(), _table);
-        licence->setTextFormat(Qt::RichText);
-        licence->setWordWrap(true);
-        licence->setAttribute(Qt::WA_TransparentForMouseEvents);
-        licence->setToolTip(tr("OSAID class: %1\n%2").arg(QString::fromStdString(entry.osaid), QString::fromStdString(entry.trainingDataLicence)));
-        _table->setCellWidget(row, eColumnTrainingDataLicence, licence);
+        QTableWidgetItem* licence = readOnlyItem(QString::fromStdString(entry.weightsLicence));
+        licence->setToolTip(licences);
+        _table->setItem(row, eColumnLicence, licence);
 
         _table->setItem(row, eColumnStatus, readOnlyItem(QString()));
 

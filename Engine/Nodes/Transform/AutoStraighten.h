@@ -33,6 +33,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/ResampleExecutor.h"
@@ -43,6 +44,7 @@
 #include "Engine/Nodes/Transform/AshiftLines.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RotoCurvePanelHook.h"
 #include "Engine/ViewIdx.h"
 
 #define PLUGINID_NATRON_AUTOSTRAIGHTEN "AutoStraighten"
@@ -59,7 +61,6 @@
 #define kAutoStraightenParamLensDependence "lensDependence"
 #define kAutoStraightenParamAspectAdjust "aspectAdjust"
 #define kAutoStraightenParamStructure "structure"
-#define kAutoStraightenParamEnhance "enhance"
 #define kAutoStraightenParamFitParameters "fitParameters"
 #define kAutoStraightenParamFitVertical "fitVertical"
 #define kAutoStraightenParamFitHorizontal "fitHorizontal"
@@ -68,6 +69,25 @@
 #define kAutoStraightenParamTopRight "topRight"
 #define kAutoStraightenParamBottomLeft "bottomLeft"
 #define kAutoStraightenParamBottomRight "bottomRight"
+
+// The orientation of a drawn guide line: each line has its own knob of that name, and the node's
+// knob shows the selected line's.
+#define kAutoStraightenParamLineOrientation "lineOrientation"
+#define kAutoStraightenParamLineOrientationLabel "Line Orientation"
+
+// The viewer toolbar group and action that draw guide lines.
+#define kAutoStraightenUIParamGuideLinesToolButton "guideLinesTool"
+#define kAutoStraightenUIParamGuideLinesToolButtonLabel "Guide Lines Tool"
+#define kAutoStraightenUIParamDrawLineToolButtonAction "drawLineTool"
+#define kAutoStraightenUIParamDrawLineToolButtonActionLabel "Draw Line Tool"
+#define kAutoStraightenUIParamDrawLineToolButtonActionHint "Draw a guide line: click and drag along an edge that should be vertical or horizontal."
+
+// The base name of drawn guide lines.
+#define kAutoStraightenLineBaseName "Line"
+
+// The curve panel's context menu actions.
+#define kAutoStraightenActionSetVertical "setVertical"
+#define kAutoStraightenActionSetHorizontal "setHorizontal"
 
 NATRON_NAMESPACE_ENTER
 
@@ -104,8 +124,8 @@ struct AutoStraightenOp {
         .id = PLUGINID_NATRON_AUTOSTRAIGHTEN,
         .label = "AutoStraighten",
         .description = "Correct converging lines and a tilted horizon: rotation, vertical and horizontal lens shift "
-                       "(keystone) and shear, fitted automatically to the structure of the image or to a rectangle "
-                       "placed in the viewer, with an automatic crop of the empty borders.\n"
+                       "(keystone) and shear, fitted to vertical and horizontal guide lines drawn in the viewer or to a "
+                       "rectangle placed in the viewer, with an automatic crop of the empty borders.\n"
                        "A port of darktable's rotate and perspective module (ashift).",
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_AUTOSTRAIGHTEN,
@@ -163,11 +183,13 @@ static_assert(GpuResampleOp<AutoStraightenOp>);
 /**
  * @brief AutoStraighten: darktable's rotate and perspective module. The source is warped by the
  * module's homography through Resampler; the output format is the corrected image's bounding box,
- * cropped by autoCrop. The fit buttons detect lines in the source (or take the four sides of the
- * rectangle in Rectangle mode) and fit the rotation, the lens shifts and the shear to them.
+ * cropped by autoCrop. The node hosts guide lines, open curves of its curve context each tagged
+ * vertical or horizontal; the fit buttons fit the rotation, the lens shifts and the shear to them
+ * (or to the four sides of the rectangle in Rectangle mode).
  **/
 class AutoStraighten
-    : public ImageNode<AutoStraightenOp> {
+    : public ImageNode<AutoStraightenOp>,
+      public RotoCurvePanelHook {
 public:
     enum LensModelEnum {
         eLensModelGeneric = 0,
@@ -175,7 +197,7 @@ public:
     };
 
     enum StructureEnum {
-        eStructureDetectedLines = 0,
+        eStructureDrawnLines = 0,
         eStructureRectangle
     };
 
@@ -184,6 +206,11 @@ public:
         eFitParametersRotation,
         eFitParametersLensShift,
         eFitParametersRotationAndLensShift
+    };
+
+    enum LineOrientationEnum {
+        eLineOrientationVertical = 0,
+        eLineOrientationHorizontal
     };
 
     enum FitButtonEnum {
@@ -220,6 +247,20 @@ public:
     virtual ~AutoStraighten();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
+
+    virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eCurveContextKindGeometry;
+    }
+
+    virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void onCurveItemCreated(const RotoDrawableItemPtr& item) OVERRIDE FINAL;
+
+    const RotoCurveInteractPtr& getInteract() const
+    {
+        return _ui;
+    }
 
     virtual bool supportsMultipleClipPARs() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -270,7 +311,7 @@ public:
     void setCropOverride(const CropOverride& cropOverride);
 
     /**
-     * @brief Runs a fit button at (time, view): detects the structure (or takes the rectangle),
+     * @brief Runs a fit button at (time, view): takes the drawn guide lines (or the rectangle),
      * fits and sets the knobs as one undo step. Returns false, with a message on the node, when
      * the fit failed and the knobs are unchanged.
      **/
@@ -292,6 +333,33 @@ public:
      **/
     Ashift::LineSet rectangleLines(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The drawn guide lines at (time, view) in darktable's source coordinates: one segment
+     * per pair of consecutive control points of each activated open curve with a line orientation.
+     **/
+    Ashift::LineSet drawnLines(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The orientation of a guide line, false when item is not one.
+     **/
+    static bool getLineOrientation(const RotoItemPtr& item, LineOrientationEnum* orientation) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Sets a guide line's orientation (and the node's knob while the line is selected).
+     **/
+    void setLineOrientation(const RotoDrawableItemPtr& item, LineOrientationEnum orientation);
+
+    /**
+     * @brief Tags a newly drawn line vertical or horizontal by the direction of its end points at time.
+     **/
+    void setLineOrientationFromDirection(const BezierPtr& line, double time);
+
+    // RotoCurvePanelHook
+    virtual std::vector<Column> getColumns() const OVERRIDE FINAL;
+    virtual std::string getItemText(const RotoItemPtr& item, int column) const OVERRIDE FINAL;
+    virtual std::vector<MenuAction> getItemMenuActions(const std::list<RotoItemPtr>& items) const OVERRIDE FINAL;
+    virtual void onItemMenuActionTriggered(const std::string& actionId, const std::list<RotoItemPtr>& items) OVERRIDE FINAL;
+
 protected:
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
@@ -305,17 +373,76 @@ protected:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL;
+
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
+
+    virtual void drawOverlay(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
+
+    virtual bool onOverlayPenDown(double time,
+                                  const RenderScale& renderScale,
+                                  ViewIdx view,
+                                  const QPointF& viewportPos,
+                                  const QPointF& pos,
+                                  double pressure,
+                                  double timestamp,
+                                  PenType pen) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool onOverlayPenMotion(double time,
+                                    const RenderScale& renderScale,
+                                    ViewIdx view,
+                                    const QPointF& viewportPos,
+                                    const QPointF& pos,
+                                    double pressure,
+                                    double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool onOverlayPenUp(double time,
+                                const RenderScale& renderScale,
+                                ViewIdx view,
+                                const QPointF& viewportPos,
+                                const QPointF& pos,
+                                double pressure,
+                                double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool onOverlayPenDoubleClicked(double time,
+                                           const RenderScale& renderScale,
+                                           ViewIdx view,
+                                           const QPointF& viewportPos,
+                                           const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool onOverlayKeyDown(double time,
+                                  const RenderScale& renderScale,
+                                  ViewIdx view,
+                                  Key key,
+                                  KeyboardModifiers modifiers) OVERRIDE FINAL;
+
+    virtual bool onOverlayKeyUp(double time,
+                                const RenderScale& renderScale,
+                                ViewIdx view,
+                                Key key,
+                                KeyboardModifiers modifiers) OVERRIDE FINAL;
+
+    virtual bool onOverlayFocusLost(double time,
+                                    const RenderScale& renderScale,
+                                    ViewIdx view) OVERRIDE FINAL;
+
+    virtual void onInteractViewportSelectionCleared() OVERRIDE FINAL;
+
+    virtual void onInteractViewportSelectionUpdated(const RectD& rectangle,
+                                                    bool onRelease) OVERRIDE FINAL;
+
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
-
-    bool detectStructure(double time, ViewIdx view, Ashift::LineSet* lines, std::string* error);
 
     void refreshVisibility();
 
     void updateClampEnabled(double time, ViewSpec view);
 
+    RotoCurveInteractPtr _ui;
     KnobChoiceWPtr _structure;
-    KnobChoiceWPtr _enhance;
+    KnobChoiceWPtr _lineOrientation;
+    // Set while setLineOrientation() shows an item's value through the node's knob.
+    bool _settingLineOrientation;
     KnobChoiceWPtr _fitParameters;
     KnobButtonWPtr _fitVertical;
     KnobButtonWPtr _fitHorizontal;

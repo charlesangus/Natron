@@ -151,6 +151,12 @@ public:
     virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes);
 
     /**
+     * @brief Registers a node knob that edits the per-item host knob of the same name: on
+     * selection it is slaved to the selected item's knob like the Shape page knobs.
+     **/
+    void addHostItemKnob(const KnobIPtr& knob);
+
+    /**
      * @brief Copies a Bezier or stroke of this context under the given name, through onItemCreated(),
      * for the curve panel's paste and duplicate. A Bezier copy is not inserted in any layer; a stroke
      * copy is inserted at the top of the source's layer.

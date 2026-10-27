@@ -41,6 +41,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/Transform.h"
@@ -573,6 +574,8 @@ RotoCurveInteract::getRoleForGroup(const KnobGroupPtr& k,
         *role = eRotoRolePointsEdition;
     } else if (k == bezierEditionToolGroup.lock()) {
         *role = eRotoRoleBezierEdition;
+    } else if (objectSelect && (k == objectSelectToolGroup.lock())) {
+        *role = eRotoRoleObjectSelect;
     } else {
         ret = false;
     }
@@ -612,6 +615,8 @@ RotoCurveInteract::getToolForAction(const KnobButtonPtr& k,
         *tool = eRotoToolDrawEllipse;
     } else if (k == drawRectangleAction.lock()) {
         *tool = eRotoToolDrawRectangle;
+    } else if (objectSelect && (k == objectSelectAction.lock())) {
+        *tool = eRotoToolObjectSelect;
     } else {
         ret = false;
     }
@@ -642,14 +647,18 @@ RotoCurveInteract::onRoleChangedInternal(const KnobGroupPtr& roleGroup)
 
     // Roto action bar
     bool isPaintRole = (role == eRotoRolePaintBrush) || (role == eRotoRoleCloneBrush) || (role == eRotoRoleMergeBrush) || (role == eRotoRoleEffectBrush);
+    const bool isObjectRole = (role == eRotoRoleObjectSelect);
     const KnobButtonWPtr rotoButtons[] = {
         autoKeyingEnabledButton, featherLinkEnabledButton, displayFeatherEnabledButton, stickySelectionEnabledButton,
         bboxClickAnywhereButton, rippleEditEnabledButton, addKeyframeButton, removeKeyframeButton, showTransformHandle
     };
     for (const KnobButtonWPtr& button : rotoButtons) {
         if (KnobButtonPtr b = button.lock()) {
-            b->setInViewerContextSecret(isPaintRole);
+            b->setInViewerContextSecret(isPaintRole || isObjectRole);
         }
+    }
+    if (objectSelect) {
+        objectSelect->setActive(isObjectRole);
     }
 
     selectedRole = role;
@@ -910,6 +919,33 @@ RotoCurveInteract::createToolbarKnobs(int toolSet)
         }
     }
 
+    if (toolSet & eRotoCurveToolSetObjectSelect) {
+        KnobGroupPtr objectToolButton = AppManager::createKnob<KnobGroup>(_host, tr(kRotoUIParamObjectSelectToolButtonLabel));
+        objectToolButton->setName(kRotoUIParamObjectSelectToolButton);
+        objectToolButton->setAsToolButton(true);
+        objectToolButton->setEvaluateOnChange(false);
+        objectToolButton->setSecretByDefault(true);
+        objectToolButton->setInViewerContextCanHaveShortcut(true);
+        objectToolButton->setIsPersistent(false);
+        toolbar->addKnob(objectToolButton);
+        objectSelectToolGroup = objectToolButton;
+
+        KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamObjectSelectToolButtonActionLabel));
+        tool->setName(kRotoUIParamObjectSelectToolButtonAction);
+        tool->setHintToolTip(tr(kRotoUIParamObjectSelectToolButtonActionHint));
+        tool->setCheckable(true);
+        tool->setDefaultValue(true);
+        tool->setSecretByDefault(true);
+        tool->setEvaluateOnChange(false);
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/scan-search.svg");
+        tool->setIsPersistent(false);
+        objectToolButton->addKnob(tool);
+        objectSelectAction = tool;
+
+        objectSelect.reset(new RotoObjectSelect(this));
+        objectSelect->setToolButton(tool);
+    }
+
     return toolbar;
 } // RotoCurveInteract::createToolbarKnobs
 
@@ -1033,6 +1069,30 @@ RotoCurveInteract::createViewerButtonKnobs(const KnobPagePtr& page)
     _host->addKnobToViewerUI(removeKeyframe);
     _host->addKnobToViewerUI(showTransform);
 } // RotoCurveInteract::createViewerButtonKnobs
+
+void
+RotoCurveInteract::createObjectSelectKnobs(const KnobPagePtr& page)
+{
+    if (objectSelect) {
+        objectSelect->createKnobs(page);
+    }
+}
+
+void
+RotoCurveInteract::onHostInputChanged()
+{
+    if (objectSelect) {
+        objectSelect->refreshSourceState();
+    }
+}
+
+void
+RotoCurveInteract::onHostEffectCreated(const CreateNodeArgs& args)
+{
+    if (objectSelect) {
+        objectSelect->onEffectCreated(args);
+    }
+}
 
 void
 RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
@@ -1201,9 +1261,12 @@ RotoCurveInteract::onCurveLockedChanged(int reason)
 }
 
 void
-RotoCurveInteract::refreshAfterTimeChanged(double /*time*/)
+RotoCurveInteract::refreshAfterTimeChanged(double time)
 {
     computeSelectedCpsBBOX();
+    if (objectSelect) {
+        objectSelect->onTimeChanged(time);
+    }
 }
 
 void
@@ -1232,6 +1295,9 @@ RotoCurveInteract::getToolbarShortcuts(int toolSet,
     }
     if (toolSet & eRotoCurveToolSetShapesDrawing) {
         shortcuts->push_back(PluginActionShortcut(kRotoUIParamBezierEditionToolButton, kRotoUIParamBezierEditionToolButtonLabel, Key_V));
+    }
+    if (toolSet & eRotoCurveToolSetObjectSelect) {
+        shortcuts->push_back(PluginActionShortcut(kRotoUIParamObjectSelectToolButton, kRotoUIParamObjectSelectToolButtonLabel, Key_O));
     }
 }
 
@@ -1262,6 +1328,21 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
     KnobIPtr kShared = k->shared_from_this();
     KnobButtonPtr isBtn = std::dynamic_pointer_cast<KnobButton>(kShared);
     KnobGroupPtr isGrp = std::dynamic_pointer_cast<KnobGroup>(kShared);
+    if (objectSelect && objectSelect->onKnobChanged(k)) {
+        return true;
+    }
+    // Backspace and Enter reach the tool as these menu actions' shortcuts.
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        if (k == removeItemsMenuAction.lock().get()) {
+            *ret = objectSelect->removeLastPrompt();
+
+            return true;
+        } else if (k == openCloseMenuAction.lock().get()) {
+            *ret = objectSelect->commit();
+
+            return true;
+        }
+    }
     if (isBtn && onToolChangedInternal(isBtn)) {
         return true;
     } else if (isGrp && onRoleChangedInternal(isGrp)) {
@@ -2649,6 +2730,9 @@ RotoCurveInteract::drawOverlay(double time)
 
         if (!_host->isDrawingPassiveOverlay()) {
             drawPaintToolOverlay(screenPixelRatio, viewportSize);
+            if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+                objectSelect->draw(time);
+            }
         }
     } // GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
 
@@ -2790,6 +2874,10 @@ RotoCurveInteract::onOverlayPenDown(double time,
 {
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
+
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        return objectSelect->penDown(time, pos, shiftDown > 0);
+    }
 
     std::pair<double, double> pixelScale;
     _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
@@ -3172,6 +3260,10 @@ RotoCurveInteract::onOverlayPenMotion(double time,
                                       double pressure,
                                       double timestamp)
 {
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        return objectSelect->penMotion(pos);
+    }
+
     std::pair<double, double> pixelScale;
 
     _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
@@ -3502,6 +3594,10 @@ RotoCurveInteract::onOverlayPenUp()
 {
     undoGesture.end();
 
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        return objectSelect->penUp();
+    }
+
     RotoCurveContextPtr context = getCurveContext();
 
     assert(context);
@@ -3560,6 +3656,16 @@ RotoCurveInteract::onOverlayKeyDown(Key key)
         ++ctrlDown;
     } else if ((key == Key_Alt_L) || (key == Key_Alt_R)) {
         ++altDown;
+    }
+
+    if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+        if (key == Key_Escape) {
+            return objectSelect->clearPrompts();
+        } else if ((key == Key_BackSpace) || (key == Key_Delete)) {
+            return objectSelect->removeLastPrompt();
+        } else if ((key == Key_Return) || (key == Key_KP_Enter)) {
+            return objectSelect->commit();
+        }
     }
 
     if (ctrlDown && !shiftDown && !altDown) {

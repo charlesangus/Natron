@@ -182,6 +182,37 @@ input kind and colour space from it, looking up a model's attributes by its file
 (`model_x4`) over the package-wide ones. Tensor names and shapes are not in it; the session reads
 them from the model.
 
+## Object segmentation
+
+`Segmenter` (`Segmentation.h`) runs darktable-ai's two-graph `mask-object` models, SegNext and SAM
+2.1. The encoder sees the image once per (image hash, frame, model) key, and the segmenter keeps the
+last `kCacheCapacity` encodings. The decoder turns click points (and, for SAM, boxes) into a
+probability mask, refined over two passes as darktable's object tool does. `MaskTrace` turns that
+mask into closed Bezier outlines and holes: marching squares, Douglas-Peucker simplification, then
+a Schneider curve fit. Without smoothing, it keeps straight segments between corners.
+
+`Segmentation.cpp` is ported from darktable's `src/common/ai/segmentation.c` (commit
+`fee19b421fdb`), which is GPL-3.0-or-later, so that file is GPL-3.0-or-later too. The Natron tree
+is GPL-2.0-or-later, which allows it, but a build that links the file is distributed under GPLv3.
+`MaskTrace` is written fresh: it does not port darktable's vectorizer or potrace.
+
+The SAM 2.1 models are trained on SA-1B, whose licence is research-only. The model licence notice
+says so before a download, as it does for every model with such training data.
+
+The Roto node's Object Select tool (`Engine/RotoObjectSelect.h`, shortcut O) is the only user of
+both for now. In the viewer:
+
+- A click adds a point on the object, and a Shift-click adds a point to leave out.
+- A drag draws a box (SAM models only).
+- The outline preview follows each prompt.
+- Backspace removes the last prompt, and Esc clears them all.
+- Return commits the outlines as Beziers keyed on the current frame, as one undo step. Holes
+  become Stencil shapes.
+- The prompts belong to one frame: changing frame drops them.
+It renders the Source on a worker thread at full resolution and converts it to the project's
+default display and view as 8-bit sRGB, not the viewer's. Then it resamples it to square pixels
+and encodes it. Prompts and decoding run on the main thread.
+
 ## Testing
 
 `Tests/Ai` runs these classes against the real ORT that `fetch-assets.sh` unpacks into the build

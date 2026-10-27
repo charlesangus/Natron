@@ -105,6 +105,8 @@ set(Tests_SOURCES
     Ai/ModelRegistry_Test.cpp
     Ai/ModelDownloader_Test.cpp
     Ai/ModelKnob_Test.cpp
+    Ai/Segmentation_Test.cpp
+    Ai/MaskTrace_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp

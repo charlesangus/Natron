@@ -98,6 +98,73 @@ def slow_loop():
                  [trips])
 
 
+# Stand-ins for darktable-ai's two-graph "mask" models, at a 64-pixel input size. Their "features"
+# are the image's channel mean, and their mask is that feature thresholded, so a bright object on a
+# dark ground segments as itself wherever the prompt is.
+SEG_SIZE = 64
+
+
+def seg_prompt_inputs():
+    return [helper.make_tensor_value_info("point_coords", TensorProto.FLOAT, [1, "points", 2]),
+            helper.make_tensor_value_info("point_labels", TensorProto.FLOAT, [1, "points"])]
+
+
+def segnext_encoder():
+    return model("fake_segnext_encoder",
+                 [helper.make_node("ReduceMean", ["image"], ["image_feats"], axes=[1], keepdims=1)],
+                 [image_value("image", TensorProto.FLOAT, SEG_SIZE, SEG_SIZE)],
+                 [helper.make_tensor_value_info("image_feats", TensorProto.FLOAT, [1, 1, SEG_SIZE, SEG_SIZE])])
+
+
+def segnext_decoder():
+    half = helper.make_tensor("half", TensorProto.FLOAT, [], [0.5])
+    gain = helper.make_tensor("gain", TensorProto.FLOAT, [], [40.0])
+    return model("fake_segnext_decoder",
+                 [helper.make_node("Sub", ["image_feats", "half"], ["centred"]),
+                  helper.make_node("Mul", ["centred", "gain"], ["logits"]),
+                  helper.make_node("Sigmoid", ["logits"], ["mask"])],
+                 [helper.make_tensor_value_info("image_feats", TensorProto.FLOAT, [1, 1, SEG_SIZE, SEG_SIZE])]
+                 + seg_prompt_inputs()
+                 + [helper.make_tensor_value_info("prev_mask", TensorProto.FLOAT, [1, 1, SEG_SIZE, SEG_SIZE])],
+                 [helper.make_tensor_value_info("mask", TensorProto.FLOAT, [1, 1, SEG_SIZE, SEG_SIZE])],
+                 [half, gain])
+
+
+def sam_encoder():
+    # Outputs in another order, and under a longer name, than the decoder takes them.
+    return model("fake_sam_encoder",
+                 [helper.make_node("Identity", ["image"], ["high_res_feats_0"]),
+                  helper.make_node("ReduceMean", ["image"], ["image_embeddings"], axes=[1], keepdims=1)],
+                 [image_value("image", TensorProto.FLOAT, SEG_SIZE, SEG_SIZE)],
+                 [image_value("high_res_feats_0", TensorProto.FLOAT, SEG_SIZE, SEG_SIZE),
+                  helper.make_tensor_value_info("image_embeddings", TensorProto.FLOAT, [1, 1, SEG_SIZE, SEG_SIZE])])
+
+
+def sam_decoder():
+    # Three logit masks: the inverse, the object and nothing; the IoU head always picks the second.
+    low = SEG_SIZE // 4
+    neg = helper.make_tensor("neg", TensorProto.FLOAT, [], [-10.0])
+    pos = helper.make_tensor("pos", TensorProto.FLOAT, [], [10.0])
+    zero = helper.make_tensor("zero", TensorProto.FLOAT, [], [0.0])
+    iou = helper.make_tensor("iou", TensorProto.FLOAT, [1, 3], [0.2, 0.9, 0.5])
+    return model("fake_sam_decoder",
+                 [helper.make_node("Mul", ["image_embed", "neg"], ["inverse"]),
+                  helper.make_node("Mul", ["image_embed", "pos"], ["object"]),
+                  helper.make_node("Mul", ["image_embed", "zero"], ["nothing"]),
+                  helper.make_node("Concat", ["inverse", "object", "nothing"], ["masks"], axis=1),
+                  helper.make_node("Identity", ["iou"], ["iou_predictions"]),
+                  helper.make_node("MaxPool", ["masks"], ["low_res_masks"], kernel_shape=[4, 4], strides=[4, 4])],
+                 [helper.make_tensor_value_info("image_embed", TensorProto.FLOAT, [1, 1, SEG_SIZE, SEG_SIZE]),
+                  image_value("high_res_feats_0", TensorProto.FLOAT, SEG_SIZE, SEG_SIZE)]
+                 + seg_prompt_inputs()
+                 + [helper.make_tensor_value_info("mask_input", TensorProto.FLOAT, [1, 1, low, low]),
+                    helper.make_tensor_value_info("has_mask_input", TensorProto.FLOAT, [1])],
+                 [helper.make_tensor_value_info("masks", TensorProto.FLOAT, [1, 3, SEG_SIZE, SEG_SIZE]),
+                  helper.make_tensor_value_info("iou_predictions", TensorProto.FLOAT, [1, 3]),
+                  helper.make_tensor_value_info("low_res_masks", TensorProto.FLOAT, [1, 3, low, low])],
+                 [neg, pos, zero, iou])
+
+
 MODELS = {
     "identity.onnx": lambda: identity(TensorProto.FLOAT, "identity"),
     "identity-fp16.onnx": lambda: identity(TensorProto.FLOAT16, "identity_fp16"),
@@ -106,6 +173,10 @@ MODELS = {
     "scale2-fp16.onnx": lambda: scale2(TensorProto.FLOAT16, "scale2_fp16"),
     "upscale2-nearest.onnx": upscale2_nearest,
     "slow-loop.onnx": slow_loop,
+    "seg-segnext-encoder.onnx": segnext_encoder,
+    "seg-segnext-decoder.onnx": segnext_decoder,
+    "seg-sam-encoder.onnx": sam_encoder,
+    "seg-sam-decoder.onnx": sam_decoder,
 }
 
 

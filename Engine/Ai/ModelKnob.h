@@ -99,6 +99,12 @@ public:
     std::optional<Resolved> resolve();
 
     /**
+     * @brief As resolve(), but hands the reason back in *error instead of posting it, and leaves
+     * the node's messages alone: for tools whose node renders fine without the model.
+     **/
+    std::optional<Resolved> resolve(std::string* error);
+
+    /**
      * @brief Selects the user's default model (see defaultModel()) on a node the user creates.
      * The knob's own default stays the registry's, so that a project saved without touching the
      * knob opens on the same model everywhere. Call from the node's onEffectCreated().

@@ -30,6 +30,8 @@
 
 #include <list>
 #include <map>
+#include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -37,6 +39,7 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/Ai/MaskTrace.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoGesture.h"
@@ -548,6 +551,49 @@ private:
     double _fromx, _fromy;
     double _tox, _toy;
     double _time;
+};
+
+/**
+ * @brief Turns traced outlines into Beziers in the selected layer, keyed at time: one per outline,
+ * holes with the stencil operator so that they cut what lies under them. Undo removes them all.
+ **/
+class CommitObjectMaskUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(CommitObjectMaskUndoCommand)
+
+public:
+    // contours are in canonical coordinates, enclosing shapes first.
+    CommitObjectMaskUndoCommand(const RotoCurveInteractPtr& roto,
+                                const std::vector<MaskTrace::Contour>& contours,
+                                double time,
+                                double feather);
+
+    virtual ~CommitObjectMaskUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    // The shapes the first redo made, enclosing shapes first.
+    const std::list<BezierPtr>& shapes() const
+    {
+        return _shapes;
+    }
+
+private:
+    struct Placement {
+        RotoLayerPtr layer;
+        int index = -1;
+        BezierPtr shape;
+    };
+
+    RotoCurveInteractWPtr _roto;
+    std::vector<MaskTrace::Contour> _contours;
+    double _time;
+    double _feather;
+    bool _firstRedoCalled;
+    std::list<BezierPtr> _shapes;
+    // Where each shape sat, by increasing index, so that re-inserting in this order restores it.
+    std::vector<Placement> _placements;
 };
 
 NATRON_NAMESPACE_EXIT

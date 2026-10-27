@@ -17,4 +17,6 @@ shaped `[1, 3, height, width]`, and return one output, `output`.
 | `scale2-fp16.onnx` | float16 multiply by 2 |
 | `upscale2-nearest.onnx` | 2x nearest-neighbour `Resize`: output pixel (x, y) is input pixel (x/2, y/2) |
 | `slow-loop.onnx` | a `Loop` of 2^50 identity steps over a float vector `input` of any length. Only an abort ends it |
+| `seg-segnext-encoder.onnx`, `seg-segnext-decoder.onnx` | a SegNext-shaped click-to-segment pair at a 64-pixel input. The "features" are the channel mean of the `[0, 1]` image, and `mask` is `sigmoid(40 (features - 0.5))`, so a bright object on a dark ground segments as itself |
+| `seg-sam-encoder.onnx`, `seg-sam-decoder.onnx` | a SAM 2.1-shaped pair at a 64-pixel input. The encoder returns `high_res_feats_0` before `image_embeddings`, which the decoder takes as `image_embed`, so the routing has to reorder them and match by substring. The three logit `masks` are the inverse of the object, the object and nothing; `iou_predictions` always ranks the object first. `low_res_masks` is a 4x4 max-pool of `masks` |
 | `identity.dtmodel` | `identity.onnx` packed as a darktable-ai package, `test-identity`, by `tools/ai/make-test-dtmodel.py` |

@@ -40,6 +40,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/BezierCP.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
@@ -1917,5 +1918,107 @@ MakeRectangleUndoCommand::mergeWith(const UndoCommandPtr &other)
 
     return true;
 }
+
+////////////////////////////////////
+
+CommitObjectMaskUndoCommand::CommitObjectMaskUndoCommand(const RotoCurveInteractPtr& roto,
+                                                         const std::vector<MaskTrace::Contour>& contours,
+                                                         double time,
+                                                         double feather)
+    : UndoCommand()
+    , _roto(roto)
+    , _contours(contours)
+    , _time(time)
+    , _feather(feather)
+    , _firstRedoCalled(false)
+    , _shapes()
+    , _placements()
+{
+    setText(tr("Commit Object Mask").toStdString());
+}
+
+CommitObjectMaskUndoCommand::~CommitObjectMaskUndoCommand()
+{
+}
+
+void
+CommitObjectMaskUndoCommand::undo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto) {
+        return;
+    }
+    for (std::list<BezierPtr>::const_iterator it = _shapes.begin(); it != _shapes.end(); ++it) {
+        roto->removeCurve(*it);
+    }
+    roto->setSelection(BezierPtr(), std::make_pair(CpPtr(), CpPtr()));
+    roto->evaluate(true);
+}
+
+void
+CommitObjectMaskUndoCommand::redo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto) {
+        return;
+    }
+    RotoCurveContextPtr ctx = roto->getCurveContext();
+    if (_firstRedoCalled) {
+        for (std::vector<Placement>::const_iterator it = _placements.begin(); it != _placements.end(); ++it) {
+            ctx->addItem(it->layer, it->index, it->shape, RotoItem::eSelectionReasonOverlayInteract);
+        }
+    } else {
+        _firstRedoCalled = true;
+        for (std::vector<MaskTrace::Contour>::const_iterator it = _contours.begin(); it != _contours.end(); ++it) {
+            const std::vector<MaskTrace::CurvePoint>& points = it->points;
+            if (points.size() < 2) {
+                continue;
+            }
+            BezierPtr shape = ctx->makeBezier(points[0].position.x, points[0].position.y, kRotoObjectBaseName, _time, false);
+            if (!shape) {
+                continue;
+            }
+            for (std::size_t i = 1; i < points.size(); ++i) {
+                shape->addControlPoint(points[i].position.x, points[i].position.y, _time);
+            }
+            shape->setCurveFinished(true);
+            // Keyed before the handles are set, so that they land on the key whether or not
+            // auto-keying is on.
+            shape->setKeyframe(_time);
+            for (std::size_t i = 0; i < points.size(); ++i) {
+                shape->setLeftBezierPoint((int)i, _time, points[i].left.x, points[i].left.y);
+                shape->setRightBezierPoint((int)i, _time, points[i].right.x, points[i].right.y);
+            }
+            if (_feather > 0.) {
+                shape->setFeatherDistance(_feather, _time);
+            }
+            if (it->isHole) {
+                if (KnobChoicePtr op = shape->getOperatorKnob()) {
+                    op->setValueFromID(Merge::getOperatorString(eMergeStencil), 0);
+                }
+            }
+            _shapes.push_back(shape);
+        }
+        for (std::list<BezierPtr>::const_iterator it = _shapes.begin(); it != _shapes.end(); ++it) {
+            Placement placement;
+            placement.layer = (*it)->getParentLayer();
+            placement.index = placement.layer ? placement.layer->getChildIndex(*it) : -1;
+            placement.shape = *it;
+            _placements.push_back(placement);
+        }
+        std::sort(_placements.begin(), _placements.end(), [](const Placement& a, const Placement& b) {
+            return a.index < b.index;
+        });
+    }
+
+    std::list<RotoDrawableItemPtr> selection;
+    for (std::list<BezierPtr>::const_iterator it = _shapes.begin(); it != _shapes.end(); ++it) {
+        selection.push_back(*it);
+    }
+    roto->setSelection(selection, std::list<std::pair<BezierCPPtr, BezierCPPtr>>());
+    roto->evaluate(true);
+} // CommitObjectMaskUndoCommand::redo
 
 NATRON_NAMESPACE_EXIT

@@ -195,60 +195,70 @@ ModelKnob::onEffectCreated(const CreateNodeArgs& args)
 std::optional<ModelKnob::Resolved>
 ModelKnob::resolve()
 {
+    std::string error;
+    std::optional<Resolved> resolved = resolve(&error);
+
+    if (resolved) {
+        clearOwnError();
+    } else {
+        postError(error);
+    }
+
+    return resolved;
+}
+
+std::optional<ModelKnob::Resolved>
+ModelKnob::resolve(std::string* error)
+{
     const SettingsPtr settings = appPTR->getCurrentSettings();
 
     if (!settings || !settings->isAiEnabled()) {
-        postError("AI is disabled. Enable it in Preferences > AI.");
+        *error = "AI is disabled. Enable it in Preferences > AI.";
 
         return std::nullopt;
     }
 
     const std::string id = modelId();
-    std::optional<Resolved> resolved;
     {
         QMutexLocker locker(&_mutex);
         if (_resolved && (_resolved->entry->id == id)) {
-            resolved = _resolved;
+            return _resolved;
         }
     }
-    if (!resolved) {
-        if (id.empty()) {
-            postError("No model is selected.");
+    if (id.empty()) {
+        *error = "No model is selected.";
 
-            return std::nullopt;
-        }
-        const AiModelResolution resolution = _downloader->registry()->resolve(id);
-        switch (resolution.status) {
-        case AiModelStatus::eUnknown:
-            postError("unknown model `" + id + "`: this version of Natron does not list it.");
-
-            return std::nullopt;
-        case AiModelStatus::eMissing:
-            postError("The model " + resolution.entry->name + " (" + id + ") is not installed. Press Download Model, "
-                                                                          "or download it in Preferences > AI Models.");
-
-            return std::nullopt;
-        case AiModelStatus::eInstalled:
-            break;
-        }
-        Resolved fresh;
-        fresh.entry = resolution.entry;
-        fresh.directory = resolution.directory;
-        fresh.files = resolution.files;
-        try {
-            fresh.config = readModelConfig(resolution.directory, resolution.entry->files.empty() ? std::string() : resolution.entry->files.front());
-        } catch (const std::exception& e) {
-            postError("The model " + id + " is installed but its config.json cannot be read: " + e.what());
-
-            return std::nullopt;
-        }
-        QMutexLocker locker(&_mutex);
-        _resolved = fresh;
-        resolved = std::move(fresh);
+        return std::nullopt;
     }
-    clearOwnError();
+    const AiModelResolution resolution = _downloader->registry()->resolve(id);
+    switch (resolution.status) {
+    case AiModelStatus::eUnknown:
+        *error = "unknown model `" + id + "`: this version of Natron does not list it.";
 
-    return resolved;
+        return std::nullopt;
+    case AiModelStatus::eMissing:
+        *error = "The model " + resolution.entry->name + " (" + id + ") is not installed. Press Download Model, "
+                                                                     "or download it in Preferences > AI Models.";
+
+        return std::nullopt;
+    case AiModelStatus::eInstalled:
+        break;
+    }
+    Resolved fresh;
+    fresh.entry = resolution.entry;
+    fresh.directory = resolution.directory;
+    fresh.files = resolution.files;
+    try {
+        fresh.config = readModelConfig(resolution.directory, resolution.entry->files.empty() ? std::string() : resolution.entry->files.front());
+    } catch (const std::exception& e) {
+        *error = "The model " + id + " is installed but its config.json cannot be read: " + e.what();
+
+        return std::nullopt;
+    }
+    QMutexLocker locker(&_mutex);
+    _resolved = fresh;
+
+    return fresh;
 }
 
 bool

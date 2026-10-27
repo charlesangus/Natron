@@ -49,6 +49,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class RotoObjectSelect;
 struct PluginActionShortcut;
 
 #define kControlPointMidSize 3
@@ -127,6 +128,16 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonAction "DrawRectangleTool"
 #define kRotoUIParamDrawRectangleToolButtonActionLabel "Rectangle Tool"
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
+
+#define kRotoUIParamObjectSelectToolButton "ObjectSelectToolButton"
+#define kRotoUIParamObjectSelectToolButtonLabel "Object Select Tool Button"
+
+#define kRotoUIParamObjectSelectToolButtonAction "ObjectSelectTool"
+#define kRotoUIParamObjectSelectToolButtonActionLabel "Object Select Tool"
+#define kRotoUIParamObjectSelectToolButtonActionHint "Click an object in the Source to outline it with shapes: click adds a point on the object, "                                  \
+                                                     "Shift-click a point off it, dragging a box around it (SAM models only). Backspace removes the last prompt, Esc clears them, " \
+                                                     "Enter commits the outlines as shapes."
+#define kRotoUIParamObjectSelectToolButtonActionNoSourceHint "Connect the Source input to select objects in it."
 
 // The right click menu
 #define kRotoUIParamRightClickMenu kNatronOfxParamRightClickMenu
@@ -266,7 +277,8 @@ enum RotoRoleEnum {
     eRotoRolePaintBrush,
     eRotoRoleCloneBrush,
     eRotoRoleEffectBrush,
-    eRotoRoleMergeBrush
+    eRotoRoleMergeBrush,
+    eRotoRoleObjectSelect
 };
 
 enum RotoToolEnum {
@@ -299,7 +311,9 @@ enum RotoToolEnum {
     eRotoToolSmear,
 
     eRotoToolDodge,
-    eRotoToolBurn
+    eRotoToolBurn,
+
+    eRotoToolObjectSelect
 };
 
 // The curve tool groups RotoCurveInteract::createToolbarKnobs() can create, as a bitmask.
@@ -307,7 +321,9 @@ enum RotoCurveToolSetEnum {
     eRotoCurveToolSetSelection = 0x1,
     eRotoCurveToolSetPointsEdition = 0x2,
     eRotoCurveToolSetShapesDrawing = 0x4,
-    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing
+    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing,
+    // The AI object select tool; it needs the host's input 0 as its Source.
+    eRotoCurveToolSetObjectSelect = 0x8
 };
 
 /**
@@ -373,6 +389,9 @@ public:
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
 
+    KnobGroupWPtr objectSelectToolGroup;
+    KnobButtonWPtr objectSelectAction;
+
     //////Right click menu
     KnobChoiceWPtr rightClickMenuKnob;
 
@@ -398,6 +417,9 @@ public:
     KnobButtonWPtr addKeyframeButton;
     KnobButtonWPtr removeKeyframeButton;
     KnobButtonWPtr showTransformHandle;
+
+    // Set when the toolbar has the object select tool.
+    std::unique_ptr<RotoObjectSelect> objectSelect;
 
 private:
     EffectInstance* _host;
@@ -463,6 +485,18 @@ public:
      * @brief Creates the right-click menu choice and its actions on page.
      **/
     void createRightClickMenuKnobs(const KnobPagePtr& page);
+
+    /**
+     * @brief Creates the object select tool's knobs on page, after the host's own viewer knobs.
+     * Needs createToolbarKnobs() to have been asked for eRotoCurveToolSetObjectSelect.
+     **/
+    void createObjectSelectKnobs(const KnobPagePtr& page);
+
+    // The host's onInputChanged() forwards to this.
+    void onHostInputChanged();
+
+    // The host's onEffectCreated() forwards to this.
+    void onHostEffectCreated(const CreateNodeArgs& args);
 
     /**
      * @brief Keeps the selection and lock state in step with the curve context and redraws the

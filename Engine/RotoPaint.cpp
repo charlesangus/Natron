@@ -437,7 +437,8 @@ RotoPaint::initializeKnobs()
     addKnobToViewerUI(sourceType);
     addKnobToViewerUI(resetCloneOffset);
 
-    KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll);
+    KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
+    _imp->ui->createObjectSelectKnobs(generalPage);
 
     KnobGroupPtr paintToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamPaintBrushToolButtonLabel) );
     paintToolButton->setName(kRotoUIParamPaintBrushToolButton);
@@ -630,7 +631,7 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamBuildUp, kRotoUIParamBuildUpLabel) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel) );
 
-    RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll, shortcuts);
+    RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect, shortcuts);
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamCloneBrushToolButton, kRotoUIParamCloneBrushToolButtonLabel, Key_C) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamEffectBrushToolButton, kRotoUIParamEffectBrushToolButtonLabel, Key_X) );
@@ -653,6 +654,13 @@ RotoPaint::shouldDrawHostOverlay() const
         return true;
     }
     return b->getValue();
+}
+
+void
+RotoPaint::onEffectCreated(bool /*mayCreateFileDialog*/,
+                           const CreateNodeArgs& args)
+{
+    _imp->ui->onHostEffectCreated(args);
 }
 
 void
@@ -719,6 +727,7 @@ RotoPaint::onInputChanged(int inputNb)
     NodePtr inputNode = getNode()->getInput(0);
 
     getNode()->getRotoContext()->onRotoPaintInputChanged(inputNode);
+    _imp->ui->onHostInputChanged();
     EffectInstance::onInputChanged(inputNb);
 }
 

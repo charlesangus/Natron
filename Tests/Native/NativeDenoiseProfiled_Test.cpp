@@ -154,7 +154,8 @@ TEST(DenoiseProfiledKernels, InferredSettingsAndForce)
     EXPECT_EQ(2, inferRadius(a));
     EXPECT_EQ(8, inferRadius(1.f));
     EXPECT_FLOAT_EQ(0.3f, inferScattering(a));
-    EXPECT_FLOAT_EQ(0.f, inferBias(1.f));
+    EXPECT_FLOAT_EQ(-5.f, inferBias(1.f));
+    EXPECT_FLOAT_EQ(0.f, inferBias(1e-6f));
     EXPECT_FLOAT_EQ(0.f, quantizeForce(0.));
     EXPECT_FLOAT_EQ(0.5f, quantizeForce(0.5));
     EXPECT_NEAR(0.3f, quantizeForce(0.3), 1. / 65536.);

@@ -4137,6 +4137,40 @@ EffectInstance::onOverlayPenUp_public(double time,
 }
 
 bool
+EffectInstance::onOverlayWheel_public(double time,
+                                      const RenderScale& renderScale,
+                                      ViewIdx view,
+                                      const QPointF& viewportPos,
+                                      const QPointF& pos,
+                                      double delta,
+                                      KeyboardModifiers modifiers)
+{
+    /// cannot be run in another thread
+    assert(QThread::currentThread() == qApp->thread());
+    if (!hasOverlay()) {
+        return false;
+    }
+
+    RenderScale actualScale;
+    if (!canHandleRenderScaleForOverlays()) {
+        actualScale = RenderScale::identity;
+    } else {
+        actualScale = renderScale;
+    }
+
+    bool ret;
+    {
+        NON_RECURSIVE_ACTION();
+        _imp->setDuringInteractAction(true);
+        ret = onOverlayWheel(time, actualScale, view, viewportPos, pos, delta, modifiers);
+        _imp->setDuringInteractAction(false);
+    }
+    checkIfRenderNeeded();
+
+    return ret;
+}
+
+bool
 EffectInstance::onOverlayKeyDown_public(double time,
                                         const RenderScale & renderScale,
                                         ViewIdx view,

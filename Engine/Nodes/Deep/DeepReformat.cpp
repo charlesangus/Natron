@@ -157,7 +157,7 @@ DeepReformat::getTranslation(double time,
 }
 
 StatusEnum
-DeepReformat::getRegionOfDefinition(U64 hash,
+DeepReformat::getRegionOfDefinition(U64 /*hash*/,
                                     double time,
                                     const RenderScale& scale,
                                     ViewIdx view,
@@ -169,7 +169,7 @@ DeepReformat::getRegionOfDefinition(U64 hash,
         return eStatusReplyDefault;
     }
     bool isProjectFormat = false;
-    StatusEnum stat = input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 
     if (stat == eStatusFailed) {
         return stat;

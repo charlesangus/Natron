@@ -125,6 +125,17 @@ find_package(rawspeed CONFIG REQUIRED PATHS "${NATRON_RAWSPEED_ROOT}" NO_DEFAULT
 # fetch-assets.sh rewrites the config when the pin moves; rawspeed_REF must follow it.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NATRON_RAWSPEED_ROOT}/lib/cmake/rawspeed/rawspeedConfig.cmake")
 
+# ONNX Runtime is unpacked by tools/ci/local/fetch-assets.sh. Only its C API headers are used at
+# build time: Engine/Ai dlopen()s the library, which tools/release/stage-bundle.sh ships.
+set(NATRON_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/build/assets/onnxruntime" CACHE PATH "The ONNX Runtime release fetch-assets.sh unpacks")
+if(NOT EXISTS "${NATRON_ONNXRUNTIME_ROOT}/include/onnxruntime_c_api.h")
+    message(FATAL_ERROR "ONNX Runtime is not unpacked at ${NATRON_ONNXRUNTIME_ROOT}. Run tools/ci/local/fetch-assets.sh first.")
+endif()
+add_library(onnxruntime::headers INTERFACE IMPORTED GLOBAL)
+set_target_properties(onnxruntime::headers PROPERTIES
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${NATRON_ONNXRUNTIME_ROOT}/include"
+    INTERFACE_INCLUDE_DIRECTORIES "${NATRON_ONNXRUNTIME_ROOT}/include")
+
 get_target_property(PYSIDE_INCLUDE_DIRS PySide6::pyside6 INTERFACE_INCLUDE_DIRECTORIES)
 set(QTCORE_INCLUDE_DIRS ${Qt6Core_INCLUDE_DIRS})
 set(QTGUI_INCLUDE_DIRS ${Qt6Gui_INCLUDE_DIRS})

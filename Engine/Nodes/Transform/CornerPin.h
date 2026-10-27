@@ -175,6 +175,28 @@ struct CornerPinOp {
 static_assert(GpuResampleOp<CornerPinOp>);
 
 /**
+ * @brief Sets op's "from" points, and with alsoTo its "to" points, to the corners of rod, in one
+ * change of holder. Shared by the nodes built on CornerPinOp's knobs.
+ **/
+void setCornerPinPointsFromRoD(KnobHolder* holder, const CornerPinOp& op, const RectD& rod, bool alsoTo);
+
+/**
+ * @brief One undoable step copying op's "from" points onto its "to" points (fromToTo) or back:
+ * the values, expressions and curves of each point with withAnimation, else its value at time.
+ * Undo restores the destination points and srcClipChanged as they were when it was made;
+ * markEdited sets srcClipChanged, as an edit of the points does.
+ **/
+UndoCommandPtr makeCornerPinCopyPointsCommand(const CornerPinOp& op,
+                                              const KnobBoolWPtr& srcClipChanged,
+                                              bool fromToTo,
+                                              bool withAnimation,
+                                              double time,
+                                              bool markEdited);
+
+/// Whether a change of a point knob for reason counts as the user editing the points.
+bool isCornerPinPointsEdit(ValueChangedReasonEnum reason);
+
+/**
  * @brief CornerPin: maps four "from" points onto four "to" points, with the host mask and mix.
  *
  * It concatenates like Transform: it always applies the transforms the host concatenates into
@@ -249,8 +271,6 @@ private:
     bool getSourceRoD(double time, RectD* rod) const;
 
     void updateClampEnabled(double time, ViewSpec view);
-
-    class CopyPointsCommand;
 
     static bool isPointsEdit(ValueChangedReasonEnum reason);
 

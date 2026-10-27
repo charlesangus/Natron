@@ -41,6 +41,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
 #include "Engine/RectD.h"
@@ -91,6 +92,11 @@ IDistort::getInputHint(int inputNb) const
     }
     if (inputNb == kIDistortInputUV) {
         return tr("The displacement, in pixels, read from the U and V channels.").toStdString();
+    }
+    if (inputNb == kIDistortInputMap) {
+        return tr("How much of the displacement each output pixel gets: none where the Map is black, all of it where it "
+                  "is white. Read at the output pixel. With no Map connected, the whole displacement applies.")
+            .toStdString();
     }
 
     return EffectInstance::getInputHint(inputNb);
@@ -191,6 +197,8 @@ IDistort::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _map.createKnobs(this, page, kMapWarpKnobHints);
+
     addStageKnobs(page);
 
     NodePtr node = getNode();
@@ -198,6 +206,7 @@ IDistort::initializeKnobs()
         node->declareLayerKnob(channelU, kIDistortInputUV, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(channelV, kIDistortInputUV, LayerKnobSpec::eRoleInputBound);
     }
+    _map.declareLayerKnob(node, kIDistortInputMap);
 
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // IDistort::initializeKnobs
@@ -345,16 +354,21 @@ IDistort::getRegionsOfInterest(double time,
         }
     }
 
-    // The Jacobians read the UV of the neighbouring pixels.
+    // The Jacobians read the UV and the Map of the neighbouring pixels.
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
+    RectI pixels = PassExec::toPixelEnclosing(renderWindow, scale, par);
+    pixels.x1 -= 1;
+    pixels.y1 -= 1;
+    pixels.x2 += 1;
+    pixels.y2 += 1;
+    const RectD grown = PassExec::toCanonical(pixels, scale, par);
     EffectInstancePtr uv = getInput(kIDistortInputUV);
     if (uv) {
-        const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
-        RectI pixels = PassExec::toPixelEnclosing(renderWindow, scale, par);
-        pixels.x1 -= 1;
-        pixels.y1 -= 1;
-        pixels.x2 += 1;
-        pixels.y2 += 1;
-        addRegion(uv, PassExec::toCanonical(pixels, scale, par));
+        addRegion(uv, grown);
+    }
+    EffectInstancePtr map = getInput(kIDistortInputMap);
+    if (map) {
+        addRegion(map, grown);
     }
 }
 
@@ -364,6 +378,9 @@ IDistort::getInputLayersRead(int inputNb,
                              ViewIdx view,
                              std::list<ImageLayerDesc>* layers)
 {
+    if (inputNb == kIDistortInputMap) {
+        return _map.getInputLayersRead(this, kIDistortInputMap, time, view, layers);
+    }
     if (inputNb != kIDistortInputUV) {
         return false;
     }
@@ -420,7 +437,23 @@ IDistort::renderOp(const RenderActionArgs& args,
     const double vScale = settings.vScale * s.y;
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
-    // into a cached image this render would otherwise already hold a read lock on.
+    // into a cached image this render would otherwise already hold a read lock on. The Map is
+    // copied out over the window grown by one pixel, for the Jacobians.
+    const bool mapped = (bool)getInput(kIDistortInputMap);
+    MapPlane mapPlane;
+    if (mapped) {
+        const MapInputParams mapParams = [&]() {
+            const KnobReader reader(args.time, args.view);
+
+            return _map.bake(reader);
+        }();
+        const RectI window(args.roi.x1 - 1, args.roi.y1 - 1, args.roi.x2 + 1, args.roi.y2 + 1);
+        const StatusEnum status = _map.read(this, kIDistortInputMap, mapParams, args.time, args.view, args.mappedScale, window, &mapPlane);
+        if (status != eStatusOK) {
+            return status;
+        }
+    }
+
     const bool doMask = plan.applyMask;
     ImagePtr mask;
     const int maskChannel = plan.maskChannel;
@@ -574,9 +607,25 @@ IDistort::renderOp(const RenderActionArgs& args,
             }
         }
         const double cy = (double)y + 0.5;
+        if (!mapped) {
+            for (int i = 0; i < gridWidth; ++i) {
+                sx[i] = (float)((double)(gridX0 + i) + 0.5 + ((double)uRow[i] - settings.uOffset) * uScale);
+                sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale);
+            }
+
+            return;
+        }
+        // The Map scales the displacement; at 0 the pixel samples its own centre.
         for (int i = 0; i < gridWidth; ++i) {
-            sx[i] = (float)((double)(gridX0 + i) + 0.5 + ((double)uRow[i] - settings.uOffset) * uScale);
-            sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale);
+            const double cx = (double)(gridX0 + i) + 0.5;
+            const float m = mapPlane.at(gridX0 + i, y);
+            if (m == 0.f) {
+                sx[i] = (float)cx;
+                sy[i] = (float)cy;
+                continue;
+            }
+            sx[i] = (float)(cx + ((double)uRow[i] - settings.uOffset) * uScale * (double)m);
+            sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale * (double)m);
         }
     };
 
@@ -636,6 +685,22 @@ IDistort::renderOp(const RenderActionArgs& args,
                                                       gridX0, y, gridWidth, uvBounds[0], uvBounds[1], 1., 1., jacobian.data());
                 Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.blackOutside,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+            }
+            if (mapped && hasSource) {
+                // Where the Map is 0 the output is the Source pixel itself, never filtered, which
+                // would soften a held pixel with its displaced neighbours.
+                for (int i = 0; i < width; ++i) {
+                    if (mapPlane.at(roi.x1 + i, y) != 0.f) {
+                        continue;
+                    }
+                    float* dst = &outRow[(std::size_t)i * nComps];
+                    const float* pix = plane.source.pixel(roi.x1 + i, y);
+                    if (pix) {
+                        std::copy(pix, pix + nComps, dst);
+                    } else {
+                        std::fill(dst, dst + nComps, 0.f);
+                    }
+                }
             }
             if (direct) {
                 continue;
@@ -716,13 +781,30 @@ IDistort::canRenderOpOnGpu(const GpuQuery& query) const
     ImageLayerDesc layer;
     int uChannel = -1;
     int vChannel = -1;
+    ImageLayerDesc mapLayer;
+    int mapChannel = -1;
 
-    return resolveGpuUVLayer(query.time, query.view, &layer, &uChannel, &vChannel);
+    return resolveGpuUVLayer(query.time, query.view, &layer, &uChannel, &vChannel) && resolveWarpGpuMapChannel(*this, _map, kIDistortInputMap, query.time, query.view, &mapLayer, &mapChannel);
 #else
     Q_UNUSED(query);
 
     return false;
 #endif
+}
+
+bool
+IDistort::readsGpuInput(int inputNb,
+                        const ImageLayerDesc& /*plane*/,
+                        double time,
+                        ViewIdx view) const
+{
+    if (inputNb != kIDistortInputMap) {
+        return true;
+    }
+    ImageLayerDesc layer;
+    int channel = -1;
+
+    return resolveWarpGpuMapChannel(*this, _map, kIDistortInputMap, time, view, &layer, &channel) && (channel >= 0);
 }
 
 bool
@@ -732,6 +814,12 @@ IDistort::getOpGpuInputLayer(int inputNb,
                              ViewIdx view,
                              ImageLayerDesc* layer) const
 {
+    if (inputNb == kIDistortInputMap) {
+        int channel = -1;
+        if (resolveWarpGpuMapChannel(*this, _map, kIDistortInputMap, time, view, layer, &channel) && (layer->getNumComponents() > 0)) {
+            return true;
+        }
+    }
     if (inputNb == kIDistortInputUV) {
         int uChannel = -1;
         int vChannel = -1;
@@ -753,6 +841,9 @@ IDistort::getOpGpuInputRoI(int inputNb,
 {
     if ((inputNb == kIDistortInputSource) || (inputNb == kIDistortInputUV)) {
         return warpGpuInputRoI(*this, inputNb, kIDistortInputSource, kIDistortInputUV, time, view, outputRect, scale);
+    }
+    if (inputNb == kIDistortInputMap) {
+        return warpGpuInputRoI(*this, inputNb, kIDistortInputSource, kIDistortInputMap, time, view, outputRect, scale);
     }
 
     return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
@@ -784,7 +875,14 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     setWarpGpuDouble(settings.uScale * s.x, params.uScale);
     setWarpGpuDouble(settings.vScale * s.y, params.vScale);
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, params, kIDistortInputUV, uvLayer, uChannel, vChannel);
+    WarpGpuMap map;
+    map.input = kIDistortInputMap;
+    if (!resolveWarpGpuMapChannel(*this, _map, kIDistortInputMap, query.time, query.view, &map.layer, &map.channel)) {
+        return eStatusFailed;
+    }
+    map.params = _map.bake(KnobReader(query.time, query.view));
+
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, params, kIDistortInputUV, uvLayer, uChannel, vChannel, map);
 #else
     Q_UNUSED(args);
 

@@ -91,6 +91,7 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
 
 ## Decisions
 
+- 2026-10-27 — Gate green; AI Models page redesigned to one-line rows (OSAID dot, licences in tooltips); GUI check 35/35; screenshots sent for sign-off. Discard now resets never-saved preferences app-wide. UAT: build/appimages/Natron-m204-ai-models.AppImage, M204-uat.md.
 - 2026-10-27 — `ModelKnob::create(effect, page, task, downloader = nullptr)`: the optional downloader is for tests. The per-task user default (hidden setting `aiDefaultModels`) applies only to nodes the user creates; a loaded project keeps its saved model.
 - 2026-10-27 — Packages, not models, are what darktable-ai ships (release-5.6.0, pinned): RealPLKSR and BSRGAN carry 2x and 4x in one `.dtmodel`, RawNIND carries Bayer and linear. The manifest keeps one entry per model and adds `package` and `files`; models of one package share a download and install to `models/<package>/`. Split ids get `-x2`/`-x4`/`-bayer`/`-linear`.
 - 2026-10-27 — `config.json` has no tensor names, multiple-of, scale or optimisation level: tensor names/shapes come from `InferenceSession`, the optimisation level is the caller's (as darktable), and `ModelConfig` holds only what the file carries (tiling, input sizes and kind, colour space, attributes, licences).

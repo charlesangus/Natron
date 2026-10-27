@@ -55,7 +55,7 @@ NATRON_NAMESPACE_ENTER
 struct SceneLayerEdit;
 
 /**
- * @brief Authors a UsdGeomCamera prim, on top of its optional scene input or as a scene source.
+ * @brief Authors a UsdGeomCamera prim, as a scene source.
  *
  * Lens and aperture knobs are in millimetres and are written in USD's camera units, tenths of a
  * scene unit, so they read as millimetres in a centimetre scene. Clipping and focus distance are
@@ -65,14 +65,10 @@ struct SceneLayerEdit;
 class USDCamera
     : public NativeEffectBase {
 public:
-    static constexpr InputSpec kInputs[] = {
-        InputSpec { .label = "Scene", .kind = eDataKindScene, .optional = true },
-    };
-
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDCAMERA,
         .label = "USDCamera",
-        .description = "Create a camera prim (UsdGeomCamera) on top of the input scene, or as a scene of its own. "
+        .description = "Create a scene holding one camera prim (UsdGeomCamera). "
                        "Focal length and aperture are in millimetres, written in USD's camera units (tenths of a scene unit); "
                        "clipping and focus distance are in scene units. Animated knobs are written as time samples.",
         .grouping = PLUGIN_GROUP_3D_USD,
@@ -81,7 +77,6 @@ public:
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDCamera.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
-        .inputs = kInputs,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

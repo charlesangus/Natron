@@ -98,6 +98,10 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
+    Ai/AiSettings_Test.cpp
+    Ai/OrtLoader_Test.cpp
+    Ai/InferenceSession_Test.cpp
+    Ai/TiledInference_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -109,6 +113,7 @@ set(Tests_SOURCES
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
+    PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerScheduler_Test.cpp
@@ -228,6 +233,8 @@ target_compile_definitions(Tests
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
         NATRON_TESTS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Engine"
         NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"
+        # Tests/Ai loads this ONNX Runtime directly, whatever the Preferences say.
+        NATRON_TESTS_ONNXRUNTIME_DIR="${NATRON_ONNXRUNTIME_ROOT}"
         NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
 )
 # The Engine binary directory holds the aggregates Engine/CMakeLists.txt generates, such as

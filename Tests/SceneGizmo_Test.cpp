@@ -51,8 +51,8 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
-#include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -402,7 +402,7 @@ sendMouse(QWidget* widget,
 }
 } // anonymous namespace
 
-// The scene viewer's handles for a USDTransform, driven by mouse events on the widget: no GL is
+// The scene viewer's handles for a USDEditTransform, driven by mouse events on the widget: no GL is
 // needed to pick and drag them, only to draw them.
 class SceneGizmoDragTest
     : public ::testing::Test {
@@ -412,16 +412,16 @@ protected:
         _app = appPTR->getTopLevelInstance();
         ASSERT_TRUE(bool(_app));
         _app->getProject()->reset(false, true);
-        _prim = create(PLUGINID_NATRON_USDPRIM);
-        _transform = create(PLUGINID_NATRON_USDTRANSFORM);
+        _prim = create(PLUGINID_NATRON_USDXFORMPRIM);
+        _transform = create(PLUGINID_NATRON_USDEDITTRANSFORM);
         ASSERT_TRUE(_prim && _transform);
         KnobString* primPath = dynamic_cast<KnobString*>(_prim->getKnobByName(kSceneParamPrimPath).get());
-        KnobString* pattern = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDTransformParamPrimPattern).get());
+        KnobString* pattern = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());
         ASSERT_TRUE(primPath && pattern);
         primPath->setValue(std::string("/Thing"));
         pattern->setValue(std::string("/Thing"));
         ASSERT_TRUE(_transform->connectInput(_prim, 0));
-        _effect = dynamic_cast<USDTransform*>(_transform->getEffectInstance().get());
+        _effect = dynamic_cast<USDEditTransform*>(_transform->getEffectInstance().get());
         ASSERT_TRUE(_effect != NULL);
         _translate = _effect->getTransformKnobs().translate.lock();
         ASSERT_TRUE(bool(_translate));
@@ -497,7 +497,7 @@ protected:
 
     AppInstancePtr _app;
     NodePtr _prim, _transform;
-    USDTransform* _effect = NULL;
+    USDEditTransform* _effect = NULL;
     KnobDoublePtr _translate;
     UndoStackContainer _container;
     KnobGuiPtr _knobGui;
@@ -565,7 +565,7 @@ TEST_F(SceneGizmoDragTest, NoHandlesWithoutAMatchOrANode)
     EXPECT_EQ(0, _container.undoStack.count());
 
     // A pattern that matches nothing names no target.
-    KnobString* pattern = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDTransformParamPrimPattern).get());
+    KnobString* pattern = dynamic_cast<KnobString*>(_transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());
     pattern->setValue(std::string("/Elsewhere"));
     showScene();
     _viewport->refreshTransformHandles();

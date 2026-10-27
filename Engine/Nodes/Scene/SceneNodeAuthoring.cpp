@@ -36,6 +36,9 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
+
+#include <pxr/usd/usd/primRange.h>
 
 #include <QDir>
 #include <QString>
@@ -198,9 +201,7 @@ getTimeCodesPerSecond(const SceneLayerEdit& edit)
 double
 getMetersPerUnit(const SceneLayerEdit& edit)
 {
-    const double metersPerUnit = edit.upstream.getMetadata().metersPerUnit;
-
-    return (metersPerUnit > 0.) ? metersPerUnit : SceneMetadata().metersPerUnit;
+    return (edit.metersPerUnit > 0.) ? edit.metersPerUnit : SceneMetadata().metersPerUnit;
 }
 
 void
@@ -216,6 +217,17 @@ appendUpstreamMetadata(const ScenePayload& upstream,
     h->appendDouble(metadata.timeCodesPerSecond);
 }
 
+void
+authorLayerMetadata(const SceneLayerEdit& edit)
+{
+    const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+
+    edit.layer->SetTimeCodesPerSecond(getTimeCodesPerSecond(edit));
+    edit.layer->SetField(root, PXR_NS::UsdGeomTokens->upAxis,
+                         (edit.upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y);
+    edit.layer->SetField(root, PXR_NS::UsdGeomTokens->metersPerUnit, getMetersPerUnit(edit));
+}
+
 PXR_NS::UsdStageRefPtr
 openLayerStage(const SceneLayerEdit& edit,
                std::string* errorMessage)
@@ -225,7 +237,7 @@ openLayerStage(const SceneLayerEdit& edit,
 
         return PXR_NS::UsdStageRefPtr();
     }
-    edit.layer->SetTimeCodesPerSecond(getTimeCodesPerSecond(edit));
+    authorLayerMetadata(edit);
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(edit.layer, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone);
     if (!stage) {
         *errorMessage = EffectInstance::tr("USD could not open a stage on the node's layer.").toStdString();
@@ -470,6 +482,75 @@ matchPrims(const PXR_NS::UsdStageRefPtr& stage,
     return true;
 } // matchPrims
 
+bool
+graftMaterialInput(const ScenePayload& material,
+                   const std::string& primPath,
+                   const std::string& layerTag,
+                   SceneGraftMemo* memo,
+                   SceneMaterialGraft* graft,
+                   std::string* errorMessage)
+{
+    *graft = SceneMaterialGraft();
+    if (!material.isEmpty()) {
+        SceneReparentArgs args;
+        args.inputs.push_back(material);
+        args.destinationPath = primPath;
+        args.layerTag = layerTag;
+        std::vector<SceneRootGraft> grafts;
+        if (!SceneOps::reparentRoots(args, memo, &graft->payload, &grafts, &graft->unmappedLinks, errorMessage)) {
+            return false;
+        }
+
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        if (!stage) {
+            if (errorMessage->empty()) {
+                *errorMessage = EffectInstance::tr("USD could not compose the material input.").toStdString();
+            }
+
+            return false;
+        }
+        for (const SceneRootGraft& root : grafts) {
+            const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(root.sourcePath));
+            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
+                if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                    graft->materialPath = prim.GetPath().ReplacePrefix(PXR_NS::SdfPath(root.sourcePath), PXR_NS::SdfPath(root.graftedPath)).GetString();
+                    break;
+                }
+            }
+            if (!graft->materialPath.empty()) {
+                break;
+            }
+        }
+    }
+
+    ContentHasher facts;
+    appendUpstreamMetadata(graft->payload, &facts);
+    facts.appendString(graft->materialPath);
+    graft->factsDigest = facts.finalize();
+
+    return true;
+} // graftMaterialInput
+
+bool
+authorMaterialBinding(const PXR_NS::UsdPrim& prim,
+                      const std::string& materialPath,
+                      std::string* errorMessage)
+{
+    if (materialPath.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdShadeMaterialBindingAPI binding = prim ? PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim) : PXR_NS::UsdShadeMaterialBindingAPI();
+    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false) : PXR_NS::UsdRelationship();
+    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) })) {
+        *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at %2.").arg(QString::fromStdString(prim ? prim.GetPath().GetString() : std::string())).arg(QString::fromStdString(materialPath)).toStdString();
+
+        return false;
+    }
+
+    return true;
+}
+
 int
 getRotateOrderAxis(SceneRotateOrderEnum rotateOrder,
                    int position)
@@ -513,6 +594,37 @@ composeTransformMatrix(const PXR_NS::GfVec3d& translate,
     fromPivot.SetTranslate(pivot + translate);
 
     return toPivot * scaling * composeRotationMatrix(rotate, rotateOrder) * fromPivot;
+}
+
+bool
+isTransformAnimated(const SceneTransformKnobs& knobs,
+                    const KnobDoublePtr& pivot)
+{
+    return isAnimated(knobs.translate.lock()) || isAnimated(knobs.rotate.lock()) || isAnimated(knobs.scale.lock())
+        || isAnimated(knobs.uniformScale.lock()) || isAnimated(pivot);
+}
+
+PXR_NS::GfMatrix4d
+getTransformMatrixAt(const SceneTransformKnobs& knobs,
+                     const KnobDoublePtr& pivot,
+                     double frame)
+{
+    KnobDoublePtr translate = knobs.translate.lock();
+    KnobDoublePtr rotate = knobs.rotate.lock();
+    KnobDoublePtr scale = knobs.scale.lock();
+    KnobDoublePtr uniformScale = knobs.uniformScale.lock();
+    KnobChoicePtr rotateOrder = knobs.rotateOrder.lock();
+
+    if (!translate || !rotate || !scale || !uniformScale || !rotateOrder || !pivot) {
+        return PXR_NS::GfMatrix4d(1.);
+    }
+    const double uniform = uniformScale->getValueAtTime(frame, 0);
+
+    return composeTransformMatrix(PXR_NS::GfVec3d(translate->getValueAtTime(frame, 0), translate->getValueAtTime(frame, 1), translate->getValueAtTime(frame, 2)),
+                                  PXR_NS::GfVec3d(rotate->getValueAtTime(frame, 0), rotate->getValueAtTime(frame, 1), rotate->getValueAtTime(frame, 2)),
+                                  PXR_NS::GfVec3d(scale->getValueAtTime(frame, 0) * uniform, scale->getValueAtTime(frame, 1) * uniform, scale->getValueAtTime(frame, 2) * uniform),
+                                  PXR_NS::GfVec3d(pivot->getValueAtTime(frame, 0), pivot->getValueAtTime(frame, 1), pivot->getValueAtTime(frame, 2)),
+                                  (SceneRotateOrderEnum)rotateOrder->getValue());
 }
 
 } // namespace SceneNodeAuthoring

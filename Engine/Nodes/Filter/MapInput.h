@@ -31,6 +31,8 @@
 #include <list>
 #include <vector>
 
+#include <QtCore/QtGlobal>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NodeSpec.h"
@@ -80,6 +82,36 @@ struct MapInputParams {
     float remap(float raw) const WARN_UNUSED_RETURN;
 
     double sizeAt(float map, int dimension, double sizeAtWhite) const WARN_UNUSED_RETURN;
+};
+
+/**
+ * @brief The tooltips of the Map knobs that say what the Map value controls: a size on the
+ * variable-size filters, the amount of the warp on the warp nodes.
+ **/
+struct MapKnobHints {
+    const char* response = nullptr;
+    const char* responseLinear = nullptr;
+    const char* responseSmooth = nullptr;
+    const char* gamma = nullptr;
+};
+
+inline constexpr MapKnobHints kMapSizeKnobHints = {
+    .response = QT_TRANSLATE_NOOP("Natron::EffectInstance", "How Map values between 0 and 1, after Map Gamma, become sizes between Size At Black and Size."),
+    .responseLinear = QT_TRANSLATE_NOOP("Natron::EffectInstance", "The size follows the Map value in proportion."),
+    .responseSmooth = QT_TRANSLATE_NOOP("Natron::EffectInstance", "Smoothstep, 3m^2 - 2m^3: the size eases out of Size At Black and into Size."),
+    .gamma = QT_TRANSLATE_NOOP("Natron::EffectInstance", "Raises the Map, clamped to [0,1], to the power 1/gamma, as the Gamma node does: "
+                                                         "above 1 the sizes lean towards Size, below 1 towards Size At Black. 0 and 1 "
+                                                         "stay put."),
+};
+
+inline constexpr MapKnobHints kMapWarpKnobHints = {
+    .response = QT_TRANSLATE_NOOP("Natron::EffectInstance", "How Map values between 0 and 1, after Map Gamma, become the amount of the warp, "
+                                                            "from none at 0 to all of it at 1."),
+    .responseLinear = QT_TRANSLATE_NOOP("Natron::EffectInstance", "The amount follows the Map value in proportion."),
+    .responseSmooth = QT_TRANSLATE_NOOP("Natron::EffectInstance", "Smoothstep, 3m^2 - 2m^3: the amount eases out of no warp and into the whole warp."),
+    .gamma = QT_TRANSLATE_NOOP("Natron::EffectInstance", "Raises the Map, clamped to [0,1], to the power 1/gamma, as the Gamma node does: "
+                                                         "above 1 the amounts lean towards the whole warp, below 1 towards no warp. 0 "
+                                                         "and 1 stay put."),
 };
 
 struct MapRange {
@@ -150,9 +182,10 @@ public:
     void createSizeAtBlackKnob(KnobHolder* holder, const KnobPagePtr& page, int sizeDimensions);
 
     /**
-     * @brief Adds the Map's channel, invert, response and gamma knobs to page.
+     * @brief Adds the Map's channel, invert, response and gamma knobs to page, the response and
+     * gamma tooltips from hints.
      **/
-    void createKnobs(KnobHolder* holder, const KnobPagePtr& page);
+    void createKnobs(KnobHolder* holder, const KnobPagePtr& page, const MapKnobHints& hints = kMapSizeKnobHints);
 
     void declareLayerKnob(const NodePtr& node, int inputNb) const;
 

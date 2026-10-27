@@ -26,15 +26,12 @@
 #include "USDMaterial.h"
 
 #include <string>
-#include <vector>
 
 #include "Engine/AppManager.h"
-#include "Engine/ContentHasher.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
-#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -164,15 +161,6 @@ USDMaterial::initializeKnobs()
     _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Material"),
                                         tr("The path of the material prim the node authors. Its shaders are authored under it."));
 
-    KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
-    primPattern->setName(kUSDMaterialParamPrimPattern);
-    primPattern->setHintToolTip(tr("The prims to bind the material to: absolute prim paths separated by spaces, whose names "
-                                   "may use * (any run of characters) and ? (any one character), such as /World/Geo/*. "
-                                   "A material bound to a prim applies to its descendants too, unless they have their own."));
-    primPattern->setAnimationEnabled(false);
-    page->addKnob(primPattern);
-    _primPattern = primPattern;
-
     _diffuseColor = makeColorKnob(this, page, tr("Diffuse Color"), kUSDMaterialParamDiffuseColor,
                                   tr("The surface's base colour (inputs:diffuseColor), in the project working space, written "
                                      "unchanged."),
@@ -207,7 +195,6 @@ USDMaterial::getTexturePath(const KnobFilePtr& knob)
 
 bool
 USDMaterial::authorLayer(const SceneLayerEdit& edit,
-                         const std::vector<std::string>& bindPaths,
                          std::string* errorMessage) const
 {
     PXR_NS::SdfPath path;
@@ -302,69 +289,17 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
         }
     }
 
-    for (const std::string& bindPath : bindPaths) {
-        PXR_NS::UsdPrim prim = stage->OverridePrim(PXR_NS::SdfPath(bindPath));
-        if (!prim || !PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim).Bind(material)) {
-            *errorMessage = tr("USD could not bind the material to %1.").arg(QString::fromStdString(bindPath)).toStdString();
-
-            return false;
-        }
-    }
-
     return true;
 } // USDMaterial::authorLayer
 
 StatusEnum
-USDMaterial::renderScene(const SceneRenderActionArgs& args,
+USDMaterial::renderScene(const SceneRenderActionArgs& /*args*/,
                          ScenePayload* outputScene,
                          std::string* errorMessage)
 {
-    const ScenePayload upstream = args.getInputScene(0);
-    KnobStringPtr patternKnob = _primPattern.lock();
-    const std::string pattern = patternKnob ? patternKnob->getValue() : std::string();
-    const bool hasPattern = pattern.find_first_not_of(" \t\r\n") != std::string::npos;
-
-    // The prims to bind to, matched on the input scene: never the material or its shaders.
-    std::vector<std::string> bindPaths;
-    if (hasPattern && !upstream.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
-        PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = tr("USD could not compose the input scene.").toStdString();
-            }
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
-        std::vector<PXR_NS::SdfPath> found;
-        if (!SceneNodeAuthoring::matchPrims(stage, pattern, &found, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
-        PXR_NS::SdfPath materialPath;
-        std::string pathError;
-        const bool hasMaterialPath = SceneNodeAuthoring::getPrimPath(_primPath.lock(), &materialPath, &pathError);
-        for (const PXR_NS::SdfPath& path : found) {
-            if (!hasMaterialPath || !path.HasPrefix(materialPath)) {
-                bindPaths.push_back(path.GetString());
-            }
-        }
-    }
-
-    // Of the input, the layer reads only the prims bound and the metadata: an edit upstream that
-    // keeps them re-stacks the layer without authoring it again.
-    ContentHasher facts;
-    SceneNodeAuthoring::appendUpstreamMetadata(upstream, &facts);
-    facts.appendU64(bindPaths.size());
-    for (const std::string& bindPath : bindPaths) {
-        facts.appendString(bindPath);
-    }
     SceneLayerReads reads;
-    reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
-    reads.factsDigest = facts.finalize();
-    if (!emitSceneLayer(upstream, reads, [this, bindPaths](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, bindPaths, error); }, outputScene, errorMessage)) {
+    reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
+    if (!emitSceneLayer(ScenePayload(), reads, [this](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
@@ -373,9 +308,6 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     // Checked on every evaluation, not only when the layer is authored: a file can appear or
     // vanish while the layer stays the same.
     QStringList warnings;
-    if (hasPattern && bindPaths.empty()) {
-        warnings.push_back(tr("The prim pattern \"%1\" matches no prim; the material is authored unbound.").arg(QString::fromStdString(pattern)));
-    }
     const KnobFilePtr textureKnobs[] = { _diffuseTexture.lock(), _metallicTexture.lock(), _roughnessTexture.lock(), _emissiveTexture.lock() };
     for (const KnobFilePtr& knob : textureKnobs) {
         const std::string texturePath = getTexturePath(knob);

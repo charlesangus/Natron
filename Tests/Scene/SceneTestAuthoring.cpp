@@ -29,6 +29,7 @@
 
 #include <string>
 
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "SceneTestEffect.h"
@@ -110,6 +111,43 @@ sceneTestReadSourceValue(const ScenePayload& payload,
     }
 
     return true;
+}
+
+bool
+sceneTestRenderGeometry(SceneTestGeometry* effect,
+                        const ScenePayload& material,
+                        const std::string& primPath,
+                        SceneGraftMemo* memo,
+                        ScenePayload* output,
+                        std::string* errorMessage)
+{
+    SceneMaterialGraft graft;
+    if (!SceneNodeAuthoring::graftMaterialInput(material, primPath, effect->getScriptName_mt_safe(), memo, &graft, errorMessage)) {
+        return false;
+    }
+    const std::string materialPath = graft.materialPath;
+
+    const auto author = [primPath, materialPath](const SceneLayerEdit& edit, std::string* error) {
+        PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
+        if (!stage) {
+            return false;
+        }
+        if (!PXR_NS::SdfPath::IsValidPathString(primPath)) {
+            *error = "\"" + primPath + "\" is not a prim path";
+
+            return false;
+        }
+        const PXR_NS::UsdPrim cube = stage->DefinePrim(PXR_NS::SdfPath(primPath), PXR_NS::TfToken("Cube"));
+        if (!cube) {
+            *error = "could not define a cube at " + primPath;
+
+            return false;
+        }
+
+        return SceneNodeAuthoring::authorMaterialBinding(cube, materialPath, error);
+    };
+
+    return effect->emitLayer(graft.payload, graft.factsDigest, author, output, errorMessage);
 }
 
 NATRON_NAMESPACE_EXIT

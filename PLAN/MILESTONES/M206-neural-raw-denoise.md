@@ -34,7 +34,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
 
 ## Phase 206.1: Node
 
-- [ ] M206.P1.T1 — Read darktable's raw restore path and write the node contract
+- [x] M206.P1.T1 — Read darktable's raw restore path and write the node contract
   - files: `Engine/Nodes/Raw/docs/RawNeuralDenoise.md` (new, contract section only)
   - approach:
     - Read darktable `src/common/ai/restore*.c` and `src/libs/neural_restore.c` at the `DARKTABLE_REF` in `tools/ci/local/fetch-assets.sh`. Use master if #20854 is newer than the pin, and record the SHA used.
@@ -48,7 +48,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
   - verify: the doc's contract section names each step with a darktable file:line, and is reviewed at the gate.
   - size: M
 
-- [ ] M206.P1.T2 — RawNeuralDenoise node (CPU tiled inference)
+- [x] M206.P1.T2 — RawNeuralDenoise node (CPU tiled inference)
   - files: new `Engine/Nodes/Raw/RawNeuralDenoise.h`, `Engine/Nodes/Raw/RawNeuralDenoise.cpp`, `Engine/Nodes/Raw/RawNeuralDenoise.reg.inc`
   - approach:
     - Build on M137's framework, following RawDemosaic's raw-in/image-out shape (`RawDemosaic.cpp`) and the README "AI nodes" section from M203.P3.T3.
@@ -58,7 +58,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
   - verify: P1.T4's tests pass.
   - size: L
 
-- [ ] M206.P1.T3 — Develop RAW "Neural" option
+- [x] M206.P1.T3 — Develop RAW "Neural" option
   - files: `Engine/Settings.cpp`, `Engine/Settings.h`, `Engine/Nodes/Raw/RawDevelop.cpp`
   - approach:
     - Add a `developRawDemosaic` preference with two values, Classic (RawDemosaic) and Neural (RawNIND).
@@ -66,7 +66,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
   - verify: a gtest drives `buildChain` with each preference value and both CFA types and checks the node types in the backdrop.
   - size: M
 
-- [ ] M206.P1.T4 — Tests, a darktable reference and docs
+- [x] M206.P1.T4 — Tests, a darktable reference and docs
   - files: new `Tests/Native/NativeRawNeuralDenoise_Test.cpp`, `Tests/fixtures/raw/reference/` (one new crop), `tools/raw/make-reference.py`, `Engine/Nodes/Raw/docs/RawNeuralDenoise.md`, `Gui/Resources/Images/NativeNodes/`
   - approach:
     - Identity checks with `expectNativeIdentity`.
@@ -82,3 +82,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
 - The full build and ctest pass, with the model-gated tests run on a host that has RawNIND installed.
 - Under Xvfb, a Develop RAW chain on a noisy high-ISO raw fixture is rendered in Classic and in Neural mode, and side-by-side screenshots are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — Gate green (f841b1472). UAT: build/appimages/Natron-m206-neural-raw-denoise.AppImage, M206-uat.md. Open for the user: darktable-cli can't run neural restore, so the darktable reference needs a hand-made darktable 5.6.2 run (or a self-recorded reference); full-resolution only (no proxy fallback) for now.

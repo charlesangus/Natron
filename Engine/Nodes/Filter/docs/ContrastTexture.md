@@ -46,7 +46,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| ContrastTexture (ContrastTexture) | darktable reference | `kDarktableClass` | the kernels on make-reference.py's plate against darktable `DARKTABLE_MASTER_REF`, mean error 0.1 % and largest error 1 % of the reference's mean level |
+| ContrastTexture (ContrastTexture) | darktable reference | `kDarktableClass` | the kernels on make-reference.py's plate against darktable `DARKTABLE_MASTER_REF`, mean error 0.1 % and largest error 1 % of the reference's mean level, each sample's beyond the half float reference's rounding |
 | ContrastTexture (ContrastTexture) | node against kernels | `kKernelTolerance` | 1e-5 relative, the CPU node against `ContrastTextureKernels` on its source |
 | ContrastTexture (ContrastTexture) | GPU against CPU | `kContrastTextureTolerance` | `ParityTolerance::make(0., 1e-4)`, the EIGF blurs' own bound |
 

@@ -164,6 +164,37 @@ readReference(const std::string& path,
 
     return true;
 }
+
+/**
+ * Half the spacing of half floats around v: how far a reference stored as half float may sit
+ * from the float darktable exported.
+ **/
+inline double
+halfFloatRounding(double v)
+{
+    const double a = std::fabs(v);
+
+    // Below 2^-14 half floats are subnormal, 2^-24 apart.
+    if (a < std::ldexp(1., -14)) {
+        return std::ldexp(1., -25);
+    }
+    int exponent = 0;
+    (void)std::frexp(a, &exponent);
+
+    // a is in [2^(exponent - 1), 2^exponent), where half floats are 2^(exponent - 11) apart.
+    return std::ldexp(1., exponent - 12);
+}
+
+/**
+ * The error of got against a sample of a half float reference, beyond the reference's own
+ * rounding, so the storage format does not count against a tolerance.
+ **/
+inline double
+halfFloatError(double got,
+               double want)
+{
+    return std::max(0., std::fabs(got - want) - halfFloatRounding(want));
+}
 } // namespace RawReference
 
 /**

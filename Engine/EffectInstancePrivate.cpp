@@ -595,6 +595,8 @@ EffectInstance::RenderArgs::RenderArgs()
     , identityTime(0)
     , identityView(0)
     , identityInput()
+    , identityContext()
+    , identityContextSet(false)
     , inputImages()
     , outputLayers()
     , outputLayerBeingRendered()
@@ -620,6 +622,8 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     , identityTime(o.identityTime)
     , identityView(o.identityView)
     , identityInput(o.identityInput)
+    , identityContext(o.identityContext)
+    , identityContextSet(o.identityContextSet)
     , inputImages(o.inputImages)
     , outputLayers(o.outputLayers)
     , outputLayerBeingRendered(o.outputLayerBeingRendered)
@@ -648,6 +652,8 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     identityTime = o.identityTime;
     identityView = o.identityView;
     identityInput = o.identityInput;
+    identityContext = o.identityContext;
+    identityContextSet = o.identityContextSet;
     inputImages = o.inputImages;
     outputLayers = o.outputLayers;
     outputLayerBeingRendered = o.outputLayerBeingRendered;
@@ -1013,6 +1019,8 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
                                                                    double identityTime,
                                                                    ViewIdx identityView,
                                                                    const EffectInstancePtr& identityInput,
+                                                                   const RenderContextPtr& identityContext,
+                                                                   bool identityContextSet,
                                                                    const ComponentsNeededMapPtr& compsNeeded,
                                                                    const EffectInstance::InputImagesMap& inputImages,
                                                                    const RoIMap& roiMap,
@@ -1030,6 +1038,8 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.identityTime = identityTime;
     tlsData->currentRenderArgs.identityView = identityView;
     tlsData->currentRenderArgs.identityInput = identityInput;
+    tlsData->currentRenderArgs.identityContext = identityContext;
+    tlsData->currentRenderArgs.identityContextSet = identityContextSet;
     tlsData->currentRenderArgs.compsNeeded = compsNeeded;
     tlsData->currentRenderArgs.inputImages.insert( inputImages.begin(), inputImages.end() );
     tlsData->currentRenderArgs.regionOfInterestResults = roiMap;

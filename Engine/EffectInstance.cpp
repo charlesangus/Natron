@@ -531,6 +531,25 @@ EffectInstance::getCurrentRenderContextKey() const
     return restrictContextToNode(getCurrentRenderContext(), getNode(), 0);
 }
 
+bool
+EffectInstance::getInputActionContext(int inputNb,
+                                      double time,
+                                      ViewIdx view,
+                                      RenderContextPtr* context) const
+{
+    // Not gated on renderContextsInUse(): the context asked for here may be the first one built.
+    if (inputNb < 0) {
+        return false;
+    }
+    std::vector<RenderContextPtr> inputContexts;
+    if (!getInputContexts(inputNb, time, view, getCurrentRenderContext(), &inputContexts) || (inputContexts.size() != 1)) {
+        return false;
+    }
+    *context = inputContexts.front();
+
+    return true;
+}
+
 std::shared_ptr<void>
 EffectInstance::reserveActionsCacheState()
 {
@@ -547,7 +566,17 @@ EffectInstance::getRenderHash() const
     EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
 
     if ( !tls || tls->frameArgs.empty() ) {
-        //No tls: get the GUI hash
+        // No frame args: the GUI hash, with the key of the context the actions on this thread
+        // answer for folded in, so an input queried under a consumer's context outside a render
+        // keys its cached answers apart from the empty context's.
+        RenderContextPtr acting;
+        if (renderContextsInUse() && ActionContextScope::current(&acting) && acting) {
+            const U64 key = restrictContextToNode(acting, getNode(), 0);
+            if (key != 0) {
+                return mixRenderContextKey(getHash(), key);
+            }
+        }
+
         return getHash();
     }
 
@@ -1674,7 +1703,14 @@ EffectInstance::getRegionOfDefinition(U64 hash,
         if (input) {
             RectD inputRod;
             bool isProjectFormat;
-            StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, renderMappedScale, view, &inputRod, &isProjectFormat);
+            StatusEnum st;
+            {
+                // Under the context this effect requests the input under, as the input renders under it.
+                RenderContextPtr inputContext;
+                const bool overlaid = getInputActionContext(i, time, view, &inputContext);
+                ActionContextScope acting(overlaid, inputContext);
+                st = input->getRegionOfDefinition_public(input->getRenderHash(), time, renderMappedScale, view, &inputRod, &isProjectFormat);
+            }
             assert(inputRod.x2 >= inputRod.x1 && inputRod.y2 >= inputRod.y1);
             if (st == eStatusFailed) {
                 return st;
@@ -1732,6 +1768,9 @@ EffectInstance::ifInfiniteApplyHeuristic(U64 hash,
                 if (input->supportsRenderScaleMaybe() == eSupportsNo) {
                     inputScale = RenderScale::identity;
                 }
+                RenderContextPtr inputContext;
+                const bool overlaid = getInputActionContext(i, time, view, &inputContext);
+                ActionContextScope acting(overlaid, inputContext);
                 StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &inputRod, &isProjectFormat);
                 if (st != eStatusFailed) {
                     if (firstInput) {
@@ -2670,6 +2709,8 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 rectToRender.identityTime,
                                                 rectToRender.identityView,
                                                 rectToRender.identityInput,
+                                                rectToRender.identityContext,
+                                                rectToRender.identityContextSet,
                                                 compsNeeded,
                                                 rectToRender.imgs,
                                                 rectToRender.inputRois,
@@ -2951,6 +2992,9 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             // If color layer, request the preferred comp of the identity input
             if (tls->currentRenderArgs.identityInput && it->second.renderMappedImage->getComponents().isColorLayer()) {
                 ImageLayerDesc prefInputComps, prefInputCompsPaired;
+                // Under the context the identity input is pulled under below, so its layers are
+                // the ones it renders.
+                ActionContextScope acting(tls->currentRenderArgs.identityContextSet, tls->currentRenderArgs.identityContext);
                 getLayersFromMetadata(*tls->currentRenderArgs.identityInput->getRenderMetadata(tls->currentRenderArgs.identityTime, tls->currentRenderArgs.identityView), -1, &prefInputComps, &prefInputCompsPaired);
                 comps.push_back(prefInputComps);
             } else {
@@ -2985,8 +3029,16 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             return eRenderingFunctorRetOK;
         } else {
             EffectInstance::RenderRoIRetCode renderOk;
-            // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
-            renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers, _publicInterface);
+            {
+                // The identity input is pulled under the context the walk to it composed, as a
+                // node on the way may set context variables over its input.
+                std::unique_ptr<InputContextScope> identityScope;
+                if (tls->currentRenderArgs.identityContextSet) {
+                    identityScope.reset(new InputContextScope(_publicInterface, tls->currentRenderArgs.identityContext));
+                }
+                // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
+                renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers, _publicInterface);
+            }
             if (renderOk == eRenderRoIRetCodeAborted) {
                 return eRenderingFunctorRetAborted;
             } else if (renderOk == eRenderRoIRetCodeFailed) {
@@ -5442,6 +5494,12 @@ EffectInstance::getPresentLayersResults(double time, ViewIdx view, int inputNb)
         return ComponentsNeededResultsPtr();
     }
 
+    // An input's layers are read under the context this effect requests it under, the pass-through
+    // input's among them, so the layers a node passes through are those its input makes there.
+    RenderContextPtr inputContext;
+    const bool overlaid = getInputActionContext(inputNb, time, view, &inputContext);
+    ActionContextScope acting(overlaid, inputContext);
+
     // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
     // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
     return effect->getComponentsNeededAndProducedShared(effect->getRenderHash(), time, view);
@@ -6636,6 +6694,10 @@ EffectInstance::getInputsMetadataAt(double time,
     for (int i = 0; i < nInputs; ++i) {
         (*inputs)[i] = getInput(i);
         if ((*inputs)[i]) {
+            // Under the context this effect requests the input under, as in applyIdentityRule().
+            RenderContextPtr inputContext;
+            const bool overlaid = getInputActionContext(i, time, view, &inputContext);
+            ActionContextScope acting(overlaid, inputContext);
             (*inputsMetadata)[i] = (*inputs)[i]->getMetadata(time, view);
         }
     }
@@ -6940,7 +7002,15 @@ EffectInstance::applyIdentityRule(U64 hash,
     if (!input) {
         return own;
     }
-    NodeMetadataConstPtr inputMetadata = input->getMetadata(inputTime, inputView);
+    NodeMetadataConstPtr inputMetadata;
+    {
+        // The input passed through is read under the context this node requests it under, as it
+        // renders under it: a node setting context variables passes on what its input makes of them.
+        RenderContextPtr inputContext;
+        const bool overlaid = getInputActionContext(inputNb, time, view, &inputContext);
+        ActionContextScope acting(overlaid, inputContext);
+        inputMetadata = input->getMetadata(inputTime, inputView);
+    }
     if (!inputMetadata) {
         return own;
     }
@@ -7132,6 +7202,9 @@ EffectInstance::getInputsMetadataOverFramesNeeded(U64 hash,
             continue;
         }
         const EffectInstancePtr& input = (*inputs)[inputNb];
+        RenderContextPtr inputContext;
+        const bool overlaid = getInputActionContext(inputNb, time, view, &inputContext);
+        ActionContextScope acting(overlaid, inputContext);
         std::shared_ptr<NodeMetadata> widened;
         std::vector<NodeMetadataConstPtr> answers;
         for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {

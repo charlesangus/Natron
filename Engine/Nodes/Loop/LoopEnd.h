@@ -278,14 +278,17 @@ private:
     // The loop as its knobs and graph define it, every iteration folded.
     Resolved resolve() const WARN_UNUSED_RETURN;
 
-    // resolve(), with the iterations the stop condition leaves at time.
-    Resolved resolveAt(double time) const WARN_UNUSED_RETURN;
+    // resolve(), with the iterations the stop condition leaves at time. preview evaluates it
+    // under the enclosing loops' preview iterations, as an edit outside a render shows it.
+    Resolved resolveAt(double time,
+                       bool preview = false) const WARN_UNUSED_RETURN;
 
     // The iteration the stop condition first holds for at time, count when none; error is set
     // when it raised, at the iteration returned. Evaluated once per render and time.
     int evaluateStop(const Resolved& resolved,
                      const std::string& expression,
                      double time,
+                     bool preview,
                      std::string* error) const WARN_UNUSED_RETURN;
 
     // The folded iterations, in iteration order, under context with no fold step.

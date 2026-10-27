@@ -47,11 +47,6 @@ CLANG_DIAG_ON(uninitialized)
 #define kReaderParamNameStartingTime "startingTime"
 #define kReaderParamNameTimeOffset "timeOffset"
 
-#define kRetimeParamNameSpeed "speed"
-#define kFrameRangeParamNameFrameRange "frameRange"
-#define kTimeOffsetParamNameTimeOffset "timeOffset"
-
-
 NATRON_NAMESPACE_ENTER
 
 class DopeSheetPrivate;

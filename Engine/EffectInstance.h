@@ -64,11 +64,7 @@
 #define PLUGINID_OFX_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
 #define PLUGINID_OFX_COLORLOOKUP  "net.sf.openfx.ColorLookupPlugin"
 #define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
-#define PLUGINID_OFX_CONSTANT     "net.sf.openfx.ConstantPlugin"
-#define PLUGINID_OFX_TIMEOFFSET   "net.sf.openfx.timeOffset"
-#define PLUGINID_OFX_FRAMEHOLD    "net.sf.openfx.FrameHold"
-#define PLUGINID_OFX_RETIME       "net.sf.openfx.Retime"
-#define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
+#define PLUGINID_OFX_CONSTANT "net.sf.openfx.ConstantPlugin"
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
 #define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
 

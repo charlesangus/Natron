@@ -1414,11 +1414,7 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.fxarena.openfx.Swirl",
         "net.fxarena.openfx.Wave",
         // Time
-        "net.sf.openfx.FrameHold",
-        "net.sf.openfx.timeOffset",
-        "net.sf.openfx.FrameRange",
         "net.sf.openfx.AppendClip",
-        "net.sf.openfx.Retime",
         "net.sf.openfx.FrameBlend",
         "net.sf.openfx.TimeBlur",
         "net.sf.openfx.NoTimeBlurPlugin",

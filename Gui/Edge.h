@@ -105,6 +105,11 @@ public:
 
     void setDefaultColor(const QColor & color);
 
+    /**
+     * @brief The Preferences Selection colour, read live, with the given alpha.
+     **/
+    static QColor highlightColor(int alpha = 255);
+
     bool isBendPointVisible() const;
 
     void setOptional(bool optional);

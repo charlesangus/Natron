@@ -276,7 +276,7 @@ future core work has solid ground to build on.
 | M179 | Render Graph Continuation | todo | M178 |  | E6 | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
 | M180 | Loop Block Core | doing | M178 | bosley-native-nodes | E15 | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
 | M181 | Loop Drivers And UI | doing | M180, M71 | bosley-native-nodes | E15 | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
-| M182 | Loop Feedback | todo | M180 |  | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
+| M182 | Loop Feedback | doing | M180 | bosley-native-nodes | E15 | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
 | M183 | Loop Map Blend | todo | M180, M179, M184 |  | E15 | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
 | M184 | Variable-Size Filter Kit | done | M120, M137 | gpu | E15 | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
 | M185 | Variable Warps | done | M113, M184 |  | E15 | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
@@ -321,7 +321,7 @@ future core work has solid ground to build on.
 | M223 | Read And Write Knob Cleanup | todo | M167 |  | E3 | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
 | M224 | Fluid Roto And RotoPaint Interaction | todo | M146 |  | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
-| M260 | Cache Invalidation Follow-ups | todo | M242 |  | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
+| M260 | Cache Invalidation Follow-ups | doing | M242 | bosley-native-nodes | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | doing | M163 | bosley-native-nodes | E6 | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 
 # Epics

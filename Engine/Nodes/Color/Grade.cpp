@@ -36,6 +36,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/RenderScale.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -54,7 +55,7 @@ double
 gradeValue(double v,
            const GradeOp::Channel& ch)
 {
-    const double x = (ch.a * v) + ch.b;
+    const double x = sumOrInfinity(productOrInfinity(ch.a, v), ch.b);
 
     if (ch.gamma == 1.) {
         return x;
@@ -64,7 +65,7 @@ gradeValue(double v,
         return x;
     }
 
-    return std::pow(x, 1. / ch.gamma);
+    return powOrInfinity(x, 1. / ch.gamma);
 }
 
 double
@@ -72,11 +73,11 @@ invgradeValue(double v,
               const GradeOp::Channel& ch)
 {
     if ((ch.gamma != 1.) && (v > 0)) {
-        v = std::pow(v, ch.gamma);
+        v = powOrInfinity(v, ch.gamma);
     }
-    v = v - ch.b;
+    v = differenceOrInfinity(v, ch.b);
     if (ch.a != 0) {
-        v /= ch.a;
+        v = quotientOrInfinity(v, ch.a);
     }
 
     return v;
@@ -194,10 +195,10 @@ GradeOp::bake(const KnobReader& reader) const
     Params p;
     p.isDefault = true;
     for (int i = 0; i < 4; ++i) {
-        const double d = wp[i] - bp[i];
-        const double A = (d != 0) ? mul[i] * (wh[i] - bl[i]) / d : 0;
+        const double d = differenceOrInfinity(wp[i], bp[i]);
+        const double A = (d != 0) ? quotientOrInfinity(productOrInfinity(mul[i], differenceOrInfinity(wh[i], bl[i])), d) : 0;
         p.channels[i].a = A;
-        p.channels[i].b = off[i] + bl[i] - A * bp[i];
+        p.channels[i].b = differenceOrInfinity(sumOrInfinity(off[i], bl[i]), productOrInfinity(A, bp[i]));
         p.channels[i].gamma = (gam[i] > kGradeMinGamma) ? gam[i] : kGradeMinGamma;
         if ((bp[i] != 0.) || (wp[i] != 1.) || (bl[i] != 0.) || (wh[i] != 1.) || (mul[i] != 1.) || (off[i] != 0.) || (gam[i] != 1.)) {
             p.isDefault = false;
@@ -243,7 +244,7 @@ GradeOp::row(const Params& params,
             if (params.clampWhite) {
                 v = (std::min)(1., v);
             }
-            dst[c] = (float)v;
+            dst[c] = knobValueAsFloat(v);
         }
     }
 }
@@ -254,10 +255,10 @@ GradeOp::gpu(const Params& params) const
 #ifdef NATRON_HAVE_GPU
     GradeGpuParams p = {};
     for (int i = 0; i < 4; ++i) {
-        p.a[i] = (float)params.channels[i].a;
-        p.b[i] = (float)params.channels[i].b;
-        p.gamma[i] = (float)params.channels[i].gamma;
-        p.invGamma[i] = (float)(1. / params.channels[i].gamma);
+        p.a[i] = knobValueAsFloat(params.channels[i].a);
+        p.b[i] = knobValueAsFloat(params.channels[i].b);
+        p.gamma[i] = knobValueAsFloat(params.channels[i].gamma);
+        p.invGamma[i] = knobValueAsFloat(1. / params.channels[i].gamma);
     }
     p.channelMask = 0xF;
     p.flags = (params.reverse ? kGradeGpuReverse : 0) | (params.clampBlack ? kGradeGpuClampBlack : 0) | (params.clampWhite ? kGradeGpuClampWhite : 0);

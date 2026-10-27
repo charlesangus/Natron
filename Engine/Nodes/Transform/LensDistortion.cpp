@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/LensModels3DE.h"
 #include "Engine/Nodes/Transform/LensModelsGpu.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
@@ -56,6 +57,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
 // Which models a knob belongs to, one bit per LensModels::ModelType.
 constexpr unsigned
 modelBit(LensModels::ModelType type)
@@ -1062,12 +1064,12 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                     if (!model.map(inverse, x, y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
                         continue;
                     }
-                    const double u = (s.x * toSourceX - sourceFormat.x1) / sourceFormat.width();
+                    const double u = (productOrInfinity(s.x, toSourceX) - sourceFormat.x1) / sourceFormat.width();
                     const double v = (s.y - sourceFormat.y1) / sourceFormat.height();
                     const bool inside = (u >= 0.) && (u < 1.) && (v >= 0.) && (v < 1.);
                     const float values[4] = {
-                        (float)u,
-                        (float)v,
+                        knobValueAsFloat(u),
+                        knobValueAsFloat(v),
                         0.f,
                         inside ? 1.f : 0.f,
                     };
@@ -1102,15 +1104,15 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                         }
                         continue;
                     }
-                    sx[i] = (float)(s.x * toSourceX * scaleX);
-                    sy[i] = (float)(s.y * scaleY);
+                    sx[i] = knobValueAsFloat(productOrInfinity(productOrInfinity(s.x, toSourceX), scaleX));
+                    sy[i] = knobValueAsFloat(productOrInfinity(s.y, scaleY));
                     if (jacobians) {
                         // d(source at scale) / d(output at scale), from the model's full-resolution one.
                         float* J = &jacobian[(std::size_t)4 * i];
-                        J[0] = (float)(s.J[0] * toSourceX);
-                        J[1] = (float)(s.J[1] * toSourceX * scaleX / scaleY);
-                        J[2] = (float)(s.J[2] * scaleY / scaleX);
-                        J[3] = (float)s.J[3];
+                        J[0] = knobValueAsFloat(productOrInfinity(s.J[0], toSourceX));
+                        J[1] = knobValueAsFloat(quotientOrInfinity(productOrInfinity(productOrInfinity(s.J[1], toSourceX), scaleX), scaleY));
+                        J[2] = knobValueAsFloat(quotientOrInfinity(productOrInfinity(s.J[2], scaleY), scaleX));
+                        J[3] = knobValueAsFloat(s.J[3]);
                     }
                 }
                 Resampler::resampleRowFromCoords(source, &sx[0], &sy[0], jacobians ? &jacobian[0] : 0, io.width,

@@ -29,6 +29,7 @@
 #include <bitset>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -53,6 +54,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
 void
 appendUnique(const ImageLayerDesc& layer,
              std::list<ImageLayerDesc>* layers)
@@ -703,10 +705,10 @@ STMap::renderOp(const RenderActionArgs& args,
                     float* sxRow = &sx[(std::size_t)r * n];
                     float* syRow = &sy[(std::size_t)r * n];
                     for (int i = 0; i < n; ++i) {
-                        const double u = (uRow[i] - uOffset) * uScale;
-                        const double v = (vRow[i] - vOffset) * vScale;
-                        double px = domainX1 + u * domainWidth;
-                        double py = domainY1 + v * domainHeight;
+                        const double u = productOrInfinity(uRow[i] - uOffset, uScale);
+                        const double v = productOrInfinity(vRow[i] - vOffset, vScale);
+                        double px = domainX1 + productOrInfinity(u, domainWidth);
+                        double py = domainY1 + productOrInfinity(v, domainHeight);
                         if (mapped) {
                             // The Map moves the pixel from its own centre c to c + (p - c) * m.
                             const float m = mapPlane.at(io.x0 - 1 + i, y);
@@ -716,12 +718,12 @@ STMap::renderOp(const RenderActionArgs& args,
                                 px = cx;
                                 py = cy;
                             } else if (m != 1.f) {
-                                px = cx + (px - cx) * (double)m;
-                                py = cy + (py - cy) * (double)m;
+                                px = cx + productOrInfinity(px - cx, (double)m);
+                                py = cy + productOrInfinity(py - cy, (double)m);
                             }
                         }
-                        sxRow[i] = (float)px;
-                        syRow[i] = (float)py;
+                        sxRow[i] = knobValueAsFloat(px);
+                        syRow[i] = knobValueAsFloat(py);
                     }
                 }
                 std::vector<float> jacobian;

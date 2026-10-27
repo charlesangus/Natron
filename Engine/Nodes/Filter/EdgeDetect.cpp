@@ -51,6 +51,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -332,10 +333,10 @@ combineWorker(const Normalization& n,
                 for (int p = 0; p < nPlanes; ++p) {
                     const std::size_t k = (std::size_t)p * planeSize + o;
                     if (n.normalizeX) {
-                        gx[k] = (float)(gx[k] * n.normX);
+                        gx[k] = knobValueAsFloat(gx[k] * n.normX);
                     }
                     if (n.normalizeY) {
-                        gy[k] = (float)(gy[k] * n.normY);
+                        gy[k] = knobValueAsFloat(gy[k] * n.normY);
                     }
                 }
                 if (separate) {
@@ -952,8 +953,8 @@ edgeDetectPasses(const EdgeDetectParams& params,
 
     if (isFiniteDifference(params.filter)) {
         // A Gaussian pre-blur, then finite differences, which read one pixel around each.
-        const float sigmax = (float)(sx / 2.4);
-        const float sigmay = (float)(sy / 2.4);
+        const float sigmax = knobValueAsFloat(sx / 2.4);
+        const float sigmay = knobValueAsFloat(sy / 2.4);
         LineFilterPtr preBlurX = makeFilter(BlurKernels::LineFilter());
         LineFilterPtr preBlurY = preBlurX;
         if (!((sigmax < 0.1) && (sigmay < 0.1))) {
@@ -980,8 +981,8 @@ edgeDetectPasses(const EdgeDetectParams& params,
         LineFilterPtr gyRows;
         LineFilterPtr gyColumns;
         if (isGaussianFamily(filter)) {
-            const float sigmax = (float)(sx / 2.4);
-            const float sigmay = (float)(sy / 2.4);
+            const float sigmax = knobValueAsFloat(sx / 2.4);
+            const float sigmay = knobValueAsFloat(sy / 2.4);
             gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 1, neumann));
             gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, neumann));
             gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, neumann));
@@ -990,10 +991,10 @@ edgeDetectPasses(const EdgeDetectParams& params,
             // CImg's box filter is the identity at size 0, but the derivative is still wanted there.
             const double boxX = (sx <= 0.) ? 1e-8 : sx;
             const double boxY = (sy <= 0.) ? 1e-8 : sy;
-            gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(boxX), 1, neumann));
-            gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(sy), 0, neumann));
-            gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(sx), 0, neumann));
-            gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(boxY), 1, neumann));
+            gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxX), 1, neumann));
+            gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sy), 0, neumann));
+            gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sx), 0, neumann));
+            gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxY), 1, neumann));
         }
         list.passes.push_back(Pass::point(true, copyWorker()));
         list.passes.push_back(atSlot(withCost(Pass::lineX(haloX, growX, lineWorker(gxRows)), sx, gxRows), kSlotGx));

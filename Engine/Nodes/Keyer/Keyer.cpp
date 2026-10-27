@@ -48,6 +48,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/RectD.h"
 
@@ -1110,7 +1111,7 @@ Keyer::readSettings(double time,
     KnobColorPtr keyColor = _keyColor.lock();
     if (keyColor) {
         for (int i = 0; i < 3; ++i) {
-            settings->keyColor[i] = (float)keyColor->getValueAtTime(time, i, view);
+            settings->keyColor[i] = knobValueAsFloat(keyColor->getValueAtTime(time, i, view));
         }
     }
     settings->mode = (KeyerModeEnum)readChoice(_mode, time, view, (int)eKeyerModeLuminance, (int)eKeyerModeNone);

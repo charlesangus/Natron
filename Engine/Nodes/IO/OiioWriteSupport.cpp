@@ -45,6 +45,7 @@
 #include <ofxMetadata.h>
 
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/KnobReader.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -845,7 +846,7 @@ namespace {
                 setRational(spec, name, *d);
             } else {
                 // OpenEXR has no double attribute, and the tags of the other formats take a float.
-                spec.attribute(name, (float)*d);
+                spec.attribute(name, knobValueAsFloat(*d));
             }
         } else if (const std::string* str = std::get_if<std::string>(&value)) {
             spec.attribute(name, *str);

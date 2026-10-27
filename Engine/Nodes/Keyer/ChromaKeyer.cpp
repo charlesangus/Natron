@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <string>
@@ -45,6 +46,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/RectD.h"
 
@@ -238,6 +240,7 @@ public:
         , _cosKey(0.)
         , _xKey(0.)
         , _ys(0.)
+        , _gainXKey(0.)
     {
         switch (settings.colorspace) {
         case eColorspaceCcir601:
@@ -275,6 +278,7 @@ public:
         _cosKey = 2 * cb / _xKey;
         _sinKey = 2 * cr / _xKey;
         _ys = _xKey == 0. ? 0. : y / _xKey;
+        _gainXKey = productOrInfinity(_keyGain, _xKey);
         if (_acceptanceAngle < 180.) {
             _tanAcceptanceAngle2 = std::tan((_acceptanceAngle / 2) * M_PI / 180);
         }
@@ -387,9 +391,9 @@ public:
             if (_keyGain <= 0.) {
                 Kbg = (Kfg > 0.) ? 1.f : 0.f;
             } else if (_keyLift >= 1.) {
-                Kbg = (Kfg >= _keyGain * _xKey) ? 1.f : 0.f;
+                Kbg = (Kfg >= _gainXKey) ? 1.f : 0.f;
             } else {
-                Kbg = (float)((Kfg / (_keyGain * _xKey) - _keyLift) / (1. - _keyLift));
+                Kbg = (float)((Kfg / _gainXKey - _keyLift) / (1. - _keyLift));
             }
             if (Kbg > 1.) {
                 Kbg = 1.f;
@@ -456,7 +460,7 @@ public:
         p->tanSuppression = (float)_tanSuppressionAngle2;
         p->keyLift = (float)_keyLift;
         p->oneMinusLift = (float)(1. - _keyLift);
-        p->gainXKey = (float)(_keyGain * _xKey);
+        p->gainXKey = knobValueAsFloat(_gainXKey);
         p->kr = kr;
         p->kb = kb;
         p->kg = 1 - kr - kb;
@@ -486,6 +490,7 @@ private:
     double _cosKey;
     double _xKey;
     double _ys;
+    double _gainXKey;
 };
 
 // An image locked for reading by the render's calling thread. Image::getBounds() takes the
@@ -906,7 +911,7 @@ ChromaKeyer::readSettings(double time,
     KnobColorPtr keyColor = _keyColor.lock();
     if (keyColor) {
         for (int i = 0; i < 3; ++i) {
-            settings->keyColor[i] = (float)keyColor->getValueAtTime(time, i, view);
+            settings->keyColor[i] = knobValueAsFloat(keyColor->getValueAtTime(time, i, view));
         }
     }
     settings->colorspace = (ColorspaceEnum)readChoice(_colorspace, time, view, (int)eColorspaceRec709, (int)eColorspaceRec2020);

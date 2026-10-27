@@ -33,6 +33,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -62,7 +63,7 @@ std::function<float(double)>
 floatAt(const KnobDoublePtr& knob)
 {
     return [knob](double frame) {
-        return (float)knob->getValueAtTime(frame, 0);
+        return knobValueAsFloat(knob->getValueAtTime(frame, 0));
     };
 }
 } // anonymous namespace
@@ -285,7 +286,7 @@ USDLight::authorLayer(const SceneLayerEdit& edit,
     const PXR_NS::UsdLuxLightAPI light(prim);
     authored = authored
         && authorValue(light.CreateColorAttr(), edit, isAnimated(color), [&color](double frame) {
-                   return PXR_NS::GfVec3f((float)color->getValueAtTime(frame, 0), (float)color->getValueAtTime(frame, 1), (float)color->getValueAtTime(frame, 2));
+                   return PXR_NS::GfVec3f(knobValueAsFloat(color->getValueAtTime(frame, 0)), knobValueAsFloat(color->getValueAtTime(frame, 1)), knobValueAsFloat(color->getValueAtTime(frame, 2)));
                })
         && authorValue(light.CreateIntensityAttr(), edit, isAnimated(intensity), floatAt(intensity)) && authorValue(light.CreateExposureAttr(), edit, isAnimated(exposure), floatAt(exposure)) && authorValue(light.CreateNormalizeAttr(), edit, isAnimated(normalize), [&normalize](double frame) {
                    return normalize->getValueAtTime(frame, 0);

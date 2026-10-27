@@ -32,6 +32,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -173,12 +174,12 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
     const double millimetresToCameraUnits = 1. / (100. * SceneNodeAuthoring::getMetersPerUnit(edit));
     const auto lengthAt = [millimetresToCameraUnits](const KnobDoublePtr& knob) {
         return [knob, millimetresToCameraUnits](double frame) {
-            return (float)(knob->getValueAtTime(frame, 0) * millimetresToCameraUnits);
+            return knobValueAsFloat(knob->getValueAtTime(frame, 0) * millimetresToCameraUnits);
         };
     };
     const auto valueAt = [](const KnobDoublePtr& knob) {
         return [knob](double frame) {
-            return (float)knob->getValueAtTime(frame, 0);
+            return knobValueAsFloat(knob->getValueAtTime(frame, 0));
         };
     };
     using SceneNodeAuthoring::authorValue;
@@ -190,7 +191,7 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
         && authorValue(camera.CreateHorizontalApertureOffsetAttr(), edit, isAnimated(horizontalApertureOffset), lengthAt(horizontalApertureOffset))
         && authorValue(camera.CreateVerticalApertureOffsetAttr(), edit, isAnimated(verticalApertureOffset), lengthAt(verticalApertureOffset))
         && authorValue(camera.CreateClippingRangeAttr(), edit, isAnimated(nearKnob) || isAnimated(farKnob), [&nearKnob, &farKnob](double frame) {
-                              return PXR_NS::GfVec2f((float)nearKnob->getValueAtTime(frame, 0), (float)farKnob->getValueAtTime(frame, 0));
+                              return PXR_NS::GfVec2f(knobValueAsFloat(nearKnob->getValueAtTime(frame, 0)), knobValueAsFloat(farKnob->getValueAtTime(frame, 0)));
                           })
         && authorValue(camera.CreateFStopAttr(), edit, isAnimated(fStop), valueAt(fStop)) && authorValue(camera.CreateFocusDistanceAttr(), edit, isAnimated(focusDistance), valueAt(focusDistance));
     if (!authored) {

@@ -108,7 +108,7 @@ constexpr uint32_t kClampGpuMaxClampToEnable = 8;
 float
 ceilToFloat(double d)
 {
-    float f = (float)d;
+    float f = knobValueAsFloat(d);
 
     if ((double)f < d) {
         f = std::nextafter(f, std::numeric_limits<float>::infinity());
@@ -121,7 +121,7 @@ ceilToFloat(double d)
 float
 floorToFloat(double d)
 {
-    float f = (float)d;
+    float f = knobValueAsFloat(d);
 
     if ((double)f > d) {
         f = std::nextafter(f, -std::numeric_limits<float>::infinity());
@@ -205,7 +205,7 @@ ClampOp::row(const Params& params,
             } else if (params.maximumEnable && (v > params.maximum[i])) {
                 out = params.maxClampToEnable ? params.maxClampTo[i] : params.maximum[i];
             }
-            dst[c] = (float)out;
+            dst[c] = knobValueAsFloat(out);
         }
     }
 }
@@ -218,10 +218,10 @@ ClampOp::gpu(const Params& params) const
     for (int i = 0; i < 4; ++i) {
         p.minTest[i] = ceilToFloat(params.minimum[i]);
         p.maxTest[i] = floorToFloat(params.maximum[i]);
-        p.minValue[i] = (float)params.minimum[i];
-        p.maxValue[i] = (float)params.maximum[i];
-        p.minClampTo[i] = (float)params.minClampTo[i];
-        p.maxClampTo[i] = (float)params.maxClampTo[i];
+        p.minValue[i] = knobValueAsFloat(params.minimum[i]);
+        p.maxValue[i] = knobValueAsFloat(params.maximum[i]);
+        p.minClampTo[i] = knobValueAsFloat(params.minClampTo[i]);
+        p.maxClampTo[i] = knobValueAsFloat(params.maxClampTo[i]);
     }
     p.flags = (params.minimumEnable ? kClampGpuMinimumEnable : 0) | (params.maximumEnable ? kClampGpuMaximumEnable : 0) | (params.minClampToEnable ? kClampGpuMinClampToEnable : 0) | (params.maxClampToEnable ? kClampGpuMaxClampToEnable : 0);
 

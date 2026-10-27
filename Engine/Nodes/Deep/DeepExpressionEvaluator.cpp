@@ -31,6 +31,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "Engine/Nodes/KnobReader.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -209,7 +211,7 @@ private:
             _token.kind = eKindNumber;
             _token.text = _source.substr(_cursor, end - _cursor);
             char* parsedEnd = nullptr;
-            _token.value = (float)std::strtod(_token.text.c_str(), &parsedEnd);
+            _token.value = knobValueAsFloat(std::strtod(_token.text.c_str(), &parsedEnd));
             if (!parsedEnd || (*parsedEnd != '\0')) {
                 return fail(_token.column, "malformed number '" + _token.text + "'");
             }

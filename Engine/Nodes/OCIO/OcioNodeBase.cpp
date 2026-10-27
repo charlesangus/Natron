@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <list>
 #include <mutex>
 
@@ -39,6 +40,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 
@@ -257,7 +259,8 @@ OcioNodeKnobs::gpu(const OcioProcessor& processor,
         }
         block.luma[3] = 0.f;
         block.gain = display->gain;
-        block.invGamma = (display->gamma > 0.) ? (float)(1. / display->gamma) : 0.f;
+        // 1 / gamma reaches 2^1024 once gamma is at most 2^-1024.
+        block.invGamma = (display->gamma > 0.) ? knobValueAsFloat(reciprocalOrInfinity(display->gamma)) : 0.f;
         block.channel = display->channel;
         block.gammaMode = (display->gamma <= 0.) ? 1 : ((display->gamma != 1.) ? 2 : 0);
         inputs.addUniform(kOcioDisplayBlock, block);

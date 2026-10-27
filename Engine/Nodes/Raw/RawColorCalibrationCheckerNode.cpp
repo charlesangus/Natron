@@ -337,7 +337,7 @@ RawColorCalibration::checkerPlacement(double time) const
     }
     for (int i = 0; i < 4; ++i) {
         if (const KnobDoublePtr corner = o.checkerCorners[i].lock()) {
-            placement.box[i] = { (float)corner->getValueAtTime(time, 0), (float)corner->getValueAtTime(time, 1) };
+            placement.box[i] = { knobValueAsFloat(corner->getValueAtTime(time, 0)), knobValueAsFloat(corner->getValueAtTime(time, 1)) };
         }
     }
 

@@ -34,6 +34,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -238,8 +239,8 @@ DeepCrop::renderDeep(const DeepRenderActionArgs& args)
     float zmax = 0.f;
     if (useZRange) {
         KnobDoublePtr zRangeKnob = _zRange.lock();
-        zmin = zRangeKnob ? (float)zRangeKnob->getValueAtTime(args.time, 0) : 0.f;
-        zmax = zRangeKnob ? (float)zRangeKnob->getValueAtTime(args.time, 1) : 0.f;
+        zmin = zRangeKnob ? knobValueAsFloat(zRangeKnob->getValueAtTime(args.time, 0)) : 0.f;
+        zmax = zRangeKnob ? knobValueAsFloat(zRangeKnob->getValueAtTime(args.time, 1)) : 0.f;
     }
 
     const RectI inputBounds = input->getBounds();

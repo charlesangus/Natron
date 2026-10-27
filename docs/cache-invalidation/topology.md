@@ -109,6 +109,7 @@ the viewers below, writes the inputs, calls `onInputChanged` (real path only), t
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): `CacheStressTest.STMapWithAToggledMap`, `MergeSwitchAndDissolveWithGrowingInputs` and `GradeBlurTransformInsideAGroup` connect, disconnect, replace and swap inputs and compare every cached step with a render from empty caches; `CacheStressConcurrentTest.InputEditsDuringARender` edits inputs while a gated render holds the node, then dequeues and revisits.
 | Test | What it pins |
 | --- | --- |
 | `Tests/HashInvariants_Test.cpp:504` | Connect and disconnect change the hash and restore it. |
@@ -129,6 +130,7 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   stores new-topology pixels under the old hash. **Fixed by M202** for its gated stores: the
   dequeue's `computeHash()` moves the mark count and the recomputed hash, so
   `CleanHashSnapshot::allowsStoreUnder` refuses or retracts. On this branch, nothing guards it.
+  Stress case: `CacheStressConcurrentTest.DISABLED_DequeueUnderARestartedRender_P4T1`.
 - **T2. Viewer A/B selection doesn't mark the viewer.** The viewer's content hash folds its
   active inputs (Node.cpp:976-980), but `InspectorNode::setInputA`/`setInputB`
   (NodeInputs.cpp:1977-1995) leave the hash as it was. The viewer's `FrameKey` also names the input
@@ -138,6 +140,7 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   2. Edit Y, so the viewer rehashes to H(X,Y'). Switch B back to X: no mark.
   3. Edit and revert X, so the viewer rehashes to H(X,X).
   4. Switch B to Y: no mark. The lookup (Y, H(X,X)) serves Y's v1, which is stale.
+  Stress case: `CacheStressTest.DISABLED_ViewerABSwitch_P4T3`, the four-step sequence above; `eOpViewerB` is out of `defaultOps()`.
 
   Not fixed by M202: the viewer isn't dirty, so its snapshot agrees. Also cross-referenced in
   viewer-and-timeline.md (P2.T1). A Phase 242.3 stress candidate.
@@ -168,3 +171,4 @@ switching, precomp Pre-Render toggling, or `onInputChanged` work stored under th
   (Node.cpp:7914), so an input edit queued during a background render (from Python) is never
   applied. This is a correctness question, not cache staleness. The hash stays consistent with the
   real inputs.
+  The stress tests call `Node::dequeueActions` themselves for this reason.

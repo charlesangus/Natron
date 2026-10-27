@@ -82,6 +82,7 @@ inherit E1 ([expressions-and-links.md](expressions-and-links.md)).
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): `CacheStressGpuTest` (`Tests/Gpu/CacheStressGpu_Test.cpp`) renders each seeded step with every accepted task placed on the GPU, through the caches, against a CPU reference from empty caches within 1e-4; `CurveEditsReachTheGpuFrame` moves ColorLookup control points and back, and `LutSwapsReachTheGpuFrame` swaps an OCIOFileTransform LUT and back, which goes through `GpuTextureCache`. Without a device it prints `[  SKIPPED ]` (NATRON_TEST_REQUIRE_GPU=1 turns that into a failure).
 - `Tests/Gpu/GpuPipelineCache_Test.cpp:85-353` (10 cases: key fields, disk round trip, checksum).
 - `Tests/Gpu/GpuTransfer_Test.cpp:707` (`ForgottenHostAllocationIsReimported`), `:784`, `:849`, `:907`.
 - `Tests/FrameRenderContext_Test.cpp:420` (FrameStore device residency).

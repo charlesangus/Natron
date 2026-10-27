@@ -20,13 +20,17 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     AddLayers_Test.cpp
     AddLayersRender_Test.cpp
     BaseTest.cpp
+    CacheStress.cpp
+    CacheStress_Test.cpp
+    CacheStressConcurrent_Test.cpp
+    CacheStressSelf_Test.cpp
     AbortableRenderInfo_Test.cpp
     BlockingRenderIdle_Test.cpp
     ChannelSetRender_Test.cpp
@@ -96,6 +100,7 @@ set(Tests_SOURCES
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
+    Gpu/CacheStressGpu_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp

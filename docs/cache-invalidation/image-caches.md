@@ -140,6 +140,7 @@ node, `updateHasAnimation` sees the expression and flips test 2 to true. See hol
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): `Tests/CacheStress_Test.cpp` and `Tests/CacheStressSelf_Test.cpp` (the self-test plants a member-cache hole and checks it is caught); seeds replay with `NATRON_CACHE_STRESS_SEED`.
 - DeepImageCache: `Tests/DeepImageCache_Test.cpp:120` (round trip), :162 (own budget), :248
   (`clearAllCaches`), :282 (holder purge), :348, :382, :440.
 - FrameStore: `Tests/FrameStoreHandoff_Test.cpp:348, 359, 399, 410`.
@@ -163,6 +164,7 @@ node, `updateHasAnimation` sees the expression and flips test 2 to true. See hol
   Node.cpp:8153-8155; ImageKey.cpp:72-73). A Grade whose `white` is `frame / 10`, over a static
   Constant, would be stored once and served at every frame. The result also depends on history
   (`updateHasAnimation`). The plan's test in M242.P4 should confirm it. **Not fixed by M202.**
+  Stress case: `CacheStressTest.DISABLED_FrameExpression_P4T2` (a `frame*0.1` expression, then two seeks); `eOpFrameExpression` is out of `defaultOps()` until it passes.
 - **I2 Stores from a render whose graph moved.** The key's hash is captured before render while knobs
   and inputs are read live (keys.md K1, topology.md T1). The entry is then served to the old
   state's hash. **Fixed by M202.**

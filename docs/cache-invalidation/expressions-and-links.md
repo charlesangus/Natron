@@ -107,6 +107,7 @@ images are keyed per time is a separate question: see I1 in [image-caches.md](im
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): `CacheStressTest.GradeBlurTransformWithExpressionsAndLinks` and `GradeBlurTransformInsideAGroup` set and clear per-dimension expressions and link and unlink knobs; `CacheStressSelfTest.TheReferenceEqualsAFreshAppLoadOfTheSavedProject` checks the reference against a saved and reloaded project.
 - `Tests/Native/MetadataExpressionDependency_Test.cpp:130-731` (about 40 cases): reader hash follows
   the source (:183), same-hash metadata changes (:277-344), results not kept across an
   invalidation (:375, :395), cycles (:435-575), renames (:677-731).
@@ -135,6 +136,7 @@ images are keyed per time is a separate question: see I1 in [image-caches.md](im
   `Tests/RFVExpression_Test.cpp:277` on that branch). **Not fixed by M202.** Residual on M72:
   `appendHashedMetadataSources` (Knob.cpp:3596-3600) still returns for `dimension < 0`, so metadata
   sources reached through a whole-value dependency are not folded.
+  Stress case: `CacheStressTest.DISABLED_WholeValueExpression_M72`; `eOpWholeValueExpression` is out of `defaultOps()`.
 - **E2 Rename rewrites listeners by plain string replace.** `replaceNodeNameInExpression`
   (Knob.cpp:3425) replaces the old name as a substring, unlike the identifier-aware path for
   metadata readers (:3458). A name that is a substring of another identifier can be rewritten

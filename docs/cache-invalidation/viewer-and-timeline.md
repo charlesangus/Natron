@@ -132,6 +132,7 @@ transform, so skipping them in that mode is correct.
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): `CacheStressTest.ViewerABProbe` renders the viewer's B input through the caches and checks that one viewer key (shown input, viewer hash, time, mipmap) never answers two different images. `Tests/gui/cache_invalidation_viewer.py` disconnects an STMap's Map while idle, during a scrub and during playback, and reads back the viewer and the cached-frames line.
 - `Tests/ViewerDisplayTransform_Test.cpp:340` (`DifferentViewsGiveDifferentFrameKeys`), `:403`
   (`FrameKeyHashDependsOnTransformWithoutShaders`), `:415` (`FrameKeyHashIgnoresTransformWithShaders`).
 - `Tests/HashInvariants_Test.cpp:773` (`ViewerCachedFramesListTheCurrentHashAndLevelInRam`).
@@ -173,3 +174,4 @@ transform, so skipping them in that mode is correct.
 - **V5. A/B switch and the line.** Changing the A/B selection does not mark the viewer hash
   (topology.md T2). `_inputName` keeps the texture lookup right, but the line filters by hash
   only, so it keeps listing the old input's frames.
+  Stress case: `CacheStressTest.DISABLED_ViewerABSwitch_P4T3`.

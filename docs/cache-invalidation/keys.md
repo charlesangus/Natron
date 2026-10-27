@@ -190,6 +190,7 @@ DiskCacheNode.cpp:206, NativeWrite.cpp:1698, USDWrite.cpp:554.
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): every case compares cached renders bit-exactly with a reference from `clearAllCaches` plus `clearActionsCache`, in Legacy and in Task graph; `CacheStressConcurrentTest` covers edits during a render.
 | Test file | What it pins |
 | --- | --- |
 | `Tests/HashInvariants_Test.cpp:230-773` | Identical graphs, reverts, worker-thread edits, keys, expressions, connect/swap, reload, labels, viewer cached frames (:773). |
@@ -219,6 +220,7 @@ session; and that a precomp's hash follows its pre-rendered output.
   post-render store guard. **Fixed by M202**: `CleanHashSnapshot::allowsStoreUnder` gates the
   stores in renderRoI, deep, viewer, roto mask and ActionsCache, and retracts what was stored when
   the graph moved mid-render. Phase 242.3 should still stress it.
+  Stress case: `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender_M202`; in a background app `canSetValue` is true during a render, so the edit lands mid-render.
 - **K2. No-TLS fallback to the live hash.** `getRenderHash()` (EffectInstance.cpp:539-541) and the
   input hash in renderRoI (EffectInstanceRenderRoI.cpp:1139) fall back to the live `getHash()`.
   Several callers pass this node's hash, or an input's live hash, where the input's render hash is

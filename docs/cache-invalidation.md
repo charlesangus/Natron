@@ -44,3 +44,23 @@ Status values:
 | OIIO header and Raw decode caches | Engine/Nodes/IO/OiioReadSupport.cpp:63, Engine/Nodes/IO/RawDecodeSupport.cpp:78 | (path, mtime, size) | [node-private.md](cache-invalidation/node-private.md) | suspected hole (N3) |
 | StageGpuShaderGate | Engine/Nodes/Image/StagePlan.h:415 | Entry and source, no device | [node-private.md](cache-invalidation/node-private.md) | suspected hole (G2; placement only) |
 | Other node-private caches (CurveTablesCache, NativeRead listings, NativeWrite read-back, RawDemosaic memos, AddLayers signature, USDTransform matches, DeepRead layers, IErodeDilate) | Engine/Nodes | Content hash or file identity; see the doc | [node-private.md](cache-invalidation/node-private.md) | covered (CurveTablesCache inherits E1) |
+
+## Stress tests
+
+`Tests/CacheStress.h` drives seeded edit walks over small graphs and compares every cached render,
+bit for bit in Legacy and in Task graph, with a render of the same state from empty caches. A
+failure prints the seed, the step and the op log; `NATRON_CACHE_STRESS_SEED=<n>` replays one seed,
+`NATRON_CACHE_STRESS_STEPS=<n>` changes the step budget and `NATRON_CACHE_STRESS_SEEDS=<n>` adds
+seeds (the heavy mode). Suites: `CacheStressSelfTest`, `CacheStressTest`,
+`CacheStressConcurrentTest` and `CacheStressGpuTest`, plus the GUI script
+`Tests/gui/cache_invalidation_viewer.py`. Holes known open here have a `DISABLED_` case named after
+the task that fixes them; run one with `--gtest_also_run_disabled_tests --gtest_filter=<name>`:
+
+| Case | Hole |
+|---|---|
+| `CacheStressTest.DISABLED_FrameExpression_P4T2` | I1 |
+| `CacheStressTest.DISABLED_WholeValueExpression_M72` | E1 |
+| `CacheStressTest.DISABLED_ViewerABSwitch_P4T3` | T2, V5 |
+| `CacheStressTest.DISABLED_IdentityAcrossScales_P4T3` | A1 |
+| `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender_M202` | K1 |
+| `CacheStressConcurrentTest.DISABLED_DequeueUnderARestartedRender_P4T1` | T1, T6 |

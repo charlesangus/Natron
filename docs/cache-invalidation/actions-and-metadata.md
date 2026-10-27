@@ -147,6 +147,7 @@ summaries in every state, generation++). Metadata frames per state are capped at
 
 ## Covered by tests
 
+- Seeded stress (`Tests/CacheStress.h`): every reference clears `clearActionsCache` on every node, so a stale action result shows up as a pixel mismatch; `CacheStressTest.MergeSwitchAndDissolveWithGrowingInputs` grows and shrinks RoDs through Switch and Dissolve.
 - Metadata: `Tests/PerFrameMetadata_Test.cpp` (16 cases; caching at :272, LRU at :294, concurrent
   stores at :385, hash ownership at :510, purge race at :539, unsettled snapshot abort at :569),
   `Tests/RenderContextMetadata_Test.cpp:140`, `Tests/NativeMetadata_Test.cpp:115,144,166`.
@@ -177,6 +178,7 @@ summaries in every state, generation++). Metadata frames per state are capped at
   ErodeDilate of size 1 asked at mipmap 1 first caches "identity", and a later full-scale render
   then skips the node. **Not fixed by M202.** PM decision: A1 goes on the M242.P4.T3 triage
   list.
+  Stress case: `CacheStressTest.DISABLED_IdentityAcrossScales_P4T3` (mipmap 1, then 0); `eOpMipmap` is out of `defaultOps()`.
 - **A2 Unchecked stores.** RoD, identity, frames-needed, time-domain and components stores have no
   generation check or snapshot on this branch, and the live-state readers above can store a newer
   graph's answer under an old hash. **Fixed by M202.**

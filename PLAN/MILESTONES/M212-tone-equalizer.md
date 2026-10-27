@@ -46,7 +46,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
   - verify: P1.T4's reference jobs pass.
   - size: L
 
-- [ ] M212.P1.T2 — Auto-adjust buttons and viewer hover/scroll
+- [x] M212.P1.T2 — Auto-adjust buttons and viewer hover/scroll
   - files: `Engine/Nodes/Color/ToneEqualizer.cpp`, new `Engine/Nodes/Color/ToneEqualizerInteract.{h,cpp}`
   - approach:
     - The buttons port darktable's `auto_adjust_exposure_boost` and `auto_adjust_contrast_boost` on a frame render of the mask.
@@ -84,4 +84,5 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 
 ## Decisions
 
+- 2026-10-27 — Gate green; GUI check passes (readout expectation corrected to the curve fit: +0.78 EV / −0.28 EV). Screenshots sent. UAT: build/appimages/Natron-m212-tone-equalizer.AppImage, M212-uat.md.
 - 2026-10-27 — All 7 darktable luminance estimators ported (plan's list was short). GPU kernel is original (darktable has no OpenCL tone equalizer). References use linear Rec.709 on a synthetic source (the node is space-agnostic). Scroll-to-edit is ported via a new generic viewer wheel hook for native overlays (PM). GUI script named m212_tone_equalizer.py.

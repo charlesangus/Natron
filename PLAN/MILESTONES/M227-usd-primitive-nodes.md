@@ -28,7 +28,7 @@ Hierarchy From Topology, and they author the project's up axis and units. Survey
 
 ## Phase 227.1: Mesh builders
 
-- [ ] M227.P1.T1 — `PrimitiveMeshes`: pure mesh builders for card, sphere, cube and cylinder
+- [x] M227.P1.T1 — `PrimitiveMeshes`: pure mesh builders for card, sphere, cube and cylinder
   - files: `Engine/Nodes/Scene/PrimitiveMeshes.{h,cpp}`, `Tests/Scene/PrimitiveMeshes_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: functions returning points, faceVertexCounts, faceVertexIndices, normals and `faceVarying` st (values + indices) for each type, given segments, size, caps and up axis. No USD stage involved; plain `VtArray`s behind the pimpl like the rest of Scene.
   - verify: gtest — expected point/face counts per type at default and minimum segments; every index in range; cube and capped cylinder are closed (each edge shared by exactly two faces); normals unit-length and outward; st covers [0,1]; the sphere seam has distinct st at u=0 and u=1.
@@ -36,19 +36,19 @@ Hierarchy From Topology, and they author the project's up axis and units. Survey
 
 ## Phase 227.2: Nodes
 
-- [ ] M227.P2.T1 — `USDCard` node
+- [x] M227.P2.T1 — `USDCard` node
   - files: `Engine/Nodes/Scene/USDCard.{h,cpp,reg.inc}`, `Engine/AppManager.cpp`, CMake source list, `Tests/Scene/USDPrimitives_Test.cpp`
   - approach: source node over `SceneNodeAuthoring` (Prim Path `/<scriptName>`, TRS + pivot, project up axis/units via M226.P3.T1). Knobs: aspect (default the project format aspect), uniform scale, rows/columns subdivisions, double sided (default on). Defines the mesh with `PrimitiveMeshes`; static knobs author defaults, animated knobs time samples.
   - verify: gtest — the composed stage has a Mesh at `/USDCard1` with the expected counts and st; aspect 2 gives a 2×1 card; renaming the node moves the prim.
   - size: M
 
-- [ ] M227.P2.T2 — `USDSphere`, `USDCube` and `USDCylinder` nodes
+- [x] M227.P2.T2 — `USDSphere`, `USDCube` and `USDCylinder` nodes
   - files: `Engine/Nodes/Scene/USDSphere.{h,cpp,reg.inc}`, `USDCube.{h,cpp,reg.inc}`, `USDCylinder.{h,cpp,reg.inc}`, `Engine/AppManager.cpp`, CMake source list, `Tests/Scene/USDPrimitives_Test.cpp`
   - approach: the same pattern as `USDCard`, sharing a small primitive-node base factored out of T1 if T1 didn't already. Sphere: radius, rows/columns. Cube: size xyz, subdivisions per axis. Cylinder: radius, height, rows/columns, top/bottom caps.
   - verify: gtest — each node composes a Mesh of its type's counts; knob edits re-author only that node's layer (layer-handle identity on unrelated nodes).
   - size: M
 
-- [ ] M227.P2.T3 — Primitives in a rendered scene
+- [x] M227.P2.T3 — Primitives in a rendered scene
   - files: `Tests/Scene/USDRenderStorm_Test.cpp` (or a sibling strict-GL case), a committed reference image, `Tests/gui/scene_primitives.py`
   - approach: strict-GL USDRender of the user's example graph (Card → Xform, Sphere → Xform, Merge, USDCamera, USDLight) against a committed reference, tolerance-compared; a GUI script under Xvfb shows it in the Viewer's 3D view and saves a screenshot.
   - verify: passes under `build/m63-gui/run-gl-tests.sh` with `NATRON_TEST_REQUIRE_GL=1`; moving the sphere makes it fail; the GUI script passes and writes the screenshot.
@@ -58,4 +58,5 @@ Hierarchy From Topology, and they author the project's up axis and units. Survey
 
 ## Decisions
 
+- 2026-10-27 — **Primitive defaults (user):** USDCube subdivisions default to 2 per axis. USDCard is always a unit mesh; the project format's aspect is applied once, at creation, through the transform's scale X knob, never by moving vertices (no Aspect knob). Primitives stay light: Nuke's orientation, lens-in, deform, display, sweep and mesh-type controls are not ported; kind/purpose/visibility will come from separate nodes later.
 - 2026-10-26 — **Material input (user):** every primitive node takes an optional Material input and authors the material under its own prim, binding itself to it (M226.P2.T4).

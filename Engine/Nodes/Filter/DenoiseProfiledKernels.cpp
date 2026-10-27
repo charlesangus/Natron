@@ -52,6 +52,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 NATRON_NAMESPACE_ENTER
 
@@ -319,6 +320,50 @@ backtransformY0U0V0(float* buf,
             buf[j + c] = std::pow(z1, expon[c]) - b;
         }
     }
+}
+
+// darktable sums the scratch buffer it allocates rather than the preconditioned pixels, so its
+// readout is undefined; this measures the preconditioned pixels it computes for the purpose.
+Vec3d
+measureVariance(const float* in,
+                std::size_t n,
+                const Settings& settings)
+{
+    Vec3d variance = { 0., 0., 0. };
+
+    if (n < 2) {
+        return variance;
+    }
+    Vec3 wb = settings.wb;
+    Vec3 p;
+    for (int c = 0; c < 3; ++c) {
+        p[c] = std::max(settings.shadows - 0.1f * std::log(wb[c]), 0.0f);
+        wb[c] *= settings.strength;
+    }
+    const float compensateP = 0.05f / std::pow(0.05f, settings.shadows);
+    std::vector<float> pre(3 * n);
+    preconditionV2(in, pre.data(), n, settings.profileA * compensateP, p, settings.profileB, wb);
+
+    Vec3d mean = { 0., 0., 0. };
+    for (std::size_t j = 0; j < 3 * n; j += 3) {
+        for (int c = 0; c < 3; ++c) {
+            mean[c] += pre[j + c];
+        }
+    }
+    for (int c = 0; c < 3; ++c) {
+        mean[c] /= (double)n;
+    }
+    for (std::size_t j = 0; j < 3 * n; j += 3) {
+        for (int c = 0; c < 3; ++c) {
+            const double d = pre[j + c] - mean[c];
+            variance[c] += d * d;
+        }
+    }
+    for (int c = 0; c < 3; ++c) {
+        variance[c] /= (double)(n - 1);
+    }
+
+    return variance;
 }
 } // namespace DenoiseProfiledKernels
 

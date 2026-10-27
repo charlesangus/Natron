@@ -49,6 +49,7 @@
 #include "NoiseProfiles.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <system_error>
 
@@ -283,10 +284,17 @@ interpolate(const Profile& p1,
 
 AutoProfile
 autoProfile(const std::vector<Profile>& profiles,
-            int iso)
+            int iso,
+            int shift)
 {
     AutoProfile result;
+    const int exifIso = iso;
+    // The exposure the camera held back, in darktable's "%+d EV" form.
+    const std::string shifted = (shift > 0) ? " (ISO " + std::to_string(exifIso) + " -" + std::to_string(shift) + " EV)" : std::string();
 
+    if (shift > 0) {
+        iso >>= shift;
+    }
     result.profile = generic();
     result.name = result.profile.name;
     const Profile* last = NULL;
@@ -294,19 +302,27 @@ autoProfile(const std::vector<Profile>& profiles,
         if (current.iso == iso) {
             result.profile = current;
             result.detected = true;
-            result.name = "found ISO " + std::to_string(iso);
+            result.name = "found ISO " + std::to_string(iso) + ((iso != exifIso) ? shifted : std::string());
             break;
         }
         if (last && (last->iso < iso) && (current.iso > iso)) {
             result.profile = interpolate(*last, current, iso);
             result.detected = true;
-            result.name = "interpolated ISO " + std::to_string(iso);
+            result.name = "interpolated ISO " + std::to_string(iso) + ((iso != exifIso) ? shifted : std::string());
             break;
         }
         last = &current;
     }
 
     return result;
+}
+
+int
+highlightPreservationShift(double highlightPreservation)
+{
+    const int shift = (int)std::floor(highlightPreservation);
+
+    return (shift > 0) ? shift : 0;
 }
 } // namespace NoiseProfiles
 

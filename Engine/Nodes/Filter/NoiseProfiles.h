@@ -149,13 +149,20 @@ struct AutoProfile {
 };
 
 /**
- * @brief dt_iop_denoiseprofile_get_auto_profile() without the highlight preservation shift: the
- * profile at exactly iso, else the interpolation of the two profiles around it, else the generic
- * profile. An ISO below the lowest or above the highest profile gets the generic profile, as in
- * darktable.
+ * @brief dt_iop_denoiseprofile_get_auto_profile(): the profile at exactly iso shifted right by
+ * shift (the whole EV of highlight preservation compensated, 0 for none), else the interpolation
+ * of the two profiles around it, else the generic profile. An ISO below the lowest or above the
+ * highest profile gets the generic profile, as in darktable.
  **/
 AutoProfile autoProfile(const std::vector<Profile>& profiles,
-                        int iso);
+                        int iso,
+                        int shift = 0);
+
+/**
+ * @brief _get_iso_highlight_preservation_shift(): the whole EV of highlightPreservation (from
+ * raw/highlight_preservation), 0 when below one.
+ **/
+int highlightPreservationShift(double highlightPreservation);
 } // namespace NoiseProfiles
 
 NATRON_NAMESPACE_EXIT

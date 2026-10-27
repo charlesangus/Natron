@@ -67,6 +67,9 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `{cr2,raf}-hotpixels-{default,permissive,strength-1}.tif` | Hot pixels at its defaults (strength 0.25, threshold 0.05), detect by 3 neighbours, strength 1 | RCD, Markesteijn |
 | `cr2-cacorrect-{iterations-1,iterations-2,iterations-5,avoidshift}.tif` | Raw CA correction 1, 2 and 5 iterations; avoid colour shift at 2 | AMaZE |
 | `{cr2,raf}-rawdenoise-0.05-{flat,shaped}.tif` | Raw denoise threshold 0.05, flat curves; the all-channels curve 0.9, 0.7, 0.5, 0.3, 0.1 | RCD, Markesteijn |
+| `{cr2,raf}-denoiseprofile-{wavelets-y0u0v0,wavelets-rgb,wavelets-auto,nlm,nlm-auto}.tif` | Denoise (profiled) after the demosaic, auto profile, highlight preservation compensated, each mode; wavelets in Y0U0V0 and RGB; other controls at their defaults, curves flat at 0.5 | AMaZE, Markesteijn |
+| `{cr2,raf}-denoiseprofile-nlm-p2-k4-s0.5.tif` | Non-local means, patch size 2, search radius 4, scattering 0.5, central pixel weight 0.3 | AMaZE, Markesteijn |
+| `{cr2,raf}-denoiseprofile-wavelets-{shadows-0.5,bias-minus-2,strength-2}.tif` | Wavelets Y0U0V0 with preserve shadows 0.5, bias correction -2, strength 2 | AMaZE, Markesteijn |
 | `{cr2,raf}-colorin-standard.tif` | Standard matrix | RCD, Markesteijn |
 | `cr2-colorin-enhanced.tif` | Enhanced matrix (`colormatrices.c` lists the 5D Mark III among the enhanced matrices only, the X-Pro2 nowhere, so there is no vendor or alternate job) | RCD |
 | `cr2-colorin-{srgb,adobergb,lin-rec709,rec709,lin-rec2020,pq-rec2020,hlg-rec2020,pq-p3,hlg-p3,display-p3,lin-prophoto,xyz,lab,infrared,brg}.tif` | Each generic input profile | RCD |
@@ -112,9 +115,12 @@ the D65 multipliers and leave the adaptation to colour calibration.
   `$DEFAULT: DT_COLORSPACE_ENHANCED_MATRIX`, but `colorin.c` `reload_defaults` (~1904) overrides it
   per image: the embedded matrix for a file that carries one (a DNG), the standard matrix for
   other raws. RawInputColor defaults the same way.
-- temperature, hotpixels, cacorrect, rawdenoise, rawprepare, channelmixerrgb: the job's settings,
-  packed at the version each module's `DT_MODULE_INTROSPECTION` gives (temperature 4, hotpixels
-  1, cacorrect 2, rawdenoise 2, rawprepare 2, channelmixerrgb 3). The color calibration jobs set
+- temperature, hotpixels, cacorrect, rawdenoise, denoiseprofile, rawprepare, channelmixerrgb: the
+  job's settings, packed at the version each module's `DT_MODULE_INTROSPECTION` gives (temperature
+  4, hotpixels 1, cacorrect 2, rawdenoise 2, denoiseprofile 12, rawprepare 2, channelmixerrgb 3).
+  denoiseprofile packs `a[0] = -1`, so darktable looks up the profile for the file as the node's
+  auto profile does; in its non-auto modes darktable uses the packed patch size, scattering,
+  shadows and bias rather than the values it infers from the profile, so the test sets them. The color calibration jobs set
   temperature explicitly, as darktable would otherwise switch its default to as shot to reference
   once color calibration is in the history.
 - colorout: linear Rec. 709, matrix path (`force_lcms2=FALSE`). darktable's matrices are D50
@@ -394,7 +400,8 @@ the number of pixels whose largest channel difference is over the max bound:
 The other crops take one of these three classes, named after the row (RCD, AMaZE, Markesteijn),
 as the reference table above gives: a module's job takes the class of the demosaic it runs on,
 and AMaZE's where the module itself adds float-sensitive steps (capture sharpening's iterated
-deconvolution, CA correction's fits, the dual and the VNG and LMMSE demosaics); the X-Trans
+deconvolution, CA correction's fits, the dual and the VNG and LMMSE demosaics, denoise (profiled)'s
+wavelets and non-local means weights); the X-Trans
 demosaics take Markesteijn's.
 
 A faithful port differs from darktable only by floating-point evaluation order and by the colour

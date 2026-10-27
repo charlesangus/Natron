@@ -52,6 +52,10 @@
 #include <cmath>
 #include <cstring>
 
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThread>
+
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -256,6 +260,7 @@ DenoiseProfiled::cameraOf(const ImageMetadata& metadata)
         iso = exifNumber(metadata, "exif/ISOSpeedRatings");
     }
     camera.iso = (iso && (*iso > 0.)) ? (int)std::lround(*iso) : 0;
+    camera.isoShift = NoiseProfiles::highlightPreservationShift(RawMetadata::getHighlightPreservation(metadata).value_or(0.));
 
     return camera;
 }
@@ -323,6 +328,17 @@ DenoiseProfiled::initializeKnobs()
     page->addKnob(profileUsed);
     _profileUsed = profileUsed;
 
+    // darktable shows it only for a plate whose camera held exposure back by a whole EV or more.
+    KnobBoolPtr compensate = createKnob<KnobBool>(tr("Compensate Highlight Preservation").toStdString());
+    compensate->setName(kDenoiseProfiledParamCompensateHighlightPreservation);
+    compensate->setHintToolTip(tr("If enabled, reduces the ISO used for denoise by the factor of the camera's hidden exposure bias "
+                                  "used in HDR / highlight preservation / dynamic range / HLG tone modes.")
+                                   .toStdString());
+    compensate->setDefaultValue(true);
+    compensate->setSecret(true);
+    page->addKnob(compensate);
+    _compensateHighlightPreservation = compensate;
+
     const char* const channelNames[3] = { "r", "g", "b" };
     KnobDoublePtr profileA = createKnob<KnobDouble>(tr("Profile A").toStdString(), 3);
     profileA->setName(kDenoiseProfiledParamProfileA);
@@ -377,6 +393,7 @@ DenoiseProfiled::initializeKnobs()
         options.push_back(ChoiceOption(kDenoiseProfiledParamModeNlmAuto, tr("Non-Local Means Auto").toStdString(), std::string()));
         options.push_back(ChoiceOption(kDenoiseProfiledParamModeWavelets, tr("Wavelets").toStdString(), std::string()));
         options.push_back(ChoiceOption(kDenoiseProfiledParamModeWaveletsAuto, tr("Wavelets Auto").toStdString(), std::string()));
+        options.push_back(ChoiceOption(kDenoiseProfiledParamModeVariance, tr("Compute Variance").toStdString(), tr("Passes the image through and measures the variance of the stabilised image.").toStdString()));
         mode->populateChoices(options);
     }
     mode->setDefaultValue((int)eModeWavelets);
@@ -530,6 +547,18 @@ DenoiseProfiled::initializeKnobs()
     page->addKnob(biasCorrection);
     _biasCorrection = biasCorrection;
 
+    KnobStringPtr variance = createKnob<KnobString>(tr("Variance").toStdString());
+    variance->setName(kDenoiseProfiledParamVariance);
+    variance->setHintToolTip(tr("Use only with a perfectly uniform image if you want to estimate the noise variance: the red, "
+                                "green and blue variance of the stabilised image over the last region rendered, 1 where the "
+                                "profile fits.")
+                                 .toStdString());
+    variance->setAsLabel();
+    variance->setEvaluateOnChange(false);
+    variance->setIsPersistent(false);
+    page->addKnob(variance);
+    _variance = variance;
+
     addStageKnobs(page);
     refreshVisibility();
 } // DenoiseProfiled::initializeKnobs
@@ -556,7 +585,7 @@ DenoiseProfiled::refreshVisibility()
     show(_patchSize.lock(), mode == eModeNlm);
     show(_searchRadius.lock(), mode == eModeNlm);
     show(_scattering.lock(), mode == eModeNlm);
-    show(_centralPixelWeight.lock(), !isWavelets(mode));
+    show(_centralPixelWeight.lock(), (mode == eModeNlm) || (mode == eModeNlmAuto));
     show(_colorMode.lock(), isWavelets(mode));
     show(_rgbCurves.lock(), isWavelets(mode) && rgb);
     show(_y0u0v0Curves.lock(), isWavelets(mode) && !rgb);
@@ -565,6 +594,7 @@ DenoiseProfiled::refreshVisibility()
     show(_biasCorrection.lock(), !isAuto(mode));
     show(_profileA.lock(), generic);
     show(_profileB.lock(), generic);
+    show(_variance.lock(), mode == eModeVariance);
 }
 
 void
@@ -595,7 +625,12 @@ DenoiseProfiled::refreshProfiles()
     }
 
     // darktable's reload_defaults(): the defaults follow the camera's profile.
-    const float a = NoiseProfiles::autoProfile(profiles, camera.iso).profile.a[1];
+    const KnobBoolPtr compensate = _compensateHighlightPreservation.lock();
+    if (compensate) {
+        compensate->setSecret(camera.isoShift <= 0);
+    }
+    const int shift = (compensate && compensate->getValue()) ? camera.isoShift : 0;
+    const float a = NoiseProfiles::autoProfile(profiles, camera.iso, shift).profile.a[1];
     if (KnobIntPtr knob = _patchSize.lock()) {
         if (!knob->hasModifications(0)) {
             knob->setDefaultValue(inferRadius(a));
@@ -633,7 +668,13 @@ DenoiseProfiled::knobChanged(KnobI* k,
     const KnobIPtr profile = _profile.lock();
     const KnobIPtr profileA = _profileA.lock();
     const KnobIPtr profileB = _profileB.lock();
+    const KnobIPtr compensate = _compensateHighlightPreservation.lock();
 
+    if (compensate && (k == compensate.get())) {
+        refreshProfiles();
+
+        return true;
+    }
     if ((k == mode.get()) || (k == colorMode.get())) {
         refreshVisibility();
 
@@ -685,6 +726,43 @@ DenoiseProfiled::purgeCaches()
     _frame.reset();
 }
 
+std::optional<std::array<double, 3>>
+DenoiseProfiled::lastVariance() const
+{
+    std::lock_guard<std::mutex> lock(_varianceMutex);
+
+    return _lastVariance;
+}
+
+void
+DenoiseProfiled::showVariance(const std::array<double, 3>& variance)
+{
+    {
+        std::lock_guard<std::mutex> lock(_varianceMutex);
+        _lastVariance = variance;
+    }
+    const std::string text = tr("red %1, green %2, blue %3")
+                                 .arg(variance[0], 0, 'f', 2)
+                                 .arg(variance[1], 0, 'f', 2)
+                                 .arg(variance[2], 0, 'f', 2)
+                                 .toStdString();
+    const KnobStringWPtr weak = _variance;
+    const auto apply = [weak, text]() {
+        if (const KnobStringPtr knob = weak.lock()) {
+            knob->setValue(text);
+        }
+    };
+    // Renders run off the main thread, and a knob change signals the GUI.
+    if (!qApp) {
+        return;
+    }
+    if (QThread::currentThread() == qApp->thread()) {
+        apply();
+    } else {
+        QMetaObject::invokeMethod(qApp, apply, Qt::QueuedConnection);
+    }
+}
+
 std::optional<DenoiseProfiled::Resolved>
 DenoiseProfiled::resolve(double time,
                          ViewIdx view)
@@ -703,7 +781,8 @@ DenoiseProfiled::resolve(double time,
 
     // The profile: darktable reads only the green fit in the transforms.
     const std::vector<NoiseProfiles::Profile> profiles = profilesFor(camera);
-    const NoiseProfiles::AutoProfile autoProfile = NoiseProfiles::autoProfile(profiles, camera.iso);
+    const int shift = reader.value(_compensateHighlightPreservation) ? camera.isoShift : 0;
+    const NoiseProfiles::AutoProfile autoProfile = NoiseProfiles::autoProfile(profiles, camera.iso, shift);
     const std::string chosen = profileKnob->getActiveEntry().id;
     if (chosen == kDenoiseProfiledParamProfileGeneric) {
         s.profileA = (float)reader.value(_profileA, 1);
@@ -742,7 +821,7 @@ DenoiseProfiled::resolve(double time,
         r.message += (r.message.empty() ? std::string() : std::string("\n")) + n;
     }
 
-    s.mode = (ModeEnum)std::clamp((int)reader.value(_mode), 0, (int)eModeWaveletsAuto);
+    s.mode = (ModeEnum)std::clamp((int)reader.value(_mode), 0, (int)eModeVariance);
     s.colorMode = (reader.value(_colorMode) == (int)eColorModeRgb) ? eColorModeRgb : eColorModeY0U0V0;
     s.searchRadius = (int)reader.value(_searchRadius);
     s.centralPixelWeight = (float)reader.value(_centralPixelWeight);
@@ -810,6 +889,9 @@ DenoiseProfiled::getRegionsOfInterest(double time,
             (*ret)[input] = sourceRoD;
         }
 
+        return;
+    }
+    if (r->settings.mode == eModeVariance) {
         return;
     }
     const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
@@ -901,6 +983,8 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
     if (processing) {
         if (isWavelets(s.mode)) {
             bufferRect = rodPixel;
+        } else if (s.mode == eModeVariance) {
+            bufferRect = window;
         } else {
             const int halo = nlmGeometry(s, renderScale).halo();
             processing = intersectRects(RectI(window.x1 - halo, window.y1 - halo, window.x2 + halo, window.y2 + halo), rodPixel, &bufferRect);
@@ -954,7 +1038,15 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             int outX = 0;
             int outY = 0;
             std::shared_ptr<const std::vector<float>> frame;
-            if (isWavelets(s.mode)) {
+            if (s.mode == eModeVariance) {
+                if (j == 0) {
+                    showVariance(measureVariance(rgb.data(), planeSize, s));
+                }
+                out = rgb.data();
+                outStride = bw;
+                outX = wx;
+                outY = wy;
+            } else if (isWavelets(s.mode)) {
                 const std::string key = std::to_string(RawNodeSupport::frameKey(getRenderHash(), args.time, args.view)) + '|' + std::to_string(renderScale) + '|' + layerIds[j]
                     + '|' + std::to_string(bufferRect.x1) + ',' + std::to_string(bufferRect.y1) + ',' + std::to_string(bw) + ',' + std::to_string(bh);
                 std::lock_guard<std::mutex> lock(_frameMutex);

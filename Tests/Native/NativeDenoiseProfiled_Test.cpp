@@ -40,6 +40,7 @@
 #include "NativeGolden.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
+#include "RawReferenceSupport.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -214,6 +215,48 @@ TEST(DenoiseProfiledKernels, FlatImageIsKept)
     }
 }
 
+// process_variance(): the sample variance of the stabilised pixels, 0 on a flat patch, and on two
+// values the squared half-difference of their transforms, times n / (n - 1).
+TEST(DenoiseProfiledKernelsTest, MeasureVariance)
+{
+    DenoiseProfiledKernels::Settings s;
+    s.profileA = 1e-4f;
+    s.profileB = 1e-6f;
+    s.shadows = 1.f;
+    s.strength = 1.f;
+    s.wb = Vec3 { 2.f, 1.f, 1.5f };
+
+    const std::vector<float> flat(3 * 64, 0.25f);
+    const Vec3d zero = measureVariance(flat.data(), 64, s);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(0., zero[c], 1e-12) << c;
+    }
+
+    const std::size_t n = 64;
+    std::vector<float> two(3 * n);
+    for (std::size_t i = 0; i < n; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            two[3 * i + c] = (i % 2) ? 0.3f : 0.1f;
+        }
+    }
+    const Vec3d measured = measureVariance(two.data(), n, s);
+    Vec3 p;
+    for (int c = 0; c < 3; ++c) {
+        p[c] = std::max(s.shadows - 0.1f * std::log(s.wb[c]), 0.f);
+    }
+    const float a = s.profileA * 0.05f / std::pow(0.05f, s.shadows);
+    float lo[3];
+    float hi[3];
+    const float loIn[3] = { 0.1f, 0.1f, 0.1f };
+    const float hiIn[3] = { 0.3f, 0.3f, 0.3f };
+    preconditionV2(loIn, lo, 1, a, p, s.profileB, s.wb);
+    preconditionV2(hiIn, hi, 1, a, p, s.profileB, s.wb);
+    for (int c = 0; c < 3; ++c) {
+        const double half = 0.5 * ((double)hi[c] - lo[c]);
+        EXPECT_NEAR(half * half * n / (n - 1.), measured[c], 1e-6 * half * half) << c;
+    }
+}
+
 class NativeDenoiseProfiledTest
     : public BaseTest {
 protected:
@@ -307,7 +350,7 @@ TEST_F(NativeDenoiseProfiledTest, KnobAudit)
         int def;
     };
     const Choice choices[] = {
-        { kDenoiseProfiledParamMode, { kDenoiseProfiledParamModeNlm, kDenoiseProfiledParamModeNlmAuto, kDenoiseProfiledParamModeWavelets, kDenoiseProfiledParamModeWaveletsAuto }, 2 },
+        { kDenoiseProfiledParamMode, { kDenoiseProfiledParamModeNlm, kDenoiseProfiledParamModeNlmAuto, kDenoiseProfiledParamModeWavelets, kDenoiseProfiledParamModeWaveletsAuto, kDenoiseProfiledParamModeVariance }, 2 },
         { kDenoiseProfiledParamColorMode, { kDenoiseProfiledParamColorModeRgb, kDenoiseProfiledParamColorModeY0U0V0 }, 1 },
     };
     for (const Choice& c : choices) {
@@ -334,6 +377,13 @@ TEST_F(NativeDenoiseProfiledTest, KnobAudit)
         EXPECT_EQ(3, d->getDimension()) << name;
     }
     EXPECT_TRUE(bool(effect->getKnobByNameAndType<KnobString>(kDenoiseProfiledParamProfileUsed)));
+    EXPECT_TRUE(bool(effect->getKnobByNameAndType<KnobString>(kDenoiseProfiledParamVariance)));
+
+    // darktable's $DEFAULT; with no highlight preservation shift it is hidden and changes nothing.
+    KnobBoolPtr compensate = effect->getKnobByNameAndType<KnobBool>(kDenoiseProfiledParamCompensateHighlightPreservation);
+    ASSERT_TRUE(bool(compensate));
+    EXPECT_TRUE(compensate->getDefaultValue(0));
+    EXPECT_TRUE(compensate->getIsSecret());
 
     // Seven neutral anchors per curve: "all", red, green, blue; Y0, U0V0.
     const std::pair<const char*, int> curves[] = { { kDenoiseProfiledParamRgbCurves, 4 }, { kDenoiseProfiledParamY0U0V0Curves, 2 } };
@@ -381,6 +431,15 @@ TEST_F(NativeDenoiseProfiledTest, Visibility)
     EXPECT_FALSE(secret(kDenoiseProfiledParamCentralPixelWeight));
     EXPECT_FALSE(secret(kDenoiseProfiledParamAdjustAutoset));
     EXPECT_TRUE(secret(kDenoiseProfiledParamPreserveShadows));
+    EXPECT_TRUE(secret(kDenoiseProfiledParamVariance));
+
+    ASSERT_TRUE(setKnobValue(node, kDenoiseProfiledParamMode, kDenoiseProfiledParamModeVariance));
+    EXPECT_FALSE(secret(kDenoiseProfiledParamVariance));
+    EXPECT_TRUE(secret(kDenoiseProfiledParamPatchSize));
+    EXPECT_TRUE(secret(kDenoiseProfiledParamCentralPixelWeight));
+    EXPECT_TRUE(secret(kDenoiseProfiledParamColorMode));
+    EXPECT_TRUE(secret(kDenoiseProfiledParamAdjustAutoset));
+    EXPECT_FALSE(secret(kDenoiseProfiledParamPreserveShadows));
 }
 
 TEST_F(NativeDenoiseProfiledTest, Golden)
@@ -401,4 +460,82 @@ TEST_F(NativeDenoiseProfiledTest, Golden)
     v.push_back(variant("maskmix", [](const GoldenGraph& g) { return setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. }); }, true));
     v.push_back(variant("nlmMaskmix", [](const GoldenGraph& g) { return mode(kDenoiseProfiledParamModeNlm)(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. }); }, true));
     run(v);
+}
+
+namespace {
+// make-reference.py's DENOISEPROFILE_VARIANTS with darktable's defaults filled in. The non-auto
+// modes use the packed patch size, scattering, shadows and bias, where the node defaults them
+// from the profile, so every case sets them.
+struct ReferenceJob {
+    const char* suffix;
+    ModeEnum mode;
+    ColorModeEnum colorMode;
+    int patchSize;
+    int searchRadius;
+    double scattering;
+    double centralPixelWeight;
+    double strength;
+    double shadows;
+    double bias;
+};
+
+const ReferenceJob kReferenceJobs[] = {
+    { "wavelets-y0u0v0", eModeWavelets, eColorModeY0U0V0, 1, 7, 0., 0.1, 1., 1., 0. },
+    { "wavelets-rgb", eModeWavelets, eColorModeRgb, 1, 7, 0., 0.1, 1., 1., 0. },
+    { "wavelets-auto", eModeWaveletsAuto, eColorModeY0U0V0, 1, 7, 0., 0.1, 1., 1., 0. },
+    { "nlm", eModeNlm, eColorModeY0U0V0, 1, 7, 0., 0.1, 1., 1., 0. },
+    { "nlm-auto", eModeNlmAuto, eColorModeY0U0V0, 1, 7, 0., 0.1, 1., 1., 0. },
+    { "nlm-p2-k4-s0.5", eModeNlm, eColorModeY0U0V0, 2, 4, 0.5, 0.3, 1., 1., 0. },
+    { "wavelets-shadows-0.5", eModeWavelets, eColorModeY0U0V0, 1, 7, 0., 0.1, 1., 0.5, 0. },
+    { "wavelets-bias-minus-2", eModeWavelets, eColorModeY0U0V0, 1, 7, 0., 0.1, 1., 1., -2. },
+    { "wavelets-strength-2", eModeWavelets, eColorModeY0U0V0, 1, 7, 0., 0.1, 2., 1., 0. },
+};
+} // namespace
+
+/**
+ * darktable's denoiseprofile jobs of make-reference.py: DenoiseProfiled between RawDemosaic and
+ * RawInputColor, where darktable's pipe runs it, with the auto profile and highlight
+ * preservation compensated, as the jobs pack them.
+ **/
+class NativeDenoiseProfiledReferenceTest
+    : public RawReferenceFixture {
+protected:
+    void compare(const RawReference::CropSite& site)
+    {
+        // The iterated wavelets and the non-local means' weights add float-sensitive steps to
+        // the demosaic, so the CR2 takes AMaZE's class.
+        const RawReference::Tolerance tolerance = site.xtrans ? RawReference::kMarkesteijnClass : RawReference::kAMaZEClass;
+        const std::string prefix = site.xtrans ? "fujifilm-x-pro2-denoiseprofile-" : "canon-eos-5d-mark-iii-denoiseprofile-";
+
+        for (const ReferenceJob& job : kReferenceJobs) {
+            const std::string name = std::string(site.xtrans ? "RAF " : "CR2 ") + "denoise (profiled) " + job.suffix;
+            SCOPED_TRACE(name);
+            const RawDevelop::Chain chain = createChain(site);
+            ASSERT_TRUE(chain.complete()) << name;
+            NodePtr denoise = createNode(QString::fromUtf8(PLUGINID_NATRON_DENOISEPROFILED));
+            ASSERT_TRUE(bool(denoise)) << name;
+            insertAbove(chain.inputColor, denoise);
+            EffectInstancePtr effect = denoise->getEffectInstance();
+            effect->getKnobByNameAndType<KnobChoice>(kDenoiseProfiledParamMode)->setValue((int)job.mode);
+            effect->getKnobByNameAndType<KnobChoice>(kDenoiseProfiledParamColorMode)->setValue((int)job.colorMode);
+            effect->getKnobByNameAndType<KnobInt>(kDenoiseProfiledParamPatchSize)->setValue(job.patchSize);
+            effect->getKnobByNameAndType<KnobInt>(kDenoiseProfiledParamSearchRadius)->setValue(job.searchRadius);
+            effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamScattering)->setValue(job.scattering);
+            effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamCentralPixelWeight)->setValue(job.centralPixelWeight);
+            effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamStrength)->setValue(job.strength);
+            effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamPreserveShadows)->setValue(job.shadows);
+            effect->getKnobByNameAndType<KnobDouble>(kDenoiseProfiledParamBiasCorrection)->setValue(job.bias);
+            compareCrop(name.c_str(), site, chain.inputColor, (prefix + job.suffix + ".tif").c_str(), tolerance);
+        }
+    }
+};
+
+TEST_F(NativeDenoiseProfiledReferenceTest, BayerMatchesDarktable)
+{
+    compare(RawReference::cr2Site());
+}
+
+TEST_F(NativeDenoiseProfiledReferenceTest, XTransMatchesDarktable)
+{
+    compare(RawReference::rafSite());
 }

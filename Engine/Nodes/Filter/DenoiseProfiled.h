@@ -51,6 +51,7 @@
 
 #include "Global/Macros.h"
 
+#include <array>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -78,6 +79,9 @@
 #define kDenoiseProfiledParamModeNlmAuto "nlmAuto"
 #define kDenoiseProfiledParamModeWavelets "wavelets"
 #define kDenoiseProfiledParamModeWaveletsAuto "waveletsAuto"
+#define kDenoiseProfiledParamModeVariance "computeVariance"
+#define kDenoiseProfiledParamCompensateHighlightPreservation "compensateHighlightPreservation"
+#define kDenoiseProfiledParamVariance "variance"
 #define kDenoiseProfiledParamPatchSize "patchSize"
 #define kDenoiseProfiledParamSearchRadius "searchRadius"
 #define kDenoiseProfiledParamScattering "scattering"
@@ -125,11 +129,13 @@ public:
     /**
      * @brief The camera a plate comes from: raw/make, raw/model and raw/iso, else exif/Make,
      * exif/Model and exif/PhotographicSensitivity (or exif/ISOSpeedRatings). iso is 0 when unknown.
+     * isoShift is the whole EV of raw/highlight_preservation.
      **/
     struct Camera {
         std::string make;
         std::string model;
         int iso = 0;
+        int isoShift = 0;
     };
 
     static Camera cameraOf(const ImageMetadata& metadata) WARN_UNUSED_RETURN;
@@ -139,6 +145,12 @@ public:
      * measured on camera RGB after demosaicing and before the input colour transform.
      **/
     static std::string cameraSpaceNotice(const ImageMetadata& metadata) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The red, green and blue variance of the variance-stabilised image the last Compute
+     * Variance render measured, which the Variance knob shows.
+     **/
+    std::optional<std::array<double, 3>> lastVariance() const WARN_UNUSED_RETURN;
 
 private:
     struct Resolved;
@@ -172,6 +184,11 @@ private:
      **/
     void refreshVisibility();
 
+    /**
+     * @brief Keeps a measured variance and shows it in the Variance knob, from the main thread.
+     **/
+    void showVariance(const std::array<double, 3>& variance);
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -189,6 +206,7 @@ private:
     KnobStringWPtr _profileUsed;
     KnobDoubleWPtr _profileA;
     KnobDoubleWPtr _profileB;
+    KnobBoolWPtr _compensateHighlightPreservation;
     KnobBoolWPtr _wbAdaptive;
     KnobChoiceWPtr _mode;
     KnobIntWPtr _patchSize;
@@ -202,6 +220,7 @@ private:
     KnobDoubleWPtr _strength;
     KnobDoubleWPtr _preserveShadows;
     KnobDoubleWPtr _biasCorrection;
+    KnobStringWPtr _variance;
 
     std::mutex _profilesMutex;
     bool _profilesValid;
@@ -212,6 +231,9 @@ private:
     bool _frameValid;
     std::string _frameKey;
     std::shared_ptr<const std::vector<float>> _frame;
+
+    mutable std::mutex _varianceMutex;
+    std::optional<std::array<double, 3>> _lastVariance;
 
     RawNodeSupport::OwnedMessage _message;
 };

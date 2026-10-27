@@ -652,6 +652,13 @@ Settings::initializeKnobsProjectSetup()
                                          "or creating a Read from Python never does."));
     _projectsPage->addKnob(_developRawOnRead);
 
+    _developRawDenoise = AppManager::createKnob<KnobBool>(this, tr("Develop RAW Denoise"));
+    _developRawDenoise->setName("developRawDenoise");
+    _developRawDenoise->setHintToolTip(tr("If checked, the Develop RAW chain also has DenoiseProfiled between RawDemosaic and "
+                                          "RawInputColor, where darktable runs its denoise (profiled), with the camera's noise "
+                                          "profile found from the file."));
+    _projectsPage->addKnob(_developRawDenoise);
+
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
     _autoPreviewEnabledForNewProjects->setName("enableAutoPreviewNewProjects");
     _autoPreviewEnabledForNewProjects->setHintToolTip( tr("If checked, then when creating a new project, the Auto-preview option"
@@ -1695,6 +1702,7 @@ Settings::setDefaultValues()
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
     _developRawOnRead->setDefaultValue(true);
+    _developRawDenoise->setDefaultValue(false);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
 
@@ -3463,6 +3471,12 @@ bool
 Settings::isDevelopRawOnReadEnabled() const
 {
     return _developRawOnRead->getValue();
+}
+
+bool
+Settings::isDevelopRawDenoiseEnabled() const
+{
+    return _developRawDenoise->getValue();
 }
 
 bool

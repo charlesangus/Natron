@@ -3008,9 +3008,11 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         }
     }
 
-    // Declared after the nodes, so that rfv always names the variables.
+    // Declared after the nodes, so that rfv, loop and loops always name the variables.
     PyRFV::ensureDeclared();
     ss << tabStr << "rfv = " << PyRFV::kMainGlobalName << "\n";
+    ss << tabStr << "loop = " << PyRFV::kMainLoopGlobalName << "\n";
+    ss << tabStr << "loops = " << PyRFV::kMainLoopsGlobalName << "\n";
 
     if (isParentGrp) {
         ss << tabStr << "thisGroup = " << appID << "." << collectionScriptName << "\n";
@@ -4232,6 +4234,22 @@ KnobHelper::compileExpressionSource(const std::string& source,
         *error = e.what();
 
         return NULL;
+    }
+    // A parameter wins over a declared name, such as loop, of the same name.
+    if (!parameters.empty()) {
+        std::stringstream kept;
+        std::stringstream lines(declarations);
+        std::string line;
+        while (std::getline(lines, line)) {
+            const std::size_t first = line.find_first_not_of(' ');
+            bool shadowed = false;
+            for (std::size_t i = 0; !shadowed && (first != std::string::npos) && (i < parameters.size()); ++i) {
+                shadowed = (line.compare(first, parameters[i].size() + 3, parameters[i] + " = ") == 0);
+            }
+            // A node declaration is the second line of an if: keep the if valid.
+            kept << (shadowed ? line.substr(0, first) + "pass" : line) << "\n";
+        }
+        declarations = kept.str();
     }
     static const char* const kFunctionName = "NatronKnobExpressionSource";
     std::stringstream ss;
@@ -7451,43 +7469,95 @@ skipPythonBlanks(const std::string& str,
 
     return pos;
 }
+
+// Whether the code at pos is name itself: not part of a longer identifier, nor an attribute of
+// another object.
+bool
+isBareNameAt(const std::string& expression,
+             const std::vector<bool>& code,
+             std::size_t pos,
+             std::size_t size)
+{
+    const std::size_t after = pos + size;
+    if (!code[pos] || ((pos > 0) && isIdentifierCharacter(expression[pos - 1])) || ((after < expression.size()) && isIdentifierCharacter(expression[after]))) {
+        return false;
+    }
+    std::size_t before = pos;
+    while ((before > 0) && isPythonBlank(expression[before - 1])) {
+        --before;
+    }
+
+    return !((before > 0) && (expression[before - 1] == '.') && code[before - 1]);
+}
+
+// The attribute read at pos, as in .<attribute>, and the position after it; npos if there is
+// none.
+std::size_t
+attributeAt(const std::string& expression,
+            const std::vector<bool>& code,
+            std::size_t pos,
+            std::string* attribute)
+{
+    const std::size_t n = expression.size();
+    const std::size_t dot = skipPythonBlanks(expression, pos);
+    if ((dot >= n) || !code[dot] || (expression[dot] != '.')) {
+        return std::string::npos;
+    }
+    const std::size_t begin = skipPythonBlanks(expression, dot + 1);
+    std::size_t end = begin;
+    while ((end < n) && isIdentifierCharacter(expression[end])) {
+        ++end;
+    }
+    if ((end == begin) || std::isdigit((unsigned char)expression[begin])) {
+        return std::string::npos;
+    }
+    *attribute = expression.substr(begin, end - begin);
+
+    return end;
+}
+
+const char* const kLoopVariableNames[] = { "iteration", "count", "t", "frame" };
+
+bool
+readsLoopVariables(const RenderContextReadSet& reads)
+{
+    if (reads.readsAll()) {
+        return true;
+    }
+    static const std::string kLoopsPrefix("loops.");
+    for (const RenderContextName& name : reads.names()) {
+        if ((name.ns == RenderContextName::loop(std::string()).ns) || (name.ns.compare(0, kLoopsPrefix.size(), kLoopsPrefix) == 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
 } // anonymous namespace
 
 RenderContextReadSet
 KnobHelper::getRFVExpressionReads(const std::string& expression)
 {
     static const std::string kRFV("rfv");
+    static const std::string kLoop("loop");
+    static const std::string kLoops("loops");
     RenderContextReadSet reads;
     const std::vector<bool> code = pythonCodeMask(expression);
     const std::size_t n = expression.size();
 
     for (std::size_t pos = expression.find(kRFV); pos != std::string::npos; pos = expression.find(kRFV, pos + 1)) {
+        if (!isBareNameAt(expression, code, pos, kRFV.size())) {
+            continue;
+        }
         const std::size_t after = pos + kRFV.size();
-        if (!code[pos] || ((pos > 0) && isIdentifierCharacter(expression[pos - 1])) || ((after < n) && isIdentifierCharacter(expression[after]))) {
-            continue;
-        }
-        // An attribute named rfv of some other object is not the rfv object.
-        std::size_t before = pos;
-        while ((before > 0) && isPythonBlank(expression[before - 1])) {
-            --before;
-        }
-        if ((before > 0) && (expression[before - 1] == '.') && code[before - 1]) {
-            continue;
-        }
-
-        std::size_t i = skipPythonBlanks(expression, after);
-        if ((i < n) && code[i] && (expression[i] == '.')) {
+        std::string attribute;
+        if (attributeAt(expression, code, after, &attribute) != std::string::npos) {
             // rfv.<name>
-            const std::size_t begin = skipPythonBlanks(expression, i + 1);
-            std::size_t end = begin;
-            while ((end < n) && isIdentifierCharacter(expression[end])) {
-                ++end;
-            }
-            if ((end > begin) && !std::isdigit((unsigned char)expression[begin])) {
-                reads.add(RenderContextName::plain(expression.substr(begin, end - begin)));
-                continue;
-            }
-        } else if ((i < n) && code[i] && ((expression[i] == '(') || (expression[i] == '['))) {
+            reads.add(RenderContextName::plain(attribute));
+            continue;
+        }
+        std::size_t i = skipPythonBlanks(expression, after);
+        if ((i < n) && code[i] && ((expression[i] == '(') || (expression[i] == '['))) {
             // rfv('<name>') or rfv['<name>'], with either quote, and a plain literal only: a
             // prefixed, triple-quoted or escaped string, a second argument or a computed key
             // makes the name unknown.
@@ -7513,6 +7583,44 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
         reads.setReadsAll();
 
         return reads;
+    }
+
+    // loop.<variable>; any other use of loop may read any of its variables.
+    for (std::size_t pos = expression.find(kLoop); pos != std::string::npos; pos = expression.find(kLoop, pos + 1)) {
+        if (!isBareNameAt(expression, code, pos, kLoop.size())) {
+            continue;
+        }
+        std::string variable;
+        if (attributeAt(expression, code, pos + kLoop.size(), &variable) != std::string::npos) {
+            reads.add(RenderContextName::loop(variable));
+        } else {
+            for (const char* name : kLoopVariableNames) {
+                reads.add(RenderContextName::loop(name));
+            }
+        }
+    }
+
+    // loops.<name>.<variable>, or every variable of loops.<name>; any other use of loops may
+    // read any loop's.
+    for (std::size_t pos = expression.find(kLoops); pos != std::string::npos; pos = expression.find(kLoops, pos + 1)) {
+        if (!isBareNameAt(expression, code, pos, kLoops.size())) {
+            continue;
+        }
+        std::string loopName;
+        const std::size_t afterName = attributeAt(expression, code, pos + kLoops.size(), &loopName);
+        if (afterName == std::string::npos) {
+            reads.setReadsAll();
+
+            return reads;
+        }
+        std::string variable;
+        if (attributeAt(expression, code, afterName, &variable) != std::string::npos) {
+            reads.add(RenderContextName::loops(loopName, variable));
+        } else {
+            for (const char* name : kLoopVariableNames) {
+                reads.add(RenderContextName::loops(loopName, name));
+            }
+        }
     }
 
     return reads;
@@ -7743,7 +7851,12 @@ KnobHelper::getExpressionContextKey(U64* key) const
     // A knob not on a node, such as a project variable's, reads under the context rfv gives its
     // expression: one result per context, rather than the first one's for all.
     const EffectInstance* effect = dynamic_cast<const EffectInstance*>(getHolder());
-    const RenderContextPtr context = effect ? effect->getCurrentRenderContext() : PyRFV::getProjectExpressionContext();
+    RenderContextPtr context = effect ? effect->getCurrentRenderContext() : PyRFV::getProjectExpressionContext();
+    // Outside a render, loop and loops read the enclosing loops' preview iteration: one result per
+    // preview, so that changing it is seen.
+    if (!context && effect && !effect->getParallelRenderArgsTLS() && readsLoopVariables(reads)) {
+        context = PyRFV::getLoopPreviewContext(this);
+    }
     if (context && !context->isEmpty()) {
         const RenderContextPtr kept = context->restrictTo(reads);
         *key = kept ? kept->hash() : 0;
@@ -7806,6 +7919,9 @@ KnobHelper::setDriver(int dimension,
         holder->updateHasAnimation();
     }
     evaluateValueChange(dimension, getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    if (_signalSlotHandler) {
+        _signalSlotHandler->s_driverChanged(dimension);
+    }
 
     return true;
 }

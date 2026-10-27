@@ -21,6 +21,48 @@ M259 - GPU Placement Under Render Contexts.
   context key and render once for every iteration at the same frame, sharing the cache with
   ordinary renders of that frame.
 
+## Drivers
+
+- A knob of a body node is driven from a loop from its right-click menu, Drive from loop, which
+  is greyed out for a node outside any loop. The driver reads `loop.t` from the knob's default
+  (usually its identity: Blur `size` 0, Grade `gain` 1) to its current value; each dimension
+  gets its own driver, and Remove loop driver takes them off. Every edit is undoable.
+- A driven knob shows a driver row in place of its fields: the dimension (All when every
+  dimension is driven), the variable, start, end and easing, then the values the knob takes.
+  The variable is `loop.t`, `loop.iteration`, `loop.count`, `loop.frame` or the same of an
+  enclosing loop as `loops.<name>.*`. Easing is Linear (which extrapolates outside 0 to 1),
+  Smooth, or Curve, edited from the row's curve button; Smooth and Curve clamp the variable
+  to 0 to 1.
+- A driver whose variable no loop around the node sets, after the node was moved out of the
+  loop or the loop renamed, keeps its value and shows a warning on the knob.
+- The `drivenKnobs` table lists every driven dimension of the body's nodes, one row each,
+  with the same variable, start, end and easing; editing a row edits the driver, and the knob's
+  own row follows. The Value column shows the value at `singlePassIteration`.
+- Driven and expression values outside a render, in the panel, the viewer's overlays or a
+  script, are those at `singlePassIteration` of every loop enclosing the node, whatever the
+  `mode`: there is no separate preview control.
+- Performance: a driver is evaluated natively for each iteration and never takes Python's
+  lock. A Python expression reading `loop.*` or `loops.*` is evaluated under the lock, so the
+  iterations' expressions run one at a time across all render threads; prefer a driver when
+  the knob is a straight ramp over the loop.
+
+## Expressions
+
+- A parameter expression in the body reads its loop as `loop.iteration`, `loop.count`,
+  `loop.t` and `loop.frame`, and an enclosing loop as `loops.<name>.iteration` and so on, for
+  example `2 + 8 * loop.t` or `loops.outer.t * loop.t`. The variables an expression reads are found when it is set: the
+  body re-renders per iteration only for what it reads.
+- Outside its loop a variable is None. In an expression `loop`, `loops` and `rfv` always
+  name these variables, over a node of the same name.
+
+## Block display
+
+- The node graph draws a hull round each loop's LoopBegin, LoopEnd and the nodes on the paths
+  between them, in a colour derived from the loop's `name`, with a wedge below the LoopBegin
+  and above the LoopEnd. A nested loop's hull lies inside its enclosing loop's. Selecting
+  either end of a loop draws its hull's outline solid and rings both ends. A node feeding the
+  body from the side is part of the loop without lying inside the hull.
+
 ## Iterations
 
 - `iterateOver` Count: `iterations` iterations, all at the current frame. 0 iterations
@@ -59,7 +101,8 @@ M259 - GPU Placement Under Render Contexts.
   Empty runs every iteration.
 - It decides which iterations render, once per render and frame, and is never evaluated per
   pixel. It may read parameters; it cannot read the body's pixels. The
-  variables of the loops enclosing this one are not available to it.
+  variables of the loops enclosing this one are read as `loops.<name>.*`, at the iteration
+  the enclosing loop is rendering.
 - Ending before the first iteration outputs black with a warning. An exception, a syntax
   error among them, ends the loop at the iteration it was raised for and shows the error on
   the LoopEnd; the iterations before it still render.

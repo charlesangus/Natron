@@ -34,6 +34,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
@@ -45,6 +47,8 @@ NATRON_NAMESPACE_ENTER
 namespace PyRFV {
 
 const char* const kMainGlobalName = "NatronEngine_rfv";
+const char* const kMainLoopGlobalName = "NatronEngine_loop";
+const char* const kMainLoopsGlobalName = "NatronEngine_loops";
 
 namespace {
 
@@ -139,7 +143,7 @@ namespace {
     }
 
     PyObject*
-    toPython(const RenderContextValue& value)
+    valueToPython(const RenderContextValue& value)
     {
         if (const bool* b = std::get_if<bool>(&value)) {
             return PyBool_FromLong(*b ? 1 : 0);
@@ -261,23 +265,180 @@ namespace {
 
         return object;
     }
+
+    // The context the expression evaluated on this thread reads loop variables from, found as
+    // getVariable() finds it.
+    RenderContextPtr
+    expressionContext()
+    {
+        RenderContextPtr context;
+        if (ActionContextScope::current(&context)) {
+            return context;
+        }
+        const ExpressionEntry* entry = t_expressions.empty() ? NULL : &t_expressions.back();
+        const KnobHolder* holder = (entry && entry->knob) ? entry->knob->getHolder() : NULL;
+        const EffectInstance* effect = dynamic_cast<const EffectInstance*>(holder);
+        if (effect && effect->getParallelRenderArgsTLS()) {
+            return effect->getCurrentRenderContext();
+        }
+        if (!t_evaluatingVariables.empty()) {
+            return t_evaluatingVariables.back().context;
+        }
+
+        // Outside a render, as the panel shows the knob.
+        return entry ? getLoopPreviewContext(entry->knob) : RenderContextPtr();
+    }
+
+    const char* const kLoopVariableNames[] = { "iteration", "count", "t", "frame" };
+
+    PyObject*
+    loopGetAttr(PyObject* self,
+                PyObject* attribute)
+    {
+        std::string name;
+        if (!utf8Of(attribute, &name) || (name.compare(0, 2, "__") == 0)) {
+            PyErr_Clear();
+
+            return PyObject_GenericGetAttr(self, attribute);
+        }
+
+        return getLoopVariable(std::string(), name);
+    }
+
+    PyObject*
+    loopsGetAttr(PyObject* self,
+                 PyObject* attribute)
+    {
+        std::string name;
+        if (!utf8Of(attribute, &name) || (name.compare(0, 2, "__") == 0)) {
+            PyErr_Clear();
+
+            return PyObject_GenericGetAttr(self, attribute);
+        }
+        // The loop's variables as they are now: a namespace is made for each read.
+        PyObject* types = PyImport_ImportModule("types");
+        PyObject* simpleNamespace = types ? PyObject_GetAttrString(types, "SimpleNamespace") : NULL;
+        Py_XDECREF(types);
+        PyObject* variables = simpleNamespace ? PyDict_New() : NULL;
+        bool ok = (variables != NULL);
+        for (const char* variable : kLoopVariableNames) {
+            if (!ok) {
+                break;
+            }
+            PyObject* value = getLoopVariable(name, variable);
+            ok = value && (PyDict_SetItemString(variables, variable, value) == 0);
+            Py_XDECREF(value);
+        }
+        PyObject* noArgs = ok ? PyTuple_New(0) : NULL;
+        PyObject* result = noArgs ? PyObject_Call(simpleNamespace, noArgs, variables) : NULL;
+        Py_XDECREF(noArgs);
+        Py_XDECREF(variables);
+        Py_XDECREF(simpleNamespace);
+
+        return result;
+    }
+
+    // A single instance of a new type whose attributes getAttr reads.
+    PyObject*
+    createAttributeObject(const char* typeName,
+                          getattrofunc getAttr,
+                          const char* doc)
+    {
+        PyType_Slot slots[] = {
+            { Py_tp_new, (void*)&PyType_GenericNew },
+            { Py_tp_getattro, (void*)getAttr },
+            { Py_tp_doc, (void*)doc },
+            { 0, NULL },
+        };
+        PyType_Spec spec = {
+            typeName,
+            (int)sizeof(PyObject),
+            0,
+            Py_TPFLAGS_DEFAULT,
+            slots,
+        };
+        PyObject* type = PyType_FromSpec(&spec);
+        if (!type) {
+            return NULL;
+        }
+        PyObject* object = PyObject_CallObject(type, NULL);
+        Py_DECREF(type);
+
+        return object;
+    }
+
+    PyObject*
+    createLoopObject()
+    {
+        return createAttributeObject("NatronEngine.Loop", &loopGetAttr,
+                                     "The nearest enclosing loop's variables: loop.iteration, loop.count, loop.t and loop.frame, None outside a loop.");
+    }
+
+    PyObject*
+    createLoopsObject()
+    {
+        return createAttributeObject("NatronEngine.Loops", &loopsGetAttr,
+                                     "Every enclosing loop's variables by loop name: loops.<name>.t and so on, None outside that loop.");
+    }
+
+    void
+    declare(PyObject* mainModule,
+            const char* globalName,
+            PyObject* (*create)())
+    {
+        if (PyObject_HasAttrString(mainModule, globalName)) {
+            return;
+        }
+        PyObject* object = create();
+        if (!object) {
+            PyErr_Print();
+
+            return;
+        }
+        PyObject_SetAttrString(mainModule, globalName, object);
+        Py_DECREF(object);
+    }
 } // anonymous namespace
 
 void
 ensureDeclared()
 {
     PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
-    if (!mainModule || PyObject_HasAttrString(mainModule, kMainGlobalName)) {
+    if (!mainModule) {
         return;
     }
-    PyObject* object = createRFVObject();
-    if (!object) {
-        PyErr_Print();
+    declare(mainModule, kMainGlobalName, &createRFVObject);
+    declare(mainModule, kMainLoopGlobalName, &createLoopObject);
+    declare(mainModule, kMainLoopsGlobalName, &createLoopsObject);
+}
 
-        return;
+PyObject*
+toPython(const RenderContextValue& value)
+{
+    return valueToPython(value);
+}
+
+RenderContextPtr
+getLoopPreviewContext(const KnobI* knob)
+{
+    const EffectInstance* effect = knob ? dynamic_cast<const EffectInstance*>(knob->getHolder()) : NULL;
+    const NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    return node ? LoopEnd::previewContextOf(node, knob->getCurrentTime()) : RenderContextPtr();
+}
+
+PyObject*
+getLoopVariable(const std::string& loopName,
+                const std::string& variable)
+{
+    const RenderContextPtr context = expressionContext();
+    const RenderContextName name = loopName.empty() ? RenderContextName::loop(variable) : RenderContextName::loops(loopName, variable);
+    const RenderContextValue* value = context ? context->find(name) : NULL;
+    if (!value) {
+        Py_RETURN_NONE;
     }
-    PyObject_SetAttrString(mainModule, kMainGlobalName, object);
-    Py_DECREF(object);
+
+    return valueToPython(*value);
 }
 
 PyObject*
@@ -329,7 +490,7 @@ getVariable(const std::string& name)
         if (const RenderContextValue* value = context->find(RenderContextName::plain(name))) {
             const RenderContextBinding* binding = std::get_if<RenderContextBinding>(value);
             if (!binding) {
-                return toPython(*value);
+                return valueToPython(*value);
             }
             // The Set's variable at this time, its expression reading the context the Set
             // received. A knob deleted since, or off its node, is unset.
@@ -353,7 +514,7 @@ getVariable(const std::string& name)
                 Py_RETURN_NONE;
             }
 
-            return toPython(bound);
+            return valueToPython(bound);
         }
     }
 
@@ -382,7 +543,7 @@ getVariable(const std::string& name)
         Py_RETURN_NONE;
     }
 
-    return toPython(value);
+    return valueToPython(value);
 } // getVariable
 
 RenderContextPtr

@@ -106,6 +106,14 @@ public:
     }
 
     /**
+     * @brief The easing curve, null unless the easing is eEasingCurve and one was given.
+     **/
+    const Curve* getCurve() const
+    {
+        return _curve.get();
+    }
+
+    /**
      * @brief The eased fraction of the way from start to end at t.
      **/
     double ease(double t) const;

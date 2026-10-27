@@ -69,11 +69,10 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
-    enum KnobWarningEnum
-    {
+    enum KnobWarningEnum {
         eKnobWarningExpressionInvalid = 0,
-        eKnobWarningChoiceMenuOutOfDate
+        eKnobWarningChoiceMenuOutOfDate,
+        eKnobWarningLoopDriverStale
     };
 
 public:
@@ -377,6 +376,12 @@ public:
 
     void setWarningValue(KnobWarningEnum warn, const QString& value);
 
+    /**
+     * @brief Hides the knob's own widgets while a loop driver stands in for them, and shows them
+     * again once it is removed.
+     **/
+    void reflectDriverState(bool driven);
+
 public Q_SLOTS:
 
     void onUnlinkActionTriggered();
@@ -495,6 +500,10 @@ public Q_SLOTS:
 
     // Copies the knob, a variable of a node, into the project's variables.
     void onPromoteToProjectActionTriggered();
+
+    void onDriveFromLoopActionTriggered();
+
+    void onRemoveLoopDriverActionTriggered();
 
 Q_SIGNALS:
 

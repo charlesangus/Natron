@@ -277,6 +277,11 @@ public:
         Q_EMIT linkChanged();
     }
 
+    void s_driverChanged(int dimension)
+    {
+        Q_EMIT driverChanged(dimension);
+    }
+
 public Q_SLOTS:
 
     /**
@@ -381,6 +386,9 @@ Q_SIGNALS:
     /// Emitted when a dimension of the knob joins or leaves a link group, is unlinked or re-linked,
     /// or when another member of one of its link groups does.
     void linkChanged();
+
+    /// Emitted when a driver is set on or removed from the dimension (see KnobHelper::setDriver()).
+    void driverChanged(int dimension);
 };
 
 struct KnobChange

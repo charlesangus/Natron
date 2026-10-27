@@ -47,6 +47,7 @@ KnobGuiPrivate::KnobGuiPrivate(KnobGuiContainerI* container)
     , guiCurves()
     , guiRemoved(false)
     , isInViewerUIKnob(dynamic_cast<NodeViewerContext*>(container) != 0)
+    , driverRow(NULL)
 {
     //copyRightClickMenu->setFont( QFont(appFont,appFontSize) );
 }

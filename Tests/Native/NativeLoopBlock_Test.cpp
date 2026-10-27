@@ -63,6 +63,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/TimeLine.h"
@@ -546,6 +547,93 @@ TEST_F(NativeLoopBlockTest, NestedLoopsSeeBothLoopsVariables)
     innerEnd->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
     outerEnd->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+}
+
+// A Python expression reads loop.t through the loop object: it gives 10 * t at each iteration,
+// reads loop.t and nothing else, and the mean over the loop is the midpoint.
+TEST_F(NativeLoopBlockTest, AnExpressionReadsTheLoopVariable)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin("outer");
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    NodePtr end = createLoopEnd(3, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && grade && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(grade->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(grade, 0));
+
+    KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+    // Set inside the loop, so the check it runs outside a render reads the preview iteration.
+    ASSERT_NO_THROW(multiply->setExpression(0, "loop.t * 10", false, true));
+    std::string error;
+    EXPECT_TRUE(multiply->isExpressionValid(0, &error)) << error;
+
+    RenderContextReadSet expected;
+    expected.add(RenderContextName::loop("t"));
+    EXPECT_TRUE(multiply->getRFVReadSet() == expected);
+
+    const double values[] = { 0., 5., 10. };
+    for (int k = 0; k < 3; ++k) {
+        ActionContextScope scope(true, LoopEnd::iterationContext(RenderContext::empty(), "outer", k, 3, 0, 1, kTime));
+        EXPECT_NEAR(values[k], multiply->getValueAtTime(kTime, 0), 1e-9) << "iteration " << k;
+    }
+
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(5., value, 1e-4);
+}
+
+// Inside a nested loop an expression reads both loops: 1 + loop.t + 2 * loops.outer.t, its
+// inner mean 1.5 + 2 * loops.outer.t, summed over the outer loop's t of 0 and 1, is 5.
+TEST_F(NativeLoopBlockTest, AnExpressionReadsAnOuterLoopsVariables)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr outerBegin = createLoopBegin("outer");
+    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    NodePtr innerEnd = createLoopEnd(3, kLoopEndParamOperationMean);
+    NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
+    ASSERT_TRUE(constant && outerBegin && innerBegin && grade && innerEnd && outerEnd);
+    ASSERT_TRUE(outerBegin->connectInput(constant, 0));
+    ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
+    ASSERT_TRUE(grade->connectInput(innerBegin, 0));
+    ASSERT_TRUE(innerEnd->connectInput(grade, 0));
+    ASSERT_TRUE(outerEnd->connectInput(innerEnd, 0));
+
+    KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+    ASSERT_NO_THROW(multiply->setExpression(0, "1 + loop.t + loops.outer.t * 2", false, true));
+
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(outerEnd, &value));
+    EXPECT_NEAR(5., value, 1e-4);
+}
+
+// An inner loop's stop condition reads the outer loop's iteration: the inner loop runs once in
+// the outer's first iteration and twice in its second, so the sums add to 3.
+TEST_F(NativeLoopBlockTest, AStopConditionReadsAnOuterLoopsVariables)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr outerBegin = createLoopBegin("outer");
+    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr innerEnd = createLoopEnd(10, kLoopEndParamOperationSum);
+    NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
+    ASSERT_TRUE(constant && outerBegin && innerBegin && innerEnd && outerEnd);
+    ASSERT_TRUE(outerBegin->connectInput(constant, 0));
+    ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
+    ASSERT_TRUE(innerEnd->connectInput(innerBegin, 0));
+    ASSERT_TRUE(outerEnd->connectInput(innerEnd, 0));
+    ASSERT_TRUE(setStopCondition(innerEnd, "loop.iteration >= loops.outer.iteration + 1"));
+
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(outerEnd, &value));
+    EXPECT_NEAR(3., value, 1e-5);
+
+    QString message;
+    int type = -1;
+    innerEnd->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 

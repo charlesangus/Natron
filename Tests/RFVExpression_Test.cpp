@@ -136,6 +136,84 @@ TEST(RFVExpression, ScanFindsTheVariablesAnExpressionReads)
     }
 }
 
+namespace {
+
+std::string
+describeQualified(const RenderContextReadSet& reads)
+{
+    if (reads.readsAll()) {
+        return "<all>";
+    }
+    std::string text = "{";
+    for (const RenderContextName& name : reads.names()) {
+        text += " '" + (name.ns.empty() ? name.name : name.ns + "." + name.name) + "'";
+    }
+
+    return text + " }";
+}
+
+RenderContextReadSet
+loopReads(const std::string& loopName,
+          const std::vector<std::string>& variables)
+{
+    RenderContextReadSet reads;
+    for (const std::string& variable : variables) {
+        reads.add(loopName.empty() ? RenderContextName::loop(variable) : RenderContextName::loops(loopName, variable));
+    }
+
+    return reads;
+}
+
+RenderContextReadSet
+united(RenderContextReadSet a,
+       const RenderContextReadSet& b)
+{
+    a.merge(b);
+
+    return a;
+}
+
+} // namespace
+
+// loop.<var> and loops.<name>.<var> read one loop variable; the bare objects read all four of
+// their loop, and any other use of loops may read any loop's.
+TEST(RFVExpression, ScanFindsTheLoopVariablesAnExpressionReads)
+{
+    const std::vector<std::string> all = { "iteration", "count", "t", "frame" };
+    struct LoopCase {
+        const char* expression;
+        bool readsAll;
+        RenderContextReadSet reads;
+    };
+    const LoopCase cases[] = {
+        { "loop.t * 10", false, loopReads("", { "t" }) },
+        { "loop . iteration", false, loopReads("", { "iteration" }) },
+        { "loops.outer.t + loop.iteration", false, united(loopReads("outer", { "t" }), loopReads("", { "iteration" })) },
+        { "loops.outer", false, loopReads("outer", all) },
+        { "f(loops.outer)", false, loopReads("outer", all) },
+        { "loop", false, loopReads("", all) },
+        { "getattr(loop, 'x')", false, loopReads("", all) },
+        { "rfv.a + loop.t", false, united(readsOf({ "a" }), loopReads("", { "t" })) },
+        // Not the loop objects.
+        { "myloop.t + loops2.x + loop_t", false, RenderContextReadSet() },
+        { "thisNode.loop.t + thisNode.loops.a.t", false, RenderContextReadSet() },
+        { "'loop.t' # loops.a.t", false, RenderContextReadSet() },
+        // Any other use of loops may read any loop.
+        { "loops", true, RenderContextReadSet() },
+        { "f(loops)", true, RenderContextReadSet() },
+        { "getattr(loops, 'outer')", true, RenderContextReadSet() },
+    };
+
+    for (const LoopCase& scan : cases) {
+        RenderContextReadSet expected = scan.reads;
+        if (scan.readsAll) {
+            expected.setReadsAll();
+        }
+        const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(scan.expression);
+        EXPECT_TRUE(reads == expected) << scan.expression << ": got " << describeQualified(reads) << ", expected " << describeQualified(expected);
+    }
+}
+
 // The scan is a context read source of the knob, over all its dimensions, and follows its
 // expressions as they are set, changed and cleared.
 TEST_F(BaseTest, RFVExpressionReadsAreTheKnobsContextReadSource)

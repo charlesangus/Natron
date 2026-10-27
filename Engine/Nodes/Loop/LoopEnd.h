@@ -64,6 +64,7 @@
 #define kLoopEndParamOperationUnder "under"
 #define kLoopEndParamReverseOrder "reverseOrder"
 #define kLoopEndParamMaxIterations "maxIterations"
+#define kLoopEndParamDrivenKnobs "drivenKnobs"
 
 #define kLoopEndDefaultMaxIterations 1024
 
@@ -108,6 +109,43 @@ public:
                                              int step,
                                              double frame) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The LoopEnds whose iterations render node: the ones its outputs reach without
+     * passing a nested loop, nearest first, then those enclosing them in turn. Empty outside any
+     * loop.
+     **/
+    static std::vector<NodePtr> enclosingLoopEnds(const NodePtr& node) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The nodes of this node's group whose iterations this loop renders, nested loops'
+     * included.
+     **/
+    std::vector<NodePtr> bodyNodes() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The name of the loop, empty when it has no valid LoopBegin.
+     **/
+    std::string getLoopName() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopBegin this node pairs with, null when it has no valid one.
+     **/
+    NodePtr getLoopBegin() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief base with the loop variables of the iteration the loop previews at time: Single
+     * Pass Iteration, clamped to the loop's iterations. base when the loop has no iteration.
+     **/
+    RenderContextPtr previewContext(const RenderContextPtr& base,
+                                    double time) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The context node's knobs are previewed under at time: the preview iteration of every
+     * loop enclosing it, outermost first. Null outside any loop.
+     **/
+    static RenderContextPtr previewContextOf(const NodePtr& node,
+                                             double time) WARN_UNUSED_RETURN;
+
 private:
     struct Resolved {
         NodePtr begin;
@@ -139,6 +177,7 @@ private:
     struct StopResult {
         AbortableRenderInfoWPtr render;
         double time = 0.;
+        U64 contextHash = 0;
         std::string expression;
         int count = 0;
         int stopAt = 0;

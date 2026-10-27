@@ -31,6 +31,7 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -56,8 +57,18 @@ namespace PyRFV {
 extern const char* const kMainGlobalName;
 
 /**
- * @brief Puts the rfv object in __main__ under kMainGlobalName unless it is there. The GIL must be
- * held.
+ * @brief The __main__ globals holding the loop and loops objects, which KnobHelper's expression
+ * scope binds to the names loop and loops. loop.<variable> is the nearest enclosing loop's
+ * variable and loops.<name> a namespace of the variables of the enclosing loop named name, read
+ * from the context rfv reads (see getVariable()). Outside a render a body knob reads each enclosing
+ * loop at its LoopEnd's singlePassIteration; a variable is None outside its loop.
+ **/
+extern const char* const kMainLoopGlobalName;
+extern const char* const kMainLoopsGlobalName;
+
+/**
+ * @brief Puts the rfv, loop and loops objects in __main__ under their global names unless they
+ * are there. The GIL must be held.
  **/
 void ensureDeclared();
 
@@ -66,6 +77,27 @@ void ensureDeclared();
  * thread (see ExpressionScope): a new reference, Py_None when unset. The GIL must be held.
  **/
 PyObject* getVariable(const std::string& name);
+
+/**
+ * @brief The variable of the loop named loopName, or of the nearest loop when loopName is empty,
+ * as loop and loops give it to the expression being evaluated on this thread: a new reference,
+ * Py_None outside that loop. The GIL must be held.
+ **/
+PyObject* getLoopVariable(const std::string& loopName,
+                          const std::string& variable);
+
+/**
+ * @brief The context loop and loops read under for an expression of knob evaluated outside a
+ * render, such as for the panel: the preview iteration of every loop enclosing knob's node (see
+ * LoopEnd::previewContextOf()) at knob's current time. Null outside every loop.
+ **/
+RenderContextPtr getLoopPreviewContext(const KnobI* knob);
+
+/**
+ * @brief value as a new Python bool, int, float, str or list of them; None for a binding. The GIL
+ * must be held.
+ **/
+PyObject* toPython(const RenderContextValue& value);
 
 /**
  * @brief The context rfv reads under, on the calling thread, for an expression whose knob is not

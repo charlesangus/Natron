@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <set>
 #include <utility>
 
@@ -38,9 +39,11 @@
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/PyRFV.h"
 #include "Engine/TLSHolder.h"
 #include "Global/PythonUtils.h"
 
@@ -210,6 +213,109 @@ LoopEnd::iterationContext(const RenderContextPtr& base,
     return builder.build();
 }
 
+std::vector<NodePtr>
+LoopEnd::enclosingLoopEnds(const NodePtr& node)
+{
+    std::vector<NodePtr> ends;
+    std::set<Node*> seen;
+    std::vector<NodePtr> from;
+
+    if (node) {
+        from.push_back(node);
+    }
+    while (!from.empty()) {
+        std::vector<NodePtr> next;
+        for (const NodePtr& start : from) {
+            std::set<Node*> found;
+            collectPairedEnds(start, &found);
+            for (Node* end : found) {
+                if (seen.insert(end).second) {
+                    next.push_back(end->shared_from_this());
+                }
+            }
+        }
+        // The walk collects a set of pointers: sort each level for a stable order.
+        std::sort(next.begin(), next.end(), [](const NodePtr& a, const NodePtr& b) {
+            return a->getScriptName_mt_safe() < b->getScriptName_mt_safe();
+        });
+        ends.insert(ends.end(), next.begin(), next.end());
+        from.swap(next);
+    }
+
+    return ends;
+}
+
+std::vector<NodePtr>
+LoopEnd::bodyNodes() const
+{
+    std::vector<NodePtr> body;
+    const NodePtr self = getNode();
+    const NodeCollectionPtr group = self ? self->getGroup() : NodeCollectionPtr();
+
+    if (!group) {
+        return body;
+    }
+    const NodesList nodes = group->getNodes();
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (*it == self) {
+            continue;
+        }
+        const std::vector<NodePtr> ends = enclosingLoopEnds(*it);
+        if (std::find(ends.begin(), ends.end(), self) != ends.end()) {
+            body.push_back(*it);
+        }
+    }
+
+    return body;
+}
+
+std::string
+LoopEnd::getLoopName() const
+{
+    return resolve().loopName;
+}
+
+NodePtr
+LoopEnd::getLoopBegin() const
+{
+    std::string error;
+
+    return findLoopBegin(&error);
+}
+
+RenderContextPtr
+LoopEnd::previewContext(const RenderContextPtr& base,
+                        double time) const
+{
+    const Resolved resolved = resolve();
+    KnobIntPtr singlePassIteration = _singlePassIteration.lock();
+
+    if (resolved.loopName.empty() || (resolved.count <= 0) || !singlePassIteration) {
+        return base;
+    }
+    const int k = std::max(0, std::min(resolved.count - 1, singlePassIteration->getValue()));
+    const double frame = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+
+    return iterationContext(base ? base : RenderContext::empty(), resolved.loopName, k, resolved.count, resolved.start, resolved.step, frame);
+}
+
+RenderContextPtr
+LoopEnd::previewContextOf(const NodePtr& node,
+                          double time)
+{
+    const std::vector<NodePtr> ends = enclosingLoopEnds(node);
+    RenderContextPtr context;
+
+    for (std::vector<NodePtr>::const_reverse_iterator it = ends.rbegin(); it != ends.rend(); ++it) {
+        const LoopEnd* end = dynamic_cast<const LoopEnd*>((*it)->getEffectInstance().get());
+        if (end) {
+            context = end->previewContext(context, time);
+        }
+    }
+
+    return context;
+}
+
 void
 LoopEnd::initializeKnobs()
 {
@@ -235,7 +341,9 @@ LoopEnd::initializeKnobs()
     singlePassIteration->setName(kLoopEndParamSinglePassIteration);
     singlePassIteration->setAnimationEnabled(false);
     singlePassIteration->setHintToolTip(tr("The iteration Single Pass outputs, counted from 0: its loop variables are "
-                                           "the ones it has in the whole loop. Past the last iteration is an error."));
+                                           "the ones it has in the whole loop. Past the last iteration is an error. "
+                                           "In either mode, the knobs of the body show their driven values at this "
+                                           "iteration, the last one when it is past it."));
     singlePassIteration->setMinimum(0);
     singlePassIteration->setDisplayMinimum(0);
     singlePassIteration->setDisplayMaximum(64);
@@ -354,7 +462,8 @@ LoopEnd::initializeKnobs()
     stopCondition->setHintToolTip(tr("A Python expression, written as a parameter expression is, evaluated before "
                                      "each iteration: node names, thisNode, frame and rfv (context variables) are "
                                      "available, with loop.iteration, loop.count, loop.t and loop.frame of that "
-                                     "iteration, also as loops.<name>.*. The loop ends before the first iteration it "
+                                     "iteration, also as loops.<name>.*, and the loops.<name>.* of the loops "
+                                     "around this one. The loop ends before the first iteration it "
                                      "is true for. It may read parameters, never pixels. An exception ends the loop "
                                      "at that iteration and shows the error. Empty runs every iteration."));
     stopCondition->setDefaultValue(std::string());
@@ -372,6 +481,17 @@ LoopEnd::initializeKnobs()
     maxIterations->setDefaultValue(kLoopEndDefaultMaxIterations);
     page->addKnob(maxIterations);
     _maxIterations = maxIterations;
+
+    // A placeholder the GUI shows as the table of the body's driven knobs; it holds no value.
+    KnobStringPtr drivenKnobs = createKnob<KnobString>(tr("Driven Knobs"));
+    drivenKnobs->setName(kLoopEndParamDrivenKnobs);
+    drivenKnobs->setAnimationEnabled(false);
+    drivenKnobs->setIsPersistent(false);
+    drivenKnobs->setHashExempt(true);
+    drivenKnobs->setHintToolTip(tr("The parameters of the loop's body that a loop variable drives: each row's "
+                                   "variable, Start, End and Easing can be edited in place. Right-click a "
+                                   "parameter in the body and choose Drive from loop to add one."));
+    page->addKnob(drivenKnobs);
 }
 
 NodePtr
@@ -525,10 +645,14 @@ LoopEnd::evaluateStop(const Resolved& resolved,
     // The request pass, the render and every action of one frame agree on where the loop stops.
     const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    // Enclosing loops' variables reach the expression as loops.<name>.*, so where the loop stops
+    // can change with the iteration of an enclosing loop.
+    const RenderContextPtr context = getCurrentRenderContext();
+    const U64 contextHash = context ? context->hash() : 0;
     if (render) {
         QMutexLocker k(&_stopMutex);
         for (const StopResult& result : _stopResults) {
-            if ((result.render.lock() == render) && (result.time == time) && (result.count == resolved.count) && (result.expression == expression)) {
+            if ((result.render.lock() == render) && (result.time == time) && (result.contextHash == contextHash) && (result.count == resolved.count) && (result.expression == expression)) {
                 *error = result.error;
 
                 return result.stopAt;
@@ -547,6 +671,31 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         PyObject* simpleNamespace = types ? PyObject_GetAttrString(types, "SimpleNamespace") : NULL;
         PyObject* noArgs = simpleNamespace ? PyTuple_New(0) : NULL;
         bool ok = (noArgs != NULL);
+        // loops.<name> for every enclosing loop, from the context this loop renders under.
+        PyObject* enclosing = ok ? PyDict_New() : NULL;
+        ok = (enclosing != NULL);
+        if (ok && context) {
+            static const std::string kLoopsPrefix("loops.");
+            std::map<std::string, PyObject*> loopVariables;
+            for (const RenderContext::Entry& entry : context->entries()) {
+                if ((entry.first.ns.size() <= kLoopsPrefix.size()) || (entry.first.ns.compare(0, kLoopsPrefix.size(), kLoopsPrefix) != 0)) {
+                    continue;
+                }
+                PyObject*& variables = loopVariables[entry.first.ns.substr(kLoopsPrefix.size())];
+                if (!variables) {
+                    variables = PyDict_New();
+                }
+                PyObject* value = PyRFV::toPython(entry.second);
+                ok = ok && variables && value && (PyDict_SetItemString(variables, entry.first.name.c_str(), value) == 0);
+                Py_XDECREF(value);
+            }
+            for (std::map<std::string, PyObject*>::const_iterator it = loopVariables.begin(); it != loopVariables.end(); ++it) {
+                PyObject* outer = (ok && it->second) ? PyObject_Call(simpleNamespace, noArgs, it->second) : NULL;
+                ok = outer && (PyDict_SetItemString(enclosing, it->first.c_str(), outer) == 0);
+                Py_XDECREF(outer);
+                Py_XDECREF(it->second);
+            }
+        }
         int k = 0;
         for (; ok && (k < resolved.count); ++k) {
             const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
@@ -563,8 +712,8 @@ LoopEnd::evaluateStop(const Resolved& resolved,
             Py_XDECREF(frameValue);
             PyObject* loop = ok ? PyObject_Call(simpleNamespace, noArgs, variables) : NULL;
             Py_XDECREF(variables);
-            // loops.<name> is this loop under its name.
-            PyObject* loopsVariables = loop ? PyDict_New() : NULL;
+            // loops.<name> is this loop under its name, and the enclosing loops under theirs.
+            PyObject* loopsVariables = loop ? PyDict_Copy(enclosing) : NULL;
             ok = loopsVariables && (resolved.loopName.empty() || (PyDict_SetItemString(loopsVariables, resolved.loopName.c_str(), loop) == 0));
             PyObject* loops = ok ? PyObject_Call(simpleNamespace, noArgs, loopsVariables) : NULL;
             Py_XDECREF(loopsVariables);
@@ -596,6 +745,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
             PyErr_Clear();
             *error = tr("Stop Condition failed at iteration %1, where the loop stops: %2").arg(stopAt).arg(QString::fromUtf8(failure.c_str())).toStdString();
         }
+        Py_XDECREF(enclosing);
         Py_XDECREF(noArgs);
         Py_XDECREF(simpleNamespace);
         Py_XDECREF(types);
@@ -609,6 +759,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         StopResult result;
         result.render = render;
         result.time = time;
+        result.contextHash = contextHash;
         result.expression = expression;
         result.count = resolved.count;
         result.stopAt = stopAt;
@@ -646,7 +797,6 @@ LoopEnd::refreshKnobVisibility()
         std::make_pair(KnobIPtr(_operation.lock()), !singlePass),
         std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass),
         std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass),
-        std::make_pair(KnobIPtr(_singlePassIteration.lock()), singlePass),
         std::make_pair(KnobIPtr(_iterations.lock()), !frames),
         std::make_pair(KnobIPtr(_start.lock()), !frames),
         std::make_pair(KnobIPtr(_step.lock()), !frames),
@@ -685,6 +835,8 @@ LoopEnd::refreshStopDependencies()
     }
     const std::string expression = stopCondition->getValue();
     stopCondition->setReadDependencyExpression(0, (expression.find_first_not_of(" \t\r\n") == std::string::npos) ? std::string() : expression);
+    // What it reads of enclosing loops is among the node's extra context reads.
+    invalidateRenderContextReads();
 }
 
 StatusEnum
@@ -738,7 +890,7 @@ LoopEnd::knobChanged(KnobI* k,
             if ((mode && (k == mode.get())) || (iterateOver && (k == iterateOver.get()))) {
                 refreshKnobVisibility();
             }
-            if (k == _stopCondition.lock().get()) {
+            if ((k == _stopCondition.lock().get()) || (mode && (k == mode.get()))) {
                 refreshStopDependencies();
             }
             refreshMessage(resolveAt(time));
@@ -776,6 +928,24 @@ LoopEnd::getExtraContextReads() const
     RenderContextReadSet reads;
 
     reads.add(foldStepName());
+    // What the stop condition reads of enclosing loops and of the project's variables: its own
+    // loop's variables are set by this loop, not read from the context.
+    const std::string expression = activeStopCondition();
+    if (!expression.empty()) {
+        const RenderContextReadSet stopReads = KnobHelper::getRFVExpressionReads(expression);
+        if (stopReads.readsAll()) {
+            reads.setReadsAll();
+
+            return reads;
+        }
+        const std::string loopName = resolve().loopName;
+        const std::string ownLoop = RenderContextName::loops(loopName, std::string()).ns;
+        for (const RenderContextName& name : stopReads.names()) {
+            if ((name.ns != RenderContextName::loop(std::string()).ns) && (loopName.empty() || (name.ns != ownLoop))) {
+                reads.add(name);
+            }
+        }
+    }
 
     return reads;
 }

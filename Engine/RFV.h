@@ -211,11 +211,17 @@ KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name)
 bool getVariableValue(const KnobIPtr& knob, double time, ViewIdx view, RenderContextValue* value);
 
 /**
+ * @brief Whether the variable knob's value may differ between times: it has keyframes, an
+ * expression (any, whatever it reads) or a link, or hashes state outside itself.
+ **/
+bool isTimeVarying(const KnobIPtr& knob);
+
+/**
  * @brief base, or the empty context when null, with every variable of the holder's declaration
- * snapshot (see getDeclarationSnapshot()) set over it to its value at time and view (see
- * getVariableValue()). The values are evaluated on the
- * calling thread, so an expression of a variable reading rfv sees the context the caller acts
- * under.
+ * snapshot (see getDeclarationSnapshot()) set over it. A time-varying variable (see
+ * isTimeVarying()) is set to a RenderContextBinding capturing base restricted to what the knob's
+ * value reads, which rfv evaluates at the reading expression's time; any other to its value at
+ * time and view (see getVariableValue()), evaluated on the calling thread.
  **/
 RenderContextPtr overlayDeclaredVariables(const KnobHolder* holder, double time, ViewIdx view, const RenderContextPtr& base);
 

@@ -31,6 +31,7 @@
 #include <iterator>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/Knob.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -87,6 +88,8 @@ struct ValueHasher {
             h->appendString(s);
         }
     }
+
+    void operator()(const RenderContextBinding& v) const { h->appendU64(v.identity); }
 };
 
 struct ValueEquals {
@@ -109,6 +112,12 @@ struct ValueEquals {
         }
 
         return true;
+    }
+
+    bool operator()(const RenderContextBinding& a,
+                    const RenderContextBinding& b) const
+    {
+        return a.identity == b.identity;
     }
 
     template <typename T>
@@ -152,6 +161,23 @@ RenderContextName::loops(const std::string& loopName,
                          const std::string& name)
 {
     return RenderContextName("loops." + loopName, name);
+}
+
+RenderContextBinding
+RenderContextBinding::create(const KnobIPtr& knob,
+                             const std::string& name,
+                             const RenderContextPtr& captured)
+{
+    RenderContextBinding binding;
+    binding.knob = knob;
+    binding.captured = captured ? captured : RenderContext::empty();
+    ContentHasher h;
+    h.appendU64(knob ? knob->getContentHash() : 0);
+    h.appendString(name);
+    h.appendU64(binding.captured->hash());
+    binding.identity = h.finalize();
+
+    return binding;
 }
 
 bool

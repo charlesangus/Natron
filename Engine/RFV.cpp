@@ -730,6 +730,22 @@ getVariableValue(const KnobIPtr& knob,
     return false;
 }
 
+bool
+isTimeVarying(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return false;
+    }
+    if (knob->hasAnimation()) {
+        return true;
+    }
+    bool hasExpression = false;
+    bool readsOutsideKnob = false;
+    knob->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
+
+    return hasExpression || readsOutsideKnob;
+}
+
 RenderContextPtr
 overlayDeclaredVariables(const KnobHolder* holder,
                          double time,
@@ -739,6 +755,13 @@ overlayDeclaredVariables(const KnobHolder* holder,
     RenderContext::Builder builder(base);
     const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(holder);
     for (const VariableDeclaration& declaration : *declared) {
+        if (isTimeVarying(declaration.knob)) {
+            const KnobHelper* helper = dynamic_cast<const KnobHelper*>(declaration.knob.get());
+            const RenderContextPtr incoming = base ? base : RenderContext::empty();
+            const RenderContextPtr captured = helper ? incoming->restrictTo(helper->getValueContextReads()) : incoming;
+            builder.set(RenderContextName::plain(declaration.name), RenderContextBinding::create(declaration.knob, declaration.name, captured));
+            continue;
+        }
         RenderContextValue value;
         if (getVariableValue(declaration.knob, time, view, &value)) {
             builder.set(RenderContextName::plain(declaration.name), value);

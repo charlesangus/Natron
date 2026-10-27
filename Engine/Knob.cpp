@@ -3759,7 +3759,7 @@ KnobHelper::executeExpression(double time,
     ss << expr << '(' << time << ", " <<  view << ")\n";
 
     const ExpressionTimeScope timeScope(time);
-    PyRFV::ExpressionScope rfvScope(this, view);
+    PyRFV::ExpressionScope rfvScope(this, time, view);
 
     return executeExpression(ss.str(), ret, error);
 }
@@ -6259,6 +6259,19 @@ KnobHelper::getExpressionContextKey(U64* key) const
     }
 
     return true;
+}
+
+RenderContextReadSet
+KnobHelper::getValueContextReads() const
+{
+    if (t_expressionReadSetQuery) {
+        return getContextReadSet();
+    }
+    t_expressionReadSetQuery = true;
+    RenderContextReadSet reads = expressionContextReads(this);
+    t_expressionReadSetQuery = false;
+
+    return reads;
 }
 
 void

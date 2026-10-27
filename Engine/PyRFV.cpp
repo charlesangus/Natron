@@ -48,11 +48,13 @@ const char* const kMainGlobalName = "NatronEngine_rfv";
 
 namespace {
 
-    // The knobs whose expressions this thread evaluates and the views they are evaluated at,
-    // innermost last.
+    // The knobs whose expressions this thread evaluates and the times and views they are
+    // evaluated at, innermost last.
     struct ExpressionEntry {
         const KnobI* knob;
         ViewIdx view;
+        bool hasTime;
+        double time;
     };
 
     thread_local std::vector<ExpressionEntry> t_expressions;
@@ -302,16 +304,54 @@ getVariable(const std::string& name)
             context = outer->context;
         }
     }
+    // Variables are read at the time the expression is evaluated at, otherwise at the time the
+    // render started at, or outside a render at the timeline's frame; at the view the render
+    // started at, or outside a render the view the expression is evaluated at.
+    AppInstancePtr app = holder ? holder->getApp() : appPTR->getTopLevelInstance();
+    double time = 0.;
+    ViewIdx view(0);
+    if (frameArgs) {
+        time = frameArgs->time;
+        view = frameArgs->view;
+    } else if (outer) {
+        time = outer->time;
+        view = outer->view;
+    } else {
+        TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr();
+        time = timeline ? (double)timeline->currentFrame() : 0.;
+        view = entry ? entry->view : ViewIdx(0);
+    }
+    if (entry && entry->hasTime) {
+        time = entry->time;
+    }
+
     if (context) {
         if (const RenderContextValue* value = context->find(RenderContextName::plain(name))) {
-            return toPython(*value);
+            const RenderContextBinding* binding = std::get_if<RenderContextBinding>(value);
+            if (!binding) {
+                return toPython(*value);
+            }
+            // The Set's variable at this time, its expression reading the context the Set
+            // received.
+            RenderContextValue bound;
+            bool found = false;
+            try {
+                ActionContextScope bindingContext(true, binding->captured);
+                found = RFV::getVariableValue(binding->knob, time, view, &bound);
+            } catch (const std::exception& e) {
+                PyErr_SetString(PyExc_RuntimeError, e.what());
+
+                return NULL;
+            }
+            if (!found) {
+                Py_RETURN_NONE;
+            }
+
+            return toPython(bound);
         }
     }
 
-    // Otherwise the project's variable is the base every context starts from: at the time and
-    // view the render started at, or outside a render at the timeline's frame and the view the
-    // expression is evaluated at.
-    AppInstancePtr app = holder ? holder->getApp() : appPTR->getTopLevelInstance();
+    // Otherwise the project's variable is the base every context starts from.
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     KnobIPtr variable = RFV::findDeclaredVariable(project.get(), name);
     if (!variable) {
@@ -320,17 +360,8 @@ getVariable(const std::string& name)
     VariableEvaluation evaluation;
     evaluation.name = name;
     evaluation.context = context;
-    if (frameArgs) {
-        evaluation.time = frameArgs->time;
-        evaluation.view = frameArgs->view;
-    } else if (outer) {
-        evaluation.time = outer->time;
-        evaluation.view = outer->view;
-    } else {
-        TimeLinePtr timeline = app->getTimeLine();
-        evaluation.time = timeline ? (double)timeline->currentFrame() : 0.;
-        evaluation.view = entry ? entry->view : ViewIdx(0);
-    }
+    evaluation.time = time;
+    evaluation.view = view;
     RenderContextValue value;
     bool found = false;
     try {
@@ -362,7 +393,14 @@ getProjectExpressionContext()
 ExpressionScope::ExpressionScope(const KnobI* knob,
                                  ViewIdx view)
 {
-    t_expressions.push_back(ExpressionEntry { knob, view });
+    t_expressions.push_back(ExpressionEntry { knob, view, false, 0. });
+}
+
+ExpressionScope::ExpressionScope(const KnobI* knob,
+                                 double time,
+                                 ViewIdx view)
+{
+    t_expressions.push_back(ExpressionEntry { knob, view, true, time });
 }
 
 ExpressionScope::~ExpressionScope()

@@ -1915,6 +1915,12 @@ public:
     bool getExpressionContextKey(U64* key) const;
 
     /**
+     * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
+     * them: its own read sources' and, transitively, those of what its expressions and links read.
+     **/
+    RenderContextReadSet getValueContextReads() const;
+
+    /**
      * @brief What the Python expression source reads of the rfv object: the variable named by each
      * rfv.<name>, rfv('<name>') and rfv['<name>'], either quote, in code rather than in a string
      * or a comment. Any other use of the name rfv, such as passing it on, getattr() or a computed

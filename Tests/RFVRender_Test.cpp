@@ -42,6 +42,7 @@
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AbortableRenderInfo.h"
@@ -59,6 +60,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
 #include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
@@ -206,6 +208,33 @@ protected:
         knob->setValue(value);
 
         return knob;
+    }
+
+    // A FrameWindow node over source that renders source at time - offset.
+    NodePtr createTimeOffset(const NodePtr& source,
+                             int offset)
+    {
+        NodePtr node = createNode(QString::fromUtf8(kNatronTestFrameWindowPluginID));
+        if (!node) {
+            ADD_FAILURE() << "no FrameWindow node";
+
+            return NodePtr();
+        }
+        connectNodes(source, node, 0, true);
+        KnobInt* range = dynamic_cast<KnobInt*>(node->getKnobByName("frameRange").get());
+        KnobBool* absolute = dynamic_cast<KnobBool*>(node->getKnobByName("absolute").get());
+        KnobInt* timeOffset = dynamic_cast<KnobInt*>(node->getKnobByName("timeOffset").get());
+        if (!range || !absolute || !timeOffset) {
+            ADD_FAILURE() << "FrameWindow knobs missing";
+
+            return NodePtr();
+        }
+        range->setValue(0, ViewSpec::all(), 0);
+        range->setValue(0, ViewSpec::all(), 1);
+        absolute->setValue(false);
+        timeOffset->setValue(offset);
+
+        return node;
     }
 
     // A second project view, so view 1 is one the project renders.
@@ -452,6 +481,23 @@ TEST_F(RFVRender, DiamondRendersTheReaderOncePerSet)
     connectNodes(set1, merge, 0, true);
     connectNodes(set2, merge, 1, true);
 
+    // Constant variables reach the reader as plain values, never as bindings.
+    {
+        FrameRequestMap request;
+        ASSERT_NE(eStatusFailed, runRequestPass(merge, &request));
+        const std::vector<NodeFrameRequestPtr> entries = entriesOf(request, reader);
+        ASSERT_EQ(2u, entries.size());
+        std::vector<double> values;
+        for (const NodeFrameRequestPtr& entry : entries) {
+            const RenderContextValue* value = entry->context ? entry->context->find(RenderContextName::plain("v")) : 0;
+            ASSERT_TRUE(value != 0);
+            EXPECT_FALSE(std::holds_alternative<RenderContextBinding>(*value));
+            values.push_back(doubleIn(entry->context, "v"));
+        }
+        std::sort(values.begin(), values.end());
+        EXPECT_EQ((std::vector<double> { 1., 2. }), values);
+    }
+
     CountingTestRegistry::reset();
     // The merge holds its value 1 plus the reader under v = 1 (1 + 1) and under v = 2 (2 + 1).
     EXPECT_EQ(1.f + 2.f + 3.f, renderFirstPixel(merge, eRenderSchedulerModeTaskGraph));
@@ -501,6 +547,128 @@ TEST_F(RFVRender, SetVariableExpressionReadsTheDownstreamValue)
 
     const RenderMismatch m = renderBothWaysDirect(outer, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
+}
+
+// Transform motion blur samples translate.x = rfv.v across the shutter: the Set's animated v is
+// read at each sample's time, so the blurred render differs from the unblurred one.
+TEST_F(RFVRender, MotionBlurSamplesTheSetVariableAcrossTheShutter)
+{
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kFormatWidth, kFormatHeight, "rfvRenderFormat", 1.));
+    NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(checker && transform && set && v);
+    v->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    v->setValueAtTime(2., 110., ViewSpec::all(), 0);
+    connectNodes(checker, transform, 0, true);
+    connectNodes(transform, set, 0, true);
+    KnobIPtr translate = transform->getKnobByName(kTransformNodeParamTranslate);
+    KnobDouble* motionBlur = dynamic_cast<KnobDouble*>(transform->getKnobByName(kTransformNodeParamMotionBlur).get());
+    KnobDouble* shutter = dynamic_cast<KnobDouble*>(transform->getKnobByName(kTransformNodeParamShutter).get());
+    ASSERT_TRUE(translate && motionBlur && shutter);
+    ASSERT_NO_THROW(translate->setExpression(0, "rfv.v or 0", false, true));
+    shutter->setValue(1.);
+
+    const RectI roi(0, 0, kFormatWidth, kFormatHeight);
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::string error;
+
+    motionBlur->setValue(0.);
+    std::vector<RenderedPlane> unblurred;
+    ASSERT_TRUE(renderNodePlanesDirect(set, 1., ViewIdx(0), 0, roi, layers, &unblurred, &error)) << error;
+
+    motionBlur->setValue(1.);
+    std::vector<RenderedPlane> blurred;
+    ASSERT_TRUE(renderNodePlanesDirect(set, 1., ViewIdx(0), 0, roi, layers, &blurred, &error)) << error;
+    std::vector<RenderedPlane> blurredTaskGraph;
+    ASSERT_TRUE(renderNodePlanesInMode(set, 1., ViewIdx(0), 0, roi, layers, eRenderSchedulerModeTaskGraph, true /*byPassCache*/, &blurredTaskGraph, &error)) << error;
+
+    // The same Transform with translate.x set to v's value at frame 1, without motion blur.
+    NodePtr plain = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(plain));
+    connectNodes(checker, plain, 0, true);
+    KnobDouble* plainTranslate = dynamic_cast<KnobDouble*>(plain->getKnobByName(kTransformNodeParamTranslate).get());
+    ASSERT_TRUE(plainTranslate != NULL);
+    plainTranslate->setValue(10., ViewSpec::all(), 0);
+    std::vector<RenderedPlane> fixed;
+    ASSERT_TRUE(renderNodePlanesDirect(plain, 1., ViewIdx(0), 0, roi, layers, &fixed, &error)) << error;
+
+    ASSERT_EQ(1u, unblurred.size());
+    ASSERT_EQ(1u, blurred.size());
+    ASSERT_EQ(1u, blurredTaskGraph.size());
+    ASSERT_EQ(1u, fixed.size());
+    EXPECT_EQ(fixed[0].pixels, unblurred[0].pixels);
+    EXPECT_NE(unblurred[0].pixels, blurred[0].pixels);
+    EXPECT_NE(fixed[0].pixels, blurred[0].pixels);
+    EXPECT_EQ(blurred[0].pixels, blurredTaskGraph[0].pixels);
+
+    const RenderMismatch m = renderBothWaysDirect(set, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, std::vector<int> { 1, 4 });
+    EXPECT_FALSE(m.any) << describe(m);
+}
+
+// reader -> FrameWindow(timeOffset 2) -> Set: a request at frame 3 reaches the reader at frame 1,
+// which reads the Set's v at frame 1.
+TEST_F(RFVRender, TimeOffsetAboveTheSetReadsTheVariableAtTheShiftedFrame)
+{
+    NodePtr reader = createReader("rfv.v or 0");
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(reader && set && v);
+    v->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    v->setValueAtTime(3., 30., ViewSpec::all(), 0);
+    NodePtr offset = createTimeOffset(reader, 2);
+    ASSERT_TRUE(bool(offset));
+    connectNodes(offset, set, 0, true);
+
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph, 3.));
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, 3.));
+
+    const RenderMismatch m = renderBothWaysDirect(set, 3., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
+    EXPECT_FALSE(m.any) << describe(m);
+}
+
+// reader -> Set -> FrameWindow(timeOffset 2): a request at frame 3 passes the Set at frame 1, and
+// the reader reads v at frame 1.
+TEST_F(RFVRender, TimeOffsetBelowTheSetReadsTheVariableAtTheShiftedFrame)
+{
+    NodePtr reader = createReader("rfv.v or 0");
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(reader && set && v);
+    v->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    v->setValueAtTime(3., 30., ViewSpec::all(), 0);
+    connectNodes(reader, set, 0, true);
+    NodePtr offset = createTimeOffset(set, 2);
+    ASSERT_TRUE(bool(offset));
+
+    EXPECT_EQ(10.f, renderFirstPixel(offset, eRenderSchedulerModeTaskGraph, 3.));
+    EXPECT_EQ(10.f, renderFirstPixel(offset, eRenderSchedulerModeLegacy, 3.));
+
+    const RenderMismatch m = renderBothWaysDirect(offset, 3., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
+    EXPECT_FALSE(m.any) << describe(m);
+}
+
+// reader -> inner Set (x = rfv.y) -> outer Set (y animated): read at frame 1.5, x is y at 1.5.
+TEST_F(RFVRender, NestedSetVariableReadsAtAFractionalTime)
+{
+    NodePtr reader = createReader("rfv.x or 0");
+    KnobDoublePtr x;
+    KnobDoublePtr y;
+    NodePtr inner = createSet("x", 0., &x);
+    NodePtr outer = createSet("y", 0., &y);
+    ASSERT_TRUE(reader && inner && outer && x && y);
+    y->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    y->setValueAtTime(2., 20., ViewSpec::all(), 0);
+    ASSERT_NO_THROW(x->setExpression(0, "rfv.y or 0", false, true));
+    connectNodes(reader, inner, 0, true);
+    connectNodes(inner, outer, 0, true);
+
+    const double expected = y->getValueAtTime(1.5);
+    ASSERT_GT(expected, 10.);
+    ASSERT_LT(expected, 20.);
+    EXPECT_FLOAT_EQ((float)expected, renderFirstPixel(outer, eRenderSchedulerModeTaskGraph, 1.5));
+    EXPECT_FLOAT_EQ((float)expected, renderFirstPixel(outer, eRenderSchedulerModeLegacy, 1.5));
 }
 
 // A right-view render reads a project variable at the right view: the variable's expression is

@@ -41,8 +41,9 @@ NATRON_NAMESPACE_ENTER
  * is read when the expression asks for it, on the thread evaluating the expression: the variable
  * of the render context the expression's node acts or renders under (see
  * EffectInstance::getCurrentRenderContext()) when that context sets it, otherwise the project's
- * variable, at the time and view the render started at, or outside a render at the timeline's
- * frame and the view the expression is evaluated at. The project variable's own expression reads
+ * variable. A context's binding (see RenderContextBinding) and the project's variable are
+ * evaluated at the time the expression is evaluated at, and at the view the render started at,
+ * or outside a render the view the expression is evaluated at. The project variable's own expression reads
  * rfv for that same render: at its time and view, under its context. Values are Python bools,
  * ints, floats, strings, or lists of them for a variable with several dimensions.
  **/
@@ -75,14 +76,18 @@ PyObject* getVariable(const std::string& name);
 RenderContextPtr getProjectExpressionContext();
 
 /**
- * @brief Marks the knob whose expression the calling thread evaluates, and the view it is
- * evaluated at, for as long as the scope lives, so that rfv reads the context of the knob's node
- * and the variables of its project. Scopes nest, the innermost winning.
+ * @brief Marks the knob whose expression the calling thread evaluates, and the time and view it
+ * is evaluated at, for as long as the scope lives, so that rfv reads the context of the knob's
+ * node and the variables of its project at that time. Without a time, rfv reads them at the
+ * current time (see getVariable()). Scopes nest, the innermost winning.
  **/
 class ExpressionScope {
 public:
     explicit ExpressionScope(const KnobI* knob,
                              ViewIdx view = ViewIdx(0));
+    ExpressionScope(const KnobI* knob,
+                    double time,
+                    ViewIdx view);
     ~ExpressionScope();
 
     ExpressionScope(const ExpressionScope&) = delete;

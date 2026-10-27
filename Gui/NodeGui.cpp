@@ -1365,6 +1365,7 @@ NodeGui::refreshPositionEnd(double x,
 {
     setPos(x, y);
     if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
         QRectF bbox = mapRectToScene( boundingRect() );
         const NodesGuiList & allNodes = _graph->getAllActiveNodes();
 
@@ -2250,6 +2251,9 @@ NodeGui::setUserSelected(bool b)
         QMutexLocker l(&_selectedMutex);
         _selected = b;
     }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
@@ -2291,6 +2295,9 @@ NodeGui::connectEdge(int edgeNumber)
     NodePtr node = getNode();
     if (!node) {
         return false;
+    }
+    if (_graph) {
+        _graph->scheduleLoopBlockRefresh(true);
     }
     const std::vector<NodeWPtr> & inputs = node->getGuiInputs();
 

@@ -296,6 +296,20 @@ public:
     bool setExpression(const QString& expr, bool hasRetVariable, int dimension = 0);
     QString getExpression(int dimension, bool* hasRetVariable) const;
 
+    /**
+     * @brief Drives the dimension, or every dimension for -1, from a loop variable ("loop.t",
+     * "loops.<name>.t", ...): it goes from start to end as the variable goes from 0 to 1, eased
+     * by "linear", "smooth" or "curve" (an identity curve). False if the parameter cannot be
+     * driven or the easing is unknown.
+     **/
+    bool setDriver(const QString& variable, double start, double end, const QString& easing = QString(), int dimension = -1);
+    bool removeDriver(int dimension = -1);
+    bool hasDriver(int dimension = 0) const;
+    QString getDriverVariable(int dimension = 0) const;
+    double getDriverStart(int dimension = 0) const;
+    double getDriverEnd(int dimension = 0) const;
+    QString getDriverEasing(int dimension = 0) const;
+
     bool setInterpolationAtTime(double time, Natron::KeyframeTypeEnum interpolation, int dimension = 0);
 
     /**

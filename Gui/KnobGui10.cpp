@@ -39,6 +39,7 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
+#include "Gui/KnobDriverRow.h"
 #include "Gui/KnobGuiPrivate.h"
 #include "Gui/KnobUndoCommand.h" // SetExpressionCommand...
 
@@ -907,6 +908,9 @@ KnobGui::show(int /*index*/)
     }
     if (!_imp->customInteract) {
         _show();
+        if (_imp->driverRow && _imp->driverRow->isDriving()) {
+            _hide();
+        }
     } else {
         _imp->customInteract->show();
     }

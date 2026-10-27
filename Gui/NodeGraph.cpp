@@ -49,6 +49,7 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
@@ -126,6 +127,7 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_root = new NodeGraphTextItem(this, 0, false);
     _imp->_nodeRoot = new NodeGraphTextItem(this, _imp->_root, false);
     scene->addItem(_imp->_root);
+    _imp->_loopBlocks = new LoopBlockOverlay(this, _imp->_nodeRoot);
 
     _imp->_navigator = new Navigator(0);
     scene->addItem(_imp->_navigator);
@@ -259,6 +261,14 @@ QGraphicsItem*
 NodeGraph::getRootItem() const
 {
     return _imp->_root;
+}
+
+void
+NodeGraph::scheduleLoopBlockRefresh(bool topology)
+{
+    if (_imp->_loopBlocks) {
+        _imp->_loopBlocks->schedule(topology);
+    }
 }
 
 void
@@ -451,6 +461,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
         QMutexLocker l(&_imp->_nodesMutex);
         _imp->_nodes.push_back(node_ui);
     }
+    scheduleLoopBlockRefresh(true);
 
     //NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());;
     const std::list<NodePtr>& nodesBeingCreated = getGui()->getApp()->getNodesBeingCreated();

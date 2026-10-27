@@ -44,6 +44,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobShuffleMap.h"
@@ -1021,6 +1022,107 @@ AnimatedParam::getExpression(int dimension,
     *hasRetVariable = thisKnob->isExpressionUsingRetVariable(dimension);
 
     return ret;
+}
+
+namespace {
+KnobDriverPtr
+driverOf(const KnobIPtr& knob,
+         int dimension)
+{
+    const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knob.get());
+
+    return (helper && (dimension >= 0) && (dimension < knob->getDimension())) ? helper->getDriver(dimension) : KnobDriverPtr();
+}
+
+bool
+setDriverOf(const KnobIPtr& knob,
+            const KnobDriverPtr& driver,
+            int dimension)
+{
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+    if (!helper || (dimension < -1) || (dimension >= knob->getDimension()) || (driver && !helper->canHaveDriver())) {
+        return false;
+    }
+    bool ok = true;
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if ((dimension == -1) || (dimension == i)) {
+            ok = helper->setDriver(i, driver) && ok;
+        }
+    }
+
+    return ok;
+}
+} // anonymous namespace
+
+bool
+AnimatedParam::setDriver(const QString& variable,
+                         double start,
+                         double end,
+                         const QString& easing,
+                         int dimension)
+{
+    KnobDriver::EasingEnum easingValue;
+    if (!KnobDriver::easingFromString(easing.toStdString(), &easingValue) || !checkIsEditable()) {
+        return false;
+    }
+    KnobIPtr knob = _knob.lock();
+    if (!knob || !recordPythonKnobEdit(knob)) {
+        return false;
+    }
+
+    return setDriverOf(knob, std::make_shared<const KnobDriver>(variable.toStdString(), start, end, easingValue), dimension);
+}
+
+bool
+AnimatedParam::removeDriver(int dimension)
+{
+    if (!checkIsEditable()) {
+        return false;
+    }
+    KnobIPtr knob = _knob.lock();
+    if (!knob || !recordPythonKnobEdit(knob)) {
+        return false;
+    }
+
+    return setDriverOf(knob, KnobDriverPtr(), dimension);
+}
+
+bool
+AnimatedParam::hasDriver(int dimension) const
+{
+    return bool(driverOf(_knob.lock(), dimension));
+}
+
+QString
+AnimatedParam::getDriverVariable(int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return driver ? QString::fromUtf8(driver->getVariable().c_str()) : QString();
+}
+
+double
+AnimatedParam::getDriverStart(int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return driver ? driver->getStart() : 0.;
+}
+
+double
+AnimatedParam::getDriverEnd(int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return driver ? driver->getEnd() : 0.;
+}
+
+QString
+AnimatedParam::getDriverEasing(int dimension) const
+{
+    KnobDriverPtr driver = driverOf(_knob.lock(), dimension);
+
+    return driver ? QString::fromUtf8(KnobDriver::easingToString(driver->getEasing())) : QString();
 }
 
 ///////////// IntParam

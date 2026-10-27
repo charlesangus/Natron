@@ -120,6 +120,8 @@ struct KnobState {
     KnobIPtr values;
     std::vector<std::string> expressions;
     std::vector<bool> expressionsHaveRet;
+    // A clone does not copy drivers.
+    std::vector<KnobDriverPtr> drivers;
     std::vector<std::pair<int, UndoKnobRef>> masters;
     std::vector<KnobGroupLink> groupLinks;
     UndoKnobRef aliasMaster;
@@ -216,6 +218,8 @@ captureKnobState(const KnobIPtr& knob)
     for (int i = 0; i < knob->getDimension(); ++i) {
         state.expressions.push_back(knob->getExpression(i));
         state.expressionsHaveRet.push_back(knob->isExpressionUsingRetVariable(i));
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knob.get());
+        state.drivers.push_back(helper ? helper->getDriver(i) : KnobDriverPtr());
         std::pair<int, KnobIPtr> master = knob->isSlave(i) ? knob->getMaster(i) : std::make_pair(-1, KnobIPtr());
         state.masters.push_back(std::make_pair(master.first, UndoKnobRef(master.second)));
     }
@@ -232,6 +236,10 @@ applyKnobExpressions(const KnobIPtr& knob,
     for (int i = 0; i < knob->getDimension(); ++i) {
         if ((dimension != -1) && (i != dimension)) {
             continue;
+        }
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && (i < (int)state.drivers.size())) {
+            helper->setDriver(i, state.drivers[i]);
         }
         knob->clearExpression(i, true);
         if ((i < (int)state.expressions.size()) && !state.expressions[i].empty()) {

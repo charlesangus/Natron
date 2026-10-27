@@ -55,6 +55,7 @@
 #include "Gui/KnobGuiString.h"
 #include "Gui/KnobGuiTrapezoid.h"
 #include "Gui/KnobGuiValue.h"
+#include "Gui/LoopDriverTable.h"
 
 NATRON_NAMESPACE_ENTER
 using std::make_pair;
@@ -127,6 +128,10 @@ KnobGuiFactory::createGuiForKnob(KnobIPtr knob,
     KnobDoublePtr isDouble = std::dynamic_pointer_cast<KnobDouble>(knob);
     if (isDouble && isDouble->isRangeWidget()) {
         return KnobGuiTrapezoid::BuildKnobGui(knob, container);
+    }
+    // LoopEnd's driven-knob table stands on a placeholder string knob.
+    if (LoopDriverTable::isTableKnob(knob)) {
+        return LoopDriverTable::BuildKnobGui(knob, container);
     }
     std::map<std::string, LibraryBinary *>::const_iterator it = _loadedKnobs.find( knob->typeName() );
     if ( it == _loadedKnobs.end() ) {

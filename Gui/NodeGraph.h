@@ -119,6 +119,12 @@ public:
 
     void centerOnItem(QGraphicsItem* item);
 
+    /**
+     * @brief Redraws the loop blocks once control returns to the event loop; topology also
+     * recomputes which nodes form each block, after a connection or a node came or went.
+     **/
+    void scheduleLoopBlockRefresh(bool topology);
+
     using PanelWidget::pushUndoCommand;
 
     /**

@@ -1569,7 +1569,11 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
             QMutexLocker k(&_imp->lastRenderedImageMutex);
             deviceRoot.swap(_imp->displayTextures[textureIndex].pendingDeviceRoot);
             if (image || deviceRoot) {
-                _imp->displayTextures[textureIndex].lastRenderedDeviceTiles[mipmapLevel] = deviceRoot;
+                std::vector<GpuDeviceImagePtr>& deviceTiles = _imp->displayTextures[textureIndex].lastRenderedDeviceTiles;
+                for (std::size_t i = 0; i < deviceTiles.size(); ++i) {
+                    deviceTiles[i].reset();
+                }
+                deviceTiles[mipmapLevel] = deviceRoot;
             }
         }
 #endif
@@ -1578,7 +1582,13 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
             _imp->viewerTab->setImageFormat(textureIndex, image->getComponents(), depth, QString::fromStdString(internalNode->getRawDisplayLabel(textureIndex)));
             {
                 QMutexLocker k(&_imp->lastRenderedImageMutex);
-                _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel] = image;
+                // The other levels hold earlier renders, possibly of an earlier graph, which the
+                // picker and the histogram would otherwise fall back to.
+                std::vector<ImagePtr>& tiles = _imp->displayTextures[textureIndex].lastRenderedTiles;
+                for (std::size_t i = 0; i < tiles.size(); ++i) {
+                    tiles[i].reset();
+                }
+                tiles[mipmapLevel] = image;
                 _imp->displayTextures[textureIndex].imageOnDemand = false;
             }
             _imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages = 0;
@@ -1591,7 +1601,10 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
             _imp->viewerTab->setImageFormat(textureIndex, deviceRoot->layout().layer, depth);
             {
                 QMutexLocker k(&_imp->lastRenderedImageMutex);
-                _imp->displayTextures[textureIndex].lastRenderedTiles[mipmapLevel].reset();
+                std::vector<ImagePtr>& tiles = _imp->displayTextures[textureIndex].lastRenderedTiles;
+                for (std::size_t i = 0; i < tiles.size(); ++i) {
+                    tiles[i].reset();
+                }
                 _imp->displayTextures[textureIndex].imageOnDemand = false;
             }
             Q_EMIT imageChanged(textureIndex, true);

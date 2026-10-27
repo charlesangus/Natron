@@ -1192,6 +1192,7 @@ Knob<T>::setValue(const T & v,
 
     if ( holder && !holder->isSetValueCurrentlyPossible() ) {
         ///If we cannot set value, queue it
+        holder->notifyValueQueued();
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
@@ -1611,6 +1612,7 @@ Knob<T>::setValueAtTime(double time,
 
     if ( holder && !holder->isSetValueCurrentlyPossible() ) {
         ///If we cannot set value, queue it
+        holder->notifyValueQueued();
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
@@ -1670,10 +1672,6 @@ Knob<T>::setValueAtTime(double time,
         ret = eValueChangedReturnCodeKeyframeAdded;
     }
 
-
-    if (holder) {
-        holder->setHasAnimation(true);
-    }
     guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
 
     if (_signalSlotHandler && newKeyFrame) {
@@ -2852,11 +2850,7 @@ Knob<T>::clone(KnobI* other,
         refreshListenersAfterValueChange(ViewSpec::all(), eValueChangedReasonNatronInternalEdited, dimension);
     }
 
-
     cloneExtraData(other, dimension, otherDimension);
-    if ( getHolder() ) {
-        getHolder()->updateHasAnimation();
-    }
     computeHasModifications();
 }
 
@@ -2876,9 +2870,6 @@ Knob<T>::cloneAndCheckIfChanged(KnobI* other,
 
     hasChanged |= cloneExtraDataAndCheckIfChanged(other, dimension, otherDimension);
     if (hasChanged) {
-        if ( getHolder() ) {
-            getHolder()->updateHasAnimation();
-        }
         computeHasModifications();
     }
     if (hasChanged) {
@@ -2908,9 +2899,6 @@ Knob<T>::copyLinkStateFrom(KnobI* other,
     hasChanged |= cloneCurvesAndCheckIfChanged(other, updateGui, dimension, otherDimension);
     hasChanged |= cloneExtraDataAndCheckIfChanged(other, dimension, otherDimension);
     if (hasChanged) {
-        if (getHolder()) {
-            getHolder()->updateHasAnimation();
-        }
         computeHasModifications();
         if (updateGui && _signalSlotHandler) {
             _signalSlotHandler->s_valueChanged(ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited);
@@ -2977,9 +2965,6 @@ Knob<T>::clone(KnobI* other,
     cloneCurves(other, offset, range, dimension, otherDimension);
 
     cloneExtraData(other, offset, range, dimension, otherDimension);
-    if ( getHolder() ) {
-        getHolder()->updateHasAnimation();
-    }
     if (_signalSlotHandler) {
         _signalSlotHandler->s_valueChanged(ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited);
     }
@@ -3005,9 +2990,6 @@ Knob<T>::cloneAndUpdateGui(KnobI* other,
     hasChanged |= cloneExtraDataAndCheckIfChanged(other, dimension, otherDimension);
 
     if (hasChanged) {
-        if ( getHolder() ) {
-            getHolder()->updateHasAnimation();
-        }
         computeHasModifications();
     }
     if (hasChanged) {
@@ -3088,10 +3070,6 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                     if (curve) {
                         curve->addKeyFrame( (*it)->key() );
                     }
-
-                    if ( getHolder() ) {
-                        getHolder()->setHasAnimation(true);
-                    }
                 } else {
                     if ( _values[(*it)->dimension()] != (*it)->value() ) {
                         _values[(*it)->dimension()] = (*it)->value();
@@ -3114,10 +3092,6 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                         }
                         curve->addKeyFrame( key );
                     }
-                }
-
-                if ( getHolder() ) {
-                    getHolder()->setHasAnimation(true);
                 }
             }
         }

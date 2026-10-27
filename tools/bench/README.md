@@ -22,6 +22,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
+| `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
 `wide` (sources merged by a balanced tree), `comp` (seeded random DAG with fan-out and merges).
@@ -309,3 +310,28 @@ nothing about the machine: note the host with the numbers.
 
 The USDRender half of the gate (edit to rendered frame on a USDRender node) needs USDRender's
 per-node long-lived stage and is not covered here yet.
+
+## Bezier keying cost
+
+`bezier_keying_bench.py` builds finished feathered Beziers in a Roto node and keys every control
+and feather point at frames 1..K through the Python roto API, auto-keying on. It prints the keying
+wall time per K, the median cost of one point edit at the largest K and the least-squares slope of
+log(time) against log(K). A slope near 2 means each edit costs time proportional to the shape's
+keyframe count; near 1 means a constant cost per edit. Presets are environment variables, since
+NatronRenderer passes no arguments to the script (see the docstring).
+
+```
+# 1 shape x 24 points x 50, 100 and 200 keys.
+tools/ci/local/devshell.sh bash -lc "cd $PWD && BENCH_LABEL=before BENCH_OUT=build/bench/bezier-keying.jsonl \
+    build/release/Renderer/NatronRenderer -b tools/bench/bezier_keying_bench.py"
+
+# Heavy: 30 shapes x 24 points x 200 keys.
+tools/ci/local/devshell.sh bash -lc "cd $PWD && BENCH_BEZIER_HEAVY=1 BENCH_LABEL=before BENCH_OUT=build/bench/bezier-keying.jsonl \
+    build/release/Renderer/NatronRenderer -b tools/bench/bezier_keying_bench.py"
+```
+
+Run both with a build from before the incremental GUI copy (`BENCH_LABEL=before`) and one from
+after (`BENCH_LABEL=after`). The record keeps nothing about the machine: note the host with the
+numbers. `Tests/BezierEditScaling_Test.cpp` prints the same single-shape figures from the engine
+directly, without the Python binding's overhead, and fails a release build when keying stops
+scaling linearly with the keyframe count.

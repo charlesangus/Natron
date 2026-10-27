@@ -7919,12 +7919,69 @@ KnobHelper::setDriver(int dimension,
     if (driver) {
         _imp->registerDriverRFVListeners(dimension);
     }
+    updateDriverKeysOnTimeline(previous, driver);
     evaluateValueChange(dimension, getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     if (_signalSlotHandler) {
         _signalSlotHandler->s_driverChanged(dimension);
     }
 
     return true;
+}
+
+void
+KnobHelper::updateDriverKeysOnTimeline(const KnobDriverPtr& previous,
+                                       const KnobDriverPtr& driver)
+{
+    if ((QThread::currentThread() != qApp->thread()) || !showsKeysOnTimeline()) {
+        return;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (!node || !node->areKeyframesVisibleOnTimeline() || !node->getApp()) {
+        return;
+    }
+    std::list<SequenceTime> removed, added;
+    if (previous) {
+        appendDriverKeyTimes(*previous, &removed);
+    }
+    if (driver) {
+        appendDriverKeyTimes(*driver, &added);
+    }
+    if (!removed.empty()) {
+        node->getApp()->removeMultipleKeyframeIndicator(removed, true);
+    }
+    if (!added.empty()) {
+        node->getApp()->addMultipleKeyframeIndicatorsAdded(added, true);
+    }
+}
+
+bool
+KnobHelper::showsKeysOnTimeline() const
+{
+    return !getIsSecret() && getIsPersistent() && canAnimate() && !dynamic_cast<const KnobFile*>(this);
+}
+
+void
+KnobHelper::appendDriverKeyTimes(const KnobDriver& driver,
+                                 std::list<SequenceTime>* times)
+{
+    std::list<double> keyTimes;
+    driver.appendRangeKeyTimes(&keyTimes);
+    for (std::list<double>::const_iterator it = keyTimes.begin(); it != keyTimes.end(); ++it) {
+        times->push_back((SequenceTime)*it);
+    }
+}
+
+void
+KnobHelper::getDriverKeyTimes(std::list<SequenceTime>* times) const
+{
+    const int dims = getDimension();
+    for (int i = 0; i < dims; ++i) {
+        const KnobDriverPtr driver = getDriver(i);
+        if (driver) {
+            appendDriverKeyTimes(*driver, times);
+        }
+    }
 }
 
 RenderContextReadSet

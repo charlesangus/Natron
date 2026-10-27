@@ -37,6 +37,7 @@
 
 #include "Engine/Bezier.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RotoContext.h" // Bezier
 #include "Engine/Utils.h"
@@ -734,6 +735,181 @@ KnobCurveGui::setKeyFrameInterpolation(KeyframeTypeEnum interp,
                                        int index)
 {
     return getInternalCurve()->setKeyFrameInterpolation(interp, index);
+}
+
+DriverCurveGui::DriverCurveGui(CurveWidget* curveWidget,
+                               const KnobIPtr& knob,
+                               int dimension,
+                               bool end,
+                               const QString& name,
+                               const QColor& color,
+                               int thickness)
+    : CurveGui(curveWidget, std::make_shared<Curve>(), name, color, thickness)
+    , _knob(knob)
+    , _dimension(dimension)
+    , _end(end)
+    , _committing(false)
+{
+    syncFromDriver();
+    KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+    if (handler) {
+        QObject::connect(handler.get(), SIGNAL(driverChanged(int)), this, SLOT(syncFromDriver()));
+    }
+}
+
+DriverCurveGui::~DriverCurveGui()
+{
+}
+
+const Curve*
+DriverCurveGui::rangeCurve(int dimension) const
+{
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(getInternalKnob().get());
+    KnobDriverPtr driver = helper ? helper->getDriver(dimension) : KnobDriverPtr();
+
+    if (!driver) {
+        return NULL;
+    }
+
+    return _end ? driver->getEndCurve() : driver->getStartCurve();
+}
+
+bool
+DriverCurveGui::sameKeys(const Curve* a,
+                         const Curve* b)
+{
+    if (!a || !b) {
+        return a == b;
+    }
+    const KeyFrameSet ka = a->getKeyFrames_mt_safe();
+    const KeyFrameSet kb = b->getKeyFrames_mt_safe();
+    if (ka.size() != kb.size()) {
+        return false;
+    }
+
+    return std::equal(ka.begin(), ka.end(), kb.begin());
+}
+
+std::vector<int>
+DriverCurveGui::sharedDimensions() const
+{
+    std::vector<int> dims;
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(getInternalKnob().get());
+
+    if (!helper) {
+        return dims;
+    }
+    const Curve* first = NULL;
+    for (int i = 0; i < helper->getDimension(); ++i) {
+        if (!helper->getDriver(i)) {
+            continue;
+        }
+        const Curve* curve = rangeCurve(i);
+        if (dims.empty()) {
+            first = curve;
+        } else if (!sameKeys(first, curve)) {
+            return std::vector<int>();
+        }
+        dims.push_back(i);
+    }
+
+    return dims;
+}
+
+std::vector<int>
+DriverCurveGui::getEditedDimensions() const
+{
+    if (_dimension < 0) {
+        return sharedDimensions();
+    }
+    std::vector<int> dims;
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(getInternalKnob().get());
+    if (helper && (_dimension < helper->getDimension()) && helper->getDriver(_dimension)) {
+        dims.push_back(_dimension);
+    }
+
+    return dims;
+}
+
+bool
+DriverCurveGui::isShown() const
+{
+    if (_internalCurve->getKeyFramesCount() == 0) {
+        return false;
+    }
+
+    return (_dimension < 0) || sharedDimensions().empty();
+}
+
+void
+DriverCurveGui::syncFromDriver()
+{
+    if (_committing) {
+        return;
+    }
+    const std::vector<int> dims = getEditedDimensions();
+    const Curve* source = dims.empty() ? NULL : rangeCurve(dims.front());
+    if (source) {
+        _internalCurve->clone(*source);
+    } else {
+        _internalCurve->clearKeyFrames();
+    }
+    if (_curveWidget) {
+        _curveWidget->update();
+    }
+}
+
+void
+DriverCurveGui::commit()
+{
+    KnobIPtr knob = getInternalKnob();
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+
+    if (!helper) {
+        return;
+    }
+    const std::vector<int> dims = getEditedDimensions();
+    const Curve curve(*_internalCurve);
+    const double time = knob->getCurrentTime();
+    _committing = true;
+    for (std::size_t i = 0; i < dims.size(); ++i) {
+        KnobDriverPtr driver = helper->getDriver(dims[i]);
+        if (driver) {
+            helper->setDriver(dims[i], driver->withRangeCurve(_end, curve, time));
+        }
+    }
+    _committing = false;
+    syncFromDriver();
+}
+
+double
+DriverCurveGui::evaluate(bool /*useExpr*/,
+                         double x) const
+{
+    if (_internalCurve->getKeyFramesCount() > 0) {
+        return _internalCurve->getValueAt(x, false);
+    }
+    const std::vector<int> dims = getEditedDimensions();
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(getInternalKnob().get());
+    KnobDriverPtr driver = (helper && !dims.empty()) ? helper->getDriver(dims.front()) : KnobDriverPtr();
+    if (!driver) {
+        return 0.;
+    }
+
+    return _end ? driver->getEnd() : driver->getStart();
+}
+
+int
+DriverCurveGui::getKeyFrameIndex(double time) const
+{
+    return _internalCurve->keyFrameIndex(time);
+}
+
+KeyFrame
+DriverCurveGui::setKeyFrameInterpolation(KeyframeTypeEnum interp,
+                                         int index)
+{
+    return _internalCurve->setKeyFrameInterpolation(interp, index);
 }
 
 BezierCPCurveGui::BezierCPCurveGui(CurveWidget* curveWidget,

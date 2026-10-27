@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+#include <memory>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QTreeWidget>
@@ -217,6 +220,10 @@ public:
     DSKnob(int dimension,
            QTreeWidgetItem *nameItem,
            const KnobGuiPtr& knobGui);
+    // A row for a driver's start or end curve, under its knob's row.
+    DSKnob(QTreeWidgetItem* nameItem,
+           const KnobGuiPtr& knobGui,
+           const DriverCurveGuiPtr& driverCurve);
     ~DSKnob();
 
     QTreeWidgetItem * getTreeItem() const;
@@ -227,6 +234,19 @@ public:
 
     bool isMultiDimRoot() const;
     int getDimension() const;
+
+    DriverCurveGuiPtr getDriverCurve() const;
+
+    // A driver row standing in for curves another driver row shows: its keys are not selectable.
+    bool isHiddenDriverRow() const;
+
+    /**
+     * @brief The curve this row shows: the driver curve on a driver row, else the knob's curve.
+     **/
+    CurvePtr getCurve(int dimension) const;
+
+    void addDriverRow(DSKnob* row);
+    const std::list<DSKnob*>& getDriverRows() const;
 
 private:
     std::unique_ptr<DSKnobPrivate> _imp;
@@ -411,6 +431,7 @@ private: /* functions */
 private Q_SLOTS:
     void onNodeNameChanged(const QString &name);
     void onKeyframeSetOrRemoved();
+    void onDriverChanged();
     void onNodeNameEditDialogFinished();
 
 private:

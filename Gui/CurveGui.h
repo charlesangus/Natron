@@ -30,6 +30,8 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <vector>
+
 #include <QObject> // QObject
 #include <QColor> // QColor
 CLANG_DIAG_ON(deprecated)
@@ -219,6 +221,82 @@ private:
     KnobIWPtr _internalKnob;
     KnobGuiWPtr _knob; //< ptr to the knob holding this curve
     int _dimension; //< which dimension is this curve representing
+};
+
+/**
+ * @brief The start or end of a knob's loop drivers as a curve: a working copy of the driver's,
+ * kept in step with it. An edit changes the copy, then commit() swaps in drivers made from it.
+ * For dimension -1 it stands for every driven dimension, and holds their curve only while they
+ * all have the same one.
+ **/
+class DriverCurveGui
+    : public CurveGui {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    Q_OBJECT
+    GCC_DIAG_SUGGEST_OVERRIDE_ON
+
+public:
+    DriverCurveGui(CurveWidget* curveWidget,
+                   const KnobIPtr& knob,
+                   int dimension,
+                   bool end,
+                   const QString& name,
+                   const QColor& color,
+                   int thickness = 1);
+
+    virtual ~DriverCurveGui();
+
+    KnobIPtr getInternalKnob() const
+    {
+        return _knob.lock();
+    }
+
+    int getDimension() const
+    {
+        return _dimension;
+    }
+
+    bool isEnd() const
+    {
+        return _end;
+    }
+
+    /**
+     * @brief The dimensions whose drivers the curve stands for; empty when it holds no curve.
+     **/
+    std::vector<int> getEditedDimensions() const;
+
+    /**
+     * @brief Whether the editors list the curve: it has keys, and for one dimension of several,
+     * the dimensions' curves differ so that the curve for all of them is empty.
+     **/
+    bool isShown() const;
+
+    /**
+     * @brief Gives the edited dimensions drivers whose start (or end) is the working curve.
+     **/
+    void commit();
+
+    static bool sameKeys(const Curve* a, const Curve* b);
+
+    virtual double evaluate(bool useExpr, double x) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual int getKeyFrameIndex(double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KeyFrame setKeyFrameInterpolation(KeyframeTypeEnum interp, int index) OVERRIDE FINAL;
+
+public Q_SLOTS:
+
+    void syncFromDriver();
+
+private:
+    const Curve* rangeCurve(int dimension) const;
+
+    // Every driven dimension, or none when their curves differ.
+    std::vector<int> sharedDimensions() const;
+
+    KnobIWPtr _knob;
+    int _dimension;
+    bool _end;
+    bool _committing;
 };
 
 class BezierCPCurveGui

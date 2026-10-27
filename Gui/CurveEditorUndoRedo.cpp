@@ -25,6 +25,7 @@
 
 #include "CurveEditorUndoRedo.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -40,10 +41,11 @@
 #include "Gui/KnobUndoCommand.h"
 
 #include "Engine/Bezier.h"
-#include "Engine/Knob.h"
 #include "Engine/Curve.h"
-#include "Engine/RotoContext.h"
+#include "Engine/Knob.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/RotoContext.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
@@ -62,6 +64,28 @@ curveKnobIsDead(const CurveGui* curve)
     }
 
     return !lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
+}
+
+// Adds or removes keys on a driver's start or end curve, clearing it first when asked.
+static void
+editDriverKeys(DriverCurveGui* curve,
+               const std::vector<KeyFrame>& keys,
+               bool add,
+               bool clearFirst)
+{
+    CurvePtr internalCurve = curve->getInternalCurve();
+
+    if (clearFirst) {
+        internalCurve->clearKeyFrames();
+    }
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (add) {
+            internalCurve->addKeyFrame(keys[i]);
+        } else if (internalCurve->keyFrameIndex(keys[i].getTime()) != -1) {
+            internalCurve->removeKeyFrameWithTime(keys[i].getTime());
+        }
+    }
+    curve->commit();
 }
 
 //////////////////////////////ADD MULTIPLE KEYS COMMAND//////////////////////////////////////////////
@@ -103,6 +127,14 @@ AddKeysCommand::addOrRemoveKeyframe(bool isSetKeyCommand,
                                     bool add)
 {
     for (KeysToAddList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(it->curveUI.get())) {
+            if (!isDriverCurve->getInternalKnob()) {
+                setObsolete(true);
+                continue;
+            }
+            editDriverKeys(isDriverCurve, it->keyframes, add, add && isSetKeyCommand);
+            continue;
+        }
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->curveUI.get() );
         BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( it->curveUI.get() );
         KnobIPtr knob = lockUndoKnob(it->knob);
@@ -246,7 +278,15 @@ SetKeysCommand::undo()
     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( _guiCurve.get() );
     BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>( _guiCurve.get() );
 
-    if (isKnobCurve) {
+    if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(_guiCurve.get())) {
+        if (!isDriverCurve->getInternalKnob()) {
+            setObsolete(true);
+
+            return;
+        }
+        isDriverCurve->getInternalCurve()->clone(*_oldCurve);
+        isDriverCurve->commit();
+    } else if (isKnobCurve) {
         KnobIPtr knob = lockUndoKnob(KnobIWPtr(isKnobCurve->getInternalKnob()));
         if (!knob) {
             setObsolete(true);
@@ -286,6 +326,14 @@ RemoveKeysCommand::addOrRemoveKeyframe(bool add)
 {
     std::set<KnobIPtr> knobsSet;
     for (std::map<CurveGuiPtr, std::vector<KeyFrame> >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(it->first.get())) {
+            if (!isDriverCurve->getInternalKnob()) {
+                setObsolete(true);
+                continue;
+            }
+            editDriverKeys(isDriverCurve, it->second, add, false);
+            continue;
+        }
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->first.get() );
         BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>(it->first.get());
         KnobIPtr knob;
@@ -421,7 +469,28 @@ moveKeys(CurveGui* curve,
     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(curve);
     BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>(curve);
 
-    if (isBezierCurve) {
+    if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(curve)) {
+        CurvePtr internalCurve = curve->getInternalCurve();
+        // Keys move in the order that keeps one from landing on another not yet moved.
+        std::vector<std::size_t> order(vect.size());
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            order[i] = i;
+        }
+        std::sort(order.begin(), order.end(), [&vect, dt](std::size_t a, std::size_t b) {
+            const double ta = vect[a].key->key.getTime();
+            const double tb = vect[b].key->key.getTime();
+            return dt > 0 ? ta > tb : ta < tb;
+        });
+        for (std::size_t j = 0; j < order.size(); ++j) {
+            const MoveKeysCommand::KeyToMove& k = vect[order[j]];
+            const int keyframeIndex = internalCurve->keyFrameIndex(k.key->key.getTime());
+            if (keyframeIndex == -1) {
+                continue;
+            }
+            k.key->key = internalCurve->setKeyFrameValueAndTime(k.key->key.getTime() + dt, k.key->key.getValue() + dv, keyframeIndex);
+        }
+        isDriverCurve->commit();
+    } else if (isBezierCurve) {
         for (std::size_t i = 0; i < vect.size(); ++i) {
             const MoveKeysCommand::KeyToMove& k = vect[i];
             double oldTime = k.key->key.getTime();
@@ -620,7 +689,7 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
                     k->beginChanges();
                 }
             }
-        } else {
+        } else if (!dynamic_cast<DriverCurveGui*>(it->key->curve.get())) {
             BezierCPCurveGui* bezierCurve = dynamic_cast<BezierCPCurveGui*>( it->key->curve.get() );
             assert(bezierCurve);
             if (bezierCurve) {
@@ -630,8 +699,26 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
         }
     }
 
+    std::list<DriverCurveGui*> driverCurves;
     for (std::list<KeyInterpolationChange >::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         KeyframeTypeEnum interp = undo ? it->oldInterp : it->newInterp;
+        if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(it->key->curve.get())) {
+            if (!isDriverCurve->getInternalKnob()) {
+                continue;
+            }
+            int keyframeIndex = isDriverCurve->getKeyFrameIndex(it->key->key.getTime());
+            if (keyframeIndex != -1) {
+                it->key->key = isDriverCurve->setKeyFrameInterpolation(interp, keyframeIndex);
+                if (undo && interpolationHasWeights(it->oldInterp)) {
+                    const KeyTangents& t = it->oldTangents;
+                    it->key->key = isDriverCurve->getInternalCurve()->setKeyFrameTangents(t.left, t.right, t.leftWeight, t.rightWeight, keyframeIndex);
+                }
+            }
+            if (std::find(driverCurves.begin(), driverCurves.end(), isDriverCurve) == driverCurves.end()) {
+                driverCurves.push_back(isDriverCurve);
+            }
+            continue;
+        }
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( it->key->curve.get() );
         if (isKnobCurve) {
             KnobIPtr knob = isKnobCurve->getInternalKnob();
@@ -665,6 +752,9 @@ SetKeysInterpolationCommand::setNewInterpolation(bool undo)
         }
     }
 
+    for (std::list<DriverCurveGui*>::iterator it = driverCurves.begin(); it != driverCurves.end(); ++it) {
+        (*it)->commit();
+    }
     for (std::list<KnobI*>::iterator it = differentKnobs.begin(); it != differentKnobs.end(); ++it) {
         (*it)->endChanges();
     }
@@ -878,7 +968,24 @@ MoveTangentCommand::setNewDerivatives(bool undo)
     }
     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>( _key->curve.get() );
 
-    if (isKnobCurve) {
+    if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(_key->curve.get())) {
+        if (!isDriverCurve->getInternalKnob()) {
+            setObsolete(true);
+
+            return;
+        }
+        CurvePtr internalCurve = isDriverCurve->getInternalCurve();
+        int keyframeIndexInCurve = internalCurve->keyFrameIndex(_key->key.getTime());
+        if (keyframeIndexInCurve != -1) {
+            _key->key = internalCurve->setKeyFrameInterpolation(undo ? _oldInterp : _newInterp, keyframeIndexInCurve);
+            _key->key = internalCurve->setKeyFrameTangents(undo ? _oldLeft : _newLeft, undo ? _oldRight : _newRight,
+                                                           undo ? _oldLeftWeight : _newLeftWeight, undo ? _oldRightWeight : _newRightWeight, keyframeIndexInCurve);
+            isDriverCurve->commit();
+        }
+        if (_widget) {
+            _widget->refreshCurveDisplayTangents(_key->curve.get());
+        }
+    } else if (isKnobCurve) {
         KnobIPtr attachedKnob = isKnobCurve->getInternalKnob();
         assert(attachedKnob);
         KnobParametric* isParametric = dynamic_cast<KnobParametric*>( attachedKnob.get() );
@@ -1004,6 +1111,17 @@ JoinTangentsCommand::setNewDerivatives(bool undo)
         }
     }
     for (std::list<JoinedTangentChange>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
+        if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(it->key->curve.get())) {
+            CurvePtr internalCurve = isDriverCurve->getInternalCurve();
+            int keyframeIndexInCurve = internalCurve->keyFrameIndex(it->key->key.getTime());
+            if ((keyframeIndexInCurve != -1) && isDriverCurve->getInternalKnob()) {
+                it->key->key = internalCurve->setKeyFrameInterpolation(undo ? it->oldInterp : eKeyframeTypeFree, keyframeIndexInCurve);
+                it->key->key = internalCurve->setKeyFrameTangents(undo ? it->oldLeft : it->joined, undo ? it->oldRight : it->joined,
+                                                                  it->key->key.getLeftWeight(), it->key->key.getRightWeight(), keyframeIndexInCurve);
+                isDriverCurve->commit();
+            }
+            continue;
+        }
         KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(it->key->curve.get());
         if (!isKnobCurve) {
             continue;
@@ -1104,7 +1222,32 @@ transform(const Transform::Matrix3x3& matrix,
     KnobCurveGui* isKnobCurve = dynamic_cast<KnobCurveGui*>(curve);
     BezierCPCurveGui* isBezierCurve = dynamic_cast<BezierCPCurveGui*>(curve);
 
-    if (isKnobCurve) {
+    if (DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(curve)) {
+        // All the keys leave before any lands, so none lands on one not yet moved.
+        CurvePtr internalCurve = curve->getInternalCurve();
+        for (std::list<KeyPtr>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+            if (internalCurve->keyFrameIndex((*it)->key.getTime()) != -1) {
+                internalCurve->removeKeyFrameWithTime((*it)->key.getTime());
+            }
+        }
+        for (std::list<KeyPtr>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+            Transform::Point3D p;
+            p.x = (*it)->key.getTime();
+            p.y = (*it)->key.getValue();
+            p.z = 1;
+            p = Transform::matApply(matrix, p);
+            (*it)->key.setTime(p.x);
+            (*it)->key.setValue(p.y);
+            internalCurve->addKeyFrame((*it)->key);
+        }
+        for (std::list<KeyPtr>::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+            KeyFrame k;
+            if (internalCurve->getKeyFrameWithTime((*it)->key.getTime(), &k)) {
+                (*it)->key = k;
+            }
+        }
+        isDriverCurve->commit();
+    } else if (isKnobCurve) {
         KnobIPtr knob = isKnobCurve->getInternalKnob();
         KnobParametric* isParametric = dynamic_cast<KnobParametric*>( knob.get() );
 
@@ -1482,6 +1625,134 @@ FoldedCurveEditCommand::mergeWith(const QUndoCommand* command)
     // Its snapshots were taken mid-drag and are dropped; this command's still hold the state
     // from before the drag began.
     return _inner->mergeWith(other->_inner.get());
+}
+
+DriverCurveEditCommand::DriverCurveEditCommand(QUndoCommand* inner,
+                                               const std::list<KnobIPtr>& knobs,
+                                               QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _inner(inner)
+    , _knobs()
+    , _redone(false)
+{
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        DrivenKnob k;
+        k.knob = *it;
+        _knobs.push_back(k);
+    }
+    setText(_inner->text());
+}
+
+DriverCurveEditCommand::~DriverCurveEditCommand()
+{
+}
+
+std::list<KnobIPtr>
+DriverCurveEditCommand::driverKnobsOf(const std::list<CurveGuiPtr>& curves)
+{
+    std::list<KnobIPtr> knobs;
+
+    for (std::list<CurveGuiPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        DriverCurveGui* isDriverCurve = dynamic_cast<DriverCurveGui*>(it->get());
+        KnobIPtr knob = isDriverCurve ? isDriverCurve->getInternalKnob() : KnobIPtr();
+        if (knob && (std::find(knobs.begin(), knobs.end(), knob) == knobs.end())) {
+            knobs.push_back(knob);
+        }
+    }
+
+    return knobs;
+}
+
+std::vector<KnobDriverPtr>
+DriverCurveEditCommand::driversOf(const KnobIPtr& knob)
+{
+    std::vector<KnobDriverPtr> drivers;
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+
+    if (helper) {
+        for (int i = 0; i < helper->getDimension(); ++i) {
+            drivers.push_back(helper->getDriver(i));
+        }
+    }
+
+    return drivers;
+}
+
+void
+DriverCurveEditCommand::apply(bool after)
+{
+    for (std::list<DrivenKnob>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+        KnobIPtr knob = lockUndoKnob(it->knob);
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (!helper) {
+            continue;
+        }
+        const std::vector<KnobDriverPtr>& drivers = after ? it->after : it->before;
+        for (std::size_t i = 0; i < drivers.size(); ++i) {
+            helper->setDriver((int)i, drivers[i]);
+        }
+    }
+}
+
+void
+DriverCurveEditCommand::undo()
+{
+    _inner->undo();
+    apply(false);
+}
+
+void
+DriverCurveEditCommand::redo()
+{
+    if (!_redone) {
+        for (std::list<DrivenKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+            it->before = driversOf(lockUndoKnob(it->knob));
+        }
+    }
+    _inner->redo();
+    if (_redone) {
+        apply(true);
+    } else {
+        for (std::list<DrivenKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+            it->after = driversOf(lockUndoKnob(it->knob));
+        }
+        _redone = true;
+    }
+    if (_inner->isObsolete()) {
+        setObsolete(true);
+    }
+}
+
+int
+DriverCurveEditCommand::id() const
+{
+    return _inner->id();
+}
+
+bool
+DriverCurveEditCommand::mergeWith(const QUndoCommand* command)
+{
+    const DriverCurveEditCommand* other = dynamic_cast<const DriverCurveEditCommand*>(command);
+
+    if (!other || (other->_knobs.size() != _knobs.size())) {
+        return false;
+    }
+    std::list<DrivenKnob>::const_iterator itOther = other->_knobs.begin();
+    for (std::list<DrivenKnob>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it, ++itOther) {
+        if (it->knob.lock() != itOther->knob.lock()) {
+            return false;
+        }
+    }
+    if (!_inner->mergeWith(other->_inner.get())) {
+        return false;
+    }
+    // The other command has run already; this one keeps the drivers from before both.
+    std::list<DrivenKnob>::const_iterator otherIt = other->_knobs.begin();
+    for (std::list<DrivenKnob>::iterator it = _knobs.begin(); it != _knobs.end(); ++it, ++otherIt) {
+        it->after = otherIt->after;
+    }
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

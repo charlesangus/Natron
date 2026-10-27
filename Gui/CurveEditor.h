@@ -86,6 +86,7 @@ public:
         , _knobFolded(false)
         , _hiddenByFold(false)
         , _foldedKnobDimensionZero(false)
+        , _driverOwner(NULL)
     {
     }
 
@@ -144,6 +145,20 @@ public:
         return _foldedKnobDimensionZero;
     }
 
+    /**
+     * @brief For a loop driver's start or end row: the element of the knob item it sits under,
+     * whose own curve keeps that item shown when the row hides.
+     **/
+    void setDriverOwner(NodeCurveEditorElement* owner)
+    {
+        _driverOwner = owner;
+    }
+
+    /**
+     * @brief Whether the element's own curve has something to draw: keys, or an expression.
+     **/
+    bool showsOwnCurve() const WARN_UNUSED_RETURN;
+
 public Q_SLOTS:
 
 
@@ -172,6 +187,7 @@ private:
     bool _knobFolded;
     bool _hiddenByFold;
     bool _foldedKnobDimensionZero;
+    NodeCurveEditorElement* _driverOwner;
 };
 
 class NodeCurveEditorContext

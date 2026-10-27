@@ -1118,7 +1118,19 @@ DenoiseProfiled::canRenderOpOnGpu(const GpuQuery& query) const
         return false;
     }
 
-    return isWavelets(r->settings.mode) || (nlmGeometry(r->settings, query.mappedScale.toOfxPointD().x).patchRadius <= DenoiseProfiledGpu::kMaxPatchRadius);
+    if (isWavelets(r->settings.mode)) {
+        // The wavelets run over the whole frame, in three-channel buffers of its size beside the divided source;
+        // a frame over what the device binds renders on the CPU.
+        RectI rodPixel;
+        if (!effectRoDPixels(*const_cast<DenoiseProfiled*>(this), query.time, query.mappedScale, query.view, &rodPixel)) {
+            return false;
+        }
+        const uint64_t floats = (uint64_t)std::max(0, rodPixel.width()) * (uint64_t)std::max(0, rodPixel.height()) * (uint64_t)std::max(3, query.nComps);
+
+        return (floats <= UINT32_MAX) && (floats * sizeof(float) <= query.maxScratchBytes);
+    }
+
+    return (nlmGeometry(r->settings, query.mappedScale.toOfxPointD().x).patchRadius <= DenoiseProfiledGpu::kMaxPatchRadius);
 #else
     Q_UNUSED(query);
 

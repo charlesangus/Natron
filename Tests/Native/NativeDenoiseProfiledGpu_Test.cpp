@@ -319,6 +319,32 @@ TEST_F(NativeDenoiseProfiledGpuTest, MixMatchesTheCpu)
     expectGpuMatchesCpuWithin(*runtime, c.denoise, c.crop, window, kNlmMean, kNlmMax, kNlmOutliers, "mix 0.5", &query);
 }
 
+// The wavelets read the whole frame in buffers of its size, so a device that binds less than that
+// leaves them to the CPU, which renders the window.
+TEST_F(NativeDenoiseProfiledGpuTest, WaveletsOverTheDeviceBufferLimitStayOnTheCpu)
+{
+    const Chain c = createChain(bayerFixture());
+    ASSERT_TRUE(c.read && c.crop && c.denoise);
+    configure(c.denoise, eModeWavelets, eColorModeRgb);
+    ASSERT_FALSE(HasFatalFailure());
+    StagedImageEffect* effect = stagedOf(c.denoise);
+    ASSERT_TRUE(effect != NULL);
+    const RectI frame = cropRect();
+    const RectI window(frame.x1 + 120, frame.y1 + 90, frame.x1 + 184, frame.y1 + 138);
+
+    GpuQuery query = rgbaQueryFor(c.denoise);
+    query.maxScratchBytes = 1u << 10;
+    EXPECT_FALSE(effect->canRenderOnGpu(query));
+    RenderedPlane cpu;
+    ASSERT_TRUE(renderCpu(c.denoise, window, &cpu));
+    RenderedPlane again;
+    ASSERT_TRUE(renderCpu(c.denoise, window, &again));
+    EXPECT_EQ(cpu.pixels, again.pixels);
+
+    query.maxScratchBytes = UINT64_MAX;
+    EXPECT_TRUE(effect->canRenderOnGpu(query));
+}
+
 // Compute Variance shows its measure in a knob, so it stays on the CPU.
 TEST_F(NativeDenoiseProfiledGpuTest, ComputeVarianceStaysOnTheCpu)
 {

@@ -77,9 +77,9 @@ setSceneKnobValue(const KnobDoublePtr& knob,
                   double value)
 {
     if (animated) {
-        knob->setValueAtTime(frame, value, ViewSpec::all(), dimension, eValueChangedReasonUserEdited, nullptr);
+        knob->setValueAtTime(frame, value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, nullptr);
     } else {
-        knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonUserEdited, nullptr);
+        knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, nullptr);
     }
 }
 
@@ -133,7 +133,7 @@ public:
         effect->beginChanges();
         for (const SceneStringEdit& s : strings) {
             if (KnobStringPtr knob = s.knob.lock()) {
-                knob->setValue(old ? s.oldValue : s.newValue, ViewSpec::all(), 0, eValueChangedReasonUserEdited, nullptr);
+                knob->setValue(old ? s.oldValue : s.newValue, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, nullptr);
             }
         }
         for (const SceneKnobEdit& d : edits) {

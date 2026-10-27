@@ -42,7 +42,8 @@ NATRON_NAMESPACE_ENTER
 constexpr double kGpuPointWeight = 1.;
 
 /**
- * @brief The weight of a Filter node whose cost does not depend on a size.
+ * @brief The weight of a Filter node whose cost does not depend on a size: about four point ops,
+ * from lone Blur and Transform regions breaking even or winning on the GPU.
  **/
 constexpr double kGpuFilterWeight = 4.;
 
@@ -58,9 +59,11 @@ constexpr double kGpuFilterWeightRefSize = 8.;
 constexpr double kGpuFilterWeightCap = 32.;
 
 /**
- * @brief The summed weight from which a region with no Heavy member renders on the GPU.
+ * @brief The summed weight from which a region with no Heavy member renders on the GPU. Measured on a
+ * Ryzen 7 9800X3D against a Radeon AI PRO R9700 (release): source plus two Grades (3) ran ~10% slower
+ * on the GPU, three Grades (4) broke even, six won by 20%.
  **/
-constexpr double kGpuRegionMinWeight = 3.;
+constexpr double kGpuRegionMinWeight = 4.;
 
 /**
  * @brief The pixel count, at the rendered scale, below which a region stays on the CPU whatever

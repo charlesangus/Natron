@@ -80,3 +80,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 - The full build and ctest pass, including both ColorBalanceRGB suites on lavapipe and RADV.
 - Under Xvfb, the panel with its four wheels and the mask outputs is captured, and a grade on a plate is compared with darktable's render. Screenshots are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — PM: the node grades in linear Rec.2020 (darktable's pipeline space), converting from and back to the working space; OCIO working spaces without a matrix stay on the CPU. Shared darktable colour helpers live in Engine/Nodes/Color/DtColorSpaces.h and Engine/Gpu/Kernels/dtcolorspaces.slang. 4 Ways are polar colour wheels (angle = hue, radius = chroma) in a 2x2 grid with luminance under each, so the tab doesn't scroll.

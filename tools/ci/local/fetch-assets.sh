@@ -263,6 +263,13 @@ RAWSPEED_REPO="https://github.com/darktable-org/rawspeed.git"
 RAWSPEED_REF="c835b05aecfacb7343f7c424abd620aa12116c3f"
 DARKTABLE_REPO="https://github.com/darktable-org/darktable.git"
 DARKTABLE_REF="20891f6c6fa7be995e5bf9dff9d1ee5062051773"
+#
+# DARKTABLE_MASTER_REF: a darktable-org/darktable master commit, for the modules that exist only
+# on master (contrast & texture, src/iop/contrastntexture.c). Bumping DARKTABLE_REF would
+# invalidate every reference made at it, so those modules are ported from, and their references
+# rendered at, this second revision. Its EIGF (src/common/eigf.h, gaussian.c) is the release's.
+# Move it to the 5.8 release tag once there is one.
+DARKTABLE_MASTER_REF="fee19b421fdbf1bddd74307b68499943394993b6"
 
 # ONNXRUNTIME_VERSION: microsoft/onnxruntime's official Linux x64 CPU release,
 # downloaded prebuilt and checked against the sha256 below. Natron never links
@@ -727,6 +734,7 @@ RAWSPEED_DEP_JPEG="/usr/local/lib/libjpeg.so"
 RAWSPEED_DEP_ZLIB="/usr/local/lib/libz.so"
 
 echo "[darktable] raw nodes are ported from ${DARKTABLE_REPO} at ${DARKTABLE_REF}"
+echo "[darktable] master-only modules are ported from ${DARKTABLE_REPO} at ${DARKTABLE_MASTER_REF}"
 if [ -f "${RAWSPEED_STAMP}" ] && [ "$(cat "${RAWSPEED_STAMP}")" = "${RAWSPEED_WANT}" ] \
     && [ -f "${RAWSPEED_LIB}" ] && [ -f "${RAWSPEED_CAMERAS_XML}" ] && [ -f "${RAWSPEED_CONFIG}" ]; then
     echo "[rawspeed] already built at the pinned ref -- skipping."

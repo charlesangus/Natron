@@ -76,7 +76,7 @@ The shared base for the exact native I-nodes (user, 2026-10-24: separate registr
 
 ## Phase 184.4: Finish
 
-- [ ] M184.P4.T1 — Register the I-variants ~~and cost seeds~~
+- [x] M184.P4.T1 — Register the I-variants ~~and cost seeds~~
   - files: `Engine/Nodes/Filter/IBlur.reg.inc`, `Engine/Nodes/Filter/IErode.reg.inc`, `Engine/Nodes/Filter/IDilate.reg.inc`, `Engine/Nodes/Filter/{IBlur,IErode,IDilate}.costseed.inc`
   - approach: Add the `NATRON_I_VARIANT` lines (Blur → IBlur, Erode → IErode, Dilate → IDilate, with their knob maps), per `Engine/Nodes/README.md`'s checklist. ~~Cost seeds~~ dropped: see Decisions, 2026-10-26.
   - verify: `ctest -R NativePluginList` and the registry gtest pass with the three entries.

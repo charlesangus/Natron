@@ -238,8 +238,15 @@ session; and that a precomp's hash follows its pre-rendered output.
 - **K3. Pixel-affecting knobs outside the hash.** A knob that is neither persistent nor
   evaluate-on-change is not hashed (Knob.cpp:4228). The plug-in sweep (HashPluginSweep_Test.cpp:362)
   checks only knobs that are render-hashed, so it can't catch a pixel-affecting knob that isn't.
-  No instance is known. Phase 242.3 could render with each non-hashed knob changed.
-- **K4. Expression dependencies are what the parser finds.** A Python expression that reaches
+  No instance is known. **Checked in M260:** `CacheStressTest.NonHashedKnobSweep` renders with each
+  non-hashed knob changed and compares against a fresh build.
+- **K4. Expression dependencies are what the parser finds. Fixed in M260:** knob reads made while
+  an expression runs are recorded (`ExpressionReadRecorder`) and registered as dependencies, at set
+  time and on each evaluation (queued to the main thread from render threads), and a new one marks
+  the hash. Tests: `NodeContentHashTest.AnExpressionReadingANodeFoundByGetattrDependsOnIt`; the
+  random walk has `dynamicExpression`. A read the expression has not yet made (a branch never
+  taken) is still unknown. The analysis below describes the code before the fix.
+  A Python expression that reaches
   another node dynamically (built names, `getattr`) has no listener and does not fold the target's
   hash (`getContentHashDependencies` Knob.cpp:7117). Volatility comes from a fixed token list
   (Knob.cpp:6729-6731). Within a session a volatile expression hashes the same every time, since
@@ -250,10 +257,15 @@ session; and that a precomp's hash follows its pre-rendered output.
 - **K6. Frame range for non-render-hashed expressions.** `Node::dependsOnProjectFrameRange`
   (Node.cpp:1050) counts any knob with an expression, but `computeContentHash` folds the range only
   when a render-hashed knob has one (Node.cpp:1035). Such a node is marked on a range edit without
-  its key changing. That costs a recompute; it is not a staleness bug. Low risk.
+  its key changing. That costs a recompute; it is not a staleness bug. **Fixed in M260:** only
+  render-hashed expressions count. Test:
+  `NodeContentHashTest.ARangeEditDoesNotMarkANodeWhoseOnlyExpressionIsOnANonHashedKnob`.
 - **K7. Settings outside the digest.** `invalidateAllHashes` (Settings.cpp:2303) only bumps the
   epoch. A Settings knob that affects pixels without feeding the digest would not re-key anything.
-  The grep found none (see "Not invalidated by"). Low risk, but not enforced.
+  The grep found none (see "Not invalidated by"). **Fixed in M260:** render-affecting Settings
+  (transform concatenation) feed the project digest. Tests:
+  `NodeContentHashTest.ARenderAffectingSettingMovesTheProjectDigest`,
+  `CacheStressTest.RenderSettingEdit`.
 - **K8. Session stability.** `statx` failing on `/proc/self/exe` (Plugin.cpp:72-74) makes every
   native hash per-session. That is safe, because it only causes misses. No persistent cache
   (disk cache, image-caches.md) can then be reused.

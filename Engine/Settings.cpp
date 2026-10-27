@@ -51,6 +51,7 @@
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
@@ -450,6 +451,7 @@ Settings::initializeKnobsRendering()
                                                                "transformations.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
     _activateTransformConcatenationSupport->setName("transformCatSupport");
     _renderingPage->addKnob(_activateTransformConcatenationSupport);
+    _renderAffectingKnobs.push_back(_activateTransformConcatenationSupport);
 }
 
 void
@@ -3544,6 +3546,32 @@ bool
 Settings::areRGBPixelComponentsSupported() const
 {
     return _activateRGBSupport->getValue();
+}
+
+U64
+Settings::getRenderAffectingDigest() const
+{
+    ContentHasher h;
+
+    h.appendU64(_renderAffectingKnobs.size());
+    for (std::size_t i = 0; i < _renderAffectingKnobs.size(); ++i) {
+        h.appendString(_renderAffectingKnobs[i]->getName());
+        h.appendU64(_renderAffectingKnobs[i]->getContentHash());
+    }
+
+    return h.finalize();
+}
+
+bool
+Settings::isRenderAffecting(const KnobI* knob) const
+{
+    for (std::size_t i = 0; i < _renderAffectingKnobs.size(); ++i) {
+        if (_renderAffectingKnobs[i].get() == knob) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool

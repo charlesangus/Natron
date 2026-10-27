@@ -306,6 +306,14 @@ USDRead::purgeCaches()
 } // USDRead::purgeCaches
 
 void
+USDRead::purgeCachesKeepingFileStamps()
+{
+    // The layers stay as loaded; the next evaluation authors from them again.
+    invalidateSceneLayer();
+    clearActionsCache();
+}
+
+void
 USDRead::onEffectCreated(bool /*mayCreateFileDialog*/,
                          const CreateNodeArgs& /*args*/)
 {

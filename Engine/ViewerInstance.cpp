@@ -1363,6 +1363,8 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
 
     if (useCache) {
         FrameEntryLocker entryLocker(_imp.get());
+        const bool recordLookup = !isDraftMode && (outArgs->params->textureIndex == 0);
+        ViewerFrameFilter lookup;
         for (std::list<UpdateViewerParams::CachedTile>::iterator it = outArgs->params->tiles.begin(); it != outArgs->params->tiles.end(); ++it) {
             FrameKey key(getNode().get(),
                          outArgs->params->time,
@@ -1380,6 +1382,10 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
                          outArgs->params->alphaLayer.getLayerID() + outArgs->params->alphaChannelName,
                          outArgs->params->depth == eImageBitDepthFloat,
                          isDraftMode);
+            if (recordLookup) {
+                lookup.settings = key;
+                lookup.tiles.push_back(it->rect);
+            }
             std::list<FrameEntryPtr> entries;
             bool hasTextureCached = appPTR->getTexture(key, &entries);
             if ( stats  && stats->isInDepthProfilingEnabled() ) {
@@ -1434,11 +1440,28 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
                 ++outArgs->params->nbCachedTile;
             }
         }
+        if (recordLookup && !lookup.tiles.empty()) {
+            QMutexLocker k(&_imp->lastLookupMutex);
+            _imp->lastLookup = lookup;
+            _imp->hasLastLookup = true;
+        }
     }
 
 
     return eViewerRenderRetCodeRender;
 } // ViewerInstance::getViewerRoIAndTexture
+
+bool
+ViewerInstance::getLastFullQualityLookup(ViewerFrameFilter* filter) const
+{
+    QMutexLocker k(&_imp->lastLookupMutex);
+    if (!_imp->hasLastLookup) {
+        return false;
+    }
+    *filter = _imp->lastLookup;
+
+    return true;
+}
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::getRoDAndLookupCache(const bool useOnlyRoDCache,

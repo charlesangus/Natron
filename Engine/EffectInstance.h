@@ -2033,6 +2033,15 @@ public:
     virtual void purgeCaches()
     {
     };
+
+    /**
+     * @brief Clear All Caches: drops what the node decoded, but the files it reads stay pinned as
+     * they were loaded or reloaded, so a file changed on disk since fails until Reload.
+     **/
+    virtual void purgeCachesKeepingFileStamps()
+    {
+        purgeCaches();
+    }
     virtual void clearLastRenderedImage();
 
     void clearActionsCache();

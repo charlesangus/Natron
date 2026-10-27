@@ -199,11 +199,11 @@ TEST_F(ExpressionFrameVaryingTest, RenameWithoutAnExpressionLeavesNoBracketOpen)
     const EffectInstancePtr effect = g.grade->getEffectInstance();
     ASSERT_TRUE(g.white->getExpression(1).empty());
 
-    g.white->replaceNodeNameInExpression(1, "oldName", "newName");
+    g.white->replaceNodeNameInExpressionCode(1, "oldName", "newName");
     EXPECT_FALSE(effect->isEvaluationBlocked());
 
     g.white->setExpression(0, "frame*0.1", false, true);
-    g.white->replaceNodeNameInExpression(0, "frame", "frame");
+    g.white->replaceNodeNameInExpressionCode(0, "frame", "frame");
     EXPECT_FALSE(effect->isEvaluationBlocked());
     EXPECT_EQ(std::string("frame*0.1"), g.white->getExpression(0));
 }

@@ -1853,10 +1853,9 @@ InspectorNode::setActiveInputAndRefresh(int inputNb,
         return;
     }
 
-    // The active inputs are part of the hash: they change first, so the mark follows them.
+    // refreshActiveInputs() marks the hash, so the rest of onInputChanged() reads the new one.
     Q_EMIT inputChanged(inputNb);
     onInputChanged(inputNb, isASide);
-    computeHash();
 
     runInputChangedCallback(inputNb);
 
@@ -1876,8 +1875,10 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
 {
     assert( QThread::currentThread() == qApp->thread() );
     NodePtr inputNode = getRealInput(inputNbChanged);
+    bool changed;
     {
         QMutexLocker l(&_activeInputsMutex);
+        const int before[2] = { _activeInputs[0], _activeInputs[1] };
         if (!inputNode) {
             ///check if the input was one of the active ones if so set to -1
             if (_activeInputs[0] == inputNbChanged) {
@@ -1905,6 +1906,13 @@ InspectorNode::refreshActiveInputs(int inputNbChanged,
                 }
             }
         }
+        changed = (before[0] != _activeInputs[0]) || (before[1] != _activeInputs[1]);
+    }
+    // The viewer's content hash folds the active inputs; marked after they change and before
+    // anything that follows in onInputChanged() reads the hash. Not under the mutex: a hash read
+    // that a mark lets through reads the active inputs.
+    if (changed) {
+        markHashDirty();
     }
     Q_EMIT activeInputsChanged();
     Q_EMIT refreshOptionalState();

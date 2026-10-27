@@ -68,11 +68,23 @@ Cases for holes fixed here run by default:
 | `USDReadTest.USDReadSublayerChangedWhileClosed` | N2 | fixed in M260 |
 | `CacheStressConcurrentTest.OnInputChangedUnderTheNewHash` | T4 | fixed in M260 |
 | `CacheStressConcurrentTest.ViewerABSwitchDuringRender` | T3 | fixed in M260 |
+| `CacheStressTest.RgbThenRgbaRequest` | I4 | added in M260; engine unchanged unless it fails |
+| `CacheStressTest.ExpressionOutsideRange` | E3 | fixed in M260 |
+| `CacheStressTest.RenderSettingEdit` | K7 | fixed in M260 |
+| `CacheStressTest.NonHashedKnobSweep` | K3 | fixed in M260 |
+| `CacheStressTest.AddLayersRegistryChange` | K5 | fixed in M260 (audit: no new overrides) |
+| `CacheStressGpuTest.DiskCacheSourcesAreNotImportedByAddress` | G1 | fixed in M260 |
+| `CacheStressGpuTest.DeviceSwitchRetriesRejectedShader` | G2 | fixed in M260 |
 | `CacheStressTest.DISABLED_WholeValueExpression_M72` | E1 | disabled until M72 |
 | `CacheStressConcurrentTest.DISABLED_KnobEditsDuringRender` | K1 | disabled until M202 (#131) |
 
 Unit tests for the M242 fixes: `Tests/ExpressionFrameVarying_Test.cpp` (I1, E2) and
 `Tests/QueuedInputEdit_Test.cpp` (T1, T6, T7). V4 has no automated test.
+
+Unit tests for the M260 fixes: `NodeContentHashTest` (E2 rename, K4 getattr reads, K6 range
+edits, K7 Settings digest), `Knob_Test` (E3), `RawKindFrameworkTest` (A5), `ProjectYaml` and
+`ClipboardYaml` cache-ID tests plus `CacheStressSelfTest` (I3), `HashInvariantsTest` (V2) and
+`Tests/gui/m178_timeline_cache_line.py` (V3). The random walk gains `dynamicExpression` (K4).
 
 ## Follow-up list
 
@@ -82,13 +94,6 @@ stores and V1; M72 owns E1). Details in the family docs.
 | Hole | Summary | Doc |
 |---|---|---|
 | T5 | Group connection changes in the queue don't count as a change | topology.md |
-| V2, V3 | Timeline cached-frames line out of date (display only) | viewer-and-timeline.md |
-| G1 | GPU host import cache keyed by host address and length | gpu.md |
-| G2 | Shader gate ignores the device | gpu.md |
-| I3 | DiskCache persistence across holders | image-caches.md |
-| I4 | Colour layers interchangeable on cache lookup | image-caches.md |
-| E2 | Rename rewrites listeners by plain string replace (the bracket leak is fixed) | expressions-and-links.md |
-| E3 | Clamped and unclamped expression results share entries | expressions-and-links.md |
-| A4 | Non-abortable render uses newer metadata | actions-and-metadata.md |
-| A5 | Same-hash drops skip geometry results (latent) | actions-and-metadata.md |
-| K3-K8 | Content hash gaps: knobs outside the hash, parser-found dependencies, opt-in node state, frame range, Settings outside the digest, session stability | keys.md |
+| A4 | A sequence write can use metadata newer than its render (the plan's premise does not hold: these writes are abortable) | actions-and-metadata.md |
+| I4 | Colour layers interchangeable on lookup, pending `CacheStressTest.RgbThenRgbaRequest` | image-caches.md |
+| K8 | Failed `statx` on the binary only causes misses (safe, no change) | keys.md |

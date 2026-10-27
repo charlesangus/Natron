@@ -169,8 +169,14 @@ not known well enough to rule time out. See hole I1 for what it was before.
 - **I3 DiskCache persistence across holders.** The cache ID is the first script name and is unique
   only within a project (NodePrivate.h:371). Restored entries from another project with the same
   first name and an equal hash are shared by content, which is correct only if the hash is
-  complete. That inherits keys.md K3-K8. Low risk; not fixed by M202.
+  complete. That inherits keys.md K3-K8. **Fixed in M260:** the cache ID is a UUID, unique in the
+  process (a live registry) and saved in the project file only, so a loaded project keeps its
+  disk-cache entries, a copy or preset gets a fresh ID, and two projects never share one. Tests:
+  `ProjectYaml.ANodeCacheIDRoundTrips`, `ClipboardYaml.ACopiedNodeLeavesItsCacheIDBehind`,
+  `CacheStressSelfTest.TheReferenceEqualsAFreshAppLoadOfTheSavedProject`. No test runs two apps on
+  one disk cache: the harness has a single AppInstance.
 - **I4 Colour layers interchangeable on lookup.** `convertible` treats any two colour layers as
   matching (EffectInstance.cpp:2131) because the key has no layer. Unverified whether an entry
-  stored for RGB can answer an RGBA request with a synthesized alpha. Worth a case in the Phase 3
-  stress suites. Not touched by M202.
+  stored for RGB can answer an RGBA request with a synthesized alpha. **M260** adds
+  `CacheStressTest.RgbThenRgbaRequest` with no engine change; if it fails, `convertible` is to
+  accept only a superset of the requested channels.

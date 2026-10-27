@@ -43,6 +43,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
@@ -107,6 +108,31 @@ TEST_F(BaseTest, ScalarKnobAcceptsExpressions)
 
     ASSERT_TRUE(bool(knob));
     EXPECT_NO_THROW(knob->setExpression(0, "1", false, true));
+}
+
+// One expression result serves clamped and unclamped reads, whichever comes first.
+TEST_F(BaseTest, ExpressionResultOutsideTheRangeServesClampedAndUnclampedReads)
+{
+    NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName(kBlurParamSize));
+    ASSERT_TRUE(bool(size));
+    ASSERT_EQ(0., size->getMinimum(0));
+    ASSERT_EQ(1000., size->getMaximum(1));
+
+    size->setExpression(0, "-5", false, true);
+    size->setExpression(1, "2000", false, true);
+
+    EXPECT_EQ(0., size->getValue(0, ViewSpec::current(), true));
+    EXPECT_EQ(-5., size->getValue(0, ViewSpec::current(), false));
+    EXPECT_EQ(0., size->getValue(0, ViewSpec::current(), true));
+
+    EXPECT_EQ(2000., size->getValue(1, ViewSpec::current(), false));
+    EXPECT_EQ(1000., size->getValue(1, ViewSpec::current(), true));
+    EXPECT_EQ(2000., size->getValue(1, ViewSpec::current(), false));
+
+    EXPECT_EQ(1000., size->getValueAtTime(3., 1, ViewSpec::current(), true));
+    EXPECT_EQ(2000., size->getValueAtTime(3., 1, ViewSpec::current(), false));
 }
 
 TEST_F(BaseTest, DuplicateOnHolderAndAliasKnobLayers)

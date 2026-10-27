@@ -160,11 +160,15 @@ transform, so skipping them in that mode is correct.
   and holder (AppManager.cpp:2651-2653). It marks a frame when any one tile exists, whatever its
   view, channels, layer, input name, draft flag, or how much of the frame the tiles cover. A frame
   cached only in another view, layer or channel mode, or only partly, is drawn as cached. Display
-  only: no pixels are wrong.
+  only: no pixels are wrong. **Fixed in M260:** the line takes the viewer's last full-quality
+  lookup (`ViewerInstance::getLastFullQualityLookup`) and marks a frame only when a non-draft entry
+  with the same display settings holds every tile of that lookup. It assumes the frame's tiles match
+  the last lookup's. Test: `HashInvariantsTest.ViewerCachedFramesFollowTheLastLookup`.
 - **V3. The line refreshes only on uploads and cache signals.** After an edit whose render fails,
   draws black, or is paused, nothing uploads and no cache signal fires. The line keeps the old
   hash's frames until the next event (TimeLineGui.cpp:1464-1473, ViewerGL.cpp:1633, :1914). Display
-  only.
+  only. **Fixed in M260:** a failed or black render and the end of playback (stop, abort, pause)
+  refresh the line if it is stale. Test: `Tests/gui/m178_timeline_cache_line.py` (failed render).
 - **V4. Other levels keep earlier images.** A new image replaces only its own level
   (ViewerGL.cpp:1581). `getLastRenderedImage` returns the first level that holds an image, starting
   at level 0 (ViewerGL.cpp:4583-4606). `getLastRenderedImageByMipmapLevel` falls back to other

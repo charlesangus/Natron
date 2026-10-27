@@ -786,6 +786,34 @@ TEST_F(RawKindFrameworkTest, AWrongRawStageIsNeverAnIdentity)
     EXPECT_TRUE(rawOp->hasPersistentMessage());
 }
 
+// A stage change under the same hash reaches the cached identity answer downstream, which is
+// keyed by that unmoved hash.
+TEST_F(RawKindFrameworkTest, AStageChangeUnderTheSameHashRecomputesTheCachedIdentity)
+{
+    NodePtr source = createRawSource("RGGB", 0, 0, eRawStagePrepared);
+    NodePtr op = createOp(kRawKindTestIdentityOpID, source);
+    ASSERT_TRUE(source && op);
+    EffectInstancePtr effect = op->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    double inputTime = 0.;
+    ViewIdx inputView;
+    int inputNb = -1;
+
+    const U64 hash = effect->getRenderHash();
+    EXPECT_TRUE(effect->isIdentity_public(true, hash, kTime, RenderScale::identity, kWindow, ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_EQ(0, inputNb);
+
+    sourceEffect(source)->setRaw("RGGB", 0, 0, eRawStageRaw);
+    ASSERT_EQ(hash, effect->getRenderHash());
+    inputNb = -1;
+    EXPECT_FALSE(effect->isIdentity_public(true, hash, kTime, RenderScale::identity, kWindow, ViewIdx(0), &inputTime, &inputView, &inputNb));
+
+    sourceEffect(source)->setRaw("RGGB", 0, 0, eRawStagePrepared);
+    inputNb = -1;
+    EXPECT_TRUE(effect->isIdentity_public(true, hash, kTime, RenderScale::identity, kWindow, ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_EQ(0, inputNb);
+}
+
 TEST_F(RawKindFrameworkTest, AReaderOnlyOpWorksUnchanged)
 {
     const RawGainTestOp gainOp;

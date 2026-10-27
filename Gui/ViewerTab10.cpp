@@ -354,6 +354,8 @@ ViewerTab::onEngineStopped()
     _imp->mustSetUpPlaybackButtonsTimer.start(200);
 
     _imp->currentFrameBox->setValue( _imp->viewerNode->getTimeline()->currentFrame() );
+    // Playback stopped, aborted or paused: its last frame may never have reached an upload.
+    refreshTimelineCacheLineIfStale();
 
     if ( getGui() && getGui()->isGUIFrozen() && appPTR->getCurrentSettings()->isAutoTurboEnabled() ) {
         getGui()->onFreezeUIButtonClicked(false);

@@ -147,6 +147,7 @@ class Format;
 class FrameEntry;
 class FrameFuture;
 class FrameKey;
+struct ViewerFrameFilter;
 class FrameParams;
 class FrameRenderContext;
 class FramebufferConfig;

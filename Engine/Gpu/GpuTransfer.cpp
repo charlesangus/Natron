@@ -798,7 +798,7 @@ struct GpuTransfer::Impl {
     // imports land in `owned` and must outlive the transfer that uses them. A range that cached imports
     // already cover needs no alignment: copies out of an import may start and end anywhere in it.
     std::optional<StagedReason> resolveImports(const void* p, VkDeviceSize bytes, std::vector<ImportSeg>& segs,
-                                               std::vector<GpuBuffer>& owned, ImportOrigin origin)
+                                               std::vector<GpuBuffer>& owned, ImportOrigin origin, bool cache)
     {
         const uintptr_t base = reinterpret_cast<uintptr_t>(p);
         if (importAlignment == 0) {
@@ -822,7 +822,7 @@ struct GpuTransfer::Impl {
             return StagedReason::Unaligned;
         }
         char* host = static_cast<char*>(const_cast<void*>(p));
-        if (!opt.cacheHostImports) {
+        if (!opt.cacheHostImports || !cache) {
             for (VkDeviceSize pos = 0; pos < bytes;) {
                 const VkDeviceSize len = std::min(importPieceMax, bytes - pos);
                 GpuBuffer b;
@@ -923,7 +923,7 @@ struct GpuTransfer::Impl {
         }
         std::vector<ImportSeg> segs;
         std::vector<GpuBuffer> owned;
-        return !resolveImports(range.data, range.bytes, segs, owned, ImportOrigin::Prepare).has_value();
+        return !resolveImports(range.data, range.bytes, segs, owned, ImportOrigin::Prepare, true).has_value();
     }
 
     void markUsed(const std::vector<ImportSeg>& segs, std::vector<GpuBuffer>& owned, TimelineValue use)
@@ -1046,7 +1046,7 @@ struct GpuTransfer::Impl {
         {
             std::vector<ImportSeg> segs;
             std::vector<GpuBuffer> owned;
-            const std::optional<StagedReason> staged = resolveImports(src.data, bytes, segs, owned, ImportOrigin::Upload);
+            const std::optional<StagedReason> staged = resolveImports(src.data, bytes, segs, owned, ImportOrigin::Upload, o.cacheImport);
             const bool imported = !staged.has_value();
             if (staged) {
                 countStaged(*staged);
@@ -1157,7 +1157,7 @@ struct GpuTransfer::Impl {
         uint64_t v = 0;
         std::vector<ImportSeg> segs;
         std::vector<GpuBuffer> owned;
-        const std::optional<StagedReason> staged = resolveImports(dst.data, bytes, segs, owned, ImportOrigin::Download);
+        const std::optional<StagedReason> staged = resolveImports(dst.data, bytes, segs, owned, ImportOrigin::Download, o.cacheImport);
         const bool imported = !staged.has_value();
         if (staged) {
             countStaged(*staged);
@@ -1502,6 +1502,8 @@ GpuTransfer::process(std::span<const TransferFrame> frames, const ComputeRecordF
         }
         so.hostSpan = host;
         so.hostOrigin = t0;
+        // process() frames are under the cacheHostImports contract.
+        so.cacheImport = true;
         return so;
     };
 

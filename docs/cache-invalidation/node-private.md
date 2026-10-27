@@ -138,10 +138,14 @@ members (RawColorCalibration.h:509-511; knob UI state used in `knobChanged`, Raw
   before opening it and after reading it, so a rewrite during a read fails instead of mixing
   versions. Reload (`NativeRead::purgeCaches`) invalidates the stamp and evicts the header and
   decode, the only way a new version comes in. NativeWrite's read-back of its own output and the
-  deep-file sniff in `AppManager` read with `FilePin::eDisk`, unpinned. Note that emptying every
-  cache (`AppManager::clearAllCaches`) purges the Reads too, so it reloads their files as Reload
-  does. Tests: `FileStamp.*Identity*`, `FileStamp.*MatchesDisk`,
+  deep-file sniff in `AppManager` read with `FilePin::eDisk`, unpinned. Emptying every cache
+  (`AppManager::clearAllCaches`) drops what the Reads decoded but keeps their stamps
+  (`purgeCachesKeepingFileStamps`), so a file changed since fails until Reload. Tests: `FileStamp.*Identity*`, `FileStamp.*MatchesDisk`,
   `FileStamp.OiioReaderFailsOnARewrittenFileUntilReload`,
   `RawDecodeSupportTest.ARewrittenFileFailsWithoutADecodeUntilReload`,
   `CacheStressTest.ReadPinnedUntilReload` and `CacheStressTest.RawReadPinnedUntilReload`.
-- **G2** (shader gate ignores the device) is recorded in [gpu.md](gpu.md).
+- **G2** (shader gate ignores the device) is recorded in [gpu.md](gpu.md); fixed in M260.
+- **K5 audit (M260).** AddLayers reads the project layer registry, which only grows; a layer it
+  names is resolved when the row is set, so a later registration changes no output it has
+  rendered. No node needed a new `appendNodeContentHash` override. Test:
+  `CacheStressTest.AddLayersRegistryChange`.

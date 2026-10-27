@@ -319,6 +319,8 @@ try:
         policy.setValue(POLICY_OPEN_EDIT)
         open_node = make("USDEditTransform", "Open", 150, 300)
         require(open_node.connectInput(0, merge), "connect Merge into Open")
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
         require(viewer.connectInput(0, open_node), "connect Open into the Viewer")
         graph = node_graph_view()
         require(graph is not None, "the node graph is on screen")

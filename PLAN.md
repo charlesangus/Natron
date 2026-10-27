@@ -311,7 +311,7 @@ future core work has solid ground to build on.
 | M213 | Contrast And Texture | doing | M209 | bosley-native-nodes | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
 | M214 | Colour Balance RGB | doing | - | bosley-native-nodes | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
 | M215 | Colour Equalizer | todo | M209, M214 |  | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
-| M216 | Auto-Straighten | todo | - |  | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
+| M216 | Auto-Straighten | doing | - | bosley-native-nodes | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
 | M217 | VectorGenerator Node | todo | M124 |  | E18 | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
 | M218 | VectorGenerator GPU | todo | M217, M124 |  | E18 | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
 | M219 | Curves Follow Vectors | todo | M217, M146 |  | E18 | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |

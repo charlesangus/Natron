@@ -306,7 +306,7 @@ future core work has solid ground to build on.
 | M210 | Profiled Denoise | doing | M209 | bosley-native-nodes | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | todo | M209, M146 |  | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
 | M212 | Tone Equalizer | doing | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
-| M213 | Contrast And Texture | todo | M209 |  | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
+| M213 | Contrast And Texture | doing | M209 | bosley-native-nodes | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
 | M214 | Colour Balance RGB | doing | - | bosley-native-nodes | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
 | M215 | Colour Equalizer | todo | M209, M214 |  | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | todo | - |  | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |

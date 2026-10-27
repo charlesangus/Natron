@@ -56,6 +56,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
@@ -75,12 +76,20 @@
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/GpuContext.h"
 
+#include "staged_test_compositealpha_xor_spirv.h"
 #include "staged_test_pixelwrap_scale_spirv.h"
 #endif
 
 #include <ofxImageEffect.h>
 
 #define kGpuScaleTestOpPluginID "test.natron.built-in.GpuScaleTestOp"
+#define kGpuAlphaFoldTestOpPluginID "test.natron.built-in.GpuAlphaFoldTestOp"
+#define kAlphaFoldParamMode "alphaMode"
+#define kAlphaFoldParamFoldA2 "foldA2"
+#define kAlphaFoldParamALayer "aLayer"
+#define kAlphaFoldParamAAlpha "aAlpha"
+#define kAlphaFoldParamAAlphaLayer "aAlphaLayer"
+#define kAlphaFoldParamBAlpha "bAlpha"
 
 NATRON_NAMESPACE_ENTER
 
@@ -175,33 +184,181 @@ static_assert(PointOp<GpuScaleTestOp>);
 
 typedef ImageNode<GpuScaleTestOp> GpuScaleTestNode;
 
+// The kernel GpuAlphaFoldTestOp names, as GpuScaleTestOp's; -1 keeps the node on the CPU.
+std::atomic<int> gAlphaFoldKernel(-1);
+
+// How GpuAlphaFoldTestOp's A input gets its alpha, in the order of the alphaMode knob.
+enum class AlphaFoldMode {
+    Channel,
+    Layer,
+    ReadLayer
+};
+
+constexpr InputSpec kAlphaFoldInputs[] = {
+    InputSpec { .label = "B" },
+    InputSpec { .label = "A", .optional = true },
+    InputSpec { .label = "A2", .optional = true },
+};
+
+/**
+ * @brief The Composite op of StagedComposite_Test's TestAlphaFoldOp with a GPU kernel: A, read in
+ * the layer aLayer selects, folded over B and, with foldA2, A2 over that, each step the Porter-Duff
+ * xor through both alphas. B's and A2's alphas are the channel bAlpha and aAlpha select; A's is
+ * aAlpha's channel, the layer aAlphaLayer selects read per channel, or aLayer's own alpha by
+ * alphaMode. Its kernel is the test entry compositealpha_xor.
+ **/
+struct GpuAlphaFoldTestOp {
+    struct Params {
+        AlphaFoldMode mode;
+        bool foldA2;
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kGpuAlphaFoldTestOpPluginID,
+        .label = "Test GPU Alpha Fold Op",
+        .grouping = "Other/Test",
+        .inputs = kAlphaFoldInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(true, true, true, true),
+        .op = OpKind::Composite,
+    };
+
+    KnobIntWPtr mode;
+    KnobBoolWPtr foldA2;
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page)
+    {
+        KnobIntPtr alphaMode = AppManager::createKnob<KnobInt>(holder, std::string("Alpha Mode"));
+        alphaMode->setName(kAlphaFoldParamMode);
+        alphaMode->setDefaultValue((int)AlphaFoldMode::Channel);
+        page->addKnob(alphaMode);
+        mode = alphaMode;
+
+        KnobBoolPtr a2 = AppManager::createKnob<KnobBool>(holder, std::string("Fold A2"));
+        a2->setName(kAlphaFoldParamFoldA2);
+        a2->setDefaultValue(false);
+        page->addKnob(a2);
+        foldA2 = a2;
+
+        KnobLayerSelectPtr aLayer = AppManager::createKnob<KnobLayerSelect>(holder, std::string("A Layer"), 1, false);
+        aLayer->setName(kAlphaFoldParamALayer);
+        page->addKnob(aLayer);
+
+        KnobLayerSelectPtr aAlphaLayer = AppManager::createKnob<KnobLayerSelect>(holder, std::string("A Alpha Layer"), 1, false);
+        aAlphaLayer->setName(kAlphaFoldParamAAlphaLayer);
+        page->addKnob(aAlphaLayer);
+
+        KnobChannelSelectPtr aAlpha = AppManager::createKnob<KnobChannelSelect>(holder, std::string("A Alpha"), 1, false);
+        aAlpha->setName(kAlphaFoldParamAAlpha);
+        page->addKnob(aAlpha);
+
+        KnobChannelSelectPtr bAlpha = AppManager::createKnob<KnobChannelSelect>(holder, std::string("B Alpha"), 1, false);
+        bAlpha->setName(kAlphaFoldParamBAlpha);
+        page->addKnob(bAlpha);
+    }
+
+    Params bake(const KnobReader& reader) const
+    {
+        return Params { (AlphaFoldMode)reader.valueOr(mode, (int)AlphaFoldMode::Channel), reader.valueOr(foldA2, false) };
+    }
+
+    bool isIdentity(const Params& /*params*/) const
+    {
+        return false;
+    }
+
+    CompositeInputs inputs(const Params& params,
+                           const RouteContext& /*context*/) const
+    {
+        CompositeInputs folded;
+
+        folded.base = CompositeInput { 0, {}, CompositeAlpha::channel(kAlphaFoldParamBAlpha) };
+        CompositeAlpha aAlpha = CompositeAlpha::channel(kAlphaFoldParamAAlpha);
+        if (params.mode == AlphaFoldMode::Layer) {
+            aAlpha = CompositeAlpha::layer(kAlphaFoldParamAAlphaLayer);
+        } else if (params.mode == AlphaFoldMode::ReadLayer) {
+            aAlpha = CompositeAlpha::readLayer(kAlphaFoldParamAAlpha);
+        }
+        folded.add(CompositeInput { 1, kAlphaFoldParamALayer, aAlpha });
+        if (params.foldA2) {
+            folded.add(CompositeInput { 2, {}, CompositeAlpha::channel(kAlphaFoldParamAAlpha) });
+        }
+
+        return folded;
+    }
+
+    void step(const Params& /*params*/,
+              const RowIO& io) const
+    {
+        const int nComps = io.nComps;
+        const float* result = io.src[0];
+        const float* input = io.src[1];
+        float* dst = io.dst;
+        float* dstAlpha = io.dstAlpha;
+
+        for (int x = 0; x < io.width; ++x, result += nComps, input += nComps, dst += nComps, dstAlpha += nComps) {
+            for (int c = 0; (c < nComps) && (c < 4); ++c) {
+                if (io.channels[pixelKernelChannelBit(nComps, c)]) {
+                    const float resultAlpha = io.alpha[0].at(x, c);
+                    const float inputAlpha = io.alpha[1].at(x, c);
+                    dst[c] = input[c] * (1.f - resultAlpha) + result[c] * (1.f - inputAlpha);
+                    dstAlpha[c] = inputAlpha * (1.f - resultAlpha) + resultAlpha * (1.f - inputAlpha);
+                }
+            }
+        }
+    }
+
+    GpuOpRef gpu(const Params& /*params*/) const
+    {
+        const int kernel = gAlphaFoldKernel.load();
+
+        return (kernel < 0) ? GpuOpRef::none() : GpuOpRef::packed(kernel, {});
+    }
+};
+
+static_assert(GpuCompositeOp<GpuAlphaFoldTestOp>);
+
+typedef ImageNode<GpuAlphaFoldTestOp> GpuAlphaFoldTestNode;
+
 const double kTime = 1.;
 
+template <typename NODE>
 void
-registerGpuScaleTestOpOnce()
+registerTestNode()
+{
+    EffectInstancePtr node(NODE::BuildEffect(NodePtr()));
+    std::map<std::string, void (*)()> functions;
+
+    functions.insert(std::make_pair("BuildEffect", (void (*)())&NODE::BuildEffect));
+    LibraryBinary* binary = new LibraryBinary(functions);
+
+    std::list<std::string> grouping;
+    node->getPluginGrouping(&grouping);
+    QStringList qgrouping;
+    for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+        qgrouping.push_back(QString::fromUtf8(it->c_str()));
+    }
+
+    Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                       QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
+    // Registered after AppManager::load(), so the label-without-suffix the script name is made
+    // from was never assigned.
+    p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+    p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+}
+
+void
+registerTestNodesOnce()
 {
     static std::once_flag once;
 
     std::call_once(once, []() {
-        EffectInstancePtr node(GpuScaleTestNode::BuildEffect(NodePtr()));
-        std::map<std::string, void (*)()> functions;
-
-        functions.insert(std::make_pair("BuildEffect", (void (*)())&GpuScaleTestNode::BuildEffect));
-        LibraryBinary* binary = new LibraryBinary(functions);
-
-        std::list<std::string> grouping;
-        node->getPluginGrouping(&grouping);
-        QStringList qgrouping;
-        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
-            qgrouping.push_back(QString::fromUtf8(it->c_str()));
-        }
-
-        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
-                                           QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
-        // Registered after AppManager::load(), so the label-without-suffix the script name is
-        // made from was never assigned.
-        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
-        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+        registerTestNode<GpuScaleTestNode>();
+        registerTestNode<GpuAlphaFoldTestNode>();
     });
 }
 
@@ -305,6 +462,7 @@ queryFor(const NodePtr& op,
 
     q.time = kTime;
     q.view = ViewIdx(0);
+    q.plane = plane;
     q.nComps = plane.getNumComponents();
     q.bitDepth = eImageBitDepthFloat;
     const int maskInput = effect->getMaskInput();
@@ -380,6 +538,21 @@ scaleKernelDesc()
 
     return d;
 }
+
+gpu::GpuKernelDesc
+alphaFoldKernelDesc()
+{
+    gpu::GpuKernelDesc d;
+
+    d.spirv = staged_test_compositealpha_xor_spirv;
+    d.spirvWords = staged_test_compositealpha_xor_spirv_words;
+    d.entry = staged_test_compositealpha_xor_entry;
+    d.storageBufferCount = staged_test_compositealpha_xor_storage_buffers;
+    d.pushConstantBytes = staged_test_compositealpha_xor_push_bytes;
+    d.groupSize = { staged_test_compositealpha_xor_group_size[0], staged_test_compositealpha_xor_group_size[1], staged_test_compositealpha_xor_group_size[2] };
+
+    return d;
+}
 #endif
 
 } // namespace
@@ -393,13 +566,14 @@ class StagedImageEffectGpuTest
 protected:
     virtual void SetUp() OVERRIDE
     {
-        registerGpuScaleTestOpOnce();
+        registerTestNodesOnce();
         BaseTest::SetUp();
     }
 
     virtual void TearDown() OVERRIDE
     {
         gScaleKernel = -1;
+        gAlphaFoldKernel = -1;
         gOversizeParams = false;
         BaseTest::TearDown();
     }
@@ -484,6 +658,71 @@ protected:
     static StagedImageEffect* effectOf(const NodePtr& node)
     {
         return node ? dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get()) : NULL;
+    }
+
+    struct AlphaFold {
+        NodePtr op;
+        NodePtr b;
+        NodePtr a;
+        NodePtr a2;
+        RectI window;
+    };
+
+    // GpuAlphaFoldTestOp with B at the origin, A, which also carries the spec layer, offset so that
+    // it reads zero over part of the window, and A2 offset elsewhere. B's alpha is rgba.A.
+    void createAlphaFold(AlphaFold* fold)
+    {
+        fold->op = createNode(QString::fromUtf8(kGpuAlphaFoldTestOpPluginID));
+        ASSERT_NE(nullptr, fold->op);
+        fold->b = createSource("rgba");
+        fold->a = createSource("rgba");
+        fold->a2 = createSource("rgba");
+        ASSERT_NE(nullptr, fold->b);
+        ASSERT_NE(nullptr, fold->a);
+        ASSERT_NE(nullptr, fold->a2);
+        setParitySourceOrigin(fold->a, 10, 6);
+        setParitySourceOrigin(fold->a2, 1, 2);
+        setParitySourceExtraLayer(fold->a, true);
+        connectNodes(fold->b, fold->op, 0, true);
+        connectNodes(fold->a, fold->op, 1, true);
+        connectNodes(fold->a2, fold->op, 2, true);
+        setChannelKnob(fold->op, kAlphaFoldParamBAlpha, std::string(kNatronColorViewRGBA) + ".A");
+        fold->window = paritySourceWindow(fold->b, kTime, 0);
+        ASSERT_FALSE(fold->window.isNull());
+    }
+
+    // Sets fold's op to read A in aLayerID, its alpha as mode gives it from aAlphaChannel (an rgba
+    // channel name) or aAlphaLayerID, with or without A2.
+    static void setAlphaFold(const AlphaFold& fold,
+                             AlphaFoldMode mode,
+                             const std::string& aLayerID,
+                             const std::string& aAlphaChannel,
+                             const std::string& aAlphaLayerID,
+                             bool foldA2)
+    {
+        ASSERT_TRUE(setKnobValues(fold.op, kAlphaFoldParamMode, { (double)mode }));
+        ASSERT_TRUE(setKnobValues(fold.op, kAlphaFoldParamFoldA2, { foldA2 ? 1. : 0. }));
+        setLayerKnob(fold.op, kAlphaFoldParamALayer, aLayerID);
+        setLayerKnob(fold.op, kAlphaFoldParamAAlphaLayer, aAlphaLayerID);
+        setChannelKnob(fold.op, kAlphaFoldParamAAlpha, std::string(kNatronColorViewRGBA) + "." + aAlphaChannel);
+    }
+
+    static void setLayerKnob(const NodePtr& node,
+                             const std::string& name,
+                             const std::string& layerID)
+    {
+        KnobLayerSelectPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobLayerSelect>(name);
+        ASSERT_NE(nullptr, knob) << name;
+        knob->setLayer(layerID);
+    }
+
+    static void setChannelKnob(const NodePtr& node,
+                               const std::string& name,
+                               const std::string& channel)
+    {
+        KnobChannelSelectPtr knob = node->getEffectInstance()->getKnobByNameAndType<KnobChannelSelect>(name);
+        ASSERT_NE(nullptr, knob) << name;
+        knob->set(channel);
     }
 };
 
@@ -787,6 +1026,112 @@ TEST_F(StagedImageEffectGpuTest, RunsInARegionAndMatchesTheCpuFrame)
             }
         }
         EXPECT_EQ(0u, mismatches) << "masked " << masked;
+    }
+}
+
+// A Composite fold reading a selected layer is accepted on the GPU once it names a kernel, whether
+// the layer is the rendered plane or another one handed over beside it.
+TEST_F(StagedImageEffectGpuTest, HostAcceptsAFoldReadingASelectedLayer)
+{
+    AlphaFold fold;
+    createAlphaFold(&fold);
+    if (HasFatalFailure()) {
+        return;
+    }
+    StagedImageEffect* effect = effectOf(fold.op);
+    ASSERT_TRUE(effect != NULL);
+    const ImageLayerDesc plane = outputColorLayer(fold.op);
+    ASSERT_EQ(4, plane.getNumComponents());
+
+    for (const std::string& aLayer : { std::string(kNatronColorViewRGBA), std::string(kParitySourceExtraLayerID) }) {
+        setAlphaFold(fold, AlphaFoldMode::Layer, aLayer, "A", aLayer, true);
+        if (HasFatalFailure()) {
+            return;
+        }
+        gAlphaFoldKernel = -1;
+        EXPECT_FALSE(effect->canRenderOnGpu(queryFor(fold.op, plane))) << aLayer << ", no kernel";
+        gAlphaFoldKernel = 0;
+        EXPECT_TRUE(effect->canRenderOnGpu(queryFor(fold.op, plane))) << aLayer;
+    }
+
+    // An alpha layer with another channel count than its layer fails the render, so stays on the CPU.
+    setAlphaFold(fold, AlphaFoldMode::Layer, kNatronColorViewRGBA, "A", kParitySourceExtraLayerID, true);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(effect->canRenderOnGpu(queryFor(fold.op, plane)));
+    gAlphaFoldKernel = -1;
+}
+
+// The fold carries the result's alpha on the GPU as on the CPU: a broadcast alpha channel, a
+// per-channel alpha layer, and the read layer's own alpha, with A read in the rendered plane or in
+// the spec layer handed over beside it, and with A2 folded over that result.
+TEST_F(StagedImageEffectGpuTest, AlphaFoldRunsInARegionAndMatchesTheCpuFrame)
+{
+    AlphaFold fold;
+    createAlphaFold(&fold);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    const GpuContextReady registerKernel = [](std::string* error) {
+        GpuContext* context = appPTR->getGpuContext();
+        gpu::GpuRuntime* gpuRuntime = context ? context->runtime() : nullptr;
+        if (!gpuRuntime) {
+            *error = "the forced GPU context has no runtime";
+
+            return false;
+        }
+        gAlphaFoldKernel = (int)gpuRuntime->registerKernel(alphaFoldKernelDesc());
+
+        return true;
+    };
+
+    struct Case {
+        AlphaFoldMode mode;
+        const char* aLayer;
+        const char* aAlphaChannel;
+        const char* aAlphaLayer;
+        bool foldA2;
+    };
+    // A per-channel alpha layer has as many channels as the layer it is the alpha of.
+    const Case cases[] = {
+        { AlphaFoldMode::Channel, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, false },
+        { AlphaFoldMode::Channel, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, true },
+        { AlphaFoldMode::Channel, kNatronColorViewRGBA, "R", kParitySourceExtraLayerID, true },
+        { AlphaFoldMode::Layer, kParitySourceExtraLayerID, "A", kParitySourceExtraLayerID, false },
+        { AlphaFoldMode::Layer, kNatronColorViewRGBA, "A", kNatronColorViewRGBA, true },
+        { AlphaFoldMode::ReadLayer, kNatronColorViewRGBA, "R", kParitySourceExtraLayerID, true },
+        { AlphaFoldMode::ReadLayer, kParitySourceExtraLayerID, "R", kParitySourceExtraLayerID, true },
+    };
+    for (const Case& c : cases) {
+        const std::string what = "alpha mode " + std::to_string((int)c.mode) + ", A in " + c.aLayer + ", alpha " + c.aAlphaChannel + (c.foldA2 ? ", with A2" : "");
+        setAlphaFold(fold, c.mode, c.aLayer, c.aAlphaChannel, c.aAlphaLayer, c.foldA2);
+        if (HasFatalFailure()) {
+            return;
+        }
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, fold.op), fold.op, fold.window, kTime, registerKernel);
+        gAlphaFoldKernel = -1;
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.ok) << what << ": " << result.error;
+        EXPECT_TRUE(result.ranInRegion(fold.op)) << what;
+        std::map<std::string, int>::const_iterator ran = result.gpuTasksPerNode.find(fold.op->getScriptName_mt_safe());
+        EXPECT_TRUE((ran != result.gpuTasksPerNode.end()) && (ran->second > 0)) << what;
+        ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
+        ASSERT_FALSE(result.cpu.empty()) << what;
+
+        std::size_t mismatches = 0;
+        for (std::size_t i = 0; i < result.cpu.size(); ++i) {
+            if (!ParityTolerance::exact().accepts(result.cpu[i], result.gpu[i])) {
+                if (mismatches == 0) {
+                    ADD_FAILURE() << what << ": float " << i << " gpu " << result.gpu[i] << " cpu " << result.cpu[i];
+                }
+                ++mismatches;
+            }
+        }
+        EXPECT_EQ(0u, mismatches) << what;
     }
 }
 

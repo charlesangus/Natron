@@ -148,6 +148,20 @@ public Q_SLOTS:
 
     void clearCachedFrames();
 
+    /**
+     * @brief Rebuilds the cached line from the viewer cache: the frames with a texture for the
+     * viewer's current hash and mipmap level. Entries of an earlier hash stay in the cache for undo,
+     * so the line is never built from the cache signals alone.
+     **/
+    void refreshCachedFrames();
+
+    /**
+     * @brief Schedules refreshCachedFrames() when the viewer's hash or mipmap level differs from the
+     * ones the line was built for, as after an edit or an undo whose frame comes from the cache
+     * and adds no entry.
+     **/
+    void refreshCachedFramesIfStale();
+
     void onKeyframesIndicatorsChanged();
 
     void onProjectFrameRangeChanged(int, int);

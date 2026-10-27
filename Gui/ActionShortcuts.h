@@ -472,6 +472,17 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphTogglePreview "togglePreview"
 #define kShortcutDescActionGraphTogglePreview "Toggle Preview Images"
 
+// Node shortcuts for the Merge menu's actions, in the kShortcutGroupNodes group next to the plug-in
+// shortcuts. The IDs double as the nodes menu actions' object names (see initGui.py).
+#define kShortcutIDActionMergeMask "MergePresetMask"
+#define kShortcutDescActionMergeMask "Merge Mask"
+#define kShortcutIDActionMergeStencil "MergePresetStencil"
+#define kShortcutDescActionMergeStencil "Merge Stencil"
+#define kShortcutIDActionMergeMaskAllLayers "MergeMaskAllLayers"
+#define kShortcutDescActionMergeMaskAllLayers "Merge Mask All Layers"
+#define kShortcutIDActionMergeStencilAllLayers "MergeStencilAllLayers"
+#define kShortcutDescActionMergeStencilAllLayers "Merge Stencil All Layers"
+
 #define kShortcutIDActionGraphForcePreview "preview"
 #define kShortcutDescActionGraphForcePreview "Refresh Preview Images"
 

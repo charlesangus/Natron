@@ -78,7 +78,7 @@ protected:
 
     NodePtr createMerge()
     {
-        return createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        return createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     }
 };
 
@@ -166,8 +166,8 @@ TEST_F(NodeContentHashTest, DiamondJoinHashesAfterAllItsInputs)
     connectNodes(constant, a, 0, true);
     connectNodes(a, b, 0, true);
     connectNodes(a, c, 0, true);
-    connectNodes(b, d, kMergeInputB, true);
-    connectNodes(c, d, kMergeInputA, true);
+    connectNodes(b, d, kNativeMergeInputB, true);
+    connectNodes(c, d, kNativeMergeInputA, true);
     connectNodes(d, e, 0, true);
 
     KnobDoublePtr aSize = blurSize(a);
@@ -222,23 +222,23 @@ TEST_F(NodeContentHashTest, SwappingInputsChangesHash)
     ASSERT_TRUE(constant && blurredConstant && blur && merge);
     connectNodes(blurredConstant, blur, 0, true);
 
-    connectNodes(constant, merge, kMergeInputB, true);
-    connectNodes(blur, merge, kMergeInputA, true);
+    connectNodes(constant, merge, kNativeMergeInputB, true);
+    connectNodes(blur, merge, kNativeMergeInputA, true);
     refreshHashes({ constant, blurredConstant, blur, merge });
     const U64 straight = merge->getContentHash();
 
     disconnectNodes(constant, merge, true);
     disconnectNodes(blur, merge, true);
-    connectNodes(blur, merge, kMergeInputB, true);
-    connectNodes(constant, merge, kMergeInputA, true);
+    connectNodes(blur, merge, kNativeMergeInputB, true);
+    connectNodes(constant, merge, kNativeMergeInputA, true);
     refreshHashes({ merge });
     const U64 swapped = merge->getContentHash();
     EXPECT_NE(straight, swapped);
 
     disconnectNodes(constant, merge, true);
     disconnectNodes(blur, merge, true);
-    connectNodes(constant, merge, kMergeInputB, true);
-    connectNodes(blur, merge, kMergeInputA, true);
+    connectNodes(constant, merge, kNativeMergeInputB, true);
+    connectNodes(blur, merge, kNativeMergeInputA, true);
     refreshHashes({ merge });
     EXPECT_EQ(straight, merge->getContentHash());
 }

@@ -58,7 +58,7 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
 
 ## Phase 204.2: UI and node integration
 
-- [ ] M204.P2.T1 — Preferences "AI Models" page
+- [x] M204.P2.T1 — Preferences "AI Models" page
   - files: `Gui/PreferencesPanel.cpp`, new `Gui/AiModelsPage.h`, `Gui/AiModelsPage.cpp`, `Gui/CMakeLists.txt`
   - approach:
     - A table with columns name, task, size, weights licence, training-data licence (with an OSAID badge), and status (Installed, Missing, or a percentage).
@@ -68,7 +68,7 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
   - verify: an Xvfb GUI script opens the page, installs the `file://` fixture model, and sees the status flip to Installed. A screenshot is shared.
   - size: L
 
-- [ ] M204.P2.T2 — `ModelKnob` helper for nodes
+- [x] M204.P2.T2 — `ModelKnob` helper for nodes
   - files: new `Engine/Ai/ModelKnob.h`, `Engine/Ai/ModelKnob.cpp`
   - approach:
     - `ModelKnob::create(effect, task)` adds a `model` choice (installed and missing ids, showing names, defaulting to the task default) and a `downloadModel` button.
@@ -77,7 +77,7 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
   - verify: gtest on a test-only native node: a missing model sets the persistent error, and installing it clears the error on the next render.
   - size: M
 
-- [ ] M204.P2.T3 — CLI flags
+- [x] M204.P2.T3 — CLI flags
   - files: `Engine/CLArgs.cpp`, `Engine/CLArgs.h`, `Engine/AppManager.cpp`
   - approach: `--list-models` prints id, task, installed status and licence. `--download-model <id>` downloads it synchronously and exits non-zero on failure. Both work in NatronRenderer without a project.
   - verify: a test or script runs both flags against the `file://` fixture manifest via a `NATRON_AI_MANIFEST` test override.
@@ -91,5 +91,6 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
 
 ## Decisions
 
+- 2026-10-27 — `ModelKnob::create(effect, page, task, downloader = nullptr)`: the optional downloader is for tests. The per-task user default (hidden setting `aiDefaultModels`) applies only to nodes the user creates; a loaded project keeps its saved model.
 - 2026-10-27 — Packages, not models, are what darktable-ai ships (release-5.6.0, pinned): RealPLKSR and BSRGAN carry 2x and 4x in one `.dtmodel`, RawNIND carries Bayer and linear. The manifest keeps one entry per model and adds `package` and `files`; models of one package share a download and install to `models/<package>/`. Split ids get `-x2`/`-x4`/`-bayer`/`-linear`.
 - 2026-10-27 — `config.json` has no tensor names, multiple-of, scale or optimisation level: tensor names/shapes come from `InferenceSession`, the optimisation level is the caller's (as darktable), and `ModelConfig` holds only what the file carries (tiling, input sizes and kind, colour space, attributes, licences).

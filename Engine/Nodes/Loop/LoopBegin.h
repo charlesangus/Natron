@@ -143,6 +143,13 @@ private:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The iteration before, as is, when it already has the format asked of this node.
+    virtual bool forwardsOutput(const RenderRoIArgs& args,
+                                const std::list<ImageLayerDesc>& layers,
+                                const RectI& roi,
+                                std::map<ImageLayerDesc, ImagePtr>* outputLayers,
+                                RenderRoIRetCode* code) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;

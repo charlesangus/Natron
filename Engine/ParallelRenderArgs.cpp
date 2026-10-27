@@ -371,6 +371,10 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
 
         int inputNb = it->first.second;
 
+        if (effect->pullsInputInRender(inputNb, time, view, effectContext)) {
+            continue;
+        }
+
         // An input requested under several contexts is pulled by the render action, once per context
         // under an InputContextScope; one requested under a single other context is pre-rendered under it.
         std::vector<RenderContextPtr> inputContexts;

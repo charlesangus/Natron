@@ -1943,6 +1943,34 @@ public:
     }
 
     /**
+     * @brief True when this effect's render action pulls input inputNb itself at time/view under
+     * context, so the host does not pre-render it: what the request pass planned for it is then
+     * rendered once by the action, not once per rectangle the action renders.
+     **/
+    virtual bool pullsInputInRender(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    const RenderContextPtr& /*context*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Images rendered elsewhere that this effect outputs unchanged for layers at args'
+     * time, view, mipmap level and depth, each covering roi (args.roi clipped to the region of
+     * definition). Returning true, renderRoI() returns code and, when it is eRenderRoIRetCodeOk,
+     * the images in outputLayers, as for an identity. False, the default, renders.
+     **/
+    virtual bool forwardsOutput(const RenderRoIArgs& /*args*/,
+                                const std::list<ImageLayerDesc>& /*layers*/,
+                                const RectI& /*roi*/,
+                                std::map<ImageLayerDesc, ImagePtr>* /*outputLayers*/,
+                                RenderRoIRetCode* /*code*/)
+    {
+        return false;
+    }
+
+    /**
      * @brief Whether getInputContexts() names a single context for input inputNb at time/view
      * under the context this effect's actions answer for on this thread, and if so that context:
      * the one the input's region of definition, metadata and layers are read under, through an

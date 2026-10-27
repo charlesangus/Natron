@@ -666,6 +666,19 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             return eRenderRoIRetCodeOk;
         } // if (identity)
 
+        {
+            const RectI forwardedRoI = args.roi.intersect(pixelRod);
+            std::map<ImageLayerDesc, ImagePtr> forwarded;
+            RenderRoIRetCode forwardCode = eRenderRoIRetCodeOk;
+            if (!forwardedRoI.isNull() && forwardsOutput(args, requestedComponents, forwardedRoI, &forwarded, &forwardCode)) {
+                if (forwardCode == eRenderRoIRetCodeOk) {
+                    outputLayers->insert(forwarded.begin(), forwarded.end());
+                }
+
+                return forwardCode;
+            }
+        }
+
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         ////////////////////////////// End identity check ///////////////////////////////////////////////////////////////
 

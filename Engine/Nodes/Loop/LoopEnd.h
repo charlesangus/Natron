@@ -124,6 +124,9 @@ public:
         NodePtr tail;
         RenderContextPtr context;
         double time = 0.;
+        // The iteration context sets, of count.
+        int iteration = 0;
+        int count = 0;
     };
 
     /**
@@ -141,15 +144,23 @@ public:
     void appendFeedbackKnobsHash(ContentHasher& h) const;
 
     /**
-     * @brief An iteration's output that a render of this node on a scheduler without a frame
-     * store keeps for the LoopBegin of the next iteration: the tail's image under the context key
-     * contextKey of the tail at time, view and mipmapLevel, covering roi. Null when none is kept.
+     * @brief True inside a task of the task-graph scheduler, whose frame store chains the
+     * Feedback iterations; elsewhere feedbackImage() does.
      **/
-    ImagePtr findFeedbackImage(U64 contextKey,
-                               double time,
-                               ViewIdx view,
-                               unsigned int mipmapLevel,
-                               const RectI& roi) const WARN_UNUSED_RETURN;
+    static bool feedbackUsesFrameStore() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The tail's output at step, the Feedback chain's store for a scheduler without a frame
+     * store: the iterations up to step.iteration not rendered yet in the render consumer belongs
+     * to are rendered in order, each at the region the request pass planned for it, each once per
+     * render, and only the last one rendered is kept. image is null where the tail is empty.
+     **/
+    EffectInstance::RenderRoIRetCode feedbackImage(const EffectInstance* consumer,
+                                                   const FeedbackStep& step,
+                                                   ViewIdx view,
+                                                   const RenderScale& scale,
+                                                   bool byPassCache,
+                                                   ImagePtr* image) WARN_UNUSED_RETURN;
 
     /**
      * @brief The loop variables of iteration k of count, as LoopEnd sets them under loop.* and
@@ -356,15 +367,13 @@ private:
                                             const RenderContextPtr& context,
                                             double time) const WARN_UNUSED_RETURN;
 
-    // Renders the Feedback iterations before last in order, each kept under owner for the
-    // LoopBegin of the next until that one has rendered, where no frame store chains them.
-    StatusEnum renderFeedbackIterations(const RenderActionArgs& args,
-                                        const Resolved& resolved,
-                                        const RenderContextPtr& context,
-                                        int last,
-                                        const void* owner);
+    virtual bool pullsInputInRender(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const RenderContextPtr& context) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    void releaseFeedbackImages(const void* owner);
+    // Feedback without a frame store: the chain feedbackImage() drives, not a host pre-render.
+    bool drivesFeedbackChain(const Resolved& resolved) const WARN_UNUSED_RETURN;
 
     // The index in foldedIterations() fold step k folds in.
     int iterationOfStep(int k,
@@ -413,18 +422,23 @@ private:
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;
 
-    struct FeedbackImage {
-        // The render that keeps it.
-        const void* owner = 0;
+    struct FeedbackChain {
+        AbortableRenderInfoWPtr render;
+        // The tail's context key under iteration 0, and that iteration's time.
         U64 contextKey = 0;
         double time = 0.;
         ViewIdx view;
         unsigned int mipmapLevel = 0;
+        // Held while iterations are rendered, so a render renders each once.
+        QMutex driving;
+        // The rest under _feedbackMutex.
+        QThread* driver = 0;
+        int iteration = -1;
         ImagePtr image;
     };
 
     mutable QMutex _feedbackMutex;
-    std::vector<FeedbackImage> _feedbackImages;
+    std::vector<std::shared_ptr<FeedbackChain>> _feedbackChains;
 };
 
 NATRON_NAMESPACE_EXIT

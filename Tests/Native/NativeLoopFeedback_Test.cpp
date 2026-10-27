@@ -43,10 +43,12 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
@@ -555,10 +557,61 @@ TEST_F(NativeLoopFeedbackTest, ABodyReadingNoLoopVariableRendersEveryIteration)
     float value = -1.f;
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
     EXPECT_EQ(5.f, value);
-    EXPECT_GE(CountingTestRegistry::renders(counting), 4);
+    EXPECT_EQ(4, CountingTestRegistry::renders(counting));
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeTaskGraph, true, &value));
     EXPECT_EQ(5.f, value);
     expectBothWays(end, countingWindow());
+}
+
+// A legacy render split into several rectangles, by what the cache already holds of the LoopEnd,
+// runs the chain once, not once per rectangle.
+TEST_F(NativeLoopFeedbackTest, ATiledLegacyRenderRunsTheChainOnce)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr counting = createCounting(1.);
+    NodePtr end = createFeedbackEnd(4);
+    ASSERT_TRUE(constant && begin && counting && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(counting->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(counting, 0));
+    ASSERT_TRUE(setForceCaching(end));
+
+    CountingTestRegistry::reset();
+    RenderedPlane centre;
+    ASSERT_TRUE(renderPlane(end, RectI(8, 8, 24, 24), eRenderSchedulerModeLegacy, false, &centre));
+    EXPECT_EQ(4, CountingTestRegistry::renders(counting)) << "centre";
+
+    CountingTestRegistry::reset();
+    RenderedPlane full;
+    ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderSchedulerModeLegacy, false, &full));
+    EXPECT_EQ(4, CountingTestRegistry::renders(counting)) << "around the cached centre";
+    const std::size_t nComps = full.channels.empty() ? 1 : full.channels.size();
+    ASSERT_EQ((std::size_t)kCountingTestSize * kCountingTestSize * nComps, full.pixels.size());
+    for (std::size_t i = 0; i < full.pixels.size(); i += nComps) {
+        ASSERT_EQ(5.f, full.pixels[i]) << "pixel " << (i / nComps);
+    }
+}
+
+// A single pass at iteration k renders the body k + 1 times: each iteration before it once.
+TEST_F(NativeLoopFeedbackTest, ASinglePassRendersEachIterationBeforeItOnce)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr counting = createCounting(1.);
+    NodePtr end = createFeedbackEnd(6);
+    ASSERT_TRUE(constant && begin && counting && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(counting->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(counting, 0));
+    ASSERT_TRUE(setBoolKnob(end, kLoopEndParamSinglePass, true));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamSinglePassIteration, 3));
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    EXPECT_EQ(5.f, value);
+    EXPECT_EQ(4, CountingTestRegistry::renders(counting));
 }
 
 // The iteration before is converted to the loop input's components, with a warning on the LoopBegin.
@@ -766,6 +819,67 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
     EXPECT_EQ(hash, begin->getContentHash()) << "LoopEnd knob set to its value";
 }
 
+// A Group inside the body is part of it: edits to the nodes inside the Group move the LoopBegin's
+// hash and reach the cached loop.
+TEST_F(NativeLoopFeedbackTest, AGroupInTheBodyIsPartOfIt)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin("fb");
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr group = getApp()->createNode(groupArgs);
+    NodePtr end = createFeedbackEnd(3);
+    ASSERT_TRUE(constant && begin && group && end);
+    NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+    ASSERT_TRUE(bool(inside));
+    const auto createInside = [&](const char* pluginID) {
+        CreateNodeArgs args(pluginID, inside);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+        return getApp()->createNode(args);
+    };
+    NodePtr groupInput = createInside(PLUGINID_NATRON_INPUT);
+    NodePtr first = createInside(kTestPluginIDCounting);
+    NodePtr second = createInside(kTestPluginIDCounting);
+    NodePtr groupOutput = createInside(PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && first && second && groupOutput);
+    ASSERT_TRUE(setDoubleKnob(first, "value", 1.));
+    ASSERT_TRUE(setDoubleKnob(second, "value", 2.));
+    ASSERT_TRUE(first->connectInput(groupInput, 0));
+    ASSERT_TRUE(second->connectInput(first, 0));
+    ASSERT_TRUE(groupOutput->connectInput(second, 0));
+    ASSERT_GE(group->getNInputs(), 1);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(group->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(group, 0));
+    cacheEverything({ constant, begin, first, second, end });
+
+    // Each iteration adds first (1) and second (2).
+    expectValue(end, 1.f + 3.f * 3.f, "initial");
+
+    U64 hash = begin->getContentHash();
+    const auto expectMoved = [&](const char* what) {
+        const U64 now = begin->getContentHash();
+        EXPECT_NE(hash, now) << what;
+        hash = now;
+    };
+
+    ASSERT_TRUE(setDoubleKnob(second, "value", 4.));
+    expectMoved("edit the last node in the Group");
+    ASSERT_TRUE(setDoubleKnob(second, "value", 5.));
+    expectMoved("edit it again");
+    ASSERT_TRUE(setDoubleKnob(first, "value", 0.));
+    expectMoved("edit the node before it");
+    expectValue(end, 1.f + 3.f * 5.f, "after the edits");
+
+    ASSERT_TRUE(setDoubleKnob(first, "value", 2.));
+    ASSERT_TRUE(setDoubleKnob(second, "value", 1.));
+    expectMoved("two edits without a render between them");
+    expectValue(end, 1.f + 3.f * 3.f, "after two edits");
+    expectBothWays(end, countingWindow());
+}
+
 // A feedback loop inside a feedback loop: both LoopBegins follow an edit at the core, and the
 // outer loop runs the inner one in full each iteration.
 TEST_F(NativeLoopFeedbackTest, NestedFeedbackLoops)
@@ -795,7 +909,7 @@ TEST_F(NativeLoopFeedbackTest, NestedFeedbackLoops)
 }
 
 // A 200-node body over 1024 iterations: the scheduler stays within its bytes budget and plans
-// every pull, and the legacy render does each iteration's work about once.
+// every pull, and the legacy render does each iteration's work once.
 TEST_F(NativeLoopFeedbackTest, ALongFeedbackChainStaysBounded)
 {
     const int bodySize = 200;
@@ -821,8 +935,7 @@ TEST_F(NativeLoopFeedbackTest, ALongFeedbackChainStaysBounded)
     float value = -1.f;
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
     EXPECT_EQ(expected, value);
-    EXPECT_GE(CountingTestRegistry::totalRenders(), bodySize * iterations);
-    EXPECT_LE(CountingTestRegistry::totalRenders(), 2 * bodySize * iterations);
+    EXPECT_EQ(bodySize * iterations, CountingTestRegistry::totalRenders());
 
     BytesBudgetGuard guard(budget);
     RenderScheduler* scheduler = appPTR->getRenderScheduler();

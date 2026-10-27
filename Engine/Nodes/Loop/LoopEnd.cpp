@@ -35,6 +35,7 @@
 #include <utility>
 
 #include <QtCore/QString>
+#include <QtCore/QThread>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
@@ -101,11 +102,13 @@ collectPairedEnds(const NodePtr& begin,
 {
     std::set<WalkStep> visited;
     std::vector<std::pair<NodePtr, int>> pending;
+    // Through groups the way the hash walks go, so a node inside a group in the body, whose
+    // GroupOutput has no outputs of its own, still finds the loop's end.
+    std::vector<NodePtr> outputs;
 
-    NodesWList outputs;
-    begin->getOutputs_mt_safe(outputs);
-    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        pending.push_back(std::make_pair(it->lock(), 0));
+    begin->appendOutputsWithGroupRedirection(&outputs);
+    for (NodePtr& output : outputs) {
+        pending.push_back(std::make_pair(std::move(output), 0));
     }
     while (!pending.empty()) {
         const NodePtr node = pending.back().first;
@@ -124,9 +127,9 @@ collectPairedEnds(const NodePtr& begin,
             ++depth;
         }
         outputs.clear();
-        node->getOutputs_mt_safe(outputs);
-        for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-            pending.push_back(std::make_pair(it->lock(), depth));
+        node->appendOutputsWithGroupRedirection(&outputs);
+        for (NodePtr& output : outputs) {
+            pending.push_back(std::make_pair(std::move(output), depth));
         }
     }
 }
@@ -164,6 +167,26 @@ bool
 foldsAsTasks()
 {
     return appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
+}
+
+// image as getImage() maps an input to a float plane of layer for the fold, over roi.
+ImagePtr
+asFoldInput(const ImagePtr& image,
+            const RectI& roi,
+            const ImageLayerDesc& layer)
+{
+    if (!image || ((image->getComponentsCount() == (unsigned int)layer.getNumComponents()) && (image->getBitDepth() == eImageBitDepthFloat))) {
+        return image;
+    }
+    Image::ReadAccess access = image->getReadRights();
+    const RectI bounds = roi.intersect(image->getBounds());
+    if (bounds.isNull()) {
+        return ImagePtr();
+    }
+    ImagePtr converted = std::make_shared<Image>(layer, image->getRoD(), bounds, image->getMipmapLevel(), image->getPixelAspectRatio(), eImageBitDepthFloat, image->getFieldingOrder(), false);
+    image->convertToFormat(bounds, -1, false, converted.get());
+
+    return converted;
 }
 
 int
@@ -274,6 +297,8 @@ LoopEnd::feedbackStepBefore(const RenderContextPtr& context,
     const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
     previous->context = iterationContext(context, resolved.loopName, k - 1, (int)*count, resolved.start, resolved.step, *frame - frameStep);
     previous->time = time - frameStep;
+    previous->iteration = k - 1;
+    previous->count = (int)*count;
 
     return true;
 }
@@ -304,23 +329,161 @@ LoopEnd::appendFeedbackKnobsHash(ContentHasher& h) const
     }
 }
 
-ImagePtr
-LoopEnd::findFeedbackImage(U64 contextKey,
-                           double time,
-                           ViewIdx view,
-                           unsigned int mipmapLevel,
-                           const RectI& roi) const
+EffectInstance::RenderRoIRetCode
+LoopEnd::feedbackImage(const EffectInstance* consumer,
+                       const FeedbackStep& step,
+                       ViewIdx view,
+                       const RenderScale& scale,
+                       bool byPassCache,
+                       ImagePtr* image)
 {
-    QMutexLocker k(&_feedbackMutex);
+    image->reset();
+    const Resolved resolved = resolve();
+    const EffectInstancePtr tail = step.tail ? step.tail->getEffectInstance() : EffectInstancePtr();
+    if (!consumer || !resolved.message.empty() || resolved.loopName.empty() || !tail || !step.context || (step.iteration < 0) || (step.iteration >= step.count)) {
+        return eRenderRoIRetCodeFailed;
+    }
+    const RenderContextValue* frameValue = step.context->find(RenderContextName::loops(resolved.loopName, "frame"));
+    const double* frame = frameValue ? std::get_if<double>(frameValue) : 0;
+    if (!frame) {
+        return eRenderRoIRetCodeFailed;
+    }
+    const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
+    const unsigned int mipmapLevel = scale.toMipmapLevel();
+    // Iteration j of the chain step belongs to, under the variables step.context sets besides it.
+    auto iterationAt = [&](int j, double* time) {
+        const double back = (double)(step.iteration - j) * frameStep;
+        *time = step.time - back;
 
-    for (const FeedbackImage& kept : _feedbackImages) {
-        if ((kept.contextKey == contextKey) && (kept.time == time) && (kept.view == view) && (kept.mipmapLevel == mipmapLevel) && kept.image && kept.image->getBounds().contains(roi)) {
-            return kept.image;
+        return iterationContext(step.context, resolved.loopName, j, step.count, resolved.start, resolved.step, *frame - back);
+    };
+    double time0 = 0.;
+    const U64 contextKey = restrictContextToNode(iterationAt(0, &time0), step.tail, 0);
+    const ParallelRenderArgsPtr frameArgs = consumer ? consumer->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    QThread* const self = QThread::currentThread();
+
+    std::shared_ptr<FeedbackChain> chain;
+    {
+        QMutexLocker k(&_feedbackMutex);
+        // A chain outside any render is only shared with the renders it drives itself.
+        _feedbackChains.erase(std::remove_if(_feedbackChains.begin(), _feedbackChains.end(), [](const std::shared_ptr<FeedbackChain>& c) { return !c->driver && c->render.expired(); }), _feedbackChains.end());
+        for (const std::shared_ptr<FeedbackChain>& c : _feedbackChains) {
+            if ((c->contextKey == contextKey) && (c->time == time0) && (c->view == view) && (c->mipmapLevel == mipmapLevel) && (render ? (c->render.lock() == render) : (c->render.expired() && c->driver))) {
+                chain = c;
+                break;
+            }
+        }
+        if (chain && (chain->iteration == step.iteration)) {
+            *image = chain->image;
+
+            return eRenderRoIRetCodeOk;
+        }
+        if (chain && (chain->driver == self)) {
+            // Only the last iteration is kept: asking its own chain for another one while rendering
+            // it would start the chain over below itself.
+            return eRenderRoIRetCodeFailed;
+        }
+        if (!chain) {
+            chain = std::make_shared<FeedbackChain>();
+            chain->render = render;
+            chain->contextKey = contextKey;
+            chain->time = time0;
+            chain->view = view;
+            chain->mipmapLevel = mipmapLevel;
+            _feedbackChains.push_back(chain);
         }
     }
 
-    return ImagePtr();
-}
+    QMutexLocker driving(&chain->driving);
+    int first;
+    {
+        QMutexLocker k(&_feedbackMutex);
+        if (chain->iteration == step.iteration) {
+            *image = chain->image;
+
+            return eRenderRoIRetCodeOk;
+        }
+        first = (chain->iteration < step.iteration) ? chain->iteration + 1 : 0;
+        chain->driver = self;
+    }
+    struct DriverReset {
+        QMutex* mutex;
+        FeedbackChain* chain;
+        ~DriverReset()
+        {
+            QMutexLocker k(mutex);
+            chain->driver = 0;
+        }
+    } driverReset { &_feedbackMutex, chain.get() };
+
+    ImagePtr last;
+    for (int j = first; j <= step.iteration; ++j) {
+        if (consumer->aborted()) {
+            return eRenderRoIRetCodeAborted;
+        }
+        double time = 0.;
+        const RenderContextPtr context = iterationAt(j, &time);
+        ImagePtr rendered;
+        {
+            InputContextScope scope(consumer, context);
+            InputContextArgs tailContext(consumer, tail, -1, time, view);
+            ImageLayerDesc layer, pairedLayer;
+            ImageBitDepthEnum depth = eImageBitDepthFloat;
+            double par = 1.;
+            {
+                ActionContextScope actions(true, context);
+                NodeMetadataConstPtr metadata = tail->getRenderMetadata(time, view);
+                if (metadata) {
+                    getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
+                    depth = metadata->getBitDepth(-1);
+                    par = metadata->getPixelAspectRatio(-1);
+                }
+            }
+            RectD region;
+            const ParallelRenderArgsPtr& planned = tailContext.args();
+            if (!planned || !planned->request || !planned->request->getFrameViewCanonicalRoI(time, view, &region)) {
+                // Not planned: the whole of the iteration.
+                ActionContextScope actions(true, context);
+                bool isProjectFormat = false;
+                if (tail->getRegionOfDefinition_public(tail->getRenderHash(), time, scale, view, &region, &isProjectFormat) == eStatusFailed) {
+                    return eRenderRoIRetCodeFailed;
+                }
+            }
+            const RectI roi = region.toPixelEnclosing(mipmapLevel, par);
+            if ((layer.getNumComponents() > 0) && !roi.isNull()) {
+                RenderRoIArgs tailArgs(time,
+                                       scale,
+                                       mipmapLevel,
+                                       view,
+                                       byPassCache,
+                                       roi,
+                                       RectD(),
+                                       std::list<ImageLayerDesc>(1, layer),
+                                       depth,
+                                       false,
+                                       consumer,
+                                       eStorageModeRAM,
+                                       time);
+                std::map<ImageLayerDesc, ImagePtr> images;
+                const RenderRoIRetCode code = renderInputOrTakeFromStore(tail, -1, &tailArgs, &images, consumer, &tailContext);
+                if (code != eRenderRoIRetCodeOk) {
+                    return code;
+                }
+                if (!images.empty()) {
+                    rendered = images.begin()->second;
+                }
+            }
+        }
+        QMutexLocker k(&_feedbackMutex);
+        chain->iteration = j;
+        chain->image = rendered;
+        last = rendered;
+    }
+    *image = last;
+
+    return eRenderRoIRetCodeOk;
+} // LoopEnd::feedbackImage
 
 void
 LoopEnd::appendExtraHashDependents(std::vector<NodePtr>* dependents) const
@@ -1368,54 +1531,30 @@ LoopEnd::takePreviousStep(const RenderActionArgs& args,
     return true;
 }
 
-StatusEnum
-LoopEnd::renderFeedbackIterations(const RenderActionArgs& args,
-                                  const Resolved& resolved,
-                                  const RenderContextPtr& context,
-                                  int last,
-                                  const void* owner)
+bool
+LoopEnd::feedbackUsesFrameStore()
 {
-    const NodePtr tail = getNode()->getInput(0);
-
-    if (!tail) {
-        return eStatusFailed;
-    }
-    const RenderContextPtr base = RenderContext::Builder(context).erase(foldStepName()).build();
-    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
-    for (int k = 0; k < last; ++k) {
-        if (aborted()) {
-            return eStatusOK;
-        }
-        FeedbackImage kept;
-        kept.owner = owner;
-        kept.time = resolved.frames ? args.time + resolved.frameStart + (double)k * resolved.frameStep : args.time;
-        kept.view = args.view;
-        kept.mipmapLevel = mipmapLevel;
-        const RenderContextPtr iteration = iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, kept.time);
-        kept.contextKey = restrictContextToNode(iteration, tail, 0);
-        {
-            InputContextScope scope(this, iteration);
-            RectI inputRoI;
-            kept.image = getImage(0, kept.time, args.mappedScale, args.view, NULL, NULL, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
-        }
-        // Only the iteration the next one reads stays: the LoopBegin renders it from scratch when
-        // it is missing, as when the input is black.
-        QMutexLocker locker(&_feedbackMutex);
-        _feedbackImages.erase(std::remove_if(_feedbackImages.begin(), _feedbackImages.end(), [owner](const FeedbackImage& image) { return image.owner == owner; }), _feedbackImages.end());
-        if (kept.image) {
-            _feedbackImages.push_back(kept);
-        }
-    }
-
-    return eStatusOK;
+    return foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
 }
 
-void
-LoopEnd::releaseFeedbackImages(const void* owner)
+bool
+LoopEnd::drivesFeedbackChain(const Resolved& resolved) const
 {
-    QMutexLocker locker(&_feedbackMutex);
+    return resolved.feedback && !feedbackUsesFrameStore();
+}
 
-    _feedbackImages.erase(std::remove_if(_feedbackImages.begin(), _feedbackImages.end(), [owner](const FeedbackImage& image) { return image.owner == owner; }), _feedbackImages.end());
+bool
+LoopEnd::pullsInputInRender(int inputNb,
+                            double time,
+                            ViewIdx /*view*/,
+                            const RenderContextPtr& /*context*/) const
+{
+    if (inputNb != 0) {
+        return false;
+    }
+    const Resolved resolved = resolveAt(time);
+
+    return resolved.message.empty() && drivesFeedbackChain(resolved);
 }
 
 StatusEnum
@@ -1433,17 +1572,23 @@ LoopEnd::render(const RenderActionArgs& args)
     // Outside a scheduler task there is no store to find the previous step in.
     const bool chained = foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
 
-    // Without a frame store, the Feedback iterations before the output one are rendered here in
-    // order, so that each LoopBegin finds the one before it rather than rendering the whole chain
-    // below it again, recursively.
-    struct FeedbackImagesRelease {
-        LoopEnd* end;
-        ~FeedbackImagesRelease() { end->releaseFeedbackImages(this); }
-    } release { this };
-    if (resolved.feedback && !chained && (resolved.singlePass > 0)) {
-        const StatusEnum stat = renderFeedbackIterations(args, resolved, context, resolved.singlePass, &release);
-        if ((stat != eStatusOK) || aborted()) {
-            return stat;
+    // Feedback without a frame store outputs the chain's last iteration, driven once per render
+    // whatever the number of rectangles rendered: the host does not pre-render the input.
+    ImagePtr feedbackOutput;
+    const bool feedbackChain = drivesFeedbackChain(resolved);
+    if (feedbackChain) {
+        FeedbackStep last;
+        last.tail = getNode()->getInput(0);
+        last.context = iterations.front().context;
+        last.time = iterations.front().time;
+        last.iteration = resolved.singlePass;
+        last.count = resolved.count;
+        const RenderRoIRetCode code = feedbackImage(this, last, args.view, args.mappedScale, args.byPassCache, &feedbackOutput);
+        if (code == eRenderRoIRetCodeAborted) {
+            return eStatusOK;
+        }
+        if (code != eRenderRoIRetCodeOk) {
+            return eStatusFailed;
         }
     }
     KnobChoicePtr operationKnob = _operation.lock();
@@ -1477,7 +1622,9 @@ LoopEnd::render(const RenderActionArgs& args)
                 return eStatusOK;
             }
             ImagePtr src;
-            {
+            if (feedbackChain) {
+                src = asFoldInput(feedbackOutput, roi, it->first);
+            } else {
                 const Iteration& iteration = iterations[iterationOfStep(k, resolved)];
                 InputContextScope scope(this, iteration.context);
                 RectI inputRoI;

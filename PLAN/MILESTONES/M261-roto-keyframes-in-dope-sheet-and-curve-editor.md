@@ -9,14 +9,13 @@ Deps: M163 - Incremental Bezier Edits.
 **In:**
 - Dope sheet: every node with a curve context (Roto, RotoPaint, any geometry host) gets a node row with its own animatable knobs (excluding the per-item proxy knobs). Under it, one row per Bezier (shape keys) and child rows for that item's animated knobs.
 - Dope sheet shape keys: select, move, delete and change interpolation, all with undo.
-- Curve editor: the host node's own knob curves come back next to its items. The shape track is shown as keys on a flat line with no fake values, named "Shape" and hidden while the shape has no keys (pending the user's OK, see P3.T2).
+- Curve editor: the host node's own knob curves come back next to its items. Shape keys don't appear in the curve editor (user); instead individual control points can be added to it on request, showing their x/y over time.
 - GUI test script that screenshots both editors for user sign-off.
 
 **Out:**
 - Paint strokes as keyed rows (strokes have no shape keys; their item knobs still get rows).
 - Copy/paste of shape keys between shapes or onto knob rows.
 - Layer grouping in either editor (items stay flat in render order).
-- Per-control-point curves in the curve editor.
 
 **Edge cases:**
 - Moving a shape key onto an existing shape key: refuse the move for that shape. `Bezier::moveKeyframe` would silently overwrite it.
@@ -60,10 +59,10 @@ Deps: M163 - Incremental Bezier Edits.
   - files: Gui/CurveEditor.cpp, Gui/CurveEditor.h
   - approach: `addNode` creates the `NodeCurveEditorContext` for curve hosts too, filtering out `isItemProxyKnob`, and adds the `RotoCurveEditorContext`. `removeNode`, `getSelectedCurves`/`findKnob` handle both contexts.
   - size: M
-- [ ] M261.P3.T2 — Shape track as keys on a flat line (user's OK pending)
-  - files: Gui/CurveGui.cpp/.h, Gui/CurveWidget.cpp, Gui/CurveWidgetPrivate.cpp, Gui/CurveEditorUndoRedo.cpp, Gui/CurveEditor.cpp
-  - approach: `BezierCPCurveGui::evaluate` and `getKeyFrames` return value 0, and `getCurveYRange` returns [0,0]. Ignore the shape track when framing on Y. Drags move it in time only, with the same collision rule. Rename "Animation" to "Shape" and hide it while `getKeyframesCount()==0`. Alternative if the user prefers: drop the shape track from the curve editor and leave shape timing to the dope sheet.
-  - size: M
+- [ ] M261.P3.T2 — No shape track in the curve editor; per-point curves on request
+  - files: Gui/CurveEditor.cpp/.h, Gui/CurveGui.cpp/.h, Gui/RotoGui*/viewer roto interact, Engine/Bezier.h/.cpp as needed
+  - approach: remove the shape "Animation" track (`BezierCPCurveGui` rows) from the curve editor. Add a "Show in Curve Editor" action for selected control points (viewer right-click and/or roto panel) that adds that point's x and y over time as curves under its shape; editing a key value there moves the point at that key (with undo). Points can be removed from the curve editor again.
+  - size: L
 
 ## Phase 261.4: Tests
 
@@ -76,3 +75,7 @@ Deps: M163 - Incremental Bezier Edits.
 **Verification gate:** one build of all phases, ctest green, m261_roto_keys_editors.py passes under Xvfb, and the user approves the dope sheet and curve editor screenshots from a release AppImage.
 
 ## Decisions
+
+## Decisions
+
+- 2026-10-27 — **Curve editor (user):** overall shape keys don't belong in the curve editor; offer adding individual control points to it instead.

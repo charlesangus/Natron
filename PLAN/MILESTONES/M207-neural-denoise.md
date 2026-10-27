@@ -88,4 +88,5 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
 
 ## Decisions
 
+- 2026-10-27 — **Range (user):** 1e4 is unrealistic; camera values rarely exceed 50–70. Measure invertibility of the config's ACES/sRGB-ish views and log spaces over 0–50 and pick from that. **ModelKnob may take several tasks (user)** — extend M204's ModelKnob.
 - 2026-10-27 — The range wrapper compresses through OCIO, not a custom soft-knee: an invertible sRGB display-referred OCIO space takes most working spaces to sRGB [0,1] in one transform (user, inbox 2026-10-27).

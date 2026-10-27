@@ -347,7 +347,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M207 - Neural Denoise (2026-10-27):** the default config's sRGB display view (ACES 2.0 SDR) is not invertible for scene-linear highlights (round-trip error 30% at 4, 99% at 1e4; measured with PyOpenColorIO 2.5.2). Pick: (a) residue = x − inverse(forward(x)) bypasses the model for out-of-gamut highlights; (b) invertible view + rescale; (c) fixed log/soft-knee; (d) narrow the promise.
+- **M207 - Neural Denoise (2026-10-27):** the default config's sRGB display view (ACES 2.0 SDR) is not invertible for scene-linear highlights (round-trip error 30% at 4, 99% at 1e4; measured with PyOpenColorIO 2.5.2). User: measure over 0–50 (camera range) across ACES/sRGB-ish views and log spaces, then pick. Consultant measuring.
 
 - **M123 - Native Sharpen And Glow, Bloom design:** the user requires GPU residency (no CPU fallback) if at all possible; candidates are being spiked. Filter default (FIR Gaussian, recommended, or CImg's quasi-Gaussian) still open.
 - **M198 - RenderEngine On Node, M199 - Remove Legacy Scheduler, M200 - Folded Knob Shared Storage, M201 - Trimap Removal:** do not start without the user's go-ahead (user, 2026-10-25, M31 triage). Each stub's `Blocked on:` names what the user is waiting for. M202 - Clean-Hash Cache Stores needs no go-ahead.

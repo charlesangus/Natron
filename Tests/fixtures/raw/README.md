@@ -89,6 +89,7 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `{cr2,raf}-colorcal-gray-normalize-{on,off}.tif` | D 4500 K CAT16, gray 0.4, 0.6, 0.3, normalize on and off | RCD, Markesteijn |
 | `dng-colorcal-camera.tif` | CAT16, as shot in camera, embedded matrix | RCD |
 | `{cr2,raf,dng}-scene-referred-default.tif` | `scene-referred (sigmoid)` workflow with its automatic presets, sigmoid, exposure and sharpen off: darktable's default temperature (as shot to reference) and color calibration | RCD, Markesteijn, RCD |
+| `retouch-{clone,heal,blur,fill}-{circle,ellipse,path}.tif`, `retouch-heal-circle-image.tif`, `retouch-blur-bilateral-circle.tif`, `retouch-fill-color-ellipse.tif`, `retouch-mixed-merge.tif` | darktable's retouch on a 64x48 plate, the tests' ParitySource with its noise at time 1 (written to the scratch directory, not kept), with XMP-authored circle, ellipse and path forms on two detail scales and the residual, with feather and opacity; `NativeRetouch_Test` builds the same shapes. Whole image, RGB half float, zip, ~15 KB each, not LFS | `Engine/Nodes/Filter/docs/Retouch.md` |
 
 ### darktable settings
 

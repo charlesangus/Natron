@@ -31,6 +31,7 @@
 #include <concepts>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -211,6 +212,24 @@ public:
     bool isConnected(int inputNb) const
     {
         return bool(_node.getInput(inputNb));
+    }
+
+    /**
+     * @brief The frame range input inputNb reports, false when it is not connected or its range
+     * is unbounded at either end, as a generator's is.
+     **/
+    bool inputFrameRange(int inputNb,
+                         double* first,
+                         double* last) const
+    {
+        const EffectInstancePtr input = _node.getInput(inputNb);
+
+        if (!input) {
+            return false;
+        }
+        input->getFrameRange_public(input->getRenderHash(), first, last);
+
+        return (*first > std::numeric_limits<int>::min()) && (*last < std::numeric_limits<int>::max()) && (*first <= *last);
     }
 
 private:

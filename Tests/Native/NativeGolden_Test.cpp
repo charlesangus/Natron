@@ -73,6 +73,11 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Time/FrameHold.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
+#include "Engine/Nodes/Time/TimeRounding.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
@@ -851,6 +856,66 @@ TEST_F(NativeGoldenTest, Dissolve)
     v.push_back(variant("which1", [](const GoldenGraph& g) { return num(g, kDissolveParamWhich, { 1. }); }));
     v.push_back(maskVariant("mask", [](const GoldenGraph& g) { return num(g, kDissolveParamWhich, { 0.4 }); }));
     run(spec, v);
+}
+
+// The golden graphs render at frame 1 from a source that brightens with time, so each case reads
+// a different source frame.
+TEST_F(NativeGoldenTest, TimeOffset)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("offset3", [](const GoldenGraph& g) { return num(g, kTimeOffsetParamTimeOffset, { 3. }); }));
+    v.push_back(variant("fractional", [](const GoldenGraph& g) {
+        return num(g, kTimeOffsetParamTimeOffset, { 0.5 }) && choice(g, kTimeOffsetParamRoundingMode, kTimeRoundingFractional);
+    }));
+    run(plainSpec("TimeOffset", PLUGINID_NATRON_TIMEOFFSET, PLUGIN_MAJOR_NATRON_TIMEOFFSET), v);
+}
+
+TEST_F(NativeGoldenTest, FrameHold)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("first7", [](const GoldenGraph& g) { return num(g, kFrameHoldParamFirstFrame, { 7. }); }));
+    v.push_back(variant("increment", [](const GoldenGraph& g) { return num(g, kFrameHoldParamFirstFrame, { -3. }) && num(g, kFrameHoldParamIncrement, { 3 }); }));
+    v.push_back(variant("fractional", [](const GoldenGraph& g) {
+        return num(g, kFrameHoldParamFirstFrame, { 2.5 }) && choice(g, kFrameHoldParamRoundingMode, kTimeRoundingFractional);
+    }));
+    run(plainSpec("FrameHold", PLUGINID_NATRON_FRAMEHOLD, PLUGIN_MAJOR_NATRON_FRAMEHOLD), v);
+}
+
+TEST_F(NativeGoldenTest, FrameRange)
+{
+    // Frame 1 lies before the range [5, 9].
+    const Apply range = [](const GoldenGraph& g) { return num(g, kFrameRangeParamFirstFrame, { 5 }) && num(g, kFrameRangeParamLastFrame, { 9 }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    const char* const modes[] = { kFrameRangeOriginal, kFrameRangeHold, kFrameRangeLoop, kFrameRangeBounce, kFrameRangeBlack };
+    for (const char* mode : modes) {
+        const std::string id(mode);
+        v.push_back(variant(std::string("before") + id, [range, id](const GoldenGraph& g) { return range(g) && choice(g, kFrameRangeParamBefore, id); }));
+    }
+    run(plainSpec("FrameRange", PLUGINID_NATRON_FRAMERANGE, PLUGIN_MAJOR_NATRON_FRAMERANGE), v);
+}
+
+TEST_F(NativeGoldenTest, Retime)
+{
+    // The output starts at -2 and runs at a quarter speed, so frame 1 reads input frame 1.75.
+    const Apply quarter = [](const GoldenGraph& g) {
+        return num(g, kRetimeParamOutputFirstLock, { 1. }) && num(g, kRetimeParamOutputFirst, { -2. }) && num(g, kRetimeParamSpeed, { 0.25 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("blend", quarter));
+    v.push_back(variant("nearest", [quarter](const GoldenGraph& g) { return quarter(g) && choice(g, kRetimeParamFilter, kRetimeFilterNearest); }));
+    v.push_back(variant("fractional", [quarter](const GoldenGraph& g) { return quarter(g) && choice(g, kRetimeParamFilter, kRetimeFilterFractional); }));
+    v.push_back(variant("reverse", [](const GoldenGraph& g) { return num(g, kRetimeParamReverse, { 1. }); }));
+    v.push_back(variant("warp", [quarter](const GoldenGraph& g) {
+        KnobParametricPtr warp = std::dynamic_pointer_cast<KnobParametric>(g.node->getKnobByName(kRetimeParamWarp));
+        double key = 0.;
+        double old = 0.;
+        return quarter(g) && warp && (warp->getNthControlPoint(0, 1, &key, &old) == eStatusOK) && (warp->setNthControlPoint(eValueChangedReasonUserEdited, 0, 1, key, 0.5) == eStatusOK);
+    }));
+    run(plainSpec("Retime", PLUGINID_NATRON_RETIME, PLUGIN_MAJOR_NATRON_RETIME), v);
 }
 
 TEST_F(NativeGoldenTest, MergeOver)

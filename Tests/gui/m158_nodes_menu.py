@@ -57,7 +57,7 @@ NAMED_ORDER = ["Image", "Draw", "Time", "Channel", "Color", "Filter", "Keyer", "
                "Deep", "Metadata", "Views", "ToolSets", "Other", "Misc"]
 DEFAULT_GROUPING = "Misc"
 MERGE_GROUPING = "Merge"
-MERGE_ID = "net.sf.openfx.MergePlugin"
+MERGE_ID = "Merge"
 BLUR_ID = "net.sf.cimg.CImgBlur"
 PYTHON_ITEM_TEXT = "M158 Python item"
 TWO_MAJORS_ID = "fr.natron.m158.TwoMajors"

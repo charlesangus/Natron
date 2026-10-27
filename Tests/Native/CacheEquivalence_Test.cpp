@@ -1143,9 +1143,9 @@ TEST_F(CacheEquivalenceTest, GroupInputRewireAndInputSwaps)
         if (!input || !blur || !output || !blur->connectInput(input, 0) || !output->connectInput(blur, 0)) {
             return false;
         }
-        NodePtr merge = create(PLUGINID_NATRON_MERGE, PLUGIN_MAJOR_NATRON_MERGE);
+        NodePtr merge = create(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         NodePtr blurredChecker = createBlurOn(checker, 3.);
-        if (!merge || !blurredChecker || !merge->connectInput(group, kMergeInputB) || !merge->connectInput(blurredChecker, kMergeInputA)) {
+        if (!merge || !blurredChecker || !merge->connectInput(group, kNativeMergeInputB) || !merge->connectInput(blurredChecker, kNativeMergeInputA)) {
             return false;
         }
         s->output = merge;

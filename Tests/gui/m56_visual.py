@@ -56,7 +56,6 @@ PLUGIN_ICON_COLUMN = 20 + 2 * 2
 LABEL_WRAP_INDENT = 8
 CHANNEL_BUTTON_CHROMA_RATIO = 0.65
 CHANNEL_BUTTON_MIN_CHROMA = 25
-ROW_LABEL_BRIGHTNESS_RATIO = 0.85
 
 HEADER_BUTTON = 22
 HEADER_BUTTON_ICON = 18
@@ -853,33 +852,6 @@ try:
         check(abs(a - b) <= ALIGN_TOLERANCE,
               "IDistort: the UV Offset and UV Scale dimension switches share a right edge (%d vs %d)" % (a, b))
 
-    def check_merge_rows(panel):
-        """The A/B/Output row labels are drawn in the normal label colour, in the label column,
-        and each row's first channel toggle starts at the same x."""
-        _l, op_fields = knob_widgets(panel, "operation")
-        op_labels = [l for l in _l if l.text().strip()]
-        reference = max_brightness(image_of(op_labels[0])) if op_labels else None
-        lefts = []
-        for knob in ("AChannels", "BChannels", "OutputChannels"):
-            labels, _f = knob_widgets(panel, knob)
-            labels = [l for l in labels if l.text().strip()]
-            if not check(bool(labels), "Merge: found the %s row label" % knob):
-                continue
-            bright = max_brightness(image_of(labels[0]))
-            check(reference is not None and bright >= reference * ROW_LABEL_BRIGHTNESS_RATIO,
-                  "Merge: the %s row label is drawn in the normal text colour (brightness %.0f vs %r)"
-                  % (knob, bright, reference))
-            if op_labels:
-                a, b = right_in(panel, labels[0]), right_in(panel, op_labels[0])
-                check(abs(a - b) <= ALIGN_TOLERANCE,
-                      "Merge: the %s row label is right-aligned in the label column (%d vs %d)" % (knob, a, b))
-            _l2, toggles = knob_widgets(panel, knob + "R")
-            if check(bool(toggles), "Merge: found the %sR toggle" % knob):
-                lefts.append(min(left_in(panel, t) for t in toggles))
-        report("NOTE Merge first toggle left x per row: %r" % lefts)
-        check(len(lefts) == 3 and max(lefts) - min(lefts) <= ALIGN_TOLERANCE,
-              "Merge: the A, B and Output toggles start at the same x (%r)" % lefts)
-
     # ---- steps ---------------------------------------------------------------------------------
 
     def steps():
@@ -1290,7 +1262,7 @@ try:
         # ---- density
         gt.section("density")
         grade = create("net.sf.openfx.GradePlugin", 0, 0)
-        merge = create("net.sf.openfx.MergePlugin", 300, 0)
+        merge = create("Merge", 300, 0)
         yield ("sleep", PANEL_MS)
         gt.shot("density-main-window.png")
         panel = panel_for(grade)
@@ -1315,7 +1287,6 @@ try:
         merge_panel = panel_for(merge)
         if check(merge_panel is not None, "Merge: settings panel is open"):
             crop_shot(merge_panel, "density-merge-panel")
-            check_merge_rows(merge_panel)
         tab_pane = pane("pane3")
         if check(tab_pane is not None and tab_pane.layout() is not None, "found the node-graph pane"):
             top = tab_pane.layout().contentsMargins().top()

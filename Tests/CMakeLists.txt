@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -130,6 +130,9 @@ set(Tests_SOURCES
     RemoveLayersRender_Test.cpp
     RenderBothWays.cpp
     RenderBothWaysSelf_Test.cpp
+    RenderContext_Test.cpp
+    RenderContextMetadata_Test.cpp
+    RenderContextRequest_Test.cpp
     RenderIsolation_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp
@@ -195,6 +198,9 @@ if(NATRON_GPU)
     # already owns a target named pixelwrap_scale.
     slang_add_kernel(staged_test_pixelwrap_scale ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/pixelwrap.slang ENTRY pixelwrap_scale)
     target_link_libraries(Tests PRIVATE staged_test_pixelwrap_scale)
+    # StagedImageEffectGpu_Test registers this as its alpha-carrying Composite test node's kernel.
+    slang_add_kernel(staged_test_compositealpha_xor ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/compositealpha.slang ENTRY compositealpha_xor)
+    target_link_libraries(Tests PRIVATE staged_test_compositealpha_xor)
     # Gpu/RawRegionGpu_Test registers this at run time to read a raw layout back from the device.
     slang_add_kernel(raw_test_layout_probe ${CMAKE_SOURCE_DIR}/Engine/Gpu/Kernels/rawprepare.slang ENTRY rawlayout_probe)
     target_link_libraries(Tests PRIVATE raw_test_layout_probe)

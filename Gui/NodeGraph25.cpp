@@ -31,8 +31,10 @@
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QMouseEvent>
+#include <QAction>
 #include <QApplication>
+#include <QMenu>
+#include <QMouseEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -200,6 +202,66 @@ NodeGraph::popCreateNodeDialog()
 {
     TabMenuBridge::launch(this);
 }
+
+namespace {
+// The nodes menu action with the given object name, searched through the submenus.
+QAction*
+findNodesMenuAction(QMenu* menu,
+                    const QString& objectName)
+{
+    const QList<QAction*> actions = menu->actions();
+
+    for (int i = 0; i < actions.size(); ++i) {
+        if (actions[i]->objectName() == objectName) {
+            return actions[i];
+        }
+        if (actions[i]->menu()) {
+            QAction* found = findNodesMenuAction(actions[i]->menu(), objectName);
+            if (found) {
+                return found;
+            }
+        }
+    }
+
+    return 0;
+}
+
+// Triggers the Merge menu action bound to the key event, if any. The key is matched as the
+// physical key, as the viewer's number keys are, because Shift turns Qt's ';' and '\'' into
+// Key_Colon and Key_QuoteDbl. The Qt key is matched too, so a key a user rebinds to still works.
+bool
+triggerMergeShortcut(const QKeyEvent* e)
+{
+    static const struct {
+        const char* shortcutID;
+    } ids[] = {
+        { kShortcutIDActionMergeMask },
+        { kShortcutIDActionMergeStencil },
+        { kShortcutIDActionMergeMaskAllLayers },
+        { kShortcutIDActionMergeStencilAllLayers }
+    };
+    // X11 and evdev scan codes of the ';' and '\'' keys, as used by Gui::handleNativeKeys().
+    Qt::Key physicalKey = (Qt::Key)e->key();
+    if (e->nativeScanCode() == 47) {
+        physicalKey = Qt::Key_Semicolon;
+    } else if (e->nativeScanCode() == 48) {
+        physicalKey = Qt::Key_Apostrophe;
+    }
+    for (std::size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+        if (!isKeybind(kShortcutGroupNodes, ids[i].shortcutID, e->modifiers(), physicalKey) && !isKeybind(kShortcutGroupNodes, ids[i].shortcutID, e->modifiers(), e->key())) {
+            continue;
+        }
+        QMenu* menu = appPTR->getNodesMenu();
+        QAction* action = menu ? findNodesMenuAction(menu, QString::fromUtf8(ids[i].shortcutID)) : 0;
+        if (action) {
+            action->trigger();
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anonymous namespace
 
 void
 NodeGraph::keyPressEvent(QKeyEvent* e)
@@ -376,6 +438,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         } else {
             accept = false;
         }
+    } else if (triggerMergeShortcut(e)) {
+        // The Merge menu's Mask, Stencil or All Layers action was triggered.
     } else {
         bool intercepted = false;
 

@@ -1690,8 +1690,7 @@ AppManager::registerNativePlugin()
 {
     EffectInstancePtr node(PLUGIN::BuildEffect(NodePtr()));
     // Through the built effect rather than PLUGIN: not every node exposes its spec as a static
-    // member (Keyer's lives in its .cpp, MissingPluginNode builds its own), and a templated
-    // registration such as MergePreset is not itself the effect class.
+    // member (Keyer's lives in its .cpp, MissingPluginNode builds its own).
     const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(node.get());
     if (!native) {
         throw std::logic_error("A native node registration fragment names " + node->getPluginID() + ", which is not a NativeEffectBase");
@@ -2637,6 +2636,29 @@ CacheSignalEmitterPtr
 AppManager::getOrActivateViewerCacheSignalEmitter() const
 {
     return _imp->_viewerCache->activateSignalEmitter();
+}
+
+void
+AppManager::getViewerCachedFrames(const std::string& holderID,
+                                  U64 viewerHash,
+                                  unsigned int mipmapLevel,
+                                  std::map<SequenceTime, StorageModeEnum>* frames) const
+{
+    frames->clear();
+    if (!_imp->_viewerCache) {
+        return;
+    }
+    _imp->_viewerCache->visitEntryKeys([&](const FrameKey& key, StorageModeEnum storage) {
+        if ((key.getTreeVersion() != viewerHash) || (key.getMipmapLevel() != mipmapLevel) || (key.getCacheHolderID() != holderID)) {
+            return;
+        }
+        std::map<SequenceTime, StorageModeEnum>::iterator found = frames->find(key.getTime());
+        if (found == frames->end()) {
+            frames->insert(std::make_pair(key.getTime(), storage));
+        } else if (storage == eStorageModeRAM) {
+            found->second = eStorageModeRAM;
+        }
+    });
 }
 
 SettingsPtr AppManager::getCurrentSettings() const

@@ -40,6 +40,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
@@ -156,7 +157,7 @@ TEST_F(GraphScalingTiming, DiamondLadderConnectIsFast)
         const std::string suffix = std::to_string(level);
         NodePtr left = createNamedNode(app, PLUGINID_OFX_GRADE, "Left" + suffix);
         NodePtr right = createNamedNode(app, PLUGINID_OFX_GRADE, "Right" + suffix);
-        NodePtr join = createNamedNode(app, PLUGINID_OFX_MERGE, "Join" + suffix);
+        NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "Join" + suffix);
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));
         ASSERT_TRUE(bool(join));
@@ -265,7 +266,7 @@ TEST_F(GraphScalingTiming, FrameVaryingFallbackIsLinearOnDiamondLadder)
         const std::string suffix = std::to_string(level);
         NodePtr left = createNamedNode(app, PLUGINID_OFX_GRADE, "Left" + suffix);
         NodePtr right = createNamedNode(app, PLUGINID_OFX_GRADE, "Right" + suffix);
-        NodePtr join = createNamedNode(app, PLUGINID_OFX_MERGE, "Join" + suffix);
+        NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "Join" + suffix);
         ASSERT_TRUE(bool(left));
         ASSERT_TRUE(bool(right));
         ASSERT_TRUE(bool(join));

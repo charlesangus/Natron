@@ -47,6 +47,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Clamp.h"
@@ -90,16 +91,7 @@ retiredIds()
         PLUGINID_NATRON_ADD,
         PLUGINID_NATRON_MULTIPLY,
         PLUGINID_NATRON_GAMMA,
-        PLUGINID_NATRON_MERGE,
-        PLUGINID_NATRON_MERGE_PREFIX "Plus",
-        PLUGINID_NATRON_MERGE_PREFIX "Matte",
-        PLUGINID_NATRON_MERGE_PREFIX "Multiply",
-        PLUGINID_NATRON_MERGE_PREFIX "In",
-        PLUGINID_NATRON_MERGE_PREFIX "Out",
-        PLUGINID_NATRON_MERGE_PREFIX "Screen",
-        PLUGINID_NATRON_MERGE_PREFIX "Max",
-        PLUGINID_NATRON_MERGE_PREFIX "Min",
-        PLUGINID_NATRON_MERGE_PREFIX "Difference",
+        PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_DISSOLVE,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
@@ -134,11 +126,6 @@ const AllowedName kAllowedNames[] = {
     { "NatronOfxParamProcess", true,
       "Per-channel process toggles that the plug-in declared for the host's channel selector; "
       "the native node's channel set replaces them." },
-    { "aChannelsChanged", false,
-      "Merge's flag recording that the user edited the A-alpha toggle of input A, so that an operation "
-      "change stops resetting it. The native Merge never resets the toggles automatically." },
-    { "bChannelsChanged", false,
-      "Merge's flag recording that the user edited the A-alpha toggle of input B; see aChannelsChanged." },
 };
 
 bool
@@ -341,6 +328,50 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
     EXPECT_GT(nChecked, 0) << "no parameter of a retired node was audited";
     EXPECT_EQ(0, nMissing) << "Params the bundled PyPlugs set on a native node that the node lacks:\n"
                            << findings.str();
+}
+
+// The PyPlugs' inner Merges were saved writing some channels of rgba, the rest passing through from
+// B: each must have that one rgba row in Layers with those channels on.
+TEST_F(PyPlugNativeParamsTest, InnerMergesWriteTheChannelsTheyWereSavedWith)
+{
+    if (!isPluginLoaded("fr.inria.Glow")) {
+        std::cerr << "Skipping: PyPlugs under " NATRON_TESTS_PYPLUGS_DIR " were not registered as plugins." << std::endl;
+        return;
+    }
+    struct Expected {
+        const char* pyPlug;
+        const char* merge;
+        std::vector<std::string> channels;
+    };
+    const std::vector<std::string> rgb = { "R", "G", "B" };
+    const Expected expected[] = {
+        { "Glow", "Merge1", rgb },
+        { "Glow", "Merge2", rgb },
+        { "Glow", "Merge3", rgb },
+        { "Glow", "Merge6", rgb },
+        { "LightWrap", "EdgeMerge", { "A" } },
+        { "LightWrap", "MaskMerge", rgb },
+    };
+    std::map<std::string, NodeCollectionPtr> groups;
+    for (const Expected& want : expected) {
+        NodeCollectionPtr& group = groups[want.pyPlug];
+        if (!group) {
+            NodePtr node = createNode(QString::fromUtf8("fr.inria.") + QString::fromUtf8(want.pyPlug));
+            ASSERT_TRUE(bool(node)) << want.pyPlug;
+            group = std::dynamic_pointer_cast<NodeCollection>(node->getEffectInstance());
+            ASSERT_TRUE(bool(group)) << want.pyPlug;
+        }
+        NodePtr merge = group->getNodeByName(want.merge);
+        ASSERT_TRUE(bool(merge)) << want.pyPlug << "/" << want.merge;
+        ASSERT_EQ(std::string(PLUGINID_NATRON_NATIVE_MERGE), merge->getPluginID()) << want.pyPlug << "/" << want.merge;
+        KnobChannelSetPtr layers = merge->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+        ASSERT_TRUE(bool(layers)) << want.pyPlug << "/" << want.merge;
+        const std::vector<ChannelSetRow> rows = layers->getRows();
+        ASSERT_EQ(1u, rows.size()) << want.pyPlug << "/" << want.merge;
+        EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode) << want.pyPlug << "/" << want.merge;
+        EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern) << want.pyPlug << "/" << want.merge;
+        EXPECT_EQ(want.channels, rows[0].channels) << want.pyPlug << "/" << want.merge;
+    }
 }
 
 // These colour inner nodes were saved with the OpenFX plug-in's un-premultiply toggle on. The

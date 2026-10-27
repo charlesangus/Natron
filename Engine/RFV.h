@@ -33,7 +33,9 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RenderContext.h"
 #include "Engine/UndoCommand.h"
+#include "Engine/ViewIdx.h"
 #include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -102,6 +104,22 @@ bool isDeclaredOnApp(const KnobI& knob);
 std::vector<VariableDeclaration> getDeclaredVariables(const KnobHolder* holder, std::vector<std::string>* errors = nullptr);
 
 /**
+ * @brief Takes getDeclaredVariables() of the holder as its declaration snapshot (see
+ * KnobHolder::getRFVDeclarationSnapshot()), and invalidates the render-context reads when the
+ * declarations changed. Called on the thread that edits the holder's RFV groups or renames a
+ * variable, after the edit: a change of an RFV group's children, a rename of one of them,
+ * KnobGroup::setAsRFVGroup() and KnobHolder::recreateUserKnobs() call it.
+ **/
+void refreshDeclarationSnapshot(KnobHolder* holder);
+
+/**
+ * @brief The holder's declarations as refreshDeclarationSnapshot() last took them, empty before
+ * it first ran. Unlike getDeclaredVariables(), safe on a render thread while the main thread
+ * edits the holder's variables. MT-safe.
+ **/
+RFVDeclarationsConstPtr getDeclarationSnapshot(const KnobHolder* holder);
+
+/**
  * @brief Whether the knob is a variable of a node: a direct child of an RFV group of an effect,
  * such as a ReverseFlowVariableSet node, rather than of the project's, and not a plug-in control.
  **/
@@ -114,6 +132,13 @@ bool isNodeVariable(const KnobIPtr& knob);
  * variables moved.
  **/
 void refreshNodeVariableGroups(const Project& project);
+
+/**
+ * @brief Has every expression of the project and its nodes that reads a variable the project
+ * declares listen to that variable (see KnobHelper::refreshRFVListeners()), so an expression set
+ * before the variable was declared, or before it took its name, follows its edits.
+ **/
+void refreshExpressionListeners(const Project& project);
 
 /**
  * @brief The variables the holder could take over from elsewhere in its project: the project's,
@@ -169,6 +194,37 @@ bool canPromoteToProject(const KnobIPtr& knob, std::string* reason = nullptr);
  * or the project's RFV group refuses the copy.
  **/
 KnobIPtr promoteToProject(const KnobIPtr& knob, std::string* error = nullptr);
+
+/**
+ * @brief The variable the holder declares under name in its declaration snapshot (see
+ * getDeclarationSnapshot()), or null. MT-safe.
+ **/
+KnobIPtr findDeclaredVariable(const KnobHolder* holder, const std::string& name);
+
+/**
+ * @brief The value of the variable knob at time and view, as a render context holds it: a bool
+ * for a boolean, an integer for a one-dimensional integer or choice, a double for a
+ * one-dimensional double, a list of either for more dimensions, and a string for a string.
+ * Evaluating it runs its expression, if any, on the calling thread.
+ * @returns false, leaving value alone, for a knob of another type.
+ **/
+bool getVariableValue(const KnobIPtr& knob, double time, ViewIdx view, RenderContextValue* value);
+
+/**
+ * @brief Whether the variable knob's value may differ between times: it has keyframes or an
+ * expression (any, whatever it reads), is linked to a time-varying master, or, unlinked, hashes
+ * state outside itself.
+ **/
+bool isTimeVarying(const KnobIPtr& knob);
+
+/**
+ * @brief base, or the empty context when null, with every variable of the holder's declaration
+ * snapshot (see getDeclarationSnapshot()) set over it. A time-varying variable (see
+ * isTimeVarying()) is set to a RenderContextBinding capturing base restricted to what the knob's
+ * value reads, which rfv evaluates at the reading expression's time; any other to its value at
+ * time and view (see getVariableValue()), evaluated on the calling thread.
+ **/
+RenderContextPtr overlayDeclaredVariables(const KnobHolder* holder, double time, ViewIdx view, const RenderContextPtr& base);
 
 /**
  * @brief promoteToProject() as one undo step. The first redo() promotes the node's variable; undo()

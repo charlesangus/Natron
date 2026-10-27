@@ -40,7 +40,7 @@
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
@@ -1105,7 +1105,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
-        // Handles are drawn for the USDTransform whose settings panel was opened last.
+        // Handles are drawn for the USDEditTransform whose settings panel was opened last.
         _imp->sceneViewport->setTransformNodeProvider([this]() -> NodePtr {
             Gui* gui = getGui();
             if (!gui) {
@@ -1116,7 +1116,7 @@ ViewerTab::onActiveInputDataKindChanged()
                 NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
                 NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
                 NodePtr panelNode = nodeGui ? nodeGui->getNode() : NodePtr();
-                if (panelNode && panelNode->isActivated() && (panelNode->getPluginID() == PLUGINID_NATRON_USDTRANSFORM)) {
+                if (panelNode && panelNode->isActivated() && (panelNode->getPluginID() == PLUGINID_NATRON_USDEDITTRANSFORM)) {
                     return panelNode;
                 }
             }

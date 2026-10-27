@@ -2,8 +2,9 @@
 
 Authors a UsdLux light at Prim Path (default `/` and the node's name, such as `/USDLight1`, following renames until the path is edited). Type picks the prim:
 `DistantLight` (Angle), `SphereLight` (Radius), `RectLight` (Width, Height) or
-`DomeLight` (Texture File). With a scene input the light is layered over the
-input's scene; without one the node is a scene source.
+`DomeLight` (Texture File). The node has no input and is a
+scene source; combine it with other scenes through USDMerge, or put it under a
+USDXformPrim.
 
 Color, Intensity, Exposure and Normalize map directly to `inputs:color`,
 `inputs:intensity`, `inputs:exposure` and `inputs:normalize` for every type.

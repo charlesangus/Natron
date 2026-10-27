@@ -525,6 +525,156 @@ CornerPinOp::costHint(const Params& params,
     return hint;
 }
 
+namespace {
+// The destination points of a copy button and srcClipChanged, kept as detached knobs so undo
+// restores their values, expressions and curves.
+class CopyPointsCommand
+    : public UndoCommand {
+public:
+    CopyPointsCommand(const CornerPinOp& o,
+                      const KnobBoolWPtr& srcClipChanged,
+                      bool fromToTo,
+                      bool withAnimation,
+                      double time,
+                      bool markEdited)
+        : UndoCommand(fromToTo ? "Copy From to To" : "Copy To to From")
+        , _withAnimation(withAnimation)
+        , _time(time)
+        , _markEdited(markEdited)
+        , _srcClipChanged(srcClipChanged)
+        , _srcClipChangedBefore(false)
+    {
+        for (int i = 0; i < 4; ++i) {
+            _src[i] = fromToTo ? o.from[i] : o.to[i];
+            _dst[i] = fromToTo ? o.to[i] : o.from[i];
+            KnobDoublePtr dst = _dst[i].lock();
+            if (dst) {
+                _before[i] = std::make_shared<KnobDouble>((KnobHolder*)NULL, std::string(), dst->getDimension(), false);
+                _before[i]->populate();
+                _before[i]->clone(dst.get());
+            }
+        }
+        KnobBoolPtr srcClipChangedKnob = _srcClipChanged.lock();
+        _srcClipChangedBefore = srcClipChangedKnob && srcClipChangedKnob->getValue();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        KnobHolder* holder = this->holder();
+
+        if (holder) {
+            holder->beginChanges();
+        }
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr src = _src[i].lock();
+            KnobDoublePtr dst = _dst[i].lock();
+            if (!src || !dst) {
+                continue;
+            }
+            if (_withAnimation) {
+                dst->cloneAndUpdateGui(src.get());
+                dst->evaluateValueChange(0, _time, ViewSpec::all(), eValueChangedReasonPluginEdited);
+            } else {
+                dst->setValues(src->getValueAtTime(_time, 0), src->getValueAtTime(_time, 1), ViewSpec::all(), eValueChangedReasonPluginEdited);
+            }
+        }
+        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
+        if (_markEdited && srcClipChanged && !srcClipChanged->getValue()) {
+            srcClipChanged->setValue(true);
+        }
+        if (holder) {
+            holder->endChanges();
+        }
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        KnobHolder* holder = this->holder();
+
+        if (holder) {
+            holder->beginChanges();
+        }
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr dst = _dst[i].lock();
+            if (!dst || !_before[i]) {
+                continue;
+            }
+            dst->cloneAndUpdateGui(_before[i].get());
+            dst->evaluateValueChange(0, _time, ViewSpec::all(), eValueChangedReasonPluginEdited);
+        }
+        // Restoring the points marks them edited; srcClipChanged goes back last.
+        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
+        if (srcClipChanged) {
+            srcClipChanged->setValue(_srcClipChangedBefore);
+        }
+        if (holder) {
+            holder->endChanges();
+        }
+    }
+
+private:
+    KnobHolder* holder() const
+    {
+        for (int i = 0; i < 4; ++i) {
+            KnobDoublePtr dst = _dst[i].lock();
+            if (dst) {
+                return dst->getHolder();
+            }
+        }
+
+        return NULL;
+    }
+
+    bool _withAnimation;
+    double _time;
+    bool _markEdited;
+    KnobDoubleWPtr _src[4];
+    KnobDoubleWPtr _dst[4];
+    KnobDoublePtr _before[4];
+    KnobBoolWPtr _srcClipChanged;
+    bool _srcClipChangedBefore;
+};
+} // anonymous namespace
+
+void
+setCornerPinPointsFromRoD(KnobHolder* holder,
+                          const CornerPinOp& op,
+                          const RectD& rod,
+                          bool alsoTo)
+{
+    const double corners[4][2] = { { rod.x1, rod.y1 }, { rod.x2, rod.y1 }, { rod.x2, rod.y2 }, { rod.x1, rod.y2 } };
+
+    holder->beginChanges();
+    for (int i = 0; i < 4; ++i) {
+        KnobDoublePtr fromKnob = op.from[i].lock();
+        if (fromKnob) {
+            fromKnob->setValues(corners[i][0], corners[i][1], ViewSpec::all(), eValueChangedReasonPluginEdited);
+        }
+        KnobDoublePtr toKnob = op.to[i].lock();
+        if (alsoTo && toKnob) {
+            toKnob->setValues(corners[i][0], corners[i][1], ViewSpec::all(), eValueChangedReasonPluginEdited);
+        }
+    }
+    holder->endChanges();
+}
+
+UndoCommandPtr
+makeCornerPinCopyPointsCommand(const CornerPinOp& op,
+                               const KnobBoolWPtr& srcClipChanged,
+                               bool fromToTo,
+                               bool withAnimation,
+                               double time,
+                               bool markEdited)
+{
+    return std::make_shared<CopyPointsCommand>(op, srcClipChanged, fromToTo, withAnimation, time, markEdited);
+}
+
+bool
+isCornerPinPointsEdit(ValueChangedReasonEnum reason)
+{
+    return (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonPluginEdited) || (reason == eValueChangedReasonNatronGuiEdited) || (reason == eValueChangedReasonNatronInternalEdited);
+}
+
 CornerPinNode::CornerPinNode(NodePtr node)
     : Base(node)
 {
@@ -664,132 +814,8 @@ CornerPinNode::setFromToInput(double time,
     if (!getSourceRoD(time, &rod) || rod.isInfinite() || rod.isNull()) {
         return;
     }
-    const double corners[4][2] = { { rod.x1, rod.y1 }, { rod.x2, rod.y1 }, { rod.x2, rod.y2 }, { rod.x1, rod.y2 } };
-    const CornerPinOp& o = op();
-
-    beginChanges();
-    for (int i = 0; i < 4; ++i) {
-        KnobDoublePtr fromKnob = o.from[i].lock();
-        if (fromKnob) {
-            fromKnob->setValues(corners[i][0], corners[i][1], ViewSpec::all(), eValueChangedReasonPluginEdited);
-        }
-        KnobDoublePtr toKnob = o.to[i].lock();
-        if (alsoTo && toKnob) {
-            toKnob->setValues(corners[i][0], corners[i][1], ViewSpec::all(), eValueChangedReasonPluginEdited);
-        }
-    }
-    endChanges();
+    setCornerPinPointsFromRoD(this, op(), rod, alsoTo);
 }
-
-// The destination points of a copy button and srcClipChanged, kept as detached knobs so undo
-// restores their values, expressions and curves.
-class CornerPinNode::CopyPointsCommand
-    : public UndoCommand {
-public:
-    CopyPointsCommand(const CornerPinNode& node,
-                      bool fromToTo,
-                      bool withAnimation,
-                      double time,
-                      bool markEdited)
-        : UndoCommand(fromToTo ? "Copy From to To" : "Copy To to From")
-        , _withAnimation(withAnimation)
-        , _time(time)
-        , _markEdited(markEdited)
-        , _srcClipChanged(node._srcClipChanged)
-        , _srcClipChangedBefore(false)
-    {
-        const CornerPinOp& o = node.op();
-
-        for (int i = 0; i < 4; ++i) {
-            _src[i] = fromToTo ? o.from[i] : o.to[i];
-            _dst[i] = fromToTo ? o.to[i] : o.from[i];
-            KnobDoublePtr dst = _dst[i].lock();
-            if (dst) {
-                _before[i] = std::make_shared<KnobDouble>((KnobHolder*)NULL, std::string(), dst->getDimension(), false);
-                _before[i]->populate();
-                _before[i]->clone(dst.get());
-            }
-        }
-        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
-        _srcClipChangedBefore = srcClipChanged && srcClipChanged->getValue();
-    }
-
-    virtual void redo() OVERRIDE FINAL
-    {
-        KnobHolder* holder = this->holder();
-
-        if (holder) {
-            holder->beginChanges();
-        }
-        for (int i = 0; i < 4; ++i) {
-            KnobDoublePtr src = _src[i].lock();
-            KnobDoublePtr dst = _dst[i].lock();
-            if (!src || !dst) {
-                continue;
-            }
-            if (_withAnimation) {
-                dst->cloneAndUpdateGui(src.get());
-                dst->evaluateValueChange(0, _time, ViewSpec::all(), eValueChangedReasonPluginEdited);
-            } else {
-                dst->setValues(src->getValueAtTime(_time, 0), src->getValueAtTime(_time, 1), ViewSpec::all(), eValueChangedReasonPluginEdited);
-            }
-        }
-        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
-        if (_markEdited && srcClipChanged && !srcClipChanged->getValue()) {
-            srcClipChanged->setValue(true);
-        }
-        if (holder) {
-            holder->endChanges();
-        }
-    }
-
-    virtual void undo() OVERRIDE FINAL
-    {
-        KnobHolder* holder = this->holder();
-
-        if (holder) {
-            holder->beginChanges();
-        }
-        for (int i = 0; i < 4; ++i) {
-            KnobDoublePtr dst = _dst[i].lock();
-            if (!dst || !_before[i]) {
-                continue;
-            }
-            dst->cloneAndUpdateGui(_before[i].get());
-            dst->evaluateValueChange(0, _time, ViewSpec::all(), eValueChangedReasonPluginEdited);
-        }
-        // Restoring the points marks them edited; srcClipChanged goes back last.
-        KnobBoolPtr srcClipChanged = _srcClipChanged.lock();
-        if (srcClipChanged) {
-            srcClipChanged->setValue(_srcClipChangedBefore);
-        }
-        if (holder) {
-            holder->endChanges();
-        }
-    }
-
-private:
-    KnobHolder* holder() const
-    {
-        for (int i = 0; i < 4; ++i) {
-            KnobDoublePtr dst = _dst[i].lock();
-            if (dst) {
-                return dst->getHolder();
-            }
-        }
-
-        return NULL;
-    }
-
-    bool _withAnimation;
-    double _time;
-    bool _markEdited;
-    KnobDoubleWPtr _src[4];
-    KnobDoubleWPtr _dst[4];
-    KnobDoublePtr _before[4];
-    KnobBoolWPtr _srcClipChanged;
-    bool _srcClipChangedBefore;
-};
 
 UndoCommandPtr
 CornerPinNode::makeCopyPointsCommand(bool fromToTo,
@@ -797,13 +823,13 @@ CornerPinNode::makeCopyPointsCommand(bool fromToTo,
                                      double time,
                                      bool markEdited)
 {
-    return std::make_shared<CopyPointsCommand>(*this, fromToTo, withAnimation, time, markEdited);
+    return makeCornerPinCopyPointsCommand(op(), _srcClipChanged, fromToTo, withAnimation, time, markEdited);
 }
 
 bool
 CornerPinNode::isPointsEdit(ValueChangedReasonEnum reason)
 {
-    return (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonPluginEdited) || (reason == eValueChangedReasonNatronGuiEdited) || (reason == eValueChangedReasonNatronInternalEdited);
+    return isCornerPinPointsEdit(reason);
 }
 
 void

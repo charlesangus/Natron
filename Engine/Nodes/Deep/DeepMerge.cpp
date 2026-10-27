@@ -414,7 +414,7 @@ DeepMerge::getRegionOfDefinition(U64 hash,
     }
     bool isProjectFormat = false;
 
-    return a->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    return a->getRegionOfDefinition_public(a->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 }
 
 void

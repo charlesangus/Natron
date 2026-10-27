@@ -1604,6 +1604,27 @@ TEST_F(DeepNodesTest, DeepCropIsRegisteredAndInstantiable)
     EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, crop->canConnectInput(imageSource, 0));
 }
 
+// The input answers under its own hash, so the region of definition it forwards is one it may
+// cache.
+TEST_F(DeepNodesTest, DeepCropCachesTheInputRegionOfDefinitionItForwards)
+{
+    NodePtr source = createSyntheticSource(makeDeepImage(RectI(0, 0, 8, 8), rgbaChannelNames(), SynthPixels(), true));
+    NodePtr crop = createTrackedNode(PLUGINID_NATRON_DEEPCROP);
+    ASSERT_TRUE(source && crop);
+    connectNodes(source, crop, 0, true);
+
+    EffectInstancePtr sourceEffect = source->getEffectInstance();
+    sourceEffect->clearActionsCache();
+    const double time = 1.;
+    const U64 sourceHash = source->getHashValue();
+    ASSERT_FALSE(sourceEffect->hasCachedRoD(sourceHash, time, ViewIdx(0), 0));
+
+    RectD rod;
+    bool isProjectFormat = false;
+    ASSERT_NE(eStatusFailed, crop->getEffectInstance()->getRegionOfDefinition_public(crop->getHashValue(), time, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    EXPECT_TRUE(sourceEffect->hasCachedRoD(sourceHash, time, ViewIdx(0), 0));
+}
+
 TEST_F(DeepNodesTest, DeepCropBBoxCropsToTheIntersectionAndLeavesSamplesInsideUnchanged)
 {
     const RectI bounds(0, 0, 8, 8);

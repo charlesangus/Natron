@@ -11,6 +11,7 @@ set(_natron_serial_suites
     GraphScalingTiming
     StagedImageEffectTiming
     BezierEditScalingTiming
+    AiAbortTiming
 )
 
 # Suites whose cases add up to more than the default 300 s, at three times the slower of the

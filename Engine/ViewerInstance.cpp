@@ -1160,32 +1160,10 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 {
     assert(_imp->uiContext);
 
-    {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        outArgs->mipmapLevelWithoutDraft = _imp->viewerMipmapLevel;
-    }
-
-    assert(_imp->uiContext);
-
     // This is the current zoom factor (1. == 100%) currently set by the user in the viewport
     double zoomFactor = _imp->uiContext->getZoomFactor();
 
-    // We render the image that is the nearest mipmap level higher in quality.
-    // For instance, if we were to render at 48% zoom factor, we would render at 50% which is mipmapLevel=1
-    // If on the other hand the zoom factor would be at 51%, then we would render at 100% which is mipmapLevel=0
-
-    // Adjust the mipmap level (without taking draft into account yet) as the max of the closest mipmap level of the viewer zoom
-    // and the requested user proxy mipmap level
-    if (isFullFrameProcessingEnabled()) {
-        outArgs->mipmapLevelWithoutDraft = 0;
-    } else {
-        unsigned int zoomMipmapLevel;
-        {
-            double closestPowerOf2 = zoomFactor >= 1 ? 1 : ipow( 2, (int)-std::ceil(std::log(zoomFactor) / M_LN2) );
-            zoomMipmapLevel = std::log(closestPowerOf2) / M_LN2;
-        }
-        outArgs->mipmapLevelWithoutDraft = std::max(outArgs->mipmapLevelWithoutDraft, zoomMipmapLevel);
-    }
+    outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
     outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
 
     outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
@@ -1568,6 +1546,8 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
 
         return eViewerRenderRetCodeRedraw;
     }
+    // The viewer's textures are keyed by its plain hash: a render tree's root has no context.
+    outArgs->cleanHash = std::make_shared<const CleanHashSnapshot>(getNode(), RenderContextPtr());
 
     int activeA, activeB;
     getActiveInputs(activeA, activeB);
@@ -2098,7 +2078,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             updateParams->deviceProcess.displayProcessor = updateParams->displayProcessor;
             updateParams->deviceStats = stats;
             updateParams->deviceCacheTiles.clear();
-            if (useTextureCache) {
+            // The tiles would be keyed by a viewer hash the upstream render may not have seen.
+            if (useTextureCache && inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash)) {
                 const std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
                 for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
                     UpdateViewerParams::DeviceCacheTile cacheTile;
@@ -2468,6 +2449,16 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             }
         } // if (singleThreaded)
 
+        // The tiles created above were cached under viewerHash before the render: an edit or a
+        // mark that came meanwhile means they may show another state, so they leave the cache,
+        // still displayed by this update.
+        if (useTextureCache && !(inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash))) {
+            for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
+                if (it->cachedData) {
+                    appPTR->removeFromViewerCache(it->cachedData);
+                }
+            }
+        }
 
         if ( colorImage && stats && stats->isInDepthProfilingEnabled() ) {
             stats->addRenderInfosForNode( getNode(), NodePtr(), colorImage->getComponents().getChannelsLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation() );
@@ -4375,6 +4366,27 @@ ViewerInstance::getTimelineBounds(int* first,
         *first = 0;
         *last = 0;
     }
+}
+
+unsigned int
+ViewerInstance::getMipmapLevelWithoutDraft() const
+{
+    if (isFullFrameProcessingEnabled()) {
+        return 0;
+    }
+    unsigned int proxyLevel;
+    {
+        QMutexLocker l(&_imp->viewerParamsMutex);
+        proxyLevel = _imp->viewerMipmapLevel;
+    }
+
+    // The nearest mipmap level higher in quality than the zoom factor: 48% renders at 50%
+    // (level 1), 51% at 100% (level 0).
+    double zoomFactor = _imp->uiContext->getZoomFactor();
+    double closestPowerOf2 = zoomFactor >= 1 ? 1 : ipow(2, (int)-std::ceil(std::log(zoomFactor) / M_LN2));
+    unsigned int zoomMipmapLevel = std::log(closestPowerOf2) / M_LN2;
+
+    return std::max(proxyLevel, zoomMipmapLevel);
 }
 
 unsigned int

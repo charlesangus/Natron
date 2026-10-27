@@ -605,12 +605,12 @@ protected:
                 ramp = column;
                 continue;
             }
-            NodePtr plus = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+            NodePtr plus = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
             EXPECT_TRUE(bool(plus));
             if (!plus) {
                 return NodePtr();
             }
-            EXPECT_TRUE(setKnobValue(plus, kMergeParamOperation, std::string("plus")));
+            EXPECT_TRUE(setKnobValue(plus, kNativeMergeParamOperation, std::string("plus")));
             connectNodes(ramp, plus, 0, true);
             connectNodes(column, plus, 1, true);
             ramp = plus;
@@ -754,10 +754,10 @@ TEST_F(NativeIErodeDilateTest, MapRampIsMonotonic)
         // Both opaque, so that the band over the background replaces it.
         NodePtr background = makeConstant(kWindow, { outside, outside, outside, 1. });
         NodePtr band = makeConstant(RectI(0, 20, kParitySourceWidth, 28), { inside, inside, inside, 1. });
-        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         NodePtr map = makeStepRamp(7);
         ASSERT_TRUE(bool(background) && bool(band) && bool(over) && bool(map));
-        EXPECT_TRUE(setKnobValue(over, kMergeParamOperation, std::string("over")));
+        EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
         connectNodes(background, over, 0, true);
         connectNodes(band, over, 1, true);
         NodePtr node = makeNode(dilate, over, map, 0., 5.5);

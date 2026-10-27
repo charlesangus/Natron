@@ -138,6 +138,9 @@ public:
 
     bool getAllowAll() const;
 
+    /// Layer-select mode only: the name of the All entry, "All" when empty.
+    void setAllLabel(const QString& label);
+
     /// Channel-select mode only: "layer.channel", or empty for None.
     void setChannelSelectValue(const std::string& layerDotChannel);
 
@@ -230,6 +233,7 @@ private:
     bool _setRowWithChannelButtons;
     bool _allowNone;
     bool _allowAll;
+    QString _allLabel;
     QString _absentMarker;
     bool _removable;
     bool _patternValid;

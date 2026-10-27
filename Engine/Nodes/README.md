@@ -221,8 +221,9 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
   unconnected clip: every standard key describes the source, so a value made up
   from the clip or the timeline would misdescribe it.
 
-Framework policies: `Merge` takes the metadata of its A input (then A2.., then
-B if no A is connected), never B's; the generators (`GeneratorNode`) output only
+Framework policies: `Merge` takes the metadata of its B input by default (its
+Metadata From choice picks A or B; the other input's when that one is not
+connected, and A means input A, not A2 onwards); the generators (`GeneratorNode`) output only
 `ofx/framerate` and `ofx/pixelaspect` (they have no source, and `ofx/frame` is the
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
@@ -369,8 +370,8 @@ under "Flat image nodes", and `Grade` is the example to read.
    naming the class and its header relative to the fragment. A template
    registered under several IDs gets one fragment per ID, each naming its
    full instantiation and named after the node it registers
-   (`Merge/MergePlus.reg.inc` holds
-   `NATRON_NATIVE_NODE(MergePreset<eMergePresetPlus>, "Merge.h")`). The
+   (`Color/Add.reg.inc` holds
+   `NATRON_NATIVE_NODE(ColorMathNode<eColorMathOperationAdd>, "ColorMathNode.h")`). The
    class is a macro argument, so an instantiation whose arguments contain a
    comma is named through an alias (`Solid` in `Generator/Constant.h`).
    CMake globs the fragments into the generated `NativeRegistryAll.inc`, which
@@ -1000,9 +1001,20 @@ the base input by default). Every input is read at the evaluation's time. The re
 as the base input's row and `step()` combines it with each further input's row
 in turn: `io.src[0]` is the result so far, `io.src[1]` the next input's row, and
 `step()` writes the processed channels to `io.dst`. Mask and mix apply once, to
-the final result. An input is read in the layer its `InputSpec::layer` names and
-reads zero wherever it has no pixel. An op reading several inputs at once is not
-supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve does.
+the final result. An input is read in the layer its `InputSpec::layer` names, or the one
+the `KnobLayerSelect` its `CompositeInput::layerKnob` names selects, and reads zero wherever
+it has no pixel. A `CompositeInput` may also carry an alpha source (`CompositeAlpha`): one
+channel a `KnobChannelSelect` selects, broadcast to every channel; a layer a `KnobLayerSelect`
+selects, read per channel, which must have as many channels as the read layer or the render
+fails with an error naming both; or the read layer's own `A`/`alpha` channel, falling back to
+a channel select. When any folded input has one, `step()` gets `io.alpha[0]` (the result's)
+and `io.alpha[1]` (the input's) as strided spans, an input without one reading zero, and writes
+the new result's alpha to `io.dstAlpha`; the base's alpha source gives the first result's. An
+input's alpha resolves apart from its pixels: a connected input lacking the layer it is read in
+has zero pixels but keeps its alpha, and only a disconnected one reads zero alpha too. With
+`CompositeInputs::resultIsAlpha` the carried alpha, not the folded pixels, is the result, as
+Merge writes B's per-channel alpha layer. An op
+reading several inputs at once is not supported. Dissolve folds the two of its 64 sources that `which` lies between, with `mix` from the `MaskMix` stage. A Composite op runs on the GPU if it has `gpu(params)` returning a `GpuOpRef` (`GpuCompositeOp`); Dissolve and Merge do. Its kernel is built with `runCompositeStep` (`compositestep.slang`), or with `runCompositeAlphaStep` (`compositealpha.slang`) when its inputs have alpha sources, the fold then carrying the result's alpha between dispatches as the CPU does. A selected layer other than the rendered plane is handed over beside it (`getGpuExtraInputLayers()`), and the node asks for it upstream (`addInputLayersNeeded()`); a further input read in a selected colour layer of another colour layout than the plane's is handed over in that layer instead (`getGpuInputLayer()`, `stageGpuSourceInputLayer()`), the fold reading its channels by channel as the CPU does; a further input lacking a rendered plane other than the colour one reads zero pixels there and is handed over in the layer its alpha is read from; a base read in a layer whose channel count differs from the plane's stays on the CPU.
 
 **Custom** is the way out, and the cost of it is that the node owns its pixels.
 A Custom node derives from `StagedImageEffect` directly, returns
@@ -1010,9 +1022,9 @@ A Custom node derives from `StagedImageEffect` directly, returns
 from `imagePipelineSpec()` (with `.op = OpKind::Custom`), and implements
 `isOpIdentity(time, scale, roi, view)` and `renderOp(args, plan)`. It still gets
 the layer knob, the stage knobs and the composed identities, and reads the mask,
-mix and divisor from the `StagePlan` instead of its own knobs. Merge, Keyer and
-ChromaKeyer are Custom nodes; Merge until M101 - Clean-Sheet Merge Node, the
-keyers until M95 - Knob Cleanup And Keyer Redesign. A Custom node is on the CPU
+mix and divisor from the `StagePlan` instead of its own knobs. Keyer and
+ChromaKeyer are Custom nodes, as are the Raw nodes; Merge is a Composite op. A
+Custom node is on the CPU
 unless it opts into the GPU by overriding three virtuals:
 `canRenderOpOnGpu(query)` (the answer may depend only on the query, the
 node's settings and its source metadata), `renderOpGpu(args)` to record its dispatches over
@@ -1090,6 +1102,39 @@ model does not price them: a region of two or more connected GPU candidates with
 goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
 (`PlacementInputs::isPriced`).
 
+### AI nodes
+
+An AI node runs a neural network through `Engine/Ai` (see `Engine/Ai/README.md`),
+usually over its render window with `runTiled()`. Three rules hold for every one.
+
+**CPU-only.** Inference goes through host memory on ONNX Runtime's own devices,
+not through Vulkan. An AI node is therefore a CPU node as far as the scheduler
+can tell. It is a Custom node that doesn't override `canRenderOpOnGpu()`, so its
+`NodeSpec` and pipeline place it on the CPU and it ends any GPU region it sits
+in. That holds even when ONNX Runtime itself runs on CUDA or MIGraphX.
+
+**A persistent error when AI can't run.** The node opens its session with
+`InferenceSession::open()`, which throws `AiError` when ONNX Runtime is
+unavailable. In that case the node posts
+`setPersistentMessage(eMessageTypeError, ...)` and fails the render; it never
+renders black or passes the input through quietly. The message is
+`OrtLoader::process()->unavailableReason()`:
+- when "AI Enabled" is off, `OrtLoader::disabledReason()`, "AI is disabled in
+  Preferences";
+- otherwise, the paths the loader tried and why each one failed.
+
+The node clears the message once a render succeeds. `AiAborted` is a normal
+abort, not an error: return `eStatusFailed` without a message. Pass the abort
+predicate as `[this] { return aborted(); }`.
+
+**`pack` and `unpack` own colour.** The node's `pack` callback converts the
+render window's pixels into the model's tensor space, for example sRGB-encoded
+and clamped, or log, with any channel reordering. Its `unpack` callback converts
+the result back to scene-linear, and it is called only once every tile has
+succeeded. `Engine/Ai` never interprets pixel values; the conversion lives in
+the node, beside the model it serves. Remember that tensor row 0 is the top of
+the image, `y2 - 1`.
+
 ### The GPU side of an op
 
 A Point op names its GPU work with a `GpuOpRef` returned from `gpu()`:
@@ -1144,8 +1189,11 @@ or redeclare:
 The stage knobs sit together below the node's own knobs, under one separator, in
 this order: (Un)premult by, the mask selectors and Invert mask, Mix. A node's own
 knobs follow the OFX plugin's order, names, types, dimensions and defaults. The
-OFX-internal `NatronOfxParamProcess*`, `unPremultBy*` and `premultChanged` are
-not declared. Labels drop the `OFX` suffix and grouping is a `/`-separated path
+OFX-internal `NatronOfxParamProcess*` and `unPremultBy*` are not declared.
+Nothing in the graph keeps premult state: OFX clips and the images they fetch
+always answer unpremultiplied, the host discards the output premult a plugin
+reports, and unpremultiplying is only ever the explicit "(Un)premult by"
+choice. Labels drop the `OFX` suffix and grouping is a `/`-separated path
 matching the OFX menus. The filters (Blur, EdgeDetect, ErodeDilate) have no
 `Premult` stage and filter the data as stored.
 
@@ -1158,7 +1206,7 @@ source plane, the divisor layer (through the "(Un)premult by" selector) and the
 mask layer (through the mask selector), all at the render window, and a Passes
 or Resample op widens the source's region of interest by its halo or filter
 reach. A node that reads more -- another input, another time, a wider window --
-declares it through `getRegionsOfInterest()`, `getComponentsNeededAndProduced()`
+declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, matching the OpenFX conditions so identities become
 identity tasks. No node here touches deep data or GL.
@@ -1190,9 +1238,8 @@ suite does. Each node parallelises its own render, within the thread budget
   between the full frame and a 1x1 window, about 1% of the input's range;
   `NativeSpatialFilterWindow_Test.cpp` holds them to 2e-2. The box family is a
   running sum in double whose rounding to float measured identical.
-- Resample ops and the Custom nodes with their own `renderOp()` (`Merge`,
-  `Keyer`, `ChromaKeyer`) and the generators split row bands the same way as
-  point ops.
+- Resample ops and the Custom nodes with their own `renderOp()` (`Keyer`,
+  `ChromaKeyer`) and the generators split row bands the same way as point ops.
 
 Read an image's bounds with `Image::getBounds()` on the calling thread, before
 the bands start, and hand the rectangle to the band. `getBounds()` takes the
@@ -1220,9 +1267,7 @@ is how a parity test renders both side by side. The ID and major live in
 node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are in
 `Gui/Resources/Images/NativeNodes/<pluginID>.png`.
 
-Siblings are one op under several IDs, each with its own `NodeSpec`: the Merge
-presets (`Plus`, `Matte`, `Multiply`, `In`, `Out`, `Screen`, `Max`, `Min`,
-`Difference`) are `MergeNode` with a default `operation`; `Solid` is a
+Siblings are one op under several IDs, each with its own `NodeSpec`: `Solid` is a
 `ConstantNode` over `ConstantOp` with its own spec; `TransformMasked` is
 `TransformImageNode<true>`, the `TransformOp` node with a mask input; `Add`,
 `Multiply` and `Gamma` are `ColorMathNode<KIND>`; `Erode` and `Dilate` are
@@ -1264,9 +1309,9 @@ NaNs matches, as do equal infinities.
 
 | Class | `ParityTolerance` | Bound | Used for |
 |---|---|---|---|
-| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge Porter-Duff operators, Crop without softness |
-| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve |
-| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes |
+| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge's multiply-and-add Porter-Duff operators on the GPU, Crop without softness |
+| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve, Merge's conjoint-over and disjoint-over on the GPU |
+| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes on the GPU |
 | Resampling | `resampling()` | 1e-5 absolute | Transform, Reformat, Crop softness |
 | IIR | `iir()` | 1e-4 absolute | Blur, EdgeDetect, Transform motion blur |
 

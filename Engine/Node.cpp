@@ -99,6 +99,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
@@ -1412,6 +1413,7 @@ Node::markHashDirtyInternal(bool includeGroupContents,
     // mark is pending, or it would stop at the node and leave the dependents clean.
     const bool alreadyQueued = _imp->hashDirtyQueued.exchange(true);
     _imp->hashDirtyGeneration.fetch_add(1);
+    invalidateRenderContextReads();
     traceHashMark(this, reason, knob);
     if (alreadyQueued && !includeGroupContents) {
         return;
@@ -1438,6 +1440,7 @@ Node::invalidateAllHashes(const char* reason,
                           const KnobI* knob)
 {
     hashEpoch().fetch_add(1);
+    invalidateRenderContextReads();
     traceHashMark(0, reason, knob);
 }
 
@@ -1578,6 +1581,43 @@ Node::getHashMarkCount() const
 
     // Both only grow, so the sum stays put only while neither moves.
     return _imp->hashDirtyGeneration.load() + hashEpoch().load();
+}
+
+CleanHashSnapshot::CleanHashSnapshot(const NodePtr& node,
+                                     const RenderContextPtr& context)
+    : _node(node)
+    , _contextKey(context ? context->hash() : 0)
+    , _marks(node ? node->getHashMarkCount() : 0)
+    , _bindings(node ? context : RenderContextPtr())
+{
+}
+
+bool
+CleanHashSnapshot::allowsStoreUnder(U64 hash) const
+{
+    if (!_node) {
+        return false;
+    }
+    // The hash check comes first: a recompute it relies on may have read a value whose write
+    // has not marked yet, and that write began before the in-flight check below.
+    U64 current = 0;
+    if (!_node->getHashValueIfUpToDate(&current) && (hashComputeDepth == 0) && (_node->getHashMarkCount() == _marks)) {
+        // Marked before construction and recomputed by no one since, as when the state moved and
+        // came back between a frame's setup and its render. With a mark raised since, the store
+        // is refused whatever the hash, so an edit in progress costs no recompute.
+        (void)_node->getHashValue();
+    }
+    if (!_node->getHashValueIfUpToDate(&current) || (mixRenderContextKey(current, _contextKey) != hash)) {
+        return false;
+    }
+    if (!_bindings.identitiesCurrent()) {
+        return false;
+    }
+    if (!KnobContentWrite::noneInFlight()) {
+        return false;
+    }
+
+    return (_node->getHashMarkCount() == _marks) && _bindings.marksUnmoved();
 }
 
 bool
@@ -2498,6 +2538,53 @@ Node::refreshDataKindConflictMessage()
     }
 } // refreshDataKindConflictMessage
 
+bool
+Node::setContextCountWarning(const QString& message,
+                             U64 renderSequence)
+{
+    bool log;
+    bool post;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        const bool posted = !_imp->contextCountWarningMessage.isEmpty();
+        // Outside a render there is no render to log it once for: it is logged when first posted.
+        log = (renderSequence == 0) ? !posted : (renderSequence != _imp->contextCountWarningSequence);
+        post = (_imp->persistentMessage != message);
+        _imp->contextCountWarningMessage = message;
+        if (log) {
+            _imp->contextCountWarningSequence = renderSequence;
+        }
+    }
+    if (post) {
+        setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    }
+
+    return log;
+}
+
+void
+Node::clearContextCountWarning()
+{
+    QString previous;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        if (_imp->contextCountWarningMessage.isEmpty()) {
+            return;
+        }
+        previous = _imp->contextCountWarningMessage;
+        _imp->contextCountWarningMessage.clear();
+        _imp->contextCountWarningSequence = 0;
+    }
+
+    // As refreshDataKindConflictMessage(): only the exact text posted here is ours to take back.
+    QString current;
+    int type;
+    getPersistentMessage(&current, &type, false);
+    if (current == previous) {
+        clearPersistentMessage(false);
+    }
+}
+
 void
 Node::fromSerialization(const Serialization::NodeSerialization& serialization,
                         bool updateKnobGui)
@@ -2974,13 +3061,13 @@ Node::makeInfoForInput(int inputNumber) const
     }
     {
         double first = 1., last = 1.;
-        input->getFrameRange_public(getHashValue(), &first, &last);
+        input->getFrameRange_public(input->getRenderHash(), &first, &last);
         ss << "<b>" << tr("Frame range:").toStdString() << "</b> <font color=#c8c8c8>" << first << " - " << last << "</font><br />";
     }
     {
         RectD rod;
         bool isProjectFormat;
-        StatusEnum stat = input->getRegionOfDefinition_public(getHashValue(),
+        StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(),
                                                               time,
                                                               RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
         if (stat != eStatusFailed) {
@@ -7388,6 +7475,19 @@ Node::setLayerKnobInput(const KnobIPtr& knob,
     }
     found->second.inputNb = inputNb;
     Q_EMIT layerListRefreshed();
+}
+
+void
+Node::setLayerKnobDrivenByContainer(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return;
+    }
+    std::map<const KnobI*, LayerKnobSource>::iterator found = _imp->layerKnobSources.find(knob.get());
+    if (found == _imp->layerKnobSources.end()) {
+        return;
+    }
+    found->second.drivenByContainer = true;
 }
 
 void

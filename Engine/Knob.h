@@ -34,6 +34,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <QReadWriteLock>
@@ -1615,6 +1616,20 @@ public:
      * invalidate the knob's hash when they change.
      **/
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const = 0;
+
+    /**
+     * @brief Registers something that makes this knob's value depend on render context
+     * variables. Adding or removing a source invalidates every memoized read-set. MT-safe.
+     **/
+    virtual void addContextReadSource(const ContextReadSourcePtr& source) = 0;
+    virtual void removeContextReadSource(const ContextReadSourcePtr& source) = 0;
+    virtual bool hasContextReadSources() const = 0;
+
+    /**
+     * @brief The union of the reads of the sources registered on this knob; empty without any.
+     * MT-safe.
+     **/
+    virtual RenderContextReadSet getContextReadSet() const = 0;
 };
 
 /**
@@ -1635,6 +1650,9 @@ public:
 
     static U64 snapshot();
     static bool isSettled(U64 snapshot);
+
+    /// True if no write is in flight at the call. CleanHashSnapshot relies on it.
+    static bool noneInFlight();
 
 private:
     bool _open;
@@ -1996,6 +2014,18 @@ public:
     static bool getExpressionEvaluationTime(double* time);
 
     virtual ViewIdx getCurrentView() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The view an expression is evaluated at: the requested one, for the current view the one the
+    // calling thread renders or acts at, and for all views the main view.
+    ViewIdx expressionView(ViewSpec view) const
+    {
+        if (view.isCurrent()) {
+            return getCurrentView();
+        }
+
+        return view.isAll() ? ViewIdx(0) : ViewIdx(view.value());
+    }
+
     virtual std::string getDimensionName(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setDimensionName(int dim, const std::string & name) OVERRIDE FINAL;
     virtual bool hasModifications() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -2052,6 +2082,64 @@ public:
     virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
+    virtual void addContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
+    virtual void removeContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
+    virtual bool hasContextReadSources() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RenderContextReadSet getContextReadSet() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a knob whose value reads the render context, the key its expression results are
+     * kept under on the calling thread, and returns true. The value reads what the knob's own
+     * read sources name and, transitively, what the knobs its expressions and links read name,
+     * and the upstream read-sets (see Node::getUpstreamContextReadSet()) of the nodes whose
+     * metadata those expressions read. The key is the hash of the context the holder is queried
+     * under (see EffectInstance::getCurrentRenderContext()), or for a knob not on a node, such as
+     * a project variable's, the context its expression reads rfv under (see
+     * PyRFV::getProjectExpressionContext()), restricted to those reads, 0 for the empty one.
+     * Returns false for a knob reading none, whose results are kept by time whatever
+     * else its holder node reads. context, if given, receives the restricted context, null for
+     * the empty one.
+     **/
+    bool getExpressionContextKey(U64* key,
+                                 RenderContextPtr* context = 0) const;
+
+    /**
+     * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
+     * them: its own read sources' and, transitively, those of what its expressions and links read.
+     * Walks them all even when called while such a gathering runs.
+     **/
+    RenderContextReadSet getValueContextReads() const;
+
+    /**
+     * @brief getValueContextReads() and getContentHash(), memoized until the next
+     * invalidateRenderContextReads(), which every content change of a node's or the project's
+     * knob raises. Either output may be null. MT-safe.
+     **/
+    void getMemoizedValueContext(RenderContextReadSetConstPtr* reads, U64* contentHash) const;
+
+    /**
+     * @brief What the Python expression source reads of the rfv object: the variable named by each
+     * rfv.<name>, rfv('<name>') and rfv['<name>'], either quote, in code rather than in a string
+     * or a comment. Any other use of the name rfv, such as passing it on, getattr() or a computed
+     * key, may read any variable and makes the result reads-all.
+     **/
+    static RenderContextReadSet getRFVExpressionReads(const std::string& expression);
+
+    /**
+     * @brief The union of getRFVExpressionReads() over the expressions of every dimension. The
+     * knob registers it as one of its context read sources (see addContextReadSource()) while it
+     * is not empty, and recomputes it whenever an expression is set or cleared. That source also
+     * reads, transitively, what this set returns for each project variable it names, since such a
+     * variable's value is its expression's; this set itself holds the direct reads only. MT-safe.
+     **/
+    RenderContextReadSet getRFVReadSet() const;
+
+    /**
+     * @brief Has every project variable an expression of this knob reads of rfv listened to by
+     * the expression's dimension, as setting the expression does, for the variables the project
+     * declares after the expression was set. Listeners already registered are kept as they are.
+     **/
+    void refreshRFVListeners();
 
     /**
      * @brief Has every invalidateContentHash() of this knob also move generation, for an owner
@@ -2331,6 +2419,9 @@ private:
 
     void expressionChanged(int dimension);
 
+    // Recomputes getRFVReadSet() and swaps the context read source holding it.
+    void refreshRFVReads();
+
     std::unique_ptr<KnobHelperPrivate> _imp;
 };
 
@@ -2353,9 +2444,13 @@ public:
        that we're able to get the same value again for the same render.
        Of course, this saved in the project to retrieve the same values between 2 runs of the project.
      */
-    typedef std::map<double, T> FrameValueMap;
+    // Keyed by (time, view): an expression reads the view it is evaluated at, directly or through
+    // the knobs and project variables it reads, so one view's result is not another's.
+    typedef std::map<std::pair<double, int>, T> FrameValueMap;
     typedef std::vector<FrameValueMap> ExprResults;
-
+    // The results of a knob whose value reads context variables, by (time, view, context key).
+    typedef std::map<std::tuple<double, int, U64>, T> ContextValueMap;
+    typedef std::vector<ContextValueMap> ExprContextResults;
 
     /**
      * @brief Make a knob for the given KnobHolder with the given label (the label displayed on
@@ -2658,6 +2753,14 @@ public:
         map = _exprRes[dim];
     }
 
+    void getExpressionContextResults(int dim,
+                                     ContextValueMap& map)
+    {
+        QMutexLocker k(&_valueMutex);
+
+        map = _exprCtxRes[dim];
+    }
+
     T getValueFromMasterAt(double time, ViewSpec view, int dimension, KnobI* master);
     T getValueFromMaster(ViewSpec view, int dimension, KnobI* master, bool clamp);
 
@@ -2714,6 +2817,7 @@ private:
         QMutexLocker k(&_valueMutex);
 
         _exprRes[dimension].clear();
+        _exprCtxRes[dimension].clear();
         ++_exprResGenerations[dimension];
     }
 
@@ -2815,7 +2919,8 @@ private:
     };
     std::vector<DefaultValue> _defaultValues;
     mutable ExprResults _exprRes;
-    // By dimension, moved by every clear of _exprRes: a result computed while a clear landed may
+    mutable ExprContextResults _exprCtxRes;
+    // By dimension, moved by every clear of _exprRes and _exprCtxRes: a result computed while a clear landed may
     // predate what the clear was for, and is then not stored.
     mutable std::vector<U64> _exprResGenerations;
 
@@ -3289,6 +3394,18 @@ public:
      * the knob list changed. Lets a holder-wide digest of its knobs be memoized. MT-safe.
      **/
     U64 getKnobsContentGeneration() const;
+
+    /**
+     * @brief The Reverse-Flow Variables the holder declares, as RFV::refreshDeclarationSnapshot()
+     * last took them; null before it first ran. Render threads read declarations here rather than
+     * walk the groups' children, which the main thread edits. MT-safe.
+     **/
+    RFVDeclarationsConstPtr getRFVDeclarationSnapshot() const;
+
+    /**
+     * @brief Replaces the snapshot getRFVDeclarationSnapshot() returns. MT-safe.
+     **/
+    void setRFVDeclarationSnapshot(const RFVDeclarationsConstPtr& declarations);
 
     /**
      * @brief Moves the generation and calls onKnobContentChanged() with the knob that changed,

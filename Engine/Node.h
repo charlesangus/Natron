@@ -48,6 +48,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
+#include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
 #include "Global/KeySymbols.h"
 
@@ -347,6 +348,23 @@ public:
     void onKnobContentChanged(const KnobI* knob);
 
     /**
+     * @brief The render context variables this node's output can depend on: what its own
+     * knobs' read sources and getExtraContextReads() name, and the same for every node it
+     * reads, through inputs and through expressions and links, less, for an input, the variables
+     * the effect sets on it under every context (see
+     * EffectInstance::getOverriddenContextVariables(); not subtracted when the input reads this
+     * node back through an expression, the two then sharing one read-set). Memoized until the next
+     * invalidateRenderContextReads(), which every hash mark raises. MT-safe.
+     **/
+    RenderContextReadSetConstPtr getUpstreamContextReadSet() const;
+
+    /**
+     * @brief Context variables the node reads that no knob source reports. Defaults to the
+     * effect's EffectInstance::getExtraContextReads().
+     **/
+    virtual RenderContextReadSet getExtraContextReads() const;
+
+    /**
      * @brief True unless the knobs were last seen without any expression. Cheap.
      **/
     bool mayHaveKnobExpressions() const;
@@ -537,6 +555,20 @@ public:
      * fix the graph is the other half of that. Unrelated persistent messages are left alone.
      **/
     void refreshDataKindConflictMessage();
+
+    /**
+     * @brief Posts message as a persistent warning for a render whose request pass reached more
+     * contexts than a frame should. renderSequence is the AbortableRenderInfo::getRenderSequence()
+     * of the render, 0 outside one. Returns whether the render should log it: true the first time
+     * a render posts it, so one render logs it once whatever number of frames it renders.
+     **/
+    bool setContextCountWarning(const QString& message, U64 renderSequence);
+
+    /**
+     * @brief Takes back the warning setContextCountWarning() posted, if it is still the
+     * node's persistent message; any other message is left alone.
+     **/
+    void clearContextCountWarning();
 
     /**
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
@@ -1931,6 +1963,14 @@ public:
     void setLayerKnobInput(const KnobIPtr& knob, int inputNb);
 
     /**
+     * @brief Marks an already-declared layer/channel knob as following a container node's
+     * layer selection (as retargetLayerKnob() does for the layer knob), so
+     * getReferencedLayerIDs() does not count it as a separate reference to the registry.
+     * No-op on a knob never declared.
+     **/
+    void setLayerKnobDrivenByContainer(const KnobIPtr& knob);
+
+    /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
      * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData() and when
@@ -2039,6 +2079,23 @@ private:
      * @brief The nodes whose stored hashes this node's hashes fold in.
      **/
     void getHashInputs(HashInputs* inputs) const;
+
+    /**
+     * @brief The nodes whose context reads this node's read-set folds in: its inputs, through
+     * group redirections, and the nodes its knobs' expressions and links read. overridden gets,
+     * for each, the variables the effect sets on it, which it does not fold in.
+     **/
+    void getContextReadSuccessors(std::vector<NodePtr>* successors,
+                                  std::vector<RenderContextReadSet>* overridden) const;
+
+    void appendOwnContextReads(RenderContextReadSet* reads) const;
+
+    /**
+     * @brief The memoized read-set if it was computed at generation, else null.
+     **/
+    RenderContextReadSetConstPtr getMemoizedContextReads(U64 generation) const;
+
+    void setMemoizedContextReads(U64 generation, const RenderContextReadSetConstPtr& reads) const;
 
     /**
      * @brief Appends the other nodes whose hashes this node's hash folds through the metadata
@@ -2358,6 +2415,44 @@ public:
     RenderingFlagSetter(const NodePtr& n);
 
     ~RenderingFlagSetter();
+};
+
+/**
+ * @brief Decides whether a result derived from a node may be stored in a cache under a hash of
+ * that node. Construct it before the derive, after the cache missed, and ask allowsStoreUnder()
+ * once the result is ready. A knob stores its value before it marks the hash, and a hash can
+ * leave a state and come back to it during a derive, so a hash read once cannot vouch for what
+ * the derive saw. The store is allowed only if, in this order, the hash is clean and equal to
+ * the key, no knob content write is in flight, and the node's mark count has not moved since
+ * construction. Any write whose value either the derive or the hash could have read began before
+ * the in-flight check, so it has finished and raised its marks by then; marks raised after
+ * construction refuse the store, and marks raised before it came before the derive's reads and
+ * the hash's recompute alike, so a hash left dirty since before construction is recomputed at the
+ * check when no mark has been raised since. Only writes in flight at the very check refuse the store, so the
+ * settled case keeps caching while knobs of unrelated nodes are being dragged.
+ *
+ * Under a render context the key is the node's hash with its context key folded in
+ * (mixRenderContextKey()), so the hash check compares the key with the clean hash mixed with
+ * contextKey: the key of the context the result is derived and stored under, 0 for none. A key
+ * folded with another context's key, or a plain hash stored for a derive that read a context, is
+ * refused like a stale one. context is the node's context restricted to what it reads (see
+ * restrictContextToNode()), null for none; its hash is the context key. The bindings it holds are
+ * read live from their knobs, so the store is also refused when a bound knob no longer has the
+ * content the key's binding identity stands for, or its node was marked since construction.
+ **/
+class CleanHashSnapshot {
+public:
+    CleanHashSnapshot(const NodePtr& node,
+                      const RenderContextPtr& context);
+
+    /// False for a null node, which has no hash to store under.
+    bool allowsStoreUnder(U64 hash) const;
+
+private:
+    NodePtr _node;
+    U64 _contextKey;
+    U64 _marks;
+    RenderContextBindingsSnapshot _bindings;
 };
 
 NATRON_NAMESPACE_EXIT

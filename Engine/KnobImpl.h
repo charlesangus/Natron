@@ -53,6 +53,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
 
 #define EXPR_RECURSION_LEVEL() KnobHelper::ExprRecursionLevel_RAII __recursionLevelIncrementer__(this)
@@ -102,6 +103,7 @@ Knob<T>::Knob(KnobHolder* holder,
     , _guiValues(dimension)
     , _defaultValues(dimension)
     , _exprRes(dimension)
+    , _exprCtxRes(dimension)
     , _exprResGenerations(dimension, 0)
     , _minMaxMutex()
     , _minimums(dimension)
@@ -492,17 +494,35 @@ Knob<T>::getValueFromExpression(double time,
 
     ///Check first if a value was already computed:
 
+    // A knob reading context variables keeps a result per context, its key computed before the
+    // mutex is taken.
+    U64 contextKey = 0;
+    RenderContextPtr keyContext;
+    const bool byContext = getExpressionContextKey(&contextKey, &keyContext);
+    const std::tuple<double, int, U64> contextResultKey(time, (int)view, contextKey);
     U64 generation;
     {
         QMutexLocker k(&_valueMutex);
-        typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
-        if ( found != _exprRes[dimension].end() ) {
-            *ret = found->second;
+        if (byContext) {
+            typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
+            if (found != _exprCtxRes[dimension].end()) {
+                *ret = found->second;
 
-            return true;
+                return true;
+            }
+        } else {
+            typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
+            if (found != _exprRes[dimension].end()) {
+                *ret = found->second;
+
+                return true;
+            }
         }
         generation = _exprResGenerations[dimension];
     }
+    // A binding in the key is read live from its knob, so an edit of that knob during the
+    // evaluation must not leave its result under the key of the content before it.
+    const RenderContextBindingsSnapshot bindings(keyContext);
 
     bool exprWasValid = isExpressionValid(dimension, 0);
     {
@@ -524,9 +544,14 @@ Knob<T>::getValueFromExpression(double time,
         *ret =  clampToMinMax(*ret, dimension);
     }
 
+    const bool bindingsCurrent = bindings.isCurrent();
     QMutexLocker k(&_valueMutex);
-    if (_exprResGenerations[dimension] == generation) {
-        _exprRes[dimension].insert(std::make_pair(time, *ret));
+    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
+        if (byContext) {
+            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+        } else {
+            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
+        }
     }
 
     return true;
@@ -583,17 +608,33 @@ Knob<T>::getValueFromExpression_pod(double time,
 
     // Not held while the expression runs: the clear that moves the generation must be able to land
     // meanwhile, and another thread holding the Python lock may be waiting for this one.
+    U64 contextKey = 0;
+    RenderContextPtr keyContext;
+    const bool byContext = getExpressionContextKey(&contextKey, &keyContext);
+    const std::tuple<double, int, U64> contextResultKey(time, (int)view, contextKey);
     U64 generation;
     {
         QMutexLocker k(&_valueMutex);
-        typename FrameValueMap::iterator found = _exprRes[dimension].find(time);
-        if (found != _exprRes[dimension].end()) {
-            *ret = found->second;
+        if (byContext) {
+            typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
+            if (found != _exprCtxRes[dimension].end()) {
+                *ret = found->second;
 
-            return true;
+                return true;
+            }
+        } else {
+            typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
+            if (found != _exprRes[dimension].end()) {
+                *ret = found->second;
+
+                return true;
+            }
         }
         generation = _exprResGenerations[dimension];
     }
+    // A binding in the key is read live from its knob, so an edit of that knob during the
+    // evaluation must not leave its result under the key of the content before it.
+    const RenderContextBindingsSnapshot bindings(keyContext);
 
     bool exprWasValid = isExpressionValid(dimension, 0);
     {
@@ -615,9 +656,14 @@ Knob<T>::getValueFromExpression_pod(double time,
         *ret =  clampToMinMax(*ret, dimension);
     }
 
+    const bool bindingsCurrent = bindings.isCurrent();
     QMutexLocker k(&_valueMutex);
-    if (_exprResGenerations[dimension] == generation) {
-        _exprRes[dimension].insert(std::make_pair(time, *ret));
+    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
+        if (byContext) {
+            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+        } else {
+            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
+        }
     }
 
     return true;
@@ -724,7 +770,7 @@ Knob<T>::getValue(int dimension,
     if ( !hasExpr.empty() ) {
         T ret;
         double time = getCurrentTime();
-        if ( getValueFromExpression(time, /*view*/ ViewIdx(0), dimension, clamp, &ret) ) {
+        if (getValueFromExpression(time, expressionView(view), dimension, clamp, &ret)) {
             return ret;
         }
     }
@@ -843,7 +889,7 @@ Knob<T>::getValueAtTime(double time,
     std::string hasExpr = getExpression(dimension);
     if ( !hasExpr.empty() ) {
         T ret;
-        if ( getValueFromExpression(time, /*view*/ ViewIdx(0), dimension, clamp, &ret) ) {
+        if (getValueFromExpression(time, expressionView(view), dimension, clamp, &ret)) {
             return ret;
         }
     }
@@ -919,7 +965,7 @@ Knob<T>::getValueAtWithExpression(double time,
 
     if (!expr.empty() && exprValid) {
         double ret;
-        if ( getValueFromExpression_pod(time, /*view*/ ViewIdx(0), dimension, false, &ret) ) {
+        if (getValueFromExpression_pod(time, expressionView(view), dimension, false, &ret)) {
             return ret;
         }
     }
@@ -2765,18 +2811,24 @@ Knob<T>::cloneExpressionsResults(KnobI* other,
         int dimMin = std::min( getDimension(), other->getDimension() );
         for (int i = 0; i < dimMin; ++i) {
             FrameValueMap results;
+            ContextValueMap contextResults;
             otherKnob->getExpressionResults(i, results);
+            otherKnob->getExpressionContextResults(i, contextResults);
             QMutexLocker k(&_valueMutex);
             _exprRes[i] = results;
+            _exprCtxRes[i] = contextResults;
         }
     } else {
         if (otherDimension == -1) {
             otherDimension = dimension;
         }
         FrameValueMap results;
+        ContextValueMap contextResults;
         otherKnob->getExpressionResults(otherDimension, results);
+        otherKnob->getExpressionContextResults(otherDimension, contextResults);
         QMutexLocker k(&_valueMutex);
         _exprRes[dimension] = results;
+        _exprCtxRes[dimension] = contextResults;
     }
 }
 

@@ -57,6 +57,7 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
@@ -66,9 +67,6 @@
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
-
-#define kMergeOFXParamOperation "operation"
-#define kMergeOFXParamInvertMask "maskInvert"
 
 #define kBlurCImgParamSize "size"
 #define kTimeOffsetParamOffset "timeOffset"
@@ -1089,9 +1087,10 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     ///compute an enhanced hash different from the one of the merge node of the item in order to differentiate within the cache
     ///the output image of the node and the mask image.
     U64 rotoHash;
+    const NodePtr mergeNode = getMergeNode();
+    const U64 mergeNodeHash = mergeNode->getEffectInstance()->getRenderHash();
     {
         Hash64 hash;
-        U64 mergeNodeHash = getMergeNode()->getEffectInstance()->getRenderHash();
         hash.append(mergeNodeHash);
         hash.computeHash();
         rotoHash = hash.value();
@@ -1114,7 +1113,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     if (image) {
         return image;
     }
-
+    const CleanHashSnapshot clean(mergeNode, mergeNode->getEffectInstance()->getCurrentRestrictedRenderContext());
 
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
     Bezier* isBezier = dynamic_cast<Bezier*>(this);
@@ -1206,6 +1205,10 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 
 
     image = renderMaskInternal(pixelRod, components, startTime, endTime, mbFrameStep, time, inverted, depth, mipmapLevel, strokes, image);
+    if (image && !clean.allowsStoreUnder(mergeNodeHash)) {
+        // An edit or a mark came while drawing: the mask may be another state's.
+        appPTR->removeFromNodeCache(image);
+    }
 
     return image;
 } // RotoDrawableItem::renderMaskFromStroke
@@ -2994,8 +2997,7 @@ RotoContext::getOrCreateGlobalMergeNode(int *availableInputIndex)
     fixedNamePrefix.append( QString::fromUtf8("globalMerge") );
     fixedNamePrefix.append( QLatin1Char('_') );
 
-
-    CreateNodeArgs args( PLUGINID_OFX_MERGE,  NodeCollectionPtr() );
+    CreateNodeArgs args(PLUGINID_NATRON_NATIVE_MERGE, NodeCollectionPtr());
     args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
     args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
     args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, fixedNamePrefix.toStdString());
@@ -3056,10 +3058,10 @@ RotoContext::refreshRotoPaintTree()
 
         if (globalMerge) {
             {
-                KnobIPtr mergeOperatorKnob = globalMerge->getKnobByName(kMergeOFXParamOperation);
+                KnobIPtr mergeOperatorKnob = globalMerge->getKnobByName(kNativeMergeParamOperation);
                 KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
                 if (mergeOp) {
-                    mergeOp->setValue(blendingOperator);
+                    mergeOp->setValueFromID(Merge::getOperatorString((MergingFunctionEnum)blendingOperator), 0);
                 }
             }
 
@@ -3095,6 +3097,7 @@ RotoContext::retargetRotoPaintTree()
     getRotoPaintTreeNodes(&nodes);
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         (*it)->retargetLayerKnob(layerID);
+        NativeMerge::followContainerLayer(*it, layerID);
     }
 }
 

@@ -389,7 +389,8 @@ public:
 
     /**
      * @brief The metadata of the image this node outputs at time and view: what
-     * deriveOutputMetadata() gives, cached per (time, view) under the node's hash, which moves
+     * deriveOutputMetadata() gives, cached per (time, view) under the node's hash, with the render context's key mixed in
+     * when one is active (a few contexts are kept at once), which moves
      * whenever a knob of this node or anything upstream of it changes or a connection changes.
      * The cache is also dropped when the node's clip preferences are refreshed. Callable from
      * any thread, holding no lock: it reads the node's hash, which may recompute dirty hashes.
@@ -588,7 +589,7 @@ protected:
     /**
      * @brief For a scene node's renderScene(): sets *output to upstream with this node's layer on
      * top. The layer is authored through author only when this node's plug-in, knobs or
-     * appendNodeContentHash() state, the project frame range or rate, or the upstream stack have
+     * appendNodeContentHash() state, the project frame range, rate or scene units, or the upstream stack have
      * changed since the last one; otherwise the same layer is re-emitted. author must read only
      * those, and author everything from scratch into the empty layer it is handed.
      **/
@@ -619,6 +620,15 @@ protected:
                         std::string* errorMessage) WARN_UNUSED_RETURN;
 
     /**
+     * @brief The key emitSceneLayer() memoizes this node's layer on, for a node that memoizes
+     * layers of its own on the same terms. Returns false with *errorMessage set while the node is
+     * being destroyed.
+     **/
+    bool getSceneLayerKey(const SceneLayerReads& reads,
+                          SceneLayerMemo::Key* key,
+                          std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Makes the next emitSceneLayer() author a new layer, for a change none of its inputs
      * see.
      **/
@@ -638,9 +648,15 @@ private:
     // invalidation, which runs upstream to downstream. See
     // docs/decisions/2026-09-10-metadata-cache-locking.md.
     std::mutex _metadataCacheMutex;
-    std::map<MetadataKey, ImageMetadata> _metadataCache;
+    // One entry per render-context-mixed hash the node was asked under, most recently used first,
+    // so a node rendered under a few contexts in turn answers each from its own entry.
+    struct MetadataCacheEntry {
+        U64 mixedHash;
+        std::map<MetadataKey, ImageMetadata> frames;
+    };
+    std::list<MetadataCacheEntry> _metadataCache;
     U64 _metadataGeneration;
-    U64 _metadataCacheHash; //< the node hash every entry of _metadataCache was derived under
+    U64 _metadataCacheHash; //< the node hash (before the context key is mixed in) every entry was derived under
 
     SceneLayerMemo _sceneLayerMemo;
 

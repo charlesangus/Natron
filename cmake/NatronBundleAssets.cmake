@@ -27,8 +27,9 @@ if(NATRON_BUNDLE_ASSETS)
     )
 
     # AppManager.cpp:1708's absolute /usr/share/Natron/Plugins is deliberately unsatisfied by a relocatable prefix
+    # AppManager::getAllNonOFXPluginsPaths() looks for PyPlugs, initGui.py included, under <bin>/../Plugins/PyPlugs
     install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Gui/Resources/PyPlugs/"
-        DESTINATION "Plugins"
+        DESTINATION "Plugins/PyPlugs"
     )
 
     if(NOT Python3_STDLIB)

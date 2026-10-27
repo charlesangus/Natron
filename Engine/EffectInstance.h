@@ -28,8 +28,9 @@
 
 #include "Global/Macros.h"
 
-#include <list>
 #include <bitset>
+#include <list>
+#include <mutex>
 
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
@@ -51,7 +52,6 @@
 #include "Serialization/SerializationFwd.h"
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()
-#define PLUGINID_OFX_MERGE        "net.sf.openfx.MergePlugin"
 #define PLUGINID_OFX_TRACKERPM    "net.sf.openfx.TrackerPM"
 #define PLUGINID_OFX_DOTEXAMPLE   "net.sf.openfx.dotexample"
 #define PLUGINID_OFX_RADIAL       "net.sf.openfx.Radial"
@@ -381,6 +381,32 @@ public:
      * @returns This function returns true if case of success, false otherwise.
      **/
     U64 getRenderHash() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The context the calling thread queries this effect under: while a getMetadata()
+     * derivation runs on this thread, the context it derives under; otherwise the one the frame
+     * args this thread renders the effect with carry. Null for the empty context.
+     **/
+    RenderContextPtr getCurrentRenderContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief This node's context key under getCurrentRenderContext(), 0 for the empty context:
+     * the key a result derived on the calling thread is stored under, folded into the node's hash.
+     **/
+    U64 getCurrentRenderContextKey() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getCurrentRenderContext() restricted to what this node reads, whose hash is
+     * getCurrentRenderContextKey(); null for the empty context.
+     **/
+    RenderContextPtr getCurrentRestrictedRenderContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Keeps one more hash state of this effect's action results than the fixed count for as
+     * long as the returned token lives, so that a render querying the effect under many contexts
+     * keeps the results of each until it is done.
+     **/
+    std::shared_ptr<void> reserveActionsCacheState() WARN_UNUSED_RETURN;
 
     /**
      * @brief Appends render-affecting state the effect keeps outside its knobs. Called under no
@@ -1008,6 +1034,11 @@ public:
      **/
     void invalidateParallelRenderArgsTLS();
 
+    /**
+     * @brief Pops the frame args setParallelRenderArgsTLS() pushed last, leaving the rotopaint tree's alone.
+     **/
+    void popParallelRenderArgsTLS();
+
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
     /**
@@ -1068,7 +1099,8 @@ public:
                                  unsigned mipmap,
                                  const std::list<ImageLayerDesc>& comps,
                                  const RectI& pixelRoI,
-                                 std::list<ImagePtr>* out);
+                                 std::list<ImagePtr>* out,
+                                 const InputContextArgs* inputContext = 0);
 
     /**
      * @brief Whether images from the store are already in the depth and storage renderRoI() would return, so that they
@@ -1082,11 +1114,15 @@ public:
      * @brief Calls input->renderRoI(*args, layers) unless the frame installed on this thread stored what it asks for,
      * in which case the stored images are returned in its place. Stored images needing a conversion are passed to
      * renderRoI() in args->inputImagesList under inputNb, where it finds them by key.
+     * The input renders under the context consumer pulls it under (see InputContextArgs), which
+     * inputContext gives when the caller already resolved it.
      **/
     static RenderRoIRetCode renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                                        int inputNb,
                                                        RenderRoIArgs* args,
-                                                       std::map<ImageLayerDesc, ImagePtr>* layers);
+                                                       std::map<ImageLayerDesc, ImagePtr>* layers,
+                                                       const EffectInstance* consumer,
+                                                       InputContextArgs* inputContext = 0);
 
     /**
      * @brief Count, in the stats of the frame installed on this thread, an input taken from the store or one rendered
@@ -1202,7 +1238,10 @@ public:
      * @brief As getMetadata(), also giving in hash the node hash the answer belongs to, which a
      * caller that read the hash earlier compares to tell whether the node moved meanwhile. An
      * answer whose derivation raced an edit is derived again, a bounded number of times; if none
-     * could be told to belong to one hash, hash is 0, which no node hash is.
+     * could be told to belong to one hash, hash is 0, which no node hash is. Under an active render
+     * context the node reads, the returned hash is the node hash mixed with that context's key
+     * (see mixRenderContextKey()), so compare it to a hash mixed the same way, not to the bare
+     * node hash.
      **/
     NodeMetadataConstPtr getMetadata(double time, ViewIdx view, U64* hash) WARN_UNUSED_RETURN;
 
@@ -1866,6 +1905,73 @@ public:
     }
 
     /**
+     * @brief Render context variables this effect reads that no knob source reports. Call
+     * invalidateRenderContextReads() when the answer changes.
+     **/
+    virtual RenderContextReadSet getExtraContextReads() const;
+
+    /**
+     * @brief The context variables every context getInputContexts() names for input inputNb sets,
+     * whatever the context this effect renders under: what the input reads of them does not reach
+     * this effect's output, so they are left out of its read-set. Names only; empty, the default,
+     * leaves the input's reads whole. Call invalidateRenderContextReads() when the answer changes.
+     **/
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const;
+
+    /**
+     * @brief The contexts to request input inputNb under when this effect renders under context
+     * (null for the empty context) at time/view. Return false, the default, to request it under
+     * context alone. An effect returning several contexts pulls the input once per context in its
+     * render action, each with getImage() under an InputContextScope; the host does not pre-render it.
+     **/
+    virtual bool getInputContexts(int /*inputNb*/,
+                                  double /*time*/,
+                                  ViewIdx /*view*/,
+                                  const RenderContextPtr& /*context*/,
+                                  std::vector<RenderContextPtr>* /*contexts*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether getInputContexts() names a single context for input inputNb at time/view
+     * under the context this effect's actions answer for on this thread, and if so that context:
+     * the one the input's region of definition, metadata and layers are read under, through an
+     * ActionContextScope, as the input renders under it.
+     **/
+    bool getInputActionContext(int inputNb,
+                               double time,
+                               ViewIdx view,
+                               RenderContextPtr* context) const;
+
+    /**
+     * @brief The output of a node, possibly this effect's own, under a context the effect names.
+     * comps defaults to RGBA; roi is in canonical coordinates.
+     **/
+    struct ContextNodeRequest {
+        NodePtr node;
+        RenderContextPtr context;
+        double time = 0.;
+        ViewIdx view;
+        RectD roi;
+        std::list<ImageLayerDesc> comps;
+    };
+
+    /**
+     * @brief Nodes whose output this effect needs under a context it names when rendering roi under
+     * context at time/view, besides its inputs: the request pass plans each one as a dependency of
+     * this frame/view. A request for this effect's own output under the context key it renders under
+     * fails the request pass.
+     **/
+    virtual void getContextNodeRequests(double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const RenderContextPtr& /*context*/,
+                                        const RectD& /*roi*/,
+                                        std::vector<ContextNodeRequest>* /*requests*/) const
+    {
+    }
+
+    /**
      * @brief Override to initialize the overlay interact. It is called only on the
      * live instance.
      **/
@@ -1935,6 +2041,16 @@ public:
     virtual void clearLastRenderedImage();
 
     void clearActionsCache();
+
+    /**
+     * @brief Whether the actions cache holds a frame range under hash. For tests.
+     **/
+    bool hasCachedFrameRange(U64 hash) const;
+
+    /**
+     * @brief Whether the actions cache holds a region of definition under hash. For tests.
+     **/
+    bool hasCachedRoD(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel) const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
@@ -2127,7 +2243,19 @@ public:
         double identityTime;
         bool isIdentity;
         ViewIdx identityView;
+        // The context identityInput is pulled under when a node on the walk to it requests its
+        // input under a context of its own; identityContextSet is false when none does.
+        RenderContextPtr identityContext;
+        bool identityContextSet = false;
     };
+
+    // The cached planes a plug-in allocated on the fly during one renderRoI(), from any of its render threads.
+    struct OnTheFlyCachedPlanes {
+        std::mutex lock;
+        std::list<ImagePtr> images;
+    };
+
+    typedef std::shared_ptr<OnTheFlyCachedPlanes> OnTheFlyCachedPlanesPtr;
 
     struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
@@ -2135,6 +2263,7 @@ public:
         ProcessChannelsPerPlaneMap processChannelsPerPlane;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
+        OnTheFlyCachedPlanesPtr onTheFlyPlanes;
 
         ImageLayersToRender()
             : rectsToRender()
@@ -2142,6 +2271,7 @@ public:
             , processChannelsPerPlane()
             , useOpenGL(false)
             , glContextData()
+            , onTheFlyPlanes(std::make_shared<OnTheFlyCachedPlanes>())
         {
         }
     };
@@ -2631,6 +2761,19 @@ private:
 
     bool isResolvingLayersPassThrough() const;
 
+    /**
+     * @brief Whether the output follows the layer knob and its selection processes no channel,
+     * which makes the effect an identity of its pass-through input (see isIdentity_public()).
+     **/
+    bool processesNoChannel(double time, ViewIdx view) const;
+
+    /**
+     * @brief Whether the output follows the layer knob and its selection resolves to at least one
+     * layer but to no channel on any of them. Unlike processesNoChannel(), a selection resolving
+     * to no layer is excluded: it falls back to the metadata planes, processed on every channel.
+     **/
+    bool selectsOnlyLayersWithNoChannel(double time, ViewIdx view) const;
+
     ComponentsNeededResultsPtr getPresentLayersResults(double time, ViewIdx view, int inputNb);
 
     void computeComponentsNeededAndProduced(double time, ViewIdx view,
@@ -2682,6 +2825,8 @@ public:
         double identityTime;
         ViewIdx identityView; //< the view of identityInput the identity area is taken from
         EffectInstancePtr identityInput;
+        RenderContextPtr identityContext; //< see RectToRender::identityContext
+        bool identityContextSet;
         EffectInstance::InputImagesMap inputImages;
         std::map<ImageLayerDesc, LayerToRender> outputLayers;
 
@@ -2700,6 +2845,7 @@ public:
         double firstFrame, lastFrame;
         InputMatrixMapPtr transformRedirections;
         bool isDoingOpenGLRender;
+        OnTheFlyCachedPlanesPtr onTheFlyPlanes;
 
         RenderArgs();
 
@@ -2875,6 +3021,46 @@ protected:
                                     std::list<ImageLayerDesc>* /*layers*/)
     {
         return false;
+    }
+
+    /**
+     * @brief Adds to comps the layers the effect reads from its inputs beside those
+     * getComponentsNeededDefault() plans from the layer knob, mask and divisor, so that the request
+     * pass plans them upstream. Called at the end of getComponentsNeededDefault(), which is all a
+     * non-multi-planar effect gets: getComponentsNeededAndProduced() is only called on a
+     * multi-planar one. producedPlanes are the planes addProducedPlanes() added to the output.
+     **/
+    virtual void addInputLayersNeeded(double /*time*/,
+                                      ViewIdx /*view*/,
+                                      const std::list<ImageLayerDesc>& /*producedPlanes*/,
+                                      EffectInstance::ComponentsNeededMap* /*comps*/)
+    {
+    }
+
+    /**
+     * @brief Adds to planes the planes a non-multi-planar effect renders beside those its layer
+     * knob selects. getComponentsNeededDefault() makes each one an output plane and a plane of
+     * every non-mask input, so that the effect renders it alone, reading it from those inputs,
+     * as it renders a selected plane. None by default.
+     **/
+    virtual void addProducedPlanes(double /*time*/,
+                                   ViewIdx /*view*/,
+                                   std::list<ImageLayerDesc>* /*planes*/)
+    {
+    }
+
+    /**
+     * @brief Sets, for output planes of an effect without a layer knob that chooses its planes
+     * and channels with a knob of its own, the channels it processes on each, as a layer knob's
+     * channel buttons do: every other channel of such a plane passes through from the
+     * pass-through input. outputPlanes are every plane the effect renders, addProducedPlanes()'
+     * among them. A plane left out of the map is processed on every channel. Nothing by default.
+     **/
+    virtual void addProducedPlanesChannels(double /*time*/,
+                                           ViewIdx /*view*/,
+                                           const std::list<ImageLayerDesc>& /*outputPlanes*/,
+                                           ProcessChannelsPerPlaneMap* /*processChannelsPerPlane*/)
+    {
     }
 
     virtual void setInteractColourPicker(const OfxRGBAColourD& /*color*/, bool /*setColor*/, bool /*hasColor*/)

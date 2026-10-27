@@ -129,6 +129,7 @@ class BufferableObject;
 class CLArgs;
 class CacheEntryHolder;
 class CacheSignalEmitter;
+class ContextReadSource;
 class CreateNodeArgs;
 class Curve;
 class DeepChannelBuffer;
@@ -241,6 +242,8 @@ class ProjectBeingLoadedInfo;
 class ProjectColorManagement;
 class RectD;
 class RectI;
+class RenderContext;
+class RenderContextReadSet;
 class RenderEngine;
 class RenderScale;
 class RenderScheduler;
@@ -283,6 +286,9 @@ class ViewerParallelRenderArgsSetter;
 namespace Transform {
 struct Matrix3x3;
 typedef std::shared_ptr<Matrix3x3> Matrix3x3Ptr;
+}
+namespace RFV {
+struct VariableDeclaration;
 }
 
 #ifdef __NATRON_WIN32__
@@ -340,6 +346,7 @@ typedef std::shared_ptr<Bezier> BezierPtr;
 typedef std::shared_ptr<BezierCP> BezierCPPtr;
 typedef std::shared_ptr<BufferableObject> BufferableObjectPtr;
 typedef std::shared_ptr<CacheSignalEmitter> CacheSignalEmitterPtr;
+typedef std::shared_ptr<ContextReadSource> ContextReadSourcePtr;
 typedef std::shared_ptr<Curve> CurvePtr;
 typedef std::shared_ptr<DeepImage> DeepImagePtr;
 typedef std::shared_ptr<DeepImage const> DeepImageConstPtr;
@@ -413,6 +420,9 @@ typedef std::shared_ptr<PrecompNode> PrecompNodePtr;
 typedef std::shared_ptr<ProcessHandler> ProcessHandlerPtr;
 typedef std::shared_ptr<Project> ProjectPtr;
 typedef std::shared_ptr<ProjectColorManagement> ProjectColorManagementPtr;
+typedef std::shared_ptr<const RenderContext> RenderContextPtr;
+typedef std::shared_ptr<const RenderContextReadSet> RenderContextReadSetConstPtr;
+typedef std::shared_ptr<const std::vector<RFV::VariableDeclaration>> RFVDeclarationsConstPtr;
 typedef std::shared_ptr<RenderEngine> RenderEnginePtr;
 typedef std::shared_ptr<RenderScheduler> RenderSchedulerPtr;
 typedef std::shared_ptr<RenderStats> RenderStatsPtr;

@@ -88,7 +88,7 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
         next = firstLayers.size();
     }
     for (; next < merged.size(); ++next) {
-        result = SceneOps::appendLayer(result, merged[next].layer, merged[next].hash);
+        result = SceneOps::appendEntry(result, merged[next]);
     }
 
     return result;

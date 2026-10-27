@@ -327,7 +327,7 @@ DeepExpression::getDeepLayers(double time,
 }
 
 StatusEnum
-DeepExpression::getRegionOfDefinition(U64 hash,
+DeepExpression::getRegionOfDefinition(U64 /*hash*/,
                                       double time,
                                       const RenderScale& scale,
                                       ViewIdx view,
@@ -340,7 +340,7 @@ DeepExpression::getRegionOfDefinition(U64 hash,
     }
     bool isProjectFormat = false;
 
-    return input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    return input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 }
 
 Route

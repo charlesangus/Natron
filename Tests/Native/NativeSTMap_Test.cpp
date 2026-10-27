@@ -488,7 +488,8 @@ TEST_F(NativeSTMapTest, KnobsAndInputs)
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_STMAP), PLUGIN_MAJOR_NATRON_STMAP);
     ASSERT_TRUE(isNative(node));
-    EXPECT_EQ(3, node->getNInputs());
+    EXPECT_EQ(4, node->getNInputs());
+    EXPECT_TRUE(node->getEffectInstance()->isInputOptional(kSTMapInputMap));
     const char* const names[] = {
         kSTMapParamChannelU,
         kSTMapParamChannelV,
@@ -498,6 +499,10 @@ TEST_F(NativeSTMapTest, KnobsAndInputs)
         kSTMapParamWrapV,
         kSTMapParamFormatFrom,
         kSTMapParamUVAlpha,
+        kMapInputParamChannel,
+        kMapInputParamInvert,
+        kMapInputParamResponse,
+        kMapInputParamGamma,
         kResamplerParamFilterType,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,

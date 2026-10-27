@@ -119,7 +119,7 @@ DeepCrop::getBBoxCanonical(double time) const
 }
 
 StatusEnum
-DeepCrop::getRegionOfDefinition(U64 hash,
+DeepCrop::getRegionOfDefinition(U64 /*hash*/,
                                 double time,
                                 const RenderScale& scale,
                                 ViewIdx view,
@@ -131,7 +131,7 @@ DeepCrop::getRegionOfDefinition(U64 hash,
         return eStatusReplyDefault;
     }
     bool isProjectFormat = false;
-    StatusEnum stat = input->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+    StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, rod, &isProjectFormat);
 
     if (stat == eStatusFailed) {
         return stat;
@@ -168,7 +168,7 @@ DeepCrop::isIdentity(double time,
         }
         RectD inputRod;
         bool isProjectFormat = false;
-        if (input->getRegionOfDefinition_public(input->getHash(), time, scale, view, &inputRod, &isProjectFormat) == eStatusFailed) {
+        if (input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRod, &isProjectFormat) == eStatusFailed) {
             return false;
         }
         if (!getBBoxCanonical(time).contains(inputRod)) {

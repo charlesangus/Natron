@@ -52,7 +52,7 @@ public:
     /**
      * @brief Everything the node's layer depends on besides the upstream stack: nodeDigest covers
      * the node's identity and knobs, the rest the project time settings animated knobs are
-     * sampled over.
+     * sampled over and the project scene units every layer authors.
      **/
     struct Key {
         // What the node's authoring reads of its upstream stack.
@@ -76,6 +76,8 @@ public:
         // Whether the layer samples anything over [firstFrame, lastFrame], animated knobs above
         // all; a node that does not leaves the range out of its key.
         bool readsFrameRange = true;
+        SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
+        double metersPerUnit = 1.;
     };
 
     // Authors the node's edits into edit.layer. Returns false and sets the message on failure.
@@ -111,6 +113,36 @@ public:
 private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
+};
+
+/**
+ * @brief The layers a re-parenting node owns, memoized one by one so that an edit re-authors only
+ * the layers it touches: the structure layer (the destination prim and its ancestors), the
+ * overrides layer (the destination's own opinions, its transform), and one wrapper plus one graft
+ * layer per input. An unchanged input keeps its graft layer, so a stage synced to the result
+ * recomposes only the roots of the input that changed. SceneOps::reparentRoots fills and reads it.
+ *
+ * Free of pxr types so NativeEffectBase can hold one; implemented in SceneOps.cpp. MT-safe:
+ * reparenting is serialized per memo.
+ **/
+class SceneGraftMemo {
+public:
+    SceneGraftMemo();
+
+    ~SceneGraftMemo();
+
+    // Forgets every memoized layer, so the next reparentRoots() authors them all again.
+    void invalidate();
+
+    // How many graft layers reparentRoots() has authored with this memo.
+    U64 getGraftLayerAuthorCount() const;
+
+    // SceneOps' view of the memoized layers; defined in SceneOps.cpp.
+    struct State;
+    State& getState();
+
+private:
+    std::unique_ptr<State> _state;
 };
 
 NATRON_NAMESPACE_EXIT

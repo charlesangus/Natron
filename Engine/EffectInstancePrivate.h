@@ -232,6 +232,19 @@ public:
      **/
     void clearResults(U64 hash);
 
+    /**
+     * @brief Makes room for one more hash state beyond the fixed count, for as long as the
+     * reservation lasts. A render that queries the node under several contexts reserves a state
+     * per context, so their results are not evicted by one another before the render is done.
+     **/
+    void reserveState();
+
+    /**
+     * @brief Ends one reservation reserveState() made. The states above the fixed count go,
+     * the least recently used first.
+     **/
+    void releaseState();
+
     bool getIdentityResult(U64 hash, double time, ViewIdx view, int* inputNbIdentity, ViewIdx *inputView, double* identityTime);
 
     void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
@@ -331,6 +344,7 @@ private:
     InstancesList _instances;
     std::unordered_map<U64, InstancesList::iterator> _instancesByHash;
     std::size_t _maxInstances;
+    std::size_t _reservedInstances;
     U64 _metadataGeneration;
     ActionsCacheInstance* findActionCache(U64 hash);
     ActionsCacheInstance & getOrCreateActionCache(U64 newHash);
@@ -373,9 +387,14 @@ public:
         QMutex lock;
         int refCount;
         bool failed;
+        bool retracted; //< failed because the image left the cache, not because its render failed
 
         ImageBeingRendered()
-            : cond(), lock(), refCount(0), failed(false)
+            : cond()
+            , lock()
+            , refCount(0)
+            , failed(false)
+            , retracted(false)
         {
         }
     };
@@ -428,9 +447,10 @@ public:
      **/
     void markImagesAsBeingRendered(const std::vector<ImagePtr>& imgs, const RectI& roi, std::list<RectI>* restToRender, bool* renderedElsewhere);
 
-    bool waitForImageBeingRenderedElsewhere(const RectI & roi, const ImagePtr & img);
+    /// False if roi could not be completed; retracted then tells whether a render was retracted from the cache.
+    bool waitForImageBeingRenderedElsewhere(const RectI& roi, const ImagePtr& img, bool* retracted);
 
-    void unmarkImageAsBeingRendered(const ImagePtr & img, const std::list<RectI>& rects, bool renderFailed);
+    void unmarkImageAsBeingRendered(const ImagePtr& img, const std::list<RectI>& rects, bool renderFailed, bool retracted);
 #endif
 
     /**
@@ -479,12 +499,15 @@ public:
                      double identityTime,
                      ViewIdx identityView,
                      const EffectInstancePtr& identityInput,
+                     const RenderContextPtr& identityContext,
+                     bool identityContextSet,
                      const ComponentsNeededMapPtr& compsNeeded,
                      const EffectInstance::InputImagesMap& inputImages,
                      const RoIMap& roiMap,
                      int firstFrame,
                      int lastFrame,
-                     bool isDoingOpenGLRender);
+                     bool isDoingOpenGLRender,
+                     const EffectInstance::OnTheFlyCachedPlanesPtr& onTheFlyPlanes);
 
     ScopedRenderArgs(const EffectTLSDataPtr& tlsData,
                      const EffectTLSDataPtr& otherThreadData);

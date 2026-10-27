@@ -442,7 +442,7 @@ TEST(KnobYaml, DriverRoundTripsAndKeepsTheOwnValue)
     // An unknown key in a driver is skipped with a warning.
     KnobSerialization unknownKey = decodeOne("gain: {driver: {variable: \"loop.t\", start: 0, end: 1, easing: \"linear\", wobble: 1}}\n", &warnings);
     ASSERT_EQ(1u, unknownKey.dimensions.size());
-    ASSERT_TRUE(unknownKey.dimensions[0].driver);
+    ASSERT_TRUE(unknownKey.dimensions[0].driver.has_value());
     EXPECT_FALSE(warnings.empty());
 }
 

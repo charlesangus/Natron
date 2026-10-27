@@ -257,3 +257,8 @@ A Switch's per-file key/value metadata (custom header attributes) always comes f
 ### 2026-10-27T05:22:20+00:00 — change-request
 - refs: M188
 - Hold on this until my say-so.
+
+### 2026-10-27T05:19:47+00:00 — change-request
+- refs: M203
+- Spike/investigate if we _need_ to end GPU regions for this to be practical.
+- Withdrawn unapplied (user, 2026-10-27): superseded by the M246 - Vulkan Inference Provider stub and the 2026-10-27T18:00:00Z M203 change-request.

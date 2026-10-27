@@ -87,9 +87,13 @@ struct FrameGraph {
         // Its renderRoI goes through the identity path, which takes its single dependency's images from the store.
         bool isIdentity = false;
 
-        // Running it starts holding a new branch in memory: every dependency is a leaf (vacuously so for a leaf), or
-        // it is the only consumer of none of them, so it frees no input when it finishes.
+        // Every dependency is a leaf (vacuously so for a leaf): running it starts holding a new branch in memory.
         bool startsBranch = false;
+
+        // It is the only consumer of none of its dependencies, such as one of the iterations of a loop body that all
+        // read the same image, so it frees no input when it finishes unless the other consumers of one of them all
+        // started before it.
+        bool sharesEveryInput = false;
 
         // The host memory of its output; for a task standing for a region, of the outputs it downloads.
         std::size_t estimatedBytes = 0;
@@ -115,6 +119,9 @@ struct FrameGraph {
 
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
+        // Per edge, as consumerTasks counts them.
+        int unstartedConsumers = 0;
+        bool started = false;
     };
 
     /**
@@ -201,8 +208,9 @@ private:
  *
  * Starting a branch is held back while the images in flight exceed a budget, so that a wide graph does not render
  * all its leaves before merging any: every branch that fits the bytes left once the images in the stores and the
- * outputs of the admitted and running tasks are counted is admitted at once, up to the threads of the pool. Tasks
- * continuing a started branch always run, and a branch is always admitted when nothing else runs or is ready, so
+ * outputs of the admitted and running tasks are counted is admitted at once, up to the threads of the pool. A task
+ * that shares every input with other consumers is admitted the same way, unless all the other consumers of one of
+ * its inputs started, as it then frees that input. Tasks continuing a started branch always run, and a branch is always admitted when nothing else runs or is ready, so
  * every frame completes.
  *
  * A ready task whose cached output another running task is rendering is held back until that task finished, rather
@@ -530,6 +538,14 @@ private:
     static void appendRegionTasks(Frame* frame);
 
     void pushReadyLocked(const FramePtr& frame, int task);
+
+    /**
+     * @brief Whether the task goes through admission under the bytes budget: it starts a branch, or it shares every
+     * input with consumers that have not started, so its output adds to what is held.
+     **/
+    static bool isGatedLocked(const Frame& frame, int task);
+
+    static void markStartedLocked(Frame* frame, int task);
 
     void releaseGpuWaitingLocked();
 

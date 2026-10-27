@@ -631,9 +631,8 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             }
             releasesAnInput = releasesAnInput || onlyConsumer;
         }
-        // A task that frees none of its inputs, such as one of many consumers of a shared input, adds its output
-        // to what is held as a branch start does: the many iterations of a loop body read the same image.
-        task.startsBranch = allLeaves || !releasesAnInput;
+        task.startsBranch = allLeaves;
+        task.sharesEveryInput = !task.dependencies.empty() && !releasesAnInput;
     }
 
     return graph;
@@ -676,6 +675,8 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
         for (std::size_t i = 0; i < frame->graph.tasks.size(); ++i) {
             FrameGraph::Task& task = frame->graph.tasks[i];
             task.remainingDeps = (int)task.dependencies.size();
+            task.unstartedConsumers = (int)task.consumerTasks.size();
+            task.started = false;
             const bool member = (task.regionId >= 0) && ((int)i < frame->regionTasksBegin);
             if ((task.remainingDeps == 0) && !member) {
                 pushReadyLocked(frame, (int)i);
@@ -1097,6 +1098,7 @@ RenderScheduler::popLocked(FramePtr* frame,
 
     *frame = ref.frame;
     *task = ref.task;
+    markStartedLocked(ref.frame.get(), ref.task);
     ++ref.frame->runningTasks;
     ++_runningTasks;
     const bool region = isRegionTask(ref);
@@ -1515,13 +1517,52 @@ void
 RenderScheduler::pushReadyLocked(const FramePtr& frame,
                                  int task)
 {
-    ReadyHeap* heap = frame->graph.tasks[task].startsBranch ? &_gatedReady : &_freeReady;
+    ReadyHeap* heap = isGatedLocked(*frame, task) ? &_gatedReady : &_freeReady;
     ReadyRef ref;
 
     ref.frame = frame;
     ref.task = task;
     heap->push_back(std::move(ref));
     std::push_heap(heap->begin(), heap->end(), ReadyRefWorse());
+}
+
+bool
+RenderScheduler::isGatedLocked(const Frame& frame,
+                               int task)
+{
+    const FrameGraph::Task& t = frame.graph.tasks[task];
+
+    if (t.startsBranch) {
+        return true;
+    }
+    if (!t.sharesEveryInput) {
+        return false;
+    }
+    // The last of the consumers of an input to start frees it, as a task continuing a branch does: the sides of a
+    // diamond run together, while the many iterations of a loop body reading one image are admitted under the budget.
+    for (std::vector<int>::const_iterator it = t.dependencies.begin(); it != t.dependencies.end(); ++it) {
+        const int ownEdges = t.started ? 0 : (int)std::count(t.dependencies.begin(), t.dependencies.end(), *it);
+        if (frame.graph.tasks[*it].unstartedConsumers == ownEdges) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+RenderScheduler::markStartedLocked(Frame* frame,
+                                   int task)
+{
+    FrameGraph::Task& t = frame->graph.tasks[task];
+
+    if (t.started) {
+        return;
+    }
+    t.started = true;
+    for (std::vector<int>::const_iterator it = t.dependencies.begin(); it != t.dependencies.end(); ++it) {
+        --frame->graph.tasks[*it].unstartedConsumers;
+    }
 }
 
 bool
@@ -1583,7 +1624,7 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         const FrameGraph::Task& topTask = top.frame->graph.tasks[top.task];
         const std::size_t estimated = topTask.estimatedBytes;
         // A stale task is admitted only to be dropped by the next pop, which releases its reservation.
-        const bool fits = isStaleLocked(top) || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated));
+        const bool fits = isStaleLocked(top) || !isGatedLocked(*top.frame, top.task) || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated));
         const bool idle = (_runningTasks == 0) && _freeReady.empty() && _admittedReady.empty();
         // Stopping at the first task that does not fit, rather than skipping to smaller ones, keeps a large branch
         // from being starved by the small ones behind it.
@@ -1593,6 +1634,8 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         std::pop_heap(_gatedReady.begin(), _gatedReady.end(), ReadyRefWorse());
         ReadyRef ref = std::move(_gatedReady.back());
         _gatedReady.pop_back();
+        // Counted as started once admitted, so that the next sibling sharing its inputs is admitted in this pass.
+        markStartedLocked(ref.frame.get(), ref.task);
         _admittedReady.push_back(std::move(ref));
         std::push_heap(_admittedReady.begin(), _admittedReady.end(), ReadyRefWorse());
         _reservedBytes += estimated;
@@ -1680,6 +1723,8 @@ RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
         task.regionId = -1;
         task.storage = eStorageModeRAM;
         task.remainingDeps = (int)task.dependencies.size();
+        task.unstartedConsumers = (int)task.consumerTasks.size();
+        task.started = false;
     }
     frame->remainingTasks = (int)graph.tasks.size();
     for (std::size_t i = 0; i < graph.tasks.size(); ++i) {

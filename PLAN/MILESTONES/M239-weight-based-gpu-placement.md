@@ -35,7 +35,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - verify: the build passes, and a gtest checks the default for each `OpKind` plus the size-scaled weight of Erode at two sizes.
   - size: M
 
-- [ ] M239.P1.T2 — Place regions by weight
+- [x] M239.P1.T2 — Place regions by weight
   - files: `Engine/GpuPlacement.h`, `Engine/GpuPlacement.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach: Replace `isPriced` and the cost-model `regionGain` with the rule: accept a region when any member is Heavy, or its summed weight ≥ `kGpuRegionMinWeight` (z), and its pixel count ≥ `kGpuRegionMinPixels`. When transfers are free (all external inputs already on the device and the root stays on the device), accept any region at or above the floor. `waitForGpuInitIfWorthIt` waits only if the rule accepts some region. Rewrite the placement tests that exercised priced/unpriced paths against the new rule: Heavy alone goes, points below z stay, points at z go, a tiny region stays, a free-transfer region goes.
   - verify: `ctest -R GpuPlacement` passes.
@@ -78,5 +78,11 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
 ## Decisions
 
 - 2026-10-26 — **Claimed despite file overlap (user):** M101 - Clean-Sheet Merge Node (cost seed, README checklist), M71 - RFV Render Context (`Engine/CMakeLists.txt`, `RenderScheduler.cpp`) and M64 - Tiled Rendering (`RenderScheduler.cpp`) have unfinished tasks on files this milestone touches. M239's edits there are small (one observe call, the seed glob block, the README item), so the user chose to run now and resolve them at rebase.
+
+- 2026-10-27 — **P1.T2 wiring:**
+  - A region's pixel count is its largest non-identity member image.
+  - Placeholder constants until P3.T1 tunes them: z = `kGpuRegionMinWeight` = 3, `kGpuRegionMinPixels` = 256², Filter weight = 4 with size scaling capped at 32.
+  - Free transfers means every external input is already on the device and no output is consumed on the CPU.
+  - When placement accepts a region, the GPU-init wait now waits up to `kGpuInitWaitLimit` (10 s) instead of only the estimated gain. Init normally takes under 100 ms; P3.T1 checks the first-frame behaviour.
 
 **Verification gate:** the full debug and release builds and ctest pass. The GPU suites pass on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`). The bench comps' same-boot Auto vs Off table shows no case where Auto is clearly slower. PR CI is green.

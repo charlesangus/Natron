@@ -1,6 +1,7 @@
-"""The Merge properties panel: its knobs sit in the rows Operation; Set BBox and Metadata From;
-Range From; Layers; B Alpha Source and B Alpha; A Layer; A Alpha Source and A Alpha, top to bottom.
-There is no Layer, Output, B Layer or Also Merge knob. Layers is set to the three layers of a
+"""The Merge properties panel: its knobs sit in the rows B Layers; B Alpha Source and B Alpha;
+A Layers; A Alpha Source and A Alpha; Operation; Set BBox, Metadata From and Range From, top to
+bottom, with a divider after each group. There is no Layer, Output, B Layer or Also Merge knob. B
+Layers is set to the three layers of a
 multi-layer Read connected to B, with rgba's row merging R, G and B alone: each row shows a button
 per channel of its layer, and rgba's A button is off. The panel is saved to
 $NATRON_GUI_TEST_OUT/shots/merge_panel.png.
@@ -20,13 +21,12 @@ MERGE_ID = "Merge"
 ROW_TOLERANCE_PX = 8
 
 ROWS = [
-    ["Operation"],
-    ["Set BBox", "Metadata From"],
-    ["Range From"],
-    ["Layers"],
+    ["B Layers"],
     ["B Alpha Source", "B Alpha"],
-    ["A Layer"],
+    ["A Layers"],
     ["A Alpha Source", "A Alpha"],
+    ["Operation"],
+    ["Set BBox", "Metadata From", "Range From"],
 ]
 
 try:
@@ -147,7 +147,7 @@ try:
         for name in ("layer", "output", "bLayer", "alsoMerge", "bbox"):
             check(merge.getParam(name) is None, "Merge has no %s param" % name)
         check(merge.getParam("setBBox") is not None, "Merge has a setBBox param")
-        layers = merge.getParam("layers")
+        layers = merge.getParam("bLayers")
         require(layers is not None, "Merge has a layers param")
 
         app.selectNode(merge, True)

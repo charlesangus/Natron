@@ -116,7 +116,7 @@ try:
     def layers_is_all(node):
         """None when the node has no layers param, else whether its row 0 is All, the mode that
         merges every layer of B."""
-        param = node.getParam("layers")
+        param = node.getParam("bLayers")
         if param is None:
             return None
         rows = param.getRows()

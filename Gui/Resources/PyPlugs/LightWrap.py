@@ -1315,7 +1315,7 @@ def createInstance(app,group):
         param.setValue("<Natron>(out)</Natron>")
         del param
 
-    param = lastNode.getParam("layers")
+    param = lastNode.getParam("bLayers")
     if param is not None:
         param.setChannels(["A"])
         del param
@@ -1347,7 +1347,7 @@ def createInstance(app,group):
         param.setValue("<Natron>(in)</Natron>")
         del param
 
-    param = lastNode.getParam("layers")
+    param = lastNode.getParam("bLayers")
     if param is not None:
         param.setChannels(["R", "G", "B"])
         del param

@@ -140,7 +140,7 @@ either side exceeds 1 joins them without the jump Nuke's "or" leaves where both 
 
 Merge has no node Layer knob. Its layer knobs are:
 
-- **Layers** (`layers`): the layers of B that are merged, each in place, listed by row. The
+- **B Layers** (`bLayers`): the layers of B that are merged, each in place, listed by row. The
   rows list B's layers, and an **All** row merges every layer B has. The default is `rgba`.
   Every layer of B that Layers leaves out passes through bit-exact and is not asked of any A
   input. A listed layer that B lacks is not produced.
@@ -153,7 +153,7 @@ Merge has no node Layer knob. Its layer knobs are:
   per-plane channel mask (`EffectInstance::addProducedPlanesChannels()`), the one a node Layer
   knob's buttons feed, so the CPU finish copies the unmerged channels from B and the GPU wrap
   masks them the same way.
-- **A Layer** (`aLayer`): **Matching** (the default) reads every A input, for each merged layer,
+- **A Layers** (`aLayers`): **Matching** (the default) reads every A input, for each merged layer,
   in A's layer of the same name; one specific A layer is read into every merged layer instead.
   Channels are taken by index: a three-channel A layer merged into rgba reads its fourth channel
   as zero, and `rgba` merged into a three-channel layer gives up its A.

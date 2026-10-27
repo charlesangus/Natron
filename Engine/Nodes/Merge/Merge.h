@@ -44,14 +44,14 @@
 #define kNativeMergeParamSetBBox "setBBox"
 #define kNativeMergeParamMetadataFrom "metadataFrom"
 #define kNativeMergeParamRangeFrom "rangeFrom"
-#define kNativeMergeParamALayer "aLayer"
+#define kNativeMergeParamALayer "aLayers"
 #define kNativeMergeParamAAlpha "aAlpha"
 #define kNativeMergeParamBAlpha "bAlpha"
 #define kNativeMergeParamAAlphaSource "aAlphaSource"
 #define kNativeMergeParamBAlphaSource "bAlphaSource"
 #define kNativeMergeParamAAlphaLayer "aAlphaLayer"
 #define kNativeMergeParamBAlphaLayer "bAlphaLayer"
-#define kNativeMergeParamLayers "layers"
+#define kNativeMergeParamLayers "bLayers"
 
 // Option IDs of the set bbox, metadata from and frame range from choices.
 #define kNativeMergeBBoxUnion "union"

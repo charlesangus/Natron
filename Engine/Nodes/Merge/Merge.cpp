@@ -331,52 +331,10 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
     page->addKnob(subLabelKnob);
     subLabel = subLabelKnob;
 
-    // The panel's rows: Operation; Set BBox and Metadata From; Range From; Layers; B's alpha;
-    // then A's layer and alpha. The host's mask and mix rows follow under their own separator.
-    KnobChoicePtr operationKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Operation").toStdString());
-    operationKnob->setName(kNativeMergeParamOperation);
-    operationKnob->setHintToolTip(EffectInstance::tr("The operator merging each A input over the result so far, starting "
-                                                     "from B. A and B are the channel values, a and b their alphas.")
-                                      .toStdString());
-    {
-        std::vector<ChoiceOption> options;
-        for (int op = 0; op < MergeOps::eOperatorCount; ++op) {
-            const MergeOps::Operator o = (MergeOps::Operator)op;
-            options.push_back(ChoiceOption(MergeOps::operatorName(o), MergeOps::operatorName(o), MergeOps::operatorHint(o)));
-        }
-        operationKnob->populateChoices(options);
-    }
-    operationKnob->setDefaultValue((int)MergeOps::eOver);
-    page->addKnob(operationKnob);
-    operation = operationKnob;
-
-    KnobChoicePtr setBBoxKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Set BBox").toStdString());
-    setBBoxKnob->setName(kNativeMergeParamSetBBox);
-    setBBoxKnob->setHintToolTip(EffectInstance::tr("The output's region of definition.").toStdString());
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kNativeMergeBBoxUnion, EffectInstance::tr("union").toStdString(), EffectInstance::tr("The union of B and every connected A input.").toStdString()));
-        options.push_back(ChoiceOption(kNativeMergeBBoxIntersection, EffectInstance::tr("intersection").toStdString(), EffectInstance::tr("The intersection of B and every connected A input.").toStdString()));
-        options.push_back(ChoiceOption(kNativeMergeBBoxA, "A", EffectInstance::tr("The union of every connected A input.").toStdString()));
-        options.push_back(ChoiceOption(kNativeMergeBBoxB, "B", EffectInstance::tr("Input B's.").toStdString()));
-        setBBoxKnob->populateChoices(options);
-    }
-    setBBoxKnob->setDefaultValue((int)eBBoxUnion);
-    setBBoxKnob->setAddNewLine(false);
-    page->addKnob(setBBoxKnob);
-    setBBox = setBBoxKnob;
-
-    metadataFrom = createFromChoice(holder, page, EffectInstance::tr("Metadata From").toStdString(), kNativeMergeParamMetadataFrom,
-                                    EffectInstance::tr("The input whose metadata the output carries: A is input A, not A2 onwards. "
-                                                       "When it is not connected, the other one's.")
-                                        .toStdString());
-    rangeFrom = createFromChoice(holder, page, EffectInstance::tr("Range From").toStdString(), kNativeMergeParamRangeFrom,
-                                 EffectInstance::tr("The input whose frame range the output has: A is input A, not A2 onwards. "
-                                                    "When it is not connected, the other one's.")
-                                     .toStdString());
-    addSeparator(holder, page, "operationSeparator");
-
-    KnobChannelSetPtr layersKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("Layers").toStdString());
+    // The panel's rows: B Layers and B's alpha; A Layers and A's alpha; Operation; Set BBox,
+    // Metadata From and Range From; each group under a separator. The host's mask and mix rows
+    // follow under their own separator.
+    KnobChannelSetPtr layersKnob = AppManager::createKnob<KnobChannelSet>(holder, EffectInstance::tr("B Layers").toStdString());
     layersKnob->setName(kNativeMergeParamLayers);
     layersKnob->setHintToolTip(EffectInstance::tr("The layers of B merged, each in place; All merges every layer of B. A row's "
                                                   "channel buttons choose the channels of its layer merged, the others passing "
@@ -402,7 +360,9 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
                                                             "a layer B lacks, gives an alpha of 0. The merged alphas are written to it.")
                                              .toStdString());
 
-    KnobLayerSelectPtr aLayerKnob = AppManager::createKnob<KnobLayerSelect>(holder, EffectInstance::tr("A Layer").toStdString(), 1, false);
+    addSeparator(holder, page, "bLayersSeparator");
+
+    KnobLayerSelectPtr aLayerKnob = AppManager::createKnob<KnobLayerSelect>(holder, EffectInstance::tr("A Layers").toStdString(), 1, false);
     aLayerKnob->setName(kNativeMergeParamALayer);
     aLayerKnob->setHintToolTip(EffectInstance::tr("The layer every A input is read in. Matching reads each merged layer of B "
                                                   "from A's layer of the same name; another layer is read for every merged "
@@ -429,6 +389,53 @@ NativeMergeOp::createKnobs(KnobHolder* holder,
                                          EffectInstance::tr("The layer of each A input whose channel i is the alpha of merged channel i. "
                                                             "None, or a layer an input lacks, gives an alpha of 0.")
                                              .toStdString());
+
+    addSeparator(holder, page, "aLayersSeparator");
+
+    KnobChoicePtr operationKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Operation").toStdString());
+    operationKnob->setName(kNativeMergeParamOperation);
+    operationKnob->setHintToolTip(EffectInstance::tr("The operator merging each A input over the result so far, starting "
+                                                     "from B. A and B are the channel values, a and b their alphas.")
+                                      .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        for (int op = 0; op < MergeOps::eOperatorCount; ++op) {
+            const MergeOps::Operator o = (MergeOps::Operator)op;
+            options.push_back(ChoiceOption(MergeOps::operatorName(o), MergeOps::operatorName(o), MergeOps::operatorHint(o)));
+        }
+        operationKnob->populateChoices(options);
+    }
+    operationKnob->setDefaultValue((int)MergeOps::eOver);
+    page->addKnob(operationKnob);
+    operation = operationKnob;
+
+    addSeparator(holder, page, "operationSeparator");
+
+    KnobChoicePtr setBBoxKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Set BBox").toStdString());
+    setBBoxKnob->setName(kNativeMergeParamSetBBox);
+    setBBoxKnob->setHintToolTip(EffectInstance::tr("The output's region of definition.").toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kNativeMergeBBoxUnion, EffectInstance::tr("union").toStdString(), EffectInstance::tr("The union of B and every connected A input.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeBBoxIntersection, EffectInstance::tr("intersection").toStdString(), EffectInstance::tr("The intersection of B and every connected A input.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeBBoxA, "A", EffectInstance::tr("The union of every connected A input.").toStdString()));
+        options.push_back(ChoiceOption(kNativeMergeBBoxB, "B", EffectInstance::tr("Input B's.").toStdString()));
+        setBBoxKnob->populateChoices(options);
+    }
+    setBBoxKnob->setDefaultValue((int)eBBoxUnion);
+    setBBoxKnob->setAddNewLine(false);
+    page->addKnob(setBBoxKnob);
+    setBBox = setBBoxKnob;
+
+    metadataFrom = createFromChoice(holder, page, EffectInstance::tr("Metadata From").toStdString(), kNativeMergeParamMetadataFrom,
+                                    EffectInstance::tr("The input whose metadata the output carries: A is input A, not A2 onwards. "
+                                                       "When it is not connected, the other one's.")
+                                        .toStdString());
+    metadataFrom.lock()->setAddNewLine(false);
+    rangeFrom = createFromChoice(holder, page, EffectInstance::tr("Range From").toStdString(), kNativeMergeParamRangeFrom,
+                                 EffectInstance::tr("The input whose frame range the output has: A is input A, not A2 onwards. "
+                                                    "When it is not connected, the other one's.")
+                                     .toStdString());
 } // NativeMergeOp::createKnobs
 
 NativeMergeOp::Params

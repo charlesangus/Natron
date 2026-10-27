@@ -28,7 +28,7 @@ def _natronAddMergePresets():
         ("Mask", "mask"),
         ("Stencil", "stencil"),
     ]
-    # Label, then operation, of the actions that also set the Merge's "layers" to All.
+    # Label, then operation, of the actions that also set the Merge's "bLayers" to All.
     allLayersItems = [
         ("Mask All Layers", "mask"),
         ("Stencil All Layers", "stencil"),
@@ -39,10 +39,10 @@ def _natronAddMergePresets():
     presetsMenuLabel = "Merge Presets"
 
     def setAllLayers(node):
-        # "layers" is a channel set (ChannelSetParam): All is its row 0's mode, and an All row
+        # "bLayers" is a channel set (ChannelSetParam): All is its row 0's mode, and an All row
         # merges every layer of B whatever rows follow it. Without the param the node keeps its
         # default layers.
-        param = node.getParam("layers")
+        param = node.getParam("bLayers")
         if param is None or not hasattr(param, "setAll"):
             return
         param.setAll()

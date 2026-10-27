@@ -27,33 +27,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 - [x] M240.P1.T1 — List overflowing knob-to-float conversions
   - files: `Engine/Nodes/**` (read only), this milestone file
-  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `
-
-- [ ] M240.P2.T4 — knobValueAsFloat in keyers, filters and OCIO
-  - files: `Engine/Nodes/Keyer/Keyer.cpp`, `Keyer/ChromaKeyer.cpp`, `Filter/EdgeDetect.cpp`, `OCIO/OCIODisplay.cpp`, `OCIO/OcioNodeBase.cpp`
-  - approach: As P2.T2, for the sites listed in Decisions, including ChromaKeyer's `keyGain` products and OCIODisplay's `1./gamma`.
-  - verify: the debug build passes, and the node's tests (goldens included) pass unchanged.
-  - size: M
-
-- [ ] M240.P2.T5 — knobValueAsFloat in the warps and lens nodes
-  - files: `Engine/Nodes/Transform/IDistort.cpp`, `Transform/STMap.cpp`, `Transform/WarpGpu.h`, `Transform/LensDistortion.cpp`, `Transform/LensModelsGpu.h`
-  - approach: As P2.T2. `setWarpGpuDouble` and `setLensModelGpuDouble` split a double into a float pair (hi, lo). Make the split non-trapping for values beyond FLT_MAX (hi = ±inf, lo = 0) so the GPU sees the same as the CPU.
-  - verify: the debug build passes; `ctest -R "STMap|IDistort|LensDistortion"` pass.
-  - size: M
-
-- [ ] M240.P2.T6 — knobValueAsFloat in the deep and scene nodes
-  - files: `Engine/Nodes/Deep/DeepCrop.cpp`, `Deep/DeepFromImage.cpp`, `Deep/DeepExpressionEvaluator.cpp`, `Scene/SceneNodeAuthoring.cpp`, `Scene/USDCamera.cpp`, `Scene/USDLight.cpp`, `Scene/USDMaterial.cpp`
-  - approach: As P2.T2 (seven files, but each is a one-to-two-line mechanical swap). The deep expression parser narrows `strtod` literals, so use the same helper there.
-  - verify: the debug build passes, and `ctest -R "Deep|USD|Scene"` passes.
-  - size: M
-
-- [ ] M240.P2.T7 — knobValueAsFloat in the raw and write nodes
-  - files: `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Raw/RawPrepare.cpp`, `Raw/RawInputColor.cpp`, `Raw/RawColorCalibrationCheckerNode.cpp`, `IO/OiioWriteSupport.cpp`, `IO/NativeWrite.cpp`
-  - approach: As P2.T2. First settle the audit's unsettled raw sites (RawInputColor `row0..2` through the matrix inversion; checker `corner`; spot `bottomLeft`/`size` in RawColorCalibrationSpot and RawTemperature) and fix those that narrow a ±DBL_MAX value.
-  - verify: the debug build passes; `ctest -R "Raw|Write"` pass.
-  - size: M
-
-## Decisions`.
+  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `## Decisions`.
   - verify: the list is recorded, with each entry's knob range checked against its knob definition.
   - size: M
 
@@ -82,6 +56,31 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - approach: For every registered native node (the registry `NativePluginList_Test` enumerates), set each float/double/colour knob in turn to +inf, -inf and ±1e300, render a small window from a constant source on the CPU in a debug build (traps enabled as on render threads), and assert the process doesn't die. A render error is allowed; a signal is not. Run it as one suite that prints the node and knob per case.
   - verify: `ctest -R NativeKnobNonFiniteSweep` passes in the debug build. Reverting one P2.T2 site makes it fail.
   - size: L
+
+
+- [ ] M240.P2.T4 — knobValueAsFloat in keyers, filters and OCIO
+  - files: `Engine/Nodes/Keyer/Keyer.cpp`, `Keyer/ChromaKeyer.cpp`, `Filter/EdgeDetect.cpp`, `OCIO/OCIODisplay.cpp`, `OCIO/OcioNodeBase.cpp`
+  - approach: As P2.T2, for the sites listed in Decisions, including ChromaKeyer's `keyGain` products and OCIODisplay's `1./gamma`.
+  - verify: the debug build passes, and the node's tests (goldens included) pass unchanged.
+  - size: M
+
+- [ ] M240.P2.T5 — knobValueAsFloat in the warps and lens nodes
+  - files: `Engine/Nodes/Transform/IDistort.cpp`, `Transform/STMap.cpp`, `Transform/WarpGpu.h`, `Transform/LensDistortion.cpp`, `Transform/LensModelsGpu.h`
+  - approach: As P2.T2. `setWarpGpuDouble` and `setLensModelGpuDouble` split a double into a float pair (hi, lo). Make the split non-trapping for values beyond FLT_MAX (hi = ±inf, lo = 0) so the GPU sees the same as the CPU.
+  - verify: the debug build passes; `ctest -R "STMap|IDistort|LensDistortion"` pass.
+  - size: M
+
+- [ ] M240.P2.T6 — knobValueAsFloat in the deep and scene nodes
+  - files: `Engine/Nodes/Deep/DeepCrop.cpp`, `Deep/DeepFromImage.cpp`, `Deep/DeepExpressionEvaluator.cpp`, `Scene/SceneNodeAuthoring.cpp`, `Scene/USDCamera.cpp`, `Scene/USDLight.cpp`, `Scene/USDMaterial.cpp`
+  - approach: As P2.T2 (seven files, but each is a one-to-two-line mechanical swap). The deep expression parser narrows `strtod` literals, so use the same helper there.
+  - verify: the debug build passes, and `ctest -R "Deep|USD|Scene"` passes.
+  - size: M
+
+- [ ] M240.P2.T7 — knobValueAsFloat in the raw and write nodes
+  - files: `Engine/Nodes/Raw/RawColorCalibration.cpp`, `Raw/RawPrepare.cpp`, `Raw/RawInputColor.cpp`, `Raw/RawColorCalibrationCheckerNode.cpp`, `IO/OiioWriteSupport.cpp`, `IO/NativeWrite.cpp`
+  - approach: As P2.T2. First settle the audit's unsettled raw sites (RawInputColor `row0..2` through the matrix inversion; checker `corner`; spot `bottomLeft`/`size` in RawColorCalibrationSpot and RawTemperature) and fix those that narrow a ±DBL_MAX value.
+  - verify: the debug build passes; `ctest -R "Raw|Write"` pass.
+  - size: M
 
 ## Phase 240.3: RADV failures inherited from main
 

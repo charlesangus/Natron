@@ -378,7 +378,8 @@ protected:
     void cacheEverything(const std::vector<NodePtr>& nodes)
     {
         for (const NodePtr& node : nodes) {
-            if (node->getPluginID() == kTestPluginIDCounting) {
+            // The counting nodes keep their output only through their own knob.
+            if (node->getKnobByName("cacheOutput")) {
                 EXPECT_TRUE(setBoolKnob(node, "cacheOutput", true));
             } else {
                 EXPECT_TRUE(setForceCaching(node)) << node->getScriptName();
@@ -637,6 +638,18 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
 
     setParitySourceComponents(source, "rgba");
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+
+    // Tell a body that iterates wrongly from a loop input that is not RGBA.
+    float sourceValue = -1.f;
+    ASSERT_TRUE(renderedValue(source, eRenderSchedulerModeLegacy, true, &sourceValue));
+    EXPECT_EQ(sourceValue + 3.f, value) << "after 3 feedback iterations: source " << sourceValue << ", rendered " << value;
+    const EffectInstancePtr beginEffect = begin->getEffectInstance();
+    const int beginComps = EffectInstance::getNCompsFromMetadata(*beginEffect->getTimeInvariantMetadata(), -1);
+    EXPECT_EQ(4, beginComps) << "LoopBegin output components (nComps)";
+    ImageLayerDesc beginLayer, beginPaired;
+    EffectInstance::getLayersFromMetadata(*beginEffect->getTimeInvariantMetadata(), -1, &beginLayer, &beginPaired);
+    EXPECT_TRUE(beginLayer == ImageLayerDesc::getRGBAComponents()) << "LoopBegin output layer " << beginLayer.getUserFacingLabel() << " (" << beginLayer.getNumComponents() << " comps)";
+
     begin->getPersistentMessage(&message, &messageType, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
@@ -647,7 +660,8 @@ TEST_F(NativeLoopFeedbackTest, FramesLeaveATrail)
     NodePtr constant = createConstant(0.5);
     NodePtr begin = createLoopBegin(std::string());
     NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
-    NodePtr frames = createNode(QString::fromUtf8(kTestPluginIDFrameValue));
+    // Animated, so its cached images are told apart by frame.
+    NodePtr frames = createFrameRamp();
     NodePtr end = createFeedbackEnd(1);
     ASSERT_TRUE(constant && begin && merge && frames && end);
     ASSERT_TRUE(setDoubleKnob(merge, "value", 0.));

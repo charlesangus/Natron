@@ -96,6 +96,12 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R NativeGpuCapability` passes on RADV and lavapipe.
   - size: M
 
+- [ ] M240.P3.T3 — Divide-by-alpha parity of M122's colour nodes on RADV
+  - files: `Tests/Native/NativeColorspaceGpu_Test.cpp`, `Tests/Native/NativeColourUtilGpu_Test.cpp`, `Tests/Native/NativeHueGpu_Test.cpp`, the matching `Engine/Nodes/Color/*` kernels
+  - approach: On RADV (AMD Radeon AI PRO R9700), exact parity fails only in the "divide by A" cases: NativeColorspaceGpu `MatchesTheCpuRender` (e.g. gpu 0.719309 vs cpu 0.719320, -152.43 vs -152.54 masked), NativeColourUtilGpu `ChainRunsAsOneRegion` (7 mismatches), and NativeHueGpu `HueCorrectMatchesTheCpuRender` (-27.6866 vs -27.6861). lavapipe passes. The errors are far beyond 1 ulp, so this looks like the GPU's unpremultiply dividing by a small or flushed alpha differently, or a fast reciprocal. Find the step and make CPU and GPU agree, or bound the comparison with a recorded reason if it is inherent.
+  - verify: `ctest -R "NativeColorspaceGpu|NativeColourUtilGpu|NativeHueGpu"` passes on RADV and lavapipe.
+  - size: M
+
 ## Decisions
 
 - 2026-10-26 — **Started alongside M184 (user):** the user asked for it to be picked up in parallel. P1 is read-only and runs now. P2 starts once M184 - Variable-Size Filter Kit has merged (it brings `knobValueAsFloat`), on a branch rebased onto main.
@@ -127,3 +133,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 **Verification gate:** the full debug build and ctest pass on lavapipe (PR CI) and on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`), with every RADV failure inherited from main fixed.
 
 - 2026-10-27 — **Runs in a lane of the E5 - GPU Compute run (user):** the gpu PM's `--parallel 4` run for E5 keeps this milestone in one of its lanes, since it fixes the RADV failures the GPU work keeps meeting.
+
+- 2026-10-27 — **Left alone in P2.T4 (beyond narrowing):** Keyer's `setThresholdsFromKeyColor` squares raw key-colour components in double (a UI edit path, not a render), and EdgeDetect's halo and filter sizes cast a huge `blurSize` to int. Neither is a knob-to-float narrow, so both stay out of scope.

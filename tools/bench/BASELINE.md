@@ -1065,3 +1065,12 @@ Run 3's `.ntpz` save and load were contended by other work on the host; runs 1 a
 | `.ntpz` (save and autosave) | 53,661,635 |
 
 `.ntpz` is 22.4× smaller. The median of the three run medians is 7.62 s for the `.ntpz` save against 17.17 s for XML (2.3× faster), and 7.68 s for autosave. XML loading was no longer possible when this was measured, so there is no load comparison.
+
+## Bezier keying before incremental GUI copy
+
+Not measured yet. Record here with `tools/bench/bezier_keying_bench.py` (commands in `README.md`,
+"Bezier keying cost") on a build from before the incremental GUI copy, with the date, commit and
+machine in the heading and text, then add the matching after-run section.
+
+| shapes x points | keys | keying (s) | median edit (ms) | slope |
+|---|---|---|---|---|

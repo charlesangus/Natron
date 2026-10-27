@@ -279,11 +279,11 @@ class Job:
 
     ref names the darktable revision that renders it ("release" or "master"), icc the --icc-type
     of the export, size its --width and --height (0 for the full size). whole keeps the whole
-    export rather than a crop.
+    export rather than a crop. half stores it as half float, which keeps a parity reference small.
     """
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None, ref="release", icc="LIN_REC709", size=0, whole=False):
+                 log_line=None, mosaic=None, ref="release", icc="LIN_REC709", size=0, whole=False, half=False):
         self.name = name
         self.source = source
         self.entries = entries
@@ -298,6 +298,7 @@ class Job:
         self.icc = icc
         self.size = size
         self.whole = whole
+        self.half = half
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -532,7 +533,8 @@ def colour_calibration_jobs(coeffs):
 # a plate: the CR2 developed to linear Rec. 2020 and exported small, then read back as a float TIFF
 # whose input and working profiles are both linear Rec. 2020, so the module's input is the plate.
 # The module's radii and detail levels follow the size of the image it is given, so the plate is
-# the whole image there and in Tests/Native/NativeContrastTexture_Test.cpp.
+# the whole image there and in Tests/Native/NativeContrastTexture_Test.cpp. Every file is half
+# float, the plate included: darktable reads back the same half plate the test feeds the kernels.
 #
 # dt_iop_contrastntexture_params_t, DT_MODULE_INTROSPECTION version 2, eight floats in this order
 # (darktable's min, max, default; description):
@@ -549,7 +551,7 @@ def colour_calibration_jobs(coeffs):
 # in %, each with a mask toggle showing its band); "filter settings": halo control (soft -5 .. 5,
 # in %) and noise bias (soft 0 .. 0.2). The mask toggles are GUI state, not params.
 CONTRASTNTEXTURE_PLATE = "contrastntexture-plate.tif"
-CONTRASTNTEXTURE_PLATE_SIZE = 384
+CONTRASTNTEXTURE_PLATE_SIZE = 256
 CONTRASTNTEXTURE_PLATE_EXPOSURE = 0.7
 CONTRASTNTEXTURE_FIELDS = ("gain_coarse", "gain_medium", "gain_fine", "detail_level", "halo_control", "noise_bias",
                            "gain_shadows", "gain_highlights")
@@ -601,7 +603,7 @@ def contrastntexture_jobs():
     jobs = [Job(CONTRASTNTEXTURE_PLATE, CR2, plate_entries,
                 "demosaic rcd, highlights opposed, exposure %+g EV, standard matrix to linear Rec. 2020, "
                 "exported at %d px" % (CONTRASTNTEXTURE_PLATE_EXPOSURE, CONTRASTNTEXTURE_PLATE_SIZE),
-                ref="master", icc="LIN_REC2020", size=CONTRASTNTEXTURE_PLATE_SIZE, whole=True)]
+                ref="master", icc="LIN_REC2020", size=CONTRASTNTEXTURE_PLATE_SIZE, whole=True, half=True)]
     for suffix, fields in CONTRASTNTEXTURE_VARIANTS:
         entries = [
             ("flip", 0, 2, flip_params()),
@@ -611,7 +613,7 @@ def contrastntexture_jobs():
         ]
         what = "contrast & texture %s" % (" ".join("%s=%g" % kv for kv in sorted(fields.items())) or "at its defaults")
         jobs.append(Job("contrastntexture-%s.tif" % suffix, CONTRASTNTEXTURE_PLATE, entries, what, ref="master",
-                        icc="LIN_REC2020", whole=True))
+                        icc="LIN_REC2020", whole=True, half=True))
     return jobs
 
 
@@ -645,9 +647,10 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
     return image[:, :, :3], result.stdout.splitlines()
 
 
-def write_reference(path, image, description):
-    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float32), photometric="rgb" if image.ndim == 3 else "minisblack",
-                     compression="zlib", description=description, metadata=None)
+def write_reference(path, image, description, half=False):
+    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float16 if half else np.float32),
+                     photometric="rgb" if image.ndim == 3 else "minisblack", compression="zlib", description=description,
+                     metadata=None)
 
 
 def probe_coefficients(fixture, scratch):
@@ -792,7 +795,7 @@ def run_job(job, out, scratch):
         revision(job.ref), job.source, job.workflow, job.what, where)
     if logged:
         description += "; darktable log: " + " | ".join(logged)
-    write_reference(os.path.join(out, job.name), result, description)
+    write_reference(os.path.join(out, job.name), result, description, job.half)
     print("%s: %s" % (job.name, summary))
 
 

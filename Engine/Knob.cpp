@@ -5733,8 +5733,13 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
         h.appendBool(true);
         h.appendI64(it->second);
         const KnobHelper* depHelper = dynamic_cast<const KnobHelper*>(dep.get());
-        h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(it->second, path)
-                              : dep->getDimensionContentHash(it->second));
+        // -1 reads every dimension (a whole-value get(), a project variable read through rfv).
+        const int firstDim = (it->second < 0) ? 0 : it->second;
+        const int endDim = (it->second < 0) ? dep->getDimension() : (it->second + 1);
+        for (int d = firstDim; d < endDim; ++d) {
+            h.appendU64(depHelper ? depHelper->getDimensionContentHashRecursive(d, path)
+                                  : dep->getDimensionContentHash(d));
+        }
     }
     // A node's metadata is a function of its hash, and of its revision when it changes under the
     // same hash. The holder's own node hash is left out: it folds this one in, and its metadata

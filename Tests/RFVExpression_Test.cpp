@@ -277,6 +277,10 @@ TEST_F(RFVPythonObject, ProjectVariableEditRefreshesTheReaderAndItsNodeHash)
     ASSERT_NO_THROW(doubled->setExpression(0, "rfv.a * 2", false, true));
     EXPECT_EQ(6., doubled->getValue(0));
     const U64 before = node->getHashValue();
+    // A node that does not read the variable keeps its hash.
+    NodePtr bystander = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(bystander));
+    const U64 bystanderBefore = bystander->getHashValue();
 
     int refreshes = 0;
     ASSERT_TRUE(bool(doubled->getSignalSlotHandler()));
@@ -291,6 +295,7 @@ TEST_F(RFVPythonObject, ProjectVariableEditRefreshesTheReaderAndItsNodeHash)
     EXPECT_EQ(10., doubled->getValue(0));
     const U64 after = node->getHashValue();
     EXPECT_NE(before, after);
+    EXPECT_EQ(bystanderBefore, bystander->getHashValue());
 
     a->setValue(3.);
     EXPECT_EQ(6., doubled->getValue(0));

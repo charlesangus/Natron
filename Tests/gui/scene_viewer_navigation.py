@@ -152,11 +152,13 @@ try:
         QApplication.processEvents()
 
     def find_item(tree, text, parent_text=None):
-        # findItems() rather than walking child(): see m45_tab_menu.py.
-        for item in tree.findItems(text, Qt.MatchExactly | Qt.MatchRecursive, 0):
-            parent = item.parent()
-            if parent_text is None or (parent is not None and parent.text(0) == parent_text):
-                return item
+        # Model indexes, not QTreeWidgetItem wrappers: the Preferences trees' item wrappers
+        # report their C++ object deleted by the time they are used (see m45_tab_menu.py).
+        model = tree.model()
+        for idx in model.match(model.index(0, 0), Qt.DisplayRole, text, -1, Qt.MatchExactly | Qt.MatchRecursive):
+            parent = idx.parent()
+            if parent_text is None or (parent.isValid() and parent.data() == parent_text):
+                return idx
         return None
 
     def open_preferences():
@@ -216,7 +218,7 @@ try:
         page_trees = [w for w in panel.findChildren(QTreeWidget) if w.columnCount() == 1]
         page = find_item(page_trees[0], "Shortcut Editor") if len(page_trees) == 1 else None
         require(page is not None, "found the Shortcut Editor page")
-        page_trees[0].setCurrentItem(page)
+        page_trees[0].setCurrentIndex(page)
         QApplication.processEvents()
         shortcut_trees = [w for w in panel.findChildren(QTreeWidget)
                           if w.columnCount() == 3 and w.headerItem() is not None and w.headerItem().text(0) == "Command"]
@@ -224,14 +226,14 @@ try:
         tree = shortcut_trees[0]
         group = find_item(tree, "3DViewer")
         require(group is not None, "the shortcuts tree has a 3DViewer group")
-        group.setExpanded(True)
+        tree.expand(group)
         tumble = find_item(tree, "Tumble", "3DViewer")
         require(tumble is not None, "the 3DViewer group has a Tumble row")
-        tree.setCurrentItem(tumble)
-        tree.scrollToItem(tumble)
+        tree.setCurrentIndex(tumble)
+        tree.scrollTo(tumble)
         QApplication.processEvents()
-        report("NOTE Tumble under Blender: %r" % (tumble.text(1),))
-        check("Middle" in tumble.text(1), "the Tumble row shows the Blender binding")
+        report("NOTE Tumble under Blender: %r" % (tumble.siblingAtColumn(1).data(),))
+        check("Middle" in tumble.siblingAtColumn(1).data(), "the Tumble row shows the Blender binding")
         yield ("sleep", 300)
         shot("scene-navigation-shortcut-editor.png")
 
@@ -249,7 +251,10 @@ try:
         validate[0].click()
         QApplication.processEvents()
         check(navigation.getValue() == CUSTOM, "editing a 3DViewer binding turns the preference to Custom (got %r)" % (navigation.getValue(),))
-        check("Alt" in tumble.text(1), "the Tumble row shows the new binding (%r)" % (tumble.text(1),))
+        QApplication.processEvents()
+        tumble = find_item(tree, "Tumble", "3DViewer")
+        require(tumble is not None, "the 3DViewer group still has a Tumble row after the rebind")
+        check("Alt" in tumble.siblingAtColumn(1).data(), "the Tumble row shows the new binding (%r)" % (tumble.siblingAtColumn(1).data(),))
         shot("scene-navigation-rebound.png")
         panel.close()
         QApplication.processEvents()

@@ -154,7 +154,7 @@ future core work has solid ground to build on.
 | M19 | USD/Hydra Foundation | done | M17, M161, M107 |  | E9 | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D Node Vocabulary | done | M19 | bosley-native-nodes | E9 | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M226 | Scene Hierarchy From Topology | done | M19, M20 |  | E9 | [M226-scene-hierarchy-from-topology.md](PLAN/MILESTONES/M226-scene-hierarchy-from-topology.md) |
-| M227 | USD Primitive Nodes | doing | M226 | bosley-native-nodes | E9 | [M227-usd-primitive-nodes.md](PLAN/MILESTONES/M227-usd-primitive-nodes.md) |
+| M227 | USD Primitive Nodes | done | M226 | bosley-native-nodes | E9 | [M227-usd-primitive-nodes.md](PLAN/MILESTONES/M227-usd-primitive-nodes.md) |
 | M228 | 3D Viewer Navigation | doing | M19, M20, M226 | bosley-native-nodes | E9 | [M228-3d-viewer-navigation.md](PLAN/MILESTONES/M228-3d-viewer-navigation.md) |
 | M229 | 3D Viewer Guides And Display | doing | M228 | bosley-native-nodes | E9 | [M229-3d-viewer-guides-and-display.md](PLAN/MILESTONES/M229-3d-viewer-guides-and-display.md) |
 | M230 | 3D Transform Widgets | todo | M226, M229 |  | E9 | [M230-3d-transform-widgets.md](PLAN/MILESTONES/M230-3d-transform-widgets.md) |
@@ -169,7 +169,7 @@ future core work has solid ground to build on.
 | M239 | Weight-Based GPU Placement | doing | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | doing | - | gpu | E14 | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
 | M241 | Up Axis And Units Policy | todo | M226 |  | E9 | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
-| M242 | Cache Invalidation Audit | doing | M178, M185 | bosley-native-nodes | E14 | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
+| M242 | Cache Invalidation Audit | done | M178, M185 | bosley-native-nodes | E14 | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
 | M243 | Startup Pane Paint On NVIDIA | todo | - |  | E10 | [M243-startup-pane-paint-on-nvidia.md](PLAN/MILESTONES/M243-startup-pane-paint-on-nvidia.md) |
 | M244 | NVIDIA Test Fixes | todo | M239 |  | E5 | [M244-nvidia-test-fixes.md](PLAN/MILESTONES/M244-nvidia-test-fixes.md) |
 | M245 | Write Path Variables | todo | - |  | E3 | [M245-write-path-variables.md](PLAN/MILESTONES/M245-write-path-variables.md) |
@@ -302,7 +302,7 @@ future core work has solid ground to build on.
 | M206 | Neural Raw Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
 | M208 | Neural Upscale | todo | M203, M204, M207 |  | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
-| M209 | Edge-Aware Filter Library | doing | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
+| M209 | Edge-Aware Filter Library | done | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
 | M210 | Profiled Denoise | doing | M209 | bosley-native-nodes | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | todo | M209, M146 |  | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
 | M212 | Tone Equalizer | doing | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |

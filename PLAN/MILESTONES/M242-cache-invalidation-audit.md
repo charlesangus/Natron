@@ -140,3 +140,5 @@ The hash side is content-addressed. `Node::computeContentHash` (`Engine/Node.cpp
 **Verification gate:** release gate green on both schedulers, and the debug PR-CI leg green (asserts on); `CacheStressSelf_Test`, `CacheStress_Test`, `CacheStressConcurrent_Test` and `QueuedInputEdit_Test` pass with no `DISABLED_` cases left; `CacheStressGpu_Test` passes on lavapipe; 50 extra random seeds of each stress suite pass locally; `cache_invalidation_viewer.py` passes under Xvfb at 1920x1080, with screenshots shared and the user's OK; every row of `docs/cache-invalidation.md` is "covered" or "fixed", with the tests that cover it.
 
 2026-10-27: Phases 1-4 written. Fixed here: T1, T6, I1, A1, T2/V5, V4, E2 (bracket). To other PRs: K1, K2, A2, A3, I2, V1 (M202 #131); E1 (M72). Everything else filed as M260 - Cache Invalidation Follow-ups.
+
+Shipped 2026-10-27: PR #138, squash a50e973d7 on main.

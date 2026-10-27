@@ -63,3 +63,5 @@ Hierarchy From Topology, and they author the project's up axis and units. Survey
 - 2026-10-26 — **Material input (user):** every primitive node takes an optional Material input and authors the material under its own prim, binding itself to it (M226.P2.T4).
 
 2026-10-27: Golden recorded; GUI screenshots shared; draft PR #133; UAT pending.
+
+Shipped 2026-10-27: PR #133, squash 936ed924d on main.

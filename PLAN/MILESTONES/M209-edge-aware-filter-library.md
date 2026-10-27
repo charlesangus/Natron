@@ -104,3 +104,5 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 ## Decisions
 
 - 2026-10-27 — **darktable's behaviour over the plan's wording (bosley-native-nodes, PR #136 review):** borders follow each darktable function (box/guided shrinking windows, B-spline clamp, hat-transform mirror, gaussian edge start) rather than the plan's "mirrored everywhere", because the library exists to port darktable modules faithfully; EIGF works on linear values with normalised variance; heal is red/black SOR (darktable has no multigrid). P1.T3: RawHighlightsLaplacian never had a private fast guided filter (plan error); only its B-spline decomposition and sigma-per-step helper moved to the library, results unchanged. Pinned darktable golden vectors (Codex finding) are deferred to the first module port that needs them (M210 reference parity).
+
+Shipped 2026-10-27: PR #136, squash a08602f38 on main.

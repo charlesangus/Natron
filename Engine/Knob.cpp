@@ -6883,6 +6883,12 @@ KnobContentWrite::isSettled(U64 snapshot)
     return ((snapshot & kContentWritesInFlightMask) == 0) && (contentWriteState().load() == snapshot);
 }
 
+bool
+KnobContentWrite::noneInFlight()
+{
+    return (contentWriteState().load() & kContentWritesInFlightMask) == 0;
+}
+
 namespace {
 thread_local PluginEditsDeferral* tPluginEditsDeferral = NULL;
 }

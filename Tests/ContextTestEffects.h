@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <list>
 #include <map>
 #include <mutex>
@@ -713,6 +714,13 @@ public:
         return _derivations.load();
     }
 
+    // Called by the next metadata derivation, before it reads the test variable, on the thread
+    // that asks for metadata.
+    void setDerivationHook(const std::function<void()>& hook)
+    {
+        _derivationHook = hook;
+    }
+
     // The output width under a context where the test variable is v.
     static int formatWidth(double v)
     {
@@ -725,6 +733,12 @@ private:
                                               NodeMetadata& metadata) OVERRIDE FINAL
     {
         ++_derivations;
+        // Taken whole, so the hook runs in one derivation only, and not in one it causes.
+        std::function<void()> hook;
+        hook.swap(_derivationHook);
+        if (hook) {
+            hook();
+        }
         metadata.setOutputFormat(RectI(0, 0, formatWidth(contextTestValue(getCurrentRenderContext())), kCountingTestSize));
 
         return eStatusOK;
@@ -763,6 +777,7 @@ private:
 
     KnobBoolWPtr _reads;
     std::atomic<int> _derivations;
+    std::function<void()> _derivationHook;
 };
 
 /**

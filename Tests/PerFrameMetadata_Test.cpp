@@ -26,8 +26,10 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <list>
 #include <map>
+#include <optional>
 #include <random>
 #include <string>
 #include <thread>
@@ -46,14 +48,17 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
@@ -708,4 +713,244 @@ TEST_F(PerFrameMetadataTest, PixelAspectRatioWarningFollowsTheFrame)
         merge->getStreamWarnings(&warnings);
         EXPECT_EQ(frame == 2, !warnings[Node::eStreamWarningPixelAspectRatio].isEmpty()) << "frame=" << frame;
     }
+}
+
+namespace {
+
+// Renders the red channel at `at` through renderRoI on this thread, after installing the frame's
+// render args and request pass and then calling `beforeRender`. A failed or aborted render
+// returns false.
+bool
+renderRedAt(const NodePtr& node,
+            const RectI& roi,
+            int x,
+            int y,
+            bool byPassCache,
+            float* red,
+            const std::function<void()>& beforeRender = std::function<void()>())
+{
+    const double time = 1.;
+    const ViewIdx view(0);
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    ParallelRenderArgsSetter frameRenderArgs(time,
+                                             view,
+                                             true /*isRenderUserInteraction*/,
+                                             false /*isSequential*/,
+                                             abortInfo,
+                                             node,
+                                             0 /*textureIndex*/,
+                                             node->getApp()->getTimeLine().get(),
+                                             NodePtr(),
+                                             false /*isAnalysis*/,
+                                             false /*draftMode*/,
+                                             RenderStatsPtr());
+    EffectInstancePtr effect = node->getEffectInstance();
+    const RectD canonicalWindow = roi.toCanonical_noClipping(0, 1.);
+    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+    if (EffectInstance::computeRequestPass(time, view, 0, canonicalWindow, node, *request) == eStatusFailed) {
+        return false;
+    }
+    frameRenderArgs.updateNodesRequest(*request);
+    if (beforeRender) {
+        beforeRender();
+    }
+
+    std::list<ImageLayerDesc> components;
+    components.push_back(ImageLayerDesc::getRGBAComponents());
+    EffectInstance::RenderRoIArgs args(time,
+                                       RenderScale::fromMipmapLevel(0),
+                                       0,
+                                       view,
+                                       byPassCache,
+                                       roi,
+                                       RectD(),
+                                       components,
+                                       eImageBitDepthFloat,
+                                       false /*calledFromGetImage*/,
+                                       0 /*caller*/,
+                                       eStorageModeRAM,
+                                       time);
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    try {
+        if (effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) {
+            return false;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (layers.empty() || !layers.begin()->second || (layers.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
+        return false;
+    }
+    Image::ReadAccess access = layers.begin()->second->getReadRights();
+    *red = reinterpret_cast<const float*>(access.pixelAt(x, y))[0];
+
+    return true;
+}
+
+// Renders on this thread's renderRoI path, and restores the scheduler mode and empties the caches
+// on the way out, so no image cached here outlives the test.
+class LegacyRenderScope {
+public:
+    LegacyRenderScope()
+        : _saved(appPTR->getRenderSchedulerMode())
+    {
+        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
+        appPTR->clearAllCaches();
+    }
+
+    ~LegacyRenderScope()
+    {
+        appPTR->setRenderSchedulerMode(_saved);
+        appPTR->clearAllCaches();
+    }
+
+    LegacyRenderScope(const LegacyRenderScope&) = delete;
+    LegacyRenderScope& operator=(const LegacyRenderScope&) = delete;
+
+private:
+    RenderSchedulerModeEnum _saved;
+};
+
+// A Constant whose colour is edited, below a Blur that caches its output. The Constant fills the
+// format, so the blurred red at any pixel well inside it is the red of the colour.
+struct CachedConstantBlur {
+    NodePtr constant;
+    NodePtr blur;
+    KnobColorPtr color;
+};
+} // anon namespace
+
+class CleanHashCacheTest
+    : public PerFrameMetadataTest {
+protected:
+    bool createConstantBlur(CachedConstantBlur* graph)
+    {
+        graph->constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        if (!graph->constant) {
+            return false;
+        }
+        graph->color = std::dynamic_pointer_cast<KnobColor>(graph->constant->getKnobByName(kConstantParamColor));
+        graph->blur = createBlurBelow(graph->constant);
+        if (!graph->color || !graph->blur) {
+            return false;
+        }
+        KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(graph->blur->getKnobByName("forceCaching"));
+        if (!forceCaching) {
+            return false;
+        }
+        forceCaching->setValue(true);
+        graph->color->setValue(0.25, ViewSpec::all(), 0);
+
+        return true;
+    }
+};
+
+namespace {
+const RectI kProbeRoI(100, 100, 132, 132);
+const int kProbeX = 116;
+const int kProbeY = 116;
+}
+
+// A render whose frame was set up before an edit renders the edited colour under the hash of the
+// state before it. Going back to that state brings its hash back, and must not find that image.
+TEST_F(CleanHashCacheTest, RenderOverlappingAnEditCachesNothingUnderTheOldHash)
+{
+    LegacyRenderScope scope;
+    CachedConstantBlur graph;
+    ASSERT_TRUE(createConstantBlur(&graph));
+
+    float red = -1.f;
+    // The outcome of the overlapped render does not matter: aborting it caches nothing either.
+    (void)renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red, [&graph]() {
+        graph.color->setValue(0.75, ViewSpec::all(), 0);
+    });
+    graph.color->setValue(0.25, ViewSpec::all(), 0);
+
+    ASSERT_TRUE(renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red));
+    EXPECT_NEAR(0.25f, red, 1e-5f);
+    ASSERT_TRUE(renderRedAt(graph.constant, kProbeRoI, kProbeX, kProbeY, false, &red));
+    EXPECT_NEAR(0.25f, red, 1e-5f);
+}
+
+// Renders on many threads race an upstream colour toggled on the main thread. Whatever any of them
+// cached under a hash must be the image of the state that hash stands for.
+TEST_F(CleanHashCacheTest, ConcurrentEditsCacheNoImageUnderAStaleHash)
+{
+    const int kThreads = 8;
+    const int kToggles = 200;
+    const float kStates[] = { 0.25f, 0.75f };
+
+    LegacyRenderScope scope;
+    CachedConstantBlur graph;
+    ASSERT_TRUE(createConstantBlur(&graph));
+
+    std::atomic<bool> stop(false);
+    std::atomic<int> rendered(0);
+    std::vector<std::thread> renderers;
+    for (int t = 0; t < kThreads; ++t) {
+        renderers.emplace_back([&]() {
+            while (!stop.load()) {
+                float red;
+                if (renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red)) {
+                    ++rendered;
+                }
+            }
+        });
+    }
+    for (int i = 0; i < kToggles; ++i) {
+        graph.color->setValue(kStates[i % 2], ViewSpec::all(), 0);
+    }
+    stop.store(true);
+    for (std::thread& renderer : renderers) {
+        renderer.join();
+    }
+    EXPECT_GT(rendered.load(), 0);
+
+    // Each state's hash finds what the renderers cached under it, if anything.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (float state : kStates) {
+            graph.color->setValue(state, ViewSpec::all(), 0);
+            float red = -1.f;
+            ASSERT_TRUE(renderRedAt(graph.blur, kProbeRoI, kProbeX, kProbeY, false, &red));
+            EXPECT_NEAR(state, red, 1e-5f) << "blur, pass=" << pass;
+            ASSERT_TRUE(renderRedAt(graph.constant, kProbeRoI, kProbeX, kProbeY, false, &red));
+            EXPECT_NEAR(state, red, 1e-5f) << "constant, pass=" << pass;
+        }
+    }
+}
+
+// A derive that reads a knob edited to B and back to A around the read answers for B under the
+// hash A comes back to. Nothing may keep that answer under it, here or downstream.
+TEST_F(PerFrameMetadataTest, EditAndRevertDuringDeriveCachesNoStaleMetadata)
+{
+    NodePtr source = createSource(3);
+    ASSERT_TRUE(bool(source));
+    NodePtr blur = createBlurBelow(source);
+    ASSERT_TRUE(bool(blur));
+    MetadataSourceTestEffect* sourceEffect = metadataSourceOf(source);
+    NativeEffectBase* blurEffect = dynamic_cast<NativeEffectBase*>(blur->getEffectInstance().get());
+    ASSERT_TRUE(sourceEffect && blurEffect);
+    KnobIntPtr tag = sourceEffect->getTagKnob();
+    ASSERT_TRUE(bool(tag));
+    tag->setValue(1, ViewSpec::all(), 0);
+    ASSERT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
+
+    const auto editAndRevert = [&tag](bool afterRead) {
+        tag->setValue(afterRead ? 1 : 2, ViewSpec::all(), 0);
+    };
+
+    // Derived on the source itself.
+    sourceEffect->setTagReadHook(editAndRevert);
+    (void)sourceEffect->getOutputMetadata(2., ViewIdx(0));
+    int derivations = sourceEffect->derivationCount();
+    EXPECT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(2., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_EQ(derivations + 1, sourceEffect->derivationCount());
+
+    // Derived on the source while the node below derives its own.
+    sourceEffect->setTagReadHook(editAndRevert);
+    (void)blurEffect->getOutputMetadata(3., ViewIdx(0));
+    derivations = sourceEffect->derivationCount();
+    EXPECT_EQ(std::optional<int>(1), blurEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_GT(sourceEffect->derivationCount(), derivations);
 }

@@ -50,8 +50,7 @@ class ClearAllCachesTest
     : public BaseTest {
 };
 
-// The hash is passed in rather than read from the node so that the edit between the two queries
-// cannot move the cache key: only an emptied cache can make the second answer differ.
+// The entry is looked up under the node's own hash, the only one a query stores under.
 TEST_F(ClearAllCachesTest, EmptiesTheActionsCacheOfANativeNode)
 {
     getApp()->getProject()->reset(false, true);
@@ -60,20 +59,16 @@ TEST_F(ClearAllCachesTest, EmptiesTheActionsCacheOfANativeNode)
     ASSERT_TRUE(setKnobValues(node, kNativeGeneratorParamFrameRange, { 3., 9. }));
 
     EffectInstancePtr effect = node->getEffectInstance();
-    const U64 hash = 1;
+    const U64 hash = node->getHashValue();
+    ASSERT_FALSE(effect->hasCachedFrameRange(hash));
+
     double first = 0., last = 0.;
     effect->getFrameRange_public(hash, &first, &last);
     ASSERT_EQ(3., first);
     ASSERT_EQ(9., last);
-
-    ASSERT_TRUE(setKnobValues(node, kNativeGeneratorParamFrameRange, { 5., 12. }));
-    effect->getFrameRange_public(hash, &first, &last);
-    EXPECT_EQ(3., first) << "the entry cached under the same hash is replayed";
-    EXPECT_EQ(9., last);
+    EXPECT_TRUE(effect->hasCachedFrameRange(hash)) << "the answer is cached under the node's hash";
 
     appPTR->clearAllCaches();
 
-    effect->getFrameRange_public(hash, &first, &last);
-    EXPECT_EQ(5., first);
-    EXPECT_EQ(12., last);
+    EXPECT_FALSE(effect->hasCachedFrameRange(hash));
 }

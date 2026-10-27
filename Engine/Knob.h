@@ -1651,6 +1651,9 @@ public:
     static U64 snapshot();
     static bool isSettled(U64 snapshot);
 
+    /// True if no write is in flight at the call. CleanHashSnapshot relies on it.
+    static bool noneInFlight();
+
 private:
     bool _open;
 };

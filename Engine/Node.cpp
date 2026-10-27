@@ -99,6 +99,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
@@ -1580,6 +1581,33 @@ Node::getHashMarkCount() const
 
     // Both only grow, so the sum stays put only while neither moves.
     return _imp->hashDirtyGeneration.load() + hashEpoch().load();
+}
+
+CleanHashSnapshot::CleanHashSnapshot(const NodePtr& node,
+                                     U64 contextKey)
+    : _node(node)
+    , _contextKey(contextKey)
+    , _marks(node ? node->getHashMarkCount() : 0)
+{
+}
+
+bool
+CleanHashSnapshot::allowsStoreUnder(U64 hash) const
+{
+    if (!_node) {
+        return false;
+    }
+    // The hash check comes first: a recompute it relies on may have read a value whose write
+    // has not marked yet, and that write began before the in-flight check below.
+    U64 current = 0;
+    if (!_node->getHashValueIfUpToDate(&current) || (mixRenderContextKey(current, _contextKey) != hash)) {
+        return false;
+    }
+    if (!KnobContentWrite::noneInFlight()) {
+        return false;
+    }
+
+    return _node->getHashMarkCount() == _marks;
 }
 
 bool

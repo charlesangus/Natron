@@ -167,3 +167,118 @@ TEST_F(RenderContextMetadata, MetadataIsDerivedPerContext)
     EXPECT_EQ(3, expectFormatsPerContext(request, downstream));
     EXPECT_EQ(derivationsBefore + 1, ancestorEffect->derivations());
 }
+
+namespace {
+RenderContextPtr
+contextWithTestValue(double v)
+{
+    return RenderContext::Builder().set(contextTestVariable(), RenderContextValue(v)).build();
+}
+} // anon namespace
+
+// Asked under a context it reads, a node keeps its metadata under its hash with that context's key
+// folded in and finds it there again; another context derives and keeps its own.
+TEST_F(RenderContextMetadata, MetadataDerivedUnderAContextIsCachedUnderItsKey)
+{
+    NodePtr format = createFormat(true);
+    ASSERT_TRUE(bool(format));
+    EffectInstancePtr effect = format->getEffectInstance();
+    ContextFormatTestEffect* formatEffect = dynamic_cast<ContextFormatTestEffect*>(effect.get());
+    ASSERT_TRUE(formatEffect != NULL);
+    const RenderContextPtr two = contextWithTestValue(2.);
+    const RenderContextPtr three = contextWithTestValue(3.);
+    effect->dropCachedMetadataDownstream();
+    ASSERT_TRUE(effect->getTimeInvariantMetadata() != NULL);
+    const int before = formatEffect->derivations();
+
+    {
+        ActionContextScope underTwo(true, two);
+        const U64 contextKey = effect->getCurrentRenderContextKey();
+        ASSERT_NE(0u, contextKey);
+        U64 hash = 0;
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0), &hash);
+        ASSERT_TRUE(metadata != NULL);
+        EXPECT_EQ(ContextFormatTestEffect::formatWidth(2.), metadata->getOutputFormat().width());
+        EXPECT_EQ(mixRenderContextKey(format->getHashValue(), contextKey), hash);
+        EXPECT_NE(format->getHashValue(), hash);
+    }
+    const int afterFirst = formatEffect->derivations();
+    EXPECT_GT(afterFirst, before);
+
+    {
+        ActionContextScope underTwo(true, two);
+        U64 hash = 0;
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0), &hash);
+        ASSERT_TRUE(metadata != NULL);
+        EXPECT_EQ(ContextFormatTestEffect::formatWidth(2.), metadata->getOutputFormat().width());
+        EXPECT_NE(0u, hash);
+    }
+    EXPECT_EQ(afterFirst, formatEffect->derivations()) << "the answer under v = 2 was not reused";
+
+    {
+        ActionContextScope underThree(true, three);
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0));
+        ASSERT_TRUE(metadata != NULL);
+        EXPECT_EQ(ContextFormatTestEffect::formatWidth(3.), metadata->getOutputFormat().width());
+    }
+    const int afterThree = formatEffect->derivations();
+    EXPECT_GT(afterThree, afterFirst);
+
+    {
+        ActionContextScope underTwo(true, two);
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0));
+        ASSERT_TRUE(metadata != NULL);
+        EXPECT_EQ(ContextFormatTestEffect::formatWidth(2.), metadata->getOutputFormat().width());
+    }
+    EXPECT_EQ(afterThree, formatEffect->derivations()) << "the answer under v = 3 replaced the one under v = 2";
+}
+
+// An upstream edit made and reverted while a node derives its metadata under a context brings the
+// node's hash back, but the derivation overlapped it: nothing is kept under that hash, so the next
+// ask derives again, and keeps that answer.
+TEST_F(RenderContextMetadata, EditOverlappingADerivationUnderAContextStoresNothing)
+{
+    NodePtr ancestor = createFormat(false);
+    NodePtr format = createFormat(true);
+    ASSERT_TRUE(ancestor && format);
+    ASSERT_TRUE(format->connectInput(ancestor, 0));
+    KnobBool* ancestorReads = dynamic_cast<KnobBool*>(ancestor->getKnobByName("reads").get());
+    ASSERT_TRUE(ancestorReads != NULL);
+    EffectInstancePtr effect = format->getEffectInstance();
+    ContextFormatTestEffect* formatEffect = dynamic_cast<ContextFormatTestEffect*>(effect.get());
+    ASSERT_TRUE(formatEffect != NULL);
+    const RenderContextPtr two = contextWithTestValue(2.);
+    ancestor->getEffectInstance()->dropCachedMetadataDownstream();
+    ASSERT_TRUE(ancestor->getEffectInstance()->getTimeInvariantMetadata() != NULL);
+    ASSERT_TRUE(effect->getTimeInvariantMetadata() != NULL);
+    const U64 hashBefore = format->getHashValue();
+
+    formatEffect->setDerivationHook([ancestorReads]() {
+        ancestorReads->setValue(true);
+        ancestorReads->setValue(false);
+    });
+    {
+        ActionContextScope underTwo(true, two);
+        // The two-argument getMetadata() derives once, whether or not an edit overlapped it.
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0));
+        ASSERT_TRUE(metadata != NULL);
+    }
+    ASSERT_EQ(hashBefore, format->getHashValue());
+    const int afterOverlapped = formatEffect->derivations();
+
+    {
+        ActionContextScope underTwo(true, two);
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0));
+        ASSERT_TRUE(metadata != NULL);
+        EXPECT_EQ(ContextFormatTestEffect::formatWidth(2.), metadata->getOutputFormat().width());
+    }
+    const int afterClean = formatEffect->derivations();
+    EXPECT_GT(afterClean, afterOverlapped) << "the overlapped derivation was kept";
+
+    {
+        ActionContextScope underTwo(true, two);
+        NodeMetadataConstPtr metadata = effect->getMetadata(1., ViewIdx(0));
+        ASSERT_TRUE(metadata != NULL);
+    }
+    EXPECT_EQ(afterClean, formatEffect->derivations()) << "the clean derivation was not kept";
+}

@@ -377,6 +377,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ///Use the hash at this time, and then copy it to the clips in the thread-local storage to use the same value
     ///through all the rendering of this frame.
     U64 nodeHash = frameArgs->nodeHash;
+    // The image is cached under nodeHash only if the render could not have seen another state.
+    const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
     const ImageFieldingOrderEnum fieldingOrder = renderMetadata->getOutputFielding();
@@ -832,6 +834,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                           renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
 
     bool isDuringPaintStroke = isDuringPaintStrokeCreationThreadLocal();
+    // A frame hash the node has already left would key the new image to a state the graph is
+    // no longer in. A paint stroke keeps its image cached while its own knobs move: each stroke
+    // render paints over the last one.
+    if (createInCache && !isDuringPaintStroke && !clean.allowsStoreUnder(nodeHash)) {
+        createInCache = false;
+    }
 
     /*
      * Get the bitdepth and output components that the plug-in expects to render. The cached image does not necesserarily has the bitdepth
@@ -1531,6 +1539,17 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     guard.reset();
 #endif
 
+    // The images rendered into were found or created in the cache under nodeHash before the
+    // render: an edit or a mark that came meanwhile means they may hold another state's pixels.
+    // Everything under the render's keys leaves the cache, the planes a plug-in allocated on the
+    // fly included; this caller still gets its images.
+    bool keepRenderedInCache = true;
+    if (hasSomethingToRender && !isDuringPaintStroke && !clean.allowsStoreUnder(nodeHash)) {
+        keepRenderedInCache = false;
+        appPTR->removeFromNodeCache(key->getHash());
+        appPTR->removeFromNodeCache(nonDraftKey->getHash());
+    }
+
     if ( renderAborted && (renderRetCode != eRenderRoIStatusImageAlreadyRendered) ) {
         ///Return a NULL image
 
@@ -1610,7 +1629,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     //bool multiplanar = isMultiPlanar();
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
         //If we have worked on a local swapped image, swap it in the cache
-        if (it->second.cacheSwapImage) {
+        if (it->second.cacheSwapImage && keepRenderedInCache) {
             const CacheAPI* cache = it->second.cacheSwapImage->getCacheAPI();
             const Cache<Image>* imgCache = dynamic_cast<const Cache<Image>*>(cache);
             if (imgCache) {

@@ -352,9 +352,12 @@ struct OfxEffectInstancePrivate
     std::mutex clipMetadataHashMutex;
 
     // One clip preferences answer at a frame, for what its key describes. The key's time counts
-    // only when the plug-in's parameters vary with time.
+    // only when the plug-in's parameters vary with time. An answer CleanHashSnapshot did not allow
+    // under its hash is never found by its key: it stays only so findFrameAnswer() can reach it
+    // through the metadata it produced.
     struct FrameAnswer {
         U64 hash;
+        bool reusable;
         ViewIdx view;
         bool keyedOnTime;
         double time;
@@ -2196,7 +2199,7 @@ OfxEffectInstance::getPreferredMetadataForInputs(U64 hash,
     const auto findAnswer = [&]() -> NodeMetadataConstPtr {
         std::lock_guard<std::mutex> l(_imp->frameAnswersMutex);
         for (std::list<OfxEffectInstancePrivate::FrameAnswer>::const_iterator it = _imp->frameAnswers.begin(); it != _imp->frameAnswers.end(); ++it) {
-            if ((it->hash == hash) && (it->view == view) && (it->keyedOnTime == keyedOnTime) && (!keyedOnTime || (it->time == time)) && (it->defaults == defaults) && sameInputsMetadata(it->inputsMetadata, inputsMetadata)) {
+            if (it->reusable && (it->hash == hash) && (it->view == view) && (it->keyedOnTime == keyedOnTime) && (!keyedOnTime || (it->time == time)) && (it->defaults == defaults) && sameInputsMetadata(it->inputsMetadata, inputsMetadata)) {
                 return it->metadata;
             }
         }
@@ -2218,6 +2221,7 @@ OfxEffectInstance::getPreferredMetadataForInputs(U64 hash,
         return found;
     }
 
+    const CleanHashSnapshot clean(getNode(), getCurrentRenderContextKey());
     NodeMetadata metadata = defaults;
     StatusEnum stat;
     bool editsRefused = false;
@@ -2249,6 +2253,7 @@ OfxEffectInstance::getPreferredMetadataForInputs(U64 hash,
 
     OfxEffectInstancePrivate::FrameAnswer answer;
     answer.hash = hash;
+    answer.reusable = clean.allowsStoreUnder(hash);
     answer.view = view;
     answer.keyedOnTime = keyedOnTime;
     answer.time = time;

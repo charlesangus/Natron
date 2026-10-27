@@ -45,6 +45,7 @@ NATRON_NAMESPACE_ENTER
 
 class UpdateViewerParams; // ViewerInstancePrivate
 class ScenePayload;
+class CleanHashSnapshot; // Node.h
 
 typedef std::map<NodePtr, NodeRenderStats > RenderStatsMap;
 
@@ -70,6 +71,9 @@ public:
     bool userRoIEnabled;
     bool mustComputeRoDAndLookupCache;
     bool isDoingPartialUpdates;
+    // Taken before the render reads anything: the textures it makes are cached under the viewer
+    // hash only if it allows the store.
+    std::shared_ptr<const CleanHashSnapshot> cleanHash;
 };
 
 class ViewerInstance

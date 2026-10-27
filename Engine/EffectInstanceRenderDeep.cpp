@@ -265,6 +265,8 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
+    // The image is cached under nodeHash only if the render could not have seen another state.
+    const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
     const double par = getRenderMetadata(frameArgs, args.time, args.view)->getPixelAspectRatio(-1);
 
     ////////////////////////////////////////////////////////////////////////////////////////////
@@ -461,7 +463,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     DeepImagePtr renderedImage;
     DeepImageCacheEntryPtr cacheEntry;
 
-    if (args.byPassCache || !doCacheLookup) {
+    // A frame hash the node has already left would key the new entry to a state the graph is no
+    // longer in.
+    if (args.byPassCache || !doCacheLookup || !clean.allowsStoreUnder(nodeHash)) {
         renderedImage = std::make_shared<DeepImage>(boundsToRender, args.scale, args.view);
     } else {
         DeepImageParamsPtr params = std::make_shared<DeepImageParams>(boundsToRender);
@@ -536,6 +540,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         return eRenderRoIRetCodeFailed;
     }
 
+    if (cacheEntry && !clean.allowsStoreUnder(nodeHash)) {
+        // An edit or a mark came during the render: the samples may be another state's.
+        appPTR->removeFromDeepImageCache(cacheEntry);
+        cacheEntry.reset();
+    }
     if (cacheEntry) {
         // The one point at which the cache captures this entry's byte cost, so it must happen
         // after renderDeep() has populated the sample table and the channel buffers.
@@ -610,6 +619,9 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
+    // The flattened images are cached under nodeHash only if the flatten could not have seen
+    // another state.
+    const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
 
@@ -743,6 +755,9 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         }
     };
 
+    // A frame hash the node has already left would key the new images to a state the graph is
+    // no longer in.
+    const bool createInCache = clean.allowsStoreUnder(nodeHash);
     for (std::size_t i = 0; i < distinct.size(); ++i) {
         FlattenedLayer& layer = distinct[i];
         if (!layer.needsFlatten) {
@@ -757,28 +772,32 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                                                   eImageBitDepthFloat,
                                                   renderMetadata->getOutputFielding());
         ImagePtr image;
-        const bool foundInCache = appPTR->getImageOrCreate(key, params, &image);
-        if (!image) {
-            retractCreated();
-
-            return eRenderRoIRetCodeFailed;
-        }
-        if (foundInCache) {
-            // Another render created this entry between the lookup above and here. Its bounds
-            // need not cover this request and it may still be filling in, so it is only served
-            // once complete over the RoI; flattening into it would race its owner.
-            image->allocateMemory();
-            std::list<RectI> restToRender;
-            image->getRestToRender(args.roi, restToRender);
-            if (!args.byPassCache && isSameFlattenedLayout(image->getComponents(), layer.storage) && image->getBounds().contains(args.roi) && restToRender.empty()) {
-                layer.image = image;
-                layer.needsFlatten = false;
-                continue;
-            }
+        if (!createInCache) {
             image = std::make_shared<Image>(key, params);
         } else {
-            image->allocateMemory();
-            created.push_back(image);
+            const bool foundInCache = appPTR->getImageOrCreate(key, params, &image);
+            if (!image) {
+                retractCreated();
+
+                return eRenderRoIRetCodeFailed;
+            }
+            if (!foundInCache) {
+                image->allocateMemory();
+                created.push_back(image);
+            } else {
+                // Another render created this entry between the lookup above and here. Its
+                // bounds need not cover this request and it may still be filling in, so it is
+                // only served once complete over the RoI; flattening into it would race its owner.
+                image->allocateMemory();
+                std::list<RectI> restToRender;
+                image->getRestToRender(args.roi, restToRender);
+                if (!args.byPassCache && isSameFlattenedLayout(image->getComponents(), layer.storage) && image->getBounds().contains(args.roi) && restToRender.empty()) {
+                    layer.image = image;
+                    layer.needsFlatten = false;
+                    continue;
+                }
+                image = std::make_shared<Image>(key, params);
+            }
         }
 
         DeepFlatten::FlattenTarget target;
@@ -836,6 +855,11 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         return eRenderRoIRetCodeFailed;
     }
 
+    if (!clean.allowsStoreUnder(nodeHash)) {
+        // An edit or a mark came during the flatten: the pixels may be another state's. The
+        // images stay this caller's.
+        retractCreated();
+    }
     for (std::size_t t = 0; t < targets.size(); ++t) {
         FlattenedLayer& layer = distinct[targetLayers[t]];
         layer.image = targets[t].dst;

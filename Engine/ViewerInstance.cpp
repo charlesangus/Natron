@@ -1546,6 +1546,8 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
 
         return eViewerRenderRetCodeRedraw;
     }
+    // The viewer's textures are keyed by its plain hash: a render tree's root has no context.
+    outArgs->cleanHash = std::make_shared<const CleanHashSnapshot>(getNode(), 0);
 
     int activeA, activeB;
     getActiveInputs(activeA, activeB);
@@ -2076,7 +2078,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             updateParams->deviceProcess.displayProcessor = updateParams->displayProcessor;
             updateParams->deviceStats = stats;
             updateParams->deviceCacheTiles.clear();
-            if (useTextureCache) {
+            // The tiles would be keyed by a viewer hash the upstream render may not have seen.
+            if (useTextureCache && inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash)) {
                 const std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
                 for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
                     UpdateViewerParams::DeviceCacheTile cacheTile;
@@ -2446,6 +2449,16 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             }
         } // if (singleThreaded)
 
+        // The tiles created above were cached under viewerHash before the render: an edit or a
+        // mark that came meanwhile means they may show another state, so they leave the cache,
+        // still displayed by this update.
+        if (useTextureCache && !(inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash))) {
+            for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
+                if (it->cachedData) {
+                    appPTR->removeFromViewerCache(it->cachedData);
+                }
+            }
+        }
 
         if ( colorImage && stats && stats->isInDepthProfilingEnabled() ) {
             stats->addRenderInfosForNode( getNode(), NodePtr(), colorImage->getComponents().getChannelsLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation() );

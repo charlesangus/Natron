@@ -49,6 +49,7 @@
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -389,9 +390,12 @@ NativeEffectBase::getOutputMetadata(double time,
 {
     const MetadataKey key(time, view.value());
     // The hash covers this node's knobs and everything upstream of it, and an edit only marks it
-    // dirty: reading it recomputes it, so a cache filled under another hash is stale.
+    // dirty: reading it recomputes it, so a cache filled under another hash is stale. Under a
+    // render context the node reads, the context's key is folded in, so an answer derived under one
+    // context is never served under another.
     const NodePtr node = getNode();
-    const U64 hash = node ? node->getHashValue() : 0;
+    const U64 contextKey = node ? getCurrentRenderContextKey() : 0;
+    const U64 hash = node ? mixRenderContextKey(node->getHashValue(), contextKey) : 0;
     U64 generation;
     std::map<MetadataKey, ImageMetadata> dropped;
 
@@ -411,13 +415,17 @@ NativeEffectBase::getOutputMetadata(double time,
     }
 
     // Derived with the lock released: it asks upstream nodes, which take their own locks.
+    const CleanHashSnapshot clean(node, contextKey);
     ImageMetadata derived = deriveOutputMetadata(time, view);
+    // A derive that saw an edit the hash does not reflect yet, or a state the hash left and came
+    // back to, would answer for the wrong state under it.
+    const bool storable = clean.allowsStoreUnder(hash);
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);
         // An invalidation that raced the derivation above must not be undone by storing a
         // result that may predate it.
-        if (generation == _metadataGeneration) {
+        if (storable && (generation == _metadataGeneration)) {
             if (_metadataCache.size() >= kMaxCachedMetadataFrames) {
                 _metadataCache.clear();
             }

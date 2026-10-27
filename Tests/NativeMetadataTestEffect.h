@@ -88,7 +88,16 @@ public:
         KnobIntPtr tagKnob = _tag.lock();
         ImageMetadata m;
 
+        // Taken whole, so the hook runs around one derive only, and not around a derive it causes.
+        std::function<void(bool)> hook;
+        hook.swap(_tagReadHook);
+        if (hook) {
+            hook(false);
+        }
         m.setInt("exr/tag", tagKnob ? tagKnob->getValue() : 0);
+        if (hook) {
+            hook(true);
+        }
         m.setString("exr/origin", "source");
         m.setInt("ofx/frame", static_cast<int>(time));
         m.merge(_extra, ImageMetadata::eMergePreferOther);
@@ -106,6 +115,18 @@ public:
     int derivationCount() const
     {
         return _derivations.load();
+    }
+
+    // Called by the next derive of the output metadata just before it reads the tag, with false,
+    // and just after, with true. Set and run on the thread that asks for metadata.
+    void setTagReadHook(const std::function<void(bool afterRead)>& hook)
+    {
+        _tagReadHook = hook;
+    }
+
+    KnobIntPtr getTagKnob() const
+    {
+        return _tag.lock();
     }
 
     // How often the node metadata were derived at a frame, through getPreferredMetadataAt().
@@ -252,6 +273,7 @@ private:
 
     KnobIntWPtr _tag;
     std::atomic<int> _derivations;
+    std::function<void(bool)> _tagReadHook;
     ImageMetadata _extra;
     KnobIntWPtr _nComps;
     KnobIntWPtr _bitDepth;

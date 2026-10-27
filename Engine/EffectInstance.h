@@ -390,6 +390,12 @@ public:
     RenderContextPtr getCurrentRenderContext() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief This node's context key under getCurrentRenderContext(), 0 for the empty context:
+     * the key a result derived on the calling thread is stored under, folded into the node's hash.
+     **/
+    U64 getCurrentRenderContextKey() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Keeps one more hash state of this effect's action results than the fixed count for as
      * long as the returned token lives, so that a render querying the effect under many contexts
      * keeps the results of each until it is done.
@@ -2015,6 +2021,11 @@ public:
     virtual void clearLastRenderedImage();
 
     void clearActionsCache();
+
+    /**
+     * @brief Whether the actions cache holds a frame range under hash. For tests.
+     **/
+    bool hasCachedFrameRange(U64 hash) const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using

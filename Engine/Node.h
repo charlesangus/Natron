@@ -2408,6 +2408,39 @@ public:
     ~RenderingFlagSetter();
 };
 
+/**
+ * @brief Decides whether a result derived from a node may be stored in a cache under a hash of
+ * that node. Construct it before the derive, after the cache missed, and ask allowsStoreUnder()
+ * once the result is ready. A knob stores its value before it marks the hash, and a hash can
+ * leave a state and come back to it during a derive, so a hash read once cannot vouch for what
+ * the derive saw. The store is allowed only if, in this order, the hash is clean and equal to
+ * the key, no knob content write is in flight, and the node's mark count has not moved since
+ * construction. Any write whose value either the derive or the hash could have read began before
+ * the in-flight check, so it has finished and raised its marks by then; marks raised after
+ * construction refuse the store, and marks raised before it came before the derive's reads and
+ * the hash's recompute alike. Only writes in flight at the very check refuse the store, so the
+ * settled case keeps caching while knobs of unrelated nodes are being dragged.
+ *
+ * Under a render context the key is the node's hash with its context key folded in
+ * (mixRenderContextKey()), so the hash check compares the key with the clean hash mixed with
+ * contextKey: the key of the context the result is derived and stored under, 0 for none. A key
+ * folded with another context's key, or a plain hash stored for a derive that read a context, is
+ * refused like a stale one.
+ **/
+class CleanHashSnapshot {
+public:
+    CleanHashSnapshot(const NodePtr& node,
+                      U64 contextKey);
+
+    /// False for a null node, which has no hash to store under.
+    bool allowsStoreUnder(U64 hash) const;
+
+private:
+    NodePtr _node;
+    U64 _contextKey;
+    U64 _marks;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_ENGINE_NODE_H

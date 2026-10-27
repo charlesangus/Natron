@@ -87,6 +87,7 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Decisions
 
+- 2026-10-27 — Gate green (99a0de9d4). AppImage build/appimages/Natron-m180-loop-block-core.AppImage; render benches vs main running before UAT.
 - 2026-10-27 — **Fold chain on the CPU only (bosley-native-nodes):** P2.T1 unrolls Accumulate into per-step LoopEnd tasks under `loopFold.step`, shared bit-exact fold arithmetic (LoopFold) for task-graph and legacy, loop outputs bypass the image cache, and the request pass walks context requests before inputs (so iteration memory stays within budget). GPU fold kernels moved to M259, since GPU placement keeps context tasks on the CPU (M178).
 - 2026-10-27 — **Phase 1 knob choices (bosley-native-nodes):** `loop.iteration = start + k*step`; Iterations defaults to 4; LoopEnd has a `mode` choice (Accumulate now, Single Pass in Phase 3) and a separate `operation` choice for the fold (mean, sum, min, max; over and under join in Phase 2). A knob driver wins over an expression; linear easing extrapolates outside 0..1, smooth and curve clamp; `clone()` does not copy drivers.
 - 2026-10-26: `loop.*` context variables stay plain values, never RFV bindings (M71 Phase 71.5 introduced time-resolved bindings for animated Set variables).

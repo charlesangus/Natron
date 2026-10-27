@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <vector>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KeyHelper.h"
@@ -118,6 +120,20 @@ public:
         return _textureRect;
     }
 
+    bool isDraft() const WARN_UNUSED_RETURN
+    {
+        return _draftMode;
+    }
+
+    /**
+     * @brief True if a lookup with `other` could be served by this key's texture at another frame
+     * and tile: everything but the time, the tree version, the tile and the mipmap level matches.
+     **/
+    bool hasTheDisplaySettingsOf(const FrameKey& other) const WARN_UNUSED_RETURN
+    {
+        return (_gain == other._gain) && (_gamma == other._gamma) && (_displayTransformHash == other._displayTransformHash) && (_bitDepth == other._bitDepth) && (_channels == other._channels) && (_view == other._view) && (_inputName == other._inputName) && (_layer == other._layer) && (_alphaChannelFullName == other._alphaChannelFullName) && (_useShaders == other._useShaders) && (_draftMode == other._draftMode);
+    }
+
     template<class Archive>
     void serialize(Archive & ar, const unsigned int version);
 
@@ -138,6 +154,15 @@ private:
     std::string _alphaChannelFullName; /// e.g: color.a , only used if _channels if A
     bool _useShaders; // Whether GLSL shaders are active or not
     bool _draftMode; // Whether draft mode is enabled or not
+};
+
+/**
+ * @brief What the viewer's last full-quality lookup asked of the cache: a frame is served only
+ * by textures with the display settings of `settings` covering every tile of `tiles`.
+ **/
+struct ViewerFrameFilter {
+    FrameKey settings;
+    std::vector<TextureRect> tiles;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <iostream>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -40,6 +42,7 @@
 
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "HashSweepEdits.h"
 #include "Native/RawFixtures.h"
 #include "NativeParity.h"
 
@@ -48,10 +51,13 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
@@ -70,6 +76,7 @@
 #include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_USING
 
@@ -343,6 +350,70 @@ buildChainIn(const AppInstancePtr& app,
     g->toggles.insert(g->toggles.end(), { grade, blur, transform });
     *first = grade;
     *last = transform;
+
+    return true;
+}
+
+// Two Transforms in a row, which render differently with and without concatenation.
+bool
+buildTransformPair(const AppInstancePtr& app,
+                   StressGraph* g,
+                   std::string* error)
+{
+    setFormat(app);
+    const NodeCollectionPtr root = app->getProject();
+    const int source = paritySource(app, root, g, 0, 0);
+    const int first = addNode(g, createIn(app, root, PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM));
+    const int second = addNode(g, createIn(app, root, PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM));
+
+    if ((source < 0) || (first < 0) || (second < 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    if (!connect(*g, source, first, 0) || !connect(*g, first, second, 0)) {
+        return fail(error, "could not connect the graph");
+    }
+    addKnob(g, first, kTransformNodeParamTranslate, 0, { 0.5, 1.25, -0.75 });
+    addKnob(g, first, kTransformNodeParamRotate, 0, { 7., -3. });
+    addKnob(g, second, kTransformNodeParamTranslate, 1, { 0.5, -1.5 });
+    addKnob(g, second, kTransformNodeParamScale, 0, { 0.8, 1.2 });
+    g->toggles = { first, second };
+    g->probe = second;
+    g->window = kWindow;
+
+    return true;
+}
+
+// A parity source into an AddLayers that adds the project layer "mask", then a Grade.
+bool
+buildAddLayers(const AppInstancePtr& app,
+               StressGraph* g,
+               std::string* error)
+{
+    setFormat(app);
+    const NodeCollectionPtr root = app->getProject();
+    std::string why;
+    if (app->getProject()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
+        return fail(error, "could not register the mask layer: " + why);
+    }
+    const int source = paritySource(app, root, g, 0, 0);
+    const int add = addNode(g, createIn(app, root, PLUGINID_NATRON_ADDLAYERS));
+    const int grade = addNode(g, createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE));
+
+    if ((source < 0) || (add < 0) || (grade < 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    if (!connect(*g, source, add, 0) || !connect(*g, add, grade, 0)) {
+        return fail(error, "could not connect the graph");
+    }
+    KnobChannelSetPtr layers = std::dynamic_pointer_cast<KnobChannelSet>(g->nodes[add]->getKnobByName(kAddLayersParamLayers));
+    if (!layers) {
+        return fail(error, "AddLayers has no layers knob");
+    }
+    layers->setLayer(0, "mask", NULL);
+    addKnob(g, grade, kGradeParamWhite, 0, { 1., 0.5, 2. });
+    g->toggles = { add, grade };
+    g->probe = grade;
+    g->window = kWindow;
 
     return true;
 }
@@ -707,6 +778,167 @@ TEST_F(CacheStressTest, FrameExpression)
     options.scripted.push_back(scriptedStep(eOpTime, seekPrim(2)));
     options.scripted.push_back(scriptedStep(eOpTime, seekPrim(4)));
     EXPECT_EQ(0, expectClean(getApp(), buildChain, kSeeds, options));
+}
+
+// An RGB render of a node leaves an image a later RGBA request of the same node must not serve,
+// since its alpha is not the node's. Only Legacy renders the layers asked for, so the RGB render is
+// a Legacy one; the RGBA one runs in both modes.
+TEST_F(CacheStressTest, RgbThenRgbaRequest)
+{
+    const AppInstancePtr app = getApp();
+    StressGraph g;
+    std::string error;
+    ASSERT_TRUE(buildChain(app, &g, &error)) << error;
+    const NodePtr probe = g.nodes[g.probe];
+    const std::list<ImageLayerDesc> rgb(1, ImageLayerDesc::getRGBComponents());
+
+    clearEverything(app);
+    RenderedPlane reference;
+    ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, eRenderSchedulerModeLegacy, true, &reference, &error)) << error;
+    ASSERT_EQ(4u, reference.channels.size());
+
+    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
+    for (RenderSchedulerModeEnum mode : modes) {
+        clearEverything(app);
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &planes, &error, false)) << error;
+        RenderedPlane got;
+        ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, mode, false, &got, &error)) << error;
+        EXPECT_EQ(std::string(), compareExact(reference, got)) << "mode " << (int)mode;
+    }
+}
+
+// Expressions whose results fall outside the Blur size's range render the clamped size.
+TEST_F(CacheStressTest, ExpressionOutsideRange)
+{
+    Options options = defaults();
+    options.ops |= opBit(eOpFrameExpression);
+    // Knob target 3 is the Blur's size, at least 0.
+    options.scripted.push_back(scriptedStep(eOpSetExpression, expressionPrim(3, 0, "-3")));
+    options.scripted.push_back(scriptedStep(eOpTime, seekPrim(2)));
+    options.scripted.push_back(scriptedStep(eOpFrameExpression, expressionPrim(3, 0, "frame - 4")));
+    options.scripted.push_back(scriptedStep(eOpTime, seekPrim(6)));
+    options.scripted.push_back(scriptedStep(eOpTime, seekPrim(1)));
+    EXPECT_EQ(0, expectClean(getApp(), buildChain, kSeeds, options));
+}
+
+// Transform concatenation is a render-affecting setting: toggling it re-keys every node through
+// the project digest.
+TEST_F(CacheStressTest, RenderSettingEdit)
+{
+    Options options = defaults();
+    // Knob targets of buildTransformPair: first translate.x 0, first rotate 1.
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(1, 0, 7.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, settingPrim("transformCatSupport", 0, 0.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 1.25)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, settingPrim("transformCatSupport", 0, 1.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, settingPrim("transformCatSupport", 0, 0.)));
+    EXPECT_EQ(0, expectClean(getApp(), buildTransformPair, kSeeds, options));
+    EXPECT_TRUE(appPTR->getCurrentSettings()->isTransformConcatenationEnabled());
+}
+
+// A knob that is neither persistent nor evaluate-on-change stays out of the node hash, so it must
+// not change what a node renders: after each such edit the cached render equals an empty-cache one.
+TEST_F(CacheStressTest, NonHashedKnobSweep)
+{
+    const std::vector<HashSweep::PluginVersion> plugins = HashSweep::sweptPlugins();
+    ASSERT_FALSE(plugins.empty());
+    setFormat(getApp());
+    const NodeCollectionPtr root = getApp()->getProject();
+    std::vector<std::string> failures;
+    int edits = 0;
+
+    for (std::size_t i = 0; i < plugins.size(); ++i) {
+        const HashSweep::PluginVersion& plugin = plugins[i];
+        if (plugin.isOfx) {
+            continue;
+        }
+        getApp()->getProject()->reset(false, true);
+        appPTR->clearAllCaches();
+        StressGraph g;
+        const int source = paritySource(getApp(), root, &g, 0, 0);
+        const int index = addNode(&g, createIn(getApp(), root, plugin.id, plugin.major));
+        if ((source < 0) || (index < 0)) {
+            continue;
+        }
+        const NodePtr node = g.nodes[index];
+        if (!node->getEffectInstance() || (node->getEffectInstance()->getOutputDataKind() != eDataKindImage)) {
+            continue;
+        }
+        if (node->getNInputs() > 0) {
+            node->connectInput(g.nodes[source], 0);
+        }
+        std::vector<std::pair<KnobIPtr, int>> targets;
+        const KnobsVec knobs = node->getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            if (*it && !(*it)->isRenderHashed()) {
+                for (int d = 0; d < (*it)->getDimension(); ++d) {
+                    targets.push_back(std::make_pair(*it, d));
+                }
+            }
+        }
+        if (targets.empty()) {
+            continue;
+        }
+        RenderedPlane plane;
+        std::string error;
+        if (!renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) {
+            continue;
+        }
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            const KnobIPtr& knob = targets[t].first;
+            const int dim = targets[t].second;
+            HashSweep::KnobEdit edit;
+            bool unsupported = false;
+            if (!HashSweep::staticValueSkipReason(knob, dim).empty() || !HashSweep::makeEdit(knob, dim, &edit, &unsupported).empty() || unsupported) {
+                continue;
+            }
+            const std::string label = plugin.describe() + " " + HashSweep::knobLabel(knob, dim);
+            if (!edit.apply()) {
+                continue;
+            }
+            ++edits;
+            RenderedPlane cached, reference;
+            std::string cachedError, referenceError;
+            const bool cachedOk = renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &cached, &cachedError);
+            clearEverything(getApp());
+            const bool referenceOk = renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, true, &reference, &referenceError);
+            if (referenceOk && !cachedOk) {
+                failures.push_back(label + ": the cached render failed: " + cachedError);
+            } else if (referenceOk) {
+                const std::string diff = compareExact(reference, cached);
+                if (!diff.empty()) {
+                    failures.push_back(label + ": edit " + edit.what + ": " + diff);
+                }
+            }
+            edit.revert();
+            // Refills the caches under the reverted state for the next edit.
+            (void)renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error);
+        }
+    }
+
+    std::cout << "[non-hashed sweep] " << edits << " edits" << std::endl;
+    std::string joined;
+    for (std::size_t i = 0; i < failures.size(); ++i) {
+        joined += "  " + failures[i] + "\n";
+    }
+    EXPECT_TRUE(failures.empty()) << failures.size() << " non-hashed knob(s) change the render; make each persistent or evaluate-on-change:\n"
+                                  << joined;
+}
+
+// Growing a layer AddLayers names, and adding one it does not, change the registry the node and
+// the project digest fold in.
+TEST_F(CacheStressTest, AddLayersRegistryChange)
+{
+    Options options = defaults();
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("mask", 2)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 1.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("other", 3)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    EXPECT_EQ(0, expectClean(getApp(), buildAddLayers, kSeeds, options));
 }
 
 // A whole-value expression (getValue() with no dimension) records a dimension -1 dependency that

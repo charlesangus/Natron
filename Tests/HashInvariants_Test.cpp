@@ -721,13 +721,22 @@ TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
 
 namespace {
 
-// One viewer cache tile of frame time under viewerHash at mipmapLevel, keyed the way the viewer
-// keys its textures.
-FrameEntryPtr
-cacheViewerTile(const NodePtr& holder,
-                SequenceTime time,
-                U64 viewerHash,
-                unsigned int mipmapLevel)
+// Tiles of a viewer texture differ only in their place along x here.
+struct ViewerTile {
+    int column = 0;
+    int displayChannels = 4;
+    bool draft = false;
+    std::string inputName;
+};
+
+// The key of one viewer cache tile of frame time under viewerHash at mipmapLevel, keyed the way
+// the viewer keys its textures.
+FrameKey
+viewerTileKey(const NodePtr& holder,
+              SequenceTime time,
+              U64 viewerHash,
+              unsigned int mipmapLevel,
+              const ViewerTile& tile = ViewerTile())
 {
     const SettingsPtr settings = appPTR->getCurrentSettings();
     const int tileSize = 1 << settings->getViewerTilesPowerOf2();
@@ -738,22 +747,36 @@ cacheViewerTile(const NodePtr& holder,
     channels.push_back("B");
     channels.push_back("A");
     const ImageLayerDesc layer("Color", "Color", "RGBA", channels);
-    const FrameKey key(holder.get(),
-                       time,
-                       viewerHash,
-                       1.,
-                       1.,
-                       0,
-                       bitDepth,
-                       4,
-                       ViewIdx(0),
-                       TextureRect(0, 0, tileSize, tileSize, 1 << mipmapLevel, 1.),
-                       mipmapLevel,
-                       holder->getScriptName(),
-                       layer,
-                       "Color.A",
-                       bitDepth == (int)eImageBitDepthFloat,
-                       false);
+
+    return FrameKey(holder.get(),
+                    time,
+                    viewerHash,
+                    1.,
+                    1.,
+                    0,
+                    bitDepth,
+                    tile.displayChannels,
+                    ViewIdx(0),
+                    TextureRect(tile.column * tileSize, 0, (tile.column + 1) * tileSize, tileSize, 1 << mipmapLevel, 1.),
+                    mipmapLevel,
+                    tile.inputName.empty() ? holder->getScriptName() : tile.inputName,
+                    layer,
+                    "Color.A",
+                    bitDepth == (int)eImageBitDepthFloat,
+                    tile.draft);
+}
+
+FrameEntryPtr
+cacheViewerTile(const NodePtr& holder,
+                SequenceTime time,
+                U64 viewerHash,
+                unsigned int mipmapLevel,
+                const ViewerTile& tile = ViewerTile())
+{
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    const int tileSize = 1 << settings->getViewerTilesPowerOf2();
+    const int bitDepth = (int)settings->getViewersBitDepth();
+    const FrameKey key = viewerTileKey(holder, time, viewerHash, mipmapLevel, tile);
     const RectI tileBounds(0, 0, tileSize, tileSize);
     FrameParamsPtr params(new FrameParams(tileBounds, bitDepth, tileBounds, ImagePtr()));
     FrameEntryPtr entry;
@@ -787,24 +810,81 @@ TEST_F(HashInvariantsTest, ViewerCachedFramesListTheCurrentHashAndLevelInRam)
     }
 
     std::map<SequenceTime, StorageModeEnum> frames;
-    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 0, &frames);
+    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 0, NULL, &frames);
     ASSERT_EQ(2u, frames.size()) << "only the frames of the current hash at level 0";
     ASSERT_TRUE(frames.count(3) && frames.count(5));
     EXPECT_EQ(eStorageModeRAM, frames[3]);
     EXPECT_EQ(eStorageModeRAM, frames[5]);
 
-    appPTR->getViewerCachedFrames(holder->getCacheID(), earlier, 0, &frames);
+    appPTR->getViewerCachedFrames(holder->getCacheID(), earlier, 0, NULL, &frames);
     ASSERT_EQ(1u, frames.size()) << "returning to an earlier hash lists its frames again";
     EXPECT_EQ(1u, frames.count(7));
 
-    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 1, &frames);
+    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 1, NULL, &frames);
     ASSERT_EQ(1u, frames.size());
     EXPECT_EQ(1u, frames.count(9));
 
     held.clear();
     appPTR->removeAllCacheEntriesForHolder(holder.get(), true);
-    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 0, &frames);
+    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 0, NULL, &frames);
     EXPECT_TRUE(frames.empty()) << "a cleared cache lists nothing";
 
+    project()->reset(false, true);
+}
+
+// The line counts a frame only if a lookup under the viewer's last full-quality settings would hit:
+// same display settings, not draft, and every tile of the lookup held.
+TEST_F(HashInvariantsTest, ViewerCachedFramesFollowTheLastLookup)
+{
+    NodePtr holder = createConstant();
+    ASSERT_TRUE(bool(holder));
+    const U64 hash = holder->getHashValue();
+    ViewerTile left;
+    ViewerTile right;
+    right.column = 1;
+    ViewerTile red;
+    red.displayChannels = 2;
+    ViewerTile draft;
+    draft.draft = true;
+    ViewerTile otherInput;
+    otherInput.inputName = "SomeOtherInput";
+
+    std::vector<FrameEntryPtr> held;
+    held.push_back(cacheViewerTile(holder, 1, hash, 0, left));
+    held.push_back(cacheViewerTile(holder, 1, hash, 0, right));
+    held.push_back(cacheViewerTile(holder, 2, hash, 0, left));
+    held.push_back(cacheViewerTile(holder, 3, hash, 0, red));
+    held.push_back(cacheViewerTile(holder, 3, hash, 0, ViewerTile { 1, 2, false, std::string() }));
+    held.push_back(cacheViewerTile(holder, 4, hash, 0, draft));
+    held.push_back(cacheViewerTile(holder, 4, hash, 0, ViewerTile { 1, 4, true, std::string() }));
+    held.push_back(cacheViewerTile(holder, 5, hash, 0, otherInput));
+    held.push_back(cacheViewerTile(holder, 5, hash, 0, ViewerTile { 1, 4, false, "SomeOtherInput" }));
+    for (std::size_t i = 0; i < held.size(); ++i) {
+        ASSERT_TRUE(bool(held[i])) << "tile " << i << " was cached";
+    }
+
+    ViewerFrameFilter filter;
+    filter.settings = viewerTileKey(holder, 7, hash, 0, left);
+    filter.tiles.push_back(viewerTileKey(holder, 7, hash, 0, left).getTexRect());
+    filter.tiles.push_back(viewerTileKey(holder, 7, hash, 0, right).getTexRect());
+
+    std::map<SequenceTime, StorageModeEnum> frames;
+    appPTR->getViewerCachedFrames(holder->getCacheID(), hash, 0, &filter, &frames);
+    ASSERT_EQ(1u, frames.size()) << "frame 2 lacks a tile; 3, 4 and 5 differ in channels, draft and input";
+    EXPECT_EQ(1u, frames.count(1));
+
+    filter.settings = viewerTileKey(holder, 7, hash, 0, red);
+    appPTR->getViewerCachedFrames(holder->getCacheID(), hash, 0, &filter, &frames);
+    ASSERT_EQ(1u, frames.size());
+    EXPECT_EQ(1u, frames.count(3));
+
+    filter.settings = viewerTileKey(holder, 7, hash, 0, left);
+    filter.tiles.pop_back();
+    appPTR->getViewerCachedFrames(holder->getCacheID(), hash, 0, &filter, &frames);
+    ASSERT_EQ(2u, frames.size()) << "a lookup of the left tile alone is served by frames 1 and 2";
+    EXPECT_TRUE(frames.count(1) && frames.count(2));
+
+    held.clear();
+    appPTR->removeAllCacheEntriesForHolder(holder.get(), true);
     project()->reset(false, true);
 }

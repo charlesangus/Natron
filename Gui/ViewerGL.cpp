@@ -2094,6 +2094,8 @@ ViewerGL::disconnectInputTexture(int textureIndex, bool clearRoD)
             _imp->infoViewer[textureIndex]->setDataWindow(r);
         }
     }
+    // A failed or black render uploads nothing, yet the edit behind it can leave the line stale.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 }
 
 void

@@ -77,6 +77,8 @@ enum OpKind {
     eOpMipmap, // renders at another mipmap level
     eOpRewriteFile, // rewrites a file a node reads, behind its back
     eOpReload, // presses a Read's Reload
+    eOpRename, // renames an expression source, often to another node's name plus a digit
+    eOpDynamicExpression, // as setExpression, but finds the node by a computed name the parser cannot see
     eOpCount
 };
 
@@ -154,7 +156,10 @@ enum PrimitiveKind {
     // first: the file, input: the version. Until the next Reload, a render may fail or render
     // nothing, and one that succeeds must equal the last render before the rewrite.
     ePrimRewriteFile,
-    ePrimReload
+    ePrimReload,
+    ePrimRename, // text: the new script name
+    ePrimSetting, // text: an application Settings knob, set at dim to value; scripted only
+    ePrimAddLayer // text: a project layer added, or grown, to first channels; scripted only
 };
 
 struct Primitive {
@@ -173,6 +178,7 @@ struct Primitive {
     // Expressions name nodes by script name, resolved when the primitive is applied.
     int exprSourceKnob = -1;
     int exprSourceDim = 0; // -1 reads the whole value
+    bool exprDynamic = false; // the source node and getter are found by getattr on computed names
 };
 
 struct Step {
@@ -243,6 +249,10 @@ Primitive viewerBPrim(int viewerInput);
 Primitive mipmapPrim(int level);
 Primitive rewriteFilePrim(int file, int version);
 Primitive reloadPrim(int node);
+// Each pass starts from the setting's value before the run and puts it back after.
+Primitive settingPrim(const std::string& knobName, int dim, double value);
+// The registry only grows, so this has no inverse; the next pass starts from a reset project.
+Primitive addLayerPrim(const std::string& layerID, int channels);
 Primitive expressionPrim(int knob, int dim, const std::string& text);
 Primitive dimensionExpressionPrim(int knob, int dim, int sourceKnob, int sourceDim);
 

@@ -44,6 +44,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Project.h"
 
@@ -338,4 +339,53 @@ TEST_F(QueuedInputEditTest, ARenderStartingAfterTheWriteReadsTheNewHash)
     releaseOnAWorker(&flag);
     QCoreApplication::processEvents();
     EXPECT_EQ(g.b, grade->getInput(0));
+}
+
+// Removing a GroupInput shrinks the group's inputs at once; the next dequeue, which a render's
+// end asks for, must not bring the removed input back.
+TEST_F(QueuedInputEditTest, ARemovedGroupInputStaysRemovedAfterTheDequeue)
+{
+    const AppInstancePtr app = getApp();
+    const NodeCollectionPtr root = app->getProject();
+    const NodePtr a = createConstantIn(app, root, kWindow, { 0.5, 0.25, 0.125, 1. });
+    const NodePtr b = createConstantIn(app, root, kWindow, { 0.125, 0.75, 0.5, 1. });
+    const NodePtr groupNode = createEmptyGroupIn(app, root);
+    ASSERT_TRUE(bool(a) && bool(b) && bool(groupNode));
+    const NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    const NodePtr in1 = createIn(app, group, PLUGINID_NATRON_INPUT);
+    const NodePtr in2 = createIn(app, group, PLUGINID_NATRON_INPUT);
+    const NodePtr out = createIn(app, group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(bool(in1) && bool(in2) && bool(out));
+    ASSERT_TRUE(out->connectInput(in1, 0));
+    ASSERT_EQ(2, group->getNInputs());
+    ASSERT_TRUE(groupNode->connectInput(a, 0));
+    ASSERT_TRUE(groupNode->connectInput(b, 1));
+    const U64 hashWith = groupNode->getHashValue();
+
+    in2->deactivate();
+    EXPECT_EQ(1, group->getNInputs());
+    EXPECT_EQ(1u, groupNode->getInputs().size());
+    const U64 hashWithout = groupNode->getHashValue();
+    EXPECT_NE(hashWith, hashWithout);
+
+    groupNode->dequeueActions();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(1, group->getNInputs());
+    EXPECT_EQ(1u, groupNode->getInputs().size());
+    std::vector<NodePtr> inputs;
+    group->getInputs(&inputs, false);
+    ASSERT_EQ(1u, inputs.size());
+    EXPECT_EQ(in1, inputs[0]);
+    inputs.clear();
+    group->getInputs(&inputs, true);
+    ASSERT_EQ(1u, inputs.size());
+    EXPECT_EQ(in1, inputs[0]);
+    EXPECT_EQ(a, groupNode->getInput(0));
+    EXPECT_EQ(hashWithout, groupNode->getHashValue());
+
+    in2->activate();
+    EXPECT_EQ(2, group->getNInputs());
+    groupNode->dequeueActions();
+    EXPECT_EQ(2, group->getNInputs());
 }

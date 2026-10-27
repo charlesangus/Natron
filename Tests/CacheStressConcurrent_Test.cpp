@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -634,6 +635,134 @@ inputChangedRound(const AppInstancePtr& app,
 
     return std::string();
 }
+
+struct TwoInputGroup {
+    NodePtr a;
+    NodePtr b;
+    NodePtr group;
+    NodePtr in1;
+    NodePtr in2;
+    NodePtr grade; // the probe, after the group
+};
+
+// a and b feed a group whose Merge puts its second input over its first.
+bool
+buildTwoInputGroup(const AppInstancePtr& app,
+                   const std::vector<double>& colorA,
+                   const std::vector<double>& colorB,
+                   TwoInputGroup* g,
+                   std::string* error)
+{
+    app->getProject()->reset(false, true);
+    clearEverything(app);
+    const NodeCollectionPtr root = app->getProject();
+    g->a = createConstantIn(app, root, kWindow, colorA);
+    g->b = createConstantIn(app, root, kWindow, colorB);
+    g->group = createEmptyGroupIn(app, root);
+    g->grade = createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    const NodeCollectionPtr inside = g->group ? std::dynamic_pointer_cast<NodeCollection>(g->group->getEffectInstance()) : NodeCollectionPtr();
+    if (!g->a || !g->b || !inside || !g->grade) {
+        *error = "could not create the nodes";
+
+        return false;
+    }
+    g->in1 = createIn(app, inside, PLUGINID_NATRON_INPUT);
+    g->in2 = createIn(app, inside, PLUGINID_NATRON_INPUT);
+    const NodePtr merge = createIn(app, inside, PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    const NodePtr out = createIn(app, inside, PLUGINID_NATRON_OUTPUT);
+    if (!g->in1 || !g->in2 || !merge || !out) {
+        *error = "could not create the group's nodes";
+
+        return false;
+    }
+    if (!merge->connectInput(g->in1, kNativeMergeInputB) || !merge->connectInput(g->in2, NativeMerge::aInput(0)) || !out->connectInput(merge, 0)
+        || !g->group->connectInput(g->a, 0) || !g->group->connectInput(g->b, 1) || !g->grade->connectInput(g->group, 0)) {
+        *error = "could not connect the group";
+
+        return false;
+    }
+
+    return true;
+}
+
+// One round: references with and without the group's second input, then from cold caches the
+// input is removed, a cached render runs, the dequeue a render's end asks for runs, and the
+// input is put back; every cached render must match its reference.
+std::string
+groupInputRound(const AppInstancePtr& app,
+                const TwoInputGroup& g)
+{
+    std::string error;
+    RenderedPlane refWith;
+    RenderedPlane refWithout;
+    NodeGroup* group = dynamic_cast<NodeGroup*>(g.group->getEffectInstance().get());
+
+    if (!group) {
+        return "the group is not a NodeGroup";
+    }
+    const auto remove = [&]() {
+        g.in2->deactivate();
+    };
+    const auto restore = [&]() -> bool {
+        g.in2->activate();
+
+        return g.group->connectInput(g.b, 1);
+    };
+    clearEverything(app);
+    if (!renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWith, &error)) {
+        return "the reference with both inputs failed: " + error;
+    }
+    remove();
+    clearEverything(app);
+    const bool withoutOk = renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWithout, &error);
+    if (!restore()) {
+        return "could not restore the second input";
+    }
+    if (!withoutOk) {
+        return "the reference without the second input failed: " + error;
+    }
+    if (compareExact(refWith, refWithout).empty()) {
+        return "the second input changes nothing";
+    }
+
+    clearEverything(app);
+    dequeueAll(app);
+    for (int m = 0; m < 2; ++m) {
+        const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+        const std::string modeName = (m == 0) ? "legacy" : "task graph";
+        RenderedPlane got;
+        if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+            return modeName + ", both inputs: the cached render failed: " + error;
+        }
+        std::string diff = compareExact(refWith, got);
+        if (!diff.empty()) {
+            return modeName + ", both inputs: " + diff;
+        }
+        remove();
+        for (int pass = 0; pass < 2; ++pass) {
+            if (group->getNInputs() != 1) {
+                return modeName + ": the removed input came back after the dequeue";
+            }
+            if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+                return modeName + ", input removed: the cached render failed: " + error;
+            }
+            diff = compareExact(refWithout, got);
+            if (!diff.empty()) {
+                return modeName + ", input removed" + (pass ? " and dequeued: " : ": ") + diff;
+            }
+            dequeueAll(app);
+        }
+        if (!restore()) {
+            return "could not restore the second input";
+        }
+        dequeueAll(app);
+        if (group->getNInputs() != 2) {
+            return modeName + ": the restored input is missing after the dequeue";
+        }
+    }
+
+    return std::string();
+} // groupInputRound
 } // namespace
 
 class CacheStressConcurrentTest
@@ -737,9 +866,10 @@ TEST_F(CacheStressConcurrentTest, OnInputChangedUnderTheNewHash)
     }
 }
 
-// A render thread reads the viewer hash at the moment the A/B switch marks it: the mark comes
-// after the active inputs change, so the hash it recomputes, and the one the viewer keeps, name
-// the input now shown.
+// A render thread reads the viewer hash at the moment the A/B switch marks it. The mark comes
+// from refreshActiveInputs(), after the active inputs change and before the rest of the viewer's
+// onInputChanged() runs, so the hash read there, and the one the viewer keeps, name the input now
+// shown.
 TEST_F(CacheStressConcurrentTest, ViewerABSwitchDuringRender)
 {
     const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
@@ -779,6 +909,7 @@ TEST_F(CacheStressConcurrentTest, ViewerABSwitchDuringRender)
             std::mutex m;
             std::condition_variable cv;
             bool read = false;
+            U64 readHash = 0;
             std::atomic<bool> armed(true);
             std::thread worker;
             Node::setHashMarkTraceForTesting([&](const Node* node,
@@ -788,9 +919,10 @@ TEST_F(CacheStressConcurrentTest, ViewerABSwitchDuringRender)
                     return;
                 }
                 worker = std::thread([&]() {
-                    (void)viewerNode->getHashValue();
+                    const U64 h = viewerNode->getHashValue();
                     {
                         std::lock_guard<std::mutex> l(m);
+                        readHash = h;
                         read = true;
                     }
                     cv.notify_all();
@@ -809,10 +941,52 @@ TEST_F(CacheStressConcurrentTest, ViewerABSwitchDuringRender)
             int activeA = -1, activeB = -1;
             viewer->getActiveInputs(activeA, activeB);
             ASSERT_EQ(next, activeB);
+            if (armed) {
+                ADD_FAILURE() << "round " << r << ": the A/B switch did not mark the viewer";
+                break;
+            }
+            bool wasRead;
+            {
+                std::lock_guard<std::mutex> l(m);
+                wasRead = read;
+            }
+            if (wasRead && (readHash != hashOfB[next])) {
+                ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r
+                              << ": a hash read at the mark names another input than the one now shown\nswitch log:\n"
+                              << log.str();
+                break;
+            }
             if (viewerNode->getHashValue() != hashOfB[next]) {
                 ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r
                               << ": the viewer shows input " << next << " under another hash than that input's\nswitch log:\n"
                               << log.str();
+                break;
+            }
+        }
+    }
+}
+
+// Removing a GroupInput updates the group's input lists at once; the dequeue that follows a
+// render must keep it removed, or the group would read through an input it no longer has.
+TEST_F(CacheStressConcurrentTest, GroupInputRemovedThenDequeued)
+{
+    const std::vector<std::uint32_t> seeds = seedsToRun(kSeeds);
+    const int rounds = stepBudget(kRounds);
+
+    for (std::size_t s = 0; s < seeds.size(); ++s) {
+        std::mt19937 rng(seeds[s]);
+        for (int r = 0; r < rounds; ++r) {
+            const auto channel = [&rng]() { return 0.1 + 0.1 * (double)(rng() % 8); };
+            const std::vector<double> colorA = { channel(), channel(), channel(), 1. };
+            // Brighter than colorA times its alpha in every channel, so the over always shows.
+            const auto bright = [&rng]() { return 0.75 + 0.05 * (double)(rng() % 4); };
+            const std::vector<double> colorB = { bright(), bright(), bright(), 0.5 + 0.1 * (double)(rng() % 5) };
+            TwoInputGroup g;
+            std::string error;
+            ASSERT_TRUE(buildTwoInputGroup(getApp(), colorA, colorB, &g, &error)) << error;
+            const std::string mismatch = groupInputRound(getApp(), g);
+            if (!mismatch.empty()) {
+                ADD_FAILURE() << "cache stress: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << ": " << mismatch;
                 break;
             }
         }

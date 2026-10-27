@@ -52,6 +52,7 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -75,6 +76,13 @@ namespace {
         unsigned mipmap = 0;
         // A file was rewritten and no Reload has happened since.
         bool stale = false;
+        // The Settings knob dimensions a step set, with their values before the first such step.
+        std::map<std::pair<std::string, int>, double> settings;
+
+        Runtime() = default;
+        Runtime(const Runtime&) = delete;
+        Runtime& operator=(const Runtime&) = delete;
+        ~Runtime();
     };
 
     double
@@ -111,6 +119,20 @@ namespace {
         }
 
         return true;
+    }
+
+    Runtime::~Runtime()
+    {
+        if (settings.empty() || !appPTR) {
+            return;
+        }
+        SettingsPtr current = appPTR->getCurrentSettings();
+        for (std::map<std::pair<std::string, int>, double>::const_iterator it = settings.begin(); it != settings.end(); ++it) {
+            KnobIPtr knob = current ? current->getKnobByName(it->first.first) : KnobIPtr();
+            if (knob) {
+                knobSetValue(knob, it->first.second, it->second);
+            }
+        }
     }
 
     bool
@@ -255,6 +277,14 @@ namespace {
         }
         const KnobTarget& src = rt.graph.knobs[p.exprSourceKnob];
         std::ostringstream os;
+        if (p.exprDynamic) {
+            const std::string name = nodeName(rt, src.node);
+            const std::size_t half = name.size() / 2;
+            os << "getattr(getattr(thisGroup, \"" << name.substr(0, half) << "\" + \"" << name.substr(half) << "\")." << src.name
+               << ", \"get\" + \"Value\")(" << std::max(0, p.exprSourceDim) << ")";
+
+            return os.str();
+        }
         os << nodeName(rt, src.node) << "." << src.name << ".getValue(";
         if (p.exprSourceDim >= 0) {
             os << p.exprSourceDim;
@@ -326,6 +356,15 @@ namespace {
             break;
         case ePrimReload:
             os << "reload " << nodeName(rt, p.node);
+            break;
+        case ePrimRename:
+            os << "rename " << nodeName(rt, p.node) << " -> " << p.text;
+            break;
+        case ePrimSetting:
+            os << "setting " << p.text << "[" << p.dim << "] = " << p.value;
+            break;
+        case ePrimAddLayer:
+            os << "addLayer " << p.text << " with " << p.first << " channels";
             break;
         }
 
@@ -457,8 +496,24 @@ namespace {
         }
         case ePrimRewriteFile:
         case ePrimReload:
-            // Scripted only: a file's past versions are not undone.
+        case ePrimAddLayer:
+            // Scripted only: a file's past versions and a grown registry are not undone.
             break;
+        case ePrimRename: {
+            Primitive q = p;
+            q.text = nodeName(rt, p.node);
+            inverse->push_back(q);
+            break;
+        }
+        case ePrimSetting: {
+            KnobIPtr knob = appPTR->getCurrentSettings()->getKnobByName(p.text);
+            if (knob) {
+                Primitive q = p;
+                q.value = knobValueAt(knob, p.dim, currentTime(rt));
+                inverse->push_back(q);
+            }
+            break;
+        }
         } // switch
     } // captureInverse
 
@@ -630,6 +685,59 @@ namespace {
             }
             reload->trigger();
             rt.stale = false;
+
+            return true;
+        }
+        case ePrimRename: {
+            const NodePtr& node = rt.graph.nodes[p.node];
+            try {
+                node->setScriptName(p.text);
+            } catch (const std::exception& e) {
+                *error = std::string("setScriptName threw: ") + e.what();
+
+                return false;
+            }
+            if (node->getScriptName() != p.text) {
+                *error = "the node was named " + node->getScriptName();
+
+                return false;
+            }
+
+            return true;
+        }
+        case ePrimSetting: {
+            KnobIPtr knob = appPTR->getCurrentSettings()->getKnobByName(p.text);
+            if (!knob || (p.dim >= knob->getDimension())) {
+                *error = "Settings has no knob " + p.text + " of that dimension";
+
+                return false;
+            }
+            const std::pair<std::string, int> key(p.text, p.dim);
+            if (rt.settings.find(key) == rt.settings.end()) {
+                rt.settings[key] = knobValueAt(knob, p.dim, currentTime(rt));
+            }
+            if (!knobSetValue(knob, p.dim, p.value)) {
+                *error = "the setting takes no number";
+
+                return false;
+            }
+
+            return true;
+        }
+        case ePrimAddLayer: {
+            static const char* const kChannels[] = { "A", "B", "C", "D" };
+            if ((p.first < 1) || (p.first > 4)) {
+                *error = "a layer has 1 to 4 channels";
+
+                return false;
+            }
+            const std::vector<std::string> channels(kChannels, kChannels + p.first);
+            std::string why;
+            if (rt.app->getProject()->addLayer(ImageLayerDesc(p.text, p.text, "", channels), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
+                *error = "the registry refused the layer: " + why;
+
+                return false;
+            }
 
             return true;
         }
@@ -858,15 +966,17 @@ namespace {
             return true;
         }
         case eOpSetExpression:
+        case eOpDynamicExpression:
         case eOpWholeValueExpression: {
+            const bool readsADimension = kind != eOpWholeValueExpression;
             std::vector<std::pair<int, int>> pairs;
             for (std::size_t i = 0; i < g.exprTargets.size(); ++i) {
                 const int t = g.exprTargets[i];
                 if (knobHasExpression(rt, t, g.knobs[t].dim) || isLinked(rt, t)) {
                     continue;
                 }
-                const std::vector<int>& sources = (kind == eOpSetExpression) ? std::vector<int>() : g.wholeValueSources;
-                if (kind == eOpSetExpression) {
+                const std::vector<int>& sources = readsADimension ? std::vector<int>() : g.wholeValueSources;
+                if (readsADimension) {
                     for (std::size_t s = 0; s < g.knobs.size(); ++s) {
                         if (((int)s != t) && !g.knobs[s].animatable && (g.knobs[s].node != g.knobs[t].node) && sameCollection(rt, g.knobs[s].node, g.knobs[t].node) && !knobHasExpressionAnywhere(rt.knobs[s]) && !knobIsAnimatedAnywhere(rt.knobs[s])) {
                             pairs.push_back(std::make_pair(t, (int)s));
@@ -885,8 +995,9 @@ namespace {
                 return false;
             }
             const std::pair<int, int>& pick = pairs[rng.pick((int)pairs.size())];
-            const int sourceDim = (kind == eOpSetExpression) ? g.knobs[pick.second].dim : -1;
+            const int sourceDim = readsADimension ? g.knobs[pick.second].dim : -1;
             step->prims.push_back(dimensionExpressionPrim(pick.first, g.knobs[pick.first].dim, pick.second, sourceDim));
+            step->prims.back().exprDynamic = kind == eOpDynamicExpression;
 
             return true;
         }
@@ -1037,6 +1148,34 @@ namespace {
             step->prims.push_back(mipmapPrim(rt.mipmap == 0 ? 1 : 0));
 
             return true;
+        case eOpRename: {
+            std::vector<int> sources;
+            for (std::map<std::pair<int, int>, Primitive>::const_iterator it = rt.expressions.begin(); it != rt.expressions.end(); ++it) {
+                if (it->second.exprSourceKnob >= 0) {
+                    const int node = g.knobs[it->second.exprSourceKnob].node;
+                    if (std::find(sources.begin(), sources.end(), node) == sources.end()) {
+                        sources.push_back(node);
+                    }
+                }
+            }
+            if (sources.empty()) {
+                return false;
+            }
+            Primitive p;
+            p.kind = ePrimRename;
+            p.node = sources[rng.pick((int)sources.size())];
+            // Another node's name plus a digit makes one name a prefix of another, which a rename
+            // must not confuse.
+            const NodeCollectionPtr collection = g.nodes[p.node]->getGroup();
+            std::string name = nodeName(rt, rng.pick((int)g.nodes.size())) + std::to_string(rng.pick(10));
+            while (collection && collection->checkIfNodeNameExists(name, 0)) {
+                name += std::to_string(rng.pick(10));
+            }
+            p.text = name;
+            step->prims.push_back(p);
+
+            return true;
+        }
         case eOpRewriteFile:
         case eOpReload:
         case eOpCount:
@@ -1281,6 +1420,10 @@ opName(OpKind kind)
         return "rewriteFile";
     case eOpReload:
         return "reload";
+    case eOpRename:
+        return "rename";
+    case eOpDynamicExpression:
+        return "dynamicExpression";
     case eOpCount:
         break;
     }
@@ -1360,6 +1503,34 @@ reloadPrim(int node)
 
     p.kind = ePrimReload;
     p.node = node;
+
+    return p;
+}
+
+Primitive
+addLayerPrim(const std::string& layerID,
+             int channels)
+{
+    Primitive p;
+
+    p.kind = ePrimAddLayer;
+    p.text = layerID;
+    p.first = channels;
+
+    return p;
+}
+
+Primitive
+settingPrim(const std::string& knobName,
+            int dim,
+            double value)
+{
+    Primitive p;
+
+    p.kind = ePrimSetting;
+    p.text = knobName;
+    p.dim = dim;
+    p.value = value;
 
     return p;
 }

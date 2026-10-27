@@ -437,7 +437,12 @@ Knob<T>::evaluateExpression(double time,
 
     ///Reset the random state to reproduce the sequence
     randomSeed( time, hashFunction(dimension) );
-    bool exprOk = executeExpression(time, view, dimension, &ret, error);
+    bool exprOk;
+    {
+        ExpressionReadRecorder reads(this);
+        exprOk = executeExpression(time, view, dimension, &ret, error);
+        registerExpressionReads(dimension, reads.getReads(), true);
+    }
     if (!exprOk) {
         return false;
     }
@@ -459,7 +464,12 @@ Knob<T>::evaluateExpression_pod(double time,
 
     ///Reset the random state to reproduce the sequence
     randomSeed( time, hashFunction(dimension) );
-    bool exprOk = executeExpression(time, view, dimension, &ret, error);
+    bool exprOk;
+    {
+        ExpressionReadRecorder reads(this);
+        exprOk = executeExpression(time, view, dimension, &ret, error);
+        registerExpressionReads(dimension, reads.getReads(), true);
+    }
     if (!exprOk) {
         return false;
     }
@@ -506,14 +516,14 @@ Knob<T>::getValueFromExpression(double time,
         if (byContext) {
             typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
             if (found != _exprCtxRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
         } else {
             typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
             if (found != _exprRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
@@ -540,18 +550,20 @@ Knob<T>::getValueFromExpression(double time,
         }
     }
 
+    // Stored unclamped: the same result serves clamped and unclamped reads.
+    {
+        const bool bindingsCurrent = bindings.isCurrent();
+        QMutexLocker k(&_valueMutex);
+        if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
+            if (byContext) {
+                _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+            } else {
+                _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
+            }
+        }
+    }
     if (clamp) {
         *ret =  clampToMinMax(*ret, dimension);
-    }
-
-    const bool bindingsCurrent = bindings.isCurrent();
-    QMutexLocker k(&_valueMutex);
-    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
-        if (byContext) {
-            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
-        } else {
-            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
-        }
     }
 
     return true;
@@ -618,14 +630,14 @@ Knob<T>::getValueFromExpression_pod(double time,
         if (byContext) {
             typename ContextValueMap::iterator found = _exprCtxRes[dimension].find(contextResultKey);
             if (found != _exprCtxRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
         } else {
             typename FrameValueMap::iterator found = _exprRes[dimension].find(std::make_pair(time, (int)view));
             if (found != _exprRes[dimension].end()) {
-                *ret = found->second;
+                *ret = clamp ? clampToMinMax(found->second, dimension) : found->second;
 
                 return true;
             }
@@ -652,18 +664,20 @@ Knob<T>::getValueFromExpression_pod(double time,
         }
     }
 
+    // Stored unclamped: the same result serves clamped and unclamped reads.
+    {
+        const bool bindingsCurrent = bindings.isCurrent();
+        QMutexLocker k(&_valueMutex);
+        if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
+            if (byContext) {
+                _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
+            } else {
+                _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
+            }
+        }
+    }
     if (clamp) {
         *ret =  clampToMinMax(*ret, dimension);
-    }
-
-    const bool bindingsCurrent = bindings.isCurrent();
-    QMutexLocker k(&_valueMutex);
-    if ((_exprResGenerations[dimension] == generation) && bindingsCurrent) {
-        if (byContext) {
-            _exprCtxRes[dimension].insert(std::make_pair(contextResultKey, *ret));
-        } else {
-            _exprRes[dimension].insert(std::make_pair(std::make_pair(time, (int)view), *ret));
-        }
     }
 
     return true;
@@ -754,6 +768,7 @@ Knob<T>::getValue(int dimension,
                   bool clamp)
 {
     assert( !view.isAll() );
+    ExpressionReadRecorder::record(this, dimension);
     bool useGuiValues = QThread::currentThread() == qApp->thread();
 
 #ifdef DEBUG
@@ -881,6 +896,7 @@ Knob<T>::getValueAtTime(double time,
                         bool byPassMaster)
 {
     assert( !view.isAll() );
+    ExpressionReadRecorder::record(this, dimension);
     if  ( ( dimension >= (int)_values.size() ) || (dimension < 0) ) {
         return T();
     }

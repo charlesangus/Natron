@@ -49,6 +49,7 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/ImageLayerDesc.h"
@@ -500,6 +501,46 @@ TEST_F(BaseTest, ReadKeepsAFileOverwrittenInPlaceUntilReload)
     EXPECT_EQ(before, reader->getHashValue());
     ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));
     EXPECT_FLOAT_EQ(0.25f, red);
+
+    pressReload(reader);
+    EXPECT_NE(before, reader->getHashValue());
+    ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));
+    EXPECT_FLOAT_EQ(0.75f, red);
+}
+
+// Clear All Caches drops what the Read decoded but not the stamp it loaded the file under: a
+// file changed since then fails to render, as it would have before the clear, until Reload.
+TEST_F(BaseTest, ClearAllCachesDoesNotReloadAChangedFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("cleared.exr")).toStdString();
+    const int width = 16;
+    const int height = 12;
+    ASSERT_TRUE(writeFlatExr(path, width, height, 0.25f));
+    setMTime(path, 1000000);
+
+    NodePtr reader = createWorkingSpaceRead(path);
+    ASSERT_TRUE(bool(reader));
+    float red = 0.f;
+    ASSERT_TRUE(renderedRed(reader, 1., width, height, &red));
+    EXPECT_FLOAT_EQ(0.25f, red);
+    const U64 before = reader->getHashValue();
+
+    ASSERT_TRUE(writeFlatExr(path, width, height, 0.75f));
+    setMTime(path, 2000000);
+    appPTR->clearAllCaches();
+    EXPECT_EQ(before, reader->getHashValue());
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool rendered = renderNodePlanesDirect(reader, 1., ViewIdx(0), 0, RectI(0, 0, width, height), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, false);
+        // It fails, or renders nothing; it never shows the changed file.
+        EXPECT_FALSE(rendered && (planes.size() == 1) && !planes[0].pixels.empty() && (planes[0].pixels[0] != 0.f))
+            << "the cleared Read rendered from the changed file without Reload";
+        EXPECT_EQ(before, reader->getHashValue());
+    }
 
     pressReload(reader);
     EXPECT_NE(before, reader->getHashValue());

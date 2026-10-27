@@ -97,6 +97,7 @@ public:
      * them in place.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void purgeCachesKeepingFileStamps() OVERRIDE FINAL;
 
 private:
     struct Implementation;

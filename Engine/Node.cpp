@@ -1600,6 +1600,12 @@ CleanHashSnapshot::allowsStoreUnder(U64 hash) const
     // The hash check comes first: a recompute it relies on may have read a value whose write
     // has not marked yet, and that write began before the in-flight check below.
     U64 current = 0;
+    if (!_node->getHashValueIfUpToDate(&current) && (hashComputeDepth == 0) && (_node->getHashMarkCount() == _marks)) {
+        // Marked before construction and recomputed by no one since, as when the state moved and
+        // came back between a frame's setup and its render. With a mark raised since, the store
+        // is refused whatever the hash, so an edit in progress costs no recompute.
+        (void)_node->getHashValue();
+    }
     if (!_node->getHashValueIfUpToDate(&current) || (mixRenderContextKey(current, _contextKey) != hash)) {
         return false;
     }

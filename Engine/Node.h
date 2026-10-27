@@ -2426,7 +2426,8 @@ public:
  * construction. Any write whose value either the derive or the hash could have read began before
  * the in-flight check, so it has finished and raised its marks by then; marks raised after
  * construction refuse the store, and marks raised before it came before the derive's reads and
- * the hash's recompute alike. Only writes in flight at the very check refuse the store, so the
+ * the hash's recompute alike, so a hash left dirty since before construction is recomputed at the
+ * check when no mark has been raised since. Only writes in flight at the very check refuse the store, so the
  * settled case keeps caching while knobs of unrelated nodes are being dragged.
  *
  * Under a render context the key is the node's hash with its context key folded in

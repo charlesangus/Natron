@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 NATRON_NAMESPACE_ENTER
@@ -543,10 +545,21 @@ gpuStripPipelining()
 }
 
 bool
+gpuSerialCopies()
+{
+    static const bool serial = [] {
+        const char* env = std::getenv("NATRON_GPU_SERIAL_COPIES");
+        return env && (std::strcmp(env, "1") == 0);
+    }();
+
+    return serial;
+}
+
+bool
 gpuStripPipeliningAllowed(bool pushDescriptor,
                           bool transferSharesComputeQueue)
 {
-    if (!pushDescriptor) {
+    if (!pushDescriptor || gpuSerialCopies()) {
         return false;
     }
     switch (gpuStripPipelining()) {

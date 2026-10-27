@@ -230,7 +230,13 @@ void setGpuStripPipeliningForTests(GpuStripPipelining mode);
 GpuStripPipelining gpuStripPipelining();
 
 /**
- * @brief Whether a device may run a region's strips pipelined, under gpuStripPipelining(). Every strip in flight
+ * @brief Whether NATRON_GPU_SERIAL_COPIES=1 asks every region to keep its copies off the device while its kernels run:
+ * no pipelined strips, and in a region run whole each segment waits for the downloads of the one before.
+ **/
+bool gpuSerialCopies();
+
+/**
+ * @brief Whether a device may run a region's strips pipelined, under gpuStripPipelining() and gpuSerialCopies(). Every strip in flight
  * holds an open record context, and without push descriptors the kernels' descriptor pools are reset only once no
  * context is open, which a pipeline would never let happen.
  **/

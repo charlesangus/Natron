@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string_view>
 
 namespace gpu {
@@ -193,9 +194,40 @@ namespace {
         return v && std::strcmp(v, "1") == 0;
     }
 
+    // RADV exposes its SDMA engines as a transfer-only queue family only under RADV_PERFTEST=transfer_queue, which it
+    // reads as each instance is created; the queue selection below then prefers that family on its own.
+    void requestTransferOnlyFamily()
+    {
+#ifndef _WIN32
+        static std::once_flag once;
+        std::call_once(once, [] {
+            if (!envFlag("NATRON_GPU_TRANSFER_QUEUE")) {
+                return;
+            }
+            static const std::string_view kFlag = "transfer_queue";
+            const char* current = std::getenv("RADV_PERFTEST");
+            std::string value = current ? current : "";
+            std::string_view rest = value;
+            while (!rest.empty()) {
+                const size_t comma = rest.find(',');
+                if (rest.substr(0, comma) == kFlag) {
+                    return;
+                }
+                rest = (comma == std::string_view::npos) ? std::string_view() : rest.substr(comma + 1);
+            }
+            if (!value.empty()) {
+                value += ',';
+            }
+            value += kFlag;
+            setenv("RADV_PERFTEST", value.c_str(), 1);
+        });
+#endif
+    }
+
     GpuStatus createInstance(bool wantValidation, const GpuDebugMessageFn& debug, VkInstance& inst,
                              bool& validationOn, bool& messengerOn)
     {
+        requestTransferOnlyFamily();
         VkApplicationInfo app { VK_STRUCTURE_TYPE_APPLICATION_INFO };
         app.pApplicationName = "natron-gpu";
         app.apiVersion = VK_API_VERSION_1_3;

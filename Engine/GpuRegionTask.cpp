@@ -1601,12 +1601,16 @@ private:
         }
     }
 
-    // Each download waits on the device for the segment that released its range to the transfer queue.
-    bool issueDownloads()
+    // Each download waits on the device for the segment that released its range to the transfer queue. A segment of
+    // -1 issues every download not yet issued, any other only those that segment releases.
+    bool issueDownloads(int onlySegment = -1)
     {
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
             if (!slot.download || slot.downloadIssued || slot.pinned) {
+                continue;
+            }
+            if ((onlySegment >= 0) && (slot.downloadSegment != onlySegment)) {
                 continue;
             }
             slot.downloadIssued = true;
@@ -1871,8 +1875,11 @@ private:
             return false;
         }
         _busy.release();
+        const bool serialCopies = gpuSerialCopies();
         gpu::TimelineValue previous;
-        for (Segment& segment : _segments) {
+        std::vector<gpu::TimelineValue> downloadsBefore;
+        for (std::size_t k = 0; k < _segments.size(); ++k) {
+            Segment& segment = _segments[k];
             if (segment.members.empty() && (segment.handoffs == 0)) {
                 continue;
             }
@@ -1882,6 +1889,8 @@ private:
             } else {
                 waits = _uploadsDone;
             }
+            waits.insert(waits.end(), downloadsBefore.begin(), downloadsBefore.end());
+            downloadsBefore.clear();
             segment.done = gpu::TimelineValue { _computeTimeline, ++_computeValue };
             const gpu::GpuStatus status = _runtime.note(segment.recorder->submit(waits, segment.done));
             if (!status) {
@@ -1889,6 +1898,16 @@ private:
             }
             segment.submitted = true;
             previous = segment.done;
+            if (serialCopies) {
+                if (!issueDownloads((int)k)) {
+                    return false;
+                }
+                for (const Slot& slot : _slots) {
+                    if (slot.downloadIssued && !slot.pinned && (slot.downloadSegment == (int)k) && slot.downloadDone) {
+                        downloadsBefore.push_back(slot.downloadDone);
+                    }
+                }
+            }
         }
 
         return true;

@@ -659,7 +659,7 @@ TEST_F(BaseTest, DeclaredInputBoundLayerKnobIsReferencedAndFollowsInputRebind)
 
     project->reset(false, true);
 
-    NodePtr merge = createNode(QString::fromUtf8("net.sf.openfx.MergePlugin"));
+    NodePtr merge = createNode(QString::fromUtf8("Merge"));
     ASSERT_TRUE(bool(merge));
 
     KnobLayerSelectPtr userLayer = merge->getEffectInstance()->createLayerSelectKnob("userLayer", "User Layer", false);

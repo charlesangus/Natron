@@ -97,6 +97,7 @@ struct FrameGraph {
         // would wait inside renderRoI for this one: one at another time when the key has no time, or one at another
         // mipmap level that renderRoI maps to the same level.
         bool sharesCachedOutput = false;
+        // The request's hash, which includes the task's context key.
         U64 nodeHash = 0;
         bool cacheKeyHasTime = false;
 
@@ -496,6 +497,8 @@ private:
 
     typedef std::vector<ReadyRef> ReadyHeap;
 
+    // Needs no context key of its own: the node hash is the one the request pass mixed the task's
+    // context key into, so tasks under different contexts never share a cached output.
     typedef std::tuple<const Node*, U64, int, unsigned int, bool, double> SharedOutputKey;
 
     static SharedOutputKey sharedOutputKeyOf(const FrameGraph::Task& task);

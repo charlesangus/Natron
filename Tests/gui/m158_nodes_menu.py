@@ -57,7 +57,7 @@ NAMED_ORDER = ["Image", "Draw", "Time", "Channel", "Color", "Filter", "Keyer", "
                "Deep", "Metadata", "Views", "ToolSets", "Other", "Misc"]
 DEFAULT_GROUPING = "Misc"
 MERGE_GROUPING = "Merge"
-MERGE_ID = "net.sf.openfx.MergePlugin"
+MERGE_ID = "Merge"
 BLUR_ID = "net.sf.cimg.CImgBlur"
 PYTHON_ITEM_TEXT = "M158 Python item"
 TWO_MAJORS_ID = "fr.natron.m158.TwoMajors"
@@ -67,7 +67,7 @@ KNOWN_GROUPINGS = {MERGE_ID: [MERGE_GROUPING], BLUR_ID: ["Filter"], TWO_MAJORS_I
 # openfx-misc, openfx-io and openfx-arena (each calls setIsDeprecated(true) when describing them).
 KNOWN_DEPRECATED = {
     ("fr.inria.openfx.OIIOResize", 1), ("fr.inria.openfx.OIIOText", 1), ("net.fxarena.openfx.MagickText", 5),
-    ("net.sf.cimg.CImgBloom", 3), ("net.sf.cimg.CImgChromaBlur", 3), ("net.sf.cimg.CImgLaplacian", 3),
+    ("net.sf.cimg.CImgChromaBlur", 3),
     ("net.sf.openfx.TrackerPM", 1), ("net.sf.openfx.joinViewsPlugin", 1), ("net.sf.openfx.oneViewPlugin", 2),
 }
 

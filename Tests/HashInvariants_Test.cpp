@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -37,6 +38,8 @@
 #include <OpenImageIO/imageio.h>
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -47,6 +50,10 @@
 #include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/FrameEntry.h"
+#include "Engine/FrameKey.h"
+#include "Engine/FrameParams.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -54,7 +61,10 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
+#include "Engine/TextureRect.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -204,7 +214,7 @@ protected:
 
     NodePtr createMerge()
     {
-        return createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        return createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     }
 
     ProjectPtr project() const
@@ -290,6 +300,76 @@ TEST_F(HashInvariantsTest, SameGraphHashesEqualInASecondAppInstance)
         EXPECT_EQ(local.constant->getHashValue(), remote.constant->getHashValue());
         EXPECT_EQ(local.blur->getHashValue(), remote.blur->getHashValue());
     }
+}
+
+namespace {
+
+// Writes size bytes to dir/name and gives the file a fixed modification time, as an AppImage's
+// squashfs does for a bundled plug-in wherever it is mounted.
+QString
+writeStampedBinary(const QString& dir,
+                   const QString& name,
+                   int size)
+{
+    if (!QDir().mkpath(dir)) {
+        return QString();
+    }
+    const QString path = dir + QLatin1Char('/') + name;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        return QString();
+    }
+    f.write(QByteArray(size, 'x'));
+    // Unflushed bytes written at close would set the modification time again.
+    if (!f.flush()) {
+        return QString();
+    }
+    if (!f.setFileTime(QDateTime::fromSecsSinceEpoch(1700000000), QFileDevice::FileModificationTime)) {
+        return QString();
+    }
+    f.close();
+
+    return path;
+}
+
+} // namespace
+
+// The disk cache outlives the session, so a hash input that differs per launch, such as the
+// mount point of an AppImage holding the OpenFX plug-ins, would miss it on every launch.
+TEST(OfxBinaryStamp, SameBinaryStampsEqualWhereverItIsMounted)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString name = QString::fromUtf8("Plugin.ofx");
+    const QString first = writeStampedBinary(tmp.path() + QString::fromUtf8("/.mount_aaaa/Plugins/OFX/Natron"), name, 64);
+    const QString second = writeStampedBinary(tmp.path() + QString::fromUtf8("/.mount_bbbb/Plugins/OFX/Natron"), name, 64);
+    ASSERT_FALSE(first.isEmpty());
+    ASSERT_FALSE(second.isEmpty());
+
+    EXPECT_EQ(Plugin::ofxBinaryStamp(first.toStdString()), Plugin::ofxBinaryStamp(second.toStdString()));
+}
+
+TEST(OfxBinaryStamp, RebuiltOrRenamedBinaryStampsDiffer)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString name = QString::fromUtf8("Plugin.ofx");
+    const QString original = writeStampedBinary(tmp.path() + QString::fromUtf8("/a"), name, 64);
+    const QString resized = writeStampedBinary(tmp.path() + QString::fromUtf8("/b"), name, 65);
+    const QString renamed = writeStampedBinary(tmp.path() + QString::fromUtf8("/c"), QString::fromUtf8("Other.ofx"), 64);
+    ASSERT_FALSE(original.isEmpty());
+    ASSERT_FALSE(resized.isEmpty());
+    ASSERT_FALSE(renamed.isEmpty());
+
+    const U64 stamp = Plugin::ofxBinaryStamp(original.toStdString());
+    EXPECT_NE(stamp, Plugin::ofxBinaryStamp(resized.toStdString()));
+    EXPECT_NE(stamp, Plugin::ofxBinaryStamp(renamed.toStdString()));
+
+    QFile f(original);
+    ASSERT_TRUE(f.open(QIODevice::ReadWrite));
+    ASSERT_TRUE(f.setFileTime(QDateTime::fromSecsSinceEpoch(1700000060), QFileDevice::FileModificationTime));
+    f.close();
+    EXPECT_NE(stamp, Plugin::ofxBinaryStamp(original.toStdString()));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -448,14 +528,14 @@ TEST_F(HashInvariantsTest, InputSwapChangesHashAndSwappingBackRestoresIt)
     NodePtr merge = createMerge();
     ASSERT_TRUE(constant && blurredConstant && blur && merge);
     connectNodes(blurredConstant, blur, 0, true);
-    connectNodes(constant, merge, kMergeInputB, true);
-    connectNodes(blur, merge, kMergeInputA, true);
+    connectNodes(constant, merge, kNativeMergeInputB, true);
+    connectNodes(blur, merge, kNativeMergeInputA, true);
     ASSERT_NE(constant->getHashValue(), blur->getHashValue());
 
     const U64 straight = merge->getHashValue();
     merge->switchInput0And1();
-    ASSERT_EQ(blur, merge->getInput(kMergeInputB));
-    ASSERT_EQ(constant, merge->getInput(kMergeInputA));
+    ASSERT_EQ(blur, merge->getInput(kNativeMergeInputB));
+    ASSERT_EQ(constant, merge->getInput(kNativeMergeInputA));
     const U64 swapped = merge->getHashValue();
     EXPECT_NE(straight, swapped);
 
@@ -635,6 +715,96 @@ TEST_F(HashInvariantsTest, DivergedSaveAsCopiesDoNotCollide)
         originalSize->setValue(3., ViewSpec::all(), 0);
         EXPECT_NE(chain.blur->getHashValue(), originalBlur->getHashValue());
     }
+
+    project()->reset(false, true);
+}
+
+namespace {
+
+// One viewer cache tile of frame time under viewerHash at mipmapLevel, keyed the way the viewer
+// keys its textures.
+FrameEntryPtr
+cacheViewerTile(const NodePtr& holder,
+                SequenceTime time,
+                U64 viewerHash,
+                unsigned int mipmapLevel)
+{
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    const int tileSize = 1 << settings->getViewerTilesPowerOf2();
+    const int bitDepth = (int)settings->getViewersBitDepth();
+    std::vector<std::string> channels;
+    channels.push_back("R");
+    channels.push_back("G");
+    channels.push_back("B");
+    channels.push_back("A");
+    const ImageLayerDesc layer("Color", "Color", "RGBA", channels);
+    const FrameKey key(holder.get(),
+                       time,
+                       viewerHash,
+                       1.,
+                       1.,
+                       0,
+                       bitDepth,
+                       4,
+                       ViewIdx(0),
+                       TextureRect(0, 0, tileSize, tileSize, 1 << mipmapLevel, 1.),
+                       mipmapLevel,
+                       holder->getScriptName(),
+                       layer,
+                       "Color.A",
+                       bitDepth == (int)eImageBitDepthFloat,
+                       false);
+    const RectI tileBounds(0, 0, tileSize, tileSize);
+    FrameParamsPtr params(new FrameParams(tileBounds, bitDepth, tileBounds, ImagePtr()));
+    FrameEntryPtr entry;
+    if (appPTR->getTextureOrCreate(key, params, NULL, &entry) || !entry) {
+        return entry;
+    }
+    entry->allocateMemory();
+
+    return entry;
+}
+
+} // namespace
+
+// The timeline's cached line is built from getViewerCachedFrames(). The viewer cache is tiled and
+// keeps every tile in its disk portion; a frame the viewer just rendered must still be listed as
+// held in RAM, which the line draws in the cached-frame colour, not the dark disk-cached one.
+TEST_F(HashInvariantsTest, ViewerCachedFramesListTheCurrentHashAndLevelInRam)
+{
+    NodePtr holder = createConstant();
+    ASSERT_TRUE(bool(holder));
+    const U64 current = holder->getHashValue();
+    const U64 earlier = current + 1;
+
+    std::vector<FrameEntryPtr> held;
+    held.push_back(cacheViewerTile(holder, 3, current, 0));
+    held.push_back(cacheViewerTile(holder, 5, current, 0));
+    held.push_back(cacheViewerTile(holder, 7, earlier, 0));
+    held.push_back(cacheViewerTile(holder, 9, current, 1));
+    for (std::size_t i = 0; i < held.size(); ++i) {
+        ASSERT_TRUE(bool(held[i])) << "tile " << i << " was cached";
+    }
+
+    std::map<SequenceTime, StorageModeEnum> frames;
+    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 0, &frames);
+    ASSERT_EQ(2u, frames.size()) << "only the frames of the current hash at level 0";
+    ASSERT_TRUE(frames.count(3) && frames.count(5));
+    EXPECT_EQ(eStorageModeRAM, frames[3]);
+    EXPECT_EQ(eStorageModeRAM, frames[5]);
+
+    appPTR->getViewerCachedFrames(holder->getCacheID(), earlier, 0, &frames);
+    ASSERT_EQ(1u, frames.size()) << "returning to an earlier hash lists its frames again";
+    EXPECT_EQ(1u, frames.count(7));
+
+    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 1, &frames);
+    ASSERT_EQ(1u, frames.size());
+    EXPECT_EQ(1u, frames.count(9));
+
+    held.clear();
+    appPTR->removeAllCacheEntriesForHolder(holder.get(), true);
+    appPTR->getViewerCachedFrames(holder->getCacheID(), current, 0, &frames);
+    EXPECT_TRUE(frames.empty()) << "a cleared cache lists nothing";
 
     project()->reset(false, true);
 }

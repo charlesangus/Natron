@@ -868,7 +868,7 @@ RotoPaint::render(const RenderActionArgs& args)
                                     eStorageModeRAM /*returnOpenGLtex*/,
                                     args.time);
         std::map<ImageLayerDesc, ImagePtr> rotoPaintImages;
-        RenderRoIRetCode code = renderInputOrTakeFromStore(bottomMerge->getEffectInstance(), -1, &rotoPaintArgs, &rotoPaintImages);
+        RenderRoIRetCode code = renderInputOrTakeFromStore(bottomMerge->getEffectInstance(), -1, &rotoPaintArgs, &rotoPaintImages, this);
         if (code == eRenderRoIRetCodeFailed) {
             return eStatusFailed;
         } else if (code == eRenderRoIRetCodeAborted) {

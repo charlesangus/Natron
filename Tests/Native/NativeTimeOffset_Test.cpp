@@ -71,6 +71,35 @@ TEST_F(NativeTimeOffsetTest, OffsetShiftsTheTimeAndTheFrameRange)
     expectFrameRange(offset, 6., 55.);
 }
 
+// The offset is read at the time asked for, so an animated one moves the route, the frame read
+// and the ends of the frame range, and makes the node frame varying.
+TEST_F(NativeTimeOffsetTest, AnimatedOffsetIsReadAtTheTimeAskedFor)
+{
+    NodePtr offset = createTimeOffset(createSource(1, 50));
+    ASSERT_TRUE(bool(offset));
+    KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(offset->getKnobByName(kTimeOffsetParamTimeOffset));
+    ASSERT_TRUE(bool(knob));
+    knob->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    knob->setValueAtTime(20., 10., ViewSpec::all(), 0);
+
+    expectInputAt(offset, 1., 1.);
+    expectInputAt(offset, 20., 10.);
+    expectInputAt(offset, 40., 30.);
+
+    const EffectInstancePtr effect = offset->getEffectInstance();
+    const FramesNeededMap frames = effect->getFramesNeeded_public(effect->getRenderHash(), 20., ViewIdx(0), 0);
+    ASSERT_EQ(1u, frames.size());
+    const FrameRangesMap::const_iterator ranges = frames.begin()->second.find(ViewIdx(0));
+    ASSERT_TRUE(ranges != frames.begin()->second.end());
+    ASSERT_EQ(1u, ranges->second.size());
+    EXPECT_EQ(10., ranges->second[0].min);
+    EXPECT_EQ(10., ranges->second[0].max);
+
+    // Input frame 1 shows at 1, where the offset is 0; input frame 50 at 60, past the last key.
+    expectFrameRange(offset, 1., 60.);
+    EXPECT_TRUE(effect->isFrameVaryingOrAnimated_Recursive());
+}
+
 TEST_F(NativeTimeOffsetTest, OffsetRendersTheSourceAtTheOffsetTime)
 {
     NodePtr offset = createTimeOffset(createSource(1, 50, { 3, 8 }));

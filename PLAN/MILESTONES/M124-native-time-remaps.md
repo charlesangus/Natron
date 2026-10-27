@@ -89,7 +89,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 123.1: Multi-time foundation
 
-- [ ] M124.P1.T1 — Add a time-remap hook to NativeImageEffect's identity path
+- [x] M124.P1.T1 — Add a time-remap hook to NativeImageEffect's identity path
   - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Tests/Native/NativeImageEffect_Test.cpp`
   - approach:
     - Add a virtual `remapInputTime(time, view, &inputTime) -> bool`, defaulting to "no remap". `isIdentity` uses it to report identity at another time before the mix/mask rules apply.
@@ -98,7 +98,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: a test node offsetting time by +3 reports identity at `t+3`, and `getFramesNeeded` lists `t+3`. Existing native tests pass at the phase build.
   - size: M
 
-- [ ] M124.P1.T2 — Let native render code fetch an input at another time
+- [x] M124.P1.T2 — Let native render code fetch an input at another time
   - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, `Engine/Nodes/README.md`, `Tests/Native/NativeMultiTime_Test.cpp` (new)
   - approach:
     - Add a helper `fetchInputAt(inputNb, time, …)` that only fetches times the node declared in `getFramesNeeded`, and fails loudly in tests otherwise.
@@ -107,7 +107,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: a test node averaging `t-1` and `t+1` renders the right pixels under both scheduler modes, and an undeclared time is rejected. Runs at the phase build.
   - size: L
 
-- [ ] M124.P1.T3 — Extend the GPU interface to supply an input at several times
+- [x] M124.P1.T3 — Extend the GPU interface to supply an input at several times
   - files: `Engine/Nodes/Image/GpuRender.h`, `Engine/GpuRegionTask.{h,cpp}`, `Engine/GpuPlacement.{h,cpp}`, `Tests/GpuResidency_Test.cpp`
   - approach:
     - Key `GpuRenderArgs` input views by (input, time). Single-time nodes keep `inputs[i]` as the render-time view.
@@ -116,7 +116,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: `GpuResidency_Test` covers a two-time consumer whose views come from a resident producer rendered at two times. It runs at the phase build on lavapipe/RADV.
   - size: L
 
-- [ ] M124.P1.T4 — Keep resident regions through identity-at-another-time nodes
+- [x] M124.P1.T4 — Keep resident regions through identity-at-another-time nodes
   - files: `Engine/GpuPlacement.{h,cpp}`, `Engine/GpuRegionTask.cpp`, `Tests/GpuPlacement_Test.cpp`
   - approach:
     - When a member reports identity at another time, placement re-targets the downstream request to the producer at that time. Do not end the region there.
@@ -126,7 +126,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 123.2: Nodes
 
-- [ ] M124.P2.T1 — Native TimeOffset and FrameHold
+- [x] M124.P2.T1 — Native TimeOffset and FrameHold
   - files: `Engine/Nodes/Time/TimeOffset.{h,cpp}` (new), `Engine/Nodes/Time/FrameHold.{h,cpp}` (new), `Engine/Nodes/Time/{FrameHold,TimeOffset}.reg.inc` (new), `Tests/Native/NativeTimeOffset_Test.cpp` (new)
   - approach:
     - Both are pure remaps through P1.T1's hook, with Nuke knobs.
@@ -136,7 +136,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover the offset, reverse, clamp, the hold with and without an increment, and frame-range reporting. Runs at the phase build.
   - size: M
 
-- [ ] M124.P2.T2 — Native FrameRange on ReadTimeDomain
+- [x] M124.P2.T2 — Native FrameRange on ReadTimeDomain
   - files: `Engine/Nodes/Time/FrameRange.{h,cpp}` (new), `Engine/Nodes/IO/ReadTimeDomain.h` (only if a shared helper needs exposing), `Engine/Nodes/Time/FrameRange.reg.inc`, `Tests/Native/NativeFrameRange_Test.cpp` (new)
   - approach:
     - `first_frame`/`last_frame` and `before`/`after` (Hold, Loop, Bounce, Black), resolved through `ReadTimeDomain::resolve`.
@@ -145,7 +145,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover each before/after mode at frames inside, before and after the range. Runs at the phase build.
   - size: M
 
-- [ ] M124.P2.T3 — Native Retime with speed, reverse and timewarp curve
+- [x] M124.P2.T3 — Native Retime with speed, reverse and timewarp curve
   - files: `Engine/Nodes/Time/Retime.{h,cpp}` (new), `Engine/Nodes/Time/Retime.reg.inc`, `Tests/Native/NativeRetime_Test.cpp` (new)
   - approach:
     - Input and output ranges, `speed`, `reverse`, and an optional `timewarp` parametric curve with cubic default keys. Port the source-time integration from OFX `Retime.cpp:331, 398`.
@@ -153,7 +153,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover speed 0.5 and 2, reverse, a warp curve, and each filter at integral and fractional times. Runs at the phase build.
   - size: L
 
-- [ ] M124.P2.T4 — Retime's blend on the GPU
+- [x] M124.P2.T4 — Retime's blend on the GPU
   - files: `Engine/Gpu/Kernels/timeblend.slang` (new), `Engine/Gpu/Kernels/timeblend.cmake` (new), `Engine/Nodes/Time/Retime.cpp`, `Tests/Native/NativeRetimeGpu_Test.cpp` (new)
   - approach:
     - A two-view weighted blend kernel on P1.T3's multi-time views. It is written generically (N views with weights) so M125 - Native Multi-Frame Nodes reuses it.
@@ -163,7 +163,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 123.3: Callers and retirement
 
-- [ ] M124.P3.T1 — Move the dope sheet to the native time nodes
+- [x] M124.P3.T1 — Move the dope sheet to the native time nodes
   - files: `Gui/DopeSheet.cpp`, `Gui/DopeSheet.h`, `Gui/DopeSheetHierarchyView.cpp`, `Gui/DopeSheetView.cpp`, `Gui/DopeSheetEditorUndoRedo.cpp`
   - approach:
     - Map the native plain IDs to the Retime, TimeOffset and FrameRange item types (`DopeSheet.cpp:322-327`), and keep the nearest-time-node and type-range logic (`:205-207, :1586`).
@@ -171,7 +171,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: an Xvfb GUI check at the phase build: a Read → TimeOffset → FrameRange → Retime chain shows correct clip ranges in the dope sheet, and dragging the TimeOffset and FrameRange clips changes their knobs. Take screenshots.
   - size: M
 
-- [ ] M124.P3.T2 — Move the roto clone tool and the ID defines to the native nodes
+- [x] M124.P3.T2 — Move the roto clone tool and the ID defines to the native nodes
   - files: `Engine/RotoDrawableItem.cpp`, `Engine/RotoItem.cpp`, `Engine/RotoContext.cpp`, `Engine/EffectInstance.h`, `Engine/OfxParamInstance.cpp`
   - approach:
     - The clone tool's internal TimeOffset and FrameHold use the native IDs and knob names (`RotoDrawableItem.cpp:68-69, 231-251, 570-572, 1009-1011`; `RotoItem.cpp:59-60`; `RotoContext.cpp:75-76`).
@@ -180,7 +180,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: the existing roto tests pass at the phase build. Manual check: a clone stroke with a time offset renders from the offset frame.
   - size: M
 
-- [ ] M124.P3.T3 — Retire the OFX time remaps and fix references
+- [x] M124.P3.T3 — Retire the OFX time remaps and fix references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (new, one per retired ID), `Engine/OfxEffectInstance.cpp`, `Tests/DefaultChannelSet_Test.cpp`, `Tests/NodeCategory_Test.cpp`
   - approach:
     - List `net.sf.openfx.timeOffset`, `FrameHold`, `FrameRange` and `Retime` as `Engine/OfxRetired/<ofx-plugin-id>` markers, one per ID.

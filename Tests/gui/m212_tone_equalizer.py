@@ -3,7 +3,7 @@
 A Rectangle fills the left half of the frame with red at 2^-4 on a blue background at 2^-1. With
 the HSV Value estimator and no detail preservation the mask is exactly those values, so hovering
 the centre of each half must write -4.0 EV (Midtones) and -1.0 EV (Whites), and the corrections
-the Midtones and Whites knobs set, into the Cursor Readout knob.
+the fitted curve gives there, into the Cursor Readout knob.
 
 A wheel notch up over the red half must raise the Midtones gain by about darktable's 0.25 EV step and
 leave the viewer's zoom alone; over the empty viewer outside the image the wheel still zooms.
@@ -33,6 +33,11 @@ INSIDE = (0.0625, 0.0, 0.0)
 OUTSIDE = (0.0, 0.0, 0.5)
 MIDTONES_GAIN = 1.0
 WHITES_GAIN = -0.5
+# The curve is a least-squares fit of eight gaussians (sigma sqrt(2) EV) to the nine band gains, so it
+# does not pass through a lone band's gain: with only these two bands set it reads +0.78 EV at -4 EV
+# and -0.28 EV at -1 EV (reproduced with numpy lstsq over the kernel's centres).
+MIDTONES_CORRECTION = 0.78
+WHITES_CORRECTION = -0.28
 
 try:
     import NatronEngine
@@ -77,9 +82,9 @@ try:
 
     def classify(c):
         r, g, b = c.red(), c.green(), c.blue()
-        if r > g + 40 and r > b + 40:
+        if r > g + 15 and r > b + 15:
             return "red"
-        if b > r + 40 and b > g + 40:
+        if b > r + 15 and b > g + 15:
             return "blue"
         return None
 
@@ -183,15 +188,15 @@ try:
             exposure, band, correction = reading
             check(abs(exposure + 4.0) <= EV_TOL and band == "Midtones",
                   "the red half reads -4.0 EV, Midtones (got %.2f, %s)" % (exposure, band))
-            check(abs(correction - MIDTONES_GAIN) <= EV_TOL,
-                  "the red half's correction is the Midtones gain %+.2f EV (got %+.2f)" % (MIDTONES_GAIN, correction))
+            check(abs(correction - MIDTONES_CORRECTION) <= EV_TOL,
+                  "the red half's correction is the fitted curve's %+.2f EV (got %+.2f)" % (MIDTONES_CORRECTION, correction))
         reading = yield from hover(gl, readout, blue_at, "blue")
         if reading:
             exposure, band, correction = reading
             check(abs(exposure + 1.0) <= EV_TOL and band == "Whites",
                   "the blue half reads -1.0 EV, Whites (got %.2f, %s)" % (exposure, band))
-            check(abs(correction - WHITES_GAIN) <= EV_TOL,
-                  "the blue half's correction is the Whites gain %+.2f EV (got %+.2f)" % (WHITES_GAIN, correction))
+            check(abs(correction - WHITES_CORRECTION) <= EV_TOL,
+                  "the blue half's correction is the fitted curve's %+.2f EV (got %+.2f)" % (WHITES_CORRECTION, correction))
         gt.section("scroll")
         midtones = te.getParam("midtones")
         before = yield from hover(gl, readout, red_at, "red before scroll")

@@ -87,8 +87,6 @@ const char* const kDeepGainGroupPyPlug = "test.natron.pyplug.DeepGainGroup";
 const char* const kAllBundledPyPlugs[] = {
     "fr.inria.AngleBlur",
     "fr.inria.DropShadow",
-    "fr.inria.EdgeBlur",
-    "fr.inria.Glow",
     "fr.inria.LightWrap",
     "fr.inria.PIKColor",
     "fr.inria.ZMask",
@@ -102,8 +100,6 @@ const char* const kAllBundledPyPlugs[] = {
 const char* const kPyPlugsWithColorPinnedInnerNodes[] = {
     "fr.inria.AngleBlur",
     "fr.inria.DropShadow",
-    "fr.inria.EdgeBlur",
-    "fr.inria.Glow",
     "fr.inria.LightWrap",
     "fr.inria.PIKColor",
     "fr.inria.ZMask",

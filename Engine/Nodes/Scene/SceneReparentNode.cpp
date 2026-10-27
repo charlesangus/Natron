@@ -28,6 +28,8 @@
 #include <string>
 #include <vector>
 
+#include <QStringList>
+
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
@@ -185,28 +187,44 @@ SceneReparentNode::renderScene(const SceneRenderActionArgs& args,
     if (!getSceneLayerKey(reads, &reparent.overridesKey, errorMessage)) {
         return eStatusFailed;
     }
+    // Shared materials stay at the top of the scene, where bindings from every graft resolve.
+    reparent.passThroughRoot = reparent.overridesKey.materialsScope;
     const std::string primPath = reparent.destinationPath;
     reparent.authorOverrides = [this, primPath, kind](const SceneLayerEdit& edit, std::string* error) {
         return authorOverrides(edit, primPath, kind, error);
     };
 
+    std::vector<SceneRootGraft> grafts;
     std::vector<SceneUnmappedLink> unmapped;
-    if (!SceneOps::reparentRoots(reparent, &_graftMemo, outputScene, NULL, &unmapped, errorMessage)) {
+    if (!SceneOps::reparentRoots(reparent, &_graftMemo, outputScene, &grafts, &unmapped, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
     }
-    if (unmapped.empty()) {
+    QStringList warnings;
+    for (const SceneRootGraft& graft : grafts) {
+        if (graft.holdsGprim) {
+            warnings += tr("Input %1's %2 holds geometry, but it is the project's Materials Scope: it stays at %2 instead "
+                           "of moving under %3.")
+                            .arg(graft.inputIndex + 1)
+                            .arg(QString::fromStdString(graft.graftedPath))
+                            .arg(QString::fromStdString(primPath));
+        }
+    }
+    if (!unmapped.empty()) {
+        QString warning = tr("These relationship targets and connections lie under no root prim their input grafts, so the "
+                             "grafted properties are authored without them:");
+        for (const SceneUnmappedLink& link : unmapped) {
+            warning += QLatin1Char('\n') + tr("input %1: %2 -> %3").arg(link.inputIndex).arg(QString::fromStdString(link.propertyPath)).arg(QString::fromStdString(link.targetPath));
+        }
+        warnings += warning;
+    }
+    if (warnings.isEmpty()) {
         clearPersistentMessage(false);
 
         return eStatusOK;
     }
-    QString warning = tr("These relationship targets and connections lie under no root prim their input grafts, so the "
-                         "grafted properties are authored without them:");
-    for (const SceneUnmappedLink& link : unmapped) {
-        warning += QLatin1Char('\n') + tr("input %1: %2 -> %3").arg(link.inputIndex).arg(QString::fromStdString(link.propertyPath)).arg(QString::fromStdString(link.targetPath));
-    }
-    setPersistentMessage(eMessageTypeWarning, warning.toStdString());
+    setPersistentMessage(eMessageTypeWarning, warnings.join(QLatin1Char('\n')).toStdString());
 
     return eStatusOK;
 } // SceneReparentNode::renderScene

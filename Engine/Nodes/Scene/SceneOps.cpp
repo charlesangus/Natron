@@ -58,7 +58,12 @@ struct GraftSlot {
     // Sublayers input's stack; created once the input has roots.
     PXR_NS::SdfLayerRefPtr wrapper;
     std::string destinationPath;
-    // The name each root is grafted under, index for index with rootNames.
+    // The root left at its own path rather than grafted, empty for none.
+    std::string passThroughRoot;
+    // Whether the input's passThroughRoot holds a UsdGeomGprim; checked when the input has it.
+    bool passThroughHoldsGprim = false;
+    // The name each root is grafted under, index for index with rootNames; a passed-through
+    // root keeps its own.
     std::vector<std::string> childNames;
     // Null layer for an input without roots.
     SceneLayerEntry graft;
@@ -583,6 +588,57 @@ namespace {
         return true;
     }
 
+    bool
+    isPassedThrough(const GraftSlot& slot,
+                    std::size_t rootIndex)
+    {
+        return !slot.passThroughRoot.empty() && (slot.rootNames[rootIndex] == slot.passThroughRoot);
+    }
+
+    // Where slot's root rootIndex lands: under destination, or at its own path when passed through.
+    PXR_NS::SdfPath
+    graftedRootOf(const GraftSlot& slot,
+                  const PXR_NS::SdfPath& destination,
+                  std::size_t rootIndex)
+    {
+        if (isPassedThrough(slot, rootIndex)) {
+            return PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(slot.rootNames[rootIndex]));
+        }
+
+        return destination.AppendChild(PXR_NS::TfToken(slot.childNames[rootIndex]));
+    }
+
+    // Whether the root prim name of input's stage holds a gprim, read through SceneQueryPool.
+    bool
+    rootHoldsGprim(const ScenePayload& input,
+                   const std::string& name,
+                   bool* holdsGprim,
+                   std::string* errorMessage)
+    {
+        *holdsGprim = false;
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, errorMessage);
+        if (!lease.isValid()) {
+            return false;
+        }
+        const PXR_NS::UsdPrim root = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(name)));
+        if (!root) {
+            return true;
+        }
+        if (root.IsA<PXR_NS::UsdGeomGprim>()) {
+            *holdsGprim = true;
+
+            return true;
+        }
+        for (const PXR_NS::UsdPrim& prim : root.GetDescendants()) {
+            if (prim.IsA<PXR_NS::UsdGeomGprim>()) {
+                *holdsGprim = true;
+                break;
+            }
+        }
+
+        return true;
+    }
+
     // Where path lies once slot's roots are grafted under destination; the empty path when it lies
     // under none of them.
     PXR_NS::SdfPath
@@ -597,7 +653,7 @@ namespace {
         }
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             if (slot.rootNames[i] == root.GetName()) {
-                return path.ReplacePrefix(root, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+                return path.ReplacePrefix(root, graftedRootOf(slot, destination, i));
             }
         }
 
@@ -682,10 +738,10 @@ namespace {
         return layer;
     }
 
-    // Defines destination/<child name> for each of slot's roots, referencing the root in slot's
-    // wrapper. Everything above the children is an "over": the structure layer defines it, and an
-    // over sent or withdrawn with this layer changes no prim's definition, so swapping this layer
-    // resyncs only the grafted roots.
+    // Defines destination/<child name> for each of slot's roots, or /<root> for a passed-through
+    // one, referencing the root in slot's wrapper. Everything above the children is an "over": the
+    // structure layer defines it, and an over sent or withdrawn with this layer changes no prim's
+    // definition, so swapping this layer resyncs only the grafted roots.
     PXR_NS::SdfLayerRefPtr
     authorGraftLayer(const GraftSlot& slot,
                      const PXR_NS::SdfPath& destination,
@@ -702,7 +758,7 @@ namespace {
         carryAuthoredMetadata(slot.input, layer);
         const std::string& wrapperIdentifier = slot.wrapper->GetIdentifier();
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
-            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, destination.AppendChild(PXR_NS::TfToken(slot.childNames[i])));
+            const PXR_NS::SdfPrimSpecHandle child = PXR_NS::SdfCreatePrimInLayer(layer, graftedRootOf(slot, destination, i));
             if (!child) {
                 return PXR_NS::SdfLayerRefPtr();
             }
@@ -764,6 +820,7 @@ namespace {
              std::vector<bool>* consumed,
              const ScenePayload& input,
              const std::string* destinationPath,
+             const std::string* passThroughRoot,
              const std::vector<std::string>* childNames)
     {
         for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -772,6 +829,9 @@ namespace {
                 continue;
             }
             if (destinationPath && ((slot.destinationPath != *destinationPath) || !slot.graft.layer)) {
+                continue;
+            }
+            if (passThroughRoot && (slot.passThroughRoot != *passThroughRoot)) {
                 continue;
             }
             if (childNames && (slot.childNames != *childNames)) {
@@ -829,16 +889,25 @@ reparentRoots(const SceneReparentArgs& args,
         GraftSlot& slot = slots[i];
         slot.input = args.inputs[i];
         slot.destinationPath = args.destinationPath;
-        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL)) {
+        slot.passThroughRoot = args.passThroughRoot;
+        bool gprimChecked = false;
+        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL, NULL)) {
             slot.rootNames = previous->rootNames;
             slot.links = previous->links;
             slot.wrapper = previous->wrapper;
+            if (previous->passThroughRoot == slot.passThroughRoot) {
+                slot.passThroughHoldsGprim = previous->passThroughHoldsGprim;
+                gprimChecked = true;
+            }
         } else if (!readInput(slot.input, &slot.rootNames, &slot.links, errorMessage)) {
+            return false;
+        }
+        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, slot.passThroughRoot, &slot.passThroughHoldsGprim, errorMessage)) {
             return false;
         }
         if (destination.IsRootPrimPath()) {
             for (const std::string& root : slot.rootNames) {
-                if (root == destination.GetName()) {
+                if ((root == destination.GetName()) && (root != slot.passThroughRoot)) {
                     if (errorMessage) {
                         *errorMessage = "Input " + std::to_string(i + 1) + " has a root prim at " + args.destinationPath + ", the path its roots are grafted under: it would be grafted inside itself.";
                     }
@@ -850,12 +919,17 @@ reparentRoots(const SceneReparentArgs& args,
     }
 
     // Names in input order: with autoRename, a root whose name an earlier input took gets the
-    // first "_<n>" suffix free of every name taken so far and of its own input's root names.
+    // first "_<n>" suffix free of every name taken so far and of its own input's root names. A
+    // passed-through root is never renamed: every input's composes at its own path.
     std::set<std::string> taken;
     for (GraftSlot& slot : slots) {
         const std::set<std::string> own(slot.rootNames.begin(), slot.rootNames.end());
         for (const std::string& root : slot.rootNames) {
             std::string name = root;
+            if (root == slot.passThroughRoot) {
+                slot.childNames.push_back(name);
+                continue;
+            }
             if (args.autoRename && taken.count(name)) {
                 for (U64 n = 1;; ++n) {
                     const std::string candidate = root + "_" + std::to_string(n);
@@ -896,7 +970,7 @@ reparentRoots(const SceneReparentArgs& args,
         if (slot.rootNames.empty()) {
             continue;
         }
-        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.childNames)) {
+        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.passThroughRoot, &slot.childNames)) {
             slot.wrapper = previous->wrapper;
             slot.graft = previous->graft;
             continue;
@@ -922,6 +996,7 @@ reparentRoots(const SceneReparentArgs& args,
         h.appendString("graft");
         h.appendU64(slot.input.getStackHash());
         h.appendString(slot.destinationPath);
+        h.appendString(slot.passThroughRoot);
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             h.appendString(slot.rootNames[i]);
             h.appendString(slot.childNames[i]);
@@ -990,7 +1065,9 @@ reparentRoots(const SceneReparentArgs& args,
                 SceneRootGraft graft;
                 graft.inputIndex = i;
                 graft.sourcePath = "/" + slot.rootNames[j];
-                graft.graftedPath = destination.AppendChild(PXR_NS::TfToken(slot.childNames[j])).GetString();
+                graft.graftedPath = graftedRootOf(slot, destination, j).GetString();
+                graft.passedThrough = isPassedThrough(slot, j);
+                graft.holdsGprim = graft.passedThrough && slot.passThroughHoldsGprim;
                 grafts->push_back(graft);
             }
         }
@@ -1066,6 +1143,7 @@ SceneLayerMemo::produce(const Key& key,
     h.appendDouble(key.framesPerSecond);
     h.appendI64((std::int64_t)key.upAxis);
     h.appendDouble(key.metersPerUnit);
+    h.appendString(key.materialsScope);
     const U64 layerHash = h.finalize();
 
     if (!SceneOps::checkUsdRuntime(errorMessage)) {
@@ -1100,6 +1178,7 @@ SceneLayerMemo::produce(const Key& key,
     edit.framesPerSecond = key.framesPerSecond;
     edit.upAxis = key.upAxis;
     edit.metersPerUnit = key.metersPerUnit;
+    edit.materialsScope = key.materialsScope;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
     if (!edit.layer) {

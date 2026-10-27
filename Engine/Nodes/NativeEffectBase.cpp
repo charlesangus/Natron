@@ -937,6 +937,7 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     key->framesPerSecond = app->getProject()->getProjectFrameRate();
     key->upAxis = app->getProject()->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
     key->metersPerUnit = app->getProject()->getProjectMetersPerUnit();
+    key->materialsScope = app->getProject()->getProjectMaterialsScope();
     key->upstreamRead = reads.upstream;
     key->factsDigest = reads.factsDigest;
     key->readsFrameRange = reads.frameRange;

@@ -78,6 +78,8 @@ public:
         bool readsFrameRange = true;
         SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
         double metersPerUnit = 1.;
+        // The project's shared materials root prim name, empty when off.
+        std::string materialsScope;
     };
 
     // Authors the node's edits into edit.layer. Returns false and sets the message on failure.

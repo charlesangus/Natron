@@ -113,6 +113,7 @@ public:
     KnobDoublePtr frameRate;
     KnobChoicePtr upAxis;
     KnobDoublePtr metersPerUnit;
+    KnobStringPtr materialsScope;
     KnobChoicePtr gpuSupport;
     KnobIntPtr frameRange;
     KnobBoolPtr lockFrameRange;

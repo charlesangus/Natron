@@ -134,6 +134,14 @@ protected:
         ASSERT_EQ(metersPerUnit, getApp()->getProject()->getProjectMetersPerUnit());
     }
 
+    void setProjectMaterialsScope(const std::string& path)
+    {
+        KnobString* knob = dynamic_cast<KnobString*>(getApp()->getProject()->getKnobByName("materialsScope").get());
+
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(path);
+    }
+
     static EffectInstance::RenderRoIRetCode evaluate(const NodePtr& node,
                                                      ScenePayload* payload,
                                                      std::string* error)
@@ -286,4 +294,64 @@ TEST_F(SceneUpAxisTest, CameraLensMillimetresConvertWithTheProjectMetersPerUnit)
     EXPECT_FLOAT_EQ(5.f, authoredFocalLength(camera));
     setProjectMetersPerUnit(0.01);
     EXPECT_FLOAT_EQ(50.f, authoredFocalLength(camera));
+}
+
+TEST_F(SceneUpAxisTest, TheMaterialsScopeDefaultsToMaterials)
+{
+    KnobString* knob = dynamic_cast<KnobString*>(getApp()->getProject()->getKnobByName("materialsScope").get());
+    ASSERT_TRUE(knob != NULL);
+    EXPECT_EQ("/materials", knob->getValue());
+    EXPECT_EQ("materials", getApp()->getProject()->getProjectMaterialsScope());
+}
+
+TEST_F(SceneUpAxisTest, OnlyASingleAbsolutePrimNameIsAMaterialsScope)
+{
+    EXPECT_EQ("looks", Project::validateMaterialsScope("/looks"));
+    EXPECT_EQ("_shared2", Project::validateMaterialsScope("/_shared2"));
+    EXPECT_EQ("", Project::validateMaterialsScope(""));
+    EXPECT_EQ("", Project::validateMaterialsScope("/"));
+    EXPECT_EQ("", Project::validateMaterialsScope("materials"));
+    EXPECT_EQ("", Project::validateMaterialsScope("/a/b"));
+    EXPECT_EQ("", Project::validateMaterialsScope("/materials/"));
+    EXPECT_EQ("", Project::validateMaterialsScope("/2materials"));
+    EXPECT_EQ("", Project::validateMaterialsScope("/my materials"));
+
+    setProjectMaterialsScope("/a/b");
+    EXPECT_EQ("", getApp()->getProject()->getProjectMaterialsScope());
+    setProjectMaterialsScope("materials");
+    EXPECT_EQ("", getApp()->getProject()->getProjectMaterialsScope());
+    setProjectMaterialsScope("");
+    EXPECT_EQ("", getApp()->getProject()->getProjectMaterialsScope());
+    setProjectMaterialsScope("/looks");
+    EXPECT_EQ("looks", getApp()->getProject()->getProjectMaterialsScope());
+}
+
+TEST_F(SceneUpAxisTest, ChangingTheMaterialsScopeReauthorsASceneLayer)
+{
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    ASSERT_TRUE(bool(camera));
+
+    ScenePayload before;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(camera, &before, &error)) << error;
+    const PXR_NS::SdfLayerRefPtr beforeLayer = getTopLayer(before);
+    ASSERT_TRUE(bool(beforeLayer));
+
+    // Unchanged settings keep the memoized layer.
+    ScenePayload again;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(camera, &again, &error)) << error;
+    EXPECT_EQ(beforeLayer, getTopLayer(again));
+
+    setProjectMaterialsScope("/looks");
+    ScenePayload after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(camera, &after, &error)) << error;
+    const PXR_NS::SdfLayerRefPtr afterLayer = getTopLayer(after);
+    ASSERT_TRUE(bool(afterLayer));
+    EXPECT_NE(beforeLayer, afterLayer);
+
+    // An invalid scope turns the feature off, which keys differently again.
+    setProjectMaterialsScope("/a/b");
+    ScenePayload off;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(camera, &off, &error)) << error;
+    EXPECT_NE(afterLayer, getTopLayer(off));
 }

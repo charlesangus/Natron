@@ -63,7 +63,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
 
 ## Phase 239.3: Constants and plan sweep
 
-- [ ] M239.P3.T1 — Pick y, z and the floor
+- [x] M239.P3.T1 — Pick y, z and the floor
   - files: `Engine/GpuWeight.h`, `Engine/GpuPlacement.h`
   - approach: On the GPU host, render the bench comps (`tools/bench/comps/run_comps.sh`: cg_multipass, defocus_retime, keying_grade), plus point-op chains of 1–6 nodes and lone Blur/Erode through `tools/bench/node_profile.sh`, with GPU auto and off on the same boot. This is a directional pass of about an hour. Choose y, z and the pixel floor so Auto is never clearly slower than Off on these, and record them as constants with a short comment giving the basis.
   - verify: a same-boot table (Auto vs Off per case, with placement) is posted on the PR.
@@ -86,5 +86,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - When placement accepts a region, the GPU-init wait now waits up to `kGpuInitWaitLimit` (10 s) instead of only the estimated gain. Init normally takes under 100 ms; P3.T1 checks the first-frame behaviour.
 
 - 2026-10-27 — **P2.T1: the strip pipelining rule changed, so the bench must check it:** without a kernel-time estimate, a cheap point op over a large frame (for example a lone UHD Grade) now runs as pipelined strips. The old model kept it whole because strips measured slower (15–18 ms against about 10 ms whole). P3.T1's bench includes that case, and if it regresses, gate strips on summed region weight.
+
+- 2026-10-27 — **Constants from the bench (gpu, same boot, Ryzen 7 9800X3D + Radeon AI PRO R9700, release):** a source plus two Grades (weight 3) ran about 10% slower on the GPU, three Grades broke even and six won by 20%, so z = 4. Lone Blur and Transform regions broke even or won, so the Filter weight stays at 4, and the pixel floor stays at 256². All three comps run faster on Auto: keying_grade 0.80–0.93, cg_multipass 0.84–0.86, defocus_retime 0.52–0.54. With z = 4 a lone UHD point op stays on the CPU, so the strip-pipelining concern from P2.T1 doesn't arise there. The full table is on PR #127.
 
 **Verification gate:** the full debug and release builds and ctest pass. The GPU suites pass on RADV (`NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest debug`). The bench comps' same-boot Auto vs Off table shows no case where Auto is clearly slower. PR CI is green.

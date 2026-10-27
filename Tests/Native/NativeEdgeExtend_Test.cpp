@@ -157,12 +157,12 @@ protected:
     {
         NodePtr b = makeConstant({ 0., 0., 0., 0. }, NULL);
         NodePtr a = makeConstant({ kColour[0], kColour[1], kColour[2], 1. }, &kBox);
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         EXPECT_TRUE(bool(merge));
         if (!merge || !a || !b) {
             return NodePtr();
         }
-        EXPECT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string("over")));
+        EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
         connectNodes(b, merge, 0, true);
         connectNodes(a, merge, 1, true);
 
@@ -348,12 +348,12 @@ protected:
                       const NodePtr& a,
                       const char* operation)
     {
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         EXPECT_TRUE(bool(merge));
         if (!merge || !a || !b) {
             return NodePtr();
         }
-        EXPECT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string(operation)));
+        EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string(operation)));
         connectNodes(b, merge, 0, true);
         connectNodes(a, merge, 1, true);
 

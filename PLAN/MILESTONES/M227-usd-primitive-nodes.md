@@ -60,3 +60,5 @@ Hierarchy From Topology, and they author the project's up axis and units. Survey
 
 - 2026-10-27 — **Primitive defaults (user):** USDCube subdivisions default to 2 per axis. USDCard is always a unit mesh; the project format's aspect is applied once, at creation, through the transform's scale X knob, never by moving vertices (no Aspect knob). Primitives stay light: Nuke's orientation, lens-in, deform, display, sweep and mesh-type controls are not ported; kind/purpose/visibility will come from separate nodes later.
 - 2026-10-26 — **Material input (user):** every primitive node takes an optional Material input and authors the material under its own prim, binding itself to it (M226.P2.T4).
+
+2026-10-27: Golden recorded; GUI screenshots shared; draft PR #133; UAT pending.

@@ -8,8 +8,12 @@ Sections:
     at iteration 3 of 4;
   - table: LoopEnd's Driven Knobs table lists size.x and size.y; setting End to 7 in the first
     row changes the driver and the inline row shows it.
+  - keys: at frame 1 the row's Start menu's Set Key keys Start; at frame 10 typing 4 into Start
+    keys it again (auto-key); the Start field shows keyed at a key's frame and animated between;
+    undo takes the second key off.
 Screenshots: loopdriver_menu.png, loopdriver_row.png, loopdriver_row_iteration3.png,
-loopdriver_table.png, loopdriver_table_edited.png in $NATRON_GUI_TEST_OUT.
+loopdriver_table.png, loopdriver_table_edited.png, loopdriver_start_key_menu.png,
+loopdriver_row_keyed.png in $NATRON_GUI_TEST_OUT.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m181_loop_drivers.py
 """
@@ -26,6 +30,10 @@ BLUR_ID = "net.sf.cimg.CImgBlur"
 BEGIN_ID = "fr.natron.LoopBegin"
 END_ID = "fr.natron.LoopEnd"
 DRIVE_ITEM = "Drive from loop"
+SET_KEY_ITEM = "Set Key"
+# SpinBox's animation property: 0 constant, 1 animated, 2 on a key.
+ANIMATED = 1
+ON_KEY = 2
 
 try:
     from PySide6.QtCore import QMetaObject, QRect, Qt, QTimer
@@ -274,6 +282,49 @@ try:
         trigger_edit("undo")
         ok = yield ("until", lambda: size.getDriverEnd(0) == 10, POLL_TIMEOUT_S)
         check(ok, "undo restores the end the table changed")
+
+        gt.section("keys")
+
+        def start_spin():
+            return child(driver_row(panel_of(blur)), "driverStart")
+
+        def start_animation():
+            spin = start_spin()
+            return spin.property("animation") if spin is not None else None
+
+        require(start_spin() is not None, "the driver row has a Start field")
+        check(start_animation() == 0, "an unkeyed Start shows constant (got %r)" % start_animation())
+        app.seek(1)
+        ok = yield ("until", lambda: app.timelineGetTime() == 1, POLL_TIMEOUT_S)
+        require(ok, "the timeline is at frame 1")
+        seen = right_click(start_spin(), SET_KEY_ITEM, "loopdriver_start_key_menu.png")
+        ok = yield ("until", lambda: seen["entries"] is not None, POLL_TIMEOUT_S)
+        require(ok, "the Start menu opened")
+        check(seen["item"] is not None and seen["item"][0], "the Start menu has an enabled \"%s\" (got %r)" % (SET_KEY_ITEM, seen["entries"]))
+        ok = yield ("until", lambda: size.getDriverStartKeyCount(0) == 1 and size.getDriverStartKeyCount(1) == 1, POLL_TIMEOUT_S)
+        check(ok, "Set Key keys Start of both dimensions (got %d, %d)" % (size.getDriverStartKeyCount(0), size.getDriverStartKeyCount(1)))
+        ok = yield ("until", lambda: start_animation() == ON_KEY, POLL_TIMEOUT_S)
+        check(ok, "at the key's frame Start shows keyed (got %r)" % start_animation())
+
+        app.seek(10)
+        ok = yield ("until", lambda: start_animation() == ANIMATED, POLL_TIMEOUT_S)
+        check(ok, "off a key Start shows animated (got %r)" % start_animation())
+        commit_spin(start_spin(), "4")
+        ok = yield ("until", lambda: size.getDriverStartKeyCount(0) == 2, POLL_TIMEOUT_S)
+        check(ok, "typing a value into an animated Start keys it (got %d keys)" % size.getDriverStartKeyCount(0))
+        check(size.getDriverStartAtTime(10, 0) == 4 and size.getDriverStartAtTime(1, 0) == default,
+              "Start is 4 at frame 10 and %g at frame 1 (got %s, %s)" % (default, size.getDriverStartAtTime(10, 0), size.getDriverStartAtTime(1, 0)))
+        ok = yield ("until", lambda: start_animation() == ON_KEY, POLL_TIMEOUT_S)
+        check(ok, "at the new key's frame Start shows keyed (got %r)" % start_animation())
+        yield ("sleep", 300)
+        screen_crop("loopdriver_row_keyed", panel_of(blur))
+
+        app.seek(5)
+        ok = yield ("until", lambda: start_animation() == ANIMATED, POLL_TIMEOUT_S)
+        check(ok, "between the keys Start shows animated (got %r)" % start_animation())
+        trigger_edit("undo")
+        ok = yield ("until", lambda: size.getDriverStartKeyCount(0) == 1, POLL_TIMEOUT_S)
+        check(ok, "undo takes the second key off (got %d keys)" % size.getDriverStartKeyCount(0))
 
         for node in (end, blur, begin, constant):
             node.destroy()

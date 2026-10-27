@@ -37,9 +37,11 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -251,4 +253,158 @@ TEST_F(BaseTest, KnobDriverRoundTripsThroughAProject)
     EXPECT_DOUBLE_EQ(1.5, doubleUnder(multiply, contextWith(RenderContextName::loop("t"), 0.5)));
     EXPECT_DOUBLE_EQ(1., multiply->getValueAtTime(1., 0));
     EXPECT_TRUE(multiply->getContextReadSet().contains(RenderContextName::loops("outer", "t")));
+}
+
+namespace {
+// Dimension 0 of knob at time, read under context.
+double
+doubleUnderAt(const KnobColorPtr& knob,
+              const RenderContextPtr& context,
+              double time)
+{
+    ActionContextScope scope(true, context);
+
+    return knob->getValueAtTime(time, 0);
+}
+
+// Linear keys: value 0 at frame 1 and 1 at frame 11.
+void
+fillRangeCurve(Curve* curve)
+{
+    curve->addKeyFrame(KeyFrame(1., 0., 0., 0., eKeyframeTypeLinear));
+    curve->addKeyFrame(KeyFrame(11., 1., 0., 0., eKeyframeTypeLinear));
+}
+} // anonymous namespace
+
+TEST_F(BaseTest, KnobDriverAnimatedStartChangesTheValueAcrossFrames)
+{
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(bool(grade));
+    KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+    ASSERT_TRUE(multiply->setDriver(0, makeDriver(kKnobDriverDefaultVariable, 0., 2., KnobDriver::eEasingLinear)));
+    const U64 constantHash = multiply->getContentHash();
+
+    Curve start;
+    fillRangeCurve(&start);
+    const KnobDriverPtr animated = std::make_shared<const KnobDriver>(kKnobDriverDefaultVariable, 0., 2., KnobDriver::eEasingLinear, (const Curve*)NULL, &start);
+    EXPECT_TRUE(animated->isAnimated());
+    ASSERT_TRUE(animated->getStartCurve() != NULL);
+    EXPECT_TRUE(animated->getEndCurve() == NULL);
+    EXPECT_NEAR(0.5, animated->getStartAt(6.), 1e-9);
+    EXPECT_DOUBLE_EQ(2., animated->getEndAt(6.));
+    ASSERT_TRUE(multiply->setDriver(0, animated));
+
+    const RenderContextName t = RenderContextName::loop("t");
+    // At t = 0 the value is start at the frame.
+    EXPECT_DOUBLE_EQ(0., doubleUnderAt(multiply, contextWith(t, 0.), 1.));
+    EXPECT_NEAR(0.5, doubleUnderAt(multiply, contextWith(t, 0.), 6.), 1e-9);
+    EXPECT_DOUBLE_EQ(1., doubleUnderAt(multiply, contextWith(t, 0.), 11.));
+    // Halfway, between start at the frame and the constant end.
+    EXPECT_DOUBLE_EQ(1., doubleUnderAt(multiply, contextWith(t, 0.5), 1.));
+    EXPECT_DOUBLE_EQ(1.5, doubleUnderAt(multiply, contextWith(t, 0.5), 11.));
+    // At t = 1 the constant end, whatever the frame.
+    EXPECT_DOUBLE_EQ(2., doubleUnderAt(multiply, contextWith(t, 1.), 1.));
+    EXPECT_DOUBLE_EQ(2., doubleUnderAt(multiply, contextWith(t, 1.), 11.));
+
+    // The keys are part of the content hash, and the node now varies with the frame.
+    const U64 animatedHash = multiply->getContentHash();
+    EXPECT_NE(constantHash, animatedHash);
+    Curve otherStart;
+    otherStart.addKeyFrame(KeyFrame(1., 0., 0., 0., eKeyframeTypeLinear));
+    otherStart.addKeyFrame(KeyFrame(11., 3., 0., 0., eKeyframeTypeLinear));
+    ASSERT_TRUE(multiply->setDriver(0, std::make_shared<const KnobDriver>(kKnobDriverDefaultVariable, 0., 2., KnobDriver::eEasingLinear, (const Curve*)NULL, &otherStart)));
+    EXPECT_NE(animatedHash, multiply->getContentHash());
+    EXPECT_TRUE(multiply->hasAnimatedDriver());
+    EXPECT_TRUE(grade->hasAnimatedKnob());
+    const NodeMetadataConstPtr varying = grade->getEffectInstance()->getTimeInvariantMetadata();
+    ASSERT_TRUE(varying != NULL);
+    EXPECT_TRUE(varying->getIsFrameVarying());
+
+    // An animated end alone does the same.
+    Curve end;
+    fillRangeCurve(&end);
+    ASSERT_TRUE(multiply->setDriver(0, std::make_shared<const KnobDriver>(kKnobDriverDefaultVariable, 0., 2., KnobDriver::eEasingLinear, (const Curve*)NULL, (const Curve*)NULL, &end)));
+    EXPECT_NEAR(0.5, doubleUnderAt(multiply, contextWith(t, 1.), 6.), 1e-9);
+    EXPECT_NEAR(0.25, doubleUnderAt(multiply, contextWith(t, 0.5), 6.), 1e-9);
+    EXPECT_TRUE(grade->hasAnimatedKnob());
+}
+
+TEST_F(BaseTest, KnobDriverWithoutKeysIsNotFrameVarying)
+{
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(bool(grade));
+    KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+
+    // A start curve without keys leaves the constant start in use.
+    Curve empty;
+    const KnobDriverPtr driver = std::make_shared<const KnobDriver>(kKnobDriverDefaultVariable, 1., 2., KnobDriver::eEasingLinear, (const Curve*)NULL, &empty, &empty);
+    EXPECT_FALSE(driver->isAnimated());
+    EXPECT_TRUE(driver->getStartCurve() == NULL);
+    EXPECT_DOUBLE_EQ(1., driver->getStartAt(50.));
+    ASSERT_TRUE(multiply->setDriver(0, driver));
+
+    EXPECT_TRUE(multiply->hasDrivers());
+    EXPECT_FALSE(multiply->hasAnimatedDriver());
+    EXPECT_FALSE(grade->hasAnimatedKnob());
+    const NodeMetadataConstPtr metadata = grade->getEffectInstance()->getTimeInvariantMetadata();
+    ASSERT_TRUE(metadata != NULL);
+    EXPECT_FALSE(metadata->getIsFrameVarying());
+
+    const RenderContextName t = RenderContextName::loop("t");
+    EXPECT_DOUBLE_EQ(1.5, doubleUnderAt(multiply, contextWith(t, 0.5), 1.));
+    EXPECT_DOUBLE_EQ(1.5, doubleUnderAt(multiply, contextWith(t, 0.5), 30.));
+}
+
+TEST_F(BaseTest, KnobDriverKeysRoundTripThroughAProject)
+{
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(bool(grade));
+    KnobColorPtr multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+    Curve start;
+    fillRangeCurve(&start);
+    Curve end;
+    end.addKeyFrame(KeyFrame(5., 4., 0., 0., eKeyframeTypeConstant));
+    ASSERT_TRUE(multiply->setDriver(0, std::make_shared<const KnobDriver>(kKnobDriverDefaultVariable, 0., 2., KnobDriver::eEasingLinear, (const Curve*)NULL, &start, &end)));
+    ASSERT_TRUE(multiply->setDriver(1, makeDriver(kKnobDriverDefaultVariable, 0.25, 3., KnobDriver::eEasingSmooth)));
+    const std::string gradeName = grade->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("knob-driver-keys.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    multiply.reset();
+    grade.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    grade = project->getNodeByName(gradeName);
+    ASSERT_TRUE(bool(grade));
+    multiply = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamMultiply));
+    ASSERT_TRUE(bool(multiply));
+
+    const KnobDriverPtr keyed = multiply->getDriver(0);
+    ASSERT_TRUE(bool(keyed));
+    ASSERT_TRUE(keyed->getStartCurve() != NULL);
+    ASSERT_TRUE(keyed->getEndCurve() != NULL);
+    EXPECT_EQ(2, keyed->getStartCurve()->getKeyFramesCount());
+    EXPECT_EQ(1, keyed->getEndCurve()->getKeyFramesCount());
+    EXPECT_DOUBLE_EQ(0., keyed->getStartAt(1.));
+    EXPECT_NEAR(0.5, keyed->getStartAt(6.), 1e-9);
+    EXPECT_DOUBLE_EQ(1., keyed->getStartAt(11.));
+    EXPECT_DOUBLE_EQ(4., keyed->getEndAt(20.));
+    EXPECT_TRUE(multiply->hasAnimatedDriver());
+    EXPECT_NEAR(0.5, doubleUnderAt(multiply, contextWith(RenderContextName::loop("t"), 0.), 6.), 1e-9);
+
+    const KnobDriverPtr constant = multiply->getDriver(1);
+    ASSERT_TRUE(bool(constant));
+    EXPECT_FALSE(constant->isAnimated());
+    EXPECT_DOUBLE_EQ(0.25, constant->getStart());
+    EXPECT_DOUBLE_EQ(3., constant->getEnd());
 }

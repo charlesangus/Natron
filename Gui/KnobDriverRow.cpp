@@ -30,7 +30,9 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAction>
 #include <QApplication>
+#include <QCursor>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QMouseEvent>
@@ -58,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiMacros.h"
 #include "Gui/KnobGui.h"
 #include "Gui/Label.h"
+#include "Gui/Menu.h"
 #include "Gui/SpinBox.h"
 #include "Gui/UndoHistory.h"
 
@@ -70,6 +73,46 @@ const double kPointPickRadius = 6.;
 
 // The easing choices, in their order in the easing menus.
 const KnobDriver::EasingEnum kEasings[] = { KnobDriver::eEasingLinear, KnobDriver::eEasingSmooth, KnobDriver::eEasingCurve };
+
+// Applies a value edit or key action to one end of a driver's range, given as its constant, its
+// curve (empty when constant) and its value at the change's time.
+void
+editRangeEnd(const LoopDriverEdit::DriverChange& change,
+             double valueAtTime,
+             double* constant,
+             Curve* curve)
+{
+    const bool animated = curve->getKeyFramesCount() > 0;
+    KeyFrame existing;
+
+    switch (change.keyAction) {
+    case LoopDriverEdit::DriverChange::eKeyActionNone:
+        if (animated) {
+            curve->addKeyFrame(KeyFrame(change.time, change.value));
+        } else {
+            *constant = change.value;
+        }
+        break;
+    case LoopDriverEdit::DriverChange::eKeyActionSet:
+        curve->addKeyFrame(KeyFrame(change.time, valueAtTime));
+        break;
+    case LoopDriverEdit::DriverChange::eKeyActionRemove:
+        if (curve->getKeyFrameWithTime(change.time, &existing)) {
+            curve->removeKeyFrameWithTime(change.time);
+            // The last key's value stays, as for a knob.
+            if (curve->getKeyFramesCount() == 0) {
+                *constant = valueAtTime;
+            }
+        }
+        break;
+    case LoopDriverEdit::DriverChange::eKeyActionClear:
+        if (animated) {
+            *constant = valueAtTime;
+            curve->clearKeyFrames();
+        }
+        break;
+    }
+}
 } // anonymous namespace
 
 //////////////////////////////// SetKnobDriverCommand
@@ -260,9 +303,82 @@ makeDriver(const std::string& variable,
            double start,
            double end,
            KnobDriver::EasingEnum easing,
-           const Curve* curve)
+           const Curve* curve,
+           const Curve* startCurve,
+           const Curve* endCurve)
 {
-    return std::make_shared<const KnobDriver>(variable, start, end, easing, curve);
+    return std::make_shared<const KnobDriver>(variable, start, end, easing, curve, startCurve, endCurve);
+}
+
+AnimationLevelEnum
+rangeAnimationLevel(const KnobDriverPtr& driver,
+                    bool end,
+                    double time)
+{
+    if (!driver) {
+        return eAnimationLevelNone;
+    }
+    const Curve* curve = end ? driver->getEndCurve() : driver->getStartCurve();
+
+    if (!curve) {
+        return eAnimationLevelNone;
+    }
+    KeyFrame key;
+
+    return curve->getKeyFrameWithTime(time, &key) ? eAnimationLevelOnKeyframe : eAnimationLevelInterpolatedValue;
+}
+
+void
+showRangeKeyMenu(Gui* gui,
+                 const KnobIPtr& knob,
+                 int dimension,
+                 bool end,
+                 QWidget* parent)
+{
+    if (!knob) {
+        return;
+    }
+    const std::vector<KnobDriverPtr> drivers = driversOf(knob);
+    const double time = knob->getCurrentTime();
+    bool anyAnimated = false;
+    bool anyKeyHere = false;
+    bool anyDriven = false;
+    for (int i = 0; i < (int)drivers.size(); ++i) {
+        if (!drivers[i] || ((dimension >= 0) && (dimension != i))) {
+            continue;
+        }
+        anyDriven = true;
+        const AnimationLevelEnum level = rangeAnimationLevel(drivers[i], end, time);
+        anyAnimated = anyAnimated || (level != eAnimationLevelNone);
+        anyKeyHere = anyKeyHere || (level == eAnimationLevelOnKeyframe);
+    }
+    if (!anyDriven) {
+        return;
+    }
+
+    const KnobIWPtr weakKnob = knob;
+    const DriverChange::FieldEnum field = end ? DriverChange::eFieldEnd : DriverChange::eFieldStart;
+    Menu menu(parent);
+    QAction* setKey = menu.addAction(QObject::tr("Set Key"));
+    QAction* removeKey = menu.addAction(QObject::tr("Remove Key"));
+    removeKey->setEnabled(anyKeyHere);
+    QAction* clear = menu.addAction(QObject::tr("Remove animation"));
+    clear->setEnabled(anyAnimated);
+    const std::pair<QAction*, DriverChange::KeyActionEnum> actions[] = {
+        { setKey, DriverChange::eKeyActionSet },
+        { removeKey, DriverChange::eKeyActionRemove },
+        { clear, DriverChange::eKeyActionClear },
+    };
+    for (const auto& entry : actions) {
+        const DriverChange::KeyActionEnum keyAction = entry.second;
+        QObject::connect(entry.first, &QAction::triggered, [gui, weakKnob, dimension, field, keyAction, time]() {
+            DriverChange change(field);
+            change.keyAction = keyAction;
+            change.time = time;
+            editDrivers(gui, weakKnob.lock(), dimension, change, 0);
+        });
+    }
+    menu.exec(QCursor::pos());
 }
 
 KnobDriverPtr
@@ -277,15 +393,23 @@ applyChange(const KnobDriverPtr& driver,
     double end = driver->getEnd();
     KnobDriver::EasingEnum easing = driver->getEasing();
     const Curve* curve = driver->getCurve();
+    Curve startCurve;
+    if (driver->getStartCurve()) {
+        startCurve.clone(*driver->getStartCurve());
+    }
+    Curve endCurve;
+    if (driver->getEndCurve()) {
+        endCurve.clone(*driver->getEndCurve());
+    }
     switch (change.field) {
     case DriverChange::eFieldVariable:
         variable = change.variable;
         break;
     case DriverChange::eFieldStart:
-        start = change.value;
+        editRangeEnd(change, driver->getStartAt(change.time), &start, &startCurve);
         break;
     case DriverChange::eFieldEnd:
-        end = change.value;
+        editRangeEnd(change, driver->getEndAt(change.time), &end, &endCurve);
         break;
     case DriverChange::eFieldEasing:
         easing = change.easing;
@@ -295,7 +419,7 @@ applyChange(const KnobDriverPtr& driver,
         break;
     }
 
-    return makeDriver(variable, start, end, easing, curve);
+    return makeDriver(variable, start, end, easing, curve, &startCurve, &endCurve);
 }
 
 void
@@ -307,15 +431,35 @@ editDrivers(Gui* gui,
 {
     std::vector<KnobDriverPtr> drivers = driversOf(knob);
     bool changed = false;
+    // A value edit of an animated start or end keys it at the current frame.
+    DriverChange timed = change;
+    if (knob && (change.keyAction == DriverChange::eKeyActionNone)) {
+        timed.time = knob->getCurrentTime();
+    }
 
     for (int i = 0; i < (int)drivers.size(); ++i) {
         if (drivers[i] && ((dimension < 0) || (dimension == i))) {
-            drivers[i] = applyChange(drivers[i], change);
+            drivers[i] = applyChange(drivers[i], timed);
             changed = true;
         }
     }
     if (changed) {
-        SetKnobDriverCommand::push(gui, knob, drivers, QObject::tr("Edit loop driver of %1").arg(knobLabel(knob, dimension)), gesture);
+        QString text;
+        switch (change.keyAction) {
+        case DriverChange::eKeyActionNone:
+            text = QObject::tr("Edit loop driver of %1");
+            break;
+        case DriverChange::eKeyActionSet:
+            text = QObject::tr("Set key on loop driver of %1");
+            break;
+        case DriverChange::eKeyActionRemove:
+            text = QObject::tr("Remove key from loop driver of %1");
+            break;
+        case DriverChange::eKeyActionClear:
+            text = QObject::tr("Remove animation from loop driver of %1");
+            break;
+        }
+        SetKnobDriverCommand::push(gui, knob, drivers, text.arg(knobLabel(knob, dimension)), gesture);
     }
 }
 
@@ -660,8 +804,10 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
 
     _start = new SpinBox(this, SpinBox::eSpinBoxTypeDouble);
     _start->setObjectName(QString::fromUtf8("driverStart"));
-    _start->setToolTip(tr("The value at t = 0."));
+    _start->setToolTip(tr("The value at t = 0. It animates like any parameter: right-click to set a key."));
+    _start->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_start, SIGNAL(valueChanged(double)), this, SLOT(onStartChanged(double)));
+    QObject::connect(_start, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onStartMenuRequested(QPoint)));
     layout->addWidget(_start);
 
     Label* arrow = new Label(QString(QChar(0x2192)), this);
@@ -669,8 +815,10 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
 
     _end = new SpinBox(this, SpinBox::eSpinBoxTypeDouble);
     _end->setObjectName(QString::fromUtf8("driverEnd"));
-    _end->setToolTip(tr("The value at t = 1."));
+    _end->setToolTip(tr("The value at t = 1. It animates like any parameter: right-click to set a key."));
+    _end->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_end, SIGNAL(valueChanged(double)), this, SLOT(onEndChanged(double)));
+    QObject::connect(_end, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onEndMenuRequested(QPoint)));
     layout->addWidget(_end);
 
     _easing = new ComboBox(this);
@@ -700,7 +848,8 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
     if (helper && helper->getSignalSlotHandler()) {
         KnobSignalSlotHandler* handler = helper->getSignalSlotHandler().get();
         QObject::connect(handler, SIGNAL(driverChanged(int)), this, SLOT(scheduleRefresh()));
-        QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(refreshPreview()));
+        // Also emitted on a frame change while a driver is animated.
+        QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(onKnobValueChanged()));
         QObject::connect(handler, SIGNAL(expressionChanged(int)), this, SLOT(refreshPreview()));
     }
     // The knob's own widgets, which carry its menu, are hidden while the row shows.
@@ -845,8 +994,7 @@ KnobDriverRow::refresh()
     }
     _variable->setCurrentText_no_emit(variable);
 
-    _start->setValue(driver->getStart());
-    _end->setValue(driver->getEnd());
+    refreshRange();
     const int easing = (int)(std::find(kEasings, kEasings + 3, driver->getEasing()) - kEasings);
     _easing->setCurrentIndex_no_emit(easing);
     _editCurve->setVisible(driver->getEasing() == KnobDriver::eEasingCurve);
@@ -873,6 +1021,31 @@ KnobDriverRow::refreshPreview()
         }
     }
     _preview->setText(QString::fromUtf8("= ") + values.join(QString::fromUtf8(", ")));
+}
+
+void
+KnobDriverRow::refreshRange()
+{
+    KnobIPtr knob = _knob.lock();
+    const KnobDriverPtr driver = currentDriver();
+
+    if (!knob || !driver) {
+        return;
+    }
+    const double time = knob->getCurrentTime();
+    _start->setValue(driver->getStartAt(time));
+    _end->setValue(driver->getEndAt(time));
+    _start->setAnimation((int)LoopDriverEdit::rangeAnimationLevel(driver, false, time));
+    _end->setAnimation((int)LoopDriverEdit::rangeAnimationLevel(driver, true, time));
+}
+
+void
+KnobDriverRow::onKnobValueChanged()
+{
+    if (_driving) {
+        refreshRange();
+    }
+    refreshPreview();
 }
 
 void
@@ -951,6 +1124,22 @@ KnobDriverRow::onEditCurveClicked()
     change.easing = KnobDriver::eEasingCurve;
     change.curve = dialog.makeCurve();
     edit(change, 0);
+}
+
+void
+KnobDriverRow::onStartMenuRequested(const QPoint& /*pos*/)
+{
+    KnobGuiPtr knobGui = _knobGui.lock();
+
+    LoopDriverEdit::showRangeKeyMenu(knobGui ? knobGui->getGui() : 0, _knob.lock(), _scope, false, this);
+}
+
+void
+KnobDriverRow::onEndMenuRequested(const QPoint& /*pos*/)
+{
+    KnobGuiPtr knobGui = _knobGui.lock();
+
+    LoopDriverEdit::showRangeKeyMenu(knobGui ? knobGui->getGui() : 0, _knob.lock(), _scope, true, this);
 }
 
 void

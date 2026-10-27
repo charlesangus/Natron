@@ -44,9 +44,11 @@ class ContentHasher;
 
 /**
  * @brief Sets a knob dimension from a render context variable: under a context holding the
- * variable, the dimension reads start + (end - start) * ease(t), t being the variable's value,
- * and its own value under any other. Linear easing extrapolates outside [0, 1]; smooth and curve
- * clamp t to it. A driver never changes once made: a knob is given a new one instead. MT-safe.
+ * variable, the dimension reads start + (end - start) * ease(t), t being the variable's value
+ * and start and end their values at the render time, and its own value under any other. Linear
+ * easing extrapolates outside [0, 1]; smooth and curve clamp t to it. Start and end are each a
+ * constant or, when keyed, a curve over time. A driver never changes once made: a knob is given
+ * a new one instead. MT-safe.
  **/
 class KnobDriver
     : public ContextReadSource {
@@ -58,14 +60,17 @@ public:
     };
 
     /**
-     * @brief curve is the easing curve over [0, 1], used by eEasingCurve only; the driver keeps
-     * a copy of it.
+     * @brief curve is the easing curve over [0, 1], used by eEasingCurve only. startCurve and
+     * endCurve animate start and end over time; one without keys leaves the constant in use.
+     * The driver keeps copies of the curves.
      **/
     KnobDriver(const std::string& variable,
                double start,
                double end,
                EasingEnum easing,
-               const Curve* curve = NULL);
+               const Curve* curve = NULL,
+               const Curve* startCurve = NULL,
+               const Curve* endCurve = NULL);
 
     virtual ~KnobDriver();
 
@@ -90,6 +95,9 @@ public:
         return _variable;
     }
 
+    /**
+     * @brief The constant start, which the start curve overrides while it has keys.
+     **/
     double getStart() const
     {
         return _start;
@@ -98,6 +106,30 @@ public:
     double getEnd() const
     {
         return _end;
+    }
+
+    /**
+     * @brief The start curve, null unless start is keyed.
+     **/
+    const Curve* getStartCurve() const
+    {
+        return _startCurve.get();
+    }
+
+    const Curve* getEndCurve() const
+    {
+        return _endCurve.get();
+    }
+
+    double getStartAt(double time) const;
+    double getEndAt(double time) const;
+
+    /**
+     * @brief Whether start or end is keyed, so the driven value changes with the time.
+     **/
+    bool isAnimated() const
+    {
+        return bool(_startCurve) || bool(_endCurve);
     }
 
     EasingEnum getEasing() const
@@ -142,6 +174,8 @@ private:
     const double _end;
     const EasingEnum _easing;
     const std::shared_ptr<const Curve> _curve;
+    const std::shared_ptr<const Curve> _startCurve;
+    const std::shared_ptr<const Curve> _endCurve;
 };
 
 NATRON_NAMESPACE_EXIT

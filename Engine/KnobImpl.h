@@ -2379,7 +2379,8 @@ Knob<T>::onTimeChanged(bool isPlayback,
     if ( getIsSecret() ) {
         return;
     }
-    bool shouldRefresh = false;
+    // A keyed driver start or end changes the value with the frame too.
+    bool shouldRefresh = hasAnimatedDriver();
     for (int i = 0; i < dims; ++i) {
         if ( _signalSlotHandler && ( isAnimated( i, ViewIdx(0) ) || !getExpression(i).empty() ) ) {
             shouldRefresh = true;

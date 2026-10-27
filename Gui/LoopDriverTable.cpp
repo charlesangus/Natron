@@ -241,8 +241,6 @@ LoopDriverTable::rebuild()
         for (int row = 0; row < (int)_entries.size(); ++row) {
             const KnobDriverPtr driver = LoopDriverEdit::driversOf(_entries[row].knob.lock())[_entries[row].dimension];
             ComboBox* variable = qobject_cast<ComboBox*>(_table->cellWidget(row, eColumnVariable));
-            SpinBox* start = qobject_cast<SpinBox*>(_table->cellWidget(row, eColumnStart));
-            SpinBox* endValue = qobject_cast<SpinBox*>(_table->cellWidget(row, eColumnEnd));
             ComboBox* easing = qobject_cast<ComboBox*>(_table->cellWidget(row, eColumnEasing));
             const QString current = QString::fromUtf8(driver->getVariable().c_str());
             if (variable && !variable->itemTexts().contains(current)) {
@@ -250,12 +248,6 @@ LoopDriverTable::rebuild()
             }
             if (variable) {
                 variable->setCurrentText_no_emit(current);
-            }
-            if (start && !start->hasFocus()) {
-                start->setValue(driver->getStart());
-            }
-            if (endValue && !endValue->hasFocus()) {
-                endValue->setValue(driver->getEnd());
             }
             if (easing) {
                 easing->setCurrentIndex_no_emit((int)(std::find(kEasings, kEasings + 3, driver->getEasing()) - kEasings));
@@ -292,15 +284,19 @@ LoopDriverTable::rebuild()
         _table->setCellWidget(row, eColumnVariable, variable);
 
         SpinBox* start = new SpinBox(_table, SpinBox::eSpinBoxTypeDouble);
-        start->setValue(driver->getStart());
         start->setProperty(kRowProperty, row);
+        start->setToolTip(tr("Right-click to set a key."));
+        start->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(start, SIGNAL(valueChanged(double)), this, SLOT(onStartChanged(double)));
+        QObject::connect(start, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onStartMenuRequested(QPoint)));
         _table->setCellWidget(row, eColumnStart, start);
 
         SpinBox* endValue = new SpinBox(_table, SpinBox::eSpinBoxTypeDouble);
-        endValue->setValue(driver->getEnd());
         endValue->setProperty(kRowProperty, row);
+        endValue->setToolTip(tr("Right-click to set a key."));
+        endValue->setContextMenuPolicy(Qt::CustomContextMenu);
         QObject::connect(endValue, SIGNAL(valueChanged(double)), this, SLOT(onEndChanged(double)));
+        QObject::connect(endValue, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onEndMenuRequested(QPoint)));
         _table->setCellWidget(row, eColumnEnd, endValue);
 
         ComboBox* easing = new ComboBox(_table);
@@ -331,6 +327,36 @@ LoopDriverTable::refreshValues()
         if (knob && item) {
             item->setText(QString::number(LoopDriverEdit::previewValue(knob, _entries[row].dimension), 'g', 6));
         }
+        refreshRange(row);
+    }
+}
+
+void
+LoopDriverTable::refreshRange(int row)
+{
+    const KnobIPtr knob = _entries[row].knob.lock();
+
+    if (!knob) {
+        return;
+    }
+    const KnobDriverPtr driver = LoopDriverEdit::driversOf(knob)[_entries[row].dimension];
+    if (!driver) {
+        return;
+    }
+    const double time = knob->getCurrentTime();
+    SpinBox* start = qobject_cast<SpinBox*>(_table->cellWidget(row, eColumnStart));
+    SpinBox* endValue = qobject_cast<SpinBox*>(_table->cellWidget(row, eColumnEnd));
+    if (start) {
+        if (!start->hasFocus()) {
+            start->setValue(driver->getStartAt(time));
+        }
+        start->setAnimation((int)LoopDriverEdit::rangeAnimationLevel(driver, false, time));
+    }
+    if (endValue) {
+        if (!endValue->hasFocus()) {
+            endValue->setValue(driver->getEndAt(time));
+        }
+        endValue->setAnimation((int)LoopDriverEdit::rangeAnimationLevel(driver, true, time));
     }
 }
 
@@ -401,6 +427,26 @@ LoopDriverTable::onEasingChanged(int index)
     LoopDriverEdit::DriverChange change(LoopDriverEdit::DriverChange::eFieldEasing);
     change.easing = kEasings[index];
     LoopDriverEdit::editDrivers(getGui(), _entries[row].knob.lock(), _entries[row].dimension, change, 0);
+}
+
+void
+LoopDriverTable::onStartMenuRequested(const QPoint& /*pos*/)
+{
+    const int row = senderRow();
+
+    if (row >= 0) {
+        LoopDriverEdit::showRangeKeyMenu(getGui(), _entries[row].knob.lock(), _entries[row].dimension, false, _table);
+    }
+}
+
+void
+LoopDriverTable::onEndMenuRequested(const QPoint& /*pos*/)
+{
+    const int row = senderRow();
+
+    if (row >= 0) {
+        LoopDriverEdit::showRangeKeyMenu(getGui(), _entries[row].knob.lock(), _entries[row].dimension, true, _table);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

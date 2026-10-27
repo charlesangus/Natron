@@ -2122,6 +2122,11 @@ public:
     bool hasDrivers() const;
 
     /**
+     * @brief Whether a driver of any dimension has a keyed start or end. MT-safe.
+     **/
+    bool hasAnimatedDriver() const;
+
+    /**
      * @brief The variables the drivers of every dimension read. MT-safe.
      **/
     RenderContextReadSet getDriverReadSet() const;

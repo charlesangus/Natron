@@ -7731,6 +7731,10 @@ Node::hasAnimatedKnob() const
                 }
             }
         }
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get());
+        if (helper && helper->hasAnimatedDriver()) {
+            hasAnimation = true;
+        }
         if (hasAnimation) {
             break;
         }

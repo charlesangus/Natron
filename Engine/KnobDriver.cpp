@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <variant>
 
 #include "Engine/ContentHasher.h"
@@ -41,11 +42,42 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+std::shared_ptr<const Curve>
+keyedCopy(const Curve* curve)
+{
+    return (curve && (curve->getKeyFramesCount() > 0)) ? std::make_shared<const Curve>(*curve) : std::shared_ptr<const Curve>();
+}
+
+void
+appendCurveHash(ContentHasher& h,
+                const std::shared_ptr<const Curve>& curve)
+{
+    h.appendBool(bool(curve));
+    if (curve) {
+        curve->appendContentHash(h);
+    }
+}
+
+void
+curveToSerialization(const std::shared_ptr<const Curve>& curve,
+                     std::optional<Serialization::CurveSerialization>* serialization)
+{
+    serialization->reset();
+    if (curve) {
+        serialization->emplace();
+        curve->toSerialization(&(**serialization));
+    }
+}
+} // anonymous namespace
+
 KnobDriver::KnobDriver(const std::string& variable,
                        double start,
                        double end,
                        EasingEnum easing,
-                       const Curve* curve)
+                       const Curve* curve,
+                       const Curve* startCurve,
+                       const Curve* endCurve)
     : ContextReadSource()
     , _variable(variable.empty() ? std::string(kKnobDriverDefaultVariable) : variable)
     , _name(parseVariable(_variable))
@@ -53,6 +85,8 @@ KnobDriver::KnobDriver(const std::string& variable,
     , _end(end)
     , _easing(easing)
     , _curve((curve && (easing == eEasingCurve)) ? std::make_shared<const Curve>(*curve) : std::shared_ptr<const Curve>())
+    , _startCurve(keyedCopy(startCurve))
+    , _endCurve(keyedCopy(endCurve))
 {
 }
 
@@ -116,8 +150,16 @@ KnobDriver::fromSerialization(const Serialization::KnobDriverSerialization& seri
     if (serialization.curve) {
         curve.fromSerialization(*serialization.curve);
     }
+    Curve startCurve;
+    if (serialization.startCurve) {
+        startCurve.fromSerialization(*serialization.startCurve);
+    }
+    Curve endCurve;
+    if (serialization.endCurve) {
+        endCurve.fromSerialization(*serialization.endCurve);
+    }
 
-    return std::make_shared<const KnobDriver>(serialization.variable, serialization.start, serialization.end, easing, &curve);
+    return std::make_shared<const KnobDriver>(serialization.variable, serialization.start, serialization.end, easing, &curve, &startCurve, &endCurve);
 }
 
 void
@@ -127,11 +169,21 @@ KnobDriver::toSerialization(Serialization::KnobDriverSerialization* serializatio
     serialization->start = _start;
     serialization->end = _end;
     serialization->easing = easingToString(_easing);
-    serialization->curve.reset();
-    if (_curve) {
-        serialization->curve.emplace();
-        _curve->toSerialization(&(*serialization->curve));
-    }
+    curveToSerialization(_curve, &serialization->curve);
+    curveToSerialization(_startCurve, &serialization->startCurve);
+    curveToSerialization(_endCurve, &serialization->endCurve);
+}
+
+double
+KnobDriver::getStartAt(double time) const
+{
+    return _startCurve ? _startCurve->getValueAt(time, false) : _start;
+}
+
+double
+KnobDriver::getEndAt(double time) const
+{
+    return _endCurve ? _endCurve->getValueAt(time, false) : _end;
 }
 
 double
@@ -218,7 +270,8 @@ KnobDriver::evaluate(const RenderContextPtr& context,
     } else {
         return false;
     }
-    *value = _start + (_end - _start) * ease(t);
+    const double start = getStartAt(time);
+    *value = start + (getEndAt(time) - start) * ease(t);
 
     return true;
 } // KnobDriver::evaluate
@@ -230,10 +283,9 @@ KnobDriver::appendContentHash(ContentHasher& h) const
     h.appendDouble(_start);
     h.appendDouble(_end);
     h.appendI64((std::int64_t)_easing);
-    h.appendBool(bool(_curve));
-    if (_curve) {
-        _curve->appendContentHash(h);
-    }
+    appendCurveHash(h, _curve);
+    appendCurveHash(h, _startCurve);
+    appendCurveHash(h, _endCurve);
 }
 
 void

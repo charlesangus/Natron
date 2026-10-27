@@ -381,6 +381,16 @@ namespace YamlDetail {
                     em << YAML::Value;
                     emitCurve(em, *driver.curve);
                 }
+                if (driver.startCurve) {
+                    emitKey(em, "startCurve");
+                    em << YAML::Value;
+                    emitCurve(em, *driver.startCurve);
+                }
+                if (driver.endCurve) {
+                    emitKey(em, "endCurve");
+                    em << YAML::Value;
+                    emitCurve(em, *driver.endCurve);
+                }
                 em << YAML::EndMap;
             }
             if (dimension.value && !dimension.curve && !hasExpression(dimension) && !dimension.master) {
@@ -690,6 +700,12 @@ namespace YamlDetail {
                 }
                 if (YAML::Node curve = driverReader.get("curve")) {
                     driver.curve = readCurve(curve, driverContext + ".curve");
+                }
+                if (YAML::Node startCurve = driverReader.get("startCurve")) {
+                    driver.startCurve = readCurve(startCurve, driverContext + ".startCurve");
+                }
+                if (YAML::Node endCurve = driverReader.get("endCurve")) {
+                    driver.endCurve = readCurve(endCurve, driverContext + ".endCurve");
                 }
                 driverReader.finish();
                 dimension.driver = std::move(driver);

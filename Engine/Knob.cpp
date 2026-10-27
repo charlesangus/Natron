@@ -7982,6 +7982,22 @@ KnobHelper::hasDrivers() const
 }
 
 bool
+KnobHelper::hasAnimatedDriver() const
+{
+    if (!_imp->hasDrivers.load()) {
+        return false;
+    }
+    QMutexLocker k(&_imp->driversMutex);
+    for (const KnobDriverPtr& driver : _imp->drivers) {
+        if (driver && driver->isAnimated()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
 KnobHelper::getDriverValue(double time,
                            ViewIdx view,
                            int dimension,

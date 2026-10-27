@@ -33,6 +33,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QObject>
+#include <QtCore/QPoint>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -94,6 +95,8 @@ private Q_SLOTS:
     void onStartChanged(double value);
     void onEndChanged(double value);
     void onEasingChanged(int index);
+    void onStartMenuRequested(const QPoint& pos);
+    void onEndMenuRequested(const QPoint& pos);
 
 private:
     virtual bool shouldAddStretch() const OVERRIDE FINAL { return false; }
@@ -125,6 +128,10 @@ private:
 
     // The row of the widget that sent the current signal, -1 if none.
     int senderRow() const;
+
+    // Start and end of row at the current time, and whether they are keyed there; a cell being
+    // edited keeps its text.
+    void refreshRange(int row);
 
     void disconnectWatched();
 

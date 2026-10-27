@@ -136,6 +136,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets
@@ -306,6 +307,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

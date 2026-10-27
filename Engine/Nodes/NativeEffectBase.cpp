@@ -900,11 +900,9 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
 }
 
 bool
-NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
-                                 const SceneLayerReads& reads,
-                                 const SceneLayerMemo::AuthorFunc& author,
-                                 ScenePayload* output,
-                                 std::string* errorMessage)
+NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
+                                   SceneLayerMemo::Key* key,
+                                   std::string* errorMessage)
 {
     NodePtr node = getNode();
     AppInstancePtr app = getApp();
@@ -933,16 +931,33 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
         h.appendString(node->getFullyQualifiedName());
     }
 
+    key->nodeDigest = h.finalize();
+    app->getProject()->getFrameRange(&key->firstFrame, &key->lastFrame);
+    key->framesPerSecond = app->getProject()->getProjectFrameRate();
+    key->upAxis = app->getProject()->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
+    key->metersPerUnit = app->getProject()->getProjectMetersPerUnit();
+    key->upstreamRead = reads.upstream;
+    key->factsDigest = reads.factsDigest;
+    key->readsFrameRange = reads.frameRange;
+
+    return true;
+} // NativeEffectBase::getSceneLayerKey
+
+bool
+NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
+                                 const SceneLayerReads& reads,
+                                 const SceneLayerMemo::AuthorFunc& author,
+                                 ScenePayload* output,
+                                 std::string* errorMessage)
+{
     SceneLayerMemo::Key key;
-    key.nodeDigest = h.finalize();
-    app->getProject()->getFrameRange(&key.firstFrame, &key.lastFrame);
-    key.framesPerSecond = app->getProject()->getProjectFrameRate();
-    key.upstreamRead = reads.upstream;
-    key.factsDigest = reads.factsDigest;
-    key.readsFrameRange = reads.frameRange;
+
+    if (!getSceneLayerKey(reads, &key, errorMessage)) {
+        return false;
+    }
 
     return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage);
-} // NativeEffectBase::emitSceneLayer
+}
 
 void
 NativeEffectBase::invalidateSceneLayer()

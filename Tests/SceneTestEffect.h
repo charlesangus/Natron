@@ -37,10 +37,13 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/ScenePayload.h"
 
 #define kTestPluginIDSceneSource "test.natron.built-in.SceneSource"
 #define kTestPluginIDSceneOp "test.natron.built-in.SceneOp"
+#define kTestPluginIDSceneGeometry "test.natron.built-in.SceneGeometry"
 
 // What a failing SceneSource reports, so a test can find it in the action's message.
 #define kSceneTestSourceFailureMessage "SceneSource was set to fail"
@@ -55,6 +58,7 @@
 NATRON_NAMESPACE_ENTER
 
 struct SceneLayerEdit;
+class SceneTestGeometry;
 
 // How many times SceneSource's renderScene() ran, so a test can tell a pass-through from a second
 // evaluation.
@@ -82,6 +86,8 @@ bool sceneTestAuthorOp(const SceneLayerEdit& edit, int value, std::string* error
 bool sceneTestAuthorFactOp(const SceneLayerEdit& edit, int value, int sourceValue, std::string* errorMessage);
 // The source value the stack composes, read through SceneQueryPool; 0 if none.
 bool sceneTestReadSourceValue(const ScenePayload& payload, int* value, std::string* errorMessage);
+// SceneTestGeometry's scene: material grafted under a cube at primPath bound to it.
+bool sceneTestRenderGeometry(SceneTestGeometry* effect, const ScenePayload& material, const std::string& primPath, SceneGraftMemo* memo, ScenePayload* output, std::string* errorMessage);
 
 /**
  * @brief A scene source: defines kSceneTestPrimPath carrying its "value" knob, or fails with
@@ -263,6 +269,89 @@ private:
 
     KnobIntWPtr _value;
     KnobIntWPtr _upstreamRead;
+};
+
+/**
+ * @brief A geometry stand-in until shipped primitives exist: defines a Cube at its Prim Path
+ * (/<script name> by default) and takes a material on its Material input, through
+ * SceneNodeAuthoring::graftMaterialInput.
+ **/
+class SceneTestGeometry
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new SceneTestGeometry(n);
+    }
+
+    explicit SceneTestGeometry(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    // emitSceneLayer() keyed on factsDigest, for sceneTestRenderGeometry().
+    bool emitLayer(const ScenePayload& upstream,
+                   U64 factsDigest,
+                   const SceneLayerMemo::AuthorFunc& author,
+                   ScenePayload* output,
+                   std::string* errorMessage)
+    {
+        SceneLayerReads reads;
+        reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+        reads.factsDigest = factsDigest;
+        reads.frameRange = false;
+
+        return emitSceneLayer(upstream, reads, author, output, errorMessage);
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Material", .kind = eDataKindScene, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDSceneGeometry,
+        .label = "Test Scene Geometry",
+        .outputKind = eDataKindScene,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+
+        _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Geometry"), QString());
+    }
+
+    virtual void onScriptNameChanged(const std::string& /*fullyQualifiedName*/) OVERRIDE FINAL
+    {
+        followSceneNodeRename(_primPath.lock(), getSceneNodeDefaultPrimPath(this, "Geometry"));
+    }
+
+    virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
+                                   ScenePayload* outputScene,
+                                   std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        KnobStringPtr primPath = _primPath.lock();
+        if (!primPath) {
+            return eStatusFailed;
+        }
+
+        return sceneTestRenderGeometry(this, args.getInputScene(0), primPath->getValue(), &_graftMemo, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+    }
+
+    KnobStringWPtr _primPath;
+    SceneGraftMemo _graftMemo;
 };
 
 NATRON_NAMESPACE_EXIT

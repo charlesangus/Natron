@@ -25,8 +25,10 @@
 
 #include "USDWrite.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -250,6 +252,96 @@ authoredOffset(const PXR_NS::SdfLayerOffset& toRoot,
     return PXR_NS::SdfLayerOffset(toRoot.GetOffset(), toRoot.GetScale() * layer->GetTimeCodesPerSecond() / rootTcps);
 }
 
+// The paths of layer's prim specs, variant ones included.
+std::vector<PXR_NS::SdfPath>
+primSpecPaths(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::vector<PXR_NS::SdfPath> paths;
+
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&paths](const PXR_NS::SdfPath& path) {
+        if (path.IsPrimOrPrimVariantSelectionPath()) {
+            paths.push_back(path);
+        }
+    });
+
+    return paths;
+}
+
+/**
+ * @brief Composes scale after the layer offset of each of layer's references and payloads to
+ * another layer. UsdUtilsFlattenLayerStack folds the offset a layer has in the stack, its time
+ * codes per second against the root's included, into these arcs, while composition of the
+ * flattened layer scales them again by the root's rate against the target's: scaling them by the
+ * layer's rate against the root's first leaves the arc mapping the target as it did in the layer.
+ **/
+void
+scaleArcOffsets(const PXR_NS::SdfLayerRefPtr& layer,
+                double scale)
+{
+    const PXR_NS::SdfLayerOffset scaling(0., scale);
+
+    for (const PXR_NS::SdfPath& path : primSpecPaths(layer)) {
+        PXR_NS::SdfReferenceListOp references;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->References, &references)) {
+            references.ModifyOperations([&scaling](const PXR_NS::SdfReference& reference) -> std::optional<PXR_NS::SdfReference> {
+                PXR_NS::SdfReference scaled(reference);
+                if (!reference.GetAssetPath().empty()) {
+                    scaled.SetLayerOffset(reference.GetLayerOffset() * scaling);
+                }
+
+                return scaled;
+            });
+            layer->SetField(path, PXR_NS::SdfFieldKeys->References, references);
+        }
+        PXR_NS::SdfPayloadListOp payloads;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->Payload, &payloads)) {
+            payloads.ModifyOperations([&scaling](const PXR_NS::SdfPayload& payload) -> std::optional<PXR_NS::SdfPayload> {
+                PXR_NS::SdfPayload scaled(payload);
+                if (!payload.GetAssetPath().empty()) {
+                    scaled.SetLayerOffset(payload.GetLayerOffset() * scaling);
+                }
+
+                return scaled;
+            });
+            layer->SetField(path, PXR_NS::SdfFieldKeys->Payload, payloads);
+        }
+    }
+}
+
+// A reference or payload to an anonymous layer, and the layer offset it maps the layer's times by.
+struct AnonymousArc {
+    std::string identifier;
+    PXR_NS::SdfLayerOffset offset;
+};
+
+// The references and payloads layer authors to anonymous layers, in traversal order.
+std::vector<AnonymousArc>
+anonymousArcs(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::vector<AnonymousArc> arcs;
+
+    for (const PXR_NS::SdfPath& path : primSpecPaths(layer)) {
+        PXR_NS::SdfReferenceListOp references;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->References, &references)) {
+            for (const PXR_NS::SdfReference& reference : references.GetAppliedItems()) {
+                if (PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(reference.GetAssetPath())) {
+                    arcs.push_back(AnonymousArc { reference.GetAssetPath(), reference.GetLayerOffset() });
+                }
+            }
+        }
+        PXR_NS::SdfPayloadListOp payloads;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->Payload, &payloads)) {
+            for (const PXR_NS::SdfPayload& payload : payloads.GetAppliedItems()) {
+                if (PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(payload.GetAssetPath())) {
+                    arcs.push_back(AnonymousArc { payload.GetAssetPath(), payload.GetLayerOffset() });
+                }
+            }
+        }
+    }
+
+    return arcs;
+}
+
 /**
  * @brief The anonymous layers run, strongest first, flattened into one layer of time codes per
  * second rootTcps, their times mapped to the root's. Null when USD cannot.
@@ -263,6 +355,11 @@ flattenRun(const std::vector<StackItem>& run,
     root->SetTimeCodesPerSecond(rootTcps);
     std::vector<std::string> paths;
     for (const StackItem& item : run) {
+        // The run's layers are copies, which are ours to edit.
+        const double tcps = item.layer->GetTimeCodesPerSecond();
+        if (tcps != rootTcps) {
+            scaleArcOffsets(item.layer, tcps / rootTcps);
+        }
         paths.push_back(item.layer->GetIdentifier());
     }
     root->SetSubLayerPaths(paths);
@@ -282,6 +379,128 @@ flattenRun(const std::vector<StackItem>& run,
         }
 
         return assetPath; }, "natron-usdwrite");
+}
+
+/**
+ * @brief A layer stack as layered mode writes it: its strongest run of anonymous layers flattened
+ * into output, and output's sublayers, strongest first: the files the stack reads, and between them
+ * the runs of anonymous layers weaker than one, flattened in place so the written stack composes
+ * with the strength order it had.
+ **/
+struct StackLayout {
+    PXR_NS::SdfLayerRefPtr output;
+    std::vector<StackItem> sublayers;
+};
+
+// Lays out items, strongest first, in layers of time codes per second rootTcps. False when USD
+// cannot flatten a run.
+bool
+layOutStack(const std::vector<StackItem>& items,
+            double rootTcps,
+            StackLayout* layout)
+{
+    // A file read twice the same way is one sublayer, where it is strongest.
+    std::set<std::pair<std::string, std::pair<double, double>>> seen;
+    std::vector<StackItem> run;
+    bool flattenedOk = true;
+    auto endRun = [&]() {
+        if (run.empty()) {
+            return;
+        }
+        PXR_NS::SdfLayerRefPtr flattened = flattenRun(run, rootTcps);
+        run.clear();
+        if (!flattened) {
+            flattenedOk = false;
+        } else if (!layout->output && layout->sublayers.empty()) {
+            layout->output = flattened;
+        } else {
+            layout->sublayers.push_back(StackItem { flattened, PXR_NS::SdfLayerOffset(), false });
+        }
+    };
+
+    for (const StackItem& item : items) {
+        if (!item.external) {
+            run.push_back(item);
+            continue;
+        }
+        if (!seen.insert(std::make_pair(item.layer->GetIdentifier(), std::make_pair(item.toRoot.GetOffset(), item.toRoot.GetScale()))).second) {
+            continue;
+        }
+        endRun();
+        layout->sublayers.push_back(item);
+    }
+    endRun();
+    if (!flattenedOk) {
+        return false;
+    }
+    if (!layout->output) {
+        // The strongest layer is a file: the written layer holds nothing but its sublayers.
+        layout->output = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite");
+    }
+
+    return true;
+}
+
+/**
+ * @brief A layer stack written to files: the scene's, or, in layered mode, that of an anonymous
+ * layer a written layer references, as a re-parenting node references the layer it grafts its
+ * input from. Such a stack goes to a sidecar, which the reference is pointed at. source is the
+ * referenced layer, null for the scene's stack. Its written layers carry time codes per second
+ * tcps, and [startTime, endTime] is the range of its times the frame range reaches.
+ **/
+struct WrittenStack {
+    PXR_NS::SdfLayerRefPtr source;
+    QString path;
+    double tcps = 24.;
+    StackLayout layout;
+    // Where each run among layout.sublayers is written; empty for a file.
+    std::vector<QString> runPaths;
+    bool hasRange = false;
+    double startTime = 0.;
+    double endTime = 0.;
+};
+
+// A written stack's reference to another's: toFrom maps the times of stack to those of stack from.
+struct StackArc {
+    std::size_t from;
+    std::size_t to;
+    PXR_NS::SdfLayerOffset toFrom;
+};
+
+/**
+ * @brief Widens each referenced stack's range to hold every time its references map the
+ * referencing stacks' ranges to, until no range grows: references between written stacks follow
+ * the scene's node graph, which has no cycles.
+ **/
+void
+propagateRanges(const std::vector<StackArc>& arcs,
+                std::vector<WrittenStack>* stacks)
+{
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const StackArc& arc : arcs) {
+            const WrittenStack& from = (*stacks)[arc.from];
+            if (!from.hasRange || !arc.toFrom.IsValid() || (arc.toFrom.GetScale() == 0.)) {
+                continue;
+            }
+            const PXR_NS::SdfLayerOffset fromTo = arc.toFrom.GetInverse();
+            const double a = fromTo * from.startTime;
+            const double b = fromTo * from.endTime;
+            const double start = std::min(a, b);
+            const double end = std::max(a, b);
+            WrittenStack& to = (*stacks)[arc.to];
+            if (!to.hasRange) {
+                to.hasRange = true;
+                to.startTime = start;
+                to.endTime = end;
+                grew = true;
+            } else if ((start < to.startTime) || (end > to.endTime)) {
+                to.startTime = std::min(start, to.startTime);
+                to.endTime = std::max(end, to.endTime);
+                grew = true;
+            }
+        }
+    }
 }
 
 /**
@@ -416,7 +635,8 @@ USDWrite::initializeKnobs()
                                           "files the scene reads (USDRead's) as sublayers, so they are referred to rather "
                                           "than copied. Each file keeps its strength: what was authored below one goes to "
                                           "a file of its own beside the written one (name_layer1.usda, ...), sublayered "
-                                          "below it. Files of those names that the write does not produce, left by an earlier write, are "
+                                          "below it, and so does what a node places under one of its prims, as USDXformPrim "
+                                          "does its inputs, which the written file references. Files of those names that the write does not produce, left by an earlier write, are "
                                           "removed.")
                                            .toStdString()));
         options.push_back(ChoiceOption("flattened", tr("Flattened").toStdString(),
@@ -620,8 +840,9 @@ USDWrite::writeFrameRange(int firstFrame,
     const double endTime = SceneOps::frameToTimeCode(scene, lastFrame, fps);
 
     PXR_NS::TfErrorMark mark;
-    // What is written, strongest first: the file itself, then, in layered mode, the files of the
-    // runs of anonymous layers below a file the scene reads, written beside it.
+    // What is written, the file itself first, then, in layered mode, the sidecars beside it: the
+    // runs of anonymous layers below a file the scene reads, and the stacks of the anonymous layers
+    // the written layers reference.
     struct Written {
         QString path;
         PXR_NS::SdfLayerRefPtr layer;
@@ -631,81 +852,107 @@ USDWrite::writeFrameRange(int firstFrame,
     {
         // The scene's layers are read while they are flattened: no write may edit them meanwhile.
         SceneWriteBarrier::ReadScope read;
-        PXR_NS::SdfLayerRefPtr output;
-        // In layered mode, the sublayers of output, strongest first: the files the scene reads, and
-        // between them the runs of anonymous layers weaker than one, flattened in place so the
-        // written file composes with the strength order the scene had.
-        std::vector<StackItem> sublayers;
+        // The written stacks, the scene's first. Each anonymous layer a written layer references
+        // is one stack, numbered among the sidecars in the order the written layers reference it,
+        // so the same scene gets the same names.
+        std::vector<WrittenStack> stacks(1);
+        stacks[0].path = outputPath;
+        stacks[0].tcps = metadata.timeCodesPerSecond;
+        stacks[0].hasRange = true;
+        stacks[0].startTime = startTime;
+        stacks[0].endTime = endTime;
+        std::map<std::string, std::size_t> stackOfLayer;
+        std::vector<StackArc> arcs;
+        int sidecarIndex = 0;
+        const auto nextSidecarPath = [&]() {
+            return QDir(outputDir).filePath(QString::fromUtf8("%1_layer%2.%3").arg(outputInfo.completeBaseName()).arg(++sidecarIndex).arg(outputInfo.suffix()));
+        };
+        const auto flattenFailure = [&]() {
+            const std::string errors = takeUsdErrors(mark);
+
+            return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
+        };
         // The files the write produces or references, which a removal of stale sidecars spares.
         std::set<QString> keep;
         if (exportMode == eExportModeFlattened) {
             PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
-            output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
+            stacks[0].layout.output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
+            if (!stacks[0].layout.output) {
+                return flattenFailure();
+            }
             // The flattened file holds what these files author, but the nodes reading them, a
             // USDRead of one, still need them.
-            if (stage) {
-                for (const PXR_NS::SdfLayerHandle& layer : stage->GetUsedLayers()) {
-                    const std::string realPath = layer ? layer->GetRealPath() : std::string();
-                    if (!realPath.empty()) {
-                        keep.insert(QDir::cleanPath(QString::fromStdString(realPath)));
-                    }
+            for (const PXR_NS::SdfLayerHandle& layer : stage->GetUsedLayers()) {
+                const std::string realPath = layer ? layer->GetRealPath() : std::string();
+                if (!realPath.empty()) {
+                    keep.insert(QDir::cleanPath(QString::fromStdString(realPath)));
                 }
             }
         } else {
-            std::vector<StackItem> items;
-            const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
-            for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
-                // As composition maps a sublayer of the root: by the ratio of their time codes per second.
-                const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
-                appendLayerStack(it->layer, toRoot, &items);
-            }
-            // A file read twice the same way is one sublayer, where it is strongest.
-            std::set<std::pair<std::string, std::pair<double, double>>> seen;
-            std::vector<StackItem> run;
-            bool flattenedOk = true;
-            auto endRun = [&]() {
-                if (run.empty()) {
-                    return;
-                }
-                PXR_NS::SdfLayerRefPtr flattened = flattenRun(run, metadata.timeCodesPerSecond);
-                run.clear();
-                if (!flattened) {
-                    flattenedOk = false;
-                } else if (!output && sublayers.empty()) {
-                    output = flattened;
+            for (std::size_t i = 0; i < stacks.size(); ++i) {
+                std::vector<StackItem> items;
+                if (i == 0) {
+                    const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
+                    for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                        // As composition maps a sublayer of the root: by the ratio of their time codes per second.
+                        const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
+                        appendLayerStack(it->layer, toRoot, &items);
+                    }
                 } else {
-                    sublayers.push_back(StackItem { flattened, PXR_NS::SdfLayerOffset(), false });
+                    appendLayerStack(stacks[i].source, PXR_NS::SdfLayerOffset(), &items);
                 }
-            };
-            for (const StackItem& item : items) {
-                if (!item.external) {
-                    run.push_back(item);
-                    continue;
+                StackLayout layout;
+                if (!layOutStack(items, stacks[i].tcps, &layout)) {
+                    return flattenFailure();
                 }
-                if (!seen.insert(std::make_pair(item.layer->GetIdentifier(), std::make_pair(item.toRoot.GetOffset(), item.toRoot.GetScale()))).second) {
-                    continue;
+                std::vector<PXR_NS::SdfLayerRefPtr> layers(1, layout.output);
+                std::vector<QString> runPaths;
+                for (const StackItem& item : layout.sublayers) {
+                    runPaths.push_back(item.external ? QString() : nextSidecarPath());
+                    if (!item.external) {
+                        layers.push_back(item.layer);
+                    }
                 }
-                endRun();
-                sublayers.push_back(item);
-            }
-            endRun();
-            if (flattenedOk && !output) {
-                // The strongest layer is a file: the written file holds nothing but its sublayers.
-                output = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite");
-            }
-            if (!flattenedOk) {
-                output.Reset();
-            }
-        }
-        if (!output) {
-            const std::string errors = takeUsdErrors(mark);
+                stacks[i].layout = layout;
+                stacks[i].runPaths = runPaths;
 
-            return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
+                for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+                    for (const AnonymousArc& arc : anonymousArcs(layer)) {
+                        std::map<std::string, std::size_t>::const_iterator found = stackOfLayer.find(arc.identifier);
+                        std::size_t to = 0;
+                        if (found != stackOfLayer.end()) {
+                            to = found->second;
+                        } else {
+                            const PXR_NS::SdfLayerHandle referenced = PXR_NS::SdfLayer::Find(arc.identifier);
+                            if (!referenced) {
+                                return fail(tr("The scene refers to the layer %1, which no longer exists.").arg(QString::fromStdString(arc.identifier)));
+                            }
+                            to = stacks.size();
+                            stackOfLayer[arc.identifier] = to;
+                            WrittenStack stack;
+                            stack.source = PXR_NS::SdfLayerRefPtr(referenced);
+                            stack.path = nextSidecarPath();
+                            stack.tcps = referenced->GetTimeCodesPerSecond();
+                            stacks.push_back(stack);
+                        }
+                        // As composition maps a reference: its offset, then the scale between the
+                        // two layers' time codes per second.
+                        arcs.push_back(StackArc { i, to, arc.offset * PXR_NS::SdfLayerOffset(0., stacks[i].tcps / stacks[to].tcps) });
+                    }
+                }
+            }
+            propagateRanges(arcs, &stacks);
         }
 
-        const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer) {
-            clipTimeSamples(layer, startTime, endTime);
-            PXR_NS::UsdUtilsModifyAssetPaths(layer, [&outputDir, pathMode, &keep](const std::string& assetPath) {
+        const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
+            if (stack.hasRange) {
+                clipTimeSamples(layer, stack.startTime, stack.endTime);
+            }
+            PXR_NS::UsdUtilsModifyAssetPaths(layer, [&](const std::string& assetPath) {
+                const std::map<std::string, std::size_t>::const_iterator sidecar = stackOfLayer.find(assetPath);
+                if (sidecar != stackOfLayer.end()) {
+                    return rewriteAssetPath(stacks[sidecar->second].path.toStdString(), outputDir, pathMode);
+                }
                 const QString referenced = referencedFilePath(assetPath);
                 if (!referenced.isEmpty()) {
                     keep.insert(referenced);
@@ -714,45 +961,65 @@ USDWrite::writeFrameRange(int firstFrame,
                 return rewriteAssetPath(assetPath, outputDir, pathMode);
             });
         };
-        finish(output);
-        authorStageMetadata(output, metadata, startTime, endTime, fps);
-        written.push_back(Written { outputPath, output });
+        for (const WrittenStack& stack : stacks) {
+            const PXR_NS::SdfLayerRefPtr& output = stack.layout.output;
+            finish(output, stack);
+            if (!stack.source) {
+                authorStageMetadata(output, metadata, startTime, endTime, fps);
+            } else {
+                // Only a stage's root layer's metadata takes effect, but a sidecar opened on its
+                // own reads as the layer it stands for.
+                const PXR_NS::SdfPath& rootPath = PXR_NS::SdfPath::AbsoluteRootPath();
+                for (const PXR_NS::TfToken& field : { PXR_NS::UsdGeomTokens->upAxis, PXR_NS::UsdGeomTokens->metersPerUnit }) {
+                    PXR_NS::VtValue value;
+                    if (stack.source->HasField(rootPath, field, &value)) {
+                        output->SetField(rootPath, field, value);
+                    }
+                }
+                if (stack.source->HasDefaultPrim()) {
+                    output->SetDefaultPrim(stack.source->GetDefaultPrim());
+                }
+                output->SetTimeCodesPerSecond(stack.tcps);
+            }
+            written.push_back(Written { stack.path, output });
 
-        // After the asset paths are rewritten, which would drop the offsets of the sublayers.
-        std::vector<std::string> subLayerPaths;
-        PXR_NS::SdfLayerOffsetVector subLayerOffsets;
-        int runIndex = 0;
-        for (const StackItem& item : sublayers) {
-            if (item.external) {
-                subLayerPaths.push_back(rewriteAssetPath(item.layer->GetIdentifier(), outputDir, pathMode));
-                // Authored so that composition, which scales by the ratio of the two layers' time
-                // codes per second, arrives at the offset the scene had.
-                subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, metadata.timeCodesPerSecond));
-                continue;
+            // After the asset paths are rewritten, which would drop the offsets of the sublayers.
+            std::vector<std::string> subLayerPaths;
+            PXR_NS::SdfLayerOffsetVector subLayerOffsets;
+            for (std::size_t i = 0; i < stack.layout.sublayers.size(); ++i) {
+                const StackItem& item = stack.layout.sublayers[i];
+                if (item.external) {
+                    subLayerPaths.push_back(rewriteAssetPath(item.layer->GetIdentifier(), outputDir, pathMode));
+                    // Authored so that composition, which scales by the ratio of the two layers' time
+                    // codes per second, arrives at the offset the stack had.
+                    subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, stack.tcps));
+                    continue;
+                }
+                // A run below a file goes to a file of its own beside the written one.
+                finish(item.layer, stack);
+                item.layer->SetTimeCodesPerSecond(stack.tcps);
+                written.push_back(Written { stack.runPaths[i], item.layer });
+                subLayerPaths.push_back(rewriteAssetPath(stack.runPaths[i].toStdString(), outputDir, pathMode));
+                subLayerOffsets.push_back(PXR_NS::SdfLayerOffset());
             }
-            // A run below a file goes to a file of its own beside the written one.
-            const QString runPath = QDir(outputDir).filePath(QString::fromUtf8("%1_layer%2.%3").arg(outputInfo.completeBaseName()).arg(++runIndex).arg(outputInfo.suffix()));
-            finish(item.layer);
-            item.layer->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
-            written.push_back(Written { runPath, item.layer });
-            subLayerPaths.push_back(rewriteAssetPath(runPath.toStdString(), outputDir, pathMode));
-            subLayerOffsets.push_back(PXR_NS::SdfLayerOffset());
+            output->SetSubLayerPaths(subLayerPaths);
+            for (std::size_t i = 0; i < subLayerOffsets.size(); ++i) {
+                output->SetSubLayerOffset(subLayerOffsets[i], (int)i);
+            }
         }
-        for (const StackItem& item : sublayers) {
-            if (!item.external) {
-                continue;
-            }
-            const QString realPath = QDir::cleanPath(QString::fromStdString(item.layer->GetRealPath()));
-            keep.insert(realPath);
-            for (const Written& w : written) {
-                if (realPath == w.path) {
-                    return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
+        for (const WrittenStack& stack : stacks) {
+            for (const StackItem& item : stack.layout.sublayers) {
+                if (!item.external) {
+                    continue;
+                }
+                const QString realPath = QDir::cleanPath(QString::fromStdString(item.layer->GetRealPath()));
+                keep.insert(realPath);
+                for (const Written& w : written) {
+                    if (realPath == w.path) {
+                        return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
+                    }
                 }
             }
-        }
-        output->SetSubLayerPaths(subLayerPaths);
-        for (std::size_t i = 0; i < subLayerOffsets.size(); ++i) {
-            output->SetSubLayerOffset(subLayerOffsets[i], (int)i);
         }
 
         // The weakest first, so that a reader of the written file never finds a sublayer missing.

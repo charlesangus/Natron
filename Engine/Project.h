@@ -507,6 +507,10 @@ public:
 
     double getProjectFrameRate() const;
 
+    // The scene units every scene node's layer authors as its upAxis and metersPerUnit.
+    bool isProjectUpAxisZ() const;
+    double getProjectMetersPerUnit() const;
+
     KnobPathPtr getEnvVarKnob() const;
 
     /**

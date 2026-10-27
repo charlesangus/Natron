@@ -29,7 +29,6 @@
 #include "Global/Macros.h"
 
 #include <string>
-#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -39,7 +38,6 @@
 
 #define PLUGINID_NATRON_USDMATERIAL "USDMaterial"
 
-#define kUSDMaterialParamPrimPattern "primPattern"
 #define kUSDMaterialParamDiffuseColor "diffuseColor"
 #define kUSDMaterialParamDiffuseTexture "diffuseTexture"
 #define kUSDMaterialParamMetallic "metallic"
@@ -55,33 +53,29 @@ struct SceneLayerEdit;
 
 /**
  * @brief Authors a UsdPreviewSurface material at its prim path (the node's name under the root by
- * default) and binds it to the prims a prim pattern names in its input scene. Diffuse Color,
+ * default), as a scene source. A geometry node binds it by taking it on its Material input, which
+ * grafts it under the geometry's prim (SceneNodeAuthoring::graftMaterialInput). Diffuse Color,
  * Metallic, Roughness and Emissive Color set the surface's inputs; each has a texture file that,
  * when set, drives the input from a UsdUVTexture read through the "st" primvar instead. Colours
  * are in the project working space and written unchanged. A texture path that does not resolve
- * is authored anyway, with a node warning naming it; a pattern that matches no prim authors the
- * material unbound, with a node warning.
+ * is authored anyway, with a node warning naming it.
  **/
 class USDMaterial
     : public NativeEffectBase {
 public:
-    static constexpr InputSpec kInputs[] = {
-        InputSpec { .label = "Scene", .kind = eDataKindScene, .optional = true },
-    };
-
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDMATERIAL,
         .label = "USDMaterial",
         .description = "Author a UsdPreviewSurface material (diffuse colour, metallic, roughness and emissive colour, each "
-                       "optionally from a texture file) and bind it to the prims a pattern names (paths, with * and ? "
-                       "wildcards) in the input scene. Colours are in the project working space and written unchanged.",
+                       "optionally from a texture file). Connect it to the Material input of a geometry node, which "
+                       "places the material under its own prim and binds itself to it. Colours are in the project "
+                       "working space and written unchanged.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDMaterial.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
-        .inputs = kInputs,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -104,13 +98,11 @@ private:
     // The path a texture file knob holds, anchored (SceneNodeAuthoring::getAnchoredFilePath), empty for none.
     static std::string getTexturePath(const KnobFilePtr& knob);
 
-    // Authors the material, and its binding to each of bindPaths, into edit's layer.
+    // Authors the material into edit's layer.
     bool authorLayer(const SceneLayerEdit& edit,
-                     const std::vector<std::string>& bindPaths,
                      std::string* errorMessage) const;
 
     KnobStringWPtr _primPath;
-    KnobStringWPtr _primPattern;
     KnobColorWPtr _diffuseColor;
     KnobFileWPtr _diffuseTexture;
     KnobDoubleWPtr _metallic;

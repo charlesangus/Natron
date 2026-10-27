@@ -410,3 +410,5 @@ Scouted facts (2026-10-22, `main` `1eed87752`; re-scouted at the grill, so the e
 - Op parameters go in a storage buffer and wrap geometry in push constants (`GpuWrapParams`, 112 B of the 128 B limit). A per-channel alpha binding table belongs in the buffer.
 - Masks may come from any layer.
 - Seed a GPU cost row by measuring a lone node's region `kernelMs` at UHD (`render-profile-report.py --emit-cost-table`), as P4.T3 does. A node without a row only gets the class default.
+
+UAT approved 2026-10-27 (round 3: B Layers / A Layers / Operation / BBox-Metadata-Range panel order; knobs bLayers/aLayers). Main merged in (kept native Merge ids in GLScheduler_Test and check-startup.sh); merging after PR CI.

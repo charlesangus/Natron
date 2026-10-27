@@ -121,3 +121,7 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
 - The full build and ctest pass, including both DenoiseProfiled suites on lavapipe and RADV.
 - Under Xvfb, a high-ISO raw is developed with DenoiseProfiled in each mode, with screenshots against darktable's render shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-27 — Restacked on main after M209 merged; gate green. UAT: build/appimages/Natron-m210-profiled-denoise.AppImage, M210-uat.md, draft PR #140. Reference suite timeout 1800 s (full-frame parity cases ~180 s per site).

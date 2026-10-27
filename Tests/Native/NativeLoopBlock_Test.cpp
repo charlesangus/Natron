@@ -612,13 +612,14 @@ TEST_F(NativeLoopBlockTest, OverAndUnderFoldInOrder)
     }
 }
 
-// 64 iterations of a UHD float body: the task graph folds them in a chain, so with a budget of a
-// few images the iterations never all wait in the frame's store at once, and the result is the
-// same bits as the Legacy render's serial fold at every pool size.
+// 64 iterations of a float body: the task graph folds them in a chain, so with a budget of a few
+// images the iterations never all wait in the frame's store at once, and the result is the same
+// bits as the Legacy render's serial fold at every pool size. The iterations all read the same
+// image, so each is admitted against the budget rather than run as soon as that image is there.
 TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
 {
-    const int width = 3840;
-    const int height = 2160;
+    const int width = 1024;
+    const int height = 576;
     const int iterations = 64;
     const std::size_t imageBytes = (std::size_t)width * height * 4 * sizeof(float);
     const std::size_t budget = 6 * imageBytes;
@@ -656,5 +657,5 @@ TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
     // A branch is admitted only while the stores fit the budget, except one admitted when nothing
     // else runs, which may go over by its own output.
     EXPECT_GT(scheduler->getPeakBytesInFlight(), (std::size_t)0);
-    EXPECT_LE(scheduler->getPeakBytesInFlight(), budget + imageBytes);
+    EXPECT_LE(scheduler->getPeakBytesInFlight(), budget + imageBytes) << "peak of " << ((double)scheduler->getPeakBytesInFlight() / (double)imageBytes) << " images";
 }

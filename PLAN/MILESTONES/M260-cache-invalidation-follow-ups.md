@@ -25,6 +25,7 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
 
 ## Decisions
 
+- 2026-10-27 — PM: A4 closes as not reachable for writes — sequence renders (Writes included) are abortable (OutputSchedulerThread.cpp:2436, :2665, abort :2598-2600); M202's store gate already keeps mixed-state results out of caches. I4 stays as a test-first item (RgbThenRgbaRequest); fix only if it fails.
 - 2026-10-27 — PM: T5 becomes the real group bug — removing a GroupInput returns early in NodeGroup::notifyNodeDeactivated without syncing the GUI list, so the next dequeue restores it (nothing queues group connection changes, so the planned test can't fail). Clear All Caches does not re-stamp files: only Reload re-reads (user's rule), so a changed file errors after Clear Caches until Reload. The A/B switch marks inside refreshActiveInputs so the viewer's own onInputChanged runs under the new hash.
 - 2026-10-27 — PM: a Write frame whose render args moved mid-render (A4) is re-rendered once under fresh args, then fails with an error if they move again. A pinned Read's "changed on disk since it was loaded, Reload to read it" error text goes to the user at UAT.
 - 2026-10-27 — **Reload is the recheck (user):** Natron never watches files on disk. For N3, a Read pins to the file as it was when last loaded or reloaded: the OIIO header and Raw decode caches must not pick up a changed file on their own; only Reload re-reads it (and moves the node hash). Old header plus new pixels must never mix.

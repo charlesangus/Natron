@@ -95,4 +95,5 @@ Asset-style material workflow, beside M226 - Scene Hierarchy From Topology's com
 
 ## Decisions
 
+- 2026-10-27 — **User:** USDAssignMaterial has both a Material input (grafted into the scope and bound) and a Material Path knob (greyed while the input is connected). Default strength Stronger Than Descendants.
 - 2026-10-27 — **Collection binding per matched root, Stronger Than Descendants by default (cat-plan):** with bindings only on roots, graph order equals binding strength. A later assign is either on the same root (where `propertyOrder` decides) or on a higher ancestor after a re-parent (where stronger-than-descendants decides). Weaker would let an asset's internal bindings, or an earlier assign deeper down, beat a later node. Rejected: direct bindings on each prim (~900 ms repair per graft at 20k prims).

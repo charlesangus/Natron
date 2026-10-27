@@ -139,4 +139,5 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Decisions
 
+- 2026-10-27 — PM: darktable rasterises path feathers with integer-snapped lines (path.c _path_falloff_roi: len+1, neighbour writes, int truncation), giving a ~1 px full-strength band biased up/left; geometry otherwise matches exactly. Parity for Bezier-path jobs excludes a ±2 px band around the path edge; tolerances unchanged; documented beside the feather-falloff deviation.
 - 2026-10-27 — PM: kept darktable's behaviour for shapes above Scales+1 (no effect), cropped (not mirrored) out-of-image sources, Roto's feather falloff (differs from darktable's quadratic — documented), Max Heal Iterations visible, a Residual output; darktable's unused 'none' algorithm dropped. Source drag made undoable (one step per drag). References: 16 whole 64x48 synthetic half-float images, ~0.3 MB plain git.

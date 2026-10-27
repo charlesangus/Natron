@@ -297,3 +297,5 @@ Shipped: phase 6 at 0c1fe3168 (release gate green, run 40239056993).
 Review round (Codex, PR #114): Threshold icon and CPU cost seeds fixed at 137eaaafa; release gate green. GPU seeds pending the GPU host; UAT pending.
 
 UAT approved 2026-10-26 (round 4, from screenshots: luma defaults to edges 0, 0.05, 0.5, 0.95, 1). Merging after PR CI on main.
+
+Shipped: merged as 39930fe80 (#114) on 2026-10-27.

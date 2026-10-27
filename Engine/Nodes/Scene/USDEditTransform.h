@@ -30,6 +30,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -102,6 +103,13 @@ public:
      **/
     bool getHandleTarget(std::string* primPath,
                          std::string* opName) const;
+
+    /**
+     * @brief Every prim the last evaluation matched, in pattern order, and the name of the op the
+     * node authors on each. Both empty when it matched nothing.
+     **/
+    void getMatchedPrims(std::vector<std::string>* primPaths,
+                         std::vector<std::string>* opNames) const;
 
     const SceneTransformKnobs& getTransformKnobs() const
     {

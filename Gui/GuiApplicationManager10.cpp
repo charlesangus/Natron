@@ -909,7 +909,11 @@ GuiApplicationManager::populateShortcuts()
         _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DToggleSelection, kShortcutDescMouseViewer3DToggleSelection, eMouseGestureClick, preset);
         _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DMarquee, kShortcutDescMouseViewer3DMarquee, eMouseGestureDrag, preset);
         for (const Viewer3DKeyBinding& b : getViewer3DDefaultKeyBindings()) {
-            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key);
+            if (b.altKey) {
+                registerKeybind2(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key, b.altModifiers, b.altKey);
+            } else {
+                registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key);
+            }
         }
     }
 

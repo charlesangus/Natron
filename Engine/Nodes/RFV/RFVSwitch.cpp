@@ -45,6 +45,27 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
+// The UTF-8 text of a str, through the calls the limited API offers.
+bool
+utf8Of(PyObject* object,
+       std::string* text)
+{
+    if (!object || !PyUnicode_Check(object)) {
+        return false;
+    }
+    PyObject* bytes = PyUnicode_AsUTF8String(object);
+    if (!bytes) {
+        return false;
+    }
+    const char* data = PyBytes_AsString(bytes);
+    if (data) {
+        text->assign(data, (std::size_t)PyBytes_Size(bytes));
+    }
+    Py_DECREF(bytes);
+
+    return data != NULL;
+}
+
 // The text of the pending Python error, which it clears.
 std::string
 takePythonError()
@@ -56,10 +77,7 @@ takePythonError()
     std::string message;
     if (value) {
         PyObject* text = PyObject_Str(value);
-        const char* utf8 = text ? PyUnicode_AsUTF8(text) : NULL;
-        if (utf8) {
-            message = utf8;
-        }
+        utf8Of(text, &message);
         Py_XDECREF(text);
     }
     Py_XDECREF(type);
@@ -180,9 +198,7 @@ RFVSwitch::readVariable(const std::string& name,
     bool found = false;
     if ((object != Py_None) && !PyList_Check(object) && !PyTuple_Check(object)) {
         PyObject* text = PyObject_Str(object);
-        const char* utf8 = text ? PyUnicode_AsUTF8(text) : NULL;
-        if (utf8) {
-            *value = utf8;
+        if (utf8Of(text, value)) {
             found = true;
         } else {
             *error = takePythonError();

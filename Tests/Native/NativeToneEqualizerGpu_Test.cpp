@@ -93,7 +93,7 @@ class NativeToneEqualizerGpuTest
 protected:
     NodePtr createScene()
     {
-        NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
+        NodePtr source = createNode(QString::fromUtf8(kImageTestSourceID));
 
         EXPECT_TRUE(bool(source));
         if (!source) {
@@ -239,7 +239,7 @@ TEST_F(NativeToneEqualizerGpuTest, AlphaPassesThrough)
     if (!createRuntime(runtime)) {
         return;
     }
-    NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
+    NodePtr source = createNode(QString::fromUtf8(kImageTestSourceID));
     ASSERT_TRUE(bool(source));
     const ImageMetadata metadata = rawTestMetadata(kRawCfaPatternNone, 0, 0, eRawStagePrepared);
     dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(kRoD, 4, [](int x, int y, int c) { return (c == 3) ? 0.25f + 0.01f * (float)((x + y) % 50) : scene(x, y, c); }, metadata);

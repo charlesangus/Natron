@@ -53,8 +53,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
@@ -254,9 +254,9 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
     }
 }
 
-// The cost model prices Transform and TransformMasked with their motion blur rows only while the
-// knobs ask for motion blur.
-TEST_F(NativeTransformGpuTest, CostTraitsFollowMotionBlur)
+// Transform and TransformMasked are Heavy only while the knobs ask for motion blur; otherwise they
+// keep the Resample default.
+TEST_F(NativeTransformGpuTest, WeightIsHeavyWithMotionBlur)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
@@ -267,22 +267,16 @@ TEST_F(NativeTransformGpuTest, CostTraitsFollowMotionBlur)
         ASSERT_TRUE(bool(node));
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(animate(node));
+        StagedImageEffect* effect = effectOf(node);
+        ASSERT_TRUE(effect != NULL);
 
-        GpuCostModel model;
-        FrameGraph::Task task;
-        task.key.node = node;
-        task.key.time = kTime;
-        task.key.view = ViewIdx(0);
-        task.key.mipmapLevel = 0;
-        EXPECT_FALSE(model.traitsOf(task).motionBlur) << name << " motion blur 0";
-        EXPECT_EQ(0., model.traitsOf(task).sigma) << name;
-        EXPECT_FALSE(model.traitsOf(task).iir) << name;
+        EXPECT_EQ(GpuWeight::Class::Filter, effect->gpuWeight(kTime, ViewIdx(0), 0).weightClass) << name << " motion blur 0";
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamMotionBlur, { 1. }));
-        EXPECT_TRUE(model.traitsOf(task).motionBlur) << name << " motion blur 1";
+        EXPECT_TRUE(effect->gpuWeight(kTime, ViewIdx(0), 0).isHeavy()) << name << " motion blur 1";
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamShutter, { 0. }));
-        EXPECT_FALSE(model.traitsOf(task).motionBlur) << name << " closed shutter";
+        EXPECT_EQ(GpuWeight::Class::Filter, effect->gpuWeight(kTime, ViewIdx(0), 0).weightClass) << name << " closed shutter";
         ASSERT_TRUE(setKnobValues(node, kTransformNodeParamDirectionalBlur, { 1. }));
-        EXPECT_TRUE(model.traitsOf(task).motionBlur) << name << " directional blur";
+        EXPECT_TRUE(effect->gpuWeight(kTime, ViewIdx(0), 0).isHeavy()) << name << " directional blur";
     }
 }
 

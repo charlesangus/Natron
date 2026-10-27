@@ -43,6 +43,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/GpuCostModel.h"
+#include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
@@ -69,21 +70,6 @@ struct GpuStageSummary {
     double mix = 1.;
     ImageLayerDesc divisorLayer;
     int divisorChannel = -1;
-};
-
-/**
- * @brief What the GPU cost model reads from an op beyond its kind to pick a row of its tables:
- * sigma, the Gaussian-equivalent spread in pixels at the rendered scale (size / 2.4 for a
- * blur of diameter size), whether the filter is recursive (IIR), whose cost does not grow
- * with sigma, the Blur filter, for an erode or dilate its size in pixels at the rendered
- * scale, and whether the render averages several matrices per pixel (motion blur).
- **/
-struct GpuCostHint {
-    double sigma = 0.;
-    bool iir = false;
-    GpuBlurFilter filter = GpuBlurFilter::eAny;
-    int size = 0;
-    bool motionBlur = false;
 };
 
 /**
@@ -278,14 +264,15 @@ public:
     }
 
     /**
-     * @brief The cost model's hint for a render at time and view, mipmapLevel levels below full
-     * resolution; empty for an op whose cost the plug-in's plain row describes, as by default.
+     * @brief How much the node weighs when GPU placement groups it into a region, for a render at
+     * time and view, mipmapLevel levels below full resolution. Heavy for a node placement cannot
+     * weigh, as by default.
      **/
-    virtual std::optional<GpuCostHint> gpuCostHint(double /*time*/,
-                                                   ViewIdx /*view*/,
-                                                   unsigned int /*mipmapLevel*/) const WARN_UNUSED_RETURN
+    virtual GpuWeight gpuWeight(double /*time*/,
+                                ViewIdx /*view*/,
+                                unsigned int /*mipmapLevel*/) const WARN_UNUSED_RETURN
     {
-        return std::nullopt;
+        return GpuWeight::heavy();
     }
 
     /**

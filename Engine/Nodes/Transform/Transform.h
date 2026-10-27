@@ -166,10 +166,11 @@ struct TransformOp {
     static bool rendersWithMotionBlur(const Params& params);
 
     /**
-     * @brief The cost model's hint: no spread, and motion blur as rendersWithMotionBlur() says.
+     * @brief Heavy when the render averages several matrices per pixel, as rendersWithMotionBlur()
+     * says; empty otherwise, for the Resample default.
      **/
-    std::optional<GpuCostHint> costHint(const Params& params,
-                                        const PassContext& context) const;
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobDoubleWPtr translate;
     KnobDoubleWPtr rotate;

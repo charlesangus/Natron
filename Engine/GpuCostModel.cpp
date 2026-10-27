@@ -390,16 +390,6 @@ GpuCostModel::traitsOf(const FrameGraph::Task& task) const
         return GpuTaskTraits();
     }
     GpuTaskTraits traits(node->getPluginID());
-    EffectInstancePtr effect = node->getEffectInstance();
-    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
-    if (const std::optional<GpuCostHint> hint = native ? native->gpuCostHint(task.key.time, task.key.view, task.cacheMipmapLevel) : std::nullopt) {
-        traits.sigma = hint->sigma;
-        traits.iir = hint->iir;
-        traits.filter = hint->filter;
-        traits.size = hint->size;
-        traits.motionBlur = hint->motionBlur;
-    }
-
     return traits;
 }
 

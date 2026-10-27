@@ -76,7 +76,7 @@ that is specific to one kind of data -- see "Single hierarchy" above. What it
 does add is kind-agnostic: the spec, the `route()` identity hook, `KnobReader`
 and `bakeParams()`, and the GPU virtuals (`canRenderOnGpu()`, `renderGpu()`,
 `getGpuInputRoI()`, `getGpuInputLayer()`, `getGpuExtraInputLayers()`,
-`getGpuStageSummary()`, `gpuCostHint()`), which refuse by default
+`getGpuStageSummary()`, `gpuWeight()`), which refuse by default
 (`getGpuExtraInputLayers()` asks for no extra layers). The engine casts to
 `NativeEffectBase` to reach them.
 
@@ -1178,6 +1178,15 @@ copyable parameter block, `GpuOpRef::packed(kernelId, words)` for words the op
 lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
+
+An op declares how much it weighs for GPU placement (`Engine/GpuWeight.h`) with an
+optional `std::optional<GpuWeight> gpuWeight(params, context) const`; without it, or
+when it returns an empty optional, the weight follows the op's `OpKind`: Point,
+Composite and Route are Point (1), Passes and Resample are Filter
+(`kGpuFilterWeight`), Custom is Heavy. A Filter whose cost follows a size returns
+`gpuSizeScaledWeight(sizeInPixelsAtTheContextScale)`, which is capped. An op that
+renders through a runtime shader, or averages several matrices per pixel, returns
+`GpuWeight::heavy()`.
 
 A runtime shader finds its source and destination by name, not by binding: its
 only storage buffers are the blocks named `Src` and `Dst`

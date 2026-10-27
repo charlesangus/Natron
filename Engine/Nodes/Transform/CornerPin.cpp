@@ -425,7 +425,7 @@ CornerPinOp::isIdentityPin(const CornerPinPoints& pin)
 
 bool
 CornerPinOp::isIdentity(const Params& params,
-                        const PassContext& /*context*/) const
+                       const PassContext& /*context*/) const
 {
     if ((params.blur.shutter != 0.) && (params.blur.motionBlur != 0.)) {
         return false;
@@ -514,15 +514,15 @@ CornerPinOp::rendersWithMotionBlur(const Params& params)
     return (params.blur.motionBlur != 0.) && (params.blur.shutter != 0.);
 }
 
-std::optional<GpuCostHint>
-CornerPinOp::costHint(const Params& params,
-                      const PassContext& /*context*/) const
+std::optional<GpuWeight>
+CornerPinOp::gpuWeight(const Params& params,
+                       const PassContext& /*context*/) const
 {
-    GpuCostHint hint;
+    if (rendersWithMotionBlur(params)) {
+        return GpuWeight::heavy();
+    }
 
-    hint.motionBlur = rendersWithMotionBlur(params);
-
-    return hint;
+    return std::nullopt;
 }
 
 namespace {

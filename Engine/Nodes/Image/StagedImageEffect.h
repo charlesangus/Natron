@@ -600,36 +600,22 @@ public:
     }
 
     /**
-     * @brief For a Passes op, the op's costHint(params, context) when it has one, else
-     * passListCostHint() of its passes, at time, view and mipmapLevel. For a Resample op, its
-     * costHint(params, context) when it has one. Empty otherwise.
+     * @brief The op's gpuWeight(params, context) when it has one and it returns a weight, else
+     * the default weight of the op's kind.
      **/
-    virtual std::optional<GpuCostHint> gpuCostHint(double time,
-                                                   ViewIdx view,
-                                                   unsigned int mipmapLevel) const OVERRIDE WARN_UNUSED_RETURN
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE WARN_UNUSED_RETURN
     {
-        if constexpr (PIPELINE.op == OpKind::Passes) {
-            const typename OP::Params params = bake(time, view);
-            const PassContext context = getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel));
-
-            if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
-                              { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
-                          }) {
-                return _op.costHint(params, context);
-            } else {
-                return passListCostHint(_op.passes(params, context));
+        if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
+                          { o.gpuWeight(p, c) } -> std::same_as<std::optional<GpuWeight>>;
+                      }) {
+            if (const std::optional<GpuWeight> weight = _op.gpuWeight(bake(time, view), getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel)))) {
+                return *weight;
             }
-        } else if constexpr (PIPELINE.op == OpKind::Resample) {
-            if constexpr (requires(const OP& o, const typename OP::Params& p, const PassContext& c) {
-                              { o.costHint(p, c) } -> std::same_as<std::optional<GpuCostHint>>;
-                          }) {
-                return _op.costHint(bake(time, view), getPassContext(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
-            } else {
-                return std::nullopt;
-            }
-        } else {
-            return std::nullopt;
         }
+
+        return defaultGpuWeight(PIPELINE.op);
     }
 
 protected:

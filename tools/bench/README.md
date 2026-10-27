@@ -233,7 +233,7 @@ Which fields lie in `wallMs`: `kernelMs`, `transferExposedMs`, `recordMs`, `acqu
 exposed part is in the wall. `other` = `wallMs` minus the five inside parts. Pipelined regions
 overlap recording and waiting with kernels, so `other` can go negative there. A node's kernel time is
 its task record's `wallNs` (device timestamps). `pred xfer` is the record's `predictedTransferMs`, the
-transfer time placement's cost model predicts for the region's `uploadBytes` and `downloadBytes`, to
+transfer time placement's transfer model predicts for the region's `uploadBytes` and `downloadBytes`, to
 compare with `uploadMs + downloadMs`; it reads `n/a` when the model knows no bandwidth (`null`).
 `--self-test` checks the breakdown, the floor and the labelling on `gpu-region-profile-sample.jsonl`.
 

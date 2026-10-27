@@ -617,7 +617,7 @@ protected:
         return true;
     }
 
-    // Places, as placeGraph() would without a cost model, every task of gpuNodes their effect can render on the GPU.
+    // Places, as placeGraph() would if every region were accepted, every task of gpuNodes their effect can render on the GPU.
     static void placeOnGpu(FrameRun* run,
                            const std::vector<NodePtr>& gpuNodes)
     {
@@ -3342,7 +3342,7 @@ TEST(GpuRegionStrips, WholeRegionKeepingAnOutputOnTheDeviceStaysWhole)
 }
 
 // Without a rate to price its bytes, a region gains nothing known from hiding its transfer, so it stays whole.
-TEST(GpuRegionStrips, WholeRegionStripsOnlyWhenItsTransferIsPriced)
+TEST(GpuRegionStrips, WholeRegionStripsOnlyWhenItsTransferIsCosted)
 {
     std::vector<GpuStrip> strips;
     int rows = 0;

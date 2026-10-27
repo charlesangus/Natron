@@ -84,7 +84,7 @@ struct MemberSample {
  *
  * planes[m], where given and positive, is how many planes member m renders, each in an interval of its own over the
  * same pixels. Each such interval counts that fraction of its pixels, so that the clean megapixels count the task's
- * area once and the sample is the task's rate with all its planes, as the cost model prices a task.
+ * area once and the sample is the task's rate with all its planes, as a task's rate is measured.
  **/
 std::vector<MemberSample> cleanMemberSamples(const std::vector<GpuMemberInterval>& intervals,
                                              const Intervals& transferBusy,

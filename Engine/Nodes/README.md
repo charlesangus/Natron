@@ -411,16 +411,10 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
       `NativeRegistryAll.inc` from `Nodes/*.reg.inc`. An I-node's fragment also
       holds its `NATRON_I_VARIANT` line, see step 4.
-- [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
-      from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
-      and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
-      with `tools/bench/render-profile-report.py ... --emit-cost-table <source root>`
-      rather than writing rows by hand. A node the tool has no rows for, such as
-      one that `Engine/GpuCostSeeds/inputs.txt` never renders, has no fragment:
-      `RenderProfileReportSelfTest` fails on any fragment the tool would not
-      write, a hand-written row-less one included. Delete
-      `Engine/GpuCostSeeds/ofx/<plugin-id>.inc` for the OFX plug-in the port
-      supersedes, or the plug-in keeps a second seed.
+- [ ] `gpuWeight()` override, when the OpKind default is wrong for the node: cost that
+      grows with a knob such as a size (return `gpuSizeScaledWeight(...)`), or work
+      heavy enough to always want the GPU (return `GpuWeight::heavy()`). Leave it out
+      otherwise.
 - [ ] `Engine/Nodes/<Dir>/docs/<Node>.md`: the node's doc, with a `Tolerance:` line
       (`Tolerance: none recorded.`, or `Tolerance:` followed by the table of
       class and test constant, as in `Color/docs/Grade.md`).
@@ -444,7 +438,7 @@ plug-in has no fragment, when two fragments share an ID, when a marker names an
 ID a native node registers, or names a replacement that is not a registered
 native plug-in. `OfxRetired_Test` fails when a marker names an ID no loaded OFX
 bundle provides (a typo), or when a retired ID is still registered as an OFX
-plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
+plug-in. Neither checks the doc, icon or kernel fragments.
 
 ## Data kinds
 
@@ -948,8 +942,8 @@ with `bake()`/`Params` as for Point.
 point pass, over scratch slots; `Pass::lineX()`, `lineY()`, `gather()` and
 `point()` build them and say their halo and growth. `PassList::gpu` is one
 recorder for the whole list, because Blur's GPU kernels fuse their passes. An op
-may add `costHint(params, ctx)` for the GPU cost model; without it the list's
-sigma gives one. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
+with a Passes list weighs Filter by default; one whose cost follows a size
+returns `gpuSizeScaledWeight()` from `gpuWeight()`. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
 `EdgeDetect.cpp`) runs its pre-blur, derivative, combine and morphology passes
 over the same buffer the CPU passes use. A node narrows the region of definition the list gives by
 overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
@@ -1097,10 +1091,9 @@ dependencies, form a run, and a run with a task that has no GPU path (neither
 cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
 between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
 at full scale only, and a region refuses such a node at a proxy level, so its task there is never
-a GPU candidate (`makeGpuQueryForTask()`). The raw nodes have no cost seed rows, so the cost
-model does not price them: a region of two or more connected GPU candidates with no priced member
-goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
-(`PlacementInputs::isPriced`).
+a GPU candidate (`makeGpuQueryForTask()`). Raw nodes are Custom, so they weigh Heavy by default and a
+single GPU candidate among them is placed on the GPU when its largest image reaches
+`kGpuRegionMinPixels`.
 
 ### Edge-aware library
 

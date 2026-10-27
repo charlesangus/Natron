@@ -436,7 +436,7 @@ protected:
         return true;
     }
 
-    // Every task of gpuNodes whose effect can render it on the GPU, placed as placeGraph() does without a cost model.
+    // Every task of gpuNodes whose effect can render it on the GPU, placed as placeGraph() does if every region is accepted.
     static PlacementInputs gpuOnly(const FrameRenderContextPtr& context,
                                    const std::vector<NodePtr>& gpuNodes)
     {

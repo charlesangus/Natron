@@ -165,7 +165,7 @@ future core work has solid ground to build on.
 | M233 | Live Node Textures | todo | M19, M20 |  | E9 | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | todo | M227, M233 |  | E9 | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | todo | M226 |  | E9 | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
-| M236 | Shared Materials And Assignment | todo | M226 |  | E9 | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
+| M236 | Shared Materials And Assignment | doing | M226 | bosley-native-nodes | E9 | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
 | M238 | EdgeExtend Options | todo | M123 |  | E3 | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | doing | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
@@ -300,17 +300,17 @@ future core work has solid ground to build on.
 | M202 | Clean-Hash Cache Stores | done | M167 | bosley-native-nodes | E14 | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |
 | M203 | ONNX Inference Backend | done | - |  | E16 | [M203-onnx-inference-backend.md](PLAN/MILESTONES/M203-onnx-inference-backend.md) |
 | M204 | AI Model Manager | doing | M203 | bosley-native-nodes | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
-| M205 | Object Mask To Roto | todo | M203, M204, M146 |  | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
+| M205 | Object Mask To Roto | doing | M203, M204, M146 | bosley-native-nodes | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
 | M206 | Neural Raw Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
-| M208 | Neural Upscale | todo | M203, M204, M207 |  | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
+| M208 | Neural Upscale | doing | M203, M204, M207 | bosley-native-nodes | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | done | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
 | M210 | Profiled Denoise | doing | M209 | bosley-native-nodes | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | doing | M209, M146 | bosley-native-nodes | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
 | M212 | Tone Equalizer | doing | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
 | M213 | Contrast And Texture | doing | M209 | bosley-native-nodes | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
 | M214 | Colour Balance RGB | doing | - | bosley-native-nodes | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
-| M215 | Colour Equalizer | todo | M209, M214 |  | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
+| M215 | Colour Equalizer | doing | M209, M214 | bosley-native-nodes | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | doing | - | bosley-native-nodes | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
 | M217 | VectorGenerator Node | todo | M124 |  | E18 | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |
 | M218 | VectorGenerator GPU | todo | M217, M124 |  | E18 | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |

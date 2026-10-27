@@ -108,3 +108,5 @@ This milestone removes all of that. Premult stops being state that flows through
 - 2026-10-24 — **`unPremultBy`/`unPremultByChannel` and the host `(Un)premult by` selector are kept:** They are an explicit per-node convenience, not tracked state (M38, 2026-09-21 decision).
 
 **Verification gate:** All three phase builds (`tools/ci/remote/build.sh fast --tests`) and full `ctest` are green, including `PremultAbsence` and `ChannelSetRender`. `git grep -n -E 'premultChanged|filePremult|outputPremult|inputPremult|hideDeprecatedPremult|_outputPreMultiplication'` over `Engine Gui Tests libs/OpenFX/HostSupport` is empty. The `(Un)premult by` render matches M38.P10.T10, and a Python check shows `inputAlpha` on an in-scope OFX plugin and on no native node.
+
+Shipped: merged as bf0cd0b23 (#130) on 2026-10-27.

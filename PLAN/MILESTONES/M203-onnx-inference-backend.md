@@ -138,3 +138,5 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 ## Decisions
 
 - 2026-10-27 — **Phase 2-3 choices (bosley-native-nodes):** CPU runs share the cores by each session's thread count; GPU one run per device; the session cache key includes threads, optimisation and library; OpenVINO attaches as GPU / GPU.<index>; fixed-size models clamp and pad tiles and skip halving; `--rocm` builds ORT with MIGraphX from source (no official AMD build at 1.31.1); GPU provider options go through library-owned option objects, never header struct layouts. Release gate 550/550; PR #132.
+
+Shipped: merged as e91c5ae29 (#132) on 2026-10-27.

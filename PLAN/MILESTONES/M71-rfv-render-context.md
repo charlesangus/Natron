@@ -123,3 +123,5 @@ Phase 71.5 shipped at 92d08cbb5: release gate 487/487; Tests/gui/m71_rfv_time_sa
 
 - 2026-10-26: RFVs are read at the reader's time (user, UAT round 1). An animated or expression-driven Set variable is stored in the context as a binding to the Set's knob and its captured context, and resolved at the reading expression's time, so in-node motion blur and TimeBlur/TimeOffset/FrameHold above the Set re-sample it. No "hold at the Set's frame" option. Any expression counts as time-varying (loses cache sharing; accepted). Cache keys use the binding identity, and time separates entries. Supersedes line 7 of DECISIONS/2026-10-08-reverse-flow-variables-design.md.
 - 2026-10-26 — **Metadata follows the context (bosley-native-nodes):** input metadata, region-of-definition and layer reads run under each input's context, so a format or RoD driven by an rfv expression follows the Set below it (RFVRender.MetadataAndRoDFollowTheSetBelowThem). This goes beyond the 2026-10-08 design's v1 note that RFV-dependent metadata is unsupported; the M178 context machinery made it cheap and leaving it out gave wrong formats under a Set.
+
+Shipped: merged as 4e1c8bc4e (#122) on 2026-10-27.

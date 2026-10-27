@@ -84,3 +84,5 @@ Rebased on M184 - Variable-Size Filter Kit's head; Codex review round (PR #121):
 2026-10-26: UAT approved (user). Merge waits on its base M184 - Variable-Size Filter Kit (#113). A transient stale-Map render after disconnecting STMap's Map input went to the inbox as a cache-invalidation audit.
 
 2026-10-27: M184 - Variable-Size Filter Kit landed (#113) with rewritten history; PR #121 closed with its base. The milestone's own commits were re-applied on main and adapted to M184's final APIs (per-frame metadata, Map reads as a remapped black pixel outside its image); new PR #128. UAT stays approved; goldens re-recorded as CI requires.
+
+Shipped: merged as 049702bee (#128) on 2026-10-27.

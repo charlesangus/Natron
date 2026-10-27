@@ -31,6 +31,10 @@
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/RFV.h"
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
 
@@ -155,6 +159,8 @@ KnobDriver::ease(double t) const
 
 bool
 KnobDriver::evaluate(const RenderContextPtr& context,
+                     double time,
+                     ViewIdx view,
                      double* value) const
 {
     if (!context) {
@@ -163,6 +169,26 @@ KnobDriver::evaluate(const RenderContextPtr& context,
     const RenderContextValue* held = context->find(_name);
     if (!held) {
         return false;
+    }
+    // A time-varying variable: its knob's value at the driven knob's time, under the context it
+    // captured, as rfv reads it. A knob deleted since, or off its node, is unset.
+    RenderContextValue bound;
+    if (const RenderContextBinding* binding = std::get_if<RenderContextBinding>(held)) {
+        const KnobIPtr boundKnob = binding->knob.lock();
+        const KnobHolder* boundHolder = boundKnob ? boundKnob->getHolder() : NULL;
+        const EffectInstance* boundEffect = dynamic_cast<const EffectInstance*>(boundHolder);
+        if (!boundHolder || (boundEffect && !boundEffect->getNode())) {
+            return false;
+        }
+        try {
+            ActionContextScope bindingContext(true, binding->captured);
+            if (!RFV::getVariableValue(boundKnob, time, view, &bound)) {
+                return false;
+            }
+        } catch (const std::exception&) {
+            return false;
+        }
+        held = &bound;
     }
     double t;
     if (const double* d = std::get_if<double>(held)) {

@@ -32,23 +32,19 @@
 
 #include <gtest/gtest.h>
 
-#include <QFile>
 #include <QString>
-#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
-#include "Engine/Nodes/Scene/USDPrim.h"
-#include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -60,13 +56,6 @@ getDoubleKnob(const NodePtr& node,
               const char* name)
 {
     return dynamic_cast<KnobDouble*>(node->getKnobByName(name).get());
-}
-
-KnobChoice*
-getChoiceKnob(const NodePtr& node,
-              const char* name)
-{
-    return dynamic_cast<KnobChoice*>(node->getKnobByName(name).get());
 }
 
 // The prim path a node authors by default: "/" and its script name.
@@ -129,11 +118,11 @@ TEST_F(USDCameraTest, DefaultsAuthorAFiftyMillimetreCameraInTenthsOfASceneUnit)
     ASSERT_TRUE(bool(usdCamera));
     EXPECT_EQ(PXR_NS::TfToken("Camera"), usdCamera.GetPrim().GetTypeName());
 
-    // No input: the stage is the default centimetre scene, where a millimetre is 1 / 10 of a
-    // scene unit and USD's camera unit (a tenth of a scene unit) is that millimetre.
-    EXPECT_FLOAT_EQ(50.f, getFloat(usdCamera.GetFocalLengthAttr()));
-    EXPECT_FLOAT_EQ(36.f, getFloat(usdCamera.GetHorizontalApertureAttr()));
-    EXPECT_FLOAT_EQ(24.f, getFloat(usdCamera.GetVerticalApertureAttr()));
+    // The project's default scene is in meters, where USD's camera unit (a tenth of a scene
+    // unit) is 100 mm.
+    EXPECT_FLOAT_EQ(0.5f, getFloat(usdCamera.GetFocalLengthAttr()));
+    EXPECT_FLOAT_EQ(0.36f, getFloat(usdCamera.GetHorizontalApertureAttr()));
+    EXPECT_FLOAT_EQ(0.24f, getFloat(usdCamera.GetVerticalApertureAttr()));
     EXPECT_FLOAT_EQ(0.f, getFloat(usdCamera.GetHorizontalApertureOffsetAttr()));
     EXPECT_FLOAT_EQ(0.f, getFloat(usdCamera.GetVerticalApertureOffsetAttr()));
     PXR_NS::GfVec2f clipping;
@@ -147,38 +136,18 @@ TEST_F(USDCameraTest, DefaultsAuthorAFiftyMillimetreCameraInTenthsOfASceneUnit)
     EXPECT_EQ((std::size_t)0, usdCamera.GetFocalLengthAttr().GetNumTimeSamples());
 }
 
-TEST_F(USDCameraTest, LensKnobsAreConvertedToTheInputScenesUnits)
+TEST_F(USDCameraTest, TheNodeIsASourceThatComposesOnlyItsOwnPrim)
 {
-    QTemporaryDir dir;
-    ASSERT_TRUE(dir.isValid());
-    const QString path = dir.filePath(QString::fromUtf8("metres.usda"));
-    {
-        QFile f(path);
-        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        f.write("#usda 1.0\n(\n    metersPerUnit = 1\n)\n\ndef Xform \"World\"\n{\n}\n");
-    }
-    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
     NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-    ASSERT_TRUE(reader && camera);
-    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
-    ASSERT_TRUE(file != NULL);
-    file->setValue(path.toStdString());
-    ASSERT_TRUE(camera->connectInput(reader, 0));
+    ASSERT_TRUE(bool(camera));
+    EXPECT_EQ(0, camera->getNInputs());
+    EXPECT_EQ(0, camera->getEffectInstance()->getNInputs());
 
     PXR_NS::UsdStageRefPtr stage = composeNode(camera);
     ASSERT_TRUE(bool(stage));
-    EXPECT_DOUBLE_EQ(1., PXR_NS::UsdGeomGetStageMetersPerUnit(stage));
-    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World")).IsValid());
-    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
-    ASSERT_TRUE(bool(usdCamera));
-    // In a metre scene a tenth of a scene unit is 100 mm.
-    EXPECT_FLOAT_EQ(0.5f, getFloat(usdCamera.GetFocalLengthAttr()));
-    EXPECT_FLOAT_EQ(0.36f, getFloat(usdCamera.GetHorizontalApertureAttr()));
-    EXPECT_FLOAT_EQ(0.24f, getFloat(usdCamera.GetVerticalApertureAttr()));
-    // Clipping is in scene units already.
-    PXR_NS::GfVec2f clipping;
-    ASSERT_TRUE(usdCamera.GetClippingRangeAttr().Get(&clipping));
-    EXPECT_FLOAT_EQ(0.1f, clipping[0]);
+    EXPECT_TRUE(stage->GetPrimAtPath(getNodePath(camera)).IsValid());
+    EXPECT_EQ((std::size_t)1, stage->GetPseudoRoot().GetAllChildrenNames().size());
+    EXPECT_TRUE(stage->GetPrimAtPath(getNodePath(camera)).GetAllChildrenNames().empty());
 }
 
 TEST_F(USDCameraTest, AnimatedKnobsAuthorATimeSampleAtEveryProjectFrame)
@@ -200,10 +169,10 @@ TEST_F(USDCameraTest, AnimatedKnobsAuthorATimeSampleAtEveryProjectFrame)
     ASSERT_TRUE(bool(usdCamera));
     const PXR_NS::UsdAttribute attribute = usdCamera.GetFocalLengthAttr();
     EXPECT_EQ((std::size_t)(std::floor(last) - std::ceil(first) + 1.), attribute.GetNumTimeSamples());
-    // With no input the layer runs at the project rate, so timecodes are frames.
-    EXPECT_FLOAT_EQ(35.f, getFloat(attribute, PXR_NS::UsdTimeCode(1.)));
-    EXPECT_FLOAT_EQ((float)focalLength->getValueAtTime(6.), getFloat(attribute, PXR_NS::UsdTimeCode(6.)));
-    EXPECT_FLOAT_EQ(85.f, getFloat(attribute, PXR_NS::UsdTimeCode(11.)));
+    // The layer runs at the project rate, so timecodes are frames.
+    EXPECT_FLOAT_EQ(0.35f, getFloat(attribute, PXR_NS::UsdTimeCode(1.)));
+    EXPECT_FLOAT_EQ((float)(focalLength->getValueAtTime(6.) * 0.01), getFloat(attribute, PXR_NS::UsdTimeCode(6.)));
+    EXPECT_FLOAT_EQ(0.85f, getFloat(attribute, PXR_NS::UsdTimeCode(11.)));
     // A knob left alone is still a single default value.
     EXPECT_EQ((std::size_t)0, usdCamera.GetHorizontalApertureAttr().GetNumTimeSamples());
 }
@@ -233,9 +202,9 @@ TEST_F(USDCameraTest, TheComposedCameraMatchesTheKnobs)
 
     // What a look-through reads: the GfCamera at a time.
     const PXR_NS::GfCamera gfCamera = usdCamera.GetCamera(PXR_NS::UsdTimeCode(1.));
-    EXPECT_FLOAT_EQ(25.f, gfCamera.GetFocalLength());
-    EXPECT_FLOAT_EQ(36.f, gfCamera.GetHorizontalAperture());
-    EXPECT_FLOAT_EQ(24.f, gfCamera.GetVerticalAperture());
+    EXPECT_FLOAT_EQ(0.25f, gfCamera.GetFocalLength());
+    EXPECT_FLOAT_EQ(0.36f, gfCamera.GetHorizontalAperture());
+    EXPECT_FLOAT_EQ(0.24f, gfCamera.GetVerticalAperture());
     EXPECT_NEAR(2. * std::atan(18. / 25.) * 180. / 3.14159265358979323846, gfCamera.GetFieldOfView(PXR_NS::GfCamera::FOVHorizontal), 1e-3);
     EXPECT_FLOAT_EQ(1.f, gfCamera.GetClippingRange().GetMin());
     EXPECT_FLOAT_EQ(500.f, gfCamera.GetClippingRange().GetMax());
@@ -279,54 +248,6 @@ TEST_F(USDCameraTest, ARelativePrimPathFailsWithANodeError)
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Rig/Camera")).IsValid());
 }
 
-TEST_F(USDCameraTest, PrimAuthorsAnXformWithItsTransformAndKind)
-{
-    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-    ASSERT_TRUE(bool(prim));
-    KnobDouble* translate = getDoubleKnob(prim, kSceneParamTranslate);
-    KnobDouble* uniformScale = getDoubleKnob(prim, kSceneParamUniformScale);
-    KnobChoice* kind = getChoiceKnob(prim, kUSDPrimParamKind);
-    ASSERT_TRUE(translate && uniformScale && kind);
-    translate->setValue(5., ViewSpec::all(), 1);
-    uniformScale->setValue(2.);
-    kind->setValueFromID("component", 0);
-
-    PXR_NS::UsdStageRefPtr stage = composeNode(prim);
-    ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(getNodePath(prim));
-    ASSERT_TRUE(usdPrim.IsValid());
-    EXPECT_EQ(PXR_NS::TfToken("Xform"), usdPrim.GetTypeName());
-    PXR_NS::TfToken kindToken;
-    ASSERT_TRUE(PXR_NS::UsdModelAPI(usdPrim).GetKind(&kindToken));
-    EXPECT_EQ(PXR_NS::KindTokens->component, kindToken);
-
-    const PXR_NS::GfMatrix4d transform = PXR_NS::UsdGeomXformable(usdPrim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode::Default());
-    EXPECT_NEAR(5., transform.ExtractTranslation()[1], 1e-9);
-    EXPECT_NEAR(2., transform.TransformDir(PXR_NS::GfVec3d(1., 0., 0.)).GetLength(), 1e-6);
-}
-
-TEST_F(USDCameraTest, PrimAuthorsAScopeWithoutATransform)
-{
-    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-    ASSERT_TRUE(bool(prim));
-    KnobChoice* primType = getChoiceKnob(prim, kUSDPrimParamType);
-    KnobDouble* translate = getDoubleKnob(prim, kSceneParamTranslate);
-    ASSERT_TRUE(primType && translate);
-    translate->setValue(5., ViewSpec::all(), 0);
-    primType->setValueFromID("Scope", 0);
-    // A Scope has no transform to edit.
-    EXPECT_TRUE(translate->getIsSecret());
-
-    PXR_NS::UsdStageRefPtr stage = composeNode(prim);
-    ASSERT_TRUE(bool(stage));
-    const PXR_NS::UsdPrim usdPrim = stage->GetPrimAtPath(getNodePath(prim));
-    ASSERT_TRUE(usdPrim.IsValid());
-    EXPECT_EQ(PXR_NS::TfToken("Scope"), usdPrim.GetTypeName());
-    EXPECT_FALSE(usdPrim.GetAttribute(PXR_NS::UsdGeomTokens->xformOpOrder).HasAuthoredValue());
-    PXR_NS::TfToken kindToken;
-    EXPECT_FALSE(PXR_NS::UsdModelAPI(usdPrim).GetKind(&kindToken) && !kindToken.IsEmpty());
-}
-
 TEST_F(USDCameraTest, ThePrimPathFollowsTheNodeNameUntilEdited)
 {
     NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
@@ -351,8 +272,8 @@ TEST_F(USDCameraTest, ThePrimPathFollowsTheNodeNameUntilEdited)
     EXPECT_EQ(std::string("/Hero2"), primPath->getDefaultValue(0));
 
     // Each node of a kind gets its own default prim.
-    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
-    NodePtr otherPrim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRIM));
+    NodePtr prim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+    NodePtr otherPrim = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     ASSERT_TRUE(prim && otherPrim);
     EXPECT_NE(getNodePath(prim), getNodePath(otherPrim));
     EXPECT_EQ(getNodePath(prim).GetString(), dynamic_cast<KnobString*>(prim->getKnobByName(kSceneParamPrimPath).get())->getValue());

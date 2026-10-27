@@ -42,6 +42,8 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/IVariantRegistry.h"
+#include "Engine/Nodes/Transform/ICornerPin.h"
+#include "Engine/Nodes/Transform/ITransform.h"
 
 NATRON_NAMESPACE_USING
 
@@ -115,6 +117,8 @@ TEST(IVariantRegistry, BuiltinPairsTheVariableSizeFilters)
         { PLUGINID_NATRON_BLUR, PLUGINID_NATRON_IBLUR },
         { PLUGINID_NATRON_ERODE, PLUGINID_NATRON_IERODE },
         { PLUGINID_NATRON_DILATE, PLUGINID_NATRON_IDILATE },
+        { PLUGINID_NATRON_TRANSFORM, PLUGINID_NATRON_ITRANSFORM },
+        { PLUGINID_NATRON_CORNERPIN, PLUGINID_NATRON_ICORNERPIN },
     };
     const IVariantRegistry& registry = IVariantRegistry::builtin();
 
@@ -130,8 +134,8 @@ class IVariantRegistryNodeTest
     : public BaseTest {
 };
 
-// Every knob the registry pairs exists on its node, and each base node's size knob converts to a
-// knob of its I-variant.
+// Every knob the registry pairs exists on its node, and each base node's size knob, where it has
+// one, converts to a knob of its I-variant.
 TEST_F(IVariantRegistryNodeTest, BuiltinKnobsExistOnBothNodes)
 {
     for (const IVariant& variant : IVariantRegistry::builtin().variants()) {
@@ -144,7 +148,9 @@ TEST_F(IVariantRegistryNodeTest, BuiltinKnobsExistOnBothNodes)
             EXPECT_NE(nullptr, base->getKnobByName(pair.baseKnob)) << variant.baseId << " has no knob " << pair.baseKnob;
             EXPECT_NE(nullptr, iNode->getKnobByName(pair.iKnob)) << variant.iId << " has no knob " << pair.iKnob;
         }
-        ASSERT_NE(nullptr, base->getKnobByName("size")) << variant.baseId;
-        EXPECT_NE(nullptr, iNode->getKnobByName(variant.iKnobFor("size"))) << variant.iId << " has no knob for the base's size";
+        // A variable warp has no size: its Map scales the whole transform.
+        if (base->getKnobByName("size")) {
+            EXPECT_NE(nullptr, iNode->getKnobByName(variant.iKnobFor("size"))) << variant.iId << " has no knob for the base's size";
+        }
     }
 }

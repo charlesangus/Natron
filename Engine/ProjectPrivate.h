@@ -111,6 +111,8 @@ public:
     mutable QMutex ocioConfigErrorMutex;
     std::string ocioConfigError; // non-empty while the OCIO override cannot be loaded
     KnobDoublePtr frameRate;
+    KnobChoicePtr upAxis;
+    KnobDoublePtr metersPerUnit;
     KnobChoicePtr gpuSupport;
     KnobIntPtr frameRange;
     KnobBoolPtr lockFrameRange;

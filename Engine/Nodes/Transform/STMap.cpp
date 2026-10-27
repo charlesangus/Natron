@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -136,6 +137,10 @@ STMap::getInputHint(int inputNb) const
         return tr("The image to distort.").toStdString();
     case kSTMapInputMask:
         return tr("The mask limiting where the distortion applies.").toStdString();
+    case kSTMapInputMap:
+        return tr("How far each output pixel moves towards its UV position: not at all where the Map is black, all the "
+                  "way where it is white. Read at the output pixel. With no Map connected, every pixel goes all the way.")
+            .toStdString();
     default:
         break;
     }
@@ -269,11 +274,14 @@ STMap::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _map.createKnobs(this, page, kMapWarpKnobHints);
+
     NodePtr node = getNode();
     if (node) {
         node->declareLayerKnob(channelU, kSTMapInputUV, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(channelV, kSTMapInputUV, LayerKnobSpec::eRoleInputBound);
     }
+    _map.declareLayerKnob(node, kSTMapInputMap);
 
     addStageKnobs(page);
 } // STMap::initializeKnobs
@@ -448,8 +456,9 @@ STMap::getRegionOfDefinition(U64 /*hash*/,
         return eStatusFailed;
     }
 
-    // Under a mask or a partial mix the Source shows through outside the warped region.
-    if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
+    // Under a mask or a partial mix the Source shows through outside the warped region, and with
+    // a Map wherever the Map holds a pixel in place.
+    if (isMaskApplied() || (getMixValue(time, view) != 1.) || getInput(kSTMapInputMap)) {
         RectD sourceRoD;
         if (inputRegion(source, time, view, scale, &sourceRoD) && !sourceRoD.isNull()) {
             if (rod->isNull()) {
@@ -496,6 +505,21 @@ STMap::getRegionsOfInterest(double time,
         }
         (*ret)[uv] = uvRoI;
     }
+
+    // The Map too, for the Jacobians.
+    EffectInstancePtr map = getInput(kSTMapInputMap);
+    if (map) {
+        const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
+        const double dx = par / scale.toOfxPointD().x;
+        const double dy = 1. / scale.toOfxPointD().y;
+        const RectD mapRoI(renderWindow.x1 - dx, renderWindow.y1 - dy, renderWindow.x2 + dx, renderWindow.y2 + dy);
+        RoIMap::iterator found = ret->find(map);
+        if (found == ret->end()) {
+            ret->insert(std::make_pair(map, mapRoI));
+        } else {
+            found->second.merge(mapRoI);
+        }
+    }
 } // STMap::getRegionsOfInterest
 
 bool
@@ -504,6 +528,9 @@ STMap::getInputLayersRead(int inputNb,
                           ViewIdx view,
                           std::list<ImageLayerDesc>* layers)
 {
+    if (inputNb == kSTMapInputMap) {
+        return _map.getInputLayersRead(this, kSTMapInputMap, time, view, layers);
+    }
     if (inputNb != kSTMapInputUV) {
         return false;
     }
@@ -542,6 +569,23 @@ STMap::renderOp(const RenderActionArgs& args,
 
     RectI domain;
     const bool hasDomain = getSourceDomain(args.time, args.view, args.mappedScale, &domain);
+
+    // The Map, copied out over the window grown by one pixel, for the Jacobians, before any image
+    // is locked: fetching renders upstream.
+    const bool mapped = hasDomain && getInput(kSTMapInputMap);
+    MapPlane mapPlane;
+    if (mapped) {
+        const MapInputParams mapParams = [&]() {
+            const KnobReader reader(args.time, args.view);
+
+            return _map.bake(reader);
+        }();
+        const RectI window(args.roi.x1 - 1, args.roi.y1 - 1, args.roi.x2 + 1, args.roi.y2 + 1);
+        const StatusEnum status = _map.read(this, kSTMapInputMap, mapParams, args.time, args.view, args.mappedScale, window, &mapPlane);
+        if (status != eStatusOK) {
+            return status;
+        }
+    }
 
     // U and V, fetched and locked here, on the calling thread; the band threads only read
     // through these.
@@ -661,8 +705,23 @@ STMap::renderOp(const RenderActionArgs& args,
                     for (int i = 0; i < n; ++i) {
                         const double u = (uRow[i] - uOffset) * uScale;
                         const double v = (vRow[i] - vOffset) * vScale;
-                        sxRow[i] = (float)(domainX1 + u * domainWidth);
-                        syRow[i] = (float)(domainY1 + v * domainHeight);
+                        double px = domainX1 + u * domainWidth;
+                        double py = domainY1 + v * domainHeight;
+                        if (mapped) {
+                            // The Map moves the pixel from its own centre c to c + (p - c) * m.
+                            const float m = mapPlane.at(io.x0 - 1 + i, y);
+                            const double cx = (double)(io.x0 - 1 + i) + 0.5;
+                            const double cy = (double)y + 0.5;
+                            if (m == 0.f) {
+                                px = cx;
+                                py = cy;
+                            } else if (m != 1.f) {
+                                px = cx + (px - cx) * (double)m;
+                                py = cy + (py - cy) * (double)m;
+                            }
+                        }
+                        sxRow[i] = (float)px;
+                        syRow[i] = (float)py;
                     }
                 }
                 std::vector<float> jacobian;
@@ -678,8 +737,25 @@ STMap::renderOp(const RenderActionArgs& args,
                     std::vector<float> alphaRow(io.width);
                     alphaPlane.readRow(io.x0, io.y, io.width, &alphaRow[0]);
                     for (int i = 0; i < io.width; ++i) {
-                        if (!(alphaRow[i] > 0.f)) {
+                        // Where the Map is 0 the pixel keeps its own place, so the gate does not apply.
+                        if (!(alphaRow[i] > 0.f) && (!mapped || (mapPlane.at(io.x0 + i, io.y) > 0.f))) {
                             std::fill(&out[(std::size_t)i * io.nComps], &out[(std::size_t)(i + 1) * io.nComps], 0.f);
+                        }
+                    }
+                }
+                if (mapped) {
+                    // Where the Map is 0 the output is the Source pixel itself, never resampled
+                    // through the wrap, which would move positions outside the Source format.
+                    for (int i = 0; i < io.width; ++i) {
+                        if (mapPlane.at(io.x0 + i, io.y) != 0.f) {
+                            continue;
+                        }
+                        float* dst = &out[(std::size_t)i * io.nComps];
+                        const float* pix = source.pixel(io.x0 + i, io.y);
+                        if (pix) {
+                            std::copy(pix, pix + io.nComps, dst);
+                        } else {
+                            std::fill(dst, dst + io.nComps, 0.f);
                         }
                     }
                 }
@@ -746,13 +822,30 @@ STMap::canRenderOpOnGpu(const GpuQuery& query) const
     ImageLayerDesc layer;
     int uChannel = -1;
     int vChannel = -1;
+    ImageLayerDesc mapLayer;
+    int mapChannel = -1;
 
-    return resolveGpuUVLayer(query.time, query.view, &layer, &uChannel, &vChannel);
+    return resolveGpuUVLayer(query.time, query.view, &layer, &uChannel, &vChannel) && resolveWarpGpuMapChannel(*this, _map, kSTMapInputMap, query.time, query.view, &mapLayer, &mapChannel);
 #else
     Q_UNUSED(query);
 
     return false;
 #endif
+}
+
+bool
+STMap::readsGpuInput(int inputNb,
+                     const ImageLayerDesc& /*plane*/,
+                     double time,
+                     ViewIdx view) const
+{
+    if (inputNb != kSTMapInputMap) {
+        return true;
+    }
+    ImageLayerDesc layer;
+    int channel = -1;
+
+    return resolveWarpGpuMapChannel(*this, _map, kSTMapInputMap, time, view, &layer, &channel) && (channel >= 0);
 }
 
 bool
@@ -762,6 +855,12 @@ STMap::getOpGpuInputLayer(int inputNb,
                           ViewIdx view,
                           ImageLayerDesc* layer) const
 {
+    if (inputNb == kSTMapInputMap) {
+        int channel = -1;
+        if (resolveWarpGpuMapChannel(*this, _map, kSTMapInputMap, time, view, layer, &channel) && (layer->getNumComponents() > 0)) {
+            return true;
+        }
+    }
     if (inputNb == kSTMapInputUV) {
         int uChannel = -1;
         int vChannel = -1;
@@ -783,6 +882,9 @@ STMap::getOpGpuInputRoI(int inputNb,
 {
     if ((inputNb == kSTMapInputSource) || (inputNb == kSTMapInputUV)) {
         return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputUV, time, view, outputRect, scale);
+    }
+    if (inputNb == kSTMapInputMap) {
+        return warpGpuInputRoI(*this, inputNb, kSTMapInputSource, kSTMapInputMap, time, view, outputRect, scale);
     }
 
     return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
@@ -838,7 +940,16 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
         }
     }
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel, alphaChannel);
+    WarpGpuMap map;
+    if (hasDomain) {
+        map.input = kSTMapInputMap;
+        if (!resolveWarpGpuMapChannel(*this, _map, kSTMapInputMap, query.time, query.view, &map.layer, &map.channel)) {
+            return eStatusFailed;
+        }
+        map.params = _map.bake(KnobReader(query.time, query.view));
+    }
+
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel, map, alphaChannel);
 #else
     Q_UNUSED(args);
 

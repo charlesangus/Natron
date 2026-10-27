@@ -288,6 +288,9 @@ namespace Transform {
 struct Matrix3x3;
 typedef std::shared_ptr<Matrix3x3> Matrix3x3Ptr;
 }
+namespace RFV {
+struct VariableDeclaration;
+}
 
 #ifdef __NATRON_WIN32__
 struct OSGLContext_wgl_data;
@@ -421,6 +424,7 @@ typedef std::shared_ptr<Project> ProjectPtr;
 typedef std::shared_ptr<ProjectColorManagement> ProjectColorManagementPtr;
 typedef std::shared_ptr<const RenderContext> RenderContextPtr;
 typedef std::shared_ptr<const RenderContextReadSet> RenderContextReadSetConstPtr;
+typedef std::shared_ptr<const std::vector<RFV::VariableDeclaration>> RFVDeclarationsConstPtr;
 typedef std::shared_ptr<RenderEngine> RenderEnginePtr;
 typedef std::shared_ptr<RenderScheduler> RenderSchedulerPtr;
 typedef std::shared_ptr<RenderStats> RenderStatsPtr;

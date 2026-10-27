@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/RenderContext.h"
+#include "Engine/ViewIdx.h"
 #include "Serialization/SerializationFwd.h"
 
 #define kKnobDriverDefaultVariable "loop.t"
@@ -111,9 +112,9 @@ public:
 
     /**
      * @brief The driven value under context, and true, if context holds the variable as a
-     * number or a bool.
+     * number or a bool, or as a binding whose knob gives one at time and view.
      **/
-    bool evaluate(const RenderContextPtr& context, double* value) const;
+    bool evaluate(const RenderContextPtr& context, double time, ViewIdx view, double* value) const;
 
     void appendContentHash(ContentHasher& h) const;
 

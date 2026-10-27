@@ -284,6 +284,32 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    ///////////////////////////////////////////////////////
+    // "AI" pane
+    bool isAiEnabled() const;
+
+    // The aiDevice choice, or NATRON_AI_DEVICE when that names one of its entries.
+    AiDeviceEnum getAiDevice() const;
+
+    /**
+     * @brief env, when it is the id of an aiDevice entry (auto, cpu, cuda, migraphx, rocm,
+     * openvino; any case), else setting.
+     **/
+    static AiDeviceEnum resolveAiDevice(AiDeviceEnum setting, const char* env);
+
+    int getAiGpuIndex() const;
+
+    // 0 lets ONNX Runtime choose.
+    int getAiThreads() const;
+
+    std::string getAiOrtLibraryPath() const;
+
+    /**
+     * @brief Re-reads the ONNX Runtime the AI nodes would use into the read-only aiDetectedProviders
+     * line. Loads the library if AI is enabled and nothing has loaded it yet.
+     **/
+    void refreshAiDetectedProviders();
+
     bool isAutoFixRelativeFilePathEnabled() const;
 
     ///////////////////////////////////////////////////////
@@ -449,6 +475,7 @@ private:
     void initializeKnobsThreading();
     void initializeKnobsRendering();
     void initializeKnobsGPU();
+    void initializeKnobsAi();
     void initializeKnobsProjectSetup();
     void initializeKnobsDocumentation();
     void initializeKnobsUserInterface();
@@ -508,6 +535,15 @@ private:
     KnobChoicePtr _gpuDevice;
     KnobIntPtr _gpuMemoryBudgetMB;
     KnobStringPtr _gpuStatus;
+
+    // AI
+    KnobPagePtr _aiPage;
+    KnobBoolPtr _aiEnabled;
+    KnobChoicePtr _aiDevice;
+    KnobIntPtr _aiGpuIndex;
+    KnobIntPtr _aiThreads;
+    KnobPathPtr _aiOrtLibraryPath;
+    KnobStringPtr _aiDetectedProviders;
 
     // General/Projects setup
     KnobPagePtr _projectsPage;

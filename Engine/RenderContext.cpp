@@ -31,6 +31,9 @@
 #include <iterator>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
+#include "Engine/Node.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -87,6 +90,8 @@ struct ValueHasher {
             h->appendString(s);
         }
     }
+
+    void operator()(const RenderContextBinding& v) const { h->appendU64(v.identity); }
 };
 
 struct ValueEquals {
@@ -109,6 +114,12 @@ struct ValueEquals {
         }
 
         return true;
+    }
+
+    bool operator()(const RenderContextBinding& a,
+                    const RenderContextBinding& b) const
+    {
+        return a.identity == b.identity;
     }
 
     template <typename T>
@@ -174,6 +185,38 @@ renderContextHasLoopVariables(const RenderContextPtr& context)
     }
 
     return false;
+}
+
+RenderContextBinding
+RenderContextBinding::create(const KnobIPtr& knob,
+                             const std::string& name,
+                             const RenderContextPtr& captured)
+{
+    RenderContextBinding binding;
+    binding.knob = knob;
+    binding.captured = captured ? captured : RenderContext::empty();
+    ContentHasher h;
+    U64 contentHash = 0;
+    std::string owner;
+    if (knob) {
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knob.get());
+        if (helper) {
+            helper->getMemoizedValueContext(0, &contentHash);
+        } else {
+            contentHash = knob->getContentHash();
+        }
+        // Knobs with equal curves or expressions are still different variables.
+        const EffectInstance* effect = dynamic_cast<const EffectInstance*>(knob->getHolder());
+        const NodePtr node = effect ? effect->getNode() : NodePtr();
+        owner = (node ? node->getFullyQualifiedName() : std::string()) + '.' + knob->getName();
+    }
+    h.appendString(owner);
+    h.appendU64(contentHash);
+    h.appendString(name);
+    h.appendU64(binding.captured->hash());
+    binding.identity = h.finalize();
+
+    return binding;
 }
 
 bool

@@ -1,1 +1,0 @@
-NATRON_NATIVE_NODE(USDPrim, "USDPrim.h")

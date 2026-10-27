@@ -557,6 +557,15 @@ enum GpuComputeModeEnum {
     eGpuComputeModeAuto = 1,
 };
 
+enum AiDeviceEnum {
+    eAiDeviceAuto = 0,
+    eAiDeviceCpu,
+    eAiDeviceCuda,
+    eAiDeviceMigraphx,
+    eAiDeviceRocm,
+    eAiDeviceOpenvino,
+};
+
 enum PenType
 {
     ePenTypeLMB,

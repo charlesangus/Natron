@@ -19,6 +19,7 @@
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 #include "Native/GlHostWrapTestEffect.h"
@@ -128,9 +129,11 @@ void
 registerSceneTestPlugins()
 {
     // A scene source and a scene op, so Scene/SceneAction_Test.cpp can pull scenes through the
-    // engine's action before any shipped scene node exists.
+    // engine's action before any shipped scene node exists, and a geometry stand-in for the
+    // Material input until shipped primitives exist.
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
+    registerTestBuiltInPlugin<SceneTestGeometry>();
 }
 
 void
@@ -139,6 +142,8 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to be an identity over part of its window only, which no shipped native node is.
+    registerTestBuiltInPlugin<TiledIdentityTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
     registerTestBuiltInPlugin<ContextReaderTestEffect>();
     registerTestBuiltInPlugin<ContextFanOutTestEffect>();
@@ -147,6 +152,19 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextRegionTestEffect>();
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
+}
+
+void
+registerIdentityHopTestPlugins()
+{
+    // Registered so IdentityHop_Test.cpp can chain identities that shift time and view and read
+    // back the time and view the source was pulled at, which no shipped node reports.
+    registerTestBuiltInPlugin<FrameValueTestEffect>();
+    registerTestBuiltInPlugin<ViewSelfIdentityTestEffect>();
+    registerTestBuiltInPlugin<TimeShiftIdentityTestEffect>();
+    registerTestBuiltInPlugin<DeepFrameValueTestEffect>();
+    registerTestBuiltInPlugin<DeepViewSelfIdentityTestEffect>();
+    registerTestBuiltInPlugin<DeepTimeShiftIdentityTestEffect>();
 }
 
 void
@@ -228,6 +246,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
+    registerIdentityHopTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();

@@ -314,9 +314,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                 return eRenderRoIRetCodeOk;
             }
             if (identityInputNb == -2) {
-                // The effect is an identity of itself at another time. Guard against the
-                // degenerate answer that would recurse forever.
-                if (identityTime == args.time) {
+                // The effect is an identity of itself at another time or view: either differing
+                // is a valid hop, both equal would recurse forever.
+                if ((identityTime == args.time) && (identityView == args.view)) {
                     return eRenderRoIRetCodeFailed;
                 }
                 RenderDeepRoIArgs selfArgs(args);
@@ -340,6 +340,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             identityArgs.roi = roi;
             identityArgs.caller = this;
             identityArgs.preComputedRoD.clear();
+
+            // The identity input renders under the context this node requests it under, as on the
+            // image path: a node setting context variables may pass its input through.
+            InputContextArgs identityContext(this, identityInput, identityInputNb, args.time, args.view);
+            identityContext.install();
 
             return identityInput->renderDeepRoI(identityArgs, outputDeepImage);
         }
@@ -418,6 +423,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             }
             inputCanonicalRoI = foundInputRoI->second;
         }
+
+        // The input is asked for its metadata and rendered under the context this node requests
+        // it under, for the whole fetch, as on the image path.
+        InputContextArgs inputContext(this, input, i, args.time, args.view);
+        inputContext.install();
 
         const RectI inputRoI = inputCanonicalRoI.toPixelEnclosing(args.mipmapLevel, input->getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
         if (inputRoI.isNull()) {

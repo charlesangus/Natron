@@ -36,6 +36,7 @@
 #include <variant>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
@@ -80,18 +81,41 @@ struct RenderContextName {
     }
 };
 
+class RenderContext;
+typedef std::shared_ptr<const RenderContext> RenderContextPtr;
+
+/**
+ * @brief A variable whose value depends on the time it is read at: the variable knob that gives
+ * it, evaluated at the reading expression's time and view under the context captured, the one
+ * the knob's value reads (see PyRFV::getVariable()). The knob is held weakly: a binding outliving
+ * it reads as an unset variable. identity stands for the value at every time: it mixes the
+ * knob's owning node and name, its content hash, the variable name and the captured context's
+ * hash, so it is the same at every frame and moves on any edit of the knob's curve or expression.
+ * Hashes and compares by identity alone.
+ **/
+struct RenderContextBinding {
+    KnobIWPtr knob;
+    RenderContextPtr captured;
+    U64 identity = 0;
+
+    static RenderContextBinding create(const KnobIPtr& knob,
+                                       const std::string& name,
+                                       const RenderContextPtr& captured);
+};
+
 typedef std::variant<bool,
                      std::int64_t,
                      double,
                      std::string,
                      std::vector<double>,
                      std::vector<std::int64_t>,
-                     std::vector<std::string>>
+                     std::vector<std::string>,
+                     RenderContextBinding>
     RenderContextValue;
 
 /**
  * @brief Equality as the context hash sees it: doubles compare by their bits, so -0 and 0 differ
- * and a NaN equals the same NaN.
+ * and a NaN equals the same NaN, and bindings by their identity.
  **/
 bool renderContextValuesEqual(const RenderContextValue& a,
                               const RenderContextValue& b);
@@ -172,9 +196,6 @@ U64 getRenderContextReadsGeneration();
  **/
 bool renderContextsInUse();
 void invalidateRenderContextReads();
-
-class RenderContext;
-typedef std::shared_ptr<const RenderContext> RenderContextPtr;
 
 /**
  * @brief An immutable map from namespaced variable names to values, shared by pointer. Its hash

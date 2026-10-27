@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h Native/NativeGolden.h Native/NativeGpuParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -70,6 +70,7 @@ set(Tests_SOURCES
     Hash64_Test.cpp
     HashInvariants_Test.cpp
     HashPluginSweep_Test.cpp
+    IdentityHop_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
@@ -98,6 +99,10 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
+    Ai/AiSettings_Test.cpp
+    Ai/OrtLoader_Test.cpp
+    Ai/InferenceSession_Test.cpp
+    Ai/TiledInference_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -109,6 +114,7 @@ set(Tests_SOURCES
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
+    PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerScheduler_Test.cpp
@@ -123,7 +129,9 @@ set(Tests_SOURCES
     PyPlugInstantiate_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
+    RFVExpression_Test.cpp
     RFVPython_Test.cpp
+    RFVRender_Test.cpp
     RFVSetNode_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
@@ -222,6 +230,8 @@ target_compile_definitions(Tests
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
         NATRON_TESTS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Engine"
         NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"
+        # Tests/Ai loads this ONNX Runtime directly, whatever the Preferences say.
+        NATRON_TESTS_ONNXRUNTIME_DIR="${NATRON_ONNXRUNTIME_ROOT}"
         NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
 )
 # The Engine binary directory holds the aggregates Engine/CMakeLists.txt generates, such as

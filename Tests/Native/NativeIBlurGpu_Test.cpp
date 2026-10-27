@@ -26,7 +26,6 @@
 #include "Global/Macros.h"
 
 #include <cmath>
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,7 +48,6 @@
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -230,10 +228,10 @@ TEST_F(NativeIBlurGpuTest, MapIsReadOverTheSourceRegion)
     const RectI rect(10, 20, 31, 47);
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-        const RectI sourceRoI = effect->getGpuInputRoI(kIBlurInputSource, rect, scale);
+        const RectI sourceRoI = effect->getGpuInputRoI(kIBlurInputSource, kTime, ViewIdx(0), rect, scale);
         EXPECT_TRUE(sourceRoI.contains(rect)) << "mipmap " << mipmapLevel;
         EXPECT_NE(rect, sourceRoI) << "mipmap " << mipmapLevel << ": the source is read beyond the output";
-        EXPECT_EQ(sourceRoI, effect->getGpuInputRoI(kIBlurInputMap, rect, scale)) << "mipmap " << mipmapLevel;
+        EXPECT_EQ(sourceRoI, effect->getGpuInputRoI(kIBlurInputMap, kTime, ViewIdx(0), rect, scale)) << "mipmap " << mipmapLevel;
     }
 }
 
@@ -291,26 +289,13 @@ TEST_F(NativeIBlurGpuTest, MapOutsideItsImageMatchesTheCpu)
 }
 
 // NaN, +Inf and -Inf in the source count as 0 in both summed-area tables, so the CPU and the GPU
-// agree, and the blur is finite throughout. A Constant's color reads clamped to the largest
-// double, which is an infinity as a float; adding +Inf and -Inf gives the NaN.
+// agree, and the blur is finite throughout.
 TEST_F(NativeIBlurGpuTest, NonFiniteSourceMatchesTheCpu)
 {
-    const double inf = std::numeric_limits<double>::infinity();
-    const RectI rect(10, 8, 22, 18);
     NodePtr source = makeParitySource();
-    NodePtr positive = makeConstant(rect, { inf, inf, -inf, 0. });
-    NodePtr negative = makeConstant(rect, { -inf, 0., 0., 0. });
-    NodePtr plus1 = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
-    NodePtr plus2 = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
-    ASSERT_TRUE(bool(source) && bool(positive) && bool(negative) && bool(plus1) && bool(plus2));
-    ASSERT_TRUE(setKnobValue(plus1, kMergeParamOperation, std::string("plus")));
-    ASSERT_TRUE(setKnobValue(plus2, kMergeParamOperation, std::string("plus")));
-    connectNodes(source, plus1, 0, true);
-    connectNodes(positive, plus1, 1, true);
-    connectNodes(plus1, plus2, 0, true);
-    connectNodes(negative, plus2, 1, true);
-    // Red NaN, green +Inf and blue -Inf over the rectangle.
-    NodePtr iblur = makeIBlur(plus2, NodePtr(), 6.);
+    ASSERT_TRUE(bool(source));
+    setParitySourceNonFinite(source, RectI(10, 8, 22, 18));
+    NodePtr iblur = makeIBlur(source, NodePtr(), 6.);
     ASSERT_TRUE(bool(iblur));
 
     const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ iblur }), iblur, kWindow, kTime);

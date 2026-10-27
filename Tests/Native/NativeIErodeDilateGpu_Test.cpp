@@ -221,10 +221,10 @@ TEST_F(NativeIErodeDilateGpuTest, MapIsReadOverTheOutput)
     const RectI rect(10, 20, 31, 47);
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-        const RectI sourceRoI = effect->getGpuInputRoI(kIErodeDilateInputSource, rect, scale);
+        const RectI sourceRoI = effect->getGpuInputRoI(kIErodeDilateInputSource, kTime, ViewIdx(0), rect, scale);
         EXPECT_TRUE(sourceRoI.contains(rect)) << "mipmap " << mipmapLevel;
         EXPECT_NE(rect, sourceRoI) << "mipmap " << mipmapLevel << ": the source is read beyond the output";
-        EXPECT_EQ(rect, effect->getGpuInputRoI(kIErodeDilateInputMap, rect, scale)) << "mipmap " << mipmapLevel;
+        EXPECT_EQ(rect, effect->getGpuInputRoI(kIErodeDilateInputMap, kTime, ViewIdx(0), rect, scale)) << "mipmap " << mipmapLevel;
     }
 }
 

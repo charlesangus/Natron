@@ -722,7 +722,7 @@ IBlur::opPasses(double time,
     range.min = getInput(kIBlurInputMap) ? 0.f : 1.f;
     range.max = 1.f;
     const IBlurParams params = getParams(time, view);
-    const PassContext context = getPassContext(scale);
+    const PassContext context = getPassContext(time, view, scale);
     PassList list = passes(params, context, range, std::shared_ptr<const MapPlane>());
 
 #ifdef NATRON_HAVE_GPU
@@ -842,7 +842,7 @@ IBlur::renderOp(const RenderActionArgs& args,
     }
     const MapRange range = map->tileRange(window);
 
-    return runPassesCpu(*this, plan, args, passes(params, getPassContext(args.mappedScale), range, map));
+    return runPassesCpu(*this, plan, args, passes(params, getPassContext(args.time, args.view, args.mappedScale), range, map));
 }
 
 void
@@ -860,7 +860,7 @@ IBlur::getRegionsOfInterest(double time,
         return;
     }
     // The Map is read over the render window grown by the full halo, in the source's pixels.
-    const double par = getAspectRatio(kIBlurInputSource);
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(kIBlurInputSource);
     const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
     const RectD mapRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
     // The Map may be the same effect as the source or the mask, which then needs both regions.
@@ -888,7 +888,7 @@ IBlur::clipRegionOfDefinition(double time,
     RectI format;
     EffectInstancePtr formatSource = source ? source->getNearestNonIdentity(time) : EffectInstancePtr();
     if (formatSource) {
-        format = formatSource->getOutputFormat();
+        format = formatSource->getRenderMetadata(time, view)->getOutputFormat();
     } else {
         Format projectFormat;
         getApp()->getProject()->getProjectDefaultFormat(&projectFormat);

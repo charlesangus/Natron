@@ -1262,7 +1262,7 @@ recordPassesGpu(EffectInstance& effect,
             return eStatusFailed;
         }
         RectI otherValid;
-        intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getAspectRatio(i)), &otherValid);
+        intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(i)), &otherValid);
         io.inputs[i] = cropGpuView(in, otherValid);
     }
     if (list.gpu(io) != eStatusOK) {

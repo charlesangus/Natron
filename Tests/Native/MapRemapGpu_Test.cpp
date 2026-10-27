@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <cfloat>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -71,6 +73,15 @@ floatOf(std::uint32_t u)
 }
 
 #ifdef NATRON_HAVE_GPU
+
+// The bits of v, or of the zero of its sign when |v| is below zeroBelow. GPUs may flush subnormal
+// values where the CPU keeps them, so a comparison through this is exact from zeroBelow up.
+std::uint32_t
+flushedBitsOf(float v,
+              float zeroBelow)
+{
+    return bitsOf(std::fabs(v) < zeroBelow ? std::copysign(0.f, v) : v);
+}
 
 // Mirrors MapRemapTestParams of mapremap_test.slang.
 struct MapRemapTestParams {
@@ -273,10 +284,15 @@ TEST(MapRemapGpu, RemapMatchesTheCpu)
                 params.exponent = exponent;
                 std::vector<float> gpu;
                 ASSERT_TRUE(runKernel(*runtime, params, raw, std::vector<float>(), &gpu));
+                // The gamma's 2^y is normal, as y >= -125, so only a subnormal result can flush.
+                // The smooth response multiplies m * m, subnormal for m below 2^-63, by 3 - 2m,
+                // at most 3: a device flushing that square gives 0 where the CPU gives up to
+                // 3 FLT_MIN.
+                const float zeroBelow = smooth ? 3.f * FLT_MIN : FLT_MIN;
                 std::size_t mismatches = 0;
                 std::size_t first = 0;
                 for (std::size_t i = 0; i < raw.size(); ++i) {
-                    if (bitsOf(gpu[i]) != bitsOf(cpuParams.remap(raw[i]))) {
+                    if (flushedBitsOf(gpu[i], zeroBelow) != flushedBitsOf(cpuParams.remap(raw[i]), zeroBelow)) {
                         if (mismatches++ == 0) {
                             first = i;
                         }

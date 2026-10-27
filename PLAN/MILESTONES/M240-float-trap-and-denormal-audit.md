@@ -53,20 +53,6 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: the debug build passes; `ctest -R "Raw|Write"` pass.
   - size: M
 
-## Phase 240.3: RADV failures inherited from main
-
-- [ ] M240.P3.T1 — Noise parity on RADV
-  - files: `Tests/Native/NativeNoiseGpu_Test.cpp`, `Engine/Nodes/Generator/Noise.cpp`, `Engine/Gpu/Kernels/noise*.slang`
-  - approach: `NativeNoiseGpuTest.MatchesTheCpuRender`'s `Match::Exact` cases differ by 1 ulp of normal values on RADV (worst 5.96e-08, e.g. white per pixel, decorrelated, and rotated odd cells far from the origin); lavapipe passes. Find which step rounds differently on hardware (fma contraction, a transcendental, float vs double hash scaling). Either make the CPU and GPU compute it identically, or, if the difference is inherent hardware rounding, move those cases to a 1-ulp tolerance with the reason recorded in the node's doc `Tolerance:` line.
-  - verify: `ctest -R NativeNoiseGpu` passes on RADV and lavapipe.
-  - size: M
-
-- [ ] M240.P3.T2 — OCIO nodes in the GPU capability allowlist
-  - files: `Tests/Native/NativeGpuCapability_Test.cpp`, `Engine/Nodes/OCIO/*`
-  - approach: on RADV, OCIODisplay and OCIOLookTransform report `canRenderOnGpu` true but are not allowlisted, so `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` fails. On lavapipe they report false. Find why the capability differs by device (runtime-shader support?). If GPU rendering is intended (M127 - Native OCIO Nodes), add them to the allowlist with the device condition the test needs; otherwise fix the capability check.
-  - verify: `ctest -R NativeGpuCapability` passes on RADV and lavapipe.
-  - size: M
-
 ## Decisions`.
   - verify: the list is recorded, with each entry's knob range checked against its knob definition.
   - size: M
@@ -96,6 +82,20 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - approach: For every registered native node (the registry `NativePluginList_Test` enumerates), set each float/double/colour knob in turn to +inf, -inf and ±1e300, render a small window from a constant source on the CPU in a debug build (traps enabled as on render threads), and assert the process doesn't die. A render error is allowed; a signal is not. Run it as one suite that prints the node and knob per case.
   - verify: `ctest -R NativeKnobNonFiniteSweep` passes in the debug build. Reverting one P2.T2 site makes it fail.
   - size: L
+
+## Phase 240.3: RADV failures inherited from main
+
+- [ ] M240.P3.T1 — Noise parity on RADV
+  - files: `Tests/Native/NativeNoiseGpu_Test.cpp`, `Engine/Nodes/Generator/Noise.cpp`, `Engine/Gpu/Kernels/noise*.slang`
+  - approach: `NativeNoiseGpuTest.MatchesTheCpuRender`'s `Match::Exact` cases differ by 1 ulp of normal values on RADV (worst 5.96e-08, e.g. white per pixel, decorrelated, and rotated odd cells far from the origin); lavapipe passes. Find which step rounds differently on hardware (fma contraction, a transcendental, float vs double hash scaling). Either make the CPU and GPU compute it identically, or, if the difference is inherent hardware rounding, move those cases to a 1-ulp tolerance with the reason recorded in the node's doc `Tolerance:` line.
+  - verify: `ctest -R NativeNoiseGpu` passes on RADV and lavapipe.
+  - size: M
+
+- [ ] M240.P3.T2 — OCIO nodes in the GPU capability allowlist
+  - files: `Tests/Native/NativeGpuCapability_Test.cpp`, `Engine/Nodes/OCIO/*`
+  - approach: on RADV, OCIODisplay and OCIOLookTransform report `canRenderOnGpu` true but are not allowlisted, so `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` fails. On lavapipe they report false. Find why the capability differs by device (runtime-shader support?). If GPU rendering is intended (M127 - Native OCIO Nodes), add them to the allowlist with the device condition the test needs; otherwise fix the capability check.
+  - verify: `ctest -R NativeGpuCapability` passes on RADV and lavapipe.
+  - size: M
 
 ## Decisions
 

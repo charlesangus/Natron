@@ -114,3 +114,5 @@ Vocabulary. Nodes are `NativeEffectBase` subclasses that author one memoized lay
 - 2026-10-26 — **Re-parent by internal references (cat-plan, from the code survey):** wrapper layer sublayering the input stack + per-root internal references keeps per-node memoization and SceneStage's sublayer-list sync; Solaris Graft's flatten-copy would re-copy the subtree on every upstream edit. Proven first by M226.P1.T1.
 
 Release gate green at 8fd54c78f (522/522 both schedulers); scene_viewer_flip and scene_viewer_live_edit pass at 1920x1080. Draft PR #126. Remaining: GUI verification script and screenshots, then UAT.
+
+UAT approved 2026-10-27; the up-axis question (item 7) moves to M241 - Up Axis Policy, and the "Units on edit layers" decision stands until it is answered there. Next: PR review, main merge, CI, merge.

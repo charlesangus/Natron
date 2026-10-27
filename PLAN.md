@@ -164,6 +164,7 @@ future core work has solid ground to build on.
 | M238 | EdgeExtend Options | todo | M123 |  | E3 | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | doing | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | doing | - | gpu | E14 | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
+| M241 | Up Axis Policy | todo | M226 |  | E9 | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
 | M52 | USD Layer-Stack Completion | todo | M226 |  | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | todo | M52, M233 |  | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M53, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |

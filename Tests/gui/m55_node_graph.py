@@ -44,9 +44,7 @@ WATCHDOG_S = 240
 SETTLE_MS = 400
 MARGIN = 80.0
 MAX_ZOOM = 1.8
-GREEN_R_MAX = 110
-GREEN_B_MAX = 110
-GREEN_G_MIN = 170
+HINT_CHANNEL_TOLERANCE = 40
 DRAG_STEPS = 4
 
 try:
@@ -154,17 +152,28 @@ try:
         path = os.path.join(gt.OUT, name + ".png")
         report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
 
-    # ---- green-pixel probe for the highlighted pipe / hint edges ---------------------------------
-    # Edge::paint draws a highlighted pipe, and the splice hint edges, in plain Qt::green. None of
-    # this script's own node bodies, selection halos (white) or category tints are pure green, so
-    # "is there a green pixel in roughly this area" is a safe, cheap stand-in for "is the hint/
-    # highlight drawn here" without needing scene() (broken in this binary, see the module
-    # docstring) or any new Python binding.
+    # ---- hint-colour probe for the highlighted pipe / hint edges ---------------------------------
+    # Edge::paint draws a highlighted pipe in the Preferences Selection colour (the splice hint
+    # edges are the same colour, translucent). "is there a pixel near the Selection colour in
+    # roughly this area" is a cheap stand-in for "is the hint/highlight drawn here" without needing
+    # scene() (broken in this binary, see the module docstring) or any new Python binding.
 
-    def is_green(c):
-        return (c.green() >= GREEN_G_MIN) and (c.red() <= GREEN_R_MAX) and (c.blue() <= GREEN_B_MAX)
+    def selection_rgb():
+        p = NatronEngine.natron.getSettings().getParam("selection")
+        return tuple(int(max(0.0, min(1.0, p.getValue(d))) * 255 + 0.5) for d in range(3))
 
-    def count_green_in_scene_rect(graph, img, rect_scene, pad=12.0):
+    def set_selection(r, g, b):
+        NatronEngine.natron.getSettings().getParam("selection").set(r, g, b)
+        graph = root_graph()
+        if graph is not None:
+            graph.viewport().update()
+        QApplication.processEvents()
+
+    def is_hint_colour(c, rgb):
+        return (abs(c.red() - rgb[0]) <= HINT_CHANNEL_TOLERANCE and abs(c.green() - rgb[1]) <= HINT_CHANNEL_TOLERANCE
+                and abs(c.blue() - rgb[2]) <= HINT_CHANNEL_TOLERANCE)
+
+    def count_hint_in_scene_rect(graph, img, rect_scene, rgb, pad=12.0):
         x0, y0, x1, y1 = rect_scene
         x0 -= pad
         y0 -= pad
@@ -181,18 +190,19 @@ try:
         hits = 0
         for y in range(py0, py1):
             for x in range(px0, px1):
-                if is_green(img.pixelColor(x, y)):
+                if is_hint_colour(img.pixelColor(x, y), rgb):
                     hits += 1
         return hits
 
-    def check_green_present(graph, rect_scene, label, want_present=True):
+    def check_hint_present(graph, rect_scene, label, want_present=True):
+        rgb = selection_rgb()
         _pix, img = viewport_image(graph)
-        hits = count_green_in_scene_rect(graph, img, rect_scene)
-        report("NOTE %s: %d green px sampled" % (label, hits))
+        hits = count_hint_in_scene_rect(graph, img, rect_scene, rgb)
+        report("NOTE %s: %d px near the Selection colour %s sampled" % (label, hits, rgb))
         if want_present:
-            return check(hits > 0, "%s: a green hint/highlight pixel is drawn" % label)
+            return check(hits > 0, "%s: a hint/highlight pixel in the Selection colour is drawn" % label)
         else:
-            return check(hits == 0, "%s: no green hint/highlight pixel is drawn (got %d)" % (label, hits))
+            return check(hits == 0, "%s: no hint/highlight pixel in the Selection colour is drawn (got %d)" % (label, hits))
 
     # ---- synthetic drag, press/move*3+/release on the NodeGraph viewport ----------------------
 
@@ -473,7 +483,7 @@ try:
 
         def mid_check_v(_pos):
             graph_shot(graph_v, "splice-01-hover-vertical")
-            check_green_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the highlight")
+            check_hint_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the highlight")
 
         # The highlighted pipe sits below node bodies, so the node is dropped just beside the pipe
         # (still inside the splice tolerance) to leave the highlight in view.
@@ -483,6 +493,11 @@ try:
         drag_node_to(graph_v, mover_v, target_v, modifiers=Qt.NoModifier, at_each_step=None,
                     release=False)
         mid_check_v(target_v)
+        default_sel = selection_rgb()
+        set_selection(0.1, 0.4, 1.0)
+        yield ("sleep", SETTLE_MS)
+        check_hint_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the highlight in a changed Selection colour")
+        set_selection(default_sel[0] / 255.0, default_sel[1] / 255.0, default_sel[2] / 255.0)
         end_drag(graph_v, target_v)
         yield ("sleep", SETTLE_MS)
         graph_shot(graph_v, "splice-02-after-drop-vertical")
@@ -539,7 +554,7 @@ try:
                     (node_center_scene(src_d)[1] + node_center_scene(dst_d)[1]) / 2.0 + ny * off_d)
         drag_node_to(graph_d, mover_d, target_d, modifiers=Qt.NoModifier, release=False)
         graph_shot(graph_d, "splice-03-hover-diagonal")
-        check_green_present(graph_d, pipe_rect_d, "splice-diagonal: hover shows the highlight")
+        check_hint_present(graph_d, pipe_rect_d, "splice-diagonal: hover shows the highlight")
         end_drag(graph_d, target_d)
         yield ("sleep", SETTLE_MS)
         graph_shot(graph_d, "splice-04-after-drop-diagonal")
@@ -628,7 +643,7 @@ try:
         target_n = (node_center_scene(src_n2)[0], (node_center_scene(src_n2)[1] + node_center_scene(dst_n2)[1]) / 2.0)
         drag_node_to(graph_n, mid_n, target_n, modifiers=Qt.NoModifier, release=False)
         graph_shot(graph_n, "splice-07-connected-node-no-splice-hover")
-        check_green_present(graph_n, pipe_rect_n2, "no-splice: an already-connected node dragged over a pipe "
+        check_hint_present(graph_n, pipe_rect_n2, "no-splice: an already-connected node dragged over a pipe "
                             "shows no highlight", want_present=False)
         end_drag(graph_n, target_n)
         yield ("sleep", SETTLE_MS)
@@ -658,7 +673,7 @@ try:
                        (node_center_scene(src_ctrl)[1] + node_center_scene(dst_ctrl)[1]) / 2.0)
         drag_node_to(graph_ctrl, mover_ctrl, target_ctrl, modifiers=Qt.ControlModifier, release=False)
         graph_shot(graph_ctrl, "splice-08-ctrl-still-splices")
-        check_green_present(graph_ctrl, pipe_rect_ctrl,
+        check_hint_present(graph_ctrl, pipe_rect_ctrl,
                             "ctrl-still-splices: holding Ctrl still shows the splice highlight")
         end_drag(graph_ctrl, target_ctrl)
         yield ("sleep", SETTLE_MS)

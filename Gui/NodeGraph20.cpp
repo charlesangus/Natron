@@ -320,6 +320,8 @@ NodeGraph::checkForSpliceHint()
     _imp->_splicePipe = bestPipe;
     bestPipe->setUseHighlight(true);
 
+    _imp->_hintInputEdge->setDefaultColor(Edge::highlightColor(100));
+    _imp->_hintOutputEdge->setDefaultColor(Edge::highlightColor(100));
     _imp->_hintInputEdge->setInputNumber(_imp->_spliceEntryInput);
     _imp->_hintInputEdge->setSourceAndDestination(bestPipe->getSource(), _imp->_spliceEntry);
     _imp->_hintInputEdge->setVisible(true);

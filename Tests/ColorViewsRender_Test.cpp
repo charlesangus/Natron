@@ -87,7 +87,7 @@ const int32_t kCheckY = 1;
 
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
 const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
-const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
+const char* const kMergePluginID = "Merge";
 const char* const kIDistortPluginID = kNatronTestMatrixWarpPluginID;
 const char* const kPremultPluginID = kNatronTestMultiPlanePluginID;
 const char* const kTimeBufferReadPluginID = "net.sf.openfx.TimeBufferRead";

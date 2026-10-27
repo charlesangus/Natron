@@ -152,6 +152,21 @@ public:
         return _allowAll;
     }
 
+    /**
+     * @brief The name an All selection shows in the GUI and in getSummary(), "All" when empty.
+     * A node whose All selection means something narrower, such as Merge's "each layer reads
+     * its own namesake", names it here. Set once by the node and never persisted.
+     **/
+    void setAllLabel(const std::string& label)
+    {
+        _allLabel = label;
+    }
+
+    std::string getAllLabel() const
+    {
+        return _allLabel.empty() ? std::string("All") : _allLabel;
+    }
+
     std::string getLayer() const;
 
     /**
@@ -195,6 +210,7 @@ private:
     bool _withChannelButtons;
     bool _allowNone;
     bool _allowAll;
+    std::string _allLabel;
 
     mutable QMutex _cacheMutex;
     mutable bool _cacheValid;

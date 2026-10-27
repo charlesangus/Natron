@@ -84,58 +84,62 @@ keysOf(const ImageMetadata& metadata)
 
 } // namespace
 
-TEST_F(BaseTest, MergeMetadataComesFromA)
+TEST_F(BaseTest, MergeMetadataComesFromB)
 {
     NodePtr sourceA = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(sourceA && sourceB && merge);
 
     setTag(sourceA, 7);
     setTag(sourceB, 9);
-    connectNodes(sourceB, merge, kMergeInputB, true);
-    connectNodes(sourceA, merge, kMergeInputA, true);
+    connectNodes(sourceB, merge, kNativeMergeInputB, true);
+    connectNodes(sourceA, merge, kNativeMergeInputA, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
-    NativeEffectBase* aEffect = nativeEffectOf(sourceA);
+    NativeEffectBase* bEffect = nativeEffectOf(sourceB);
 
     ASSERT_TRUE(mergeEffect != NULL);
-    ASSERT_TRUE(aEffect != NULL);
+    ASSERT_TRUE(bEffect != NULL);
 
     const ImageMetadata result = mergeEffect->getOutputMetadata(2., ViewIdx(0));
 
-    EXPECT_EQ(std::optional<int>(7), result.getInt("exr/tag"));
-    EXPECT_EQ(aEffect->getOutputMetadata(2., ViewIdx(0)), result);
+    EXPECT_EQ(std::optional<int>(9), result.getInt("exr/tag"));
+    EXPECT_EQ(bEffect->getOutputMetadata(2., ViewIdx(0)), result);
 }
 
-TEST_F(BaseTest, MergeMetadataFallsBackToBWithoutA)
+TEST_F(BaseTest, MergeMetadataFallsBackToAWithoutB)
 {
-    NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr sourceA = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
-    ASSERT_TRUE(sourceB && merge);
+    ASSERT_TRUE(sourceA && merge);
 
-    setTag(sourceB, 9);
-    connectNodes(sourceB, merge, kMergeInputB, true);
+    setTag(sourceA, 7);
+    connectNodes(sourceA, merge, kNativeMergeInputA, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
 
     ASSERT_TRUE(mergeEffect != NULL);
-    EXPECT_EQ(std::optional<int>(9), mergeEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_EQ(std::optional<int>(7), mergeEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
 }
 
-TEST_F(BaseTest, MergeMetadataFollowsAWhenItChanges)
+TEST_F(BaseTest, MergeMetadataFromAFollowsAWhenItChanges)
 {
     NodePtr sourceA = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
     NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(sourceA && sourceB && merge);
 
     setTag(sourceB, 9);
-    connectNodes(sourceB, merge, kMergeInputB, true);
-    connectNodes(sourceA, merge, kMergeInputA, true);
+    connectNodes(sourceB, merge, kNativeMergeInputB, true);
+    connectNodes(sourceA, merge, kNativeMergeInputA, true);
+
+    KnobChoice* metadataFrom = dynamic_cast<KnobChoice*>(merge->getKnobByName(kNativeMergeParamMetadataFrom).get());
+    ASSERT_TRUE(metadataFrom != NULL);
+    metadataFrom->setValueFromID(kNativeMergeFromA, 0);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
 
@@ -147,14 +151,34 @@ TEST_F(BaseTest, MergeMetadataFollowsAWhenItChanges)
     EXPECT_EQ(std::optional<int>(5), mergeEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
 }
 
+TEST_F(BaseTest, MergeMetadataFromAFallsBackToBWithoutA)
+{
+    NodePtr sourceB = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+
+    ASSERT_TRUE(sourceB && merge);
+
+    setTag(sourceB, 9);
+    connectNodes(sourceB, merge, kNativeMergeInputB, true);
+
+    KnobChoice* metadataFrom = dynamic_cast<KnobChoice*>(merge->getKnobByName(kNativeMergeParamMetadataFrom).get());
+    ASSERT_TRUE(metadataFrom != NULL);
+    metadataFrom->setValueFromID(kNativeMergeFromA, 0);
+
+    NativeEffectBase* mergeEffect = nativeEffectOf(merge);
+
+    ASSERT_TRUE(mergeEffect != NULL);
+    EXPECT_EQ(std::optional<int>(9), mergeEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
+}
+
 TEST_F(BaseTest, MergeMetadataIsCachedPerFrame)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(source && merge);
 
-    connectNodes(source, merge, kMergeInputA, true);
+    connectNodes(source, merge, kNativeMergeInputA, true);
 
     NativeEffectBase* mergeEffect = nativeEffectOf(merge);
     MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());

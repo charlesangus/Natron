@@ -249,7 +249,7 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
     const RectI whiteBox(kParitySourceWidth / 2, 0, kParitySourceWidth, kParitySourceHeight);
     NodePtr black = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
     NodePtr white = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     NodePtr edge = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
     ASSERT_TRUE(bool(black) && bool(white) && bool(merge));
     ASSERT_TRUE(isNative(edge));
@@ -259,7 +259,7 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
     ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)whiteBox.x1, (double)whiteBox.y1 }));
     ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)whiteBox.width(), (double)whiteBox.height() }));
     ASSERT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
-    ASSERT_TRUE(setKnobValue(merge, kMergeParamOperation, std::string("over")));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
     connectNodes(black, merge, 0, true);
     connectNodes(white, merge, 1, true);
     connectNodes(merge, edge, 0, true);

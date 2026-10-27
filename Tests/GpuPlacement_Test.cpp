@@ -437,6 +437,8 @@ namespace {
 
 const char* const kGradeId = "net.sf.openfx.GradePlugin";
 const char* const kBlurId = "net.sf.cimg.CImgBlur";
+// A plug-in ID with no seed row.
+const char* const kUnseededId = "fr.natron.test.Unseeded";
 const RectI kUhd(0, 0, 3840, 2160);
 const std::size_t kUhdBytes = (std::size_t)3840 * 2160 * 4 * sizeof(float);
 const double kUhdMpx = 3840. * 2160. / 1e6;
@@ -510,7 +512,7 @@ TEST(GpuCostModel, GradeCostsFollowSeedOverride)
     model.setCpuSeed(kGradeId, 16., 16.);
     EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), kUhdMpx), kUhdMpx, 1e-9);
     EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.497, 1e-3);
-    EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
+    EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits(kUnseededId)));
 }
 
 TEST(GpuCostModel, SerialSeedScalesToPoolSize)
@@ -546,8 +548,8 @@ TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
     EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), 1.), seedGpu + GpuCostModel::kEmaWeight * (1. - seedGpu), 1e-9);
 
     // A measured GPU run makes a plugin without a GPU seed eligible.
-    model.observeGpu(GpuTaskTraits("net.sf.openfx.MergePlugin"), 1000000, 1.);
-    EXPECT_TRUE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
+    model.observeGpu(GpuTaskTraits(kUnseededId), 1000000, 1.);
+    EXPECT_TRUE(model.hasGpuCost(GpuTaskTraits(kUnseededId)));
 }
 
 // sink 0 (CPU) <- Grade 1 <- reader 2 (CPU)

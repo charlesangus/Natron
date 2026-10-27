@@ -147,7 +147,7 @@ TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForBlur)
 
 TEST_F(BaseTest, CategoryForPluginAgreesWithGetNodeCategoryForMerge)
 {
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
 
     ASSERT_TRUE(bool(merge));
     EXPECT_EQ(merge->getNodeCategory(), Node::categoryForPlugin(*merge->getPlugin()));

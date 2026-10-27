@@ -66,6 +66,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -398,7 +399,7 @@ protected:
     NodePtr createMerge(const NodePtr& b,
                         const NodePtr& a)
     {
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_OFX_MERGE));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
         EXPECT_TRUE(bool(merge));
         if (!merge) {
             return merge;

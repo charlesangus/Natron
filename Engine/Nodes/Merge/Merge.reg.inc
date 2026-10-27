@@ -1,1 +1,1 @@
-NATRON_NATIVE_NODE(MergePreset<eMergePresetMerge>, "Merge.h")
+NATRON_NATIVE_NODE(NativeMerge, "Merge.h")

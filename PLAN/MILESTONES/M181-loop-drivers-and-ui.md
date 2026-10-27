@@ -46,6 +46,10 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
   - Driver Start/End keys (Curve on KnobDriver, d3af7e02c) appear under their driven knob in the curve editor and dope sheet, editable there with undo, and are marked on the timeline like knob keys.
   - size: M
 
+- [ ] M181.P1.T5 — Knob expressions under knobChanged see preview loop variables
+  - EffectInstance::onKnobValueChanged_public (EffectInstance.cpp ~5893-5931) sets isAnalysis frame args before knobChanged; PyRFV expressionContext (~281) and Knob.cpp (~7875) treat any frame args as a render, so a body-knob expression evaluated during knobChanged misses previewContextOf's loop variables. Make "is this a render" mean a real render (not analysis/instance-changed args) in one shared predicate, used by LoopEnd::evaluateStop, PyRFV and Knob expression context. Test: a body knob expression reading loop.iteration evaluated from another knob's knobChanged sees the preview iteration.
+  - size: M
+
 ## Phase 181.2: Expressions
 
 - [x] M181.P2.T1 — Expose loop variables to Python expressions

@@ -199,7 +199,7 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
     const Range ranges[] = {
         { kHSVKeyerParamHueRange, KnobDouble::eRangeWidgetRoleHue, kHSVKeyerParamUseHue, kHSVKeyerParamHueSmooth, "Hue Smooth", { 0.05, 0.035, 0.4, 0.035, 0.05 } },
         { kHSVKeyerParamSaturationRange, KnobDouble::eRangeWidgetRoleSaturation, kHSVKeyerParamUseSaturation, kHSVKeyerParamSaturationSmooth, "Saturation Smooth", { 0.04, 0.14, 0.2, 0.2, 0. } },
-        { kHSVKeyerParamLumaRange, KnobDouble::eRangeWidgetRoleLuma, kHSVKeyerParamUseLuma, kHSVKeyerParamLumaSmooth, "Luma Smooth", { 0.05, 0.45, 0.5, 0.5, 1. } },
+        { kHSVKeyerParamLumaRange, KnobDouble::eRangeWidgetRoleLuma, kHSVKeyerParamUseLuma, kHSVKeyerParamLumaSmooth, "Luma Smooth", { 0.05, 0.45, 0.5, 0.45, 0.05 } },
     };
     const char* const dimensionNames[] = { "Outer Low", "Inner Low", "Centre", "Inner High", "Outer High" };
     KnobColorPtr source = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kHSVKeyerParamSourceColor));
@@ -253,7 +253,7 @@ TEST_F(NativeHSVKeyerTest, ControlsAndDefaults)
     EXPECT_FLOAT_EQ(0.06f, params.sat[1]);
     EXPECT_FLOAT_EQ(0.4f, params.sat[2]);
     EXPECT_FLOAT_EQ(0.4f, params.sat[3]);
-    EXPECT_FLOAT_EQ(2.f, params.luma[3]);
+    EXPECT_FLOAT_EQ(1.f, params.luma[3]);
 }
 
 // The Use toggles come before the ranges they switch, so the panel shows them above.

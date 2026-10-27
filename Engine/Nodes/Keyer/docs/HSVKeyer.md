@@ -34,7 +34,7 @@ and GPU trapezoids read, so `hue.slang` is unaffected by the knob layout.
 - **Hue** wraps around its centre, so the range may cross red; each offset counts up to a whole
   turn, so the trapezoid spans at most four. Defaults 0.05, 0.035, 0.4, 0.035, 0.05.
 - **Saturation** defaults 0.04, 0.14, 0.2, 0.2, 0 (a hard edge at 0.4). **Luma** defaults 0.05,
-  0.45, 0.5, 0.5, 1 (outer high at 2, for HDR).
+  0.45, 0.5, 0.45, 0.05.
 
 ## Smooth falloffs (`hueSmooth`, `saturationSmooth`, `lumaSmooth`)
 
@@ -58,7 +58,7 @@ leaves the outer point in place, stopping there too. Dragging an outer handle ch
 offset, stopping at its inner point. The mouse wheel zooms around the cursor and a middle or Alt
 drag pans. The initial view and Reset Zoom show one hue turn centred on the centre, and 0 to 1
 for saturation and luma in every model, OkLCh chroma included; a side with a point outside 0 to 1
-is widened to it plus 5% of the span, so the luma defaults show about 0 to 2.1. A row, its S
+is widened to it plus 5% of the span, so all three defaults open at 0 to 1. A row, its S
 button included, greys out while its toggle is off, and the strips grow with the panel's width.
 
 ## Hue fade

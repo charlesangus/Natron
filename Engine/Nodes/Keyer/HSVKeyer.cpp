@@ -249,7 +249,7 @@ HSVKeyerOp::createKnobs(KnobHolder* knobHolder,
     // green.
     const double hueDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.035, 0.4, 0.035, 0.05 };
     const double satDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.04, 0.14, 0.2, 0.2, 0. };
-    const double lumaDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.45, 0.5, 0.5, 1. };
+    const double lumaDefaults[KnobDouble::eRangeWidgetDimensionCount] = { 0.05, 0.45, 0.5, 0.45, 0.05 };
     const std::string offsetsHint = EffectInstance::tr("The key is 1 from the centre minus the inner low offset to the centre plus the inner high offset, and falls to 0 over the outer low offset below that and over the outer high offset above it, so an outer offset of 0 is a hard edge. Offsets below 0 count as 0.").toStdString();
     KnobDoublePtr hue = addRange(knobHolder, page, kHSVKeyerParamHueRange, EffectInstance::tr("Hue Range").toStdString(),
                                  EffectInstance::tr("The hue range, in turns from red at 0, wrapping around its centre, so it may cross red. Each offset counts up to a whole turn. Hue counts for less as the chroma nears 0.").toStdString() + "\n" + offsetsHint,

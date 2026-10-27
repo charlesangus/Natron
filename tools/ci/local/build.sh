@@ -96,6 +96,8 @@ RECONFIGURE=0
 SHOW_CCACHE_STATS=1
 WANT_TESTS_FLAG=0
 EXTRA_CMAKE_ARGS=()
+# The loop below shifts its arguments away; the container re-exec needs them.
+ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -260,7 +262,7 @@ if ! in_container; then
     if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
         ENV_FORWARD+=("NATRON_BUILD_JOBS=${NATRON_BUILD_JOBS}")
     fi
-    exec "${SCRIPT_DIR}/devshell.sh" env "${ENV_FORWARD[@]}" "${REPO_ROOT}/tools/ci/local/build.sh" "$@"
+    exec "${SCRIPT_DIR}/devshell.sh" env "${ENV_FORWARD[@]}" "${REPO_ROOT}/tools/ci/local/build.sh" "${ORIG_ARGS[@]}"
 fi
 
 # --- from here on, we are inside the dev container ---------------------------

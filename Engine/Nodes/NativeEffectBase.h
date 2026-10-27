@@ -588,7 +588,7 @@ protected:
     /**
      * @brief For a scene node's renderScene(): sets *output to upstream with this node's layer on
      * top. The layer is authored through author only when this node's plug-in, knobs or
-     * appendNodeContentHash() state, the project frame range or rate, or the upstream stack have
+     * appendNodeContentHash() state, the project frame range, rate or scene units, or the upstream stack have
      * changed since the last one; otherwise the same layer is re-emitted. author must read only
      * those, and author everything from scratch into the empty layer it is handed.
      **/
@@ -617,6 +617,15 @@ protected:
                         const SceneLayerMemo::AuthorFunc& author,
                         ScenePayload* output,
                         std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The key emitSceneLayer() memoizes this node's layer on, for a node that memoizes
+     * layers of its own on the same terms. Returns false with *errorMessage set while the node is
+     * being destroyed.
+     **/
+    bool getSceneLayerKey(const SceneLayerReads& reads,
+                          SceneLayerMemo::Key* key,
+                          std::string* errorMessage) WARN_UNUSED_RETURN;
 
     /**
      * @brief Makes the next emitSceneLayer() author a new layer, for a change none of its inputs

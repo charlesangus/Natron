@@ -41,6 +41,23 @@ NATRON_NAMESPACE_ENTER
 class ContentHasher;
 
 /**
+ * @brief What a geometry node's Material input adds to its scene: see
+ * SceneNodeAuthoring::graftMaterialInput().
+ **/
+struct SceneMaterialGraft {
+    // The input's root prims grafted under the geometry prim, for the geometry node to stack its
+    // own layer on. Empty when the input is.
+    ScenePayload payload;
+    // Where the input's first material landed, which the geometry binds itself to. Empty when the
+    // input holds no material.
+    std::string materialPath;
+    // A hash of what the geometry's layer reads of payload: its metadata and materialPath. A
+    // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
+    U64 factsDigest = 0;
+    std::vector<SceneUnmappedLink> unmappedLinks;
+};
+
+/**
  * @brief What the scene nodes that author prims from knobs share: a stage to author their layer
  * through with the Usd API, and the time policy for knob values. A knob that is not animated
  * authors the attribute's default; an animated one (keyframes or an expression in any dimension)
@@ -55,14 +72,12 @@ namespace SceneNodeAuthoring {
 double getTimeCodesPerSecond(const SceneLayerEdit& edit);
 
 /**
- * @brief The meters per unit of the scene the node's layer goes on top of: the upstream stage's,
- * or USD's fallback (centimetres) for a node with no scene input.
+ * @brief The project's meters per unit, which the node's layer authors.
  **/
 double getMetersPerUnit(const SceneLayerEdit& edit);
 
 /**
- * @brief Appends to h what getTimeCodesPerSecond(), getMetersPerUnit() and openLayerStage() read
- * of upstream: whether there is one, and its stage metadata. A node that keys its layer on the
+ * @brief Appends to h what getTimeCodesPerSecond() and openLayerStage() read of upstream: whether there is one, and its stage metadata. A node that keys its layer on the
  * upstream facts it reads (SceneLayerMemo::Key::eUpstreamReadFacts) hashes these with its own.
  **/
 /**
@@ -77,8 +92,14 @@ void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);
 
 /**
- * @brief Sets edit.layer's time codes per second and opens a stage on it alone, so the node can
- * author through the Usd schema API with edit.layer as the edit target.
+ * @brief Authors edit.layer's stage metadata: its time codes per second, and the project's upAxis
+ * and metersPerUnit from edit.
+ **/
+void authorLayerMetadata(const SceneLayerEdit& edit);
+
+/**
+ * @brief authorLayerMetadata(), then opens a stage on edit.layer alone, so the node can author
+ * through the Usd schema API with edit.layer as the edit target.
  **/
 PXR_NS::UsdStageRefPtr openLayerStage(const SceneLayerEdit& edit,
                                       std::string* errorMessage);
@@ -129,8 +150,33 @@ authorValue(const PXR_NS::UsdAttribute& attribute,
 }
 
 /**
+ * @brief For a geometry node's optional Material input: grafts every root prim of material under
+ * the geometry prim at primPath through SceneOps::reparentRoots, memoized in memo, so the material
+ * lives and moves with the geometry and each geometry node holds its own copy. The graft defines
+ * primPath and its missing ancestors typeless: the geometry's own layer, stacked on
+ * graft->payload, gives them their types and binds the prim with authorMaterialBinding().
+ * graft->materialPath is the grafted path of material's first UsdShadeMaterial, depth first.
+ * Returns false with *errorMessage set when primPath is not an absolute prim path, a root of
+ * material is at primPath itself, or authoring fails.
+ **/
+bool graftMaterialInput(const ScenePayload& material,
+                        const std::string& primPath,
+                        const std::string& layerTag,
+                        SceneGraftMemo* memo,
+                        SceneMaterialGraft* graft,
+                        std::string* errorMessage);
+
+/**
+ * @brief Binds prim to the material at materialPath (material:binding, with
+ * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty.
+ **/
+bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
+                           const std::string& materialPath,
+                           std::string* errorMessage);
+
+/**
  * @brief Authors knobs as xformable's op stack: xformOp:translate, xformOp:rotate<order> and
- * xformOp:scale, replacing whatever op order a weaker layer gives the prim.
+ * xformOp:scale, as the prim's whole op order.
  **/
 bool authorTransform(const SceneTransformKnobs& knobs,
                      const PXR_NS::UsdGeomXformable& xformable,
@@ -166,6 +212,18 @@ PXR_NS::GfMatrix4d composeTransformMatrix(const PXR_NS::GfVec3d& translate,
                                           const PXR_NS::GfVec3d& scale,
                                           const PXR_NS::GfVec3d& pivot,
                                           SceneRotateOrderEnum rotateOrder);
+
+// Whether any of knobs, or pivot, is animated.
+bool isTransformAnimated(const SceneTransformKnobs& knobs,
+                         const KnobDoublePtr& pivot);
+
+/**
+ * @brief composeTransformMatrix() of the knobs' values at frame, scale multiplied by uniform
+ * scale, about pivot. The identity when a knob is gone.
+ **/
+PXR_NS::GfMatrix4d getTransformMatrixAt(const SceneTransformKnobs& knobs,
+                                        const KnobDoublePtr& pivot,
+                                        double frame);
 
 // The axis (0 for X, 1 for Y, 2 for Z) rotateOrder turns about at position (0 first, 2 last).
 int getRotateOrderAxis(SceneRotateOrderEnum rotateOrder, int position);

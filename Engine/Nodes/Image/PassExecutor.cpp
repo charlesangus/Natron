@@ -945,6 +945,20 @@ isRunnablePassList(const PassList& list)
     return true;
 }
 
+void
+runPassListOnScratch(const PassList& list,
+                     const PassScratch& scratch,
+                     int nThreads,
+                     RenderCancellation& cancel)
+{
+    for (const Pass& pass : list.passes) {
+        if (cancel.check()) {
+            return;
+        }
+        runPass(pass, scratch, nThreads, cancel);
+    }
+}
+
 StatusEnum
 runPassesCpu(EffectInstance& effect,
              const StagePlan& plan,
@@ -968,6 +982,21 @@ runPassesCpu(EffectInstance& effect,
         if (mask && ((plan.maskChannel >= (int)mask->getComponentsCount()))) {
             mask.reset();
         }
+    }
+    // An op that applies its mask itself reads it over the whole buffer instead.
+    StagePlan opMaskPlan = plan;
+    ImagePtr opMask;
+    if (list.opMask) {
+        resolveStageOpMask(effect, &opMaskPlan);
+        if (opMaskPlan.applyMask && (opMaskPlan.maskChannel >= 0)) {
+            RectI maskRoI;
+            opMask = effect.getImage(opMaskPlan.maskInput, args.time, args.mappedScale, args.view, NULL, &opMaskPlan.maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
+        }
+        if (opMask && (opMaskPlan.maskChannel >= (int)opMask->getComponentsCount())) {
+            opMask.reset();
+        }
+    } else {
+        opMaskPlan.applyMask = false;
     }
 
     const ImageLayerDesc& divisorLayer = plan.divisorLayer;
@@ -1003,7 +1032,7 @@ runPassesCpu(EffectInstance& effect,
         }
         jobs.push_back(job);
     }
-    if (!isFloatImage(mask)) {
+    if (!isFloatImage(mask) || !isFloatImage(opMask)) {
         return eStatusFailed;
     }
 
@@ -1025,6 +1054,11 @@ runPassesCpu(EffectInstance& effect,
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
     maskSource.lock();
+    MaskInput opMaskSource;
+    opMaskSource.applied = opMaskPlan.applyMask;
+    opMaskSource.image = opMask;
+    opMaskSource.channel = opMaskPlan.maskChannel;
+    opMaskSource.lock();
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         jobs[j].lock();
     }
@@ -1049,6 +1083,21 @@ runPassesCpu(EffectInstance& effect,
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(&effect);
 
+    // The op's mask over the buffer, the same for every plane job: 0 outside the mask's image,
+    // everywhere when its channel resolves to none.
+    std::vector<float> opMaskPlane;
+    if (opMaskSource.applied && planeSize) {
+        opMaskPlane.resize(planeSize);
+        forEachLineChunk(bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, [&](int first, int end) {
+            for (int r = first; r < end; ++r) {
+                readChannelRow(opMaskSource.image.get(), opMaskSource.access.get(), opMaskSource.bounds, opMaskSource.nComps, opMaskSource.channel, bufferRect.x1, bufferRect.y1 + r, bufferWidth, 0.f, &opMaskPlane[(std::size_t)r * bufferWidth]);
+            }
+        });
+        if (cancel.check()) {
+            return eStatusOK;
+        }
+    }
+
     // All scratch comes uninitialised from the pooled huge-page allocator, and is released when the
     // function returns. Zeroing it here would fault every page in on this thread alone; instead
     // the threads that first write a page fault it in, and a re-render takes pooled pages that are
@@ -1061,9 +1110,10 @@ runPassesCpu(EffectInstance& effect,
     //   slots 1 and 2: copyWorker() copies slot 0 over every row of every plane, or stencilWorker()
     //                  writes every element of both, and combineWorker() reads only after that;
     //   slot 3:        suppressionWorker() writes every pixel of every plane, border included;
-    // IBlur's, whose box passes alternate between slots 0 and 1, each writing every pixel of
-    // every plane of the slot the next one reads; and IErode's and IDilate's, whose filterWorker()
-    // writes every pixel of every plane of slot 1, copying slot 0 outside the render window.
+    // IBlur's and EdgeBlur's, whose box passes alternate between slots 0 and 1, each writing
+    // every pixel of every plane of the slot the next one reads; and IErode's and IDilate's, whose
+    // filterWorker() writes every pixel of every plane of slot 1, copying slot 0 outside the render
+    // window.
     HostScratchFloats sourceStorage;
     std::vector<HostScratchFloats> extraStorage(list.scratchSlots - 1);
     // Playback overlaps two frames, and pooling both sets would keep both resident.
@@ -1087,6 +1137,11 @@ runPassesCpu(EffectInstance& effect,
             scratch.nPlanes = nPlanes;
             scratch.planeSize = planeSize;
             scratch.buffers.push_back(buffer);
+            scratch.nComps = job.nComps;
+            scratch.mask = opMaskPlane.empty() ? nullptr : opMaskPlane.data();
+            for (int c : planes.channel) {
+                scratch.channelBits.push_back(pixelKernelChannelBit(job.nComps, c));
+            }
             for (HostScratchFloats& slot : extraStorage) {
                 slot.reserve(bufferSize);
                 scratch.buffers.push_back(slot.data());
@@ -1264,6 +1319,21 @@ recordPassesGpu(EffectInstance& effect,
         RectI otherValid;
         intersectRects(in.bounds, toPixelEnclosing(otherRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(i)), &otherValid);
         io.inputs[i] = cropGpuView(in, otherValid);
+    }
+    if (list.opMask) {
+        StagePlan maskPlan = plan;
+        resolveStageOpMask(effect, &maskPlan);
+        io.maskApplied = maskPlan.applyMask;
+        const int maskInput = maskPlan.maskInput;
+        // A mask that is not handed over reads zero everywhere.
+        const bool hasMask = (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;
+        if (io.maskApplied && hasMask && (maskPlan.maskChannel >= 0) && (maskPlan.maskChannel < maskPlan.maskLayer.getNumComponents())) {
+            io.mask = args.inputs[maskInput];
+            io.maskComponent = stageGpuMaskViewComponent(maskPlan.maskLayer, maskPlan.maskChannel, io.mask.nComps);
+            if ((io.maskComponent < 0) || (io.maskComponent >= io.mask.nComps) || ((io.mask.byteOffset % sizeof(float)) != 0)) {
+                return eStatusFailed;
+            }
+        }
     }
     if (list.gpu(io) != eStatusOK) {
         return eStatusFailed;

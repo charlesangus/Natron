@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <functional>
 #include <list>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -242,6 +243,16 @@ public:
     U64 getCachesTotalMemorySize() const;
     U64 getCachesTotalDiskSize() const;
     CacheSignalEmitterPtr getOrActivateViewerCacheSignalEmitter() const;
+
+    /**
+     * @brief The frames the viewer cache holds textures for under the given holder, viewer hash and
+     * mipmap level, each with where it is stored (RAM wins over disk when a frame has both). Entries
+     * of other hashes stay in the cache for undo, so they are left out.
+     **/
+    void getViewerCachedFrames(const std::string& holderID,
+                               U64 viewerHash,
+                               unsigned int mipmapLevel,
+                               std::map<SequenceTime, StorageModeEnum>* frames) const;
 
     void setApplicationsCachesMaximumMemoryPercent(double p);
 

@@ -164,7 +164,7 @@ protected:
         source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
         grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
         blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
-        merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         ASSERT_TRUE(source && grade && blur && merge);
         connectNodes(source, grade, 0, true);
         connectNodes(grade, blur, 0, true);

@@ -14,6 +14,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
@@ -127,9 +128,11 @@ void
 registerSceneTestPlugins()
 {
     // A scene source and a scene op, so Scene/SceneAction_Test.cpp can pull scenes through the
-    // engine's action before any shipped scene node exists.
+    // engine's action before any shipped scene node exists, and a geometry stand-in for the
+    // Material input until shipped primitives exist.
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
+    registerTestBuiltInPlugin<SceneTestGeometry>();
 }
 
 void
@@ -138,6 +141,14 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
+    registerTestBuiltInPlugin<ContextReaderTestEffect>();
+    registerTestBuiltInPlugin<ContextFanOutTestEffect>();
+    registerTestBuiltInPlugin<ContextChainTestEffect>();
+    registerTestBuiltInPlugin<ContextFormatTestEffect>();
+    registerTestBuiltInPlugin<ContextRegionTestEffect>();
+    registerTestBuiltInPlugin<ContextUnionTestEffect>();
+    registerTestBuiltInPlugin<ContextSetTestEffect>();
 }
 
 void

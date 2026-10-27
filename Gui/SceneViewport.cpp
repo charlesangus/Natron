@@ -49,7 +49,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
-#include "Engine/Nodes/Scene/USDTransform.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/UndoGesture.h"
 
@@ -1131,14 +1131,14 @@ struct SceneViewport::Implementation {
     double handlePressValue = 0.;
     UndoGesture handleGesture;
 
-    USDTransform* getTransformNode(NodePtr* node) const
+    USDEditTransform* getTransformNode(NodePtr* node) const
     {
         *node = transformNodeProvider ? transformNodeProvider() : NodePtr();
         if (!*node) {
             return nullptr;
         }
 
-        return dynamic_cast<USDTransform*>((*node)->getEffectInstance().get());
+        return dynamic_cast<USDEditTransform*>((*node)->getEffectInstance().get());
     }
 
     // The device pixel of a widget position.
@@ -1396,7 +1396,7 @@ void
 SceneViewport::refreshTransformHandles()
 {
     NodePtr node;
-    USDTransform* effect = _imp->getTransformNode(&node);
+    USDEditTransform* effect = _imp->getTransformNode(&node);
     std::string primPath, opName;
 
     if (!effect || !effect->getHandleTarget(&primPath, &opName)) {
@@ -1613,7 +1613,7 @@ SceneViewport::beginHandleDrag(const QPoint& pos)
         return false;
     }
     NodePtr node;
-    USDTransform* effect = _imp->getTransformNode(&node);
+    USDEditTransform* effect = _imp->getTransformNode(&node);
     if (!effect) {
         return false;
     }

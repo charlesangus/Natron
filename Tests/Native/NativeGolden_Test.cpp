@@ -36,7 +36,9 @@
 #include "NativeGolden.h"
 #include "NativeParity.h"
 
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
@@ -53,9 +55,13 @@
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Color/Threshold.h"
+#include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Filter/Glow.h"
+#include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
@@ -230,7 +236,7 @@ mergeSpec(const std::string& name,
           const std::string& id,
           bool secondA)
 {
-    GoldenNodeSpec spec = plainSpec(name, id, PLUGIN_MAJOR_NATRON_MERGE);
+    GoldenNodeSpec spec = plainSpec(name, id, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
     spec.maskInput = "Mask";
     spec.extraInputs.push_back("A");
@@ -244,27 +250,50 @@ mergeSpec(const std::string& name,
 Apply
 mergeOperation(const std::string& operation)
 {
-    return [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation); };
+    return [operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation); };
 }
 
-// The cases every Merge registration shares: B and the A inputs sit at different origins, so each
-// A reaches outside the render window and the bounding box modes differ.
+// Layers set to All, so that the non-colour case, which turns on the sources' spec layer, merges
+// spec rather than passing it through from B.
+bool
+mergeAllLayers(const GoldenGraph& g)
+{
+    KnobChannelSetPtr layers = g.node->getEffectInstance()->getKnobByNameAndType<KnobChannelSet>(kNativeMergeParamLayers);
+
+    if (!layers) {
+        ADD_FAILURE() << "Merge has no " kNativeMergeParamLayers " knob";
+
+        return false;
+    }
+    std::vector<ChannelSetRow> rows(1);
+    rows[0].mode = ChannelSetRow::eModeAll;
+    layers->setRows(rows);
+
+    return true;
+}
+
+// The cases every Merge registration shares, each merging every layer: B and the A inputs sit at
+// different origins, so each A reaches outside the render window and the bounding box modes
+// differ.
 void
 addMergeCases(std::vector<GoldenVariant>* variants,
               const std::string& operation)
 {
+    const auto allLayers = [](const Apply& apply) {
+        return Apply([apply](const GoldenGraph& g) { return mergeAllLayers(g) && apply(g); });
+    };
     const Apply op = mergeOperation(operation);
 
-    variants->push_back(variant("default", op));
-    variants->push_back(variant("bboxa", [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation) && choice(g, kMergeParamBBox, kMergeBBoxA); }));
-    variants->push_back(variant("bboxintersection", [operation](const GoldenGraph& g) { return choice(g, kMergeParamOperation, operation) && choice(g, kMergeParamBBox, kMergeBBoxIntersection); }));
-    variants->push_back(variant("channels", [operation](const GoldenGraph& g) {
-        return choice(g, kMergeParamOperation, operation) && num(g, std::string(kMergeParamAChannels) + "R", { 0. }) && num(g, std::string(kMergeParamOutputChannels) + "A", { 0. });
-    }));
-    variants->push_back(maskVariant("maskmix", [operation](const GoldenGraph& g) {
-        return choice(g, kMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
-    }));
-    variants->push_back(maskVariant("maskplain", op));
+    variants->push_back(variant("default", allLayers(op)));
+    variants->push_back(variant("bboxa", allLayers([operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamSetBBox, kNativeMergeBBoxA); })));
+    variants->push_back(variant("bboxintersection", allLayers([operation](const GoldenGraph& g) { return choice(g, kNativeMergeParamOperation, operation) && choice(g, kNativeMergeParamSetBBox, kNativeMergeBBoxIntersection); })));
+    variants->push_back(variant("noalpha", allLayers([operation](const GoldenGraph& g) {
+                                    return choice(g, kNativeMergeParamOperation, operation) && setGoldenChannelSelect(g.node, kNativeMergeParamAAlpha, std::string()) && setGoldenChannelSelect(g.node, kNativeMergeParamBAlpha, std::string());
+                                })));
+    variants->push_back(maskVariant("maskmix", allLayers([operation](const GoldenGraph& g) {
+                                        return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
+                                    })));
+    variants->push_back(maskVariant("maskplain", allLayers(op)));
 }
 
 } // namespace
@@ -652,6 +681,83 @@ TEST_F(NativeGoldenTest, EdgeDetect)
     run(filterSpec("EdgeDetect", PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT), v);
 }
 
+TEST_F(NativeGoldenTest, EdgeExtend)
+{
+    const Apply wide = [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 20. }) && num(g, kEdgeExtendParamSlices, { 8. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("wide", wide));
+    v.push_back(variant("oneslice", [](const GoldenGraph& g) { return num(g, kEdgeExtendParamSize, { 6. }) && num(g, kEdgeExtendParamSlices, { 1. }); }));
+    v.push_back(variant("premultiplied", [](const GoldenGraph& g) {
+        return num(g, kEdgeExtendParamPremultiplyOutput, { 1. }) && num(g, kEdgeExtendParamThreshold, { 0.2 });
+    }));
+    v.push_back(variant("straight", [](const GoldenGraph& g) {
+        return num(g, kEdgeExtendParamSourcePremultiplied, { 0. }) && num(g, kEdgeExtendParamThreshold, { 0.9 });
+    }));
+    v.push_back(filterMaskMix(wide));
+    run(filterSpec("EdgeExtend", PLUGINID_NATRON_EDGEEXTEND, PLUGIN_MAJOR_NATRON_EDGEEXTEND), v);
+}
+
+TEST_F(NativeGoldenTest, Sharpen)
+{
+    const Apply soften = [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamMode, kSharpenParamModeSoften) && num(g, kSharpenParamAmount, { 0.7 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("soften", soften));
+    v.push_back(variant("laplacian", [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamMode, kSharpenParamModeLaplacian) && num(g, kSharpenParamSize, { 5., 2. }) && num(g, kSharpenParamAmount, { 2. });
+    }));
+    v.push_back(variant("threshold", [](const GoldenGraph& g) {
+        return num(g, kSharpenParamThreshold, { 0.2 }) && num(g, kSharpenParamAmount, { 1.5 });
+    }));
+    v.push_back(variant("gaussian", [](const GoldenGraph& g) {
+        return choice(g, kSharpenParamFilter, kBlurParamFilterGaussian) && num(g, kSharpenParamSize, { 6. });
+    }));
+    v.push_back(variant("box", [](const GoldenGraph& g) { return choice(g, kSharpenParamFilter, kBlurParamFilterBox) && num(g, kSharpenParamSize, { 7., 2. }); }));
+    v.push_back(filterMaskMix(soften));
+    run(filterSpec("Sharpen", PLUGINID_NATRON_SHARPEN, PLUGIN_MAJOR_NATRON_SHARPEN), v);
+}
+
+TEST_F(NativeGoldenTest, Bloom)
+{
+    const Apply pyramid = [](const GoldenGraph& g) { return num(g, kBloomParamSize, { 6. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("pyramid", pyramid));
+    v.push_back(variant("anisotropic", [](const GoldenGraph& g) {
+        return num(g, kBloomParamSize, { 12., 3. }) && num(g, kBloomParamRatio, { 1.5 }) && num(g, kBloomParamCount, { 4. });
+    }));
+    v.push_back(variant("single", [](const GoldenGraph& g) { return num(g, kBloomParamSize, { 8. }) && num(g, kBloomParamCount, { 1. }); }));
+    v.push_back(variant("gaussian", [](const GoldenGraph& g) {
+        return choice(g, kBloomParamFilter, kBlurParamFilterGaussian) && num(g, kBloomParamSize, { 4. }) && num(g, kBloomParamCount, { 3. });
+    }));
+    v.push_back(variant("box", [](const GoldenGraph& g) {
+        return choice(g, kBloomParamFilter, kBlurParamFilterBox) && num(g, kBloomParamSize, { 3. }) && num(g, kBloomParamCount, { 3. });
+    }));
+    v.push_back(filterMaskMix(pyramid));
+    run(filterSpec("Bloom", PLUGINID_NATRON_BLOOM, PLUGIN_MAJOR_NATRON_BLOOM), v);
+}
+
+TEST_F(NativeGoldenTest, Glow)
+{
+    const Apply small = [](const GoldenGraph& g) { return num(g, kGlowParamThreshold, { 0.1 }) && num(g, kGlowParamSize, { 3. }) && num(g, kGlowParamCount, { 3. }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default", [](const GoldenGraph& g) { return num(g, kGlowParamThreshold, { 0.1 }); }));
+    v.push_back(variant("small", small));
+    v.push_back(variant("preview", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamPreview, { 1. }); }));
+    v.push_back(variant("graded", [small](const GoldenGraph& g) {
+        return small(g) && num(g, kGlowParamTint, { 1.5, 0.75, 0.5, 0.6 }) && num(g, kGlowParamBrightness, { 2. }) && num(g, kGlowParamSaturation, { 0.4, 1.3, 0. }) && num(g, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }) && num(g, kGlowParamStretch, { 0.5 });
+    }));
+    v.push_back(variant("screenAddInput", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamScreen, { 1. }) && num(g, kGlowParamAddInput, { 1. }); }));
+    v.push_back(variant("glowOnly", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamGlowOnly, { 1. }); }));
+    v.push_back(variant("box", [small](const GoldenGraph& g) { return small(g) && choice(g, kGlowParamFilter, kBlurParamFilterBox); }));
+    v.push_back(maskVariant("mask", small));
+    v.push_back(variant("rotated", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamStretch, { 0.6 }) && num(g, kGlowParamRotate, { 30. }); }));
+    v.push_back(variant("hue", [small](const GoldenGraph& g) { return small(g) && num(g, kGlowParamIsolateHue, { 1. }) && num(g, kGlowParamPickHue, { 0.8, 0.2, 0.2 }); }));
+    run(filterSpec("Glow", PLUGINID_NATRON_GLOW, PLUGIN_MAJOR_NATRON_GLOW), v);
+}
+
 TEST_F(NativeGoldenTest, Erode)
 {
     const Apply wide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 3., 1. }); };
@@ -751,46 +857,35 @@ TEST_F(NativeGoldenTest, MergeOver)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "over");
-    v.push_back(variant("alphamasking", [](const GoldenGraph& g) { return choice(g, kMergeParamOperation, "over") && num(g, kMergeParamAlphaMasking, { 1. }); }));
-    run(mergeSpec("MergeOver", PLUGINID_NATRON_MERGE, false), v);
+    run(mergeSpec("MergeOver", PLUGINID_NATRON_NATIVE_MERGE, false), v);
 }
 
 TEST_F(NativeGoldenTest, MergePlusOperation)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "plus");
-    v.push_back(variant("alphamasking", [](const GoldenGraph& g) { return choice(g, kMergeParamOperation, "plus") && num(g, kMergeParamAlphaMasking, { 1. }); }));
-    run(mergeSpec("MergePlusOperation", PLUGINID_NATRON_MERGE, false), v);
+    run(mergeSpec("MergePlusOperation", PLUGINID_NATRON_NATIVE_MERGE, false), v);
 }
 
 TEST_F(NativeGoldenTest, MergeA2)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "over");
-    run(mergeSpec("MergeA2", PLUGINID_NATRON_MERGE, true), v);
+    run(mergeSpec("MergeA2", PLUGINID_NATRON_NATIVE_MERGE, true), v);
 }
 
 TEST_F(NativeGoldenTest, MergeA2Plus)
 {
     std::vector<GoldenVariant> v;
     addMergeCases(&v, "plus");
-    run(mergeSpec("MergeA2Plus", PLUGINID_NATRON_MERGE, true), v);
-}
-
-TEST_F(NativeGoldenTest, MergePlus)
-{
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. }); }));
-    run(mergeSpec("MergePlus", MergeNode::presetPluginID(eMergePresetPlus), true), v);
+    run(mergeSpec("MergeA2Plus", PLUGINID_NATRON_NATIVE_MERGE, true), v);
 }
 
 TEST_F(NativeGoldenTest, MergeMultiply)
 {
     std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) { return num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. }); }));
-    run(mergeSpec("MergeMultiply", MergeNode::presetPluginID(eMergePresetMultiply), false), v);
+    addMergeCases(&v, "multiply");
+    run(mergeSpec("MergeMultiply", PLUGINID_NATRON_NATIVE_MERGE, false), v);
 }
 
 TEST_F(NativeGoldenTest, Keyer)

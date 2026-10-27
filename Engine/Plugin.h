@@ -35,6 +35,7 @@
 #include <list>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -351,14 +352,20 @@ public:
     OFX::Host::ImageEffect::ImageEffectPlugin* getOfxPlugin() const;
 
     /**
-     * @brief Identifies the code that renders this plug-in: for OpenFX the binary's path,
-     * modification time and size, otherwise the Natron version and commit and the running
+     * @brief Identifies the code that renders this plug-in: for OpenFX ofxBinaryStamp() of its
+     * binary, otherwise the Natron version and commit and the running
      * executable's modification time and size. A plug-in whose output depends on state outside
      * the project (system fonts, files in the home directory) also gets the session salt.
      * Computed once, on first call, so a binary replaced while Natron runs keeps its first
      * stamp, matching the already loaded code. Never 0.
      **/
     U64 getBinaryContentStamp() const;
+
+    /**
+     * @brief Stamp of the OpenFX binary at binaryPath: its file name, modification time and
+     * size. The directory is left out, so one binary stamps the same wherever it is mounted.
+     **/
+    static U64 ofxBinaryStamp(const std::string& binaryPath);
     OFX::Host::ImageEffect::Descriptor* getOfxDesc(Natron::ContextEnum* ctx) const;
 
     void setOfxDesc(OFX::Host::ImageEffect::Descriptor* desc, Natron::ContextEnum ctx);

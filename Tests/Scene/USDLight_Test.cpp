@@ -105,6 +105,8 @@ TEST_F(USDLightTest, EachTypeAuthorsItsUsdLuxPrimWithTheSharedInputs)
     NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
     ASSERT_TRUE(bool(light));
     EXPECT_TRUE(light->getEffectInstance()->producesSceneData());
+    EXPECT_EQ(0, light->getNInputs());
+    EXPECT_EQ(0, light->getEffectInstance()->getNInputs());
     KnobColor* color = dynamic_cast<KnobColor*>(light->getKnobByName(kUSDLightParamColor).get());
     KnobDouble* intensity = dynamic_cast<KnobDouble*>(light->getKnobByName(kUSDLightParamIntensity).get());
     KnobDouble* exposure = dynamic_cast<KnobDouble*>(light->getKnobByName(kUSDLightParamExposure).get());
@@ -135,6 +137,7 @@ TEST_F(USDLightTest, EachTypeAuthorsItsUsdLuxPrimWithTheSharedInputs)
         const PXR_NS::UsdPrim prim = composeLight(light, &stage);
         ASSERT_TRUE(prim.IsValid());
         EXPECT_EQ(PXR_NS::TfToken(c.typeName), prim.GetTypeName());
+        EXPECT_EQ((std::size_t)1, stage->GetPseudoRoot().GetAllChildrenNames().size());
 
         const PXR_NS::UsdLuxLightAPI lightAPI(prim);
         PXR_NS::GfVec3f colorValue;

@@ -2188,7 +2188,7 @@ OfxEffectInstance::getPreferredMetadataForInputs(U64 hash,
         return found;
     }
 
-    const CleanHashSnapshot clean(getNode(), getCurrentRenderContextKey());
+    const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     NodeMetadata metadata = defaults;
     StatusEnum stat;
     bool editsRefused = false;

@@ -2097,9 +2097,11 @@ public:
      * a project variable's, the context its expression reads rfv under (see
      * PyRFV::getProjectExpressionContext()), restricted to those reads, 0 for the empty one.
      * Returns false for a knob reading none, whose results are kept by time whatever
-     * else its holder node reads.
+     * else its holder node reads. context, if given, receives the restricted context, null for
+     * the empty one.
      **/
-    bool getExpressionContextKey(U64* key) const;
+    bool getExpressionContextKey(U64* key,
+                                 RenderContextPtr* context = 0) const;
 
     /**
      * @brief The context variables the knob's value reads, as getExpressionContextKey() finds

@@ -265,7 +265,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
-    const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
+    const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const double par = getRenderMetadata(frameArgs, args.time, args.view)->getPixelAspectRatio(-1);
 
     ////////////////////////////////////////////////////////////////////////////////////////////
@@ -628,7 +628,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     }
 
     const U64 nodeHash = frameArgs->nodeHash;
-    const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
+    const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
 

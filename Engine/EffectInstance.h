@@ -396,6 +396,12 @@ public:
     U64 getCurrentRenderContextKey() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief getCurrentRenderContext() restricted to what this node reads, whose hash is
+     * getCurrentRenderContextKey(); null for the empty context.
+     **/
+    RenderContextPtr getCurrentRestrictedRenderContext() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Keeps one more hash state of this effect's action results than the fixed count for as
      * long as the returned token lives, so that a render querying the effect under many contexts
      * keeps the results of each until it is done.

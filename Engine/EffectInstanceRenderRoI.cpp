@@ -445,7 +445,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ///Use the hash at this time, and then copy it to the clips in the thread-local storage to use the same value
     ///through all the rendering of this frame.
     U64 nodeHash = frameArgs->nodeHash;
-    const CleanHashSnapshot clean(getNode(), frameArgs->contextKey);
+    const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
     const ImageFieldingOrderEnum fieldingOrder = renderMetadata->getOutputFielding();

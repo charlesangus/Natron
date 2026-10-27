@@ -1584,10 +1584,11 @@ Node::getHashMarkCount() const
 }
 
 CleanHashSnapshot::CleanHashSnapshot(const NodePtr& node,
-                                     U64 contextKey)
+                                     const RenderContextPtr& context)
     : _node(node)
-    , _contextKey(contextKey)
+    , _contextKey(context ? context->hash() : 0)
     , _marks(node ? node->getHashMarkCount() : 0)
+    , _bindings(node ? context : RenderContextPtr())
 {
 }
 
@@ -1609,11 +1610,14 @@ CleanHashSnapshot::allowsStoreUnder(U64 hash) const
     if (!_node->getHashValueIfUpToDate(&current) || (mixRenderContextKey(current, _contextKey) != hash)) {
         return false;
     }
+    if (!_bindings.identitiesCurrent()) {
+        return false;
+    }
     if (!KnobContentWrite::noneInFlight()) {
         return false;
     }
 
-    return _node->getHashMarkCount() == _marks;
+    return (_node->getHashMarkCount() == _marks) && _bindings.marksUnmoved();
 }
 
 bool

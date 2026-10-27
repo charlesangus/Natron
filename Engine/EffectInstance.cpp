@@ -531,6 +531,18 @@ EffectInstance::getCurrentRenderContextKey() const
     return restrictContextToNode(getCurrentRenderContext(), getNode(), 0);
 }
 
+RenderContextPtr
+EffectInstance::getCurrentRestrictedRenderContext() const
+{
+    if (!renderContextsInUse()) {
+        return RenderContextPtr();
+    }
+    RenderContextPtr restricted;
+    (void)restrictContextToNode(getCurrentRenderContext(), getNode(), &restricted);
+
+    return restricted;
+}
+
 bool
 EffectInstance::getInputActionContext(int inputNb,
                                       double time,
@@ -4404,7 +4416,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
             return true;
         }
     }
-    const CleanHashSnapshot clean(useIdentityCache ? getNode() : NodePtr(), useIdentityCache ? getCurrentRenderContextKey() : 0);
+    const CleanHashSnapshot clean(useIdentityCache ? getNode() : NodePtr(), useIdentityCache ? getCurrentRestrictedRenderContext() : RenderContextPtr());
 
     ///EDIT: We now allow isIdentity to be called recursively.
     RECURSIVE_ACTION();
@@ -4539,7 +4551,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             return preferredInput->getEffectInstance()->getRegionOfDefinition_public(preferredInput->getEffectInstance()->getRenderHash(), time, scale, view, rod, isProjectFormat);
         }
 
-        const CleanHashSnapshot clean(getNode(), getCurrentRenderContextKey());
+        const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
         StatusEnum ret;
         {
             RECURSIVE_ACTION();
@@ -4614,7 +4626,7 @@ EffectInstance::getFramesNeeded_public(U64 hash,
         return framesNeeded;
     }
 
-    const CleanHashSnapshot clean(getNode(), getCurrentRenderContextKey());
+    const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     try {
         framesNeeded = getFramesNeeded(time, view);
     } catch (std::exception &e) {
@@ -4677,7 +4689,7 @@ EffectInstance::getFrameRange_public(U64 hash,
         }
 
         NON_RECURSIVE_ACTION();
-        const CleanHashSnapshot clean(getNode(), getCurrentRenderContextKey());
+        const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
         getFrameRange(first, last);
         if (clean.allowsStoreUnder(hash)) {
             _imp->actionsCache->setTimeDomainResult(hash, *first, *last);
@@ -5020,7 +5032,7 @@ EffectInstance::getLayersPassThroughInput(double time,
     // current one reads a snapshot this key does not name.
     // Keyed by the plain node hash, so cacheable only where the render hash carries no context key.
     NodePtr node = getNode();
-    const CleanHashSnapshot clean(node, 0);
+    const CleanHashSnapshot clean(node, RenderContextPtr());
     const U64 generation = _imp->actionsCache->getMetadataGeneration();
     const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
     U64 hash = 0;
@@ -5420,7 +5432,7 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
         return cached;
     }
 
-    const CleanHashSnapshot clean(getNode(), getCurrentRenderContextKey());
+    const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     std::shared_ptr<ComponentsNeededResults> results = std::make_shared<ComponentsNeededResults>();
     int passThroughView = 0;
     computeComponentsNeededAndProduced(time, view, &results->neededComps, &results->passThroughLayers, &results->passThroughTime, &passThroughView,
@@ -7373,7 +7385,7 @@ EffectInstance::getMetadataAttempt(double time,
     if (contexts) {
         contextKey = restrictContextToNode(getCurrentRenderContext(), node, &context);
     }
-    const CleanHashSnapshot clean(node, contextKey);
+    const CleanHashSnapshot clean(node, context);
     const U64 hash = mixRenderContextKey(node->getHashValue(), contextKey);
     *hashOut = hash;
     NodeMetadataConstPtr cached = _imp->actionsCache->getMetadataResult(hash, time, view);
@@ -7408,7 +7420,7 @@ EffectInstance::getTimeInvariantMetadata()
         return tls->timeInvariantInProgress;
     }
     // As getMetadata(), under the empty context it is derived under.
-    const CleanHashSnapshot clean(node, 0);
+    const CleanHashSnapshot clean(node, RenderContextPtr());
     const U64 hash = node->getHashValue();
     NodeMetadataConstPtr cached = _imp->actionsCache->getTimeInvariantMetadataResult(hash);
     if (cached) {

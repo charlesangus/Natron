@@ -1113,7 +1113,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     if (image) {
         return image;
     }
-    const CleanHashSnapshot clean(mergeNode, mergeNode->getEffectInstance()->getCurrentRenderContextKey());
+    const CleanHashSnapshot clean(mergeNode, mergeNode->getEffectInstance()->getCurrentRestrictedRenderContext());
 
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
     Bezier* isBezier = dynamic_cast<Bezier*>(this);

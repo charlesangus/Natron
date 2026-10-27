@@ -48,6 +48,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
+#include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
 #include "Global/KeySymbols.h"
 
@@ -2434,12 +2435,15 @@ public:
  * (mixRenderContextKey()), so the hash check compares the key with the clean hash mixed with
  * contextKey: the key of the context the result is derived and stored under, 0 for none. A key
  * folded with another context's key, or a plain hash stored for a derive that read a context, is
- * refused like a stale one.
+ * refused like a stale one. context is the node's context restricted to what it reads (see
+ * restrictContextToNode()), null for none; its hash is the context key. The bindings it holds are
+ * read live from their knobs, so the store is also refused when a bound knob no longer has the
+ * content the key's binding identity stands for, or its node was marked since construction.
  **/
 class CleanHashSnapshot {
 public:
     CleanHashSnapshot(const NodePtr& node,
-                      U64 contextKey);
+                      const RenderContextPtr& context);
 
     /// False for a null node, which has no hash to store under.
     bool allowsStoreUnder(U64 hash) const;
@@ -2448,6 +2452,7 @@ private:
     NodePtr _node;
     U64 _contextKey;
     U64 _marks;
+    RenderContextBindingsSnapshot _bindings;
 };
 
 NATRON_NAMESPACE_EXIT

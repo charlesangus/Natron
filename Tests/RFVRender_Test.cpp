@@ -27,7 +27,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -47,6 +49,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -108,6 +111,22 @@ KnobGroupPtr
 variablesGroupOf(const NodePtr& node)
 {
     return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kReverseFlowVariableSetParamVariables));
+}
+
+// Polls done until it holds or ten seconds pass.
+bool
+waitUntil(const std::function<bool()>& done)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+
+    while (!done()) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return true;
 }
 
 } // namespace
@@ -570,6 +589,61 @@ TEST_F(RFVRender, SetVariableExpressionThroughTheCacheFollowsTheKnobItReads)
         sourceValue->setValue(expected);
         EXPECT_EQ((float)expected, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
     }
+}
+
+// The reader reads the Set's expression-driven variable through a binding, whose identity is fixed
+// when the frame is set up while its value is read from the Set's knob live. The expression is
+// edited while the reader renders, before it reads the variable: the edit marks only the Set and
+// what is below it, and the reader computes the edited value under the key of the expression
+// before the edit. Neither its image nor its expression's result may be kept under that key, so
+// going back to that expression renders the reader afresh with the value it gives.
+TEST_F(RFVRender, BoundVariableEditedDuringAReadersRenderCachesNothingUnderTheOldBinding)
+{
+    const double time = 1.;
+    NodePtr reader = createReader("rfv.v or 0");
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(reader && set && v);
+    KnobBoolPtr cacheOutput = std::dynamic_pointer_cast<KnobBool>(reader->getKnobByName("cacheOutput"));
+    ASSERT_TRUE(bool(cacheOutput));
+    cacheOutput->setValue(true);
+    ASSERT_NO_THROW(v->setExpression(0, "frame * 10", false, true));
+    ASSERT_TRUE(RFV::isTimeVarying(v));
+    connectNodes(reader, set, 0, true);
+    appPTR->clearAllCaches();
+
+    // 0: the reader has not rendered; 1: its render waits for the edit; 2: the edit is done.
+    std::atomic<int> stage(0);
+    std::atomic<bool> hookTimedOut(false);
+    const Node* readerNode = reader.get();
+    CountingTestRegistry::setRenderHook([&](const Node* node) {
+        int expected = 0;
+        if ((node != readerNode) || !stage.compare_exchange_strong(expected, 1)) {
+            return;
+        }
+        if (!waitUntil([&]() { return stage.load() >= 2; })) {
+            hookTimedOut = true;
+        }
+    });
+    float overlappedRed = -1.f;
+    std::thread overlapped([&]() {
+        overlappedRed = renderFirstPixel(set, eRenderSchedulerModeLegacy, time, ViewIdx(0), false /*byPassCache*/);
+    });
+    const bool reached = waitUntil([&]() { return stage.load() >= 1; });
+    if (reached) {
+        EXPECT_NO_THROW(v->setExpression(0, "frame * 30", false, true));
+    }
+    stage = 2;
+    overlapped.join();
+    CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    ASSERT_TRUE(reached) << "the reader never rendered";
+    ASSERT_FALSE(hookTimedOut.load());
+    EXPECT_EQ(30.f, overlappedRed) << "the reader did not read the edited variable";
+
+    ASSERT_NO_THROW(v->setExpression(0, "frame * 10", false, true));
+    const int readerRenders = CountingTestRegistry::renders(reader);
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, time, ViewIdx(0), false /*byPassCache*/));
+    EXPECT_GT(CountingTestRegistry::renders(reader), readerRenders) << "the reader's image was kept under the binding before the edit";
 }
 
 // A Set variable's expression reads what the nodes below the Set set.

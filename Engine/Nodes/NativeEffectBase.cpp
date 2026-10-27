@@ -396,7 +396,8 @@ NativeEffectBase::getOutputMetadata(double time,
     // render context the node reads, the context's key is folded in, so an answer derived under one
     // context is never served under another.
     const NodePtr node = getNode();
-    const U64 contextKey = node ? getCurrentRenderContextKey() : 0;
+    const RenderContextPtr context = node ? getCurrentRestrictedRenderContext() : RenderContextPtr();
+    const U64 contextKey = context ? context->hash() : 0;
     const U64 nodeHash = node ? node->getHashValue() : 0;
     const U64 hash = node ? mixRenderContextKey(nodeHash, contextKey) : 0;
     U64 generation;
@@ -425,7 +426,7 @@ NativeEffectBase::getOutputMetadata(double time,
     }
 
     // Derived with the lock released: it asks upstream nodes, which take their own locks.
-    const CleanHashSnapshot clean(node, contextKey);
+    const CleanHashSnapshot clean(node, context);
     ImageMetadata derived = deriveOutputMetadata(time, view);
     const bool storable = clean.allowsStoreUnder(hash);
 

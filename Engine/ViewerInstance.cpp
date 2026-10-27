@@ -1547,7 +1547,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
         return eViewerRenderRetCodeRedraw;
     }
     // The viewer's textures are keyed by its plain hash: a render tree's root has no context.
-    outArgs->cleanHash = std::make_shared<const CleanHashSnapshot>(getNode(), 0);
+    outArgs->cleanHash = std::make_shared<const CleanHashSnapshot>(getNode(), RenderContextPtr());
 
     int activeA, activeB;
     getActiveInputs(activeA, activeB);

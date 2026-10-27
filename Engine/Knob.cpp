@@ -703,6 +703,12 @@ struct KnobHelperPrivate
     // listened to by this knob's dimension, once.
     void registerRFVListeners(int dimension, const std::string& expression);
 
+    // Has every project variable reads names listened to by this knob's dimension, once.
+    void registerRFVListeners(int dimension, const RenderContextReadSet& reads);
+
+    // registerRFVListeners() for the variable the dimension's driver falls back to, if any.
+    void registerDriverRFVListeners(int dimension);
+
     std::string declarePythonVariables(bool addTab, int dimension);
 
     bool shouldUseGuiCurve() const
@@ -3049,7 +3055,32 @@ KnobHelperPrivate::registerRFVListeners(int dimension,
 {
     // The project's variables are the values rfv falls back to (see PyRFV::getVariable()), so an
     // edit of one the expression reads reaches it as the edit of a parameter it reads does.
-    const RenderContextReadSet reads = KnobHelper::getRFVExpressionReads(expression);
+    registerRFVListeners(dimension, KnobHelper::getRFVExpressionReads(expression));
+}
+
+void
+KnobHelperPrivate::registerDriverRFVListeners(int dimension)
+{
+    KnobDriverPtr driver;
+    {
+        QMutexLocker k(&driversMutex);
+        if ((dimension >= 0) && (dimension < (int)drivers.size())) {
+            driver = drivers[dimension];
+        }
+    }
+    const std::string name = driver ? driver->getProjectVariableName() : std::string();
+    if (name.empty()) {
+        return;
+    }
+    RenderContextReadSet reads;
+    reads.add(RenderContextName::plain(name));
+    registerRFVListeners(dimension, reads);
+}
+
+void
+KnobHelperPrivate::registerRFVListeners(int dimension,
+                                        const RenderContextReadSet& reads)
+{
     AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (!project || reads.empty()) {
@@ -3857,6 +3888,10 @@ KnobHelper::clearExpression(int dimension,
 void
 KnobHelper::expressionChanged(int dimension)
 {
+    // Clearing an expression drops every listener of its dimension, a driver's among them.
+    if (hasDrivers()) {
+        _imp->registerDriverRFVListeners(dimension);
+    }
     refreshRFVReads();
     invalidateContentHash();
     if (_imp->holder) {
@@ -6852,12 +6887,13 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     {
         QMutexLocker k(&_imp->expressionMutex);
         const Expr& expr = _imp->expressions[dimension];
-        if (expr.originalExpression.empty()) {
+        // Without an expression, the dependencies are the project variables a driver falls back to.
+        if (expr.originalExpression.empty() && expr.dependencies.empty()) {
             return own;
         }
         dependencies = expr.dependencies;
         metadataDependencies = expr.metadataDependencies;
-        isVolatile = expressionIsVolatile(expr.originalExpression);
+        isVolatile = !expr.originalExpression.empty() && expressionIsVolatile(expr.originalExpression);
     }
     if (dependencies.empty() && metadataDependencies.empty() && !isVolatile) {
         return own;
@@ -7254,6 +7290,11 @@ KnobHelper::refreshRFVListeners()
     for (const std::pair<int, std::string>& expression : expressions) {
         _imp->registerRFVListeners(expression.first, expression.second);
     }
+    if (hasDrivers()) {
+        for (int i = 0; i < getDimension(); ++i) {
+            _imp->registerDriverRFVListeners(i);
+        }
+    }
 }
 
 void
@@ -7459,9 +7500,34 @@ KnobHelper::setDriver(int dimension,
         }
         invalidateContentHash();
     }
+    if (driver) {
+        _imp->registerDriverRFVListeners(dimension);
+    }
+    KnobHolder* holder = getHolder();
+    if (holder) {
+        holder->updateHasAnimation();
+    }
     evaluateValueChange(dimension, getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 
     return true;
+}
+
+RenderContextReadSet
+KnobHelper::getDriverReadSet() const
+{
+    RenderContextReadSet reads;
+
+    if (!_imp->hasDrivers.load()) {
+        return reads;
+    }
+    QMutexLocker k(&_imp->driversMutex);
+    for (const KnobDriverPtr& driver : _imp->drivers) {
+        if (driver) {
+            driver->appendContextReads(&reads);
+        }
+    }
+
+    return reads;
 }
 
 KnobDriverPtr
@@ -7502,7 +7568,10 @@ KnobHelper::getDriverValue(double time,
         return false;
     }
 
-    return driver->evaluate(effect->getCurrentRenderContext(), time, view, value);
+    const AppInstancePtr app = effect->getApp();
+    const ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    return driver->evaluate(effect->getCurrentRenderContext(), project.get(), time, view, value);
 }
 
 RenderContextReadSet
@@ -7565,6 +7634,7 @@ KnobHelper::getContentHashDependencies(bool* hasExpression,
     const int nDims = getDimension();
 
     *hasExpression = false;
+    bool hasDependencies = false;
     {
         QMutexLocker k(&_imp->expressionMutex);
         for (int i = 0; i < nDims; ++i) {
@@ -7572,6 +7642,7 @@ KnobHelper::getContentHashDependencies(bool* hasExpression,
                 *hasExpression = true;
                 break;
             }
+            hasDependencies = hasDependencies || !_imp->expressions[i].dependencies.empty();
         }
     }
     bool hasMaster = false;
@@ -7584,7 +7655,7 @@ KnobHelper::getContentHashDependencies(bool* hasExpression,
             }
         }
     }
-    *readsOutsideKnob = *hasExpression || hasMaster || hasUnmemoizedContentHash();
+    *readsOutsideKnob = *hasExpression || hasDependencies || hasMaster || hasUnmemoizedContentHash();
 }
 
 U64
@@ -9284,7 +9355,10 @@ KnobHolder::updateHasAnimation()
         QMutexLocker l(&_imp->knobsMutex);
 
         for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            if ( (*it)->hasAnimation() ) {
+            // A driver's variable may be bound to an animated knob, or come from a context that
+            // changes with the frame.
+            const KnobHelper* helper = dynamic_cast<const KnobHelper*>(it->get());
+            if ((*it)->hasAnimation() || (helper && helper->hasDrivers())) {
                 hasAnimation = true;
                 break;
             }

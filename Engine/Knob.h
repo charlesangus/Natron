@@ -2114,6 +2114,11 @@ public:
     bool hasDrivers() const;
 
     /**
+     * @brief The variables the drivers of every dimension read. MT-safe.
+     **/
+    RenderContextReadSet getDriverReadSet() const;
+
+    /**
      * @brief The context variables the knob's value reads, as getExpressionContextKey() finds
      * them: its own read sources' and, transitively, those of what its expressions and links read.
      * Walks them all even when called while such a gathering runs.
@@ -2145,9 +2150,10 @@ public:
     RenderContextReadSet getRFVReadSet() const;
 
     /**
-     * @brief Has every project variable an expression of this knob reads of rfv listened to by
-     * the expression's dimension, as setting the expression does, for the variables the project
-     * declares after the expression was set. Listeners already registered are kept as they are.
+     * @brief Has every project variable an expression of this knob reads of rfv, or a driver of
+     * it falls back to, listened to by that dimension, as setting the expression or the driver
+     * does, for the variables the project declares after it was set. Listeners already registered
+     * are kept as they are.
      **/
     void refreshRFVListeners();
 

@@ -112,9 +112,16 @@ public:
 
     /**
      * @brief The driven value under context, and true, if context holds the variable as a
-     * number or a bool, or as a binding whose knob gives one at time and view.
+     * number or a bool, or as a binding whose knob gives one at time and view. A plain name the
+     * context lacks is read, as rfv reads it, from the variable of that name project declares,
+     * under context; project may be null.
      **/
-    bool evaluate(const RenderContextPtr& context, double time, ViewIdx view, double* value) const;
+    bool evaluate(const RenderContextPtr& context, const Project* project, double time, ViewIdx view, double* value) const;
+
+    /**
+     * @brief The project variable a plain name could fall back to; empty for a namespaced one.
+     **/
+    std::string getProjectVariableName() const;
 
     void appendContentHash(ContentHasher& h) const;
 

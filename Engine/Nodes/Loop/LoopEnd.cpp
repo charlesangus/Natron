@@ -33,6 +33,7 @@
 
 #include <QtCore/QString>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
@@ -40,6 +41,7 @@
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/TLSHolder.h"
+#include "Global/PythonUtils.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -220,11 +222,25 @@ LoopEnd::initializeKnobs()
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kLoopEndParamModeAccumulate, tr("Accumulate").toStdString(),
                                        tr("Folds every iteration together with the Operation.").toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamModeSinglePass, tr("Single Pass").toStdString(),
+                                       tr("Outputs the iteration Single Pass Iteration names, unfolded.").toStdString()));
         mode->populateChoices(options);
     }
     mode->setDefaultValue(0);
     page->addKnob(mode);
     _mode = mode;
+
+    KnobIntPtr singlePassIteration = createKnob<KnobInt>(tr("Single Pass Iteration"));
+    singlePassIteration->setName(kLoopEndParamSinglePassIteration);
+    singlePassIteration->setAnimationEnabled(false);
+    singlePassIteration->setHintToolTip(tr("The iteration Single Pass outputs, counted from 0: its loop variables are "
+                                           "the ones it has in the whole loop. Past the last iteration is an error."));
+    singlePassIteration->setMinimum(0);
+    singlePassIteration->setDisplayMinimum(0);
+    singlePassIteration->setDisplayMaximum(64);
+    singlePassIteration->setDefaultValue(0);
+    page->addKnob(singlePassIteration);
+    _singlePassIteration = singlePassIteration;
 
     KnobChoicePtr operation = createKnob<KnobChoice>(tr("Operation"));
     operation->setName(kLoopEndParamOperation);
@@ -251,6 +267,22 @@ LoopEnd::initializeKnobs()
     reverseOrder->setDefaultValue(false);
     page->addKnob(reverseOrder);
     _reverseOrder = reverseOrder;
+
+    KnobChoicePtr iterateOver = createKnob<KnobChoice>(tr("Iterate Over"));
+    iterateOver->setName(kLoopEndParamIterateOver);
+    iterateOver->setAnimationEnabled(false);
+    iterateOver->setHintToolTip(tr("What the iterations step through."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kLoopEndParamIterateOverCount, tr("Count").toStdString(),
+                                       tr("Iterations iterations, all at the current frame.").toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamIterateOverFrames, tr("Frames").toStdString(),
+                                       tr("One iteration per frame of a range relative to the current frame, the body rendered at that frame.").toStdString()));
+        iterateOver->populateChoices(options);
+    }
+    iterateOver->setDefaultValue(0);
+    page->addKnob(iterateOver);
+    _iterateOver = iterateOver;
 
     KnobIntPtr iterations = createKnob<KnobInt>(tr("Iterations"));
     iterations->setName(kLoopEndParamIterations);
@@ -283,6 +315,49 @@ LoopEnd::initializeKnobs()
     step->setDefaultValue(1);
     page->addKnob(step);
     _step = step;
+
+    KnobIntPtr frameStart = createKnob<KnobInt>(tr("Frame Start"));
+    frameStart->setName(kLoopEndParamFrameStart);
+    frameStart->setAnimationEnabled(false);
+    frameStart->setHintToolTip(tr("The first frame iterated over, relative to the current frame."));
+    frameStart->setDisplayMinimum(-10);
+    frameStart->setDisplayMaximum(10);
+    frameStart->setDefaultValue(-2);
+    page->addKnob(frameStart);
+    _frameStart = frameStart;
+
+    KnobIntPtr frameEnd = createKnob<KnobInt>(tr("Frame End"));
+    frameEnd->setName(kLoopEndParamFrameEnd);
+    frameEnd->setAnimationEnabled(false);
+    frameEnd->setHintToolTip(tr("The last frame iterated over, relative to the current frame. Before Frame Start, the output is black."));
+    frameEnd->setDisplayMinimum(-10);
+    frameEnd->setDisplayMaximum(10);
+    frameEnd->setDefaultValue(2);
+    page->addKnob(frameEnd);
+    _frameEnd = frameEnd;
+
+    KnobIntPtr frameStep = createKnob<KnobInt>(tr("Frame Step"));
+    frameStep->setName(kLoopEndParamFrameStep);
+    frameStep->setAnimationEnabled(false);
+    frameStep->setHintToolTip(tr("How many frames apart the iterated frames are."));
+    frameStep->setMinimum(1);
+    frameStep->setDisplayMinimum(1);
+    frameStep->setDisplayMaximum(10);
+    frameStep->setDefaultValue(1);
+    page->addKnob(frameStep);
+    _frameStep = frameStep;
+
+    KnobStringPtr stopCondition = createKnob<KnobString>(tr("Stop Condition"));
+    stopCondition->setName(kLoopEndParamStopCondition);
+    stopCondition->setAnimationEnabled(false);
+    stopCondition->setHintToolTip(tr("A Python expression evaluated before each iteration, with loop.iteration, "
+                                     "loop.count, loop.t and loop.frame of that iteration and frame (the current "
+                                     "frame) set: the loop ends before the first iteration it is true for. It may "
+                                     "read parameters, never pixels. An exception ends the loop at that iteration "
+                                     "and shows the error. Empty runs every iteration."));
+    stopCondition->setDefaultValue(std::string());
+    page->addKnob(stopCondition);
+    _stopCondition = stopCondition;
 
     KnobIntPtr maxIterations = createKnob<KnobInt>(tr("Max Iterations"));
     maxIterations->setName(kLoopEndParamMaxIterations);
@@ -341,8 +416,14 @@ LoopEnd::resolve() const
     KnobIntPtr start = _start.lock();
     KnobIntPtr step = _step.lock();
     KnobIntPtr maxIterations = _maxIterations.lock();
+    KnobChoicePtr mode = _mode.lock();
+    KnobIntPtr singlePassIteration = _singlePassIteration.lock();
+    KnobChoicePtr iterateOver = _iterateOver.lock();
+    KnobIntPtr frameStart = _frameStart.lock();
+    KnobIntPtr frameEnd = _frameEnd.lock();
+    KnobIntPtr frameStep = _frameStep.lock();
 
-    if (!iterations || !start || !step || !maxIterations) {
+    if (!iterations || !start || !step || !maxIterations || !mode || !singlePassIteration || !iterateOver || !frameStart || !frameEnd || !frameStep) {
         resolved.message = "LoopEnd: missing knobs.";
 
         return resolved;
@@ -364,34 +445,251 @@ LoopEnd::resolve() const
         return resolved;
     }
     resolved.loopName = begin->getLoopName();
-    resolved.count = iterations->getValue();
-    resolved.start = start->getValue();
-    resolved.step = step->getValue();
+    resolved.frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
+    if (resolved.frames) {
+        resolved.frameStart = frameStart->getValue();
+        resolved.frameStep = std::max(1, frameStep->getValue());
+        const int end = frameEnd->getValue();
+        resolved.count = (end < resolved.frameStart) ? 0 : ((end - resolved.frameStart) / resolved.frameStep + 1);
+        resolved.start = 0;
+        resolved.step = 1;
+    } else {
+        resolved.count = iterations->getValue();
+        resolved.start = start->getValue();
+        resolved.step = step->getValue();
+    }
     const int cap = maxIterations->getValue();
     if (resolved.count <= 0) {
         resolved.count = 0;
         resolved.messageType = eMessageTypeWarning;
-        resolved.message = tr("Iterations is 0: the output is black.").toStdString();
-    } else if (resolved.count > cap) {
+        resolved.message = resolved.frames ? tr("Frame End is before Frame Start: the output is black.").toStdString()
+                                           : tr("Iterations is 0: the output is black.").toStdString();
+
+        return resolved;
+    }
+    if (resolved.count > cap) {
         resolved.message = tr("%1 iterations is more than Max Iterations (%2).").arg(resolved.count).arg(cap).toStdString();
+
+        return resolved;
+    }
+    resolved.folded = resolved.count;
+    if (mode->getActiveEntry().id == kLoopEndParamModeSinglePass) {
+        const int k = singlePassIteration->getValue();
+        if ((k < 0) || (k >= resolved.count)) {
+            resolved.message = tr("Single Pass Iteration %1 is past the last iteration, %2.").arg(k).arg(resolved.count - 1).toStdString();
+
+            return resolved;
+        }
+        resolved.singlePass = k;
+        resolved.folded = 1;
+    }
+
+    return resolved;
+} // LoopEnd::resolve
+
+LoopEnd::Resolved
+LoopEnd::resolveAt(double time) const
+{
+    Resolved resolved = resolve();
+    KnobStringPtr stopCondition = _stopCondition.lock();
+
+    // Single Pass shows any iteration, whether or not the loop would have reached it.
+    if (!resolved.message.empty() || (resolved.singlePass >= 0) || !stopCondition) {
+        return resolved;
+    }
+    const std::string expression = stopCondition->getValue();
+    if (expression.find_first_not_of(" \t\r\n") == std::string::npos) {
+        return resolved;
+    }
+    resolved.folded = evaluateStop(resolved, expression, time, &resolved.stopError);
+    if (resolved.folded == 0) {
+        if (resolved.stopError.empty()) {
+            resolved.messageType = eMessageTypeWarning;
+            resolved.message = tr("The Stop Condition ended the loop before its first iteration: the output is black.").toStdString();
+        } else {
+            resolved.messageType = eMessageTypeError;
+            resolved.message = resolved.stopError;
+        }
     }
 
     return resolved;
 }
+
+int
+LoopEnd::evaluateStop(const Resolved& resolved,
+                      const std::string& expression,
+                      double time,
+                      std::string* error) const
+{
+    // The request pass, the render and every action of one frame agree on where the loop stops.
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+    if (render) {
+        QMutexLocker k(&_stopMutex);
+        for (const StopResult& result : _stopResults) {
+            if ((result.render.lock() == render) && (result.time == time) && (result.count == resolved.count) && (result.expression == expression)) {
+                *error = result.error;
+
+                return result.stopAt;
+            }
+        }
+    }
+
+    int stopAt = resolved.count;
+    error->clear();
+    {
+        PythonGILLocker pgl;
+        PyObject* code = Py_CompileString(expression.c_str(), "<stopCondition>", Py_eval_input);
+        PyObject* globals = code ? PyDict_Copy(PyModule_GetDict(NATRON_PYTHON_NAMESPACE::getMainModule())) : NULL;
+        PyObject* types = globals ? PyImport_ImportModule("types") : NULL;
+        PyObject* simpleNamespace = types ? PyObject_GetAttrString(types, "SimpleNamespace") : NULL;
+        PyObject* noArgs = simpleNamespace ? PyTuple_New(0) : NULL;
+        bool ok = (noArgs != NULL);
+        if (ok) {
+            PyObject* frame = PyFloat_FromDouble(time);
+            ok = frame && (PyDict_SetItemString(globals, "frame", frame) == 0);
+            Py_XDECREF(frame);
+        }
+        int k = 0;
+        for (; ok && (k < resolved.count); ++k) {
+            const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
+            const double iterationTime = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+            PyObject* variables = PyDict_New();
+            PyObject* iteration = PyLong_FromLongLong((long long)resolved.start + (long long)k * resolved.step);
+            PyObject* count = PyLong_FromLong(resolved.count);
+            PyObject* tValue = PyFloat_FromDouble(t);
+            PyObject* frameValue = PyFloat_FromDouble(iterationTime);
+            ok = variables && iteration && count && tValue && frameValue && (PyDict_SetItemString(variables, "iteration", iteration) == 0) && (PyDict_SetItemString(variables, "count", count) == 0) && (PyDict_SetItemString(variables, "t", tValue) == 0) && (PyDict_SetItemString(variables, "frame", frameValue) == 0);
+            Py_XDECREF(iteration);
+            Py_XDECREF(count);
+            Py_XDECREF(tValue);
+            Py_XDECREF(frameValue);
+            PyObject* loop = ok ? PyObject_Call(simpleNamespace, noArgs, variables) : NULL;
+            Py_XDECREF(variables);
+            ok = loop && (PyDict_SetItemString(globals, "loop", loop) == 0);
+            Py_XDECREF(loop);
+            if (!ok) {
+                break;
+            }
+            PyObject* result = PyEval_EvalCode(code, globals, globals);
+            const int truth = result ? PyObject_IsTrue(result) : -1;
+            Py_XDECREF(result);
+            if (truth != 0) {
+                ok = (truth == 1);
+                break;
+            }
+        }
+        stopAt = std::min(k, resolved.count);
+        if (!ok) {
+            std::string what = "the expression could not be evaluated";
+            if (PyErr_Occurred()) {
+                PyObject* type = NULL;
+                PyObject* value = NULL;
+                PyObject* traceback = NULL;
+                PyErr_Fetch(&type, &value, &traceback);
+                PyErr_NormalizeException(&type, &value, &traceback);
+                PyObject* text = value ? PyObject_Str(value) : NULL;
+                PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
+                PyErr_Clear();
+                what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
+                Py_XDECREF(typeName);
+                Py_XDECREF(text);
+                Py_XDECREF(type);
+                Py_XDECREF(value);
+                Py_XDECREF(traceback);
+                PyErr_Clear();
+            }
+            *error = tr("Stop Condition failed at iteration %1, where the loop stops: %2").arg(stopAt).arg(QString::fromUtf8(what.c_str())).toStdString();
+        }
+        Py_XDECREF(noArgs);
+        Py_XDECREF(simpleNamespace);
+        Py_XDECREF(types);
+        Py_XDECREF(globals);
+        Py_XDECREF(code);
+    }
+
+    if (render) {
+        QMutexLocker k(&_stopMutex);
+        // Results of renders that have ended are dropped.
+        _stopResults.erase(std::remove_if(_stopResults.begin(), _stopResults.end(), [](const StopResult& result) { return result.render.expired(); }), _stopResults.end());
+        StopResult result;
+        result.render = render;
+        result.time = time;
+        result.expression = expression;
+        result.count = resolved.count;
+        result.stopAt = stopAt;
+        result.error = *error;
+        _stopResults.push_back(result);
+    }
+
+    return stopAt;
+} // LoopEnd::evaluateStop
 
 void
 LoopEnd::refreshMessage(const Resolved& resolved)
 {
     QMutexLocker k(&_messageMutex);
 
-    refreshLoopMessage(getNode(), resolved.messageType, resolved.message, &_postedMessage);
+    if (resolved.message.empty() && !resolved.stopError.empty()) {
+        refreshLoopMessage(getNode(), eMessageTypeError, resolved.stopError, &_postedMessage);
+    } else {
+        refreshLoopMessage(getNode(), resolved.messageType, resolved.message, &_postedMessage);
+    }
+}
+
+void
+LoopEnd::refreshKnobVisibility()
+{
+    KnobChoicePtr mode = _mode.lock();
+    KnobChoicePtr iterateOver = _iterateOver.lock();
+
+    if (!mode || !iterateOver) {
+        return;
+    }
+    const bool singlePass = (mode->getActiveEntry().id == kLoopEndParamModeSinglePass);
+    const bool frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
+    const std::pair<KnobIPtr, bool> visibility[] = {
+        std::make_pair(KnobIPtr(_operation.lock()), !singlePass),
+        std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass),
+        std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass),
+        std::make_pair(KnobIPtr(_singlePassIteration.lock()), singlePass),
+        std::make_pair(KnobIPtr(_iterations.lock()), !frames),
+        std::make_pair(KnobIPtr(_start.lock()), !frames),
+        std::make_pair(KnobIPtr(_step.lock()), !frames),
+        std::make_pair(KnobIPtr(_frameStart.lock()), frames),
+        std::make_pair(KnobIPtr(_frameEnd.lock()), frames),
+        std::make_pair(KnobIPtr(_frameStep.lock()), frames),
+    };
+    for (const std::pair<KnobIPtr, bool>& knob : visibility) {
+        if (knob.first) {
+            knob.first->setSecret(!knob.second);
+        }
+    }
+}
+
+bool
+LoopEnd::shouldCacheOutput(bool isFrameVaryingOrAnimated,
+                           double time,
+                           ViewIdx view,
+                           int visitsCount) const
+{
+    // The stop condition may read anything Python reaches, none of it in the node's hash.
+    KnobStringPtr stopCondition = _stopCondition.lock();
+    KnobChoicePtr mode = _mode.lock();
+    const bool singlePass = mode && (mode->getActiveEntry().id == kLoopEndParamModeSinglePass);
+
+    if (!singlePass && stopCondition && (stopCondition->getValue().find_first_not_of(" \t\r\n") != std::string::npos)) {
+        return false;
+    }
+
+    return EffectInstance::shouldCacheOutput(isFrameVaryingOrAnimated, time, view, visitsCount);
 }
 
 Route
-LoopEnd::route(double /*time*/,
+LoopEnd::route(double time,
                ViewIdx /*view*/)
 {
-    const Resolved resolved = resolve();
+    const Resolved resolved = resolveAt(time);
 
     refreshMessage(resolved);
 
@@ -402,16 +700,32 @@ bool
 LoopEnd::knobChanged(KnobI* k,
                      ValueChangedReasonEnum /*reason*/,
                      ViewSpec /*view*/,
-                     double /*time*/,
+                     double time,
                      bool /*originatedFromMainThread*/)
 {
-    KnobIntPtr iterations = _iterations.lock();
-    KnobIntPtr maxIterations = _maxIterations.lock();
+    const KnobIPtr resolving[] = {
+        _iterations.lock(),
+        _maxIterations.lock(),
+        _mode.lock(),
+        _singlePassIteration.lock(),
+        _iterateOver.lock(),
+        _frameStart.lock(),
+        _frameEnd.lock(),
+        _frameStep.lock(),
+        _stopCondition.lock(),
+    };
 
-    if ((iterations && (k == iterations.get())) || (maxIterations && (k == maxIterations.get()))) {
-        refreshMessage(resolve());
+    for (const KnobIPtr& knob : resolving) {
+        if (knob && (k == knob.get())) {
+            KnobChoicePtr mode = _mode.lock();
+            KnobChoicePtr iterateOver = _iterateOver.lock();
+            if ((mode && (k == mode.get())) || (iterateOver && (k == iterateOver.get()))) {
+                refreshKnobVisibility();
+            }
+            refreshMessage(resolveAt(time));
 
-        return true;
+            return true;
+        }
     }
 
     return false;
@@ -426,6 +740,7 @@ LoopEnd::onInputChanged(int /*inputNb*/)
 void
 LoopEnd::onKnobsLoaded()
 {
+    refreshKnobVisibility();
     refreshMessage(resolve());
 }
 
@@ -467,30 +782,62 @@ LoopEnd::getOverriddenContextVariables(int inputNb) const
     return overridden;
 }
 
-std::vector<RenderContextPtr>
-LoopEnd::iterationContexts(const Resolved& resolved,
-                           const RenderContextPtr& context,
-                           double time) const
+std::vector<LoopEnd::Iteration>
+LoopEnd::foldedIterations(const Resolved& resolved,
+                          const RenderContextPtr& context,
+                          double time) const
 {
-    std::vector<RenderContextPtr> contexts;
+    std::vector<Iteration> iterations;
     // The body never sees this loop's fold step, nor an enclosing loop's.
     const RenderContextPtr base = RenderContext::Builder(context).erase(foldStepName()).build();
+    const int first = (resolved.singlePass >= 0) ? resolved.singlePass : 0;
 
-    contexts.reserve(resolved.count);
-    for (int k = 0; k < resolved.count; ++k) {
-        contexts.push_back(iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, time));
+    iterations.reserve(resolved.folded);
+    for (int k = first; k < first + resolved.folded; ++k) {
+        Iteration iteration;
+        iteration.time = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+        iteration.context = iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, iteration.time);
+        iterations.push_back(iteration);
     }
 
-    return contexts;
+    return iterations;
 }
 
 int
 LoopEnd::iterationOfStep(int k,
-                         int count) const
+                         const Resolved& resolved) const
 {
     KnobBoolPtr reverseOrder = _reverseOrder.lock();
 
-    return (reverseOrder && reverseOrder->getValue()) ? count - 1 - k : k;
+    return ((resolved.singlePass < 0) && reverseOrder && reverseOrder->getValue()) ? resolved.folded - 1 - k : k;
+}
+
+FramesNeededMap
+LoopEnd::getFramesNeeded(double time,
+                         ViewIdx view)
+{
+    const Resolved resolved = resolveAt(time);
+
+    if (!resolved.message.empty() || !resolved.frames || !getInput(0)) {
+        return EffectInstance::getFramesNeeded(time, view);
+    }
+    const RenderContextPtr context = getCurrentRenderContext();
+    const std::vector<Iteration> iterations = foldedIterations(resolved, context, time);
+    std::vector<RangeD> ranges;
+    if (foldsAsTasks()) {
+        const double frame = iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].time;
+        ranges.push_back(RangeD { frame, frame });
+    } else {
+        for (const Iteration& iteration : iterations) {
+            ranges.push_back(RangeD { iteration.time, iteration.time });
+        }
+    }
+    FrameRangesMap views;
+    views.insert(std::make_pair(view, ranges));
+    FramesNeededMap frames;
+    frames.insert(std::make_pair(0, views));
+
+    return frames;
 }
 
 bool
@@ -503,17 +850,19 @@ LoopEnd::getInputContexts(int inputNb,
     if (inputNb != 0) {
         return false;
     }
-    const Resolved resolved = resolve();
+    const Resolved resolved = resolveAt(time);
     if (!resolved.message.empty()) {
         return false;
     }
-    std::vector<RenderContextPtr> all = iterationContexts(resolved, context, time);
+    const std::vector<Iteration> iterations = foldedIterations(resolved, context, time);
     contexts->clear();
     if (foldsAsTasks()) {
         // A fold step needs only the iteration it folds in.
-        contexts->push_back(all[iterationOfStep(foldStepOf(context, resolved.count), resolved.count)]);
+        contexts->push_back(iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].context);
     } else {
-        contexts->swap(all);
+        for (const Iteration& iteration : iterations) {
+            contexts->push_back(iteration.context);
+        }
     }
 
     return true;
@@ -529,11 +878,11 @@ LoopEnd::getContextNodeRequests(double time,
     if (!foldsAsTasks()) {
         return;
     }
-    const Resolved resolved = resolve();
+    const Resolved resolved = resolveAt(time);
     if (!resolved.message.empty()) {
         return;
     }
-    const int step = foldStepOf(context, resolved.count);
+    const int step = foldStepOf(context, resolved.folded);
     if (step <= 0) {
         return;
     }
@@ -563,9 +912,9 @@ LoopEnd::getRegionOfDefinition(U64 hash,
                                RectD* rod)
 {
     EffectInstancePtr input = getInput(0);
-    const Resolved resolved = resolve();
+    const Resolved resolved = resolveAt(time);
 
-    if (!input || !resolved.message.empty() || (resolved.count <= 0)) {
+    if (!input || !resolved.message.empty() || (resolved.folded <= 0)) {
         return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
     }
     const RenderContextPtr context = getCurrentRenderContext();
@@ -579,11 +928,11 @@ LoopEnd::getRegionOfDefinition(U64 hash,
     }
     // The union of the body's region over the iterations, each asked under its own context.
     bool first = true;
-    for (const RenderContextPtr& iteration : iterationContexts(resolved, context, time)) {
-        ActionContextScope scope(true, iteration);
+    for (const Iteration& iteration : foldedIterations(resolved, context, time)) {
+        ActionContextScope scope(true, iteration.context);
         RectD inputRod;
         bool isProjectFormat = false;
-        const StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRod, &isProjectFormat);
+        const StatusEnum stat = input->getRegionOfDefinition_public(input->getRenderHash(), iteration.time, scale, view, &inputRod, &isProjectFormat);
         if (stat == eStatusFailed) {
             return stat;
         }
@@ -640,19 +989,22 @@ LoopEnd::takePreviousStep(const RenderActionArgs& args,
 StatusEnum
 LoopEnd::render(const RenderActionArgs& args)
 {
-    const Resolved resolved = resolve();
+    const Resolved resolved = resolveAt(args.time);
 
-    if (!resolved.message.empty() || (resolved.count <= 0)) {
+    if (!resolved.message.empty() || (resolved.folded <= 0)) {
         return eStatusFailed;
     }
     const RenderContextPtr context = getCurrentRenderContext();
-    const std::vector<RenderContextPtr> iterations = iterationContexts(resolved, context, args.time);
-    const int count = resolved.count;
+    const std::vector<Iteration> iterations = foldedIterations(resolved, context, args.time);
+    const int count = resolved.folded;
     const int step = foldStepOf(context, count);
     // Outside a scheduler task there is no store to find the previous step in.
     const bool chained = foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
     KnobChoicePtr operationKnob = _operation.lock();
-    const LoopFold::OperationEnum operation = operationKnob ? (LoopFold::OperationEnum)operationKnob->getValue() : LoopFold::eOperationMean;
+    // A single iteration summed onto black is that iteration, whatever the Operation.
+    const LoopFold::OperationEnum operation = (resolved.singlePass >= 0) ? LoopFold::eOperationSum
+        : operationKnob                                                  ? (LoopFold::OperationEnum)operationKnob->getValue()
+                                                                         : LoopFold::eOperationMean;
     const RectI& roi = args.roi;
     const int width = roi.width();
     const int height = roi.height();
@@ -680,9 +1032,10 @@ LoopEnd::render(const RenderActionArgs& args)
             }
             ImagePtr src;
             {
-                InputContextScope scope(this, iterations[iterationOfStep(k, count)]);
+                const Iteration& iteration = iterations[iterationOfStep(k, resolved)];
+                InputContextScope scope(this, iteration.context);
                 RectI inputRoI;
-                src = getImage(0, args.time, args.mappedScale, args.view, NULL, &it->first, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
+                src = getImage(0, iteration.time, args.mappedScale, args.view, NULL, &it->first, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
             }
             const bool usable = src && (src->getBitDepth() == eImageBitDepthFloat);
             const int srcComps = usable ? (int)src->getComponentsCount() : 0;

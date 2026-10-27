@@ -52,6 +52,7 @@
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -192,6 +193,21 @@ protected:
             return NodePtr();
         }
         EXPECT_NO_THROW(value->setExpression(0, expression, false, true)) << expression;
+
+        return node;
+    }
+
+    // A counting node whose value is variable, through a linear driver from 0 to 1.
+    NodePtr createDrivenReader(const std::string& variable)
+    {
+        NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+        KnobDoublePtr value = node ? std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("value")) : KnobDoublePtr();
+        if (!value) {
+            ADD_FAILURE() << "no counting node";
+
+            return NodePtr();
+        }
+        EXPECT_TRUE(value->setDriver(0, std::make_shared<const KnobDriver>(variable, 0., 1., KnobDriver::eEasingLinear)));
 
         return node;
     }
@@ -1140,4 +1156,78 @@ TEST_F(RFVRender, MetadataAndRoDFollowTheSetBelowThem)
         requestWidths[b] = fv->globalData.rod.width();
     }
     EXPECT_EQ(16., requestWidths[0] - requestWidths[1]);
+}
+
+// A driver of an animated Set variable reads it at the driven knob's frame, through the cache too:
+// a driven node counts as animated, so its cached output keys each frame apart.
+TEST_F(RFVRender, DriverFollowsAnAnimatedSetVariable)
+{
+    NodePtr reader = createDrivenReader("v");
+    KnobDoublePtr v;
+    NodePtr set = createSet("v", 0., &v);
+    ASSERT_TRUE(reader && set && v);
+    v->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    v->setValueAtTime(2., 20., ViewSpec::all(), 0);
+    connectNodes(reader, set, 0, true);
+    EXPECT_TRUE(reader->getEffectInstance()->getHasAnimation());
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+        EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1.));
+        EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2.));
+        EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
+        EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2., ViewIdx(0), false /*byPassCache*/));
+        EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
+    }
+}
+
+// A knob with a driver counts as animated, and stops counting when it loses it.
+TEST_F(RFVRender, ADriverCountsAsAnimation)
+{
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr value = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("value"));
+    ASSERT_TRUE(bool(value));
+    EffectInstancePtr effect = node->getEffectInstance();
+    EXPECT_FALSE(effect->getHasAnimation());
+
+    ASSERT_TRUE(value->setDriver(0, std::make_shared<const KnobDriver>("v", 0., 1., KnobDriver::eEasingLinear)));
+    EXPECT_TRUE(effect->getHasAnimation());
+
+    ASSERT_TRUE(value->setDriver(0, KnobDriverPtr()));
+    EXPECT_FALSE(effect->getHasAnimation());
+}
+
+// A driver of a plain name no Set provides reads the project's variable, as rfv does, and follows
+// its edits through the cache; a Set of the name below still wins.
+TEST_F(RFVRender, DriverFallsBackToTheProjectVariable)
+{
+    KnobDoublePtr p = addProjectDouble("p", 4.);
+    NodePtr reader = createDrivenReader("p");
+    ASSERT_TRUE(p && reader);
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+        p->setValue(4.);
+        EXPECT_EQ(4.f, renderFirstPixel(reader, mode));
+        EXPECT_EQ(4.f, renderFirstPixel(reader, mode, 1., ViewIdx(0), false /*byPassCache*/));
+        p->setValue(6.);
+        EXPECT_EQ(6.f, renderFirstPixel(reader, mode, 1., ViewIdx(0), false /*byPassCache*/));
+    }
+
+    NodePtr set = createSet("p", 2., NULL);
+    ASSERT_TRUE(bool(set));
+    connectNodes(reader, set, 0, true);
+    EXPECT_EQ(2.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(2.f, renderFirstPixel(set, eRenderSchedulerModeLegacy));
+}
+
+// A driver set before the project declares its variable follows it once declared.
+TEST_F(RFVRender, DriverFollowsAProjectVariableDeclaredAfterIt)
+{
+    NodePtr reader = createDrivenReader("q");
+    ASSERT_TRUE(bool(reader));
+    KnobDoublePtr q = addProjectDouble("q", 3.);
+    ASSERT_TRUE(bool(q));
+    EXPECT_EQ(3.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(0), false /*byPassCache*/));
+    q->setValue(5.);
+    EXPECT_EQ(5.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(0), false /*byPassCache*/));
 }

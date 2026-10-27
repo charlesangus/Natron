@@ -30,6 +30,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -348,6 +349,48 @@ protected:
         return setIntKnob(node, kLoopEndParamIterations, iterations);
     }
 
+    static bool setChoiceKnob(const NodePtr& node,
+                              const char* name,
+                              const std::string& id)
+    {
+        KnobChoicePtr knob = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(name));
+
+        if (!knob) {
+            return false;
+        }
+        knob->setValueFromID(id, 0);
+
+        return knob->getActiveEntry().id == id;
+    }
+
+    static bool setStopCondition(const NodePtr& node,
+                                 const std::string& expression)
+    {
+        KnobStringPtr knob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kLoopEndParamStopCondition));
+
+        if (!knob) {
+            return false;
+        }
+        knob->setValue(expression);
+
+        return true;
+    }
+
+    // A counting body whose value goes from 0 to 1 over loop.t, so every iteration is its own render.
+    NodePtr createDrivenCounter()
+    {
+        NodePtr node = createNode(QString::fromUtf8(kTestPluginIDCounting));
+        KnobDoublePtr value = node ? std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("value")) : KnobDoublePtr();
+
+        EXPECT_TRUE(bool(value));
+        if (!value) {
+            return NodePtr();
+        }
+        EXPECT_TRUE(value->setDriver(0, linearDriver(kKnobDriverDefaultVariable, 0., 1.)));
+
+        return node;
+    }
+
     // The node renders black, as a black identity, and shows text in a message of type type.
     void expectBlackWithMessage(const NodePtr& node,
                                 MessageTypeEnum type,
@@ -658,4 +701,213 @@ TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
     // else runs, which may go over by its own output.
     EXPECT_GT(scheduler->getPeakBytesInFlight(), (std::size_t)0);
     EXPECT_LE(scheduler->getPeakBytesInFlight(), budget + imageBytes) << "peak of " << ((double)scheduler->getPeakBytesInFlight() / (double)imageBytes) << " images";
+}
+
+// Over the frames 2 before to 2 after the current frame 1, a Constant whose value is the frame
+// number gives the frames -1 to 3: their mean is 1, their sum 5, their minimum -1, their maximum 3.
+TEST_F(NativeLoopBlockTest, FramesIterateOverARelativeFrameRange)
+{
+    NodePtr constant = createConstant(0.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr end = createLoopEnd(1, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && end);
+    KnobColorPtr color = std::dynamic_pointer_cast<KnobColor>(constant->getKnobByName(kConstantParamColor));
+    ASSERT_TRUE(bool(color));
+    for (int frame = -1; frame <= 3; ++frame) {
+        for (int i = 0; i < color->getDimension(); ++i) {
+            color->setValueAtTime((double)frame, (double)frame, ViewSpec::all(), i);
+        }
+    }
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(end->connectInput(begin, 0));
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStart, -2));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, 2));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 1));
+
+    // The body is asked for every iteration's frame.
+    EffectInstancePtr effect = end->getEffectInstance();
+    FramesNeededMap frames = effect->getFramesNeeded_public(effect->getRenderHash(), kTime, ViewIdx(0), 0);
+    ASSERT_EQ(1u, frames.count(0));
+    std::set<double> needed;
+    for (const RangeD& range : frames[0][ViewIdx(0)]) {
+        for (double frame = range.min; frame <= range.max; frame += 1.) {
+            needed.insert(frame);
+        }
+    }
+    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
+        EXPECT_EQ(std::set<double>({ -1., 0., 1., 2., 3. }), needed);
+    } else {
+        // Under no fold step, the last step's iteration.
+        EXPECT_EQ(std::set<double>({ 3. }), needed);
+    }
+
+    struct Case {
+        const char* operation;
+        float value;
+    };
+    const Case cases[] = {
+        { kLoopEndParamOperationMean, 1.f },
+        { kLoopEndParamOperationSum, 5.f },
+        { kLoopEndParamOperationMin, -1.f },
+        { kLoopEndParamOperationMax, 3.f },
+    };
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.operation);
+        ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamOperation, c.operation));
+        float value = -10.f;
+        ASSERT_TRUE(renderedValue(end, &value));
+        EXPECT_NEAR(c.value, value, 1e-5);
+
+        std::vector<int> unplanned;
+        const RenderMismatch m = renderBothWaysDirect(end, kTime, ViewIdx(0), 0, fullWindow(), poolSizes, std::function<void()>(), 0.f, &unplanned);
+        EXPECT_FALSE(m.any) << describe(m);
+        ASSERT_EQ(poolSizes.size(), unplanned.size());
+        for (std::size_t i = 0; i < unplanned.size(); ++i) {
+            EXPECT_EQ(0, unplanned[i]) << "pool " << poolSizes[i];
+        }
+    }
+
+    // Frame Step 2 keeps -1, 1 and 3.
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamOperation, kLoopEndParamOperationSum));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 2));
+    float value = -10.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(3., value, 1e-5);
+
+    // An empty range is black, with a warning.
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, -3));
+    expectBlackWithMessage(end, eMessageTypeWarning, QString::fromUtf8("Frame End is before Frame Start"));
+}
+
+// A body that is the same at every frame has one output for all the iterated frames.
+TEST_F(NativeLoopBlockTest, FramesOfAStillBodyRenderOnce)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr end = createLoopEnd(1, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && body && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(2., value, 1e-5);
+    EXPECT_EQ(1, CountingTestRegistry::renders(body));
+}
+
+// Single Pass at iteration 2 of 5 is the body at t = 2/4: a gain of 1 to 2 gives 1.5, unfolded.
+TEST_F(NativeLoopBlockTest, SinglePassOutputsOneIteration)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr grade = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
+    NodePtr end = createLoopEnd(5, kLoopEndParamOperationSum);
+    ASSERT_TRUE(constant && begin && grade && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(grade->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(grade, 0));
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamMode, kLoopEndParamModeSinglePass));
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamSinglePassIteration, 2));
+
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(1.5, value, 1e-5);
+
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    std::vector<int> unplanned;
+    const RenderMismatch m = renderBothWaysDirect(end, kTime, ViewIdx(0), 0, fullWindow(), poolSizes, std::function<void()>(), 0.f, &unplanned);
+    EXPECT_FALSE(m.any) << describe(m);
+
+    // The stop condition does not apply to a single pass.
+    ASSERT_TRUE(setStopCondition(end, "True"));
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(1.5, value, 1e-5);
+
+    ASSERT_TRUE(setIntKnob(end, kLoopEndParamSinglePassIteration, 5));
+    expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("past the last iteration"));
+}
+
+// The loop ends before the first iteration the stop condition holds for: 3 of 10 iterations
+// render, t being 0, 1/9 and 2/9.
+TEST_F(NativeLoopBlockTest, AStopConditionEndsTheLoop)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createDrivenCounter();
+    NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && body && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+    ASSERT_TRUE(setStopCondition(end, "loop.iteration >= 3"));
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_EQ(3, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 1. / 9., value, 1e-5);
+
+    QString message;
+    int type = -1;
+    end->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    std::vector<int> unplanned;
+    const RenderMismatch m = renderBothWaysDirect(end, kTime, ViewIdx(0), 0, fullWindow(), poolSizes, std::function<void()>(), 0.f, &unplanned);
+    EXPECT_FALSE(m.any) << describe(m);
+
+    // Holding before the first iteration leaves nothing to fold.
+    ASSERT_TRUE(setStopCondition(end, "loop.frame == frame"));
+    expectBlackWithMessage(end, eMessageTypeWarning, QString::fromUtf8("before its first iteration"));
+}
+
+// A stop condition that raises at iteration 2 ends the loop there and shows its error; the two
+// iterations before it still render.
+TEST_F(NativeLoopBlockTest, ARaisingStopConditionEndsTheLoopWithItsError)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createDrivenCounter();
+    NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && body && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+    ASSERT_TRUE(setStopCondition(end, "1 / (2 - loop.iteration) > 100"));
+
+    CountingTestRegistry::reset();
+    float value = -1.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_EQ(2, CountingTestRegistry::renders(body));
+    EXPECT_NEAR(1. + 1. / 18., value, 1e-5);
+
+    QString message;
+    int type = -1;
+    end->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeError, type) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("ZeroDivisionError"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("iteration 2"))) << message.toStdString();
+
+    // Fixing the expression takes the error back.
+    ASSERT_TRUE(setStopCondition(end, "False"));
+    ASSERT_TRUE(renderedValue(end, &value));
+    end->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+
+    // A syntax error stops the loop before its first iteration.
+    ASSERT_TRUE(setStopCondition(end, "loop.iteration >"));
+    expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("SyntaxError"));
 }

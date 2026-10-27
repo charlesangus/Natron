@@ -18,7 +18,7 @@ Deps: M209 - Edge-Aware Filter Library, M214 - Colour Balance RGB. See `DECISION
 - **Three periodic parametric curve knobs** (hue, saturation, brightness against hue). Each has eight fixed-x control points whose y values are the params, and they interpolate the way darktable does. Like `HueCorrect`, these use Natron's parametric knob in periodic mode. If a fixed-x constraint can't be expressed, each curve's eight values are sliders, with a read-only curve preview.
 - **`output`:** Result, or Hue/Saturation/Brightness weight. This replaces darktable's darkroom mask display.
 - **Working-space handling** as in M214: convert to linear Rec.2020 through OCIO and back.
-- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon and a cost seed.
+- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon.
 
 **Out:**
 - darktable's on-image colour picker that selects a node by hue: no milestone owns it. The doc notes it as a follow-up for M165 - Rich Viewer Overlays.
@@ -45,7 +45,7 @@ Deps: M209 - Edge-Aware Filter Library, M214 - Colour Balance RGB. See `DECISION
   - size: L
 
 - [ ] M215.P1.T3 — Reference parity, knob audit and docs
-  - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeColorEqualizer_Test.cpp`, `Engine/Nodes/Color/docs/ColorEqualizer.md`, `Engine/Nodes/Color/ColorEqualizer.costseed.inc`
+  - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeColorEqualizer_Test.cpp`, `Engine/Nodes/Color/docs/ColorEqualizer.md`
   - approach:
     - darktable-cli jobs: per-node hue, saturation and brightness edits, filter on and off, and presets.
     - Audit `dt_iop_colorequal_params_t` against the knobs.

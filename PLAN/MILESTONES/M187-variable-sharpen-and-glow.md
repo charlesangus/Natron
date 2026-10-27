@@ -28,8 +28,8 @@ Exact I-variants of M123 - Native Sharpen And Glow's nodes (user, 2026-10-24): *
   - verify: tests: Map 0 identity; Map 1 matches the base within tolerance; GPU parity on lavapipe within 1e-4 relative.
   - size: L
 
-- [ ] M187.P1.T3 — Icons, cost seeds and docs
-  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/*.costseed.inc`, `Engine/Nodes/Filter/docs/{ISharpen,IGlow,IBloom}.md`
+- [ ] M187.P1.T3 — Icons, gpuWeight (size-scaled) and docs
+  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/ISharpen.cpp`, `Engine/Nodes/Filter/IGlow.cpp`, `Engine/Nodes/Filter/IBloom.cpp`, `Engine/Nodes/Filter/docs/{ISharpen,IGlow,IBloom}.md`
   - approach: Per the native checklist; docs describe `mapDrives`.
   - verify: `ctest -R NativePluginList` passes; docs reviewed at the gate.
   - size: S

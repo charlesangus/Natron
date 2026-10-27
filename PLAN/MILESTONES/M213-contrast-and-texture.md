@@ -13,7 +13,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 - **Every control** of the module at the pinned SHA. P1.T1 lists them from its params struct and GUI.
 - **A GPU path** on M209's EIGF kernels. darktable has none, so the CPU port is the reference.
 - **darktable reference parity** from a second darktable build at the master pin.
-- **A params-to-knob audit**, a doc, an icon and a cost seed.
+- **A params-to-knob audit**, a doc, an icon.
 
 **Out:**
 - darktable's bilat (local Laplacian, Lab): not ported.
@@ -52,7 +52,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
   - size: M
 
 - [ ] M213.P1.T4 — Reference parity, knob audit and docs
-  - files: `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeContrastTexture_Test.cpp`, `Engine/Nodes/Filter/docs/ContrastTexture.md`, `Engine/Nodes/Filter/ContrastTexture.costseed.inc`, `Gui/Resources/Images/NativeNodes/`
+  - files: `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeContrastTexture_Test.cpp`, `Engine/Nodes/Filter/docs/ContrastTexture.md`, `Gui/Resources/Images/NativeNodes/`
   - approach: compare against P1.T1's references on the same pre-module image in linear Rec.2020, run the params audit, and run identity checks. Write the doc with the tolerance and add an icon.
   - verify: `ctest -R NativeContrastTexture` passes within the doc's `Tolerance:`.
   - size: M

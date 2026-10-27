@@ -8,7 +8,7 @@ An optional Matte input separates foreground and background so motion doesn't bl
 
 Deps:
 - M124 - Native Time Remaps: the native multi-time fetch (`getFramesNeeded` plus fetching the input at another time).
-- M120 - Native Node Port Kit (done): the per-node `.reg.inc`, cost-seed and doc fragments.
+- M120 - Native Node Port Kit (done): the per-node `.reg.inc`, and doc fragments.
 - M137 - Native Base Class Flexibility (done): the Custom kind.
 
 Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
@@ -45,7 +45,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - the Forward and Backward motion layers, in pixels at the render scale;
   - a new single-channel `vectorConfidence` layer, 0..1, where 1 means forward and backward agree and the pixel is not occluded;
   - RGBA passed through unchanged.
-- Tests on synthetic sequences with known ground-truth flow, an icon, a cost seed and a doc.
+- Tests on synthetic sequences with known ground-truth flow, an icon and a doc.
 
 **Out:**
 - GPU kernels → M218 - VectorGenerator GPU.
@@ -155,12 +155,12 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: `ctest -R NativeVectorGenerator` passes.
   - size: M
 
-- [ ] M217.P2.T3 — Icon, cost seed and doc
-  - files: `Gui/Resources/Images/NativeNodes/` (icon), `Engine/Nodes/Time/VectorGenerator.costseed.inc` (new), `Engine/Nodes/Time/docs/VectorGenerator.md` (new)
+- [ ] M217.P2.T3 — Icon and doc
+  - files: `Gui/Resources/Images/NativeNodes/` (icon), `Engine/Nodes/Time/docs/VectorGenerator.md` (new)
   - approach:
     - Follow the M120 fragment conventions.
     - The doc covers the methods, quality presets, the matte, temporal smoothing, the confidence layer, the vector convention (pixels; forward is t→t+1) and the full-frame cost.
-    - The cost seed reflects whole-frame multi-time work.
+    - Declare `gpuWeight` Heavy: whole-frame multi-time work.
   - verify: the node shows its icon in the Time menu, and the doc renders in the node's help. Both are checked in the gate's Xvfb pass.
   - size: M
 

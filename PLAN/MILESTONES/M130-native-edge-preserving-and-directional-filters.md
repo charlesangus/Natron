@@ -11,7 +11,7 @@ Every node follows the native conventions:
 - host mask, mix and (un)premult from the base class;
 - no compatibility with the OFX versions.
 
-Every node ships a CPU kernel, a GPU kernel, a native test, a GPU parity test, a cost seed and an icon. It registers through M120 - Native Node Port Kit's per-node fragment files, and retires through one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
+Every node ships a CPU kernel, a GPU kernel, a native test, a GPU parity test, an icon and a size-scaled `gpuWeight()` where cost grows with the kernel size. It registers through M120 - Native Node Port Kit's per-node fragment files, and retires through one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
 
 Deps: M120 - Native Node Port Kit.
 

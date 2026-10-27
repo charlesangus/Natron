@@ -5,7 +5,7 @@ Native, redesigned replacements for the openfx-misc routing and mix nodes: `KeyM
 Shared conventions:
 - Plain IDs at major 1, Nuke-like knob sets and scene-linear maths. The nodes don't copy OFX behaviour (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`), and there is no project compatibility (`DECISIONS/2026-09-18-clean-break-no-project-compat.md`).
 - Nodes are declared on M137 - Native Base Class Flexibility's framework: a `NodeSpec`, an `ImagePipelineSpec` with its stages (Premult, MaskMix) and an `Op`. Mask, mix and "(Un)premult by" are stages, not base-class code. `NativeImageEffect` no longer exists.
-- Registration, kernels, cost seeds, icons, docs and retirement go through the per-node fragment files from M120 - Native Node Port Kit (`<Node>.reg.inc`, `<Node>.costseed.inc`, `docs/<Node>.md`, `<kernel>.cmake`; one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID). Don't edit the shared manifests.
+- Registration, kernels, icons, docs and retirement go through the per-node fragment files from M120 - Native Node Port Kit (`<Node>.reg.inc`, `docs/<Node>.md`, `<kernel>.cmake`; one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID). Don't edit the shared manifests.
 
 Deps:
 - M137 - Native Base Class Flexibility. It provides the framework and the native Switch.
@@ -124,16 +124,15 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - size: M
 
 - [ ] M121.P3.T2 — GPU kernels for KeyMix and Difference
-  - files: `Engine/Gpu/Kernels/routing.slang`, `Engine/Gpu/Kernels/routing.cmake`, `Engine/Nodes/Merge/KeyMix.cpp`, `Engine/Nodes/Keyer/Difference.cpp`, `Engine/Nodes/Merge/KeyMix.costseed.inc`, `Engine/Nodes/Keyer/Difference.costseed.inc`
+  - files: `Engine/Gpu/Kernels/routing.slang`, `Engine/Gpu/Kernels/routing.cmake`, `Engine/Nodes/Merge/KeyMix.cpp`, `Engine/Nodes/Keyer/Difference.cpp`
   - approach:
     - Implement both as binary pixel ops on the shape M101.P4.T1 builds (`IBinaryPixelOp`), wrapped by `pixelwrap.slang`.
     - `canRenderOnGpu` accepts masks and mix: the wrap handles them.
-    - Add cost seed rows by analogy with Merge.
   - verify: at the phase build, `NativeKeyMixGpu_Test` and `NativeDifferenceGpu_Test` (new, on the `NativeGpuParity` harness) match the CPU within 1e-6 absolute on RADV.
   - size: M
 
 - [ ] M121.P3.T3 — GPU path for AdjustBBox
-  - files: `Engine/Nodes/Transform/AdjustBBox.cpp`, `Engine/Gpu/Kernels/routing.slang`, `Tests/Native/NativeAdjustBBoxGpu_Test.cpp`, `Engine/Nodes/Transform/AdjustBBox.costseed.inc`
+  - files: `Engine/Nodes/Transform/AdjustBBox.cpp`, `Engine/Gpu/Kernels/routing.slang`, `Tests/Native/NativeAdjustBBoxGpu_Test.cpp`
   - approach: a copy kernel with Black/Nearest boundary reads (reuse the boundary helpers in `pixelwrap.slang` if present), so AdjustBBox stays inside a region.
   - verify: at the phase build, the GPU parity test passes bit-exact on RADV.
   - size: M

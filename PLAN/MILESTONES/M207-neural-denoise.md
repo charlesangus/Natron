@@ -26,7 +26,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
   - `tileSize`
   - every control darktable's neural restore offers for denoise
 - **`Engine/Ai/SceneLinearWrapper.{h,cpp}`**: the convert, compress and restore stages above, plus a per-frame exposure statistic computed on a downsampled frame, so every tile of a frame gets the same exposure.
-- Tests, a doc, an icon and a cost seed.
+- Tests, a doc, an icon and `gpuWeight` Heavy.
 
 **Out:**
 - Temporal (multi-frame) denoise: no milestone owns it. Per-frame results may flicker, and the doc says so.
@@ -56,7 +56,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. See `DECISIONS/202
   - size: M
 
 - [ ] M207.P1.T2 — NeuralDenoise node
-  - files: new `Engine/Nodes/Filter/NeuralDenoise.h`, `Engine/Nodes/Filter/NeuralDenoise.cpp`, `Engine/Nodes/Filter/NeuralDenoise.reg.inc`, `Engine/Nodes/Filter/NeuralDenoise.costseed.inc`
+  - files: new `Engine/Nodes/Filter/NeuralDenoise.h`, `Engine/Nodes/Filter/NeuralDenoise.cpp`, `Engine/Nodes/Filter/NeuralDenoise.reg.inc`
   - approach:
     - The node is CPU-only per the README "AI nodes" section.
     - Its `pack` and `unpack` callbacks run the wrapper when the model's colour space is `srgb`. When it is `linear-rec2020`, they only convert working space to Rec.2020 and back.

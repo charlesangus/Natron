@@ -14,7 +14,7 @@ Every node:
 - has a GPU kernel on M85 - Native GPU Kernels's generator template;
 - keeps no compatibility with the OFX versions.
 
-Registration, kernel lists, cost seeds, icons, docs and OFX retirement go through M120 - Native Node Port Kit's per-node fragment files (`Engine/Nodes/Generator/<Node>.{reg.inc,costseed.inc}`, `docs/<Node>.md`, `Engine/Gpu/Kernels/<kernel>.cmake`) and one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
+Registration, kernel lists, icons, docs and OFX retirement go through M120 - Native Node Port Kit's per-node fragment files (`Engine/Nodes/Generator/<Node>.{reg.inc}`, `docs/<Node>.md`, `Engine/Gpu/Kernels/<kernel>.cmake`) and one `Engine/OfxRetired/<ofx-plugin-id>` marker per retired ID.
 
 Deps: M120 - Native Node Port Kit, M85 - Native GPU Kernels (`generators.slang`, `PixelKernelGpu`, `pixelwrap.slang`).
 
@@ -87,7 +87,6 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 **References:**
 - `Engine/EffectInstance.h:53` defines `PLUGINID_OFX_RADIAL`, which has no users.
-- `Engine/GpuCostSeed.inc:38-40` holds the Radial, Ramp and Rectangle cost rows.
 - Tests:
   - `Tests/LayerKnobs_Test.cpp:282-289`: Ramp, Radial, Rectangle, ColorBars, ColorWheel, Noise and CImgPlasma.
   - `Tests/GeneratorLayer_Test.cpp:67, 316`: ColorWheel and Ramp.
@@ -189,7 +188,6 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
     - One Slang file with an `IPixelOp` per node, built on `shapefalloff.slang` and run through `runWrapped`, following M85 - Native GPU Kernels's `generators.slang`.
     - Each node's `makeGpuKernel` packs the extent, scale and knobs into a ≤128 B params block.
     - Add ColorWheel's `makeGpuKernel` in the same pattern; put its file in this task if the count allows, else in P3.T2.
-    - Add the cost seeds to the generator family seed file.
   - verify: P3.T2's parity test.
   - size: L
 
@@ -204,7 +202,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 ## Phase 127.4: Retire the OFX generators
 
 - [ ] M128.P4.T1 — Retire the OFX Ramp, Radial, Rectangle and ColorWheel and fix their references
-  - files: `Engine/OfxRetired/<ofx-plugin-id>` (four markers), `Engine/EffectInstance.h` (delete the unused `PLUGINID_OFX_RADIAL`), `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID; these were the OFX rows at `GpuCostSeed.inc:38-40`), `Tests/LayerKnobs_Test.cpp`, `Tests/GeneratorLayer_Test.cpp`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (four markers), `Engine/EffectInstance.h` (delete the unused `PLUGINID_OFX_RADIAL`), `Tests/LayerKnobs_Test.cpp`, `Tests/GeneratorLayer_Test.cpp`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of the four OFX IDs.
     - Move the test cases to the native IDs. ColorBars cases stay (it remains OFX); Noise and Plasma cases stay until M129 - Clean-Sheet Noise Node retires them.

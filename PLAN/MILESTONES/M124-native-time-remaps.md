@@ -9,7 +9,7 @@ This milestone also owns the **multi-time infrastructure** that both time milest
 
 M125 - Native Multi-Frame Nodes builds on all three.
 
-Deps: M120 - Native Node Port Kit (per-node registration, kernel, cost-seed and doc fragments; per-milestone OFX retirement list).
+Deps: M120 - Native Node Port Kit (per-node registration, kernel and doc fragments; per-milestone OFX retirement list).
 
 Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels facts from `origin/milestone/m85-native-gpu-kernels`; re-check at promotion):
 - **OFX sources** (`build/assets/plugin-src/openfx-misc/`):
@@ -39,7 +39,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
     - `Gui/DopeSheetView.cpp` has `computeRetimeRange` (`:1937`, calls `getFramesNeeded`), `computeTimeOffsetRange` (`:2018`), `computeFRRange` (`:2056`), and the move cursors at `:517-518`.
     - `Gui/DopeSheetEditorUndoRedo.cpp:75-112` moves TimeOffset and FrameRange by knob name. The knob-name constants are at `Gui/DopeSheet.h:48-52`.
   - **Curve default:** `Engine/OfxParamInstance.cpp:4850-4854` sets the Retime warp curve's default interpolation to Cubic.
-  - **Other ID lists:** `Engine/OfxEffectInstance.cpp:1298-1309, 1338` and `Engine/GpuCostSeed.inc:41` (Retime).
+  - **Other ID lists:** `Engine/OfxEffectInstance.cpp:1298-1309, 1338`.
 - **Native infrastructure:**
   - **Time virtuals** are on `EffectInstance`, not `NativeEffectBase`:
     - `isIdentity(time, …, &inputTime, &inputView, &inputNb)` (`Engine/EffectInstance.h:1436`);
@@ -154,11 +154,10 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - size: L
 
 - [ ] M124.P2.T4 — Retime's blend on the GPU
-  - files: `Engine/Gpu/Kernels/timeblend.slang` (new), `Engine/Gpu/Kernels/timeblend.cmake` (new), `Engine/Nodes/Time/Retime.cpp`, `Tests/Native/NativeRetimeGpu_Test.cpp` (new), `Engine/Nodes/Time/Retime.costseed.inc` (new)
+  - files: `Engine/Gpu/Kernels/timeblend.slang` (new), `Engine/Gpu/Kernels/timeblend.cmake` (new), `Engine/Nodes/Time/Retime.cpp`, `Tests/Native/NativeRetimeGpu_Test.cpp` (new)
   - approach:
     - A two-view weighted blend kernel on P1.T3's multi-time views. It is written generically (N views with weights) so M125 - Native Multi-Frame Nodes reuses it.
     - Retime's `makeGpuKernel` fills the views and weights.
-    - Add a cost seed.
   - verify: the GPU parity harness matches the CPU Blend within 1e-6 absolute at several fractional times. Runs at the phase build on RADV.
   - size: M
 
@@ -182,10 +181,10 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - size: M
 
 - [ ] M124.P3.T3 — Retire the OFX time remaps and fix references
-  - files: `Engine/OfxRetired/<ofx-plugin-id>` (new, one per retired ID), `Engine/OfxEffectInstance.cpp`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID), `Tests/DefaultChannelSet_Test.cpp`, `Tests/NodeCategory_Test.cpp`
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (new, one per retired ID), `Engine/OfxEffectInstance.cpp`, `Tests/DefaultChannelSet_Test.cpp`, `Tests/NodeCategory_Test.cpp`
   - approach:
     - List `net.sf.openfx.timeOffset`, `FrameHold`, `FrameRange` and `Retime` as `Engine/OfxRetired/<ofx-plugin-id>` markers, one per ID.
-    - Remove their entries from the OFX default-channel lists (`OfxEffectInstance.cpp:1298-1309`) and the OFX cost seed.
+    - Remove their entries from the OFX default-channel lists (`OfxEffectInstance.cpp:1298-1309`).
     - Repoint tests that used them, including `FrameGraphBuild_Test.cpp:74, 514-548` (the `FrameGraphBuild` case moves to native TimeOffset; keep FrameBlend on OFX until M125 - Native Multi-Frame Nodes).
   - verify: at the phase build, the retired IDs no longer load, `git grep` finds no live use of them outside the `Engine/OfxRetired/` markers, and ctest passes.
   - size: M

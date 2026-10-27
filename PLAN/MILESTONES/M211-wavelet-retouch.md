@@ -35,7 +35,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - The toolbar's shape tools create shapes on `currentScale` with the default algorithm.
   - darktable's "copy shapes to scale" and "move shapes to scale" become actions on the Roto panel's context menu, through M146's host hook.
 - A panel column that shows each shape's scale and algorithm, through M146's column hook.
-- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon and a cost seed.
+- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon.
 
 **Out:**
 - darktable's darkroom display of masks and the scale "bar" widget: the `output` knob and the panel column replace them.
@@ -119,8 +119,8 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.4: Docs and UAT
 
-- [ ] M211.P4.T1 — Doc, icon and cost seed
-  - files: `Engine/Nodes/Filter/docs/Retouch.md`, `Engine/Nodes/Filter/Retouch.costseed.inc`, `Gui/Resources/Images/NativeNodes/`
+- [ ] M211.P4.T1 — Doc and icon
+  - files: `Engine/Nodes/Filter/docs/Retouch.md`, `Gui/Resources/Images/NativeNodes/`
   - approach: the doc explains scales, the algorithms, source offsets, the `output` modes and the tolerance.
   - verify: `ctest -R NativePluginList` passes.
   - size: S

@@ -13,7 +13,7 @@ Scouted facts (2026-10-20; re-check at promotion):
 
 **In:**
 - `splinewarp.slang`: field lookup, Jacobian, the concatenated-matrix map, and `coordmap.slang` sampling. It covers every filter, clamp and black outside.
-- Field upload, and the GPU path wired through the Custom-kind GPU executor, with a cost seed.
+- Field upload, and the GPU path wired through the Custom-kind GPU executor, with a size-scaled `gpuWeight`.
 - A parity test against the CPU path.
 
 **Out:**
@@ -35,11 +35,11 @@ Scouted facts (2026-10-20; re-check at promotion):
   - size: L
 
 - [ ] M150.P1.T2 — Wire the GPU path into SplineWarp
-  - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Nodes/Transform/SplineWarp.costseed.inc` (new), `Tests/Native/NativeSplineWarpGpu_Test.cpp`
+  - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Tests/Native/NativeSplineWarpGpu_Test.cpp`
   - approach:
     - Implement the Custom-kind GPU hooks: build the field on the CPU, upload it, and dispatch.
     - Decline for motion blur (until M151 - SplineWarp Motion Blur) and for oversized fields.
-    - Add the cost seed.
+    - Declare its `gpuWeight` (size-scaled).
   - verify: node-level parity against the CPU path within 1e-5, on M147 - SplineWarp Node Core's gate fixture with both solvers and with Transform concatenation. It runs on RADV.
   - size: M
 

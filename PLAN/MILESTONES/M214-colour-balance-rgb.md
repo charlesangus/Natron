@@ -28,7 +28,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 - **`output`:** Result, Shadows Mask, Midtones Mask or Highlights Mask. This replaces darktable's darkroom mask checker.
 - **Shared `Engine/Nodes/Color/DtColorSpaces.h`:** darktable UCS 22, JzAzBz, the XYZ↔LMS conversions and the gamut helpers, ported from `src/common/colorspaces_inline_conversions.h` and `chromatic_adaptation.h`.
 - **Working-space handling:** the node converts the project working space to linear Rec.2020 (darktable's pipeline space) through OCIO and back.
-- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon and a cost seed.
+- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon.
 
 **Out:**
 - Display-referred concerns, such as darktable's gamut mapping to the display at export: none. The node's own gamut handling on output is in scope, because it is part of the module.
@@ -68,7 +68,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - size: M
 
 - [ ] M214.P1.T5 — Reference parity, knob audit and docs
-  - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeColorBalanceRGB_Test.cpp`, `Engine/Nodes/Color/docs/ColorBalanceRGB.md`, `Engine/Nodes/Color/ColorBalanceRGB.costseed.inc`
+  - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeColorBalanceRGB_Test.cpp`, `Engine/Nodes/Color/docs/ColorBalanceRGB.md`
   - approach:
     - darktable-cli jobs: each preset, each 4-way, saturation and brilliance per range under both formulas, contrast and vibrance.
     - Audit `dt_iop_colorbalancergb_params_t` against the knobs.

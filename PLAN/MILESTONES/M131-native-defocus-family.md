@@ -11,7 +11,7 @@ New native nodes with no OFX source:
 Every node follows the native conventions:
 - plain ID at major 1;
 - host mask, mix and (un)premult from the base class;
-- a CPU kernel, a GPU kernel, a native test, a GPU parity test, a cost seed and an icon;
+- a CPU kernel, a GPU kernel, a native test, a GPU parity test, an icon and a size-scaled `gpuWeight()` (cost grows with the defocus size);
 - registration through M120 - Native Node Port Kit's per-node fragment files, and retirement (none here: these are new nodes) would add `Engine/OfxRetired/<ofx-plugin-id>` markers.
 
 Deps: M120 - Native Node Port Kit.

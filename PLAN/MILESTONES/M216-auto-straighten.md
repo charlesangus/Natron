@@ -28,7 +28,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 - **Fit actions:** they run line detection on the current frame at full resolution and set the knobs. They are undoable as one step and keyed when auto-key is on.
 - **Rectangle mode:** four corner position interacts (`Node::addPositionInteract`, `Engine/NodeOverlay.cpp:347`) define the quad that darktable's rectangle mode fits.
 - **Homography warp:** through `Resampler` (`Engine/Nodes/Image/Resampler.h`), with the native filter choice, and the region of definition and format from `autoCrop`.
-- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon and a cost seed.
+- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon.
 
 **Out:**
 - Drawing detected lines in the viewer, toggling them by click or drag, and darktable's drawn-lines guide mode: M165 - Rich Viewer Overlays. They are added to its consumers, and the node exposes the line list for it.
@@ -86,8 +86,8 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: `ctest -R "NativeAutoStraighten|AshiftLines"` passes.
   - size: L
 
-- [ ] M216.P2.T4 — GUI script, doc, icon and cost seed
-  - files: new `Tests/gui/test_auto_straighten.py`, `Engine/Nodes/Transform/docs/AutoStraighten.md`, `Engine/Nodes/Transform/AutoStraighten.costseed.inc`, `Gui/Resources/Images/NativeNodes/`
+- [ ] M216.P2.T4 — GUI script, doc and icon
+  - files: new `Tests/gui/test_auto_straighten.py`, `Engine/Nodes/Transform/docs/AutoStraighten.md`, `Gui/Resources/Images/NativeNodes/`
   - approach: under Xvfb, fit "both" on a tilted architecture fixture, check that the knobs moved, switch to rectangle mode, drag a corner, and take screenshots. The doc covers the fits, the lens model, crop and the M165 follow-up.
   - verify: the script passes under Xvfb, and `ctest -R NativePluginList` passes.
   - size: M

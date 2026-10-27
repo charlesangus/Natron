@@ -38,8 +38,8 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
   - verify: at the phase build, `ctest -R NativeIDefocusGpu` passes on RADV within 1e-4 relative.
   - size: L
 
-- [ ] M186.P1.T4 — Icon, cost seed and doc
-  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/IDefocus.costseed.inc`, `Engine/Nodes/Filter/docs/IDefocus.md`
+- [ ] M186.P1.T4 — Icon, gpuWeight (size-scaled) and doc
+  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/IDefocus.cpp`, `Engine/Nodes/Filter/docs/IDefocus.md`
   - approach: Per the native checklist.
   - verify: `ctest -R NativePluginList` passes; doc reviewed at the gate.
   - size: S

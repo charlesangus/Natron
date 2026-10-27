@@ -18,7 +18,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M207 - Neural Deno
   - every darktable upscale control
 - **Format and geometry:** the output format is the input format × scale, with pixel aspect unchanged. The region of definition scales about the origin. A region-of-interest request maps back through ÷scale plus the tile overlap.
 - Metadata: the output carries an `upscale/factor` metadata key.
-- Tests, a doc, an icon and a cost seed.
+- Tests, a doc, an icon and `gpuWeight` Heavy.
 
 **Out:**
 - Non-integer factors, and an output-format choice: put a Reformat after the node.
@@ -33,7 +33,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M207 - Neural Deno
 ## Phase 208.1: Node
 
 - [ ] M208.P1.T1 — NeuralUpscale node
-  - files: new `Engine/Nodes/Transform/NeuralUpscale.h`, `Engine/Nodes/Transform/NeuralUpscale.cpp`, `Engine/Nodes/Transform/NeuralUpscale.reg.inc`, `Engine/Nodes/Transform/NeuralUpscale.costseed.inc`
+  - files: new `Engine/Nodes/Transform/NeuralUpscale.h`, `Engine/Nodes/Transform/NeuralUpscale.cpp`, `Engine/Nodes/Transform/NeuralUpscale.reg.inc`
   - approach:
     - Override the format, region-of-definition and region-of-interest methods to scale by the factor. Follow `Reformat.cpp` for how a native node changes its output format.
     - Run inference through `runTiled` with `TileSpec.scale = factor`, wrapped in `SceneLinearWrapper` (P1 of M207).

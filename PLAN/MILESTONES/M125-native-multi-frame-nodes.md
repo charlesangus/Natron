@@ -36,7 +36,6 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - **References:**
   - `Engine/EffectInstance.h:71` (`PLUGINID_OFX_TIMEDISSOLVE`).
   - `Engine/OfxEffectInstance.cpp:1298-1309, 1338` (default-channel lists; TimeDissolve is under Routing) and `Engine/OfxParamInstance.cpp:4850-4854` (TimeDissolve curve default).
-  - `Engine/GpuCostSeed.inc:34, 42` (FrameBlend, TimeBlur).
   - Tests: `Tests/FrameGraphBuild_Test.cpp:74, 514-548`, `SchedulerEquivalence_Test.cpp:411, 860`, `GpuResidency_Test.cpp:828-836`, `TimeVaryingLayers_Test.cpp:474-482`, `DefaultChannelSet_Test.cpp:80-91`, `ColorViewsRender_Test.cpp:92-93` (TimeBuffer) and `NodeCategory_Test.cpp:168`.
   - Bench: `tools/bench/comps/build_comps.py:249-254` and `defocus_retime.ntp` use TimeBlur, Retime and FrameBlend.
 - **Cost:** FrameBlend is one of the top costs in the render profile (`.plan/PLAN/DESIGN/2026-10-10-render-cost-profile.md:64,70`: 21 ms/Mpx, about 2253 ms total).
@@ -94,7 +93,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - approach:
     - Extend M124 - Native Time Remaps's N-view blend with the operation modes (min, max, sum, over) and per-view weights for decay.
     - Above the view cap, chain dispatches through an accumulator buffer.
-    - Both nodes fill the views through `makeGpuKernel`. Add cost seeds.
+    - Both nodes fill the views through `makeGpuKernel`.
   - verify: the GPU parity harness matches the CPU within 1e-5 for every operation and for a sample count above the cap. Runs at the phase build on RADV.
   - size: L
 
@@ -121,17 +120,17 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - files: `Engine/Gpu/Kernels/slitscan.slang` (new), `Engine/Gpu/Kernels/slitscan.cmake`, `Engine/Nodes/Time/SlitScan.cpp`, `Engine/Nodes/Time/AppendClip.cpp`, `Tests/Native/NativeSlitScanGpu_Test.cpp` (new)
   - approach:
     - SlitScan uses a frame-array gather over the window's views, reading the per-pixel time from the map view.
-    - AppendClip's dissolve reuses the two-view blend. Add cost seeds.
+    - AppendClip's dissolve reuses the two-view blend.
   - verify: the GPU parity harness matches the CPU within 1e-5 for both nodes. Runs at the phase build on RADV.
   - size: L
 
 ## Phase 124.3: Retirement and measurement
 
 - [ ] M125.P3.T1 — Retire the OFX multi-frame nodes, TimeDissolve and TimeBuffer, and fix references
-  - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/EffectInstance.h`, `Engine/OfxEffectInstance.cpp`, `Engine/OfxParamInstance.cpp`, `Engine/GpuCostSeeds/ofx/<retired-id>.inc` (deleted, one per retired ID)
+  - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/EffectInstance.h`, `Engine/OfxEffectInstance.cpp`, `Engine/OfxParamInstance.cpp`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of FrameBlend, TimeBlur, NoTimeBlur, AppendClip, SlitScan, TimeDissolve, TimeBufferRead and TimeBufferWrite.
-    - Drop `PLUGINID_OFX_TIMEDISSOLVE`, the TimeDissolve curve default (`OfxParamInstance.cpp:4850-4854`), the default-channel entries, and the OFX cost seeds.
+    - Drop `PLUGINID_OFX_TIMEDISSOLVE`, the TimeDissolve curve default (`OfxParamInstance.cpp:4850-4854`), and the default-channel entries.
   - verify: at the phase build, the retired IDs don't load and `git grep` finds no live use of them outside the `Engine/OfxRetired/` markers.
   - size: M
 

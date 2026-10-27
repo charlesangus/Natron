@@ -44,7 +44,7 @@ Licensing: lensfun is LGPL-3 and its database is CC-BY-SA; record both in `tools
 ## Phase 160.2: LensCorrect node
 
 - [ ] M160.P2.T1 — Distortion and TCA via the coordinate sampler
-  - files: new `Engine/Nodes/Transform/LensCorrect.h/.cpp` + per-node files (`.reg.inc`, `.costseed.inc`, `docs/LensCorrect.md`, icon), new `Tests/Native/NativeLensCorrect_Test.cpp`
+  - files: new `Engine/Nodes/Transform/LensCorrect.h/.cpp` + per-node files (`.reg.inc`, `docs/LensCorrect.md`, icon), new `Tests/Native/NativeLensCorrect_Test.cpp`
   - approach: port the geometry part of darktable `src/iop/lens.cc` at M80's `DARKTABLE_REF`. Build the inverse coordinate map from the lensfun modifier: one map, plus per-channel offsets for TCA. Sample through `resampleRowFromCoords` with the Jacobian. RoD and RoI come from the map with a bounded halo. Autofill reads `exif/*` and `raw/*`, and knobs override every field. An unknown lens passes through with a persistent message.
   - verify: gtest: a synthetic grid through a known profile lands within a sub-pixel bound; tiled equals full-frame; an unknown lens passes through with the message.
   - size: L

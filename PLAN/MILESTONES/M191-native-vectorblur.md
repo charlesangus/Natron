@@ -7,7 +7,7 @@ A native motion blur from motion vectors (user, 2026-10-25, split from M188 - Va
 **In:**
 - `VectorBlur`, plain ID at major 1, Filter grouping. Inputs: Source, optional Mask (host MaskMix).
 - Knobs: `uv` layer and u/v channels (any layer, default the first of `motion`, `forward`), `offset` (0..1, default 0.5), `scale` (default 1), `vectorUnits` (Pixels, Normalised to width), `samples` (default 16, adaptive to streak length up to `maxSamples`), `filter` (Box, Triangle), `depth` layer/channel with `depthUnits` (Distance, 1/Distance) and `occlusion` (Off, Depth-aware).
-- CPU and GPU kernels, native and GPU parity tests, a cost seed, an icon and a doc.
+- CPU and GPU kernels, native and GPU parity tests, a size-scaled `gpuWeight()`, an icon and a doc.
 
 **Out:**
 - Two-pass (forward + backward) vector modes (user).
@@ -41,8 +41,8 @@ A native motion blur from motion vectors (user, 2026-10-25, split from M188 - Va
   - verify: at the phase build, `ctest -R NativeVectorBlurGpu` passes on lavapipe within 1e-4 relative.
   - size: L
 
-- [ ] M191.P1.T4 — Icon, cost seed and doc
-  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/VectorBlur.costseed.inc`, `Engine/Nodes/Filter/docs/VectorBlur.md`
+- [ ] M191.P1.T4 — Icon, gpuWeight (size-scaled) and doc
+  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/VectorBlur.cpp`, `Engine/Nodes/Filter/docs/VectorBlur.md`
   - approach: Per the native checklist; the doc explains `offset`, units, `maxLength` and occlusion.
   - verify: `ctest -R NativePluginList` passes; doc reviewed at the gate.
   - size: S

@@ -33,7 +33,7 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
   - manual a/b when the profile is generic
 - The vendored noise-profile DB, a lookup with ISO interpolation, and a read-only "profile used" knob.
 - A Develop RAW option, off by default: insert DenoiseProfiled between RawDemosaic and RawInputColor, where darktable places it.
-- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon and a cost seed.
+- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon.
 
 **Out:**
 - Noise profiling tools (darktable's `-DBUILD_NOISE_TOOLS`): none.
@@ -109,8 +109,8 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
   - verify: `ctest -R NativeDenoiseProfiledGpu` passes on lavapipe within the doc's tolerance.
   - size: M
 
-- [ ] M210.P3.T3 — Develop RAW option, doc, icon and cost seed
-  - files: `Engine/Settings.{h,cpp}`, `Engine/Nodes/Raw/RawDevelop.cpp`, `Engine/Nodes/Filter/docs/DenoiseProfiled.md`, `Engine/Nodes/Filter/DenoiseProfiled.costseed.inc`, `Gui/Resources/Images/NativeNodes/`
+- [ ] M210.P3.T3 — Develop RAW option, doc and icon
+  - files: `Engine/Settings.{h,cpp}`, `Engine/Nodes/Raw/RawDevelop.cpp`, `Engine/Nodes/Filter/docs/DenoiseProfiled.md`, `Gui/Resources/Images/NativeNodes/`
   - approach:
     - Add a `developRawDenoise` bool (off) that inserts the node into `buildChain` after the demosaic slot.
     - The doc covers profiles, modes, the camera-space notice and the tolerance.

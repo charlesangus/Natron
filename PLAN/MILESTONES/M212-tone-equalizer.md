@@ -25,7 +25,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
   - darktable's presets, as Natron presets
 - **`output`:** Result, Mask or Mask Exposure Histogram Zones. This replaces darktable's darkroom mask display.
 - **The viewer interaction:** hover readout as overlay text of the zone and EV, and scroll to adjust that band. Shift-scroll gives fine steps.
-- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon and a cost seed.
+- CPU and GPU paths, darktable reference parity, a params-to-knob audit, a doc, an icon.
 
 **Out:**
 - darktable's histogram graph widget and its advanced-tab curve graph: the graph only redraws the nine band gains, which stay plain sliders here. The Mask output and the hover readout replace the histogram.
@@ -61,12 +61,12 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
   - size: L
 
 - [ ] M212.P1.T4 — Reference parity, knob audit and docs
-  - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeToneEqualizer_Test.cpp`, `Engine/Nodes/Color/docs/ToneEqualizer.md`, `Engine/Nodes/Color/ToneEqualizer.costseed.inc`
+  - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeToneEqualizer_Test.cpp`, `Engine/Nodes/Color/docs/ToneEqualizer.md`
   - approach:
     - darktable-cli jobs on a developed fixture: each estimator, each detail mode, band edits, and the compensations.
     - The node is given the same pre-module image and working space, linear Rec.2020, converted through OCIO.
     - Audit `dt_iop_toneequalizer_params_t` against the knobs.
-    - Write the doc with the tolerance, plus an icon (`Gui/Resources/Images/NativeNodes/`) and a cost seed.
+    - Write the doc with the tolerance, plus an icon (`Gui/Resources/Images/NativeNodes/`).
   - verify: `ctest -R NativeToneEqualizer` passes within the doc's `Tolerance:`.
   - size: L
 

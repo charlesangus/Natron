@@ -16,7 +16,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
   - `tileSize`, which defaults to the model config
   - every control darktable's neural restore offers for raw (P1.T1 lists them)
 - Tiled inference through M203, with the CFA-aligned packing (2×2 superpixels) and an overlap aligned to the CFA period.
-- A doc, an icon, a cost seed, and tests. A Develop RAW variant option: Preferences "Develop RAW demosaic" gains "Neural (RawNIND)", which inserts this node instead of RawDemosaic when the model is installed.
+- A doc, an icon, `gpuWeight` Heavy, and tests. A Develop RAW variant option: Preferences "Develop RAW demosaic" gains "Neural (RawNIND)", which inserts this node instead of RawDemosaic when the model is installed.
 
 **Out:**
 - X-Trans and other non-Bayer CFAs: the model is Bayer-only, so the node shows a persistent error that points to NeuralDenoise's RawNIND linear model after RawInputColor (M207 - Neural Denoise).
@@ -49,7 +49,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager. It builds on M80 -
   - size: M
 
 - [ ] M206.P1.T2 — RawNeuralDenoise node (CPU tiled inference)
-  - files: new `Engine/Nodes/Raw/RawNeuralDenoise.h`, `Engine/Nodes/Raw/RawNeuralDenoise.cpp`, `Engine/Nodes/Raw/RawNeuralDenoise.reg.inc`, `Engine/Nodes/Raw/RawNeuralDenoise.costseed.inc`
+  - files: new `Engine/Nodes/Raw/RawNeuralDenoise.h`, `Engine/Nodes/Raw/RawNeuralDenoise.cpp`, `Engine/Nodes/Raw/RawNeuralDenoise.reg.inc`
   - approach:
     - Build on M137's framework, following RawDemosaic's raw-in/image-out shape (`RawDemosaic.cpp`) and the README "AI nodes" section from M203.P3.T3.
     - `pack` and `unpack` implement P1.T1's contract. The tiler is `runTiled` with a CFA-aligned overlap.

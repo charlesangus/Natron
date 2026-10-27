@@ -17,7 +17,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 ## Scope
 
 **In:**
-- GPU kernels for every M217 stage, a GPU path in `VectorGenerator` taken when placement puts it on the GPU, parity tests on lavapipe, and an updated cost seed.
+- GPU kernels for every M217 stage, a GPU path in `VectorGenerator` taken when placement puts it on the GPU, parity tests on lavapipe, and its `gpuWeight` (Heavy).
 
 **Out:**
 - The neural method on the GPU → M221 - Neural Optical Flow (runs through ONNX Runtime, CPU-side tensors).
@@ -72,12 +72,12 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 ## Phase 218.2: Node wiring
 
 - [ ] M218.P2.T1 — GPU path in VectorGenerator
-  - files: `Engine/Nodes/Time/VectorGenerator.cpp`, `Engine/Nodes/Time/VectorGenerator.costseed.inc`, `Tests/Native/NativeVectorGeneratorGpu_Test.cpp` (new)
+  - files: `Engine/Nodes/Time/VectorGenerator.cpp`, `Tests/Native/NativeVectorGeneratorGpu_Test.cpp` (new)
   - approach:
     - Declare GPU support and the per-input times for placement.
     - Feed `GpuFlow` from the (input, time) views. Write Forward, Backward and `vectorConfidence` to the output textures.
     - Fall back to the CPU when allocation fails.
-    - Update the cost seed.
+    - Declare `gpuWeight` Heavy.
   - verify: `ctest -R NativeVectorGeneratorGpu` passes on lavapipe. Every M217 node case runs on the GPU path within the tolerances above, and a forced allocation failure takes the CPU path and still matches.
   - size: M
 

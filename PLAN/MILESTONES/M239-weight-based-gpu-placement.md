@@ -69,7 +69,7 @@ The placement framework already takes its judgment as callbacks (`PlacementInput
   - verify: a same-boot table (Auto vs Off per case, with placement) is posted on the PR.
   - size: M
 
-- [ ] M239.P3.T2 — Strike cost-seed tasks from unstarted milestones
+- [x] M239.P3.T2 — Strike cost-seed tasks from unstarted milestones
   - files: `.plan/PLAN/MILESTONES/*.md` (todo, unclaimed rows only)
   - approach: In each todo, unclaimed milestone, strike through any task or clause that only measures or writes cost seeds, citing the decision. For claimed rows, file an inbox change-request to each owner instead.
   - verify: `grep -ln costseed .plan/PLAN/MILESTONES` lists only done milestones and struck-through text.

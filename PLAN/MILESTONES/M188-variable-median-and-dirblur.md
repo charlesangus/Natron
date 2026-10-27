@@ -31,8 +31,8 @@ Exact I-variants of M130 - Native Edge-Preserving And Directional Filters' Media
   - verify: tests per mode: Map 0 identity; Map 1 equals DirBlur; GPU parity on lavapipe within DirBlur's tolerance.
   - size: L
 
-- [ ] M188.P1.T3 — Icons, cost seeds and docs
-  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/*.costseed.inc`, `Engine/Nodes/Filter/docs/{IMedian,IDirBlur}.md`
+- [ ] M188.P1.T3 — Icons, gpuWeight (size-scaled) and docs
+  - files: `Gui/Resources/Images/NativeNodes/`, `Engine/Nodes/Filter/IMedian.cpp`, `Engine/Nodes/Filter/IDirBlur.cpp`, `Engine/Nodes/Filter/docs/{IMedian,IDirBlur}.md`
   - approach: Per the native checklist; the IDirBlur doc shows each mode.
   - verify: `ctest -R NativePluginList` passes; docs reviewed at the gate.
   - size: S

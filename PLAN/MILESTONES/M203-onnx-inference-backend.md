@@ -42,7 +42,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Phase 203.1: Runtime loading
 
-- [ ] M203.P1.T1 — Vendor ONNX Runtime CPU and stage it in the bundle
+- [x] M203.P1.T1 — Vendor ONNX Runtime CPU and stage it in the bundle
   - files: `tools/ci/local/fetch-assets.sh`, `CMakeLists.txt`, `tools/release/stage-bundle.sh`, `tools/license/components/README.md`, new `tools/license/components/LICENSE-onnxruntime.txt`
   - approach:
     - Pin `ONNXRUNTIME_VERSION` plus a sha256 of the official `onnxruntime-linux-x64-<ver>.tgz`. Follow the rawspeed pin and stamp recipe (`fetch-assets.sh:254-273`) into `build/assets/onnxruntime`.
@@ -55,7 +55,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
     - The licence README lists it.
   - size: M
 
-- [ ] M203.P1.T2 — dlopen loader and provider probe
+- [x] M203.P1.T2 — dlopen loader and provider probe
   - files: new `Engine/Ai/OrtLoader.h`, `Engine/Ai/OrtLoader.cpp`, `Engine/CMakeLists.txt`
   - approach:
     - A process-wide singleton loads the library in the Scope's search order with `dlopen(RTLD_NOW|RTLD_LOCAL)`, gets `OrtGetApiBase()->GetApi(ORT_API_VERSION)`, and creates one `OrtEnv`.
@@ -64,7 +64,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: `Tests/Ai/OrtLoader_Test.cpp` (P3.T1) loads the bundled build-tree copy and lists `CPUExecutionProvider`. A bogus library path yields `available()==false` with that path in the reason.
   - size: M
 
-- [ ] M203.P1.T3 — AI preferences page
+- [x] M203.P1.T3 — AI preferences page
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`
   - approach:
     - Add an "AI" tab with these knobs: `aiEnabled` (bool, off), `aiDevice` (Auto, CPU, CUDA, MIGraphX, ROCm, OpenVINO), `aiGpuIndex` (int 0), `aiThreads` (0 = auto), `aiOrtLibraryPath` (`KnobPath`, single path, like `_diskCachePath` at `Settings.cpp:1384-1396`), and a read-only `aiDetectedProviders` string refreshed on open. A `NATRON_AI_DEVICE` env override applies to farm use.
@@ -74,7 +74,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Phase 203.2: Sessions and tiled inference
 
-- [ ] M203.P2.T1 — Inference session wrapper
+- [x] M203.P2.T1 — Inference session wrapper
   - files: new `Engine/Ai/InferenceSession.h`, `Engine/Ai/InferenceSession.cpp`, new `Engine/Ai/Tensor.h`
   - approach:
     - Write `InferenceSession::open(modelPath, SessionOptions{ep, device, threads, optLevel})`. EP fallback follows the Scope's edge cases.
@@ -85,7 +85,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: P3.T1's identity and scale models run with float32 and float16 IO and produce exact outputs. Two threads sharing a session give identical results.
   - size: L
 
-- [ ] M203.P2.T2 — Abort and OOM handling
+- [x] M203.P2.T2 — Abort and OOM handling
   - files: `Engine/Ai/InferenceSession.cpp`, `Engine/Ai/InferenceSession.h`
   - approach:
     - `run` takes an abort predicate. A watcher thread polls it every 20 ms and calls `RunOptionsSetTerminate`.
@@ -93,7 +93,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: a test model with a long loop (`Loop` op, P3.T1) is aborted within 200 ms of the predicate flipping. A forced OOM status (test hook) surfaces as `AiOutOfMemory`.
   - size: M
 
-- [ ] M203.P2.T3 — Tiled inference helper
+- [x] M203.P2.T3 — Tiled inference helper
   - files: new `Engine/Ai/TiledInference.h`, `Engine/Ai/TiledInference.cpp`
   - approach:
     - `runTiled(session, image RoI, TileSpec{tile, overlap, multipleOf, scale, inChannels, outChannels}, pack, unpack, abort)`.
@@ -105,7 +105,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Phase 203.3: Tests, tooling and docs
 
-- [ ] M203.P3.T1 — Generated test models
+- [x] M203.P3.T1 — Generated test models
   - files: new `tools/ai/make-test-models.py`, new `Tests/fixtures/ai/` (`identity.onnx`, `scale2.onnx`, `identity-fp16.onnx`, `upscale2-nearest.onnx`, `slow-loop.onnx`, README), new `Tests/Ai/OrtLoader_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - The script uses the `onnx` helper API to write the models. Each is a few hundred bytes, so they're committed outright, not through LFS.
@@ -114,7 +114,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: `ctest -R Ai` passes, and re-running the script reproduces byte-identical files.
   - size: M
 
-- [ ] M203.P3.T2 — GPU runtime installer script
+- [x] M203.P3.T2 — GPU runtime installer script
   - files: new `tools/ai/install-ort-gpu.sh`
   - approach:
     - Write `--cuda` and `--rocm` modes. Each downloads the matching official ONNX Runtime GPU release at the pinned version, checks its sha256, and unpacks it into `$XDG_DATA_HOME/<Natron data dir>/onnxruntime/`. Mirror darktable's `tools/ai/install-ort-gpu.sh` and `install-ort-amd-build.sh`.
@@ -122,7 +122,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: `--dry-run` prints the URL and target. A real `--cuda` run on the GPU host followed by Natron with Device = CUDA lists `CUDAExecutionProvider`, and the result goes in `## Decisions`. Without an NVIDIA host, record that it's unverified.
   - size: M
 
-- [ ] M203.P3.T3 — README section
+- [x] M203.P3.T3 — README section
   - files: `Engine/Nodes/README.md`, new `Engine/Ai/README.md`
   - approach:
     - `Engine/Ai/README.md` covers the library search order, EP selection, the session cache, tiled inference and the abort and OOM policy.
@@ -134,3 +134,7 @@ See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 - The full build and ctest pass, including `ctest -R Ai`.
 - The AppImage contains the ORT CPU library.
 - Under Xvfb, the Preferences "AI" page shows the detected providers with AI enabled, and "AI is disabled" behaviour with it off. Screenshots are shared with the user before sign-off.
+
+## Decisions
+
+- 2026-10-27 — **Phase 2-3 choices (bosley-native-nodes):** CPU runs share the cores by each session's thread count; GPU one run per device; the session cache key includes threads, optimisation and library; OpenVINO attaches as GPU / GPU.<index>; fixed-size models clamp and pad tiles and skip halving; `--rocm` builds ORT with MIGraphX from source (no official AMD build at 1.31.1); GPU provider options go through library-owned option objects, never header struct layouts. Release gate 550/550; PR #132.

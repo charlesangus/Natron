@@ -37,6 +37,7 @@
 #include "Engine/Node.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoPoint.h"
@@ -476,6 +477,9 @@ RotoPaintInteract::makeStroke(bool prepareForLater,
         context->addItem(layer, 0, strokeBeingPaint, RotoItem::eSelectionReasonOther);
         context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, true);
         strokeBeingPaint->appendPoint(true, point);
+        if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+            probe->notePointAppended();
+        }
     }
 } // RotoGui::RotoGuiPrivate::makeStroke
 
@@ -611,6 +615,9 @@ RotoPaintInteract::onPaintToolPenDown(double /*time*/,
                 lifeTimeFrameKnob->setValue(context->getTimelineCurrentTime());
 
                 strokeBeingPaint->appendPoint(true, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
+                if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+                    probe->notePointAppended();
+                }
             } else {
                 if (strokeBeingPaint && !strokeBeingPaint->getParentLayer() && multiStrokeEnabled) {
                     strokeBeingPaint.reset();
@@ -686,6 +693,9 @@ RotoPaintInteract::onPaintStatePenMotion(const QPointF& pos,
 
             RotoPoint p(pos.x(), pos.y(), pressure, timestamp);
             if (strokeBeingPaint->appendPoint(false, p)) {
+                if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+                    probe->notePointAppended();
+                }
                 lastMousePos = pos;
                 context->evaluateChange_noIncrement();
                 didSomething = true;

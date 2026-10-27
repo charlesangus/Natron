@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Runs the GUI benchmark (gui_bench.py) and writes build/bench/gui/<UTC>-<host>-<mode>.jsonl.
+# Runs a GUI benchmark driver and writes build/bench/gui/<UTC>-<host>-<mode>[-roto].jsonl.
 #
 #   tools/bench/gui/run.sh --xvfb [--appimage PATH] [options]   # in natron-dev, under Xvfb
 #   tools/bench/gui/run.sh --host --appimage PATH [options]     # on this machine's display
 #
 # Options:
+#   --driver gui|roto        gui_bench.py (node graph, default) or roto_bench.py (roto/paint)
 #   --sizes N[,N...]         node counts (default 300)
 #   --topologies T[,T...]    chain, wide, comp, mixed (default mixed)
 #   --reps N                 repetitions per op (default 5)
@@ -12,6 +13,9 @@
 #   --out DIR                result directory (default build/bench/gui)
 #   --self-check             add the 300 ms blocked-main-thread check per graph
 #   --wait                   --xvfb only: run in the foreground rather than detached
+#
+# --sizes, --topologies and --self-check apply to the gui driver; the roto driver reads its
+# ROTO_BENCH_* variables (see roto_bench.py) and also writes NATRON_ROTO_LATENCY_LOG beside the result.
 #
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
@@ -33,11 +37,12 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 self="$repo/tools/bench/gui/run.sh"
 
 usage() {
-    sed -n '2,18p' "$self" >&2
+    sed -n '2,22p' "$self" >&2
     exit 2
 }
 
 mode=""
+driver=gui
 appimage=""
 sizes=300
 topologies=mixed
@@ -50,6 +55,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --xvfb) mode=xvfb ;;
         --host) mode=host ;;
+        --driver) driver=${2:?--driver needs gui or roto}; shift ;;
         --appimage) appimage=${2:?--appimage needs a path}; shift ;;
         --sizes) sizes=${2:?--sizes needs a list}; shift ;;
         --topologies) topologies=${2:?--topologies needs a list}; shift ;;
@@ -65,6 +71,11 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$mode" ] || usage
+case $driver in
+    gui) suffix="" ;;
+    roto) suffix="-roto" ;;
+    *) echo "unknown driver: $driver (gui or roto)" >&2; exit 2 ;;
+esac
 if [ "$detach" -lt 0 ]; then
     if [ "$mode" = xvfb ]; then detach=1; else detach=0; fi
 fi
@@ -81,7 +92,7 @@ if [ "$mode" = host ] && [ -z "$appimage" ]; then
     exit 2
 fi
 # Normalised, so a re-exec (detached or in the container) sees absolute paths.
-args=("--$mode" --sizes "$sizes" --topologies "$topologies" --reps "$reps" --out "$outdir")
+args=("--$mode" --driver "$driver" --sizes "$sizes" --topologies "$topologies" --reps "$reps" --out "$outdir")
 [ -n "$appimage" ] && args+=(--appimage "$appimage")
 [ -n "$ops" ] && args+=(--ops "$ops")
 [ "$self_check" -eq 1 ] && args+=(--self-check)
@@ -92,7 +103,7 @@ if [ "$detach" -eq 1 ]; then
     log="$outdir/run-$stamp.log"
     GUI_BENCH_STAMP=$stamp setsid nohup "$self" "${args[@]}" --detached-child > "$log" 2>&1 < /dev/null &
     echo "started in the background; log $log"
-    echo "result $outdir/$stamp-$(hostname -s)-$mode.jsonl (exit code in .done)"
+    echo "result $outdir/$stamp-$(hostname -s)-$mode$suffix.jsonl (exit code in .done)"
     exit 0
 fi
 
@@ -100,15 +111,19 @@ stamp=${GUI_BENCH_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}
 export GUI_BENCH_STAMP=$stamp
 
 if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
+    roto_env=()
+    for name in $(compgen -e | grep '^ROTO_BENCH_'); do
+        roto_env+=("$name=${!name}")
+    done
     # The host name belongs to the machine, not the container.
     exec "$repo/tools/ci/local/devshell.sh" env GUI_BENCH_STAMP="$stamp" GUI_BENCH_HOSTNAME="$(hostname -s)" \
         GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-120}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
-        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" "$self" "${args[@]}" --wait
+        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" "${roto_env[@]}" "$self" "${args[@]}" --wait
 fi
 
 host=${GUI_BENCH_HOSTNAME:-$(hostname -s)}
-result="$outdir/$stamp-$host-$mode.jsonl"
-work="$outdir/$stamp-$host-$mode"
+result="$outdir/$stamp-$host-$mode$suffix.jsonl"
+work="$outdir/$stamp-$host-$mode$suffix"
 mkdir -p "$work"
 rm -f "$result" "$result.done"
 
@@ -131,7 +146,13 @@ GUI_BENCH_GIT_SHA=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo un
 export NATRON_STALL_LOG="$work/stalls.jsonl" NATRON_GUI_TEST_OUT="$work"
 rm -f "$NATRON_STALL_LOG"
 timeout_s=${GUI_BENCH_TIMEOUT:-21600}
-script="$repo/tools/bench/gui/gui_bench.py"
+script="$repo/tools/bench/gui/${driver}_bench.py"
+if [ "$driver" = roto ]; then
+    export NATRON_ROTO_LATENCY_LOG="$work/latency.jsonl"
+    rm -f "$NATRON_ROTO_LATENCY_LOG"
+else
+    unset NATRON_ROTO_LATENCY_LOG
+fi
 
 if [ "$mode" = xvfb ]; then
     if [ -n "$appimage" ]; then

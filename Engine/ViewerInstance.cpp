@@ -76,6 +76,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -3694,6 +3695,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         assert(params->roi.contains(texRect));
         uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
         isFirstTile = false;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteTextureUploaded();
     }
 
     NodePtr rotoPaintNode;

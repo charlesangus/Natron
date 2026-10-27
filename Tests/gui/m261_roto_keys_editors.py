@@ -28,7 +28,8 @@ NODE_KEY = 20.0
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QMetaObject, QPoint, Q_ARG
+    from PySide6.QtCore import QMetaObject, QPoint, Q_ARG, Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication, QMainWindow, QTreeWidget, QWidget
 
@@ -90,10 +91,19 @@ try:
 
     _keepalive = {}
 
+    def editor_widgets(editor_class):
+        """DopeSheetEditor has no Q_OBJECT, so it is stood in for by its view."""
+        return gt.widgets_of("DopeSheetView" if editor_class == "DopeSheetEditor" else editor_class)
+
     def editor_tree(editor_class):
         """The editor's tree, found again on every call: a wrapper held across a yield is marked
         deleted. The editor's wrapper is kept alive with it, since a child wrapper dies with its
         parent's."""
+        if editor_class == "DopeSheetEditor":
+            trees = gt.widgets_of("HierarchyView")
+            if trees:
+                _keepalive[editor_class] = trees[0]
+            return trees[0] if trees else None
         editors = gt.widgets_of(editor_class)
         if not editors:
             return None
@@ -102,20 +112,32 @@ try:
             _keepalive[editor_class] = editors[0]
         return trees[0] if trees else None
 
+    def snapshot(editor_class):
+        """The editor's tree as plain data, read through the model: [{'text', 'hidden', 'kids'}]."""
+        tree = editor_tree(editor_class)
+        if tree is None:
+            return []
+        model = tree.model()
+
+        def walk(parent):
+            out = []
+            for r in range(model.rowCount(parent)):
+                idx = model.index(r, 0, parent)
+                out.append({"text": str(idx.data()), "hidden": tree.isRowHidden(r, parent),
+                            "kids": walk(idx)})
+            return out
+        return walk(tree.rootIndex())
+
     def rows_under(item, depth=0):
         """(depth, text, hidden) of the item and every descendant."""
-        rows = [(depth, item.text(0), item.isHidden())]
-        for i in range(item.childCount()):
-            rows.extend(rows_under(item.child(i), depth + 1))
+        rows = [(depth, item["text"], item["hidden"])]
+        for kid in item["kids"]:
+            rows.extend(rows_under(kid, depth + 1))
         return rows
 
     def top_item(editor_class, label):
-        tree = editor_tree(editor_class)
-        if tree is None:
-            return None
-        for i in range(tree.topLevelItemCount()):
-            item = tree.topLevelItem(i)
-            if item.text(0) == label:
+        for item in snapshot(editor_class):
+            if item["text"] == label:
                 return item
         return None
 
@@ -124,9 +146,9 @@ try:
         return rows_under(item) if item is not None else None
 
     def child_with_text(item, text):
-        for i in range(item.childCount()):
-            if item.child(i).text(0) == text:
-                return item.child(i)
+        for kid in item["kids"]:
+            if kid["text"] == text:
+                return kid
         return None
 
     def visible_text_at(rows, depth, text):
@@ -184,6 +206,31 @@ try:
                           [(tuple(b.getKeyframes()), b.getOpacityParam().getNumKeys()) for b in shapes]))
         return state
 
+    def write_sequence(prefix, first, last):
+        """A tiny PPM sequence prefix.0001.ppm ..., returns the '####' pattern path."""
+        os.makedirs(os.path.dirname(prefix), exist_ok=True)
+        for f in range(first, last + 1):
+            with open("%s.%04d.ppm" % (prefix, f), "wb") as fh:
+                fh.write(b"P6\n8 8\n255\n" + bytes([200, 60, 60]) * 64)
+        return prefix + ".####.ppm"
+
+    def bar_run_lengths(widget):
+        """Lengths of the long same-colour horizontal runs in the widget, the Reader bars among them."""
+        QApplication.processEvents()
+        origin = widget.mapToGlobal(QPoint(0, 0))
+        img = QGuiApplication.primaryScreen().grabWindow(
+            0, origin.x(), origin.y(), widget.width(), widget.height()).toImage()
+        runs = []
+        for yd in range(0, img.height(), 2):
+            best, run, prev = 0, 0, None
+            for xd in range(img.width()):
+                rgb = img.pixel(xd, yd)
+                run = run + 1 if rgb == prev else 1
+                prev = rgb
+                best = max(best, run)
+            runs.append(best)
+        return runs, img.width()
+
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "node graph widget is up")
@@ -208,8 +255,15 @@ try:
         initial = key_state(hosts)
         report("NOTE keys %r" % (initial,))
         check(initial == expected, "each host has a Mix key and two shapes keyed at 1/10/20 with one opacity key")
-        for node, _shapes in hosts:
-            app.selectNode(node, False)
+        seq_dir = os.path.join(gt.OUT, "m261-clips")
+        clips = []
+        for name, last in (("long", 40), ("short", 10)):
+            clip = app.createReader(write_sequence(os.path.join(seq_dir, name), 1, last))
+            gt.require(clip is not None, "created a Read of %d frames" % last)
+            clip.setPosition(600 if name == "long" else 400, 1200)
+            clips.append(clip)
+        for node in [h[0] for h in hosts] + clips:
+            app.selectNode(node, True)
             QMetaObject.invokeMethod(root_graph(), "showSelectedNodeSettingsPanel")
             yield ("sleep", SETTLE_MS)
         ok = yield ("until", gt.any_panel_open, 10.0)
@@ -217,7 +271,7 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("dope-sheet")
-        editors = gt.widgets_of("DopeSheetEditor")
+        editors = editor_widgets("DopeSheetEditor")
         gt.require(editors, "found the dope sheet")
         gt.require(make_tab_current(editors[0], "dope"), "brought the dope sheet's tab to the front")
         yield ("sleep", SETTLE_MS)
@@ -231,7 +285,7 @@ try:
             check(visible_text_at(rows, 1, "Mix"), "%s's Mix knob has a row" % label)
             for bez in shapes:
                 item = child_with_text(top_item("DopeSheetEditor", label), bez.getLabel())
-                check(item is not None and not item.isHidden(), "%s has an item row for %s" % (label, bez.getLabel()))
+                check(item is not None and not item["hidden"], "%s has an item row for %s" % (label, bez.getLabel()))
                 if item is None:
                     continue
                 sub = rows_under(item)
@@ -241,8 +295,13 @@ try:
 
         views = gt.widgets_of("DopeSheetView")
         gt.require(views, "found the dope sheet view")
+        report("NOTE selecting all keys")
         QMetaObject.invokeMethod(views[0], "onSelectedAllTriggered")
         QApplication.processEvents()
+        report("NOTE selected all keys")
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m261-dope-sheet-all-selected.png")
+        report("NOTE deleting selected keys")
         QMetaObject.invokeMethod(views[0], "deleteSelectedKeyframes")
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
@@ -291,18 +350,29 @@ try:
         show.trigger()
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
+        with_points = 0
         for bez in paint_shapes:
             shape_item = child_with_text(top_item("CurveEditor", paint_label), bez.getLabel())
             check(shape_item is not None, "%s still has its curve editor row" % bez.getLabel())
             if shape_item is None:
                 continue
-            for n in range(1, bez.getNumControlPoints() + 1):
-                point = child_with_text(shape_item, "Point %d" % n)
-                check(point is not None and not point.isHidden(), "%s Point %d has a row" % (bez.getLabel(), n))
-                if point is None:
-                    continue
-                coords = [point.child(i).text(0) for i in range(point.childCount())]
-                check(coords == ["x", "y"], "%s Point %d has x and y curves (%r)" % (bez.getLabel(), n, coords))
+            points = [k for k in shape_item["kids"] if k["text"].startswith("Point ")]
+            if not points:
+                report("NOTE %s has no point rows (it is not among the selected shapes)" % bez.getLabel())
+                continue
+            with_points += 1
+            check(len(points) == bez.getNumControlPoints(), "%s shows a row per control point (%d)" % (
+                bez.getLabel(), len(points)))
+            for point in points:
+                coords = [k["text"] for k in point["kids"]]
+                check(coords == ["x", "y"] and not point["hidden"],
+                      "%s %s has x and y curves (%r)" % (bez.getLabel(), point["text"], coords))
+        check(with_points >= 1, "at least one selected shape shows its control points")
+        for cw in gt.widgets_of("CurveWidget"):
+            if cw.isVisible():
+                QMetaObject.invokeMethod(cw, "frameAll")
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
         ink_points = curve_widget_ink()
         report("NOTE curve widget ink: nothing selected %r, points shown %r" % (ink_none, ink_points))
         check(ink_none is not None and ink_points is not None and ink_points > ink_none,
@@ -315,6 +385,29 @@ try:
         rows = node_rows("CurveEditor", paint_label) or []
         check(not any(t.startswith("Point ") for _d, t, _h in rows), "removing the points drops their rows")
         gt.shot("m261-curve-editor.png")
+
+        gt.section("framing")
+        # Needs the build with the dope sheet framing over every clip range (not the one before it).
+        editors = editor_widgets("DopeSheetEditor")
+        make_tab_current(editors[0], "dope")
+        yield ("sleep", SETTLE_MS)
+        views = gt.widgets_of("DopeSheetView")
+        # A click on empty space clears any key selection, so F frames the whole project.
+        QTest.mouseClick(views[0], Qt.LeftButton, Qt.NoModifier, QPoint(views[0].width() - 6, views[0].height() - 6))
+        QApplication.processEvents()
+        QMetaObject.invokeMethod(views[0], "centerOnSelection")
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        report("NOTE dope sheet top-level rows: %r" % ([(i["text"], i["hidden"]) for i in snapshot("DopeSheetEditor")],))
+        runs, width = bar_run_lengths(gt.widgets_of("DopeSheetView")[0])
+        # Both bars whole: the 40-frame bar spans the view, the 10-frame bar about a quarter of it.
+        quarter = [r for r in runs if 0.15 * width <= r <= 0.4 * width]
+        full = [r for r in runs if r >= 0.85 * width]
+        report("NOTE framing: view width %d, %d rows with a bar run of 15-40%%, %d rows with 85%%+" % (
+            width, len(quarter), len(full)))
+        check(len(quarter) >= 3 and len(full) >= 3,
+              "framing the dope sheet shows a 10-frame and a 40-frame Read bar whole (needs the P2.T3 build)")
+        gt.shot("m261-dope-sheet-framing.png")
 
         faulthandler.cancel_dump_traceback_later()
 

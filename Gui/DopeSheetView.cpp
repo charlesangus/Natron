@@ -2782,16 +2782,8 @@ std::pair<double, double> DopeSheetView::getKeyframeRange() const
         std::map<DSNode *, FrameRange >::const_iterator foundRange = _imp->nodeRanges.find( dsNode.get() );
         if ( foundRange != _imp->nodeRanges.end() ) {
             const FrameRange& range = foundRange->second;
-            if ( !dimFirstKeys.empty() ) {
-                dimFirstKeys[0] = range.first;
-            } else {
-                dimFirstKeys.push_back(range.first);
-            }
-            if ( !dimLastKeys.empty() ) {
-                dimLastKeys[0] = range.second;
-            } else {
-                dimLastKeys.push_back(range.second);
-            }
+            dimFirstKeys.push_back(range.first);
+            dimLastKeys.push_back(range.second);
         }
     }
 

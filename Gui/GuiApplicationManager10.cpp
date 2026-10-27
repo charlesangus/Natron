@@ -102,10 +102,8 @@ CLANG_DIAG_ON(uninitialized)
 
 /**
  * @brief Performs the same that the registerKeybind macro, except that it works for shortcuts using mouse buttons instead of key symbols.
- * Generally you don't want this kind of interaction to be editable because it might break compatibility with non 3-button mouses.
- * Also the shortcut editor of Natron doesn't support editing mouse buttons.
- * In the end a mouse shortcut will be NON editable. The reason why you should call this is just to show the shortcut in the shortcut view
- * so that the user is aware it exists, but he/she will not be able to modify it.
+ * Such a shortcut is NOT editable, since it may rely on the three-button mouse emulation of matchesMouseShortcut; it is
+ * registered so that the shortcut view shows it. The 3D viewer's editable mouse actions use addViewer3DMouseShortcut.
  **/
 #define registerMouseShortcut(group, id, description, modifiers, button) ( _imp->addMouseShortcut(group, id, description, modifiers, button) )
 
@@ -623,6 +621,11 @@ GuiApplicationManager::matchesMouseShortcut(const std::string & stdgroup,
         return false;
     }
 
+    // The 3D view binds Alt and Meta drags itself, so the emulation below would hide them.
+    if (group == QString::fromUtf8(kShortcutGroupViewer3D)) {
+        return mAction->matches(modifiers, (Qt::MouseButton)button);
+    }
+
     // the following macro only tests the Control, Alt, and Shift (and cmd an mac) modifiers, and discards the others
     Qt::KeyboardModifiers onlyMCAS = modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier);
 
@@ -640,17 +643,7 @@ GuiApplicationManager::matchesMouseShortcut(const std::string & stdgroup,
         button = Qt::RightButton;
     }
 
-    for (std::list<Qt::KeyboardModifiers>::const_iterator it = mAction->modifiers.begin(); it != mAction->modifiers.end(); ++it) {
-        if (onlyMCAS == *it) {
-            // modifiers are equal, now test symbol
-            if ( (Qt::MouseButton)button == mAction->button ) {
-                return true;
-            }
-        }
-    }
-
-
-    return false;
+    return mAction->matches(onlyMCAS, (Qt::MouseButton)button);
 }
 
 void
@@ -661,26 +654,7 @@ GuiApplicationManager::saveShortcuts() const
     for (AppShortcuts::const_iterator it = _imp->_actionShortcuts.begin(); it != _imp->_actionShortcuts.end(); ++it) {
         settings.beginGroup(it->first);
         for (GroupShortcuts::const_iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-            const MouseAction* mAction = dynamic_cast<const MouseAction*>(it2->second);
-            const KeyBoundAction* kAction = dynamic_cast<const KeyBoundAction*>(it2->second);
-
-            settings.setValue( it2->first + QString::fromUtf8("_nbShortcuts"), QVariant( (int)it2->second->modifiers.size() ) );
-
-            int c = 0;
-            for (std::list<Qt::KeyboardModifiers>::const_iterator it3 = it2->second->modifiers.begin(); it3 != it2->second->modifiers.end(); ++it3, ++c) {
-                settings.setValue(it2->first + QString::fromUtf8("_Modifiers") + QString::number(c), (int)*it3);
-            }
-
-            if (mAction) {
-                settings.setValue(it2->first + QString::fromUtf8("_Button"), (int)mAction->button);
-            } else if (kAction) {
-                assert( it2->second->modifiers.size() == kAction->currentShortcut.size() );
-
-                c = 0;
-                for (std::list<Qt::Key>::const_iterator it3 = kAction->currentShortcut.begin(); it3 != kAction->currentShortcut.end(); ++it3, ++c) {
-                    settings.setValue(it2->first + QString::fromUtf8("_Symbol") + QString::number(c), (int)*it3);
-                }
-            }
+            writeShortcutSettings(settings, it2->first, *it2->second);
         }
         settings.endGroup();
     }
@@ -693,62 +667,8 @@ restoreSavedShortcut(QSettings& settings,
                      const QString& actionID,
                      BoundAction* action)
 {
-    MouseAction* mAction = dynamic_cast<MouseAction*>(action);
-    KeyBoundAction* kAction = dynamic_cast<KeyBoundAction*>(action);
-    int nbShortcuts = 1;
-    bool nbShortcutsSet = false;
-    if (settings.contains(actionID + QString::fromUtf8("_nbShortcuts"))) {
-        nbShortcuts = settings.value(actionID + QString::fromUtf8("_nbShortcuts")).toInt();
-        nbShortcutsSet = true;
-    }
+    bool hasNonNullKeybind = readShortcutSettings(settings, actionID, action);
 
-    bool hasNonNullKeybind = false;
-
-    if (!nbShortcutsSet) {
-        if (kAction) {
-            if (settings.contains(actionID + QString::fromUtf8("_Symbol"))) {
-                Qt::Key key = (Qt::Key)settings.value(actionID + QString::fromUtf8("_Symbol")).toInt();
-                if (key != (Qt::Key)0) {
-                    kAction->currentShortcut.clear();
-                    kAction->currentShortcut.push_back(key);
-                    hasNonNullKeybind = true;
-                }
-            }
-        }
-        if (hasNonNullKeybind && settings.contains(actionID + QString::fromUtf8("_Modifiers"))) {
-            action->modifiers.clear();
-            action->modifiers.push_back(Qt::KeyboardModifiers(settings.value(actionID + QString::fromUtf8("_Modifiers")).toInt()));
-        }
-    } else {
-        for (int i = 0; i < nbShortcuts; ++i) {
-            QString idm = actionID + QString::fromUtf8("_Modifiers") + QString::number(i);
-
-            if (kAction) {
-                QString ids = actionID + QString::fromUtf8("_Symbol") + QString::number(i);
-                if (settings.contains(ids)) {
-                    Qt::Key key = (Qt::Key)settings.value(ids).toInt();
-                    if (key != (Qt::Key)0) {
-                        if (i == 0) {
-                            kAction->currentShortcut.clear();
-                        }
-                        kAction->currentShortcut.push_back(key);
-                        hasNonNullKeybind = true;
-                    } else {
-                        continue;
-                    }
-                }
-            }
-            if (settings.contains(idm)) {
-                if (i == 0) {
-                    action->modifiers.clear();
-                }
-                action->modifiers.push_back(Qt::KeyboardModifiers(settings.value(idm).toInt()));
-            }
-        }
-    }
-    if (mAction && settings.contains(actionID + QString::fromUtf8("_Button"))) {
-        mAction->button = (Qt::MouseButton)settings.value(actionID + QString::fromUtf8("_Button")).toInt();
-    }
     // If this is a node shortcut, notify the Plugin object that it has a shortcut.
     if (hasNonNullKeybind && groupID.startsWith(QString::fromUtf8(kShortcutGroupNodes))) {
         const PluginsMap& allPlugins = appPTR->getPluginsList();
@@ -785,7 +705,30 @@ GuiApplicationManager::loadShortcuts()
         }
         settings.endGroup();
     }
+
+    // The preference names the 3D bindings unless the user customised them.
+    Settings::Viewer3DNavigationEnum navigation = getCurrentSettings()->getViewer3DNavigation();
+    if (navigation != Settings::eViewer3DNavigationCustom) {
+        onViewer3DNavigationChanged((int)navigation);
+    }
 } // GuiApplicationManager::loadShortcuts
+
+void
+GuiApplicationManager::onViewer3DNavigationChanged(int navigation)
+{
+    AppShortcuts::iterator group = _imp->_actionShortcuts.find(QString::fromUtf8(kShortcutGroupViewer3D));
+
+    if (group == _imp->_actionShortcuts.end()) {
+        return;
+    }
+    for (GroupShortcuts::iterator it = group->second.begin(); it != group->second.end(); ++it) {
+        MouseAction* mAction = dynamic_cast<MouseAction*>(it->second);
+        std::vector<MouseBinding> bindings;
+        if (mAction && getViewer3DNavigationPresetBindings(navigation, it->first, &bindings)) {
+            mAction->setBindings(bindings);
+        }
+    }
+}
 
 bool
 GuiApplicationManager::isShorcutVersionUpToDate() const
@@ -799,14 +742,18 @@ GuiApplicationManager::restoreDefaultShortcuts()
     for (AppShortcuts::iterator it = _imp->_actionShortcuts.begin(); it != _imp->_actionShortcuts.end(); ++it) {
         for (GroupShortcuts::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
             KeyBoundAction* kAction = dynamic_cast<KeyBoundAction*>(it2->second);
+            MouseAction* mAction = dynamic_cast<MouseAction*>(it2->second);
             it2->second->modifiers = it2->second->defaultModifiers;
             if (kAction) {
                 kAction->currentShortcut = kAction->defaultShortcut;
                 notifyShortcutChanged(kAction);
+            } else if (mAction) {
+                mAction->buttons = mAction->defaultButtons;
             }
-            ///mouse actions cannot have their button changed
         }
     }
+    // The defaults are the Nuke preset's bindings.
+    getCurrentSettings()->setViewer3DNavigation(Settings::eViewer3DNavigationNuke);
 }
 
 void
@@ -948,6 +895,21 @@ GuiApplicationManager::populateShortcuts()
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePick, kShortcutDescMouseRectanglePick, Qt::ShiftModifier | Qt::ControlModifier, Qt::LeftButton);
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickAlternateColor, kShortcutDescMousePickAlternateColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickAlternate, kShortcutDescMouseRectanglePickAlternate, Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
+
+    // 3D viewer: the defaults are the Nuke preset, the default of the Viewer 3D Navigation preference.
+    {
+        const int preset = (int)Settings::eViewer3DNavigationNuke;
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DTumble, kShortcutDescMouseViewer3DTumble, eMouseGestureDrag, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DPan, kShortcutDescMouseViewer3DPan, eMouseGestureDrag, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DDolly, kShortcutDescMouseViewer3DDolly, eMouseGestureDrag, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DDollyWheel, kShortcutDescMouseViewer3DDollyWheel, eMouseGestureWheel, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DSelect, kShortcutDescMouseViewer3DSelect, eMouseGestureClick, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DAddToSelection, kShortcutDescMouseViewer3DAddToSelection, eMouseGestureClick, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DToggleSelection, kShortcutDescMouseViewer3DToggleSelection, eMouseGestureClick, preset);
+        _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DMarquee, kShortcutDescMouseViewer3DMarquee, eMouseGestureDrag, preset);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DFrameSelection, kShortcutDescActionViewer3DFrameSelection, Qt::NoModifier, Qt::Key_F);
+        registerKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DFrameAll, kShortcutDescActionViewer3DFrameAll, Qt::NoModifier, Qt::Key_A);
+    }
 
     ///Player
     registerKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, kShortcutDescActionPlayerPrevious, Qt::NoModifier, Qt::Key_Left);

@@ -58,6 +58,17 @@ constexpr double kGpuFilterWeightRefSize = 8.;
 constexpr double kGpuFilterWeightCap = 32.;
 
 /**
+ * @brief The summed weight from which a region with no Heavy member renders on the GPU.
+ **/
+constexpr double kGpuRegionMinWeight = 3.;
+
+/**
+ * @brief The pixel count, at the rendered scale, below which a region stays on the CPU whatever
+ * it weighs: the GPU's fixed costs outweigh what so few pixels save.
+ **/
+constexpr double kGpuRegionMinPixels = 256. * 256.;
+
+/**
  * @brief How much a node weighs when GPU placement decides where a region of nodes renders. A
  * Point node is kGpuPointWeight. A Filter node carries a weight, kGpuFilterWeight unless its
  * cost follows a size. A Heavy node sends the region it belongs to to the GPU whatever the other

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -433,6 +434,296 @@ TEST(GpuPlacement, NoAvailabilityLeavesGraphUnchanged)
     }
 }
 
+// root 0 (GPU) <- 1 <- 3 (GPU) <- reader 4 (CPU), and 1 (GPU) also feeds the CPU sink 2. The region loses most by
+// keeping 1, but dropping it would leave {3, 0} waiting on itself through 1: the shrink drops the root first, then 1.
+TEST(GpuPlacement, ShrinkingNeverBreaksConvexity)
+{
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 1, 3 }, { 2, 1 }, { 3, 4 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 3 });
+    const std::map<int, double> memberGain = { { 0, 1. }, { 1, -10. }, { 3, 2. } };
+
+    inputs.regionGain = [&memberGain](const FrameGraph&, const FrameGraph::Region& region) {
+        double gain = 0.;
+        for (int m : region.members) {
+            gain += memberGain.at(m);
+        }
+
+        return gain;
+    };
+    placeGraph(graph, inputs);
+
+    ASSERT_EQ(graph.regions.size(), 1u);
+    EXPECT_EQ(graph.regions[0].members, std::vector<int>({ 3 }));
+    EXPECT_EQ(graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_TRUE(isConvex(graph, 0));
+    EXPECT_TRUE(isContractionAcyclic(graph));
+}
+
+namespace {
+
+const RectI kWeightRoI(0, 0, 3840, 2160);
+
+/**
+ * @brief A graph of UHD tasks placed by the weight rule, where the tasks in weights are the GPU candidates. taskWeight
+ * answers Heavy for any other task, so that a weight asked of a task that should weigh nothing sends its region to
+ * the GPU.
+ **/
+struct WeightFixture {
+    std::map<int, GpuWeight> weights;
+    FrameGraph graph;
+    bool rootOnDevice = false;
+
+    WeightFixture(int nTasks,
+                  const std::vector<std::pair<int, int>>& edges)
+        : graph(makeGraph(nTasks, edges))
+    {
+        for (FrameGraph::Task& task : graph.tasks) {
+            task.roi = kWeightRoI;
+            task.renderedRoI = kWeightRoI;
+        }
+    }
+
+    std::function<GpuWeight(const FrameGraph::Task&)> taskWeight() const
+    {
+        return [this](const FrameGraph::Task& task) {
+            const std::map<int, GpuWeight>::const_iterator found = weights.find(indexOf(graph, task));
+
+            return (found == weights.end()) ? GpuWeight::heavy() : found->second;
+        };
+    }
+
+    void place()
+    {
+        PlacementInputs inputs;
+
+        inputs.canRenderOnGpu = [this](const FrameGraph::Task& task) {
+            return weights.count(indexOf(graph, task)) != 0;
+        };
+        inputs.taskWeight = taskWeight();
+        inputs.rootOnDevice = rootOnDevice;
+        placeGraph(graph, inputs);
+    }
+
+    void setRoI(const RectI& roi)
+    {
+        for (FrameGraph::Task& task : graph.tasks) {
+            task.roi = roi;
+            task.renderedRoI = roi;
+        }
+    }
+};
+
+/**
+ * @brief sink 0 (CPU) <- 1 <- ... <- nMiddle <- reader nMiddle + 1 (CPU), in a graph of nMiddle + 2 tasks.
+ **/
+std::vector<std::pair<int, int>>
+chainEdges(int nMiddle)
+{
+    std::vector<std::pair<int, int>> edges;
+
+    for (int t = 0; t <= nMiddle; ++t) {
+        edges.push_back(std::make_pair(t, t + 1));
+    }
+
+    return edges;
+}
+
+// The fewest Point nodes that weigh kGpuRegionMinWeight together.
+int
+pointsReachingMinWeight()
+{
+    return (int)std::ceil(kGpuRegionMinWeight / kGpuPointWeight);
+}
+
+} // namespace
+
+// sink 0 (CPU) <- Heavy 1 <- reader 2 (CPU)
+TEST(GpuWeightPlacement, HeavyAloneGoes)
+{
+    WeightFixture fixture(3, chainEdges(1));
+
+    fixture.weights[1] = GpuWeight::heavy();
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+}
+
+TEST(GpuWeightPlacement, PointsBelowMinWeightStay)
+{
+    const int nPoints = pointsReachingMinWeight() - 1;
+    ASSERT_GE(nPoints, 1);
+    WeightFixture fixture(nPoints + 2, chainEdges(nPoints));
+
+    for (int t = 1; t <= nPoints; ++t) {
+        fixture.weights[t] = GpuWeight::point();
+    }
+    fixture.place();
+
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    for (const FrameGraph::Task& task : fixture.graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Cpu) << indexOf(fixture.graph, task);
+    }
+}
+
+TEST(GpuWeightPlacement, PointsAtMinWeightGo)
+{
+    const int nPoints = pointsReachingMinWeight();
+    WeightFixture fixture(nPoints + 2, chainEdges(nPoints));
+
+    for (int t = 1; t <= nPoints; ++t) {
+        fixture.weights[t] = GpuWeight::point();
+    }
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members.size(), (std::size_t)nPoints);
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[nPoints + 1].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- Filter 1 <- Point 2 <- reader 3 (CPU), the Filter one Point short of kGpuRegionMinWeight.
+TEST(GpuWeightPlacement, FilterAndPointsReachingMinWeightGo)
+{
+    const GpuWeight filter = GpuWeight::filter(kGpuRegionMinWeight - kGpuPointWeight);
+    ASSERT_GT(filter.weight, 0.);
+
+    WeightFixture pair(4, chainEdges(2));
+    pair.weights[1] = filter;
+    pair.weights[2] = GpuWeight::point();
+    pair.place();
+    ASSERT_EQ(pair.graph.regions.size(), 1u);
+    EXPECT_EQ(pair.graph.regions[0].members, std::vector<int>({ 2, 1 }));
+
+    WeightFixture alone(4, chainEdges(2));
+    alone.weights[1] = filter;
+    alone.place();
+    EXPECT_TRUE(alone.graph.regions.empty());
+    EXPECT_EQ(alone.graph.tasks[1].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- Heavy 1 <- reader 2 (CPU), and a lone generator root on the device, one pixel short of the floor.
+TEST(GpuWeightPlacement, RegionBelowPixelFloorStays)
+{
+    const int floorWidth = (int)std::ceil(kGpuRegionMinPixels);
+
+    WeightFixture heavy(3, chainEdges(1));
+    heavy.weights[1] = GpuWeight::heavy();
+    heavy.setRoI(RectI(0, 0, floorWidth - 1, 1));
+    heavy.place();
+    EXPECT_TRUE(heavy.graph.regions.empty());
+    EXPECT_EQ(heavy.graph.tasks[1].device, FrameGraph::Device::Cpu);
+
+    heavy.setRoI(RectI(0, 0, floorWidth, 1));
+    heavy.place();
+    ASSERT_EQ(heavy.graph.regions.size(), 1u);
+
+    WeightFixture generator(1, {});
+    generator.weights[0] = GpuWeight::heavy();
+    generator.rootOnDevice = true;
+    generator.setRoI(RectI(0, 0, floorWidth - 1, 1));
+    generator.place();
+    EXPECT_TRUE(generator.graph.regions.empty());
+}
+
+// A lone Point root with no input: it moves nothing between the devices when its consumer takes the root on the
+// device, so it goes there however little it weighs. Fed by a CPU reader, it would upload, and stays.
+TEST(GpuWeightPlacement, FreeTransferRegionBelowMinWeightGoes)
+{
+    ASSERT_LT(kGpuPointWeight, kGpuRegionMinWeight);
+
+    WeightFixture generator(1, {});
+    generator.weights[0] = GpuWeight::point();
+    generator.rootOnDevice = true;
+    generator.place();
+    ASSERT_EQ(generator.graph.regions.size(), 1u);
+    EXPECT_EQ(generator.graph.tasks[0].device, FrameGraph::Device::Gpu);
+
+    generator.rootOnDevice = false;
+    generator.place();
+    EXPECT_TRUE(generator.graph.regions.empty());
+
+    WeightFixture read(2, { { 0, 1 } });
+    read.weights[0] = GpuWeight::point();
+    read.rootOnDevice = true;
+    read.place();
+    EXPECT_TRUE(read.graph.regions.empty());
+}
+
+// sink 0 (CPU) <- Point 1 <- identity 2 <- Point 3 <- reader 4 (CPU): the identity joins the region and adds nothing.
+TEST(GpuWeightPlacement, IdentityMembersWeighNothing)
+{
+    ASSERT_LT(2. * kGpuPointWeight, kGpuRegionMinWeight);
+    WeightFixture fixture(5, chainEdges(3));
+
+    fixture.graph.tasks[2].isIdentity = true;
+    fixture.weights[1] = GpuWeight::point();
+    fixture.weights[3] = GpuWeight::point();
+    fixture.place();
+
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    for (const FrameGraph::Task& task : fixture.graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Cpu) << indexOf(fixture.graph, task);
+    }
+}
+
+// sink 0 (CPU) <- Heavy 1 <- X 2 <- Heavy 3 <- reader 4 (CPU), X unable to render on the GPU.
+TEST(GpuWeightPlacement, NodeThatCannotRenderOnGpuIsNeverPlaced)
+{
+    WeightFixture fixture(5, chainEdges(3));
+
+    fixture.weights[1] = GpuWeight::heavy();
+    fixture.weights[3] = GpuWeight::heavy();
+    fixture.place();
+
+    EXPECT_EQ(fixture.graph.regions.size(), 2u);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Gpu);
+}
+
+// root 0 <- 1 <- 2, judging region {1} and then the root alone.
+TEST(GpuWeightPlacement, TransfersAreFreeOnlyWithoutUploadOrDownload)
+{
+    WeightFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+    FrameGraph& graph = fixture.graph;
+
+    FrameGraph::Region middle;
+    middle.members = { 1 };
+    middle.externalInputs = { 2 };
+    FrameGraph::Region::Output middleOutput;
+    middleOutput.task = 1;
+    middleOutput.externalConsumers = 1;
+    middle.outputs.push_back(middleOutput);
+
+    EXPECT_FALSE(regionTransfersAreFree(graph, middle, true));
+    graph.tasks[2].device = FrameGraph::Device::Gpu;
+    EXPECT_FALSE(regionTransfersAreFree(graph, middle, true));
+    graph.tasks[0].device = FrameGraph::Device::Gpu;
+    EXPECT_TRUE(regionTransfersAreFree(graph, middle, false));
+    graph.tasks[2].device = FrameGraph::Device::Cpu;
+    EXPECT_FALSE(regionTransfersAreFree(graph, middle, false));
+
+    FrameGraph::Region root;
+    root.members = { 0 };
+    root.externalInputs = { 1 };
+    FrameGraph::Region::Output rootOutput;
+    rootOutput.task = 0;
+    rootOutput.isRoot = true;
+    root.outputs.push_back(rootOutput);
+
+    graph.tasks[1].device = FrameGraph::Device::Gpu;
+    const auto point = [](const FrameGraph::Task&) {
+        return GpuWeight::point();
+    };
+    EXPECT_TRUE(regionTransfersAreFree(graph, root, true));
+    EXPECT_GT(regionWeightGain(graph, root, point, true), 0.);
+    EXPECT_FALSE(regionTransfersAreFree(graph, root, false));
+    EXPECT_LT(regionWeightGain(graph, root, point, false), 0.);
+}
+
 namespace {
 
 const char* const kGradeId = "net.sf.openfx.GradePlugin";
@@ -455,9 +746,8 @@ rates(double bytesPerSecond)
 }
 
 /**
- * @brief A model on 16 threads, as the seeds were measured, whose traits come from a per-task table. Grade's CPU cost
- * is that of a host where it runs at 1 ms/Mpx on the whole pool: the seeded cost includes the render path's serial
- * overhead, against which even a lone Grade at 25 GB/s gains on the GPU.
+ * @brief A model on 16 threads, as the seeds were measured, whose traits come from a per-task table, over a graph of
+ * UHD tasks.
  **/
 struct CostFixture {
     GpuCostModel model;
@@ -483,22 +773,6 @@ struct CostFixture {
 
             return (found == table->end()) ? GpuTaskTraits() : found->second;
         });
-    }
-
-    void place()
-    {
-        PlacementInputs inputs;
-
-        inputs.canRenderOnGpu = [this](const FrameGraph::Task& task) {
-            return traits.count(indexOf(graph, task)) != 0;
-        };
-        inputs.isPriced = [this](const FrameGraph::Task& task) {
-            return model.isPriced(model.traitsOf(task));
-        };
-        inputs.regionGain = [this](const FrameGraph& g, const FrameGraph::Region& region) {
-            return model.regionGainMs(g, region, false);
-        };
-        placeGraph(graph, inputs);
     }
 };
 
@@ -552,119 +826,6 @@ TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
     EXPECT_TRUE(model.hasGpuCost(GpuTaskTraits(kUnseededId)));
 }
 
-// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU)
-TEST(GpuCostModel, IsolatedGradeNeedsUnifiedMemory)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-
-    GpuTransferRates unified;
-    unified.unifiedMemory = true;
-    fixture.model.setTransferRates(unified);
-    fixture.place();
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
-}
-
-// sink 0 (CPU) <- Grade 1 <- ... <- Grade 10 <- reader 11 (CPU)
-TEST(GpuCostModel, GradeChainFormsOneRegion)
-{
-    std::vector<std::pair<int, int>> edges;
-    for (int t = 0; t <= 10; ++t) {
-        edges.push_back(std::make_pair(t, t + 1));
-    }
-    CostFixture fixture(12, edges);
-    for (int t = 1; t <= 10; ++t) {
-        fixture.traits[t] = GpuTaskTraits(kGradeId);
-    }
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members.size(), 10u);
-    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(fixture.graph.tasks[11].device, FrameGraph::Device::Cpu);
-}
-
-// sink 0 (CPU) <- Blur 1 (sigma 25) <- reader 2 (CPU), on the seeds alone.
-TEST(GpuCostModel, LoneBlurIsAcceptedAtUhd)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = GpuTaskTraits(kBlurId, 25.);
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
-}
-
-// sink 0 (CPU) <- Grade 1 <- Grade 2 <- reader 3 (CPU): it gains about 4.7 ms at 25 GB/s and loses at 12.5.
-TEST(GpuCostModel, HalvingBandwidthRejectsMarginalRegion)
-{
-    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.traits[2] = GpuTaskTraits(kGradeId);
-    fixture.place();
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 2, 1 }));
-
-    fixture.model.setTransferRates(rates(12.5e9));
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    for (const FrameGraph::Task& task : fixture.graph.tasks) {
-        EXPECT_EQ(task.device, FrameGraph::Device::Cpu) << indexOf(fixture.graph, task);
-    }
-}
-
-// sink 0 (CPU) reads Blur 1 (sigma 3) and CPU 2, which both read Grade 3, which reads reader 4 (CPU). On a 10 GB/s link
-// the Grade's extra download sinks the region, but the Blur alone still gains.
-TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
-{
-    CostFixture fixture(5, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 }, { 3, 4 } });
-
-    fixture.traits[1] = GpuTaskTraits(kBlurId, 3.);
-    fixture.traits[3] = GpuTaskTraits(kGradeId);
-    fixture.model.setTransferRates(rates(10e9));
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
-    EXPECT_EQ(fixture.graph.regions[0].externalInputs, std::vector<int>({ 3 }));
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
-    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(fixture.graph.tasks[3].regionId, -1);
-    EXPECT_TRUE(isConvex(fixture.graph, 0));
-    EXPECT_TRUE(isContractionAcyclic(fixture.graph));
-}
-
-// root Blur 0 <- 1 <- Blur 3 <- reader 4 (CPU), and 1 also feeds the CPU sink 2. 1 is much slower on the GPU, so the
-// region would gain most by dropping it, but that would leave {3, 0} waiting on itself through 1: the shrink drops the
-// root first, then 1.
-TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
-{
-    CostFixture fixture(5, { { 0, 1 }, { 1, 3 }, { 2, 1 }, { 3, 4 } });
-    const char* const slowId = "test.SlowOnGpu";
-
-    fixture.model.setCpuSeed(slowId, 1., 1.);
-    fixture.model.observeGpu(GpuTaskTraits(slowId), 1000000000, 1.);
-    fixture.traits[0] = GpuTaskTraits(kBlurId, 3.);
-    fixture.traits[1] = GpuTaskTraits(slowId);
-    fixture.traits[3] = GpuTaskTraits(kBlurId, 3.);
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 3 }));
-    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-    EXPECT_TRUE(isConvex(fixture.graph, 0));
-    EXPECT_TRUE(isContractionAcyclic(fixture.graph));
-}
-
 namespace {
 
 GpuTransferRates
@@ -677,57 +838,7 @@ pipelinedRates(double bytesPerSecond)
     return r;
 }
 
-// The Grade's kernel seeded at 0.5 ms/Mpx, as heavy as a spatial node's, so that pipelined strips can hide its transfer.
-const double kHeavyGradeMsPerMpx = 0.5;
-
 } // namespace
-
-// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU): the Grade saves 8.3 ms of CPU time for 4.1 ms of GPU time, and moves
-// 265 MB in 7.6 ms at 35 GB/s. Pipelined strips hide the 4.1 ms of transfer that overlaps the kernel, so the Grade
-// gains 0.2 ms beyond the margin; run whole it exposes all 7.6 ms and falls 3.9 ms short.
-TEST(GpuCostModel, PipelinedLoneGradeIsAcceptedWhereItsTransferHides)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.model.setGpuSeed(kGradeId, kHeavyGradeMsPerMpx);
-    fixture.model.setTransferRates(pipelinedRates(35e9));
-    fixture.place();
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 1 }));
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
-
-    fixture.model.setTransferRates(rates(35e9));
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-}
-
-// The same Grade at 25 GB/s: its 10.6 ms of transfer leave 6.5 ms exposed even pipelined.
-TEST(GpuCostModel, PipelinedLoneGradeIsRefusedOnHalfTheBandwidth)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.model.setGpuSeed(kGradeId, kHeavyGradeMsPerMpx);
-    fixture.model.setTransferRates(pipelinedRates(25e9));
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-}
-
-// At its own 0.5 ms the Grade's kernel is under a quarter of its 7.6 ms of transfer, so the planner would run it whole:
-// placement charges it all 7.6 ms, and it falls 0.3 ms short.
-TEST(GpuCostModel, PipelinedLoneCheapGradeIsChargedItsWholeTransfer)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.model.setTransferRates(pipelinedRates(35e9));
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-}
 
 TEST(GpuCostModel, PipeliningNeedsDeviceSupportBytesKernelHeightAndNoOutputKeptOnDevice)
 {
@@ -786,26 +897,6 @@ TEST(GpuCostModel, ObservedTransfersMoveRatesByMovingAverage)
 
     model.observeTransfer(1e9, 0., 0.);
     EXPECT_NEAR(model.transferMs(1e9, 0.), 40. * scale, 1e-9);
-}
-
-// The Grade the 50 GB/s calibration accepts is refused once its regions measure the bus at half that.
-TEST(GpuCostModel, SlowObservedTransfersRefuseLoneGrade)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.model.setTransferRates(pipelinedRates(50e9));
-    fixture.place();
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-
-    const double bytes = (double)kUhdBytes;
-    const double calibratedMs = fixture.model.transferMs(bytes, bytes);
-    for (int i = 0; i < 4; ++i) {
-        fixture.model.observeTransfer(bytes, bytes, 2. * calibratedMs);
-    }
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
 }
 
 #ifdef NATRON_HAVE_GPU
@@ -1112,221 +1203,4 @@ TEST(GpuCostModel, EveryGpuNodeIsSeeded)
         EXPECT_TRUE(model.isPriced(traits)) << id;
         EXPECT_GT(model.cpuMs(traits, 1.), 0.) << id;
     }
-}
-
-// sink 0 (CPU) <- X 1 <- reader 2 (CPU), X a GPU-capable op with no rows. Even with free transfers it never makes a
-// region on its own.
-TEST(GpuCostModel, UnseededOpAloneStaysOnTheCpu)
-{
-    CostFixture fixture(3, { { 0, 1 }, { 1, 2 } });
-
-    fixture.traits[1] = unseededTraits();
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-
-    GpuTransferRates unified;
-    unified.unifiedMemory = true;
-    fixture.model.setTransferRates(unified);
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-}
-
-// sink 0 (CPU) <- X 1 <- Y 2 <- reader 3 (CPU), X and Y GPU-capable ops with no rows. Two connected candidates make a
-// region with no cost to veto it, whatever the transfers cost.
-TEST(GpuCostModel, UnseededPairMakesARegion)
-{
-    CostFixture pair(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
-
-    pair.traits[1] = unseededTraits();
-    pair.traits[2] = unseededTraits();
-    pair.place();
-    ASSERT_EQ(pair.graph.regions.size(), 1u);
-    EXPECT_EQ(pair.graph.regions[0].members, std::vector<int>({ 2, 1 }));
-    EXPECT_EQ(pair.graph.tasks[1].device, FrameGraph::Device::Gpu);
-    EXPECT_EQ(pair.graph.tasks[2].device, FrameGraph::Device::Gpu);
-}
-
-// sink 0 (CPU) <- X 1 <- Y 2 <- Z 3 <- reader 4 (CPU), three GPU-capable ops with no rows: one region of all three.
-TEST(GpuCostModel, UnseededChainMakesOneRegion)
-{
-    CostFixture chain(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
-
-    for (int t : { 1, 2, 3 }) {
-        chain.traits[t] = unseededTraits();
-    }
-    chain.place();
-    ASSERT_EQ(chain.graph.regions.size(), 1u);
-    const FrameGraph::Region& region = chain.graph.regions[0];
-    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
-    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
-    ASSERT_EQ(region.outputs.size(), 3u);
-    for (int t : { 3, 2 }) {
-        const FrameGraph::Region::Output* output = findOutput(region, t);
-        ASSERT_TRUE(output) << t;
-        EXPECT_EQ(output->internalConsumers, 1) << t;
-        EXPECT_EQ(output->externalConsumers, 0) << t;
-    }
-    const FrameGraph::Region::Output* last = findOutput(region, 1);
-    ASSERT_TRUE(last);
-    EXPECT_EQ(last->internalConsumers, 0);
-    EXPECT_EQ(last->externalConsumers, 1);
-    EXPECT_EQ(chain.graph.tasks[0].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(chain.graph.tasks[4].device, FrameGraph::Device::Cpu);
-}
-
-// sink 0 (CPU) <- X 1 <- Y 2 <- Grade 3 <- reader 4 (CPU), X and Y with no rows, the Grade far slower on the GPU. The
-// region loses, shrinking drops the Grade, and the unpriced pair left keeps the GPU.
-TEST(GpuCostModel, UnseededPairLeftByShrinkingKeepsTheGpu)
-{
-    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
-
-    fixture.model.setCpuSeed(kGradeId, 0.01, 1.);
-    fixture.model.setGpuSeed(kGradeId, 10.);
-    fixture.traits[1] = unseededTraits();
-    fixture.traits[2] = unseededTraits();
-    fixture.traits[3] = GpuTaskTraits(kGradeId);
-    fixture.place();
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({ 2, 1 }));
-    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
-}
-
-// sink 0 (CPU) <- X 1 <- Grade 2 <- reader 3 (CPU), X with no rows, the Grade far slower on the GPU. Shrinking leaves X
-// alone, which stays on the CPU.
-TEST(GpuCostModel, UnseededOpLeftAloneByShrinkingStaysOnTheCpu)
-{
-    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
-
-    fixture.model.setCpuSeed(kGradeId, 0.01, 1.);
-    fixture.model.setGpuSeed(kGradeId, 10.);
-    fixture.traits[1] = unseededTraits();
-    fixture.traits[2] = GpuTaskTraits(kGradeId);
-    fixture.place();
-    EXPECT_TRUE(fixture.graph.regions.empty());
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
-}
-
-// sink 0 (CPU) <- Grade 1 <- X 2 <- Grade 3 <- reader 4 (CPU), X a GPU-capable op with no rows. The two Grades gain on
-// their own, and X runs between them in their region, so nothing is downloaded between them.
-TEST(GpuCostModel, UnseededOpJoinsTheRegionOfItsGpuNeighbours)
-{
-    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.traits[2] = unseededTraits();
-    fixture.traits[3] = GpuTaskTraits(kGradeId);
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    const FrameGraph::Region& region = fixture.graph.regions[0];
-    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
-    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
-    ASSERT_EQ(region.outputs.size(), 3u);
-    for (int t : { 3, 2 }) {
-        const FrameGraph::Region::Output* output = findOutput(region, t);
-        ASSERT_TRUE(output) << t;
-        EXPECT_EQ(output->internalConsumers, 1) << t;
-        EXPECT_EQ(output->externalConsumers, 0) << t;
-    }
-    const FrameGraph::Region::Output* last = findOutput(region, 1);
-    ASSERT_TRUE(last);
-    EXPECT_EQ(last->internalConsumers, 0);
-    EXPECT_EQ(last->externalConsumers, 1);
-    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
-}
-
-// sink 0 (CPU) <- OCIODisplay 1 <- Grade 2 <- OCIOColorSpace 3 <- reader 4 (CPU). The OCIO nodes have no measured
-// rows, so neither is priced, but they are GPU-capable neighbours of the seeded Grade, which gains on the GPU, and join its region: the colour
-// pipeline is one region whose only download is the display's output.
-TEST(GpuCostModel, OcioColorPipelineFormsOneRegion)
-{
-    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
-    fixture.model.setCpuSeed(kGradeId, 10., 1.);
-    fixture.model.setGpuSeed(kGradeId, 0.01);
-
-    fixture.traits[1] = GpuTaskTraits("OCIODisplay");
-    fixture.traits[2] = GpuTaskTraits(kGradeId);
-    fixture.traits[3] = GpuTaskTraits("OCIOColorSpace");
-    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[1]));
-    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[3]));
-    EXPECT_TRUE(fixture.model.isPriced(fixture.traits[2]));
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    const FrameGraph::Region& region = fixture.graph.regions[0];
-    EXPECT_EQ(region.members, std::vector<int>({ 3, 2, 1 }));
-    EXPECT_EQ(region.externalInputs, std::vector<int>({ 4 }));
-    ASSERT_EQ(region.outputs.size(), 3u);
-    for (int t : { 3, 2 }) {
-        const FrameGraph::Region::Output* output = findOutput(region, t);
-        ASSERT_TRUE(output) << t;
-        EXPECT_EQ(output->internalConsumers, 1) << t;
-        EXPECT_EQ(output->externalConsumers, 0) << t;
-    }
-    const FrameGraph::Region::Output* last = findOutput(region, 1);
-    ASSERT_TRUE(last);
-    EXPECT_EQ(last->internalConsumers, 0);
-    EXPECT_EQ(last->externalConsumers, 1);
-    for (int t = 1; t <= 3; ++t) {
-        EXPECT_EQ(fixture.graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
-    }
-    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(fixture.graph.tasks[4].device, FrameGraph::Device::Cpu);
-}
-
-// sink 0 (CPU) <- OCIODisplay 1 <- OCIOColorSpace 2 <- reader 3 (CPU), no Grade. Neither OCIO node has measured rows,
-// but two connected GPU-capable nodes make a region on their own, so the conversion and the display run on the GPU
-// together.
-TEST(GpuCostModel, UnseededOcioPairFormsOneRegion)
-{
-    CostFixture fixture(4, { { 0, 1 }, { 1, 2 }, { 2, 3 } });
-
-    fixture.traits[1] = GpuTaskTraits("OCIODisplay");
-    fixture.traits[2] = GpuTaskTraits("OCIOColorSpace");
-    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[1]));
-    EXPECT_FALSE(fixture.model.isPriced(fixture.traits[2]));
-    fixture.place();
-
-    ASSERT_EQ(fixture.graph.regions.size(), 1u);
-    const FrameGraph::Region& region = fixture.graph.regions[0];
-    EXPECT_EQ(region.members, std::vector<int>({ 2, 1 }));
-    EXPECT_EQ(region.externalInputs, std::vector<int>({ 3 }));
-    const FrameGraph::Region::Output* first = findOutput(region, 2);
-    ASSERT_TRUE(first);
-    EXPECT_EQ(first->internalConsumers, 1);
-    EXPECT_EQ(first->externalConsumers, 0);
-    const FrameGraph::Region::Output* last = findOutput(region, 1);
-    ASSERT_TRUE(last);
-    EXPECT_EQ(last->internalConsumers, 0);
-    EXPECT_EQ(last->externalConsumers, 1);
-    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
-    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Gpu);
-    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
-    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
-}
-
-// X cannot render on the GPU, so it does not join the Grades' region.
-TEST(GpuCostModel, NodeThatCannotRenderOnGpuIsNeverPlaced)
-{
-    CostFixture fixture(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
-
-    fixture.traits[1] = GpuTaskTraits(kGradeId);
-    fixture.traits[2] = unseededTraits();
-    fixture.traits[3] = GpuTaskTraits(kGradeId);
-
-    PlacementInputs inputs;
-    inputs.canRenderOnGpu = [&fixture](const FrameGraph::Task& task) {
-        const int index = indexOf(fixture.graph, task);
-
-        return (index != 2) && (fixture.traits.count(index) != 0);
-    };
-    inputs.regionGain = [&fixture](const FrameGraph& g, const FrameGraph::Region& region) {
-        return fixture.model.regionGainMs(g, region, false);
-    };
-    placeGraph(fixture.graph, inputs);
-
-    EXPECT_EQ(fixture.graph.tasks[2].device, FrameGraph::Device::Cpu);
 }

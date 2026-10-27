@@ -201,6 +201,13 @@ private:
                                     const QPointF& pos,
                                     double pressure,
                                     double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayWheel(double time,
+                                const RenderScale& renderScale,
+                                ViewIdx view,
+                                const QPointF& viewportPos,
+                                const QPointF& pos,
+                                double delta,
+                                KeyboardModifiers modifiers) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool onOverlayFocusLost(double time,
                                     const RenderScale& renderScale,
                                     ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;

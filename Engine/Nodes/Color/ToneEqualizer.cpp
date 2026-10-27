@@ -34,6 +34,7 @@
 #include <bitset>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #include "Engine/AppInstance.h"
@@ -718,6 +719,70 @@ ToneEqualizer::onOverlayPenMotion(double time,
     redrawOverlayInteract();
 
     return false;
+}
+
+bool
+ToneEqualizer::onOverlayWheel(double time,
+                              const RenderScale& /*renderScale*/,
+                              ViewIdx view,
+                              const QPointF& /*viewportPos*/,
+                              const QPointF& pos,
+                              double delta,
+                              KeyboardModifiers modifiers)
+{
+    _interact.setCursor(pos);
+    const std::optional<Mask> mask = lastMask();
+    if (!mask) {
+        return false;
+    }
+    ToneEqualizerInteract::Reading reading = readingAt(*mask, pos, time, view);
+    // Off the image the wheel zooms the viewer.
+    if (!reading.valid) {
+        return false;
+    }
+    bool editedBurst = false;
+    const int steps = _interact.takeWheelSteps(delta, &editedBurst);
+    if (steps == 0) {
+        return true;
+    }
+    const std::optional<Resolved> r = resolve(time, view);
+    if (!r) {
+        return true;
+    }
+    const float offset = (steps > 0 ? 1.f : -1.f) * ToneEqualizerInteract::wheelStepEv(modifiers);
+    std::array<float, kBands> gains = r->settings.gains;
+    bool changed = false;
+    for (int i = 0; i < std::abs(steps); ++i) {
+        std::array<float, kBands> next;
+        // darktable keeps the bands when the refit is unstable.
+        if (!scrollGains(gains, r->settings.smoothing, reading.exposure, offset, &next)) {
+            break;
+        }
+        gains = next;
+        changed = true;
+    }
+    if (changed) {
+        AppInstancePtr app = getApp();
+        const bool undoable = app && !app->isCreatingPythonGroup();
+        if (undoable) {
+            setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
+            if (editedBurst) {
+                setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOn);
+            }
+        }
+        for (int i = 0; i < kBands; ++i) {
+            setIfChanged(_gains[i].lock(), (double)gains[i]);
+        }
+        if (undoable) {
+            setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+        }
+        _interact.markWheelEdit();
+        reading = readingAt(*mask, pos, time, view);
+    }
+    showReadout(reading);
+    redrawOverlayInteract();
+
+    return true;
 }
 
 bool

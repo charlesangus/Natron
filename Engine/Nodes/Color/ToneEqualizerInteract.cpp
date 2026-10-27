@@ -25,6 +25,7 @@
 
 #include "ToneEqualizerInteract.h"
 
+#include <cmath>
 #include <cstdio>
 
 #include "Engine/Nodes/Color/ToneEqualizerKernels.h"
@@ -93,6 +94,56 @@ ToneEqualizerInteract::bandLabel(int band)
     std::snprintf(buffer, sizeof(buffer), "%s (%+d EV)", kBandNames[band], band + (int)ToneEqualizerKernels::kMinEv);
 
     return buffer;
+}
+
+float
+ToneEqualizerInteract::wheelStepEv(KeyboardModifiers modifiers)
+{
+    const bool shift = modifiers.testFlag(eKeyboardModifierShift);
+    const bool control = modifiers.testFlag(eKeyboardModifierControl);
+    const bool other = modifiers.testFlag(eKeyboardModifierAlt) || modifiers.testFlag(eKeyboardModifierMeta);
+
+    if (shift && !control && !other) {
+        return 1.0f;
+    }
+    if (control && !shift && !other) {
+        return 0.1f;
+    }
+
+    return 0.25f;
+}
+
+int
+ToneEqualizerInteract::takeWheelSteps(double notches,
+                                      bool* editedBurst)
+{
+    // Turns further apart than this start a new undo step.
+    const std::chrono::milliseconds burstGap(500);
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    if (!_hasWheel || (now - _lastWheel > burstGap)) {
+        _wheelRemainder = 0.;
+        _wheelEdited = false;
+    } else if (notches * _wheelRemainder < 0.) {
+        _wheelRemainder = 0.;
+    }
+    *editedBurst = _wheelEdited;
+    _hasWheel = true;
+    _lastWheel = now;
+    _wheelRemainder += notches;
+    const int steps = (int)std::trunc(_wheelRemainder);
+    _wheelRemainder -= steps;
+
+    return steps;
+}
+
+void
+ToneEqualizerInteract::markWheelEdit()
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _wheelEdited = true;
 }
 
 void

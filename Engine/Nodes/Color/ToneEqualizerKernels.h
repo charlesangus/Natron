@@ -141,6 +141,17 @@ bool solveFactors(const std::array<float, kBands>& gainsEv,
                   std::array<float, kCenters>* factors) WARN_UNUSED_RETURN;
 
 /**
+ * @brief darktable's scroll edit (set_new_params_interactive): raises the bands by offsetEv at
+ * controlExposure, fading with a gaussian of the curve's sigma, refits the curve and returns the
+ * fitted curve at the bands. False, with newGainsEv untouched, when the fit is unstable.
+ **/
+bool scrollGains(const std::array<float, kBands>& gainsEv,
+                 float sigma,
+                 float controlExposure,
+                 float offsetEv,
+                 std::array<float, kBands>* newGainsEv) WARN_UNUSED_RETURN;
+
+/**
  * @brief The linear correction at exposure (EV), the gaussians' sum clamped to [1/4, 4].
  **/
 float pixelCorrection(float exposure,

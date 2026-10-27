@@ -389,6 +389,29 @@ solveFactors(const std::array<float, kBands>& gainsEv,
     return valid;
 }
 
+bool
+scrollGains(const std::array<float, kBands>& gainsEv,
+            float sigma,
+            float controlExposure,
+            float offsetEv,
+            std::array<float, kBands>* newGainsEv)
+{
+    const float denom = gaussianDenom(sigma * sigma / 2.0f);
+    std::array<float, kBands> raised;
+    for (int i = 0; i < kBands; ++i) {
+        raised[i] = gainsEv[i] + gaussianFunc(kCentersParams[i] - controlExposure, denom) * offsetEv;
+    }
+    std::array<float, kCenters> factors;
+    if (!solveFactors(raised, sigma, &factors)) {
+        return false;
+    }
+    for (int i = 0; i < kBands; ++i) {
+        (*newGainsEv)[i] = std::log2(pixelCorrection(kCentersParams[i], factors, sigma));
+    }
+
+    return true;
+}
+
 float
 pixelCorrection(float exposure,
                 const std::array<float, kCenters>& factors,

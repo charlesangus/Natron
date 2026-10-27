@@ -477,6 +477,88 @@ ViewerTab::notifyOverlaysPenMotion(const RenderScale & renderScale,
 }
 
 bool
+ViewerTab::notifyOverlaysWheel(const RenderScale& renderScale,
+                               const QPointF& viewportPos,
+                               const QPointF& pos,
+                               double delta,
+                               const Qt::KeyboardModifiers& mods)
+{
+    if (!getGui()->getApp() || getGui()->getApp()->isClosing()) {
+        return false;
+    }
+
+    if (getGui()->getApp()->isShowingDialog()) {
+        // See notifyOverlaysPenMotion.
+        return false;
+    }
+
+    NodesList nodes;
+    getGui()->getNodesEntitledForOverlays(nodes);
+
+    const ViewIdx view = getCurrentView();
+    const KeyboardModifiers natronMods = QtEnumConvert::fromQtModifiers(mods);
+    bool didSomething = false;
+
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        double time = getGui()->getApp()->getTimeLine()->currentFrame();
+        QPointF transformPos;
+#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
+        transformPos = pos;
+#else
+        double transformedTime;
+        bool ok = _imp->getTimeTransform(time, view, *it, getInternalNode(), &transformedTime);
+        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
+            // overlay is not visible in current viewer, even though its parameter panel is open.
+            continue;
+        }
+        if (ok) {
+            // Like pen motion, retimed interacts are not editable.
+            if (time != transformedTime) {
+                continue;
+            }
+            time = transformedTime;
+        }
+
+        Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
+        ok = _imp->getOverlayTransform(time, view, *it, getInternalNode(), &mat);
+        if (!ok) {
+            transformPos = pos;
+        } else {
+            mat = Transform::matInverse(mat);
+            Transform::Point3D p;
+            p.x = pos.x();
+            p.y = pos.y();
+            p.z = 1;
+            p = Transform::matApply(mat, p);
+            if (p.z < 0) {
+                // the transformed position has a negative z, don't send it
+                continue;
+            }
+            transformPos.rx() = p.x / p.z;
+            transformPos.ry() = p.y / p.z;
+        }
+#endif
+
+        if (!_imp->hasInactiveNodeViewerContext(*it)) {
+            EffectInstancePtr effect = (*it)->getEffectInstance();
+            assert(effect);
+            effect->setCurrentViewportForOverlays_public(_imp->viewer);
+            if (effect->onOverlayWheel_public(time, renderScale, view, viewportPos, transformPos, delta, natronMods)) {
+                didSomething = true;
+                break;
+            }
+        }
+    }
+
+    if (getGui()->getApp()->getOverlayRedrawRequestsCount() > 0) {
+        getGui()->getApp()->redrawAllViewers();
+    }
+    getGui()->getApp()->clearOverlayRedrawRequests();
+
+    return didSomething;
+} // ViewerTab::notifyOverlaysWheel
+
+bool
 ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
                                const QPointF & viewportPos,
                                const QPointF & pos,

@@ -87,15 +87,16 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Phase 228.4: UAT round 1 fixes (user, 2026-10-27)
 
-- [ ] M228.P4.T1 — Nuke preset: plain drag marquee-selects
+- [x] M228.P4.T1 — Nuke preset: plain drag marquee-selects
   - Ctrl-drag tumbles in the Nuke preset, so plain left-drag on empty space must marquee-select (click still selects).
-- [ ] M228.P4.T2 — Locked look-through viewport performance
+- [x] M228.P4.T2 — Locked look-through viewport performance
   - Viewport interaction is very slow while locked to a camera. Profile the locked path (likely per-event authoring of the camera prim / engine rebuild / full-scene re-sync) and make it as fast as the free camera.
-- [ ] M228.P4.T3 — One-step lock
+- [x] M228.P4.T3 — One-step lock
   - "Lock" with no look-through camera: one camera in the scene locks to it directly; several open a menu of cameras to pick from. Also add the camera list to the look-through control so lock is one step.
 - [ ] M228.P4.T4 — Rebuild, AppImage, re-UAT
 
 ## Decisions
 
+- 2026-10-27 — A plain left-drag marquee-selects wherever it starts, in every preset (Nuke docs: "click and drag a marquee"); a click selects, Ctrl+drag tumbles. Locked navigation: the view draws a transient camera during the gesture and writes the camera knobs once on release (one undo step); wheel runs commit 300 ms after the last step. Root cause was a knob write → evaluate → full scene re-sync per mouse event.
 - 2026-10-27 — UAT round 1 (user): fixes in Phase 228.4. Lock with several cameras offers a menu (PM call: one camera locks directly).
 - 2026-10-27 — **Choices (bosley-native-nodes):** Nuke preset follows the Nuke 17 docs (Ctrl+left tumble, Alt+left pan, Alt+middle dolly; plain middle-drag pan added); Back/Left/Bottom views added; clip planes per viewer, not saved; a camera created from the view is not auto-connected (as Nuke). Release gate 568/568; GUI checks pass; draft PR #137; UAT pending.

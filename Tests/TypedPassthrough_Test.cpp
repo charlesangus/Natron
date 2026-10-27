@@ -402,7 +402,7 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
 
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     // Render 2: generator -> TypedPassthrough -> writer.
@@ -429,7 +429,7 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
 
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-        getApp()->startWritersRendering(false, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
     }
 
     ASSERT_TRUE(QFile::exists(QString::fromStdString(directPath)));

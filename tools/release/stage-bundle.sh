@@ -320,8 +320,61 @@ else
     echo "warning: no PySide6 in $PY_SITELIB — Natron's Python GUI layer will not load" >&2
 fi
 
+# OpenUSD finds its plug-ins relative to the directory libusd_plug.so is loaded
+# from: <lib>/usd holds the plugInfo.json and resources of the libusd_* libraries
+# themselves, <lib>/../plugin/usd the loadable file-format and Hydra plug-ins.
+# Staging both at those places under the bundle's lib/ is all the bundle needs;
+# no PXR_PLUGINPATH_NAME is set. Every libusd_* is staged, not only what the
+# binaries link: a plugInfo.json names its library, and USD loads it the first
+# time a type it declares is needed (a UsdLux light in a referenced file), so a
+# library missing here is a stage that fails to compose later.
+USD_PREFIX="$(cache_value 'NATRON_USD_PREFIX:PATH')"
+if [[ -z "$USD_PREFIX" || ! -f "$USD_PREFIX/pxrConfig.cmake" ]]; then
+    echo "error: cannot determine the OpenUSD install $BUILD_DIR was configured against" >&2
+    exit 1
+fi
+for usd_dir in "$USD_PREFIX/lib/usd" "$USD_PREFIX/plugin/usd" "$PY_SITELIB/pxr"; do
+    if [[ ! -d "$usd_dir" ]]; then
+        echo "error: $usd_dir not found; the OpenUSD install at $USD_PREFIX is incomplete" >&2
+        exit 1
+    fi
+done
+
+echo "==> Staging OpenUSD from $USD_PREFIX"
+for usd_lib in "$USD_PREFIX"/lib/libusd_*.so; do
+    stage_library "$usd_lib" "$(basename "$usd_lib")"
+done
+copy_tree "$USD_PREFIX/lib/usd" "$STAGE_DIR/lib/usd"
+copy_tree "$USD_PREFIX/plugin/usd" "$STAGE_DIR/plugin/usd"
+while IFS= read -r staged_usd_plugin; do
+    stage_elf "$staged_usd_plugin"
+done < <(find "$STAGE_DIR/plugin/usd" -type f -name "*.so" 2>/dev/null)
+
+# "import pxr" from Natron's Python. usdview is left out: it is an application,
+# and its GUI needs PySide6 modules the bundle does not ship.
+copy_tree "$PY_SITELIB/pxr" "$PY_DEST/site-packages/pxr" --exclude='./Usdviewq'
+
 while IFS= read -r staged_py_binary; do
     stage_elf "$staged_py_binary"
+done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
+
+# A pxr extension module (pxr/UsdAbc/_usdAbc.so) links the plug-in library of the same
+# name (plugin/usd/usdAbc.so), which no lib/ RUNPATH reaches. Add plugin/usd to the
+# RUNPATH of every staged Python module that needs a library staged there.
+while IFS= read -r staged_py_binary; do
+    is_elf "$staged_py_binary" || continue
+    needs_usd_plugin=0
+    while IFS= read -r needed; do
+        if [[ -n "$needed" && -f "$STAGE_DIR/plugin/usd/$needed" ]]; then
+            needs_usd_plugin=1
+            break
+        fi
+    done < <(patchelf --print-needed "$staged_py_binary" 2>/dev/null)
+    if [[ "$needs_usd_plugin" == 1 ]]; then
+        usd_plugin_dir="$(cd "$(dirname "$staged_py_binary")" && pwd)"
+        usd_plugin_rpath="$(patchelf --print-rpath "$staged_py_binary"):\$ORIGIN/$(relative_up "$usd_plugin_dir" "$STAGE_DIR")plugin/usd"
+        patchelf --set-rpath "$usd_plugin_rpath" "$staged_py_binary"
+    fi
 done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
 
 echo "==> Staging bundle-relative resources"
@@ -398,15 +451,15 @@ echo "==> Walking ldd closure"
 declare -A SEEN
 
 # Seed from everything the bundle ships that the loader can be asked for:
-# the executables, the libraries CMake installed, and the whole Qt plugin
-# tree -- plugins are dlopen'd, so nothing in bin/ lists them as a
+# the executables, the libraries CMake installed, and the whole Qt and OpenUSD
+# plugin trees -- plugins are dlopen'd, so nothing in bin/ lists them as a
 # dependency and a walk seeded from bin/ alone never reaches what they need.
 collect_binaries() {
     while IFS= read -r f; do
         if is_elf "$f"; then
             echo "$f"
         fi
-    done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" -type f 2>/dev/null
+    done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" "$STAGE_DIR/plugin" -type f 2>/dev/null
              find "$STAGE_DIR/Plugins" -type f \( -name "*.ofx" -o -name "*.so*" \) 2>/dev/null)
 }
 

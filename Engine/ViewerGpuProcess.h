@@ -147,7 +147,6 @@ private:
 
     gpu::GpuRuntime& _runtime;
     std::mutex _mutex;
-    std::mutex _resourcesMutex;
     OcioVulkanShader::Resources _resources;
     std::map<std::string, std::shared_ptr<const Pipeline>> _pipelines;
     std::map<std::string, std::shared_future<Built>> _building;

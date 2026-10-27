@@ -442,8 +442,12 @@ plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
   connection typing, but there is no deep payload type, no deep cache, and no
   deep render path yet. Declaring a kind does not mean a node can render that
   kind of data today.
-- `eDataKindScene` -- 3D scene data. Same caveat as deep: declaration only,
-  no scene payload or evaluation path yet.
+- `eDataKindScene` -- 3D scene data: a `ScenePayload` (`Engine/ScenePayload.h`),
+  an immutable stack of USD layers, one per scene node. A consumer pulls it
+  with `EffectInstance::evaluateScene()`; a native scene node overrides
+  `renderScene()` and authors its layer through `NativeEffectBase::emitSceneLayer()`,
+  which memoizes it. USD types stay in `Engine/Nodes/Scene/`, which includes
+  them only through `UsdIncludes.h`.
 - `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
   "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
   other `NoOps`, group boundaries, `TypedPassthrough`), and for a source whose
@@ -1072,6 +1076,15 @@ copyable parameter block, `GpuOpRef::packed(kernelId, words)` for words the op
 lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
+
+A runtime shader finds its source and destination by name, not by binding: its
+only storage buffers are the blocks named `Src` and `Dst`
+(`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set
+0, so generated code that puts its own uniform block at binding 0, as
+OpenColorIO's does, is wrapped as it is. Every other binding is a uniform block
+or a texture matched by name to `GpuShaderInputs`. A texture with a `cacheKey`
+is kept by the GPU context's `GpuTextureCache`, shared with the viewer, and
+uploaded once rather than for each render.
 
 The kernel is an `IPixelOp` in the style of `Engine/Gpu/Kernels/pixelwrap.slang`:
 `load()` reads the block, `apply(float4, int2)` does the maths on a pixel in

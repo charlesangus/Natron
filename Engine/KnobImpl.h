@@ -31,10 +31,12 @@
 #include "Knob.h"
 
 #include <algorithm> // min, max
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #include <QString>
 #include <QDebug>
@@ -48,6 +50,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -1094,6 +1097,9 @@ Knob<T>::setValue(const T & v,
     if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if (IsolatedJob::refusesValueWrite(this, reason)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     KnobHelper::ValueChangedReturnCodeEnum ret = eValueChangedReturnCodeNoKeyframeAdded;
     KnobHolder* holder =  getHolder();
@@ -1178,7 +1184,7 @@ Knob<T>::setValue(const T & v,
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
-            holder->abortAnyEvaluation();
+            holder->abortViewerRendersForEdit();
         }
 
         KnobHelper::ValueChangedReturnCodeEnum returnValue;
@@ -1513,6 +1519,9 @@ Knob<T>::setValueAtTime(double time,
     if ((reason == eValueChangedReasonPluginEdited) && PluginEditsDeferral::refuse()) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if (IsolatedJob::refusesValueWrite(this, reason)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     if ( !canAnimate() || !isAnimationEnabled() ) {
         qDebug() << "WARNING: Attempting to call setValueAtTime on " << getName().c_str() << " which does not have animation enabled.";
@@ -1594,7 +1603,7 @@ Knob<T>::setValueAtTime(double time,
         if ( holder && getEvaluateOnChange() ) {
             //We explicitly abort rendering now and do not wait for it to be done in EffectInstance::evaluate()
             //because the actual value change (which will call evaluate()) may arise well later
-            holder->abortAnyEvaluation();
+            holder->abortViewerRendersForEdit();
         }
 
         QueuedSetValueAtTimePtr qv = std::make_shared<QueuedSetValueAtTime>( time, view, dimension, v, *newKey, reason, isValueChangesBlocked() );
@@ -1858,7 +1867,7 @@ Knob<T>::unSlaveInternal(int dimension,
         }
     }
     if (getHolder() && _signalSlotHandler) {
-        getHolder()->onKnobSlaved( shared_from_this(), master.second, dimension, false );
+        getHolder()->onKnobSlaved(shared_from_this(), master.second, dimension, false, false);
     }
     if (masterHelper) {
         masterHelper->removeListener(this, dimension);
@@ -2873,6 +2882,74 @@ Knob<T>::cloneAndCheckIfChanged(KnobI* other,
     return hasChanged;
 }
 
+template <typename T>
+bool
+Knob<T>::copyLinkStateFrom(KnobI* other,
+                           int dimension,
+                           int otherDimension,
+                           bool updateGui)
+{
+    if ((other == this) && (dimension == otherDimension)) {
+        return false;
+    }
+
+    bool hasChanged = cloneValuesAndCheckIfChanged(other, dimension, otherDimension);
+    hasChanged |= cloneCurvesAndCheckIfChanged(other, updateGui, dimension, otherDimension);
+    hasChanged |= cloneExtraDataAndCheckIfChanged(other, dimension, otherDimension);
+    if (hasChanged) {
+        if (getHolder()) {
+            getHolder()->updateHasAnimation();
+        }
+        computeHasModifications();
+        if (updateGui && _signalSlotHandler) {
+            _signalSlotHandler->s_valueChanged(ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited);
+        }
+    }
+
+    return hasChanged;
+}
+
+template <typename T>
+bool
+Knob<T>::writeLinkValueFrom(KnobI* state,
+                            int dimension,
+                            ValueChangedReasonEnum reason)
+{
+    if (!state || (dimension < 0) || (dimension >= getDimension())) {
+        return false;
+    }
+
+    T value;
+    if constexpr (std::is_same<T, std::string>::value) {
+        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(state);
+        if (!isString) {
+            return false;
+        }
+        value = isString->getRawValue(0);
+    } else {
+        double v;
+        if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(state)) {
+            v = isInt->getRawValue(0);
+        } else if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(state)) {
+            v = isBool->getRawValue(0) ? 1. : 0.;
+        } else if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(state)) {
+            v = isDouble->getRawValue(0);
+        } else {
+            return false;
+        }
+        if constexpr (std::is_same<T, bool>::value) {
+            value = (v != 0.);
+        } else if constexpr (std::is_integral<T>::value) {
+            value = static_cast<T>(std::floor(v + 0.5));
+        } else {
+            value = static_cast<T>(v);
+        }
+    }
+
+    // No keyframe pointer: the group's keyframes are written by writeLinkCurveFrom(), never auto-keyed here.
+    return setValue(value, ViewSpec::all(), dimension, reason, NULL) != eValueChangedReturnCodeNothingChanged;
+}
+
 template<typename T>
 void
 Knob<T>::clone(KnobI* other,
@@ -2957,6 +3034,22 @@ Knob<T>::cloneDefaultValues(KnobI* other)
     }
 }
 
+/**
+ * @brief Records that a dequeued write changed the dimension. A write a link group made
+ * (eValueChangedReasonSlaveRefresh) is not pushed back to the group, so any other write to the same
+ * dimension in the queue takes precedence and is pushed.
+ **/
+inline void
+insertDequeuedValueChange(std::map<int, ValueChangedReasonEnum>& dimensionChanged,
+                          int dimension,
+                          ValueChangedReasonEnum reason)
+{
+    std::pair<std::map<int, ValueChangedReasonEnum>::iterator, bool> ret = dimensionChanged.insert(std::make_pair(dimension, reason));
+    if (!ret.second && (ret.first->second == eValueChangedReasonSlaveRefresh)) {
+        ret.first->second = reason;
+    }
+}
+
 template <typename T>
 bool
 Knob<T>::dequeueValuesSet(bool disableEvaluation)
@@ -2994,7 +3087,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                         _guiValues[(*it)->dimension()] = (*it)->value();
                         valueWritten = true;
                         if (!blockValueChanges) {
-                            dimensionChanged.insert( std::make_pair( (*it)->dimension(), (*it)->reason() ) );
+                            insertDequeuedValueChange(dimensionChanged, (*it)->dimension(), (*it)->reason());
                         }
                     }
                 }
@@ -3006,7 +3099,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                     bool hasKey = curve->getKeyFrameWithTime( key.getTime(), &existingKey );
                     if (!hasKey || (existingKey.getTime() != key.getTime()) || (existingKey.getValue() != key.getValue()) || (existingKey.getLeftDerivative() != key.getLeftDerivative()) || (existingKey.getRightDerivative() != key.getRightDerivative()) || (existingKey.getLeftWeight() != key.getLeftWeight()) || (existingKey.getRightWeight() != key.getRightWeight())) {
                         if (!blockValueChanges) {
-                            dimensionChanged.insert( std::make_pair( (*it)->dimension(), (*it)->reason() ) );
+                            insertDequeuedValueChange(dimensionChanged, (*it)->dimension(), (*it)->reason());
                         }
                         curve->addKeyFrame( key );
                     }

@@ -237,7 +237,7 @@ renderWriterBlocking(OutputEffectInstance* writerEffect,
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-    writerEffect->getApp()->startWritersRendering(true, works);
+    writerEffect->getApp()->startWritersRendering(eRenderModeBlocking, works);
 
     QObject::disconnect(connection);
 

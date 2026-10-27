@@ -48,6 +48,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeGraphConnect.h"
+#include "Gui/NodeGraphPickUp.h"
 #include "Gui/PanelWidget.h"
 
 NATRON_NAMESPACE_ENTER
@@ -171,7 +172,12 @@ public:
 
     void duplicateSelectedNodes(const QPointF& pos);
     bool pasteNodeClipBoards(const QPointF& pos);
-    void cloneSelectedNodes(const QPointF& pos);
+
+    /**
+     * @brief Pastes a copy of each selected node, centred on pos, and makes it a Linked Node of the node
+     * it was copied from: each of its knobs is linked two-way to the original's.
+     **/
+    void createLinkedNodes(const QPointF& pos);
 
     QPointF getRootPos() const;
 
@@ -227,8 +233,13 @@ public Q_SLOTS:
     void cutSelectedNodes();
     bool pasteNodeClipBoards();
     void duplicateSelectedNodes();
-    void cloneSelectedNodes();
-    void decloneSelectedNodes();
+    void createLinkedNodes();
+
+    /**
+     * @brief Unlinks every knob of the selected nodes, and of the nodes in selected backdrops, from its
+     * link groups that are not permanent.
+     **/
+    void unlinkSelectedNodes();
     /////////////////////////////////////////////
 
     void centerOnAllNodes();
@@ -277,11 +288,19 @@ private:
 
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 
+    bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);
+
+    bool connectOutputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
+
     void applyConnectPlan(const std::vector<ConnectPlanConnection>& plan, const QString& undoText);
+
+    bool hasPickedUpArrow() const;
 
     Edge* getPickedUpArrow() const;
 
-    void pickUpArrow(Edge* arrow);
+    void pickUpArrow(Edge* arrow, PickUpEndEnum end);
+
+    void forgetPickedUpArrow();
 
     void dragPickedUpArrowToCursor();
 

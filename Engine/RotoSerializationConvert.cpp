@@ -318,7 +318,7 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
         switch (it->type) {
         case Serialization::eRotoLayerChildTypeBezier: {
             BezierPtr bezier(new Bezier(getContext(), kRotoBezierBaseName, RotoLayerPtr(), false));
-            bezier->createNodes(false);
+            getContext()->onItemCreated(bezier, false);
             bezier->fromSerialization(it->bezier);
             if (!bezier->getParentLayer()) {
                 bezier->setParentLayer(thisLayer);
@@ -329,7 +329,7 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
         }
         case Serialization::eRotoLayerChildTypeStroke: {
             RotoStrokeItemPtr stroke(new RotoStrokeItem((RotoStrokeType)it->stroke.brushType, getContext(), kRotoPaintBrushBaseName, RotoLayerPtr()));
-            stroke->createNodes(false);
+            getContext()->onItemCreated(stroke, false);
             stroke->fromSerialization(it->stroke);
             if (!stroke->getParentLayer()) {
                 stroke->setParentLayer(thisLayer);
@@ -356,7 +356,7 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
 }
 
 void
-RotoContext::toSerialization(Serialization::RotoContextSerialization* serialization) const
+RotoCurveContext::toSerialization(Serialization::RotoContextSerialization* serialization) const
 {
     QMutexLocker l(&_imp->rotoContextMutex);
 
@@ -376,7 +376,7 @@ RotoContext::toSerialization(Serialization::RotoContextSerialization* serializat
 }
 
 void
-RotoContext::fromSerialization(const Serialization::RotoContextSerialization& serialization)
+RotoCurveContext::fromSerialization(const Serialization::RotoContextSerialization& serialization)
 {
     assert(QThread::currentThread() == qApp->thread());
 
@@ -399,7 +399,7 @@ RotoContext::fromSerialization(const Serialization::RotoContextSerialization& se
 
     restoreSavedSelection(serialization.selectedItems);
     _imp->isCurrentlyLoading = false;
-    refreshRotoPaintTree();
+    onStructureChanged();
 }
 
 NATRON_NAMESPACE_EXIT

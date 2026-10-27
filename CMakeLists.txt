@@ -74,6 +74,21 @@ if(WIN32)
     set(Python3_FIND_REGISTRY NEVER)
 endif()
 find_package(Python3 COMPONENTS Interpreter Development)
+# OpenUSD, for the scene data kind; checked against the Python just found.
+include(NatronUsd)
+
+# For every executable that embeds the interpreter. libshiboken exports its own PyStaticMethod_New,
+# a shim that only works once the interpreter is running; when libshiboken precedes libpython in the
+# executable's DT_NEEDED order, the shim interposes CPython's own during Py_Initialize() and the
+# interpreter segfaults building its builtin types. The executable listing Python3::Python does not
+# fix that order: CMake emits a shared library once, after the last target linking it, and OpenUSD's
+# targets link Python3::Python after libshiboken. So libpython is named ahead of everything.
+function(natron_link_embedded_python target)
+    target_link_options(${target} BEFORE PRIVATE
+        "LINKER:--push-state,--no-as-needed"
+        "$<TARGET_LINKER_FILE:Python3::Python>"
+        "LINKER:--pop-state")
+endfunction()
 
 if(IS_DEBUG_BUILD AND WIN32)
     # Explicitly setting SHIBOKEN_PYTHON_LIBRARIES variable to avoid PYTHON_DEBUG_LIBRARY-NOTFOUND

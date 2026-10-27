@@ -277,3 +277,35 @@ tools/bench/raw_gpu_bench.sh --app <Natron.AppImage> [--rounds 3] [--out DIR] [-
   boot id and `MemAvailable`. `DIR/table.txt` has the median first-frame ms off and auto and the speed-up.
 - A case is skipped, with a line in `DIR/skips.log`, when `MemAvailable` is below the raw file size times
   `BENCH_NEED_FACTOR` (default 40, at least 4 GiB). `--dry-run` lists the cases and the memory probe.
+
+## Scene edit-to-frame latency
+
+`scene_edit_bench.py` times how long an edit takes to reach the scene viewer: from setting a knob
+to the first finished frame drawn after the viewer synced the edit. It runs inside Natron under
+Xvfb through the GUI test runner, configured by environment variables (see the script's
+docstring), and appends one JSON line per run to `$NATRON_GUI_TEST_OUT/scene_edit_bench.jsonl`.
+
+```
+# Once: a 1M-prim file (the natron-dev image's python3 has pxr).
+docker exec natron-dev python3 tools/bench/scene_edit_bench.py make-file build/bench/prims1m.usdc --prims 1000000
+
+# A 30-node chain, editing the head (needs a scene op such as USDTransform; without one it chains
+# Dots and edits USDRead's frame offset).
+docker exec -e BENCH_SCENE=chain -e BENCH_N=30 -e BENCH_LABEL=after natron-dev \
+    Tests/gui/run-gui-test.sh tools/bench/scene_edit_bench.py build/release/App/Natron
+
+# The 1M-prim file, editing USDRead's frame offset.
+docker exec -e GUI_TEST_TIMEOUT=1800 -e BENCH_SCENE=file -e BENCH_FILE=build/bench/prims1m.usdc -e BENCH_LABEL=after natron-dev \
+    Tests/gui/run-gui-test.sh tools/bench/scene_edit_bench.py build/release/App/Natron
+```
+
+Run each configuration with a build from before the long-lived scene (`BENCH_LABEL=before`) and
+one from after, one at a time in the container. Builds from before lack the
+`natronSceneSyncedAtMs` and `natronSceneLastPaintMs` properties, so their latencies are rounded to
+the 50 ms poll and marked `"approximate": true`; their open times are exact. Compare
+`edit_ms_median` against `open_ms`: an upstream edit on the 1M-prim file should cost far less than
+opening it. `engines_after` should equal `engines_before` (1) after the phase. The record keeps
+nothing about the machine: note the host with the numbers.
+
+The USDRender half of the gate (edit to rendered frame on a USDRender node) needs USDRender's
+per-node long-lived stage and is not covered here yet.

@@ -31,7 +31,9 @@
 #include <atomic>
 #include <cassert>
 #include <cctype> // isspace
+#include <cmath> // floor
 #include <cstddef>
+#include <map>
 #include <random>
 #include <set>
 #include <sstream> // stringstream
@@ -55,6 +57,7 @@
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
@@ -64,6 +67,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
 #include "Engine/StringAnimationManager.h"
@@ -302,6 +306,22 @@ findMaster(const KnobIPtr & knob,
     return KnobIPtr();
 }
 
+/*
+ * The one-way links a file may hold are those a subsystem makes between knobs of separate nodes, which
+ * nothing recreates when the node is created: the Tracker's "Export" with "Link" slaves the CornerPin or
+ * Transform it creates to knobs of the Tracker node. Every other one-way link is either recreated with
+ * its node (the Tracker's internal nodes, which are not saved), kept by its own holder's serialization
+ * (Roto items, tracks), never saved (MultiInstance), or a user link, which is a link group.
+ */
+bool
+KnobI::isSavedOneWayLinkMaster(const KnobIPtr& master)
+{
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(master->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    return node && node->getTrackerContext();
+}
+
 void
 KnobI::restoreLinks(const NodesList& allNodes,
                     const std::map<std::string, std::string>& oldNewScriptNamesMapping,
@@ -335,10 +355,13 @@ KnobI::restoreLinks(const NodesList& allNodes,
             }
        } else if (l->dimension == -1) {
             setKnobAsAliasOfThis(linkedKnob, true);
-        } else {
-            assert(l->slaveDimension >= 0);
-            slaveTo(l->slaveDimension, linkedKnob, l->dimension);
-        }
+       } else if (isSavedOneWayLinkMaster(linkedKnob)) {
+           assert(l->slaveDimension >= 0);
+           slaveTo(l->slaveDimension, linkedKnob, l->dimension);
+       } else {
+           qDebug() << "Link for" << getName().c_str() << "to" << l->nodeName.c_str() << '/' << l->knobName.c_str()
+                    << "is a one-way link no part of Natron saves: links between knobs are link groups";
+       }
     }
     _links.clear();
 }
@@ -469,6 +492,7 @@ struct KnobHelperPrivate
     QMutex evaluateOnChangeMutex;
     bool evaluateOnChange; //< if true, a value change will never trigger an evaluation
     bool IsPersistent; //will it be serialized?
+    bool ReadByRenders; // can a render read its value?
     std::string tooltipHint;
     bool hintIsMarkdown;
     bool isAnimationEnabled;
@@ -484,6 +508,10 @@ struct KnobHelperPrivate
 
     //Used when this knob is an alias of another knob. The other knob is set in "slaveForAlias"
     KnobIPtr slaveForAlias;
+
+    // For each dimension, the two-way link group it is in, linked or not.
+    mutable QMutex linkGroupsMutex;
+    std::vector<KnobLinkGroupPtr> linkGroups;
 
     ///This is a list of all the knobs that have expressions/links to this knob.
     KnobI::ListenerDimsMap listeners;
@@ -506,6 +534,11 @@ struct KnobHelperPrivate
     /// Set to true if gui curves were modified by the user instead of the real internal curves.
     /// If true then when finished rendering, the knob should clone the guiCurves into the internal curves.
     std::vector<bool> mustCloneGuiCurves;
+    /// Whether anything but a link group write changed the GUI curve: only such a change is pushed back
+    /// to the link groups when the GUI curve is copied to the internal one.
+    std::vector<bool> guiCurveChangedOutsideLink;
+    /// The thread writing a link group's curve to this knob, if one is.
+    QThread* linkCurveWriter;
     std::vector<bool> mustCloneInternalCurves;
 
     ///Used by deQueueValuesSet to know whether we should clear expressions results or not
@@ -578,6 +611,7 @@ struct KnobHelperPrivate
         , evaluateOnChangeMutex()
         , evaluateOnChange(true)
         , IsPersistent(true)
+        , ReadByRenders(true)
         , tooltipHint()
         , hintIsMarkdown(false)
         , isAnimationEnabled(true)
@@ -587,6 +621,8 @@ struct KnobHelperPrivate
         , masters(dimension_)
         , ignoreMasterPersistence(false)
         , slaveForAlias()
+        , linkGroupsMutex()
+        , linkGroups(dimension_)
         , listeners()
         , animationLevelMutex()
         , animationLevel(dimension_)
@@ -599,6 +635,8 @@ struct KnobHelperPrivate
         , hasDimensionsFoldState(false)
         , mustCloneGuiCurvesMutex()
         , mustCloneGuiCurves()
+        , guiCurveChangedOutsideLink()
+        , linkCurveWriter(NULL)
         , mustCloneInternalCurves()
         , mustClearExprResults()
         , ofxParamHandle(0)
@@ -627,6 +665,7 @@ struct KnobHelperPrivate
         }
 
         mustCloneGuiCurves.resize(dimension);
+        guiCurveChangedOutsideLink.resize(dimension);
         mustCloneInternalCurves.resize(dimension);
         mustClearExprResults.resize(dimension);
         expressions.resize(dimension);
@@ -634,6 +673,7 @@ struct KnobHelperPrivate
         for (int i = 0; i < dimension_; ++i) {
             defaultEnabled[i] = enabled[i] = true;
             mustCloneGuiCurves[i] = false;
+            guiCurveChangedOutsideLink[i] = false;
             mustCloneInternalCurves[i] = false;
             mustClearExprResults[i] = false;
             hasModifications[i] = false;
@@ -665,6 +705,7 @@ KnobHelper::KnobHelper(KnobHolder* holder,
 
 KnobHelper::~KnobHelper()
 {
+    leaveAllLinkGroups();
     std::size_t metadataDependencies = 0;
     for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
         metadataDependencies += _imp->expressions[i].metadataDependencies.size();
@@ -719,9 +760,84 @@ KnobHelper::getExpressionRecursionLevel() const
     return tls->expressionRecursionLevel;
 }
 
+namespace {
+
+// The node a link group member belongs to: the node of its effect, or the tracker node of a track's knob.
+NodePtr
+linkMemberNode(const KnobI* knob)
+{
+    KnobHolder* holder = knob ? knob->getHolder() : 0;
+
+    if (EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder)) {
+        return isEffect->getNode();
+    }
+    if (TrackMarker* isMarker = dynamic_cast<TrackMarker*>(holder)) {
+        TrackerContextPtr context = isMarker->getContext();
+
+        return context ? context->getNode() : NodePtr();
+    }
+
+    return NodePtr();
+}
+
+// Adds the nodes of the live members of the link groups of the knob's given dimension (or of all of
+// them for -1), the knob's own node included, to nodes.
+void
+collectLinkGroupNodes(const KnobI& knob,
+                      int dimension,
+                      NodesList* nodes)
+{
+    for (int i = 0; i < knob.getDimension(); ++i) {
+        if ((dimension != -1) && (i != dimension)) {
+            continue;
+        }
+        KnobLinkGroupPtr group = knob.getLinkGroup(i);
+        if (!group) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr member = it->knob.lock();
+            NodePtr node = linkMemberNode(member.get());
+            if (node && (std::find(nodes->begin(), nodes->end(), node) == nodes->end())) {
+                nodes->push_back(node);
+            }
+        }
+    }
+}
+
+void
+emitNodesLinksChanged(const NodesList& nodes)
+{
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        Q_EMIT(*it)->linksChanged();
+    }
+}
+
+} // anon namespace
+
 void
 KnobHelper::deleteKnob()
 {
+    // The badges and link lines of every node that shared a group with this knob change.
+    NodesList linkedNodes;
+    collectLinkGroupNodes(*this, -1, &linkedNodes);
+
+    // An alias of this knob, or the knob this one is an alias of, becomes an ordinary knob that keeps its value.
+    KnobIPtr thisShared = shared_from_this();
+    KnobsVec aliases = getAliasesOfThis();
+    for (KnobsVec::const_iterator it = aliases.begin(); it != aliases.end(); ++it) {
+        (*it)->setKnobAsAliasOfThis(thisShared, false);
+    }
+    KnobIPtr aliasMaster = getAliasMaster();
+    if (aliasMaster) {
+        setKnobAsAliasOfThis(aliasMaster, false);
+    }
+
+    // Before the expressions are cleared below, or the clearing would reach the linked knobs.
+    leaveAllLinkGroups();
+    emitNodesLinksChanged(linkedNodes);
+
     KnobI::ListenerDimsMap listenersCpy = _imp->listeners;
 
     for (ListenerDimsMap::iterator it = listenersCpy.begin(); it != listenersCpy.end(); ++it) {
@@ -991,6 +1107,9 @@ KnobHelper::deleteValuesAtTime(CurveChangeReason curveChangeReason,
                                ViewSpec view,
                                int dimension, bool copyCurveValueAtTimeToInternalValue)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
         throw std::invalid_argument("KnobHelper::deleteValueAtTime(): Dimension out of range");
     }
@@ -1070,6 +1189,9 @@ KnobHelper::deleteValueAtTime(CurveChangeReason curveChangeReason,
                               ViewSpec view,
                               int dimension, bool copyCurveValueAtTimeToInternalValue)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if ( ( dimension > (int)_imp->curves.size() ) || (dimension < 0) ) {
         throw std::invalid_argument("KnobHelper::deleteValueAtTime(): Dimension out of range");
     }
@@ -1152,6 +1274,9 @@ KnobHelper::moveValuesAtTime(CurveChangeReason reason,
                              double dv,
                              std::vector<KeyFrame>* keyframes)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert(keyframes);
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
@@ -1247,6 +1372,9 @@ KnobHelper::moveValueAtTime(CurveChangeReason reason,
                             double dv,
                             KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1285,6 +1413,9 @@ KnobHelper::transformValuesAtTime(CurveChangeReason curveChangeReason,
                                   const Transform::Matrix3x3& matrix,
                                   std::vector<KeyFrame>* keyframes)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1401,6 +1532,9 @@ KnobHelper::transformValueAtTime(CurveChangeReason curveChangeReason,
                                  const Transform::Matrix3x3& matrix,
                                  KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1477,6 +1611,9 @@ KnobHelper::setInterpolationAtTime(CurveChangeReason reason,
                                    KeyframeTypeEnum interpolation,
                                    KeyFrame* newKey)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     assert( QThread::currentThread() == qApp->thread() );
     assert( dimension >= 0 && dimension < (int)_imp->curves.size() );
 
@@ -1597,6 +1734,9 @@ KnobHelper::removeAnimationWithReason(ViewSpec view,
                                       int dimension,
                                       ValueChangedReasonEnum reason)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     assert(0 <= dimension);
     if ( (dimension < 0) || ( (int)_imp->curves.size() <= dimension ) ) {
         throw std::invalid_argument("KnobHelper::removeAnimationWithReason(): Dimension out of range");
@@ -1714,7 +1854,10 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
 
             _imp->mustCloneGuiCurves[i] = false;
 
-            modifiedDimensions.insert( std::make_pair(i, eValueChangedReasonUserEdited) );
+            // A curve only link groups wrote already matches their state, so it is not pushed back.
+            const ValueChangedReasonEnum reason = _imp->guiCurveChangedOutsideLink[i] ? eValueChangedReasonUserEdited : eValueChangedReasonSlaveRefresh;
+            _imp->guiCurveChangedOutsideLink[i] = false;
+            modifiedDimensions.insert(std::make_pair(i, reason));
         }
     }
     if (hasChanged && _imp->holder) {
@@ -1772,6 +1915,11 @@ KnobHelper::setGuiCurveHasChanged(ViewSpec /*view*/,
     assert( dimension < (int)_imp->mustCloneGuiCurves.size() );
     QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
     _imp->mustCloneGuiCurves[dimension] = changed;
+    if (!changed) {
+        _imp->guiCurveChangedOutsideLink[dimension] = false;
+    } else if (_imp->linkCurveWriter != QThread::currentThread()) {
+        _imp->guiCurveChangedOutsideLink[dimension] = true;
+    }
 }
 
 bool
@@ -1907,6 +2055,12 @@ KnobHelper::evaluateValueChangeInternal(int dimension,
     /// For eValueChangedReasonTimeChanged we never call the instanceChangedAction and evaluate otherwise it would just throttle
     /// the application responsiveness
     onInternalValueChanged(dimension, time, view);
+
+    // eValueChangedReasonSlaveRefresh is the reason link groups write members with: such a change came
+    // from the group, including when it was queued during a render and is only applied now.
+    if ((originalReason != eValueChangedReasonTimeChanged) && (originalReason != eValueChangedReasonSlaveRefresh)) {
+        pushStateToLinkGroups(dimension, time, view, originalReason);
+    }
 
     bool ret = false;
     if ( ( (originalReason != eValueChangedReasonTimeChanged) || evaluateValueChangeOnTimeChange() ) && _imp->holder ) {
@@ -3217,7 +3371,7 @@ KnobHelper::setExpressionInternal(int dimension,
         exprInvalid = e.what();
         exprCpy = expression;
         if (failIfInvalid) {
-            throw e;
+            throw;
         }
     }
 
@@ -3597,7 +3751,7 @@ KnobHelper::clearExpression(int dimension,
             }
 
             if ( getHolder() ) {
-                getHolder()->onKnobSlaved(thisShared, otherKnob, dimension, false );
+                getHolder()->onKnobSlaved(thisShared, otherKnob, dimension, false, true);
             }
 
 
@@ -3646,6 +3800,9 @@ KnobHelper::expressionChanged(int dimension)
         _signalSlotHandler->s_expressionChanged(dimension);
     }
     computeHasModifications();
+
+    // Setting or clearing an expression does not go through evaluateValueChange().
+    pushStateToLinkGroups(dimension, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
 }
 
 static bool
@@ -4007,6 +4164,18 @@ KnobHelper::getIsPersistent() const
     return _imp->IsPersistent;
 }
 
+bool
+KnobHelper::isReadByRenders() const
+{
+    return _imp->ReadByRenders;
+}
+
+void
+KnobHelper::setReadByRenders(bool b)
+{
+    _imp->ReadByRenders = b;
+}
+
 void
 KnobHelper::setIsPersistent(bool b)
 {
@@ -4348,6 +4517,9 @@ KnobHelper::slaveToInternal(int dimension,
                             ValueChangedReasonEnum reason,
                             bool ignoreMasterPersistence)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return false;
+    }
     KnobContentWrite write;
     assert(other.get() != this);
     assert( 0 <= dimension && dimension < (int)_imp->masters.size() );
@@ -4535,6 +4707,9 @@ KnobHelper::deleteAnimationConditional(double time,
                                        ValueChangedReasonEnum reason,
                                        bool before)
 {
+    if (IsolatedJob::refusesWrite(this)) {
+        return;
+    }
     if (!_imp->curves[dimension]) {
         return;
     }
@@ -4893,10 +5068,12 @@ KnobHelper::cloneOneCurveAndCheckIfChanged(KnobI* other,
 
     CurvePtr guiCurve = getGuiCurve(ViewIdx(0), dimension);
     CurvePtr otherGuiCurve = other->getGuiCurve(ViewIdx(0), otherDimension);
+    // A source with no curve at all cannot animate: the internal curve above is left as it is, and so is
+    // the GUI curve, which must keep mirroring it.
     if (guiCurve) {
         if (otherGuiCurve) {
             cloningCurveChanged |= guiCurve->cloneAndCheckIfChanged(*otherGuiCurve);
-        } else {
+        } else if (otherCurve) {
             cloningCurveChanged |= guiCurve->cloneAndCheckIfChanged(*otherCurve);
         }
     }
@@ -4987,7 +5164,7 @@ KnobHelper::addListener(const bool isExpression,
     if (listenerIsHelper->_signalSlotHandler && _signalSlotHandler) {
         //Notify the holder one of its knob is now slaved
         if ( listenerIsHelper->getHolder() ) {
-            listenerIsHelper->getHolder()->onKnobSlaved(listener, thisShared, listenerDimension, true );
+            listenerIsHelper->getHolder()->onKnobSlaved(listener, thisShared, listenerDimension, true, isExpression);
         }
     }
 
@@ -5503,13 +5680,967 @@ KnobI::areTypesCompatibleForSlave(KnobI* lhs,
     return false;
 }
 
+/**
+ * @brief Makes the calling thread the one copying a group's state while in scope, unless it already is
+ * or another thread is, and makes the copies other threads requested meanwhile before it lets go.
+ **/
+class KnobLinkGroupSyncLocker {
+public:
+    explicit KnobLinkGroupSyncLocker(const KnobLinkGroupPtr& group,
+                                     const KnobLinkGroup::SyncRequest* request = 0)
+        : _group(group)
+        , _state(group->beginSync(request))
+    {
+    }
+
+    ~KnobLinkGroupSyncLocker()
+    {
+        if (_state == KnobLinkGroup::eSyncStateAcquired) {
+            KnobHelper::finishLinkGroupSync(_group);
+        }
+    }
+
+    bool isLocked() const
+    {
+        return _state == KnobLinkGroup::eSyncStateAcquired;
+    }
+
+private:
+    KnobLinkGroupPtr _group;
+    KnobLinkGroup::SyncStateEnum _state;
+};
+
+void
+KnobHelper::setLinkGroupInternal(int dimension,
+                                 const KnobLinkGroupPtr& group)
+{
+    QMutexLocker k(&_imp->linkGroupsMutex);
+
+    _imp->linkGroups[dimension] = group;
+}
+
+KnobLinkGroupPtr
+KnobHelper::getLinkGroup(int dimension) const
+{
+    QMutexLocker k(&_imp->linkGroupsMutex);
+
+    if ((dimension < 0) || (dimension >= (int)_imp->linkGroups.size())) {
+        return KnobLinkGroupPtr();
+    }
+
+    return _imp->linkGroups[dimension];
+}
+
+bool
+KnobHelper::isLinked(int dimension) const
+{
+    KnobLinkGroupPtr group = getLinkGroup(dimension);
+
+    return group && group->isMemberLinked(this, dimension);
+}
+
+bool
+KnobHelper::isLinkPermanent(int dimension) const
+{
+    KnobLinkGroupPtr group = getLinkGroup(dimension);
+
+    return group && group->isPermanent();
+}
+
+bool
+KnobHelper::hasRelinkableGroups() const
+{
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (group && !group->isMemberLinked(this, i)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<KnobLinkedDimension>
+KnobHelper::getLinkedKnobs() const
+{
+    std::vector<KnobLinkedDimension> ret;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (!group || !group->isMemberLinked(this, i)) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            if (!it->linked || ((it->key == this) && (it->dimension == i))) {
+                continue;
+            }
+            KnobIPtr knob = it->knob.lock();
+            if (!knob) {
+                continue;
+            }
+            KnobLinkedDimension d;
+            d.dimension = i;
+            d.knob = knob;
+            d.otherDimension = it->dimension;
+            ret.push_back(d);
+        }
+    }
+
+    return ret;
+}
+
+void
+KnobHelper::dissolveLinkGroupIfAlone(const KnobLinkGroupPtr& group)
+{
+    if (group->getLiveMembersCount() > 1) {
+        return;
+    }
+    std::vector<KnobLinkGroup::Member> members = group->clearMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr knob = it->knob.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (!helper) {
+            continue;
+        }
+        QMutexLocker k(&helper->_imp->linkGroupsMutex);
+        if ((it->dimension < (int)helper->_imp->linkGroups.size()) && (helper->_imp->linkGroups[it->dimension] == group)) {
+            helper->_imp->linkGroups[it->dimension].reset();
+        }
+    }
+    notifyLinkMembers(members);
+}
+
+void
+KnobHelper::notifyLinkGroupMembers(const KnobLinkGroupPtr& group)
+{
+    if (group) {
+        notifyLinkMembers(group->getMembers());
+    }
+}
+
+void
+KnobHelper::notifyLinkMembers(const std::vector<KnobLinkGroup::Member>& members)
+{
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr knob = it->knob.lock();
+        KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+        if (handler) {
+            handler->s_linkChanged();
+        }
+    }
+}
+
+void
+KnobHelper::leaveLinkGroup(int dimension)
+{
+    KnobLinkGroupPtr group;
+    {
+        QMutexLocker k(&_imp->linkGroupsMutex);
+        if ((dimension < 0) || (dimension >= (int)_imp->linkGroups.size())) {
+            return;
+        }
+        group.swap(_imp->linkGroups[dimension]);
+    }
+    if (!group) {
+        return;
+    }
+    group->removeMember(this, dimension);
+    dissolveLinkGroupIfAlone(group);
+    // This knob may be in its destructor: the caller notifies it if it must.
+    notifyLinkGroupMembers(group);
+}
+
+void
+KnobHelper::leaveAllLinkGroups()
+{
+    int nDims;
+    {
+        QMutexLocker k(&_imp->linkGroupsMutex);
+        nDims = (int)_imp->linkGroups.size();
+    }
+    for (int i = 0; i < nDims; ++i) {
+        leaveLinkGroup(i);
+    }
+}
+
+/**
+ * @brief Marks the curve setters this thread calls on a knob as link group writes while in scope.
+ **/
+class LinkCurveWriteMarker {
+public:
+    explicit LinkCurveWriteMarker(KnobHelperPrivate* imp)
+        : _imp(imp)
+    {
+        QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
+        _previous = _imp->linkCurveWriter;
+        _imp->linkCurveWriter = QThread::currentThread();
+    }
+
+    ~LinkCurveWriteMarker()
+    {
+        QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
+        _imp->linkCurveWriter = _previous;
+    }
+
+private:
+    KnobHelperPrivate* _imp;
+    QThread* _previous;
+};
+
+bool
+KnobHelper::writeLinkCurveFrom(KnobI* state,
+                               int dimension,
+                               ValueChangedReasonEnum reason)
+{
+    if (!canAnimate()) {
+        return false;
+    }
+    if (!_imp->holder) {
+        // Nothing renders with a knob that has no holder, and the key setters need one.
+        return cloneCurvesAndCheckIfChanged(state, true, dimension, 0);
+    }
+    LinkCurveWriteMarker marker(_imp.get());
+    // While the holder renders, the curve setters write the GUI curve, which the render does not read,
+    // and dequeueValuesSet() copies it to the internal curve afterwards: compare against that curve.
+    CurvePtr thisCurve = _imp->shouldUseGuiCurve() ? getGuiCurve(ViewIdx(0), dimension) : getCurve(ViewIdx(0), dimension, true);
+    if (!thisCurve) {
+        return false;
+    }
+    CurvePtr stateCurve = state->getCurve(ViewIdx(0), 0, true);
+    KeyFrameSet stateKeys;
+    if (stateCurve) {
+        stateKeys = stateCurve->getKeyFrames_mt_safe();
+    }
+    KeyFrameSet thisKeys = thisCurve->getKeyFrames_mt_safe();
+
+    if (stateKeys.empty()) {
+        if (thisKeys.empty()) {
+            return false;
+        }
+        removeAnimationWithReason(ViewSpec::all(), dimension, reason);
+
+        return true;
+    }
+
+    bool changed = false;
+    for (KeyFrameSet::const_iterator it = thisKeys.begin(); it != thisKeys.end(); ++it) {
+        KeyFrame k;
+        if (!stateCurve->getKeyFrameWithTime(it->getTime(), &k)) {
+            deleteValueAtTime(eCurveChangeReasonInternal, it->getTime(), ViewSpec::all(), dimension, false);
+            changed = true;
+        }
+    }
+    // An integer or boolean curve keeps whole values and constant interpolation whatever it is given.
+    const bool clampedToIntegers = thisCurve->areKeyFramesValuesClampedToIntegers();
+    const bool clampedToBooleans = thisCurve->areKeyFramesValuesClampedToBooleans();
+    for (KeyFrameSet::const_iterator it = stateKeys.begin(); it != stateKeys.end(); ++it) {
+        KeyFrame key = *it;
+        if (clampedToIntegers) {
+            key.setValue(std::floor(key.getValue() + 0.5));
+        } else if (clampedToBooleans) {
+            key.setValue(key.getValue() != 0. ? 1. : 0.);
+        }
+        KeyFrame existing;
+        if (thisCurve->getKeyFrameWithTime(key.getTime(), &existing) && (existing.getValue() == key.getValue())) {
+            if (clampedToIntegers || clampedToBooleans) {
+                continue;
+            }
+            // The curve derives the tangents of the other interpolations itself.
+            const KeyframeTypeEnum interp = key.getInterpolation();
+            const bool userTangents = (interp == eKeyframeTypeFree) || (interp == eKeyframeTypeBroken);
+            if ((existing.getInterpolation() == interp) && (!userTangents || ((existing.getLeftDerivative() == key.getLeftDerivative()) && (existing.getRightDerivative() == key.getRightDerivative()) && (existing.getLeftWeight() == key.getLeftWeight()) && (existing.getRightWeight() == key.getRightWeight())))) {
+                continue;
+            }
+        }
+        ignore_result(setKeyFrame(key, ViewSpec::all(), dimension, reason));
+        changed = true;
+    }
+    if (changed && _imp->holder) {
+        _imp->holder->updateHasAnimation();
+    }
+
+    return changed;
+} // KnobHelper::writeLinkCurveFrom
+
+bool
+KnobHelper::adoptLinkGroupState(const KnobLinkGroupPtr& group,
+                                int dimension,
+                                double time,
+                                ViewSpec view,
+                                ValueChangedReasonEnum reason)
+{
+    KnobHelperPtr state = group->getStateKnob();
+    bool changed = false;
+    // Changes that no setter below evaluates.
+    bool mustEvaluate = false;
+
+    if (_imp->holder) {
+        _imp->holder->beginChanges();
+    }
+
+    if (supportsExpressions()) {
+        bool hasRet = false;
+        std::string expr = group->getExpression(&hasRet);
+        if ((expr != getExpression(dimension)) || (!expr.empty() && (hasRet != isExpressionUsingRetVariable(dimension)))) {
+            if (expr.empty()) {
+                clearExpression(dimension, true);
+            } else {
+                try {
+                    setExpression(dimension, expr, hasRet, false);
+                } catch (...) {
+                }
+            }
+            mustEvaluate = true;
+        }
+    }
+
+    // A choice's active entry follows its index through onInternalValueChanged(), so it comes with the
+    // value below. The other extra data (parametric curves, animated string values) has no setter that
+    // defers while rendering; each is held behind its own lock, which the render's reads also take.
+    if (!dynamic_cast<KnobChoice*>(this) && cloneExtraDataAndCheckIfChanged(state.get(), dimension, 0)) {
+        mustEvaluate = true;
+    }
+
+    changed |= writeLinkCurveFrom(state.get(), dimension, reason);
+    changed |= writeLinkValueFrom(state.get(), dimension, reason);
+
+    if (mustEvaluate) {
+        evaluateValueChange(dimension, time, view, reason);
+    }
+
+    if (_imp->holder) {
+        _imp->holder->endChanges();
+    }
+
+    return changed || mustEvaluate;
+} // KnobHelper::adoptLinkGroupState
+
+void
+KnobHelper::pushStateToLinkGroups(int dimension,
+                                  double time,
+                                  ViewSpec view,
+                                  ValueChangedReasonEnum reason)
+{
+    std::vector<std::pair<int, KnobLinkGroupPtr>> groups;
+    {
+        QMutexLocker k(&_imp->linkGroupsMutex);
+        for (int i = 0; i < (int)_imp->linkGroups.size(); ++i) {
+            if (_imp->linkGroups[i] && ((dimension == -1) || (dimension == i))) {
+                groups.push_back(std::make_pair(i, _imp->linkGroups[i]));
+            }
+        }
+    }
+    if (groups.empty()) {
+        return;
+    }
+
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        const int dim = groups[i].first;
+        const KnobLinkGroupPtr& group = groups[i].second;
+        if (!group->isMemberLinked(this, dim)) {
+            continue;
+        }
+        KnobLinkGroup::SyncRequest request;
+        request.knob = weak_from_this();
+        request.dimension = dim;
+        request.time = time;
+        request.view = view;
+        request.reason = reason;
+        KnobLinkGroupSyncLocker locker(group, &request);
+        if (!locker.isLocked()) {
+            continue;
+        }
+        copyStateToLinkGroup(group, dim, time, view, reason);
+    }
+} // KnobHelper::pushStateToLinkGroups
+
+void
+KnobHelper::copyStateToLinkGroup(const KnobLinkGroupPtr& group,
+                                 int dimension,
+                                 double time,
+                                 ViewSpec view,
+                                 ValueChangedReasonEnum reason)
+{
+    // A button press changes no value, but must still reach the linked buttons.
+    const bool alwaysEvaluate = dynamic_cast<KnobButton*>(this) != 0;
+
+    group->getStateKnob()->copyLinkStateFrom(this, 0, dimension, false);
+    group->setExpression(getExpression(dimension), isExpressionUsingRetVariable(dimension));
+
+    std::vector<KnobLinkGroup::Member> members = group->getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        if (!it->linked || ((it->key == this) && (it->dimension == dimension))) {
+            continue;
+        }
+        KnobIPtr knob = it->knob.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (!helper) {
+            continue;
+        }
+        if (!helper->adoptLinkGroupState(group, it->dimension, time, view, eValueChangedReasonSlaveRefresh) && alwaysEvaluate) {
+            helper->evaluateValueChangeInternal(it->dimension, time, view, eValueChangedReasonSlaveRefresh, reason);
+        }
+    }
+}
+
+void
+KnobHelper::finishLinkGroupSync(const KnobLinkGroupPtr& group)
+{
+    KnobLinkGroup::SyncRequest next;
+
+    while (group->endSync(&next)) {
+        // Another thread's member changed while this thread copied the group's state: its change was
+        // left to this thread, and goes to the group and the other members now.
+        KnobIPtr knob = next.knob.lock();
+        KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+        if (helper && (helper->getLinkGroup(next.dimension) == group) && group->isMemberLinked(helper, next.dimension)) {
+            helper->copyStateToLinkGroup(group, next.dimension, next.time, next.view, next.reason);
+        }
+        next = KnobLinkGroup::SyncRequest();
+    }
+}
+
+bool
+KnobHelper::linkDimensionTo(int dimension,
+                            const KnobIPtr& other,
+                            int otherDimension)
+{
+    KnobHelper* otherHelper = dynamic_cast<KnobHelper*>(other.get());
+
+    if (!otherHelper || (dimension < 0) || (dimension >= getDimension()) || (otherDimension < 0) || (otherDimension >= other->getDimension())) {
+        return false;
+    }
+    if ((otherHelper == this) && (otherDimension == dimension)) {
+        return false;
+    }
+
+    KnobLinkGroupPtr group = other->getLinkGroup(otherDimension);
+    if (group && !group->isMemberLinked(otherHelper, otherDimension)) {
+        // other kept its own state when it unlinked: the link starts from that state, in a new group.
+        otherHelper->leaveLinkGroup(otherDimension);
+        group.reset();
+    }
+
+    KnobLinkGroupPtr current = getLinkGroup(dimension);
+    if (current && (current == group) && group->isMemberLinked(this, dimension)) {
+        return true;
+    }
+    if (current && (current != group)) {
+        leaveLinkGroup(dimension);
+    }
+
+    if (!group) {
+        group = KnobLinkGroup::create(other);
+        if (!group) {
+            return false;
+        }
+        group->getStateKnob()->copyLinkStateFrom(otherHelper, 0, otherDimension, false);
+        group->setExpression(other->getExpression(otherDimension), other->isExpressionUsingRetVariable(otherDimension));
+        group->addMember(other, otherDimension);
+        otherHelper->setLinkGroupInternal(otherDimension, group);
+    }
+    group->addMember(shared_from_this(), dimension);
+    setLinkGroupInternal(dimension, group);
+
+    {
+        // The knob's own changes while it adopts the group's state must not push back to the group.
+        KnobLinkGroupSyncLocker locker(group);
+        ignore_result(adoptLinkGroupState(group, dimension, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited));
+    }
+    notifyLinkGroupMembers(group);
+
+    return true;
+} // KnobHelper::linkDimensionTo
+
+bool
+KnobHelper::linkTo(int thisDimension,
+                   const KnobIPtr& other,
+                   int otherDimension)
+{
+    if (!other || !isTypeCompatible(other)) {
+        return false;
+    }
+    bool ret = false;
+    if (thisDimension == -1) {
+        int nDims = (otherDimension == -1) ? std::min(getDimension(), other->getDimension()) : getDimension();
+        for (int i = 0; i < nDims; ++i) {
+            ret |= linkDimensionTo(i, other, otherDimension == -1 ? i : otherDimension);
+        }
+    } else {
+        ret = linkDimensionTo(thisDimension, other, otherDimension == -1 ? thisDimension : otherDimension);
+    }
+
+    return ret;
+}
+
+bool
+KnobHelper::linkAsAlias(const KnobIPtr& other)
+{
+    if (!linkTo(-1, other, -1)) {
+        return false;
+    }
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (group && group->isMemberLinked(this, i)) {
+            group->setMemberAlias(this, i, true);
+            notifyLinkGroupMembers(group);
+        }
+    }
+
+    return true;
+}
+
+bool
+KnobHelper::unlinkFromGroups()
+{
+    bool ret = false;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (group && !group->isPermanent() && group->isMemberLinked(this, i)) {
+            group->setMemberLinked(this, i, false);
+            notifyLinkGroupMembers(group);
+            ret = true;
+        }
+    }
+
+    return ret;
+}
+
+bool
+KnobHelper::relinkToGroups()
+{
+    bool ret = false;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (!group || group->isMemberLinked(this, i)) {
+            continue;
+        }
+        group->setMemberLinked(this, i, true);
+        ret = true;
+        {
+            KnobLinkGroupSyncLocker locker(group);
+            ignore_result(adoptLinkGroupState(group, i, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited));
+        }
+        notifyLinkGroupMembers(group);
+    }
+
+    return ret;
+}
+
+void
+KnobHelper::leaveLinkGroups(int dimension)
+{
+    // The badges and link lines of every node that shared a group with this knob change.
+    NodesList affectedNodes;
+    collectLinkGroupNodes(*this, dimension, &affectedNodes);
+    bool left = false;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        if (((dimension == -1) || (i == dimension)) && getLinkGroup(i)) {
+            leaveLinkGroup(i);
+            left = true;
+        }
+    }
+    if (left && _signalSlotHandler) {
+        _signalSlotHandler->s_linkChanged();
+    }
+    if (left) {
+        emitNodesLinksChanged(affectedNodes);
+    }
+}
+
+namespace {
+
+/*
+ * The group the knob dimension a saved link group id names is in, when that group still has a member on
+ * the project, or on an active node that is not one of the restored nodes: the group of the knob a copy
+ * was made from. The id is "node.knob.dimension" or "node/track.knob.dimension", the node name fully
+ * qualified, or "@project.knob.dimension" for a project knob.
+ */
+KnobLinkGroupPtr
+findOriginalLinkGroup(const std::string& id,
+                      const AppInstancePtr& app,
+                      const NodesList& restoredNodes,
+                      KnobHelperPtr* originalKnob)
+{
+    if (!app) {
+        return KnobLinkGroupPtr();
+    }
+    const std::size_t dimensionDot = id.rfind('.');
+    if ((dimensionDot == std::string::npos) || (dimensionDot == 0)) {
+        return KnobLinkGroupPtr();
+    }
+    const std::size_t knobDot = id.rfind('.', dimensionDot - 1);
+    if ((knobDot == std::string::npos) || (knobDot == 0)) {
+        return KnobLinkGroupPtr();
+    }
+    int dimension = -1;
+    try {
+        dimension = std::stoi(id.substr(dimensionDot + 1));
+    } catch (const std::exception&) {
+        return KnobLinkGroupPtr();
+    }
+    const std::string knobName = id.substr(knobDot + 1, dimensionDot - knobDot - 1);
+    const std::string owner = id.substr(0, knobDot);
+    const std::size_t slash = owner.find('/');
+    const std::string nodeName = owner.substr(0, slash);
+
+    KnobIPtr knob;
+    if (owner == kKnobLinkGroupProjectOwner) {
+        ProjectPtr project = app->getProject();
+        knob = project ? project->getKnobByName(knobName) : KnobIPtr();
+    } else {
+        NodePtr node = app->getNodeByFullySpecifiedName(nodeName);
+        if (!node || (std::find(restoredNodes.begin(), restoredNodes.end(), node) != restoredNodes.end())) {
+            return KnobLinkGroupPtr();
+        }
+        if (slash == std::string::npos) {
+            knob = node->getKnobByName(knobName);
+        } else {
+            TrackerContextPtr tracker = node->getTrackerContext();
+            TrackMarkerPtr marker = tracker ? tracker->getMarkerByName(owner.substr(slash + 1)) : TrackMarkerPtr();
+            knob = marker ? marker->getKnobByName(knobName) : KnobIPtr();
+        }
+    }
+    KnobHelperPtr helper = std::dynamic_pointer_cast<KnobHelper>(knob);
+    if (!helper || (dimension < 0) || (dimension >= helper->getDimension())) {
+        return KnobLinkGroupPtr();
+    }
+    KnobLinkGroupPtr group = helper->getLinkGroup(dimension);
+    if (!group) {
+        return KnobLinkGroupPtr();
+    }
+
+    // A group whose members are all deleted, or are all being restored, is not one to join.
+    const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+    for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+        KnobIPtr member = it->knob.lock();
+        NodePtr memberNode = linkMemberNode(member.get());
+        const bool onProject = member && dynamic_cast<Project*>(member->getHolder());
+        if (onProject || (memberNode && memberNode->isActivated() && (std::find(restoredNodes.begin(), restoredNodes.end(), memberNode) == restoredNodes.end()))) {
+            *originalKnob = helper;
+
+            return group;
+        }
+    }
+
+    return KnobLinkGroupPtr();
+} // findOriginalLinkGroup
+
+} // anon namespace
+
+void
+KnobHelper::restoreLinkGroups(const NodesList& nodes,
+                              bool joinExistingGroups,
+                              const KnobsVec& otherKnobs)
+{
+    NodesList allNodes;
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        allNodes.push_back(*it);
+        NodeGroupPtr isGroup = std::dynamic_pointer_cast<NodeGroup>((*it)->getEffectInstance());
+        if (isGroup) {
+            isGroup->getNodes_recursive(allNodes, false);
+        }
+    }
+
+    struct StoredMember {
+        KnobHelperPtr knob;
+        int dimension;
+        bool linked;
+        bool nodeLink;
+    };
+    std::map<std::string, std::vector<StoredMember>> stored;
+    const auto takeStoredGroups = [&stored](const KnobsVec& knobs) {
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            const std::vector<StoredLinkGroup> groups = (*k)->takeStoredLinkGroups();
+            KnobHelperPtr helper = std::dynamic_pointer_cast<KnobHelper>(*k);
+            if (!helper) {
+                continue;
+            }
+            for (std::vector<StoredLinkGroup>::const_iterator g = groups.begin(); g != groups.end(); ++g) {
+                StoredMember m;
+                m.knob = helper;
+                m.dimension = g->dimension;
+                m.linked = g->linked;
+                m.nodeLink = g->nodeLink;
+                stored[g->id].push_back(m);
+            }
+        }
+    };
+    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+        KnobsVec knobs = (*it)->getKnobs();
+        TrackerContextPtr tracker = (*it)->getTrackerContext();
+        if (tracker) {
+            std::vector<TrackMarkerPtr> markers;
+            tracker->getAllMarkers(&markers);
+            for (std::vector<TrackMarkerPtr>::const_iterator m = markers.begin(); m != markers.end(); ++m) {
+                const KnobsVec markerKnobs = (*m)->getKnobs_mt_safe();
+                knobs.insert(knobs.end(), markerKnobs.begin(), markerKnobs.end());
+            }
+        }
+        takeStoredGroups(knobs);
+    }
+    // Every group is rebuilt once all of its members are collected, so a group is restored the same
+    // whether a node knob or a project knob holds its first member.
+    takeStoredGroups(otherKnobs);
+
+    // Knob link changes do not emit Node::linksChanged(): the nodes that gained links are told at the end.
+    NodesList linkedNodes;
+    for (std::map<std::string, std::vector<StoredMember>>::const_iterator it = stored.begin(); it != stored.end(); ++it) {
+        const std::vector<StoredMember>& members = it->second;
+
+        // Copies join the group of the knobs they were copied from while it is still there.
+        KnobHelperPtr anchorKnob;
+        const StoredMember* anchor = 0;
+        KnobLinkGroupPtr group;
+        if (joinExistingGroups) {
+            const AppInstancePtr app = members.front().knob->getHolder() ? members.front().knob->getHolder()->getApp() : AppInstancePtr();
+            group = findOriginalLinkGroup(it->first, app, allNodes, &anchorKnob);
+        }
+        if (!group && (members.size() < 2)) {
+            // Its other members were not saved with it (a single copied node, a preset): nothing to link to.
+            continue;
+        }
+        if (!group) {
+            // A preset or user knobs restored onto knobs that kept their groups leaves those groups alone.
+            const KnobLinkGroupPtr current = members.front().knob->getLinkGroup(members.front().dimension);
+            bool together = (bool)current;
+            for (std::size_t i = 1; together && i < members.size(); ++i) {
+                together = (members[i].knob->getLinkGroup(members[i].dimension) == current);
+            }
+            if (together) {
+                continue;
+            }
+        }
+
+        // A member an alias was restored onto already is in the group that alias forms, which holds the
+        // state the alias restored: the other members join that group, whichever was restored first.
+        std::size_t anchorIndex = members.size();
+        for (std::size_t i = 0; !group && i < members.size(); ++i) {
+            KnobLinkGroupPtr g = members[i].knob->getLinkGroup(members[i].dimension);
+            if (g && g->isPermanent()) {
+                anchorIndex = i;
+                group = g;
+            }
+        }
+        if (!group) {
+            // The group starts from the state of a member that was linked when saved; unlinked members
+            // keep their own state, as they did when saved.
+            anchorIndex = 0;
+            for (std::size_t i = 0; i < members.size(); ++i) {
+                if (members[i].linked) {
+                    anchorIndex = i;
+                    break;
+                }
+            }
+            const StoredMember& seed = members[anchorIndex];
+            group = KnobLinkGroup::create(seed.knob);
+            if (!group) {
+                continue;
+            }
+            group->getStateKnob()->copyLinkStateFrom(seed.knob.get(), 0, seed.dimension, false);
+            group->setExpression(seed.knob->getExpression(seed.dimension), seed.knob->isExpressionUsingRetVariable(seed.dimension));
+        }
+        if (anchorIndex < members.size()) {
+            anchor = &members[anchorIndex];
+            anchorKnob = anchor->knob;
+        }
+
+        std::vector<const StoredMember*> joined;
+        for (std::size_t i = 0; i < members.size(); ++i) {
+            const StoredMember& m = members[i];
+            if ((&m != anchor) && !m.knob->isTypeCompatible(anchorKnob)) {
+                continue;
+            }
+            const KnobLinkGroupPtr memberGroup = m.knob->getLinkGroup(m.dimension);
+            if (memberGroup && (memberGroup != group) && memberGroup->isPermanent()) {
+                // Leaving it would break the alias that made it permanent.
+                continue;
+            }
+            NodePtr node = linkMemberNode(m.knob.get());
+            if (node && (std::find(linkedNodes.begin(), linkedNodes.end(), node) == linkedNodes.end())) {
+                linkedNodes.push_back(node);
+            }
+            if (memberGroup == group) {
+                group->setMemberNodeLink(m.knob.get(), m.dimension, m.nodeLink);
+                continue;
+            }
+            m.knob->leaveLinkGroup(m.dimension);
+            group->addMember(m.knob, m.dimension);
+            group->setMemberLinked(m.knob.get(), m.dimension, m.linked);
+            group->setMemberNodeLink(m.knob.get(), m.dimension, m.nodeLink);
+            m.knob->setLinkGroupInternal(m.dimension, group);
+            joined.push_back(&m);
+        }
+        if (group->getLiveMembersCount() < 2) {
+            dissolveLinkGroupIfAlone(group);
+            continue;
+        }
+
+        {
+            // The members' own changes while they adopt the group's state must not push back to the group.
+            KnobLinkGroupSyncLocker locker(group);
+            for (std::size_t i = 0; i < joined.size(); ++i) {
+                if (joined[i]->linked && (joined[i] != anchor)) {
+                    ignore_result(joined[i]->knob->adoptLinkGroupState(group, joined[i]->dimension, joined[i]->knob->getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited));
+                }
+            }
+        }
+        notifyLinkGroupMembers(group);
+    }
+
+    for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+        (*it)->emitLinksChanged(NodesList());
+    }
+} // KnobHelper::restoreLinkGroups
+
+KnobsVec
+KnobHelper::getAliasesOfThis() const
+{
+    KnobsVec ret;
+
+    for (int i = 0; i < getDimension(); ++i) {
+        KnobLinkGroupPtr group = getLinkGroup(i);
+        if (!group || !group->isPermanent()) {
+            continue;
+        }
+        std::vector<KnobLinkGroup::Member> members = group->getMembers();
+        for (std::vector<KnobLinkGroup::Member>::const_iterator it = members.begin(); it != members.end(); ++it) {
+            KnobIPtr knob = it->knob.lock();
+            if (knob && (knob.get() != this) && (knob->getAliasMaster().get() == this) && (std::find(ret.begin(), ret.end(), knob) == ret.end())) {
+                ret.push_back(knob);
+            }
+        }
+    }
+
+    return ret;
+}
+
+int
+KnobI::getPasteSourceDimension(int dimension,
+                               int targetDimension,
+                               int fromDimension,
+                               int fromDimensionCount)
+{
+    if (fromDimension != -1) {
+        return fromDimension;
+    }
+    if (fromDimensionCount == 1) {
+        return 0;
+    }
+    if (dimension < fromDimensionCount) {
+        return dimension;
+    }
+
+    return (targetDimension == -1) ? -1 : 0;
+}
+
+bool
+KnobI::isAliasKnob(const KnobI* knob)
+{
+    if (!knob) {
+        return false;
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->isLinkPermanent(i)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+KnobHelper::pasteFrom(const KnobIPtr& other,
+                      KnobClipBoardType type,
+                      int fromDimension,
+                      int targetDimension)
+{
+    if (!other || !KnobI::areTypesCompatibleForSlave(other.get(), this)) {
+        return false;
+    }
+    if ((type == eKnobClipBoardTypeCopyLink) && isAliasKnob(other.get())) {
+        return false;
+    }
+    if ((type == eKnobClipBoardTypeCopyAnim) && !isAnimationEnabled()) {
+        return false;
+    }
+    if ((fromDimension < -1) || (fromDimension >= other->getDimension()) || (targetDimension < -1) || (targetDimension >= getDimension())) {
+        return false;
+    }
+
+    KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(this);
+    KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(this);
+    KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(this);
+    KnobStringBase* isString = dynamic_cast<KnobStringBase*>(this);
+    KnobIntBase* isFromInt = dynamic_cast<KnobIntBase*>(other.get());
+    KnobBoolBase* isFromBool = dynamic_cast<KnobBoolBase*>(other.get());
+    KnobDoubleBase* isFromDouble = dynamic_cast<KnobDoubleBase*>(other.get());
+    KnobStringBase* isFromString = dynamic_cast<KnobStringBase*>(other.get());
+
+    bool ret = false;
+    beginChanges();
+    for (int i = 0; i < getDimension(); ++i) {
+        if ((targetDimension != -1) && (i != targetDimension)) {
+            continue;
+        }
+        const int src = getPasteSourceDimension(i, targetDimension, fromDimension, other->getDimension());
+        if (src == -1) {
+            continue;
+        }
+        switch (type) {
+        case eKnobClipBoardTypeCopyAnim: {
+            CurvePtr fromCurve = other->getCurve(ViewIdx(0), src);
+            if (fromCurve) {
+                cloneCurve(ViewIdx(0), i, *fromCurve);
+                ret = true;
+            }
+            break;
+        }
+        case eKnobClipBoardTypeCopyValue: {
+            if (isInt && isFromInt) {
+                isInt->setValue(isFromInt->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isInt && isFromDouble) {
+                isInt->setValue((int)std::floor(isFromDouble->getValue(src) + 0.5), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isDouble && isFromDouble) {
+                isDouble->setValue(isFromDouble->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isDouble && isFromInt) {
+                isDouble->setValue((double)isFromInt->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isBool && isFromBool) {
+                isBool->setValue(isFromBool->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else if (isString && isFromString) {
+                isString->setValue(isFromString->getValue(src), ViewIdx(0), i, eValueChangedReasonNatronInternalEdited, 0);
+            } else {
+                break;
+            }
+            ret = true;
+            break;
+        }
+        case eKnobClipBoardTypeCopyLink: {
+            if (!isLinkPermanent(i) && linkTo(i, other, src)) {
+                ret = true;
+            }
+            break;
+        }
+        } // switch
+    }
+    endChanges();
+
+    return ret;
+} // KnobHelper::pasteFrom
+
 bool
 KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
                                  bool doAlias)
 {
-    //Sanity check
-    if ( !master || ( master->getDimension() != getDimension() ) ||
-         ( master->typeName() != typeName() ) ) {
+    // Sanity check
+    if (!master || (master->getDimension() != getDimension()) || (master->typeName() != typeName())) {
         return false;
     }
 
@@ -5517,39 +6648,53 @@ KnobHelper::setKnobAsAliasOfThis(const KnobIPtr& master,
        For choices, copy exactly the menu entries because they have to be the same
      */
     if (doAlias) {
-        master->onKnobAboutToAlias( shared_from_this() );
+        master->onKnobAboutToAlias(shared_from_this());
+    }
+    // Set first, so that getAliasesOfThis() finds this knob when the link notifies its members.
+    {
+        QWriteLocker k(&_imp->mastersMutex);
+        if (doAlias) {
+            _imp->slaveForAlias = master;
+        } else {
+            _imp->slaveForAlias.reset();
+        }
     }
     beginChanges();
     for (int i = 0; i < getDimension(); ++i) {
-        if ( isSlave(i) ) {
+        if (isSlave(i)) {
             unSlave(i, false);
         }
-        if (doAlias) {
-            //master->clone(this, i);
-            bool ok = slaveToInternal(i, master, i, eValueChangedReasonNatronInternalEdited, false);
-            assert(ok);
-            Q_UNUSED(ok);
+    }
+    bool ok = true;
+    if (doAlias) {
+        ok = linkAsAlias(master);
+    } else {
+        for (int i = 0; i < getDimension(); ++i) {
+            KnobLinkGroupPtr group = getLinkGroup(i);
+            if (group && group->isPermanent() && group->hasMember(master.get(), i)) {
+                leaveLinkGroups(i);
+            }
         }
     }
-    for (int i = 0; i < getDimension(); ++i) {
-        master->setDimensionName( i, getDimensionName(i) );
+    if (ok) {
+        for (int i = 0; i < getDimension(); ++i) {
+            master->setDimensionName(i, getDimensionName(i));
+        }
+        handleSignalSlotsForAliasLink(master, doAlias);
     }
-    handleSignalSlotsForAliasLink(master, doAlias);
 
     endChanges();
 
-    QWriteLocker k(&_imp->mastersMutex);
-    if (doAlias) {
-        _imp->slaveForAlias = master;
-    } else {
+    if (!ok) {
+        QWriteLocker k(&_imp->mastersMutex);
         _imp->slaveForAlias.reset();
     }
 
-    return true;
+    return ok;
 }
 
 KnobIPtr
-KnobHelper::getAliasMaster()  const
+KnobHelper::getAliasMaster() const
 {
     QReadLocker k(&_imp->mastersMutex);
 
@@ -6053,7 +7198,8 @@ KnobHelper::getOwnDimensionContentHash(int dimension) const
 }
 
 void
-KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
+KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                  std::set<NodePtr>* metadataSources) const
 {
     std::set<KnobIPtr> deps;
     {
@@ -6082,21 +7228,34 @@ KnobHelper::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) cons
     std::list<KnobIPtr> knobsToInspectRecursive;
 
     for (std::set<KnobIPtr>::iterator it = deps.begin(); it != deps.end(); ++it) {
-        EffectInstance* effect  = dynamic_cast<EffectInstance*>( (*it)->getHolder() );
+        KnobHolder* holder = (*it)->getHolder();
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
         if (effect) {
             NodePtr node = effect->getNode();
 
             nodes.insert(node);
             knobsToInspectRecursive.push_back(*it);
+            continue;
+        }
+        // A track's parameter: the track belongs to its tracker node.
+        TrackMarker* marker = dynamic_cast<TrackMarker*>(holder);
+        TrackerContextPtr tracker = marker ? marker->getContext() : TrackerContextPtr();
+        NodePtr trackerNode = tracker ? tracker->getNode() : NodePtr();
+        if (trackerNode) {
+            nodes.insert(trackerNode);
+            knobsToInspectRecursive.push_back(*it);
         }
     }
 
-    std::list<NodePtr> metadataSources;
-    getMetadataDependencies(-1, &metadataSources);
-    nodes.insert(metadataSources.begin(), metadataSources.end());
+    std::list<NodePtr> metadataNodes;
+    getMetadataDependencies(-1, &metadataNodes);
+    nodes.insert(metadataNodes.begin(), metadataNodes.end());
+    if (metadataSources) {
+        metadataSources->insert(metadataNodes.begin(), metadataNodes.end());
+    }
 
     for (std::list<KnobIPtr>::iterator it = knobsToInspectRecursive.begin(); it != knobsToInspectRecursive.end(); ++it) {
-        (*it)->getAllExpressionDependenciesRecursive(nodes);
+        (*it)->getAllExpressionDependenciesRecursive(nodes, metadataSources);
     }
 }
 
@@ -6109,7 +7268,6 @@ struct KnobHolder::KnobHolderPrivate
     std::vector<KnobIPtr> knobs;
     bool knobsInitialized;
     bool isInitializingKnobs;
-    bool isSlave;
     std::vector<KnobIWPtr> knobsWithViewerUI;
 
     ///Count how many times an overlay needs to be redrawn for the instanceChanged/penMotion/penDown etc... actions
@@ -6144,7 +7302,6 @@ struct KnobHolder::KnobHolderPrivate
         , knobs()
         , knobsInitialized(false)
         , isInitializingKnobs(false)
-        , isSlave(false)
         , overlayRedrawStackMutex()
         , overlayRedrawStack(0)
         , isDequeingValuesSet(false)
@@ -6167,29 +7324,28 @@ struct KnobHolder::KnobHolderPrivate
     }
 
     KnobHolderPrivate(const KnobHolderPrivate& other)
-    : app(other.app)
-    , knobsMutex()
-    , knobs(other.knobs)
-    , knobsInitialized(other.knobsInitialized)
-    , isInitializingKnobs(other.isInitializingKnobs)
-    , isSlave(other.isSlave)
-    , overlayRedrawStackMutex()
-    , overlayRedrawStack(0)
-    , isDequeingValuesSet(other.isDequeingValuesSet)
-    , paramsEditLevel(other.paramsEditLevel)
-    , paramsEditRecursionLevel(other.paramsEditRecursionLevel)
-    , evaluationBlockedMutex()
-    , evaluationBlocked(0)
-    , canCurrentlySetValue(other.canCurrentlySetValue)
-    , knobChanged()
-    , nbSignificantChangesDuringEvaluationBlock(0)
-    , nbChangesDuringEvaluationBlock(0)
-    , nbChangesRequiringMetadataRefresh(0)
-    , knobsFrozenMutex()
-    , knobsFrozen(false)
-    , hasAnimationMutex()
-    , hasAnimation(other.hasAnimation)
-    , settingsPanel(other.settingsPanel)
+        : app(other.app)
+        , knobsMutex()
+        , knobs(other.knobs)
+        , knobsInitialized(other.knobsInitialized)
+        , isInitializingKnobs(other.isInitializingKnobs)
+        , overlayRedrawStackMutex()
+        , overlayRedrawStack(0)
+        , isDequeingValuesSet(other.isDequeingValuesSet)
+        , paramsEditLevel(other.paramsEditLevel)
+        , paramsEditRecursionLevel(other.paramsEditRecursionLevel)
+        , evaluationBlockedMutex()
+        , evaluationBlocked(0)
+        , canCurrentlySetValue(other.canCurrentlySetValue)
+        , knobChanged()
+        , nbSignificantChangesDuringEvaluationBlock(0)
+        , nbChangesDuringEvaluationBlock(0)
+        , nbChangesRequiringMetadataRefresh(0)
+        , knobsFrozenMutex()
+        , knobsFrozen(false)
+        , hasAnimationMutex()
+        , hasAnimation(other.hasAnimation)
+        , settingsPanel(other.settingsPanel)
     {
 
     }
@@ -7009,7 +8165,7 @@ KnobHolder::onDoEvaluateOnMainThread(bool significant,
 }
 
 void
-KnobHolder::abortAnyEvaluationForChange()
+KnobHolder::abortViewerRendersForChange()
 {
     {
         QMutexLocker l(&_imp->evaluationBlockedMutex);
@@ -7022,7 +8178,7 @@ KnobHolder::abortAnyEvaluationForChange()
             return;
         }
     }
-    abortAnyEvaluation();
+    abortViewerRendersForEdit();
 }
 
 void
@@ -7171,7 +8327,7 @@ KnobHolder::endChanges(bool discardRendering)
     }
 
     if (mustAbort) {
-        abortAnyEvaluation();
+        abortViewerRendersForEdit();
     }
 
     // Call getClipPreferences & render
@@ -7297,12 +8453,13 @@ KnobHolder::isSetValueCurrentlyPossible() const
 }
 
 void
-KnobHolder::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes) const
+KnobHolder::getAllExpressionDependenciesRecursive(std::set<NodePtr>& nodes,
+                                                  std::set<NodePtr>* metadataSources) const
 {
     QMutexLocker k(&_imp->knobsMutex);
 
     for (KnobsVec::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        (*it)->getAllExpressionDependenciesRecursive(nodes);
+        (*it)->getAllExpressionDependenciesRecursive(nodes, metadataSources);
     }
 }
 
@@ -7447,75 +8604,6 @@ KnobHolder::getKnobs_mt_safe() const
     QMutexLocker k(&_imp->knobsMutex);
 
     return _imp->knobs;
-}
-
-void
-KnobHolder::slaveAllKnobs(KnobHolder* other,
-                          bool restore)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    if (_imp->isSlave) {
-        return;
-    }
-    ///Call it prior to slaveTo: it will set the master pointer as pointing to other
-    onAllKnobsSlaved(true, other);
-
-    ///When loading a project, we don't need to slave all knobs here because the serialization of each knob separately
-    ///will reslave it correctly if needed
-    if (!restore) {
-        beginChanges();
-
-        const KnobsVec & otherKnobs = other->getKnobs();
-        const KnobsVec & thisKnobs = getKnobs();
-        for (U32 i = 0; i < otherKnobs.size(); ++i) {
-            if ( otherKnobs[i]->isDeclaredByPlugin() || otherKnobs[i]->isUserKnob() ) {
-                KnobIPtr foundKnob;
-                for (U32 j = 0; j < thisKnobs.size(); ++j) {
-                    if ( thisKnobs[j]->getName() == otherKnobs[i]->getName() ) {
-                        foundKnob = thisKnobs[j];
-                        break;
-                    }
-                }
-                assert(foundKnob);
-                if (!foundKnob) {
-                    continue;
-                }
-                int dims = foundKnob->getDimension();
-                for (int j = 0; j < dims; ++j) {
-                    foundKnob->slaveTo(j, otherKnobs[i], j);
-                }
-            }
-        }
-        endChanges();
-    }
-    _imp->isSlave = true;
-}
-
-bool
-KnobHolder::isSlave() const
-{
-    return _imp->isSlave;
-}
-
-void
-KnobHolder::unslaveAllKnobs()
-{
-    if (!_imp->isSlave) {
-        return;
-    }
-    const KnobsVec & thisKnobs = getKnobs();
-    beginChanges();
-    for (U32 i = 0; i < thisKnobs.size(); ++i) {
-        int dims = thisKnobs[i]->getDimension();
-        for (int j = 0; j < dims; ++j) {
-            if ( thisKnobs[i]->isSlave(j) ) {
-                thisKnobs[i]->unSlave(j, true);
-            }
-        }
-    }
-    endChanges();
-    _imp->isSlave = false;
-    onAllKnobsSlaved(false, (KnobHolder*)NULL);
 }
 
 void

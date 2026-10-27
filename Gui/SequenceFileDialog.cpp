@@ -1937,9 +1937,10 @@ SequenceFileDialog::setDefaultFilter()
     }
 
     QString filter = QString::fromUtf8("*.*");
-    // Long extension lists (readers) stay unfiltered; a single type, or a project with its
-    // folder form, is filtered on exactly that.
-    if ((_filters.size() == 1) || _filters.contains(Project::folderProjectFileName())) {
+    // The readers' long extension list stays unfiltered in sequence dialogs; any other dialog,
+    // and a project with its folder form, is filtered on exactly the types it was given.
+    const bool sequenceDialog = _model->isSequenceModeEnabled();
+    if (!_filters.isEmpty() && ((_filters.size() == 1) || !sequenceDialog || _filters.contains(Project::folderProjectFileName()))) {
         QStringList patterns;
         for (const QString& f : _filters) {
             patterns.push_back(filterPattern(f));

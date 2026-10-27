@@ -153,7 +153,7 @@ renderAndRead(const AppInstancePtr& app,
 
     std::list<AppInstance::RenderWork> works;
     works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-    app->startWritersRendering(false, works);
+    app->startWritersRendering(eRenderModeBlocking, works);
 
     if (!QFile::exists(QString::fromStdString(path))) {
         *error = "frame was not rendered: " + path;
@@ -581,7 +581,7 @@ TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsT
         ASSERT_TRUE(writerEffect != NULL);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-        app->startWritersRendering(false, works);
+        app->startWritersRendering(eRenderModeBlocking, works);
         ASSERT_TRUE(QFile::exists(QString::fromStdString(perLayerParts))) << "frame was not rendered: " << perLayerParts;
     }
 

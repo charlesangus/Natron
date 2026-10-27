@@ -28,16 +28,49 @@
 NATRON_NAMESPACE_ENTER
 
 bool
-shouldStartPickUp(PickUpButtonEnum releasedButton,
-                  bool movedSincePress,
-                  bool isOutputEdge)
+isDragDistance(double pressToReleaseDistance,
+               double dragDistance)
 {
-    return (releasedButton == ePickUpButtonLeft) && !movedSincePress && !isOutputEdge;
+    return pressToReleaseDistance >= dragDistance;
+}
+
+bool
+shouldStartPickUp(PickUpButtonEnum releasedButton,
+                  double pressToReleaseDistance,
+                  double dragDistance)
+{
+    return (releasedButton == ePickUpButtonLeft) && !isDragDistance(pressToReleaseDistance, dragDistance);
+}
+
+PickUpEndEnum
+pickedUpEnd(const QPointF& click,
+            const QPointF& destination,
+            const QPointF& source)
+{
+    const QPointF toDestination = click - destination;
+    const QPointF toSource = click - source;
+    const double destinationDist2 = QPointF::dotProduct(toDestination, toDestination);
+    const double sourceDist2 = QPointF::dotProduct(toSource, toSource);
+
+    return (destinationDist2 < sourceDist2) ? ePickUpEndDestination : ePickUpEndSource;
+}
+
+PickUpEndEnum
+carriedPickUpEnd(PickUpEndEnum nearestEnd,
+                 bool isOutputEdge,
+                 bool hasSource)
+{
+    if (isOutputEdge) {
+        return ePickUpEndDestination;
+    }
+
+    return hasSource ? nearestEnd : ePickUpEndSource;
 }
 
 PickUpPressActionEnum
 decidePickUpPress(PickUpButtonEnum button,
-                  PickUpClickTargetEnum target)
+                  PickUpClickTargetEnum target,
+                  bool carriesOutputStub)
 {
     switch (button) {
     case ePickUpButtonLeft:
@@ -47,7 +80,7 @@ decidePickUpPress(PickUpButtonEnum button,
         case ePickUpClickTargetNavigator:
             return ePickUpPressPassThrough;
         case ePickUpClickTargetOther:
-            return ePickUpPressDisconnect;
+            return carriesOutputStub ? ePickUpPressCancel : ePickUpPressDisconnect;
         case ePickUpClickTargetHoldingNode:
         default:
             return ePickUpPressCancel;

@@ -221,6 +221,14 @@ ViewerInstance::ViewerInstance(NodePtr node)
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
     QObject::connect( _imp.get(), SIGNAL(mustRedrawViewer()), this, SLOT(redrawViewer()) );
     QObject::connect( this, SIGNAL(s_callRedrawOnMainThread()), this, SLOT(redrawViewer()) );
+    if (node) {
+        // dataKindChanged() also reaches the Viewer when a Group it shows changes what reaches
+        // its output, which no input change on the Viewer itself reports.
+        QObject::connect(node.get(), SIGNAL(dataKindChanged()), this, SLOT(refreshActiveInputDataKind()));
+        if (dynamic_cast<InspectorNode*>(node.get())) {
+            QObject::connect(node.get(), SIGNAL(activeInputsChanged()), this, SLOT(refreshActiveInputDataKind()));
+        }
+    }
 }
 
 ViewerInstance::~ViewerInstance()
@@ -1576,6 +1584,12 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
             _rawDisplayLabel[textureIndex] = rawLabel;
         }
     }
+    // The scene action resolves disabled nodes itself, so a scene is evaluated from the input
+    // as connected rather than from the nearest non-disabled node.
+    outArgs->sceneUpstream = upstreamInput && upstreamInput->producesSceneData();
+    if (outArgs->sceneUpstream) {
+        outArgs->activeInputToRender = upstreamInput;
+    }
 
     // Before rendering we check that all mandatory inputs in the graph are connected else we fail
     if ( !outArgs->activeInputToRender || !checkTreeCanRender( outArgs->activeInputToRender->getNode().get() ) ) {
@@ -1585,11 +1599,56 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     // Fetch the render parameters from the Viewer UI
     setupMinimalUpdateViewerParams(time, view, textureIndex, abortInfo, isSequential, outArgs);
 
+    // A scene has no RoD or texture to look up; it is evaluated on the render thread.
+    if (outArgs->sceneUpstream) {
+        return eViewerRenderRetCodeRender;
+    }
+
     // Try to look-up the cache but do so only if we have a RoD valid in the cache because
 
     // we are on the main-thread here, it would be expensive to compute the RoD now.
     return getRoDAndLookupCache(true, viewerHash, rotoPaintNode, stats, outArgs);
 }
+
+ViewerInstance::ViewerRenderRetCode
+ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
+{
+    assert(inArgs.activeInputToRender && inArgs.params);
+    const int textureIndex = inArgs.params->textureIndex;
+    ScenePayload scene;
+    std::string error;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view), &scene, &error);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        error = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+
+    if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+        return eViewerRenderRetCodeRedraw;
+    }
+
+    const bool ok = (code == EffectInstance::eRenderRoIRetCodeOk);
+    if (!ok && error.empty()) {
+        error = inArgs.activeInputToRender->getScriptName_mt_safe() + ": scene evaluation failed";
+    }
+    if ((textureIndex == 0) || (textureIndex == 1)) {
+        {
+            std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+            _imp->lastScene[textureIndex] = ok ? scene : ScenePayload();
+            _imp->lastSceneError[textureIndex] = ok ? std::string() : error;
+            _imp->lastSceneOk[textureIndex] = ok;
+        }
+        Q_EMIT sceneEvaluated(textureIndex);
+    }
+
+    // Black rather than Fail even when the action failed: the failing node carries the error
+    // itself, and Fail would stop playback and clear the whole viewer for what the 3D view shows.
+    return eViewerRenderRetCodeBlack;
+} // ViewerInstance::evaluateSceneInput
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::renderViewer_internal(ViewIdx view,
@@ -1603,6 +1662,10 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       const RenderStatsPtr& stats,
                                       ViewerArgs& inArgs)
 {
+    if (inArgs.sceneUpstream) {
+        return evaluateSceneInput(inArgs);
+    }
+
     // We are in the render thread, we may not have computed the RoD and lookup the cache yet
 
     ViewerParallelRenderArgsSetterPtr frameArgs;
@@ -4086,13 +4149,108 @@ ViewerInstance::isViewerPaused(int texIndex) const
 void
 ViewerInstance::onInputChanged(int /*inputNb*/)
 {
+    refreshActiveInputDataKind();
     Q_EMIT clipPreferencesChanged();
 }
 
 void
 ViewerInstance::onCurrentFrameMetadataChanged(const NodeMetadata& /*metadata*/)
 {
+    // Also the first call once a loaded project is complete, when every input is in place.
+    refreshActiveInputDataKind();
     Q_EMIT clipPreferencesChanged();
+}
+
+static DataKindEnum
+viewerInputDataKind(const ViewerInstance* viewer,
+                    int inputNb)
+{
+    if (inputNb < 0) {
+        return eDataKindImage;
+    }
+    EffectInstancePtr input = viewer->getInput(inputNb);
+    NodePtr inputNode = input ? input->getNode() : NodePtr();
+    if (!inputNode) {
+        return eDataKindImage;
+    }
+    bool isAmbiguous = false;
+    const DataKindEnum kind = inputNode->getEffectiveOutputDataKind(&isAmbiguous);
+
+    return isAmbiguous ? eDataKindPolymorphic : kind;
+}
+
+DataKindEnum
+ViewerInstance::getInputDataKindForTexture(int textureIndex) const
+{
+    int a = -1, b = -1;
+
+    getActiveInputs(a, b);
+
+    return viewerInputDataKind(this, textureIndex == 0 ? a : b);
+}
+
+DataKindEnum
+ViewerInstance::getActiveInputDataKind() const
+{
+    return getInputDataKindForTexture(0);
+}
+
+bool
+ViewerInstance::isWipeDisabledByDataKind() const
+{
+    return (getInputDataKindForTexture(0) == eDataKindScene) || (getInputDataKindForTexture(1) == eDataKindScene);
+}
+
+bool
+ViewerInstance::getLastEvaluatedScene(int textureIndex,
+                                      ScenePayload* scene,
+                                      std::string* error) const
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+    if (scene) {
+        *scene = _imp->lastScene[textureIndex];
+    }
+    if (error) {
+        *error = _imp->lastSceneError[textureIndex];
+    }
+
+    return _imp->lastSceneOk[textureIndex];
+}
+
+void
+ViewerInstance::refreshActiveInputDataKind()
+{
+    if (!qApp || (QThread::currentThread() != qApp->thread())) {
+        QMetaObject::invokeMethod(this, "refreshActiveInputDataKind", Qt::QueuedConnection);
+
+        return;
+    }
+    if (!getNode()) {
+        return;
+    }
+
+    const DataKindEnum kinds[2] = { getInputDataKindForTexture(0), getInputDataKindForTexture(1) };
+    const bool wipeDisabled = (kinds[0] == eDataKindScene) || (kinds[1] == eDataKindScene);
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        for (int i = 0; i < 2; ++i) {
+            if (kinds[i] != eDataKindScene) {
+                _imp->lastScene[i] = ScenePayload();
+                _imp->lastSceneError[i].clear();
+                _imp->lastSceneOk[i] = false;
+            }
+        }
+    }
+
+    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled)) {
+        return;
+    }
+    _imp->notifiedInputDataKind = kinds[0];
+    _imp->notifiedWipeDisabled = wipeDisabled;
+    Q_EMIT activeInputDataKindChanged();
 }
 
 void
@@ -4154,6 +4312,7 @@ ViewerInstance::setInputA(int inputNb)
         isInspector->setInputA(inputNb);
     }
 
+    refreshActiveInputDataKind();
     Q_EMIT availableComponentsChanged();
 }
 
@@ -4168,6 +4327,7 @@ ViewerInstance::setInputB(int inputNb)
         isInspector->setInputB(inputNb);
     }
 
+    refreshActiveInputDataKind();
     Q_EMIT availableComponentsChanged();
 }
 

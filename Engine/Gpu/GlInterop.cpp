@@ -5,6 +5,8 @@
 
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -13,7 +15,7 @@
 
 namespace gpu {
 
-struct GlInterop::Gl {
+struct GlExternal::Api {
     decltype(&::glGetError) GetError = nullptr;
     decltype(&::glGetString) GetString = nullptr;
     decltype(&::glGetIntegerv) GetIntegerv = nullptr;
@@ -108,6 +110,9 @@ struct GlInterop::Gl {
     }
 };
 
+struct GlInterop::Gl : GlExternal::Api {
+};
+
 namespace {
 
     GpuStatus fail(VkResult r, std::string msg)
@@ -117,7 +122,7 @@ namespace {
 
     constexpr VkExternalMemoryHandleTypeFlagBits kMemHandle = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
     constexpr VkExternalSemaphoreHandleTypeFlagBits kSemHandle = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
-    constexpr VkDeviceSize kImportSlack = 256;
+    constexpr VkDeviceSize kImportSlack = GlExternal::kImportSlackBytes;
     constexpr VkBufferUsageFlags kBufferUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
     void appendMissing(std::string& missing, const std::string& what)
@@ -126,6 +131,98 @@ namespace {
             missing += ", ";
         }
         missing += what;
+    }
+
+    GpuStatus glErrorStatus(GlExternal::Api& gl, const char* what)
+    {
+        GLenum first = GL_NO_ERROR;
+        for (GLenum e = gl.GetError(); e != GL_NO_ERROR; e = gl.GetError()) {
+            if (first == GL_NO_ERROR) {
+                first = e;
+            }
+        }
+        if (first == GL_NO_ERROR) {
+            return {};
+        }
+        char code[16];
+        std::snprintf(code, sizeof code, "%04x", first);
+        return fail(VK_ERROR_UNKNOWN, std::string(what) + " raised GL error 0x" + code);
+    }
+
+    // Imports the dedicated `memory`, allocationEnd bytes from its start, as a GL memory object, and
+    // makes a GL buffer of bufferBytes at `offset` in it.
+    GpuStatus importMemory(GlExternal::Api& gl,
+                           GpuDevice& device,
+                           VkDeviceMemory memory,
+                           VkDeviceSize allocationEnd,
+                           VkDeviceSize offset,
+                           VkDeviceSize bufferBytes,
+                           GLuint* glMemory,
+                           GLuint* glBuffer)
+    {
+        VkDevice vk = device.device();
+        auto getMemoryFd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(vk, "vkGetMemoryFdKHR"));
+        if (!getMemoryFd) {
+            return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkGetMemoryFdKHR unavailable");
+        }
+        gl.GenBuffers(1, glBuffer);
+        VkMemoryGetFdInfoKHR mfi { VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
+        mfi.memory = memory;
+        mfi.handleType = kMemHandle;
+        int memFd = -1;
+        if (GpuStatus s = device.check(getMemoryFd(vk, &mfi, &memFd), "vkGetMemoryFdKHR"); !s) {
+            return s;
+        }
+
+        // GL takes ownership of the fd only when the import itself succeeds, so every earlier call is
+        // checked on its own: a stale error read after the import would close an fd GL already owns.
+        gl.CreateMemoryObjectsEXT(1, glMemory);
+        GpuStatus s = glErrorStatus(gl, "glCreateMemoryObjectsEXT");
+        if (s) {
+            const GLint dedicated = GL_TRUE;
+            gl.MemoryObjectParameterivEXT(*glMemory, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+            s = glErrorStatus(gl, "glMemoryObjectParameterivEXT");
+        }
+        if (!s) {
+            close(memFd);
+            return s;
+        }
+        gl.ImportMemoryFdEXT(*glMemory, allocationEnd, GL_HANDLE_TYPE_OPAQUE_FD_EXT, memFd);
+        if (s = glErrorStatus(gl, "glImportMemoryFdEXT"); !s) {
+            close(memFd);
+            return s;
+        }
+        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, *glBuffer);
+        gl.BufferStorageMemEXT(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(bufferBytes), *glMemory, offset);
+        gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        return glErrorStatus(gl, "glBufferStorageMemEXT");
+    }
+
+    GpuStatus importSemaphoreFd(GlExternal::Api& gl, GpuDevice& device, VkSemaphore semaphore, GLuint* glSemaphore)
+    {
+        VkDevice vk = device.device();
+        auto getSemFd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(vkGetDeviceProcAddr(vk, "vkGetSemaphoreFdKHR"));
+        if (!getSemFd) {
+            return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkGetSemaphoreFdKHR unavailable");
+        }
+        VkSemaphoreGetFdInfoKHR sfi { VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR };
+        sfi.semaphore = semaphore;
+        sfi.handleType = kSemHandle;
+        int fd = -1;
+        if (GpuStatus s = device.check(getSemFd(vk, &sfi, &fd), "vkGetSemaphoreFdKHR"); !s) {
+            return s;
+        }
+        gl.GenSemaphoresEXT(1, glSemaphore);
+        if (GpuStatus s = glErrorStatus(gl, "glGenSemaphoresEXT"); !s) {
+            close(fd);
+            return s;
+        }
+        gl.ImportSemaphoreFdEXT(*glSemaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+        if (GpuStatus s = glErrorStatus(gl, "glImportSemaphoreFdEXT"); !s) {
+            close(fd);
+            return s;
+        }
+        return {};
     }
 
     std::string hex(const std::array<uint8_t, 16>& u)
@@ -153,6 +250,192 @@ toString(GlHandoffPath path)
         return "readback";
     }
     return "?";
+}
+
+const char*
+overrideName(GlHandoffPath path)
+{
+    switch (path) {
+    case GlHandoffPath::ZeroCopy:
+        return "zerocopy";
+    case GlHandoffPath::ZeroCopyHostSync:
+        return "hostsync";
+    case GlHandoffPath::Readback:
+        return "readback";
+    }
+    return "?";
+}
+
+std::optional<GlHandoffPath>
+parseOverride(const char* value)
+{
+    if (!value) {
+        return std::nullopt;
+    }
+    std::string lower(value);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    for (GlHandoffPath path : { GlHandoffPath::ZeroCopy, GlHandoffPath::ZeroCopyHostSync, GlHandoffPath::Readback }) {
+        if (lower == overrideName(path)) {
+            return path;
+        }
+    }
+    return std::nullopt;
+}
+
+bool
+isDeviceLost(const GpuStatus& s)
+{
+    return s.result == VK_ERROR_DEVICE_LOST;
+}
+
+GlHandoffChoice
+chooseHandoffPath(const GlInteropCaps& caps,
+                  GlHandoffPath first,
+                  const std::function<GpuStatus(GlHandoffPath)>& build)
+{
+    GlHandoffChoice choice;
+    auto note = [&](const std::string& reason) {
+        choice.reasons += (choice.reasons.empty() ? "" : "; ") + reason;
+    };
+    for (int i = (int)first; i <= (int)GlHandoffPath::Readback; ++i) {
+        const GlHandoffPath path = (GlHandoffPath)i;
+        if (!caps.supports(path)) {
+            note(std::string(overrideName(path)) + " unavailable: missing " + caps.missing);
+            continue;
+        }
+        const GpuStatus s = build(path);
+        if (s) {
+            choice.path = path;
+            break;
+        }
+        if (isDeviceLost(s)) {
+            choice.lost = true;
+            break;
+        }
+        note(std::string(overrideName(path)) + " failed: " + s.message);
+    }
+    return choice;
+}
+
+GpuStatus
+createExportableSemaphore(GpuDevice& device, VkSemaphore* out)
+{
+    *out = VK_NULL_HANDLE;
+    VkExportSemaphoreCreateInfo esci { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO };
+    esci.handleTypes = kSemHandle;
+    VkSemaphoreCreateInfo sci { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    sci.pNext = &esci;
+    return device.check(vkCreateSemaphore(device.device(), &sci, nullptr, out), "vkCreateSemaphore");
+}
+
+GpuStatus
+GlExternal::load(const GlProcLoader& loader, std::unique_ptr<GlExternal>& out)
+{
+    out.reset();
+    std::unique_ptr<GlExternal> self(new GlExternal);
+    self->api_ = std::make_unique<Api>();
+    Api& gl = *self->api_;
+    if (!gl.load(loader)) {
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GL core entry points unavailable; is a context current?");
+    }
+    if (!gl.has("GL_EXT_memory_object_fd") || !gl.CreateMemoryObjectsEXT || !gl.DeleteMemoryObjectsEXT
+        || !gl.MemoryObjectParameterivEXT || !gl.ImportMemoryFdEXT || !gl.BufferStorageMemEXT) {
+        return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "GL_EXT_memory_object_fd unavailable");
+    }
+    out = std::move(self);
+    return {};
+}
+
+GlExternal::~GlExternal() = default;
+
+GpuStatus
+GlExternal::importBuffer(GpuDevice& device, const GpuBuffer& buffer, VkDeviceSize bytes, unsigned int* glMemory,
+                         unsigned int* glBuffer)
+{
+    *glMemory = 0;
+    *glBuffer = 0;
+    if (buffer.kind() != GpuBufferKind::Exportable || bytes + kImportSlackBytes > buffer.size()) {
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GlExternal::importBuffer: not an exportable buffer that large");
+    }
+    // The dedicated allocation is as large as the buffer's requirements, which GL must import whole.
+    VkMemoryRequirements requirements {};
+    vkGetBufferMemoryRequirements(device.device(), buffer.buffer(), &requirements);
+    GLuint memory = 0;
+    GLuint name = 0;
+    GpuStatus s = importMemory(*api_, device, buffer.memory(), buffer.memoryOffset() + requirements.size,
+                               buffer.memoryOffset(), bytes, &memory, &name);
+    *glMemory = memory;
+    *glBuffer = name;
+    if (!s) {
+        deleteBuffer(glMemory, glBuffer);
+    }
+    return s;
+}
+
+GpuStatus
+GlExternal::importSemaphore(GpuDevice& device, VkSemaphore semaphore, unsigned int* glSemaphore)
+{
+    *glSemaphore = 0;
+    if (!api_->GenSemaphoresEXT || !api_->ImportSemaphoreFdEXT || !api_->SignalSemaphoreEXT) {
+        return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "GL_EXT_semaphore_fd unavailable");
+    }
+    GLuint name = 0;
+    GpuStatus s = importSemaphoreFd(*api_, device, semaphore, &name);
+    *glSemaphore = name;
+    if (!s) {
+        deleteSemaphore(glSemaphore);
+    }
+    return s;
+}
+
+void
+GlExternal::deleteBuffer(unsigned int* glMemory, unsigned int* glBuffer)
+{
+    if (*glBuffer) {
+        GLuint name = *glBuffer;
+        api_->DeleteBuffers(1, &name);
+        *glBuffer = 0;
+    }
+    if (*glMemory && api_->DeleteMemoryObjectsEXT) {
+        GLuint name = *glMemory;
+        api_->DeleteMemoryObjectsEXT(1, &name);
+        *glMemory = 0;
+    }
+}
+
+void
+GlExternal::deleteSemaphore(unsigned int* glSemaphore)
+{
+    if (*glSemaphore && api_->DeleteSemaphoresEXT) {
+        GLuint name = *glSemaphore;
+        api_->DeleteSemaphoresEXT(1, &name);
+    }
+    *glSemaphore = 0;
+}
+
+GpuStatus
+GlExternal::signal(unsigned int glSemaphore, unsigned int glBuffer)
+{
+    if (!api_->SignalSemaphoreEXT) {
+        return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "GL_EXT_semaphore unavailable");
+    }
+    const GLuint buffer = glBuffer;
+    api_->SignalSemaphoreEXT(glSemaphore, 1, &buffer, 0, nullptr, nullptr);
+    api_->Flush();
+    return glErrorStatus(*api_, "glSignalSemaphoreEXT");
+}
+
+GpuStatus
+GlExternal::finish()
+{
+    api_->Finish();
+    return glErrorStatus(*api_, "glFinish");
+}
+
+GpuStatus
+GlExternal::error(const char* what)
+{
+    return glErrorStatus(*api_, what);
 }
 
 uint32_t
@@ -456,12 +739,8 @@ GlInterop::initVulkanSlot(Slot& slot, bool exportable, bool semaphores)
     }
 
     if (semaphores) {
-        VkExportSemaphoreCreateInfo esci { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO };
-        esci.handleTypes = kSemHandle;
-        VkSemaphoreCreateInfo sci { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        sci.pNext = &esci;
         for (VkSemaphore* sem : { &slot.vkReady, &slot.glDone }) {
-            if (GpuStatus s = dev.check(vkCreateSemaphore(vk, &sci, nullptr, sem), "vkCreateSemaphore"); !s) {
+            if (GpuStatus s = createExportableSemaphore(dev, sem); !s) {
                 return s;
             }
         }
@@ -472,95 +751,28 @@ GlInterop::initVulkanSlot(Slot& slot, bool exportable, bool semaphores)
 GpuStatus
 GlInterop::glError(const char* what)
 {
-    GLenum first = GL_NO_ERROR;
-    for (GLenum e = gl_->GetError(); e != GL_NO_ERROR; e = gl_->GetError()) {
-        if (first == GL_NO_ERROR) {
-            first = e;
-        }
-    }
-    if (first == GL_NO_ERROR) {
-        return {};
-    }
-    return fail(VK_ERROR_UNKNOWN, std::string(what) + " raised GL error 0x" + [&] {
-        char buf[16];
-        std::snprintf(buf, sizeof buf, "%04x", first);
-        return std::string(buf); }());
+    return glErrorStatus(*gl_, what);
 }
 
 GpuStatus
 GlInterop::initGlSlot(Slot& slot, bool semaphores)
 {
-    Gl& gl = *gl_;
-    VkDevice vk = device_->device();
-
     if (path_ == GlHandoffPath::Readback) {
         return {};
     }
-    gl.GenBuffers(1, &slot.glBuffer);
-
-    auto getMemoryFd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(vk, "vkGetMemoryFdKHR"));
-    if (!getMemoryFd) {
-        return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkGetMemoryFdKHR unavailable");
-    }
     VmaAllocationInfo ai {};
     vmaGetAllocationInfo(device_->allocator(), slot.allocation, &ai);
-    VkMemoryGetFdInfoKHR mfi { VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
-    mfi.memory = ai.deviceMemory;
-    mfi.handleType = kMemHandle;
-    int memFd = -1;
-    if (GpuStatus s = device_->check(getMemoryFd(vk, &mfi, &memFd), "vkGetMemoryFdKHR"); !s) {
+    if (GpuStatus s = importMemory(*gl_, *device_, ai.deviceMemory, ai.offset + ai.size, ai.offset, capacity_,
+                                   &slot.glMemory, &slot.glBuffer);
+        !s) {
         return s;
     }
-
-    // GL takes ownership of the fd only when the import itself succeeds, so every earlier call is
-    // checked on its own: a stale error read after the import would close an fd GL already owns.
-    gl.CreateMemoryObjectsEXT(1, &slot.glMemory);
-    GpuStatus s = glError("glCreateMemoryObjectsEXT");
-    if (s) {
-        const GLint dedicated = GL_TRUE;
-        gl.MemoryObjectParameterivEXT(slot.glMemory, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
-        s = glError("glMemoryObjectParameterivEXT");
-    }
-    if (!s) {
-        close(memFd);
-        return s;
-    }
-    gl.ImportMemoryFdEXT(slot.glMemory, ai.offset + ai.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, memFd);
-    if (s = glError("glImportMemoryFdEXT"); !s) {
-        close(memFd);
-        return s;
-    }
-    gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, slot.glBuffer);
-    gl.BufferStorageMemEXT(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(capacity_), slot.glMemory, ai.offset);
-    gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-    if (s = glError("glBufferStorageMemEXT"); !s) {
-        return s;
-    }
-
     if (!semaphores) {
         return {};
     }
-    auto getSemFd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(vkGetDeviceProcAddr(vk, "vkGetSemaphoreFdKHR"));
-    if (!getSemFd) {
-        return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkGetSemaphoreFdKHR unavailable");
-    }
     std::pair<VkSemaphore, GLuint*> pairs[] = { { slot.vkReady, &slot.glReady }, { slot.glDone, &slot.glDoneGl } };
     for (auto& [vkSem, glSem] : pairs) {
-        VkSemaphoreGetFdInfoKHR sfi { VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR };
-        sfi.semaphore = vkSem;
-        sfi.handleType = kSemHandle;
-        int fd = -1;
-        if (GpuStatus s = device_->check(getSemFd(vk, &sfi, &fd), "vkGetSemaphoreFdKHR"); !s) {
-            return s;
-        }
-        gl.GenSemaphoresEXT(1, glSem);
-        if (GpuStatus s = glError("glGenSemaphoresEXT"); !s) {
-            close(fd);
-            return s;
-        }
-        gl.ImportSemaphoreFdEXT(*glSem, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
-        if (GpuStatus s = glError("glImportSemaphoreFdEXT"); !s) {
-            close(fd);
+        if (GpuStatus s = importSemaphoreFd(*gl_, *device_, vkSem, glSem); !s) {
             return s;
         }
     }

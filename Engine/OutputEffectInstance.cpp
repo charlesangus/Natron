@@ -150,6 +150,15 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
                                          int last,
                                          int frameStep)
 {
+    const int requestedFirst = first;
+    const int requestedLast = last;
+    const bool atOnce = writesFrameRangeAtOnce();
+
+    if (atOnce) {
+        last = first;
+        frameStep = 1;
+    }
+
     int viewsCount = getApp()->getProject()->getProjectViewsCount();
     const ViewIdx mainView(0);
     std::vector<ViewIdx> viewsToRender(viewsCount);
@@ -172,7 +181,10 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
     KnobOutputFile* outputFileName = outputFileNameKnob ? dynamic_cast<KnobOutputFile*>( outputFileNameKnob.get() ) : 0;
     std::string pattern = outputFileName ? outputFileName->getValue() : std::string();
 
-    if ( isViewAware() ) {
+    if (atOnce) {
+        viewsToRender.clear();
+        viewsToRender.push_back(mainView);
+    } else if (isViewAware()) {
         //If the Writer is view aware, check if it wants to render all views at once or not
         std::size_t foundViewPattern = pattern.find_first_of("%v");
         if (foundViewPattern == std::string::npos) {
@@ -234,7 +246,6 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
             ///should write one view per-file.
         }
 
-
     } else { // !isViewAware
         if (viewsToRender.size() > 1) {
             std::string mainViewName;
@@ -294,6 +305,8 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
         args.firstFrame = first;
         args.lastFrame = last;
         args.frameStep = frameStep;
+        args.requestedFirstFrame = requestedFirst;
+        args.requestedLastFrame = requestedLast;
         args.renderController = renderController;
         args.useStats = enableRenderStats;
         args.blocking = isBlocking;
@@ -378,6 +391,23 @@ OutputEffectInstance::hasRenderSequenceRequestOtherThan(const BlockingBackground
     }
 
     return false;
+}
+
+bool
+OutputEffectInstance::getRunningRenderRequestedRange(int* firstFrame,
+                                                     int* lastFrame) const
+{
+    QMutexLocker k(&_outputEffectDataLock);
+
+    // The front request is the one running; the others wait behind it.
+    if (_renderSequenceRequests.empty()) {
+        return false;
+    }
+    const RenderSequenceArgs& args = _renderSequenceRequests.front();
+    *firstFrame = args.requestedFirstFrame;
+    *lastFrame = args.requestedLastFrame;
+
+    return true;
 }
 
 bool

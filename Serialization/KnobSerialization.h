@@ -66,6 +66,30 @@ struct KnobMasterSerialization {
 };
 
 /**
+ * @brief The two-way link group one knob dimension belongs to. The id is only meaningful within
+ * what was saved together (a project, a clipboard, a preset): dimensions with the same id are
+ * linked to each other again on load, never to anything else.
+ **/
+struct KnobLinkGroupSerialization {
+    std::string id;
+
+    // False when the dimension was unlinked and keeps its own value until re-linked.
+    bool linked;
+
+    // True when the dimension joined the group through a Linked Node.
+    bool nodeLink;
+
+    KnobLinkGroupSerialization()
+        : id()
+        , linked(true)
+        , nodeLink(false)
+    {
+    }
+
+    bool operator==(const KnobLinkGroupSerialization&) const = default;
+};
+
+/**
  * @brief The saved state of one knob dimension.
  **/
 struct KnobDimensionSerialization {
@@ -82,6 +106,9 @@ struct KnobDimensionSerialization {
     // Present when the dimension is linked to another knob.
     std::optional<KnobMasterSerialization> master;
 
+    // Present when the dimension is in a two-way link group (Linked Nodes, Paste Link).
+    std::optional<KnobLinkGroupSerialization> linkGroup;
+
     std::string expression;
     bool expressionHasReturnVariable;
 
@@ -91,6 +118,7 @@ struct KnobDimensionSerialization {
         , value()
         , defaultValue()
         , master()
+        , linkGroup()
         , expression()
         , expressionHasReturnVariable(false)
     {

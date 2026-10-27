@@ -31,6 +31,7 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/Node.h"
 
 NATRON_NAMESPACE_ENTER
@@ -416,6 +417,7 @@ FrameRenderContext::FrameRenderContext()
     , _time(0.)
     , _view(0)
     , _store()
+    , _isolatedJob(IsolatedJob::current())
 #ifdef NATRON_HAVE_GPU
     , _wantsRootOnDevice(false)
     , _rootDeviceMutex()

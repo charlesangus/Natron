@@ -448,7 +448,7 @@ protected:
 
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, first, last, 1, false));
-        getApp()->startWritersRendering(true, works);
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
 
         QObject::disconnect(connection);
 
@@ -889,7 +889,7 @@ TEST_F(DeepReadWriteTest, CLIWriterArgOverridesTheFileKnobAndRendersThroughGetWr
     ASSERT_TRUE(knob != NULL);
     EXPECT_EQ(overrideFilename.toStdString(), knob->getValue());
 
-    getApp()->startWritersRendering(true, works);
+    getApp()->startWritersRendering(eRenderModeBlocking, works);
     EXPECT_TRUE(QFile::exists(overrideFilename));
     EXPECT_FALSE(QFile::exists(originalFilename));
 }

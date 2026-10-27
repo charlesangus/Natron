@@ -82,6 +82,20 @@ public:
         return _isInputImage;
     }
 
+    /**
+     * @brief The extensions the file dialog filters on, such as "usda". An empty list shows every
+     * file. Input-image knobs filter on the readers' formats instead.
+     **/
+    void setFileExtensions(const std::vector<std::string>& extensions)
+    {
+        _fileExtensions = extensions;
+    }
+
+    const std::vector<std::string>& getFileExtensions() const
+    {
+        return _fileExtensions;
+    }
+
     void open_file()
     {
         Q_EMIT openFile();
@@ -145,6 +159,7 @@ private:
     virtual const std::string & typeName() const OVERRIDE FINAL;
     static const std::string _typeNameStr;
     int _isInputImage;
+    std::vector<std::string> _fileExtensions;
 };
 
 /******************************KnobOutputFile**************************************/

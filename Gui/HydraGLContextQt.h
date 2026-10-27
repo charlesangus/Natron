@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Gui_LinkToKnobDialog_h
-#define Gui_LinkToKnobDialog_h
+#ifndef Gui_HydraGLContextQt_h
+#define Gui_HydraGLContextQt_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -28,48 +28,18 @@
 
 #include "Global/Macros.h"
 
-#include <list>
-#include <utility>
-
-CLANG_DIAG_OFF(deprecated)
-CLANG_DIAG_OFF(uninitialized)
-#include <QObject>
-#include <QString>
-#include <QDialog>
-CLANG_DIAG_ON(deprecated)
-CLANG_DIAG_ON(uninitialized)
-
-#include "Gui/GuiFwd.h"
-
 NATRON_NAMESPACE_ENTER
 
-struct LinkToKnobDialogPrivate;
-
-class LinkToKnobDialog
-    : public QDialog
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
-    Q_OBJECT
-GCC_DIAG_SUGGEST_OVERRIDE_ON
-
-public:
-
-    LinkToKnobDialog(const KnobGuiPtr& from,
-                     QWidget* parent);
-
-    virtual ~LinkToKnobDialog();
-
-    KnobIPtr getSelectedKnobs() const;
-
-public Q_SLOTS:
-
-    void onNodeComboEditingFinished();
-
-private:
-
-    std::unique_ptr<LinkToKnobDialogPrivate> _imp;
-};
+namespace HydraGLContextQt {
+/**
+ * @brief Has USDRender's renders run on a Qt OpenGL context of the GUI's format, shared with Qt's
+ * global share context when the application has one, instead of the headless EGL context they
+ * make without a GUI. Call on the main thread once the GUI's OpenGL was accepted. Does nothing
+ * where Qt cannot make a context current off the main thread, leaving the EGL context in place.
+ **/
+void install();
+} // namespace HydraGLContextQt
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Gui_LinkToKnobDialog_h
+#endif // Gui_HydraGLContextQt_h

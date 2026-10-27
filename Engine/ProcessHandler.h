@@ -97,6 +97,7 @@ class ProcessHandler
     bool _earlyCancel; //< true if the user pressed cancel but the _bgProcessInput socket was not created yet
     QString _processLog; //< used to record the log of the process
     QStringList _processArgs;
+    QString _projectPath; //< the project file the process loads
 
 public:
     /**
@@ -117,6 +118,17 @@ public:
     {
         return _writer;
     }
+
+    const QString& getProjectPath() const
+    {
+        return _projectPath;
+    }
+
+    /**
+     * @brief While set, startProcess() starts nothing, so tests can follow the render queue
+     * without launching their own executable as a render process.
+     **/
+    static void setLaunchDisabledForTesting(bool disabled);
 
 public Q_SLOTS:
 

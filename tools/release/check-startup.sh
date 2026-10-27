@@ -106,6 +106,7 @@ BUNDLE_ENV=(
     -u QT_QPA_PLATFORM
     -u QT_QPA_PLATFORM_PLUGIN_PATH
     -u NATRON_PLUGIN_PATH
+    -u PXR_PLUGINPATH_NAME
     # Without this the probes leave __pycache__ directories behind in the very
     # tree they are inspecting, so the gate would change the artefact it exists
     # to check.
@@ -261,6 +262,7 @@ expected_plugins = {
     "reader": "fr.inria.built-in.Read",
     "writer": "fr.inria.built-in.Write",
     "Merge": "net.sf.openfx.MergePlugin",
+    "USDRead": "USDRead",
 }
 missing = [
     "%s (%s)" % (role, plugin_id)
@@ -275,6 +277,32 @@ try:
     from PySide6 import QtCore, QtGui, QtWidgets  # noqa: F401
 except ImportError as error:
     fail("PySide6 did not import: %s" % error)
+
+# USD looks for plug-ins relative to the libusd_plug.so it was loaded from, so a
+# bundle without lib/usd and plugin/usd still imports pxr -- from the host's
+# install, when there is one -- and only fails on the first stage it composes.
+try:
+    from pxr import Plug, Sdf, Usd
+except ImportError as error:
+    fail("pxr did not import: %s" % error)
+
+pxr_location = os.path.realpath(sys.modules["pxr"].__file__)
+if not pxr_location.startswith(BUNDLE + os.sep):
+    fail("pxr was imported from %s, outside the bundle" % pxr_location)
+
+usd_plugins = Plug.Registry().GetAllPlugins()
+outside = [plugin.path for plugin in usd_plugins
+           if not os.path.realpath(plugin.path).startswith(BUNDLE + os.sep)]
+if outside:
+    fail("OpenUSD registered plug-ins from outside the bundle: %s" % ", ".join(sorted(outside)))
+for plugin_name in ("usd", "sdf", "sdr", "usdGeom", "usdLux", "usdShade", "usdAbc"):
+    if not Plug.Registry().GetPluginWithName(plugin_name):
+        fail("OpenUSD has no %s plug-in registered; lib/usd or plugin/usd is missing" % plugin_name)
+for extension in ("usda", "usdc", "abc"):
+    if not Sdf.FileFormat.FindByExtension(extension):
+        fail("OpenUSD has no file format for .%s" % extension)
+if not Usd.Stage.CreateInMemory():
+    fail("OpenUSD could not create an in-memory stage")
 
 fontconfig_path = os.environ.get("FONTCONFIG_PATH", "")
 if not fontconfig_path.startswith(BUNDLE + os.sep):
@@ -304,6 +332,7 @@ print("natron-startup-probe: interpreter prefix %s" % sys.prefix)
 print("natron-startup-probe: fontconfig %s" % fontconfig_path)
 print("natron-startup-probe: OCIO %s" % ocio.decode("utf-8", "replace"))
 print("natron-startup-probe: %d OFX/PyPlug plugins loaded" % len(plugin_ids))
+print("natron-startup-probe: %d OpenUSD plug-ins registered" % len(usd_plugins))
 print("$SENTINEL")
 sys.stdout.flush()
 PROBE
@@ -484,7 +513,9 @@ fi
 
 echo "    Xvfb display :$DISPLAY_NUMBER, reached over xcb"
 
-GUI_ENV=("${PROBE_ENV[@]}" "DISPLAY=:$DISPLAY_NUMBER")
+# A GUI that refuses the OpenGL context says why on stderr and in a dialog; the
+# dialog would hold the probe until the timeout, so only the stderr report is kept.
+GUI_ENV=("${PROBE_ENV[@]}" "DISPLAY=:$DISPLAY_NUMBER" "NATRON_GUI_GL_NO_DIALOG=1")
 if [[ -n "$GUI_PRELOAD" ]]; then
     GUI_ENV+=("LD_PRELOAD=$GUI_PRELOAD" "LIBGL_ALWAYS_SOFTWARE=1")
 fi

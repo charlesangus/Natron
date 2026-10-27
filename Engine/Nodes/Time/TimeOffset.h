@@ -47,6 +47,12 @@ inline constexpr InputSpec kTimeOffsetInputs[] = {
 };
 
 /**
+ * @brief The output frame at which a TimeOffset whose offset knob is offset shows the Source's
+ * frame: the t with t - offset(t) = frame.
+ **/
+double timeOffsetOutputTime(const KnobDoublePtr& offset, double frame);
+
+/**
  * @brief TimeOffset: its Source at time - timeOffset, optionally reversed over the Source's frame
  * range and clipped to it, then rounded down to a whole frame unless the rounding mode is
  * Fractional. It renders nothing: the host reads the Source at that time. Its frame range is the

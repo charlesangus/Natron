@@ -25,7 +25,7 @@ the output is black.
 
 Port audit (every OFX and Nuke control):
 
-| OFX (net.sf.openfx.TimeOffset) | Nuke (TimeOffset) | Natron knob | Default | Status |
+| OFX (net.sf.openfx.timeOffset) | Nuke (TimeOffset) | Natron knob | Default | Status |
 |---|---|---|---|---|
 | `timeOffset` | `time_offset` | `timeOffset` | 0 | mapped; animates, as Nuke's does (OFX's does not) |
 | `reverseInput` | `reverse_input` | `reverseInput` | off | mapped |

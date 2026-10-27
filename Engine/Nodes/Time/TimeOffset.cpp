@@ -36,13 +36,13 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 constexpr int kMaxOutputTimeIterations = 32;
+} // anonymous namespace
 
-// The output frame that shows input frame frame: the t with t - offset(t) = frame. An animated
-// offset makes that a fixed point, iterated to from frame + offset(frame); for an offset moving
-// slower than time it converges, and a constant one is there at once.
+// An animated offset makes the output time a fixed point, iterated to from frame + offset(frame);
+// for an offset moving slower than time it converges, and a constant one is there at once.
 double
-outputTimeOf(const KnobDoublePtr& offset,
-             double frame)
+timeOffsetOutputTime(const KnobDoublePtr& offset,
+                     double frame)
 {
     double t = frame + offset->getValueAtTime(frame);
     for (int i = 0; i < kMaxOutputTimeIterations; ++i) {
@@ -55,7 +55,6 @@ outputTimeOf(const KnobDoublePtr& offset,
 
     return t;
 }
-} // anonymous namespace
 
 void
 TimeOffsetOp::createKnobs(KnobHolder* holder,
@@ -143,10 +142,10 @@ TimeOffset::getFrameRange(double* first,
         return;
     }
     if (*first > std::numeric_limits<int>::min()) {
-        *first = outputTimeOf(offset, *first);
+        *first = timeOffsetOutputTime(offset, *first);
     }
     if (*last < std::numeric_limits<int>::max()) {
-        *last = outputTimeOf(offset, *last);
+        *last = timeOffsetOutputTime(offset, *last);
     }
 }
 

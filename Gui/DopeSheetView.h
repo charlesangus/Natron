@@ -229,6 +229,7 @@ public Q_SLOTS:
      * specific knob.
      */
     void onRangeNodeChanged(ViewSpec, int, int);
+    void onRangeNodeCurveChanged();
 
     /**
      * @brief Computes the bounding rect of the selected keyframes and the ranges

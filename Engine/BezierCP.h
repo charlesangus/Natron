@@ -30,6 +30,7 @@
 
 #include <list>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "Global/Macros.h"
@@ -189,6 +190,51 @@ public:
      **/
     void appendContentHash(ContentHasher& h) const;
 
+    /**
+     * @brief Whether the point follows a track. A linked point evaluates to the track's centre
+     * plus the offsets taken at the link time, for the point and both tangents; its own
+     * animation is kept but ignored until it is unlinked.
+     **/
+    bool isLinkedToTrack() const;
+
+    /**
+     * @brief The linked track when it can be followed: it still exists, belongs to its tracker
+     * and the tracker node is active. Null otherwise.
+     **/
+    TrackMarkerPtr getResolvedTrack() const;
+
+    /**
+     * @brief The linked track object while it is alive, resolvable or not. Null otherwise.
+     **/
+    TrackMarkerPtr getLinkedTrack() const;
+
+    /**
+     * @brief The tracker node's fully qualified name and the track's script name, read from the
+     * track when it is alive so renames are followed. Empty when unlinked.
+     **/
+    std::string getTrackLinkTrackerName() const;
+    std::string getTrackLinkTrackName() const;
+
+    /**
+     * @brief The centre the point is evaluated against at time: the track's when resolved, the
+     * last known one otherwise. Returns false when unlinked.
+     **/
+    bool getTrackLinkCentre(double time, double* x, double* y) const;
+
+    /**
+     * @brief Keeps the centre used while the track cannot be resolved up to date: while it
+     * resolves, the track's centre at time; when it stops resolving, the centre at time of the
+     * track object if it is still alive, else the last one kept. Returns true when the link's
+     * state changed.
+     **/
+    bool updateTrackLinkState(double time);
+
+    /**
+     * @brief Points an unresolved link (as loaded) at marker, keeping its offsets. Does nothing
+     * when unlinked.
+     **/
+    void resolveTrackLink(const TrackMarkerPtr& marker);
+
     void toSerialization(Serialization::BezierCPSerialization* serialization) const;
 
     /**
@@ -197,6 +243,27 @@ public:
     void fromSerialization(const Serialization::BezierCPSerialization& serialization);
 
 private:
+    /**
+     * @brief Links the point to marker, taking the offsets of its internal and GUI values from
+     * the track's centre at time. Bezier::linkPointToTrack() calls it for both the point and its
+     * feather point.
+     **/
+    void linkToTrack(const TrackMarkerPtr& marker, double time);
+
+    /**
+     * @brief Drops the link; the point evaluates from its own animation again.
+     **/
+    void unlinkFromTrack();
+
+    // The point's own value, ignoring any link. which: 0 position, 1 left, 2 right.
+    bool getStoredPointAtTime(bool useGuiCurves, int which, double time, double* x, double* y) const;
+
+    // Updates the link offsets for a value set at time, and keys the stored curves with their
+    // own value there so the keyframe layout matches the other points.
+    void setLinkedPointAtTime(bool useGuiCurves, int which, double time, double x, double y);
+
+    // Updates the link offsets for a value set without a time, against the current frame's centre.
+    void setLinkedStaticPoint(bool useGuiCurves, int which, double x, double y);
 
     std::unique_ptr<BezierCPPrivate> _imp;
 };

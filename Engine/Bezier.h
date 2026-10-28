@@ -537,6 +537,32 @@ public:
      * @brief Returns the feather point at the given index if any, NULL otherwise.
      **/
     BezierCPPtr getFeatherPointAtIndex(int index) const;
+
+    /**
+     * @brief Makes the control point at index, and its feather point, follow marker's centre,
+     * offset by where they are at time. Throws std::invalid_argument for a bad index.
+     **/
+    void linkPointToTrack(int index, const TrackMarkerPtr& marker, double time);
+
+    /**
+     * @brief Stops the control point at index and its feather point following a track. With
+     * bake, they are first keyed at every frame of the track's keyed range, and their keys at
+     * the curve's other keyframes are replaced by the linked values. Throws
+     * std::invalid_argument for a bad index.
+     **/
+    void unlinkPoint(int index, bool bake);
+
+    /**
+     * @brief Whether any control or feather point follows a track.
+     **/
+    bool hasTrackLinks() const;
+
+    /**
+     * @brief Freezes, at time, the links whose track can no longer be followed, and collects
+     * the names ("tracker / track") of those missing. Returns true if any link changed.
+     **/
+    bool refreshTrackLinks(double time, std::list<std::string>* missing);
+
     BezierCPPtr getFeatherPointForControlPoint(const BezierCPPtr & cp) const;
     BezierCPPtr getControlPointForFeatherPoint(const BezierCPPtr & fp) const;
 
@@ -604,6 +630,12 @@ public:
 
 protected:
     virtual void appendGeometryContentHash(ContentHasher& h) const OVERRIDE;
+
+    /**
+     * @brief Adds, for every linked point, whether its track resolves and the track centre's
+     * hash, which change without this curve being edited.
+     **/
+    virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
 
 private:
 

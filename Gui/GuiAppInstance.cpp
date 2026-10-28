@@ -35,9 +35,11 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QEvent>
+#include <QInputDialog>
 #include <QMutex>
 #include <QSettings>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTimer>
 #include <QWindow>
 
@@ -663,6 +665,32 @@ GuiAppInstance::openImageFileDialog()
     }
 
     return ret;
+}
+
+int
+GuiAppInstance::chooseItemDialog(const std::string& title,
+                                 const std::string& label,
+                                 const std::vector<std::string>& items)
+{
+    if (!_imp->_gui || items.empty()) {
+        return -1;
+    }
+    QStringList list;
+    for (std::vector<std::string>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        list.push_back(QString::fromUtf8(it->c_str()));
+    }
+    {
+        QMutexLocker l(&_imp->_showingDialogMutex);
+        ++_imp->_showingDialog;
+    }
+    bool ok = false;
+    const QString chosen = QInputDialog::getItem(_imp->_gui, QString::fromUtf8(title.c_str()), QString::fromUtf8(label.c_str()), list, 0, false, &ok);
+    {
+        QMutexLocker l(&_imp->_showingDialogMutex);
+        --_imp->_showingDialog;
+    }
+
+    return ok ? list.indexOf(chosen) : -1;
 }
 
 std::string

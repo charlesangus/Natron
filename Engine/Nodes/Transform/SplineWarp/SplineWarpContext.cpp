@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -1173,17 +1174,7 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
             continue;
         }
         Serialization::SplineWarpLinkSerialization s;
-        s.source = source->getScriptName();
-        s.destination = destination->getScriptName();
-        s.startOffset = link._startOffset;
-        s.reversed = link._reversed;
-        link._amount.toSerialization(&s.amount);
-        for (std::size_t c = 0; c < link._correspondences.size(); ++c) {
-            Serialization::SplineWarpCorrespondenceSerialization cs;
-            link._correspondences[c].source.toSerialization(&cs.source);
-            link._correspondences[c].destination.toSerialization(&cs.destination);
-            s.correspondences.push_back(cs);
-        }
+        linkToSerialization(link, source->getScriptName(), destination->getScriptName(), &s);
         warp.links.push_back(s);
     }
 }
@@ -1199,50 +1190,173 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
     _loading = true;
     RotoCurveContext::fromSerialization(serialization);
 
+    if (serialization.hasSplineWarp) {
+        restoreWarpData(serialization.splineWarp, nullptr);
+    }
+    _loading = false;
+    warpDataChanged(false);
+}
+
+void
+SplineWarpContext::linkToSerialization(const SplineWarpLink& link,
+                                       const std::string& source,
+                                       const std::string& destination,
+                                       Serialization::SplineWarpLinkSerialization* serialization)
+{
+    serialization->source = source;
+    serialization->destination = destination;
+    serialization->startOffset = link._startOffset;
+    serialization->reversed = link._reversed;
+    link._amount.toSerialization(&serialization->amount);
+    serialization->correspondences.clear();
+    for (std::size_t c = 0; c < link._correspondences.size(); ++c) {
+        Serialization::SplineWarpCorrespondenceSerialization cs;
+        link._correspondences[c].source.toSerialization(&cs.source);
+        link._correspondences[c].destination.toSerialization(&cs.destination);
+        serialization->correspondences.push_back(cs);
+    }
+}
+
+void
+SplineWarpContext::restoreWarpData(const Serialization::SplineWarpSerialization& warp,
+                                   const std::map<std::string, std::string>* names)
+{
     NodePtr node = getNode();
     const QString context = node ? QString::fromUtf8(node->getLabel_mt_safe().c_str()) : QString();
     const auto logDropped = [&](const std::string& what) {
         appPTR->writeToErrorLog_mt_safe(context, QDateTime::currentDateTime(), QString::fromUtf8(what.c_str()));
     };
 
-    const Serialization::SplineWarpSerialization& warp = serialization.splineWarp;
-    if (serialization.hasSplineWarp) {
-        std::lock_guard<std::mutex> l(_warpMutex);
-        for (std::list<std::string>::const_iterator it = warp.boundaries.begin(); it != warp.boundaries.end(); ++it) {
-            BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
-            if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_boundaries, curve.get())) {
-                logDropped("SplineWarp: dropped boundary " + *it + ": no closed curve has that name.");
-                continue;
-            }
-            _boundaries.push_back(curve);
+    const auto findCurve = [&](const std::string& name, bool* skip) -> BezierPtr {
+        *skip = false;
+        if (!names) {
+            return std::dynamic_pointer_cast<Bezier>(getItemByName(name));
         }
-        for (std::list<Serialization::SplineWarpLinkSerialization>::const_iterator it = warp.links.begin(); it != warp.links.end(); ++it) {
-            BezierPtr source = std::dynamic_pointer_cast<Bezier>(getItemByName(it->source));
-            BezierPtr destination = std::dynamic_pointer_cast<Bezier>(getItemByName(it->destination));
-            const std::string name = it->source + " -> " + it->destination;
-            if (!source || !destination) {
-                logDropped("SplineWarp: dropped link " + name + ": a curve is missing.");
-                continue;
-            }
-            if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
-                logDropped("SplineWarp: dropped link " + name + ": a curve is a boundary or in another link.");
-                continue;
-            }
-            SplineWarpLinkPtr link = std::make_shared<SplineWarpLink>(source, destination);
-            link->_startOffset = clampToSegments(it->startOffset, SplineWarpCurveShape::segmentCountOf(*destination));
-            link->_reversed = it->reversed;
-            link->_amount.fromSerialization(it->amount);
-            for (std::list<Serialization::SplineWarpCorrespondenceSerialization>::const_iterator c = it->correspondences.begin(); c != it->correspondences.end(); ++c) {
-                SplineWarpCorrespondence corr;
-                corr.source.fromSerialization(c->source);
-                corr.destination.fromSerialization(c->destination);
-                link->_correspondences.push_back(corr);
-            }
-            _links.push_back(link);
+        std::map<std::string, std::string>::const_iterator found = names->find(name);
+        if (found == names->end()) {
+            *skip = true;
+
+            return BezierPtr();
+        }
+
+        return std::dynamic_pointer_cast<Bezier>(getItemByName(found->second));
+    };
+
+    std::lock_guard<std::mutex> l(_warpMutex);
+    for (std::list<std::string>::const_iterator it = warp.boundaries.begin(); it != warp.boundaries.end(); ++it) {
+        bool skip;
+        BezierPtr curve = findCurve(*it, &skip);
+        if (skip) {
+            continue;
+        }
+        if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_boundaries, curve.get()) || findLinkLocked(curve.get())) {
+            logDropped("SplineWarp: dropped boundary " + *it + ": no closed curve has that name.");
+            continue;
+        }
+        _boundaries.push_back(curve);
+    }
+    for (std::list<Serialization::SplineWarpLinkSerialization>::const_iterator it = warp.links.begin(); it != warp.links.end(); ++it) {
+        bool skipSource, skipDestination;
+        BezierPtr source = findCurve(it->source, &skipSource);
+        BezierPtr destination = findCurve(it->destination, &skipDestination);
+        if (skipSource || skipDestination) {
+            continue;
+        }
+        const std::string name = it->source + " -> " + it->destination;
+        if (!source || !destination) {
+            logDropped("SplineWarp: dropped link " + name + ": a curve is missing.");
+            continue;
+        }
+        if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
+            logDropped("SplineWarp: dropped link " + name + ": a curve is a boundary or in another link.");
+            continue;
+        }
+        SplineWarpLinkPtr link = std::make_shared<SplineWarpLink>(source, destination);
+        link->_startOffset = clampToSegments(it->startOffset, SplineWarpCurveShape::segmentCountOf(*destination));
+        link->_reversed = it->reversed;
+        link->_amount.fromSerialization(it->amount);
+        for (std::list<Serialization::SplineWarpCorrespondenceSerialization>::const_iterator c = it->correspondences.begin(); c != it->correspondences.end(); ++c) {
+            SplineWarpCorrespondence corr;
+            corr.source.fromSerialization(c->source);
+            corr.destination.fromSerialization(c->destination);
+            link->_correspondences.push_back(corr);
+        }
+        _links.push_back(link);
+    }
+}
+
+namespace {
+void
+collectCurveNames(const Serialization::RotoLayerSerialization& layer,
+                  std::set<std::string>* names)
+{
+    for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = layer.children.begin(); it != layer.children.end(); ++it) {
+        if (it->type == Serialization::eRotoLayerChildTypeBezier) {
+            names->insert(it->bezier.name);
+        } else if (it->type == Serialization::eRotoLayerChildTypeLayer) {
+            collectCurveNames(it->layer, names);
         }
     }
-    _loading = false;
+}
+} // anonymous namespace
+
+std::string
+SplineWarpContext::serializeItems(const std::list<RotoItemPtr>& items) const
+{
+    Serialization::RotoContextSerialization serialization;
+
+    itemsToSerialization(items, &serialization);
+
+    std::set<std::string> curves;
+    collectCurveNames(serialization.baseLayer, &curves);
+
+    Serialization::SplineWarpSerialization& warp = serialization.splineWarp;
+    serialization.hasSplineWarp = true;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        for (std::list<BezierWPtr>::const_iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
+            BezierPtr curve = it->lock();
+            if (curve && curves.count(curve->getScriptName())) {
+                warp.boundaries.push_back(curve->getScriptName());
+            }
+        }
+        for (std::size_t i = 0; i < _links.size(); ++i) {
+            const SplineWarpLink& link = *_links[i];
+            std::lock_guard<std::mutex> ll(link._mutex);
+            BezierPtr source = link._source.lock();
+            BezierPtr destination = link._destination.lock();
+            if (!source || !destination || !curves.count(source->getScriptName()) || !curves.count(destination->getScriptName())) {
+                continue;
+            }
+            Serialization::SplineWarpLinkSerialization s;
+            linkToSerialization(link, source->getScriptName(), destination->getScriptName(), &s);
+            warp.links.push_back(s);
+        }
+    }
+
+    return encodeItems(serialization);
+}
+
+std::list<RotoItemPtr>
+SplineWarpContext::pasteItems(const std::string& blob,
+                              const RotoLayerPtr& layer,
+                              int* droppedStrokes)
+{
+    Serialization::RotoContextSerialization serialization = decodeItems(blob);
+    std::map<std::string, std::string> names;
+    std::list<RotoItemPtr> pasted = pasteSerialization(serialization, layer, &names, droppedStrokes);
+
+    if (pasted.empty()) {
+        return pasted;
+    }
+    if (serialization.hasSplineWarp) {
+        restoreWarpData(serialization.splineWarp, &names);
+    }
+    onStructureChanged();
     warpDataChanged(false);
+    evaluateChange();
+
+    return pasted;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -38,6 +38,7 @@ NATRON_NAMESPACE_ENTER;
 NATRON_PYTHON_NAMESPACE_ENTER;
 
 class Layer; // defined below
+class Track;
 
 class ItemBase
 {
@@ -128,6 +129,20 @@ public:
     void setFeatherPointAtIndex(int index, double time, double x, double y, double lx, double ly, double rx, double ry);
 
     int getNumControlPoints() const;
+
+    /**
+     * @brief Makes the control point at index, its tangents and its feather point follow track,
+     * keeping their offsets from the track's centre at the current frame. Raises ValueError for an
+     * index out of range or no track.
+     **/
+    void linkPointToTrack(int index, Track* track);
+
+    /**
+     * @brief Stops the control point at index following its track. With bake, the point is
+     * keyed where the track took it, at every frame of the track's keyed range; otherwise its
+     * own animation applies again. Raises ValueError for an index out of range.
+     **/
+    void unlinkPoint(int index, bool bake);
 
     void getKeyframes(std::list<double>* keys) const;
 

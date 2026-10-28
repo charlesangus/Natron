@@ -35,6 +35,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/PyNode.h"
+#include "Engine/PyTracker.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -353,6 +354,35 @@ int
 BezierCurve::getNumControlPoints() const
 {
     return _bezier->getControlPointsCount();
+}
+
+void
+BezierCurve::linkPointToTrack(int index,
+                              Track* track)
+{
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
+    TrackMarkerPtr marker = track ? track->getInternalMarker() : TrackMarkerPtr();
+    try {
+        _bezier->linkPointToTrack(index, marker, _bezier->getContext()->getTimelineCurrentTime());
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+BezierCurve::unlinkPoint(int index,
+                         bool bake)
+{
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
+    try {
+        _bezier->unlinkPoint(index, bake);
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
 }
 
 void

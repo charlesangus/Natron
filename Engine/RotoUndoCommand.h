@@ -585,6 +585,52 @@ private:
     double _time;
 };
 
+/**
+ * @brief Links control points to a track, or unlinks them with or without baking. Undo puts back
+ * every point of the curves involved, since baking keys whole curves.
+ **/
+class TrackLinkUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(TrackLinkUndoCommand)
+
+public:
+    enum ActionEnum {
+        eActionLink,
+        eActionUnlink,
+        eActionUnlinkAndBake
+    };
+
+    // A control point by curve and index.
+    typedef std::pair<BezierPtr, int> PointRef;
+
+    TrackLinkUndoCommand(const RotoCurveInteractPtr& roto,
+                         const std::list<PointRef>& points,
+                         ActionEnum action,
+                         const TrackMarkerPtr& marker,
+                         double time);
+
+    virtual ~TrackLinkUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    struct CurveState {
+        BezierPtr curve;
+        std::list<BezierCPPtr> points, before, after;
+    };
+
+    void restore(bool after);
+
+    RotoCurveInteractWPtr _roto;
+    std::list<PointRef> _points;
+    ActionEnum _action;
+    TrackMarkerPtr _marker;
+    double _time;
+    bool _done;
+    std::list<CurveState> _curves;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // ROTOUNDOCOMMAND_H

@@ -91,6 +91,8 @@ set(Tests_SOURCES
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    CurveTrackLink_Test.cpp
+    CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
     BezierIncrementalCopy_Test.cpp

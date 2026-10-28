@@ -29,7 +29,9 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 
 // clang-format off
@@ -45,6 +47,9 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/EngineFwd.h"
 #include "Engine/RotoItem.h"
 #include "Engine/ViewIdx.h"
+
+// The mime type of curves on the system clipboard: the text of serializeItems().
+#define kRotoCurvesMimeType "application/x-natron-curves"
 
 // #define NATRON_ROTO_INVERTIBLE
 // #define NATRON_ROTO_ENABLE_MOTION_BLUR
@@ -292,7 +297,53 @@ public:
      **/
     virtual void fromSerialization(const Serialization::RotoContextSerialization& serialization);
 
+    /**
+     * @brief A self-contained text holding items, for pasting into any curve host. Each item is
+     * written once: an item inside a layer that is also given comes with that layer, and the base
+     * layer stands for its children. Throws std::runtime_error when encoding fails.
+     **/
+    virtual std::string serializeItems(const std::list<RotoItemPtr>& items) const;
+
+    /**
+     * @brief Inserts the items of a serializeItems() text at the top of layer, the base layer when
+     * null, in their order, on the main thread. A name already used here gets a "_copy" suffix.
+     * Strokes are dropped unless this is a paint host, and counted in droppedStrokes. Track links
+     * are resolved by tracker and track names, and stay where they were when those are not found.
+     * Returns the inserted items. Throws std::invalid_argument when blob cannot be read.
+     **/
+    virtual std::list<RotoItemPtr> pasteItems(const std::string& blob,
+                                              const RotoLayerPtr& layer,
+                                              int* droppedStrokes = nullptr);
+
+    /**
+     * @brief How many items pasteItems(blob) would insert at the top level, and in droppedStrokes
+     * how many strokes it would drop. Returns 0 when blob cannot be read.
+     **/
+    int countPastableItems(const std::string& blob, int* droppedStrokes = nullptr) const;
+
 protected:
+    void itemsToSerialization(const std::list<RotoItemPtr>& items,
+                              Serialization::RotoContextSerialization* serialization) const;
+
+    /**
+     * @brief The text of serialization, with its blobs inlined.
+     **/
+    std::string encodeItems(const Serialization::RotoContextSerialization& serialization) const;
+
+    /**
+     * @brief Throws std::invalid_argument when blob cannot be read.
+     **/
+    static Serialization::RotoContextSerialization decodeItems(const std::string& blob);
+
+    /**
+     * @brief The work of pasteItems() on a decoded text, without the render. names maps each
+     * pasted item's name in the text to its name here.
+     **/
+    std::list<RotoItemPtr> pasteSerialization(const Serialization::RotoContextSerialization& serialization,
+                                              const RotoLayerPtr& layer,
+                                              std::map<std::string, std::string>* names,
+                                              int* droppedStrokes);
+
     /**
      * @brief Appends what a subclass holds beside the items to getContentHash(). MT-safe.
      **/
@@ -411,6 +462,20 @@ public:
 
     void dequeueGuiActions();
 
+    /**
+     * @brief Watches the tracks the linked points follow, their trackers and tracker nodes, so
+     * edits re-render the node; refreshes the links' state and the warning naming missing
+     * tracks. Called whenever links or items change, on the main thread.
+     **/
+    void refreshTrackLinkListeners();
+
+    /**
+     * @brief Points loaded links whose track object is unknown at their tracks, found by the
+     * tracker node's fully qualified name and the track's script name. Called once every node
+     * of a load or paste exists. Links that do not resolve keep their last centre.
+     **/
+    void resolveTrackLinks();
+
 Q_SIGNALS:
 
     /**
@@ -447,6 +512,12 @@ public Q_SLOTS:
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
 
 private:
+    std::list<BezierPtr> getTrackLinkedCurves() const;
+
+    // Refreshes every link's state and the warning; with redraw, also invalidates the linked
+    // curves and re-renders.
+    void updateTrackLinks(bool redraw);
+
     void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
     void deselectInternal(RotoItemPtr b);
 

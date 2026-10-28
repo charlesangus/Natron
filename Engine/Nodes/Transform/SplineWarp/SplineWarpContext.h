@@ -30,8 +30,10 @@
 
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "Engine/Curve.h"
@@ -42,6 +44,8 @@ NATRON_NAMESPACE_ENTER
 
 namespace Serialization {
 struct SplineWarpAnimatedValueSerialization;
+struct SplineWarpLinkSerialization;
+struct SplineWarpSerialization;
 }
 
 /**
@@ -280,6 +284,18 @@ public:
     virtual void toSerialization(Serialization::RotoContextSerialization* serialization) const OVERRIDE;
     virtual void fromSerialization(const Serialization::RotoContextSerialization& serialization) OVERRIDE;
 
+    /**
+     * @brief Also writes the boundaries among items and the links with both curves among them.
+     **/
+    virtual std::string serializeItems(const std::list<RotoItemPtr>& items) const OVERRIDE;
+
+    /**
+     * @brief Also restores the boundaries and links of the text between the pasted curves.
+     **/
+    virtual std::list<RotoItemPtr> pasteItems(const std::string& blob,
+                                              const RotoLayerPtr& layer,
+                                              int* droppedStrokes = nullptr) OVERRIDE;
+
 protected:
     virtual void appendHostContentHash(ContentHasher& h) const OVERRIDE;
 
@@ -289,6 +305,17 @@ private:
     void checkLinkable(const BezierPtr& curve, const char* what) const;
     void remapCurveParams(const BezierPtr& curve, const std::function<double(double)>& f);
     void warpDataChanged(bool evaluate);
+
+    // The link's state, with the curves given by name. The caller holds the link's mutex.
+    static void linkToSerialization(const SplineWarpLink& link,
+                                    const std::string& source,
+                                    const std::string& destination,
+                                    Serialization::SplineWarpLinkSerialization* serialization);
+
+    // Adds the boundaries and links of warp, logging those that cannot be made. With names, a
+    // curve is found by its name in names, and entries naming curves outside names are skipped.
+    void restoreWarpData(const Serialization::SplineWarpSerialization& warp,
+                         const std::map<std::string, std::string>* names);
 
     mutable std::mutex _warpMutex;
     std::vector<SplineWarpLinkPtr> _links;

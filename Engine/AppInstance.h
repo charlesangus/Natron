@@ -369,6 +369,17 @@ public:
     virtual std::string saveImageFileDialog() { return std::string(); }
 
     /**
+     * @brief Asks the user to pick one of items, listed under label. Returns the index of the
+     * chosen item, or -1 when the user cancels or there is no GUI.
+     **/
+    virtual int chooseItemDialog(const std::string& /*title*/,
+                                 const std::string& /*label*/,
+                                 const std::vector<std::string>& /*items*/)
+    {
+        return -1;
+    }
+
+    /**
      * @brief Given writer names, start rendering the given RenderRequest. If empty all Writers in the project
      * will be rendered using the frame ranges.
      **/

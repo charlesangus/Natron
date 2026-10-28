@@ -152,6 +152,18 @@ struct PluginActionShortcut;
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeather "removeItemsFeatherAction"
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel "Remove Selected item(s) Feather"
 
+#define kRotoUIParamRightClickMenuActionLinkToTrack "linkToTrack"
+#define kRotoUIParamRightClickMenuActionLinkToTrackLabel "Link To Track..."
+#define kRotoUIParamRightClickMenuActionLinkToTrackHint "Makes the selected control points follow a track, keeping their offsets from the track at the current frame"
+
+#define kRotoUIParamRightClickMenuActionUnlinkTrack "unlinkTrack"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackLabel "Unlink Track"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackHint "Stops the selected control points following their track; their own animation applies again"
+
+#define kRotoUIParamRightClickMenuActionUnlinkTrackAndBake "unlinkTrackAndBake"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeLabel "Unlink Track And Bake"
+#define kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeHint "Stops the selected control points following their track, keying them where the track took them at every frame of its keyed range"
+
 #define kRotoUIParamRightClickMenuActionNudgeLeft "nudgeLeftAction"
 #define kRotoUIParamRightClickMenuActionNudgeLeftLabel "Nudge Left"
 
@@ -400,6 +412,7 @@ public:
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
+    KnobButtonWPtr linkToTrackMenuAction, unlinkTrackMenuAction, unlinkTrackAndBakeMenuAction;
 
     // Right click on curve
     KnobButtonWPtr selectAllMenuAction;
@@ -603,6 +616,15 @@ public:
     bool smoothSelectedCurve();
     bool cuspSelectedCurve();
     bool removeFeatherForSelectedCurve();
+
+    // The selected control points as curve and index.
+    std::list<std::pair<BezierPtr, int>> getSelectedPointRefs() const;
+
+    // Asks which track to follow, among every track in the project, and links the selected
+    // control points to it.
+    bool linkSelectedPointsToTrack(double time);
+
+    bool unlinkSelectedPoints(bool bake);
     bool lockSelectedCurves();
 
     /**

@@ -30,6 +30,8 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <string>
+
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -178,6 +180,16 @@ public Q_SLOTS:
     void onOperatorColMinimumSizeChanged(const QSize& size);
 
 private:
+    /**
+     * @brief Puts the items of treeItems on the system clipboard as a curves text, for pasting
+     * into any curve host.
+     **/
+    void copyToSystemClipboard(const QList<QTreeWidgetItem*>& treeItems);
+
+    /**
+     * @brief The curves text on the system clipboard, empty when it holds none.
+     **/
+    static std::string clipboardCurves();
 
     ///Called when the selection changes from another reason than settings panel interaction
     void onSelectionChangedInternal();

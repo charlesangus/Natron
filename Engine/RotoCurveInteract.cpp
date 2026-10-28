@@ -34,15 +34,19 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/Project.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
 #include "Global/GLIncludes.h"
 
@@ -1183,6 +1187,36 @@ RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
         page->addKnob(action);
         lockShapeMenuAction = action;
     }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionLinkToTrackLabel));
+        action->setName(kRotoUIParamRightClickMenuActionLinkToTrack);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionLinkToTrackHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        linkToTrackMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionUnlinkTrackLabel));
+        action->setName(kRotoUIParamRightClickMenuActionUnlinkTrack);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionUnlinkTrackHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        unlinkTrackMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeLabel));
+        action->setName(kRotoUIParamRightClickMenuActionUnlinkTrackAndBake);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        unlinkTrackAndBakeMenuAction = action;
+    }
 } // RotoCurveInteract::createRightClickMenuKnobs
 
 void
@@ -1339,6 +1373,18 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         }
     } else if (k == removeItemFeatherMenuAction.lock().get()) {
         if (!removeFeatherForSelectedCurve()) {
+            *ret = false;
+        }
+    } else if (k == linkToTrackMenuAction.lock().get()) {
+        if (!linkSelectedPointsToTrack(time)) {
+            *ret = false;
+        }
+    } else if (k == unlinkTrackMenuAction.lock().get()) {
+        if (!unlinkSelectedPoints(false)) {
+            *ret = false;
+        }
+    } else if (k == unlinkTrackAndBakeMenuAction.lock().get()) {
+        if (!unlinkSelectedPoints(true)) {
             *ret = false;
         }
     } else if (k == nudgeLeftMenuAction.lock().get()) {
@@ -1543,7 +1589,7 @@ RotoCurveInteract::handleControlPointSelection(const std::pair<BezierCPPtr,
 }
 
 void
-RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
+RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
 {
     KnobChoicePtr menu = rightClickMenuKnob.lock();
 
@@ -1560,6 +1606,15 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
     menuKnobs.push_back(nudgeBottomMenuAction.lock());
     menuKnobs.push_back(nudgeRightMenuAction.lock());
     menuKnobs.push_back(nudgeTopMenuAction.lock());
+    menuKnobs.push_back(linkToTrackMenuAction.lock());
+    bool anyLinked = cp && cp->isLinkedToTrack();
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end() && !anyLinked; ++it) {
+        anyLinked = it->first->isLinkedToTrack();
+    }
+    if (anyLinked) {
+        menuKnobs.push_back(unlinkTrackMenuAction.lock());
+        menuKnobs.push_back(unlinkTrackAndBakeMenuAction.lock());
+    }
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {
@@ -2195,6 +2250,89 @@ RotoCurveInteract::cuspSelectedCurve()
     return false;
 }
 
+std::list<std::pair<BezierPtr, int>>
+RotoCurveInteract::getSelectedPointRefs() const
+{
+    std::list<std::pair<BezierPtr, int>> ret;
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        const BezierCPPtr& point = it->first;
+        BezierPtr curve = point ? point->getBezier() : BezierPtr();
+        if (!curve) {
+            continue;
+        }
+        const int index = point->isFeatherPoint() ? curve->getFeatherPointIndex(point) : curve->getControlPointIndex(point);
+        if (index < 0) {
+            continue;
+        }
+        std::pair<BezierPtr, int> ref(curve, index);
+        if (std::find(ret.begin(), ret.end(), ref) == ret.end()) {
+            ret.push_back(ref);
+        }
+    }
+
+    return ret;
+}
+
+bool
+RotoCurveInteract::linkSelectedPointsToTrack(double time)
+{
+    std::list<std::pair<BezierPtr, int>> points = getSelectedPointRefs();
+    if (points.empty()) {
+        return false;
+    }
+
+    // Every track of every tracker in the project, as "tracker / track".
+    AppInstancePtr app = _host->getApp();
+    NodesList nodes;
+    app->getProject()->getNodes_recursive(nodes, true);
+    std::vector<std::string> labels;
+    std::vector<TrackMarkerPtr> markers;
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        TrackerContextPtr tracker = (*it)->getTrackerContext();
+        if (!tracker) {
+            continue;
+        }
+        std::vector<TrackMarkerPtr> all;
+        tracker->getAllMarkers(&all);
+        for (std::vector<TrackMarkerPtr>::const_iterator itM = all.begin(); itM != all.end(); ++itM) {
+            labels.push_back((*it)->getFullyQualifiedName() + " / " + (*itM)->getScriptName_mt_safe());
+            markers.push_back(*itM);
+        }
+    }
+    if (markers.empty()) {
+        app->warningDialog(tr("Link To Track").toStdString(), tr("There is no track in the project to link to.").toStdString(), false);
+
+        return false;
+    }
+    const int chosen = app->chooseItemDialog(tr("Link To Track").toStdString(), tr("Track:").toStdString(), labels);
+    if ((chosen < 0) || (chosen >= (int)markers.size())) {
+        return false;
+    }
+    pushUndoCommand(new TrackLinkUndoCommand(shared_from_this(), points, TrackLinkUndoCommand::eActionLink, markers[chosen], time));
+
+    return true;
+}
+
+bool
+RotoCurveInteract::unlinkSelectedPoints(bool bake)
+{
+    std::list<std::pair<BezierPtr, int>> points;
+    std::list<std::pair<BezierPtr, int>> all = getSelectedPointRefs();
+    for (std::list<std::pair<BezierPtr, int>>::const_iterator it = all.begin(); it != all.end(); ++it) {
+        BezierCPPtr cp = it->first->getControlPointAtIndex(it->second);
+        BezierCPPtr fp = it->first->getFeatherPointAtIndex(it->second);
+        if ((cp && cp->isLinkedToTrack()) || (fp && fp->isLinkedToTrack())) {
+            points.push_back(*it);
+        }
+    }
+    if (points.empty()) {
+        return false;
+    }
+    pushUndoCommand(new TrackLinkUndoCommand(shared_from_this(), points, bake ? TrackLinkUndoCommand::eActionUnlinkAndBake : TrackLinkUndoCommand::eActionUnlink, TrackMarkerPtr(), 0.));
+
+    return true;
+}
+
 bool
 RotoCurveInteract::removeFeatherForSelectedCurve()
 {
@@ -2581,6 +2719,26 @@ RotoCurveInteract::drawOverlay(double time)
                         glBegin(GL_POINTS);
                         glVertex2f(x, y);
                         glEnd();
+
+                        // A point following a track gets a square around it: magenta while the
+                        // track resolves, red when it is lost.
+                        if ((*it2)->isLinkedToTrack()) {
+                            const double halfX = cpWidth * 1.5 * pixelScale.first;
+                            const double halfY = cpWidth * 1.5 * pixelScale.second;
+                            if ((*it2)->getResolvedTrack()) {
+                                glColor3f(1., 0.3, 1.);
+                            } else {
+                                glColor3f(1., 0.15, 0.15);
+                            }
+                            glLineWidth(1.5 * screenPixelRatio);
+                            glBegin(GL_LINE_LOOP);
+                            glVertex2f(x - halfX, y - halfY);
+                            glVertex2f(x + halfX, y - halfY);
+                            glVertex2f(x + halfX, y + halfY);
+                            glVertex2f(x - halfX, y + halfY);
+                            glEnd();
+                            colorChanged = true;
+                        }
 
                         if (colorChanged) {
                             glColor3d(0.85, 0.67, 0.);

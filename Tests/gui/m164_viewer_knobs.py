@@ -200,7 +200,7 @@ try:
 
     def combo_with_item(name, item):
         tab = tab_for(name)
-        for c in (children_of(tab, ("ComboBox", "ChannelsComboBox")) if tab is not None else []):
+        for c in (children_of(tab, ("ComboBox",)) if tab is not None else []):
             if item in combo_items(c):
                 return c
         return None
@@ -436,7 +436,7 @@ try:
         check(ok, "typing 1.8 in the gamma box writes gamma (got %r)" % (knob_value(viewer1, "gamma"),))
         check(knob_value(viewer1, "enableGamma") is True, "a gamma other than 1 turns the gamma toggle on")
 
-        channels1 = (children_of(tab_for(V1), ("ChannelsComboBox",)) or [None])[0]
+        channels1 = widget_of(V1, ("ComboBox",), "Display Channels:")
         require(channels1 is not None, "found Viewer1's Display Channels menu")
         set_combo_index(channels1, 2)
         ok = yield from knobs_until(lambda: knob_value(viewer1, "displayChannels") == 2)
@@ -587,7 +587,7 @@ try:
 
         require(run_in_script_editor('%s.getNode("%s").getParam("displayChannels").set(3)\n' % (app_var, V2)),
                 "run the Viewer2 channels edit in the Script Editor")
-        channels2 = (children_of(tab_for(V2), ("ChannelsComboBox",)) or [None])[0]
+        channels2 = widget_of(V2, ("ComboBox",), "Display Channels:")
         require(channels2 is not None, "found Viewer2's Display Channels menu")
         ok = yield ("until", lambda: combo_current(channels2) in ("G", "Green"), POLL_TIMEOUT_S)
         check(ok, "the channels menu moves to G with the Python set (shows %r)" % (combo_current(channels2),))
@@ -675,8 +675,8 @@ try:
         check(abs((spin_value(gamma_box2) or 0.0) - 1.0) < 0.01, "Viewer2's gamma box shows 1 (%r)" % (spin_value(gamma_box2),))
         check(abs((spin_value(gain_box) or 0.0) - gain_after) < 0.01, "Viewer1's gain box shows the gain (%r vs %r)"
               % (spin_value(gain_box), gain_after))
-        channels1 = (children_of(tab_for(V1), ("ChannelsComboBox",)) or [None])[0]
-        channels2 = (children_of(tab_for(V2), ("ChannelsComboBox",)) or [None])[0]
+        channels1 = widget_of(V1, ("ComboBox",), "Display Channels:")
+        channels2 = widget_of(V2, ("ComboBox",), "Display Channels:")
         check(channels1 is not None and combo_current(channels1) in ("R", "Red"),
               "Viewer1's channels menu shows R (%r)" % (combo_current(channels1) if channels1 else None))
         check(channels2 is not None and combo_current(channels2) in ("G", "Green"),

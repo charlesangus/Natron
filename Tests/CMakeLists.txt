@@ -93,6 +93,7 @@ set(Tests_SOURCES
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
     BezierIncrementalCopy_Test.cpp
+    RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
     RotoDragRenderThrottle_Test.cpp

@@ -717,13 +717,15 @@ MoveTangentUndoCommand::MoveTangentUndoCommand(const RotoCurveInteractPtr& roto,
                                                double time,
                                                const BezierCPPtr& cp,
                                                bool left,
-                                               bool breakTangents)
+                                               bool breakTangents,
+                                               TangentDragModeEnum mode)
     : RotoDragUndoCommand(roto, time)
     , _dx(dx)
     , _dy(dy)
     , _tangentBeingDragged(cp)
     , _left(left)
     , _breakTangents(breakTangents)
+    , _mode(mode)
 {
     roto->getSelection(&_selectedCurves, &_selectedPoints);
     if ( cp->isFeatherPoint() ) {
@@ -750,9 +752,10 @@ getDeltaForPoint(const BezierCP& p,
                  const double dy,
                  const bool isLeft,
                  const bool breakTangents,
+                 const bool together,
                  double* otherDiffX,
                  double* otherDiffY,
-                 bool *isOnKeyframe)
+                 bool* isOnKeyframe)
 {
     Transform::Point3D ltan, rtan, pos;
 
@@ -774,6 +777,26 @@ getDeltaForPoint(const BezierCP& p,
         rtan.x += dx;
         rtan.y += dy;
     }
+    if (together) {
+        // The other handle turns by the dragged handle's rotation and scales by its stretch, so a
+        // smooth point stays smooth and a broken one keeps the angle between its handles.
+        const Transform::Point3D& moved = isLeft ? ltan : rtan;
+        const Transform::Point3D& other = isLeft ? rtan : ltan;
+        double v1x = moved.x - pos.x, v1y = moved.y - pos.y;
+        double v0x = v1x - dx, v0y = v1y - dy;
+        double len0 = std::sqrt(v0x * v0x + v0y * v0y);
+        double len1 = std::sqrt(v1x * v1x + v1y * v1y);
+        if (len0 > 0.) {
+            double turn = std::atan2(v1y, v1x) - std::atan2(v0y, v0x);
+            double ratio = len1 / len0;
+            double ox = other.x - pos.x, oy = other.y - pos.y;
+            double c = std::cos(turn), s = std::sin(turn);
+            *otherDiffX = (c * ox - s * oy) * ratio - ox;
+            *otherDiffY = (s * ox + c * oy) * ratio - oy;
+
+            return;
+        }
+    }
     double alpha = isLeft ? std::atan2(pos.y - ltan.y, pos.x - ltan.x) : std::atan2(pos.y - rtan.y, pos.x - rtan.x);
 
     if (isLeft) {
@@ -787,8 +810,8 @@ getDeltaForPoint(const BezierCP& p,
 
 static void
 dragTangent(double time,
-            BezierCP & cp,
-            BezierCP & fp,
+            BezierCP& cp,
+            BezierCP& fp,
             const Transform::Matrix3x3& transform,
             double dx,
             double dy,
@@ -796,7 +819,8 @@ dragTangent(double time,
             bool left, //< which one is being controlled
             bool autoKeying,
             bool breakTangents,
-            bool draggedPointIsFeather)
+            bool draggedPointIsFeather,
+            bool together = false) //< with !both: the other handle follows the dragged one's turn and stretch
 {
     bool isOnKeyframe;
     double otherDiffX, otherDiffY, otherFpDiffX, otherFpDiffY;
@@ -804,8 +828,8 @@ dragTangent(double time,
     // A broken handle stays broken until Smooth is applied.
     breakTangents = breakTangents || cp.getBroken() || fp.getBroken();
 
-    getDeltaForPoint(cp, time, transform, dx, dy, left, breakTangents, &otherDiffX, &otherDiffY, &isOnKeyframe);
-    getDeltaForPoint(fp, time, transform, dx, dy, left, breakTangents, &otherFpDiffX, &otherFpDiffY, &isOnKeyframe);
+    getDeltaForPoint(cp, time, transform, dx, dy, left, breakTangents, together, &otherDiffX, &otherDiffY, &isOnKeyframe);
+    getDeltaForPoint(fp, time, transform, dx, dy, left, breakTangents, together, &otherFpDiffX, &otherFpDiffY, &isOnKeyframe);
 
     if (autoKeying || isOnKeyframe) {
         if (both) {
@@ -859,11 +883,13 @@ MoveTangentUndoCommand::redo()
 void
 MoveTangentUndoCommand::addDelta(double dx,
                                  double dy,
-                                 bool breakTangents)
+                                 bool breakTangents,
+                                 TangentDragModeEnum mode)
 {
     _dx += dx;
     _dy += dy;
     _breakTangents = breakTangents;
+    _mode = mode;
     moveTangent(dx, dy);
 }
 
@@ -894,7 +920,8 @@ MoveTangentUndoCommand::moveTangent(double dx,
 
     bool autoKeying = roto->getCurveContext()->isAutoKeyingEnabled();
 
-    dragTangent(_time, *cp, *fp, transform, dx, dy, false, _left, autoKeying, _breakTangents, _tangentBeingDragged->isFeatherPoint());
+    dragTangent(_time, *cp, *fp, transform, dx, dy, _mode == eTangentDragModeMirrored, _left, autoKeying, _breakTangents,
+                _tangentBeingDragged->isFeatherPoint(), _mode == eTangentDragModeTogether);
 
     roto->computeSelectedCpsBBOX();
 }
@@ -913,6 +940,7 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
     , _selectedCurves()
     , _selectedPoints()
     , _bars()
+    , _byDistance(false)
 {
     assert(point.first && point.second);
     roto->getSelection(&_selectedCurves, &_selectedPoints);
@@ -938,6 +966,25 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
         _selectedPoints.push_back(point);
     }
     setText( tr("Move control point feather bar").toStdString() );
+}
+
+MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
+                                                     double distance,
+                                                     const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points,
+                                                     double time)
+    : RotoDragUndoCommand(roto, time)
+    , _dx(distance)
+    , _dy(0.)
+    , _selectedCurves()
+    , _selectedPoints()
+    , _bars()
+    , _byDistance(true)
+{
+    roto->getSelection(&_selectedCurves, &_selectedPoints);
+    for (SelectedCpList::const_iterator it = points.begin(); it != points.end(); ++it) {
+        addFeatherBar(*it);
+    }
+    setText(tr("Increase feather").toStdString());
 }
 
 MoveFeatherBarUndoCommand::~MoveFeatherBarUndoCommand()
@@ -1092,12 +1139,15 @@ MoveFeatherBarUndoCommand::moveFeathers(double dx,
         FeatherBarDrag drag;
         if (computeFeatherBarDrag(it->cp, it->fp, _time, &drag)) {
             drags.push_back(drag);
-        } else if (it == _bars.begin()) {
+        } else if ((it == _bars.begin()) && !_byDistance) {
             return;
         }
     }
+    if (drags.empty()) {
+        return;
+    }
 
-    const double s = featherDragDistance(drags.front().dir, dx, dy);
+    const double s = _byDistance ? dx : featherDragDistance(drags.front().dir, dx, dy);
     const bool autoKeying = roto->getCurveContext()->isAutoKeyingEnabled();
     for (std::list<FeatherBarDrag>::const_iterator it = drags.begin(); it != drags.end(); ++it) {
         if (!autoKeying && !it->isOnKeyframe) {
@@ -1300,7 +1350,9 @@ MakeBezierUndoCommand::MakeBezierUndoCommand(const RotoCurveInteractPtr& roto,
                                              bool createPoint,
                                              double dx,
                                              double dy,
-                                             double time)
+                                             double time,
+                                             bool breakTangents,
+                                             bool sharpenPrevious)
     : UndoCommand()
     , _firstRedoCalled(false)
     , _roto(roto)
@@ -1317,6 +1369,10 @@ MakeBezierUndoCommand::MakeBezierUndoCommand(const RotoCurveInteractPtr& roto,
     , _time(time)
     , _lastPointAdded(-1)
     , _isOpenBezier(isOpenBezier)
+    , _breakTangents(breakTangents)
+    , _sharpenPrevious(createPoint && sharpenPrevious && curve)
+    , _previousCpState()
+    , _previousFpState()
 {
     setGestureKey(roto->undoGesture.key());
     if (!_newCurve) {
@@ -1350,6 +1406,12 @@ MakeBezierUndoCommand::undo()
         roto->removeCurve(_newCurve);
     }
     _newCurve->removeControlPointByIndex(_lastPointAdded);
+    if (_previousCpState && (_lastPointAdded > 0)) {
+        _newCurve->restorePointState(_newCurve->getControlPointAtIndex(_lastPointAdded - 1), *_previousCpState);
+        if (_previousFpState) {
+            _newCurve->restorePointState(_newCurve->getFeatherPointAtIndex(_lastPointAdded - 1), *_previousFpState);
+        }
+    }
 
     if (!_curveNonExistant) {
         roto->setSelection( _newCurve, std::make_pair( CpPtr(), CpPtr() ) );
@@ -1384,6 +1446,9 @@ MakeBezierUndoCommand::redo()
                 _curveNonExistant = false;
             } else {
                 _oldCurve->clone( _newCurve.get() );
+                if (_sharpenPrevious) {
+                    sharpenLastPoint();
+                }
                 _newCurve->addControlPoint(_x, _y, _time);
                 int lastIndex = _newCurve->getControlPointsCount() - 1;
                 assert(lastIndex > 0);
@@ -1400,7 +1465,7 @@ MakeBezierUndoCommand::redo()
             BezierCPPtr cp = _newCurve->getControlPointAtIndex(lastIndex);
             BezierCPPtr fp = _newCurve->getFeatherPointAtIndex(lastIndex);
 
-            dragTangent(_time, *cp, *fp, transform, _dx, _dy, true, false, false, false, false);
+            dragTangent(_time, *cp, *fp, transform, _dx, _dy, !_breakTangents, false, false, _breakTangents, false);
         }
 
         RotoItemPtr parentItem;
@@ -1426,6 +1491,38 @@ MakeBezierUndoCommand::redo()
     _firstRedoCalled = true;
 } // redo
 
+void
+MakeBezierUndoCommand::sharpenLastPoint()
+{
+    int index = _newCurve->getControlPointsCount() - 1;
+    if (index < 0) {
+        return;
+    }
+    BezierCPPtr cp = _newCurve->getControlPointAtIndex(index);
+    BezierCPPtr fp = _newCurve->getFeatherPointAtIndex(index);
+    if (!cp) {
+        return;
+    }
+    _previousCpState = std::make_shared<BezierCP>(_newCurve);
+    _previousCpState->cloneGuiState(*cp, true);
+    if (fp) {
+        _previousFpState = std::make_shared<BezierCP>(_newCurve);
+        _previousFpState->cloneGuiState(*fp, true);
+    }
+
+    double x, y, lx, ly;
+    cp->getPositionAtTime(true, _time, ViewIdx(0), &x, &y);
+    cp->getLeftBezierPointAtTime(true, _time, ViewIdx(0), &lx, &ly, false);
+    _newCurve->setPointAtIndex(false, index, _time, x, y, lx, ly, x, y);
+    cp->setBroken(true);
+    if (fp) {
+        fp->getPositionAtTime(true, _time, ViewIdx(0), &x, &y);
+        fp->getLeftBezierPointAtTime(true, _time, ViewIdx(0), &lx, &ly, false);
+        _newCurve->setPointAtIndex(true, index, _time, x, y, lx, ly, x, y);
+        fp->setBroken(true);
+    }
+}
+
 bool
 MakeBezierUndoCommand::mergeWith(const UndoCommandPtr& other)
 {
@@ -1448,6 +1545,166 @@ MakeBezierUndoCommand::mergeWith(const UndoCommandPtr& other)
     }
 
     return true;
+}
+
+//////////////////////////////
+
+SketchBezierUndoCommand::SketchBezierUndoCommand(const RotoCurveInteractPtr& roto,
+                                                 const BezierPtr& curve,
+                                                 bool isOpenBezier,
+                                                 const std::list<std::pair<double, double>>& points,
+                                                 double time,
+                                                 const std::pair<double, double>& pixelScale)
+    : UndoCommand()
+    , _roto(roto)
+    , _curve(curve)
+    , _before()
+    , _after()
+    , _parentLayer()
+    , _indexInLayer(0)
+    , _createdCurve(!curve)
+    , _firstRedoCalled(false)
+    , _isOpenBezier(isOpenBezier)
+    , _points(points)
+    , _time(time)
+    , _pixelScale(pixelScale)
+{
+    setText(tr("Sketch Bezier").toStdString());
+}
+
+SketchBezierUndoCommand::~SketchBezierUndoCommand()
+{
+}
+
+void
+SketchBezierUndoCommand::undo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto || !_curve) {
+        return;
+    }
+    roto->setCurrentTool(roto->drawBezierAction.lock());
+    if (_createdCurve) {
+        roto->removeCurve(_curve);
+        roto->setSelection(BezierPtr(), std::make_pair(CpPtr(), CpPtr()));
+    } else {
+        _curve->clone(_before.get());
+        roto->setSelection(_curve, std::make_pair(CpPtr(), CpPtr()));
+        roto->setBuiltBezier(_curve);
+    }
+    roto->evaluate(true);
+}
+
+void
+SketchBezierUndoCommand::redo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto || _points.empty()) {
+        return;
+    }
+
+    if (!_firstRedoCalled) {
+        std::list<std::pair<double, double>>::const_iterator it = _points.begin();
+        int firstNew = 0;
+        if (!_curve) {
+            _curve = roto->getCurveContext()->makeBezier(it->first, it->second, _isOpenBezier ? kRotoOpenBezierBaseName : kRotoBezierBaseName, _time, _isOpenBezier);
+            assert(_curve);
+            if (!_curve) {
+                return;
+            }
+            ++it;
+        } else {
+            _before.reset(new Bezier(_curve->getContext(), _curve->getScriptName(), _curve->getParentLayer(), false));
+            _before->clone(_curve.get());
+            firstNew = _curve->getControlPointsCount();
+        }
+        for (; it != _points.end(); ++it) {
+            _curve->addControlPoint(it->first, it->second, _time);
+        }
+        int count = _curve->getControlPointsCount();
+        // A sample's tangents come from its neighbours, so the point the sketch continues from is
+        // smoothed too.
+        for (int i = std::max(0, firstNew - 1); i < count; ++i) {
+            _curve->smoothPointAtIndex(i, _time, _pixelScale);
+        }
+        _after.reset(new Bezier(_curve->getContext(), _curve->getScriptName(), _curve->getParentLayer(), false));
+        _after->clone(_curve.get());
+
+        RotoItemPtr parentItem;
+        if (_curve->getParentLayer()) {
+            parentItem = roto->getCurveContext()->getItemByName(_curve->getParentLayer()->getScriptName());
+        }
+        if (parentItem) {
+            _parentLayer = std::dynamic_pointer_cast<RotoLayer>(parentItem);
+            _indexInLayer = _parentLayer ? _parentLayer->getChildIndex(_curve) : 0;
+        }
+    } else {
+        roto->setCurrentTool(roto->drawBezierAction.lock());
+        if (_createdCurve) {
+            roto->getCurveContext()->addItem(_parentLayer, _indexInLayer, _curve, RotoItem::eSelectionReasonOverlayInteract);
+        }
+        _curve->clone(_after.get());
+    }
+
+    int last = _curve->getControlPointsCount() - 1;
+    roto->setSelection(_curve, std::make_pair(_curve->getControlPointAtIndex(last), _curve->getFeatherPointAtIndex(last)));
+    roto->setBuiltBezier(_curve);
+    roto->autoSaveAndRedraw();
+    _firstRedoCalled = true;
+} // redo
+
+//////////////////////////////
+
+BreakTangentsUndoCommand::BreakTangentsUndoCommand(const RotoCurveInteractPtr& roto,
+                                                   const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points,
+                                                   double time)
+    : RotoDragUndoCommand(roto, time)
+    , _toBreak(points)
+    , _done(false)
+{
+    for (std::list<std::pair<BezierCPPtr, BezierCPPtr>>::const_iterator it = _toBreak.begin(); it != _toBreak.end(); ++it) {
+        addPoint(it->first);
+        addPoint(it->second);
+    }
+    setText(tr("Break tangents").toStdString());
+}
+
+BreakTangentsUndoCommand::~BreakTangentsUndoCommand()
+{
+}
+
+void
+BreakTangentsUndoCommand::undo()
+{
+    restoreBefore();
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (roto) {
+        roto->evaluate(true);
+    }
+}
+
+void
+BreakTangentsUndoCommand::redo()
+{
+    if (_done) {
+        restoreAfter();
+    } else {
+        for (std::list<std::pair<BezierCPPtr, BezierCPPtr>>::const_iterator it = _toBreak.begin(); it != _toBreak.end(); ++it) {
+            if (it->first) {
+                it->first->setBroken(true);
+            }
+            if (it->second) {
+                it->second->setBroken(true);
+            }
+        }
+        _done = true;
+    }
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (roto) {
+        roto->evaluate(true);
+    }
 }
 
 //////////////////////////////

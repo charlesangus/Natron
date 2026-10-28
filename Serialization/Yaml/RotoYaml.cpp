@@ -109,6 +109,27 @@ namespace YamlDetail {
             em << YAML::Value << std::string(keyframeInterpolationToken(interpolation));
         }
 
+        const char* const kRippleEditModeTokens[] = { "all", "fromStart", "toEnd", "range" };
+
+        const char*
+        rippleEditModeToken(int mode)
+        {
+            return (mode >= 0 && mode < 4) ? kRippleEditModeTokens[mode] : kRippleEditModeTokens[0];
+        }
+
+        int
+        readRippleEditModeToken(const YAML::Node& node,
+                                const std::string& context)
+        {
+            std::string token = readString(node, context);
+            for (int i = 0; i < 4; ++i) {
+                if (token == kRippleEditModeTokens[i]) {
+                    return i;
+                }
+            }
+            fail(node, context, "expected a ripple edit mode (all, fromStart, toEnd or range)");
+        }
+
         int
         readInterpolationToken(const YAML::Node& node,
                                const std::string& context)
@@ -821,6 +842,14 @@ namespace YamlDetail {
         emitKey(em, "rippleEdit");
         em << YAML::Value;
         emitBool(em, roto.rippleEdit);
+        if (roto.rippleEditMode != 0) {
+            emitKey(em, "rippleEditMode");
+            em << YAML::Value << std::string(rippleEditModeToken(roto.rippleEditMode));
+        }
+        const RotoContextSerialization defaults;
+        if ((roto.rippleEditRangeFirst != defaults.rippleEditRangeFirst) || (roto.rippleEditRangeLast != defaults.rippleEditRangeLast)) {
+            emitDoublePair(em, "rippleEditRange", roto.rippleEditRangeFirst, roto.rippleEditRangeLast);
+        }
         emitKey(em, "featherLink");
         em << YAML::Value;
         emitBool(em, roto.featherLink);
@@ -845,6 +874,14 @@ namespace YamlDetail {
         MapReader reader(node, context, warnings);
         roto.autoKeying = readBool(reader.get("autoKeying"), context + ".autoKeying");
         roto.rippleEdit = readBool(reader.get("rippleEdit"), context + ".rippleEdit");
+        if (YAML::Node mode = reader.get("rippleEditMode")) {
+            roto.rippleEditMode = readRippleEditModeToken(mode, context + ".rippleEditMode");
+        }
+        if (YAML::Node range = reader.get("rippleEditRange")) {
+            std::vector<double> firstLast = readDoubleVector(range, context + ".rippleEditRange", 2);
+            roto.rippleEditRangeFirst = firstLast[0];
+            roto.rippleEditRangeLast = firstLast[1];
+        }
         roto.featherLink = readBool(reader.get("featherLink"), context + ".featherLink");
         if (YAML::Node selected = reader.get("selected")) {
             roto.selectedItems = readStringList(selected, context + ".selected");

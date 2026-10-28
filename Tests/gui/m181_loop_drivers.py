@@ -313,6 +313,20 @@ try:
     def start_key_counts(size):
         return (size.getDriverStartKeyCount(0), size.getDriverStartKeyCount(1))
 
+    _py_viewer = {}
+
+    def seek(frame):
+        """Moves the timeline through a viewer, the only Python handle on it; makes the viewer if needed."""
+        if "v" not in _py_viewer:
+            viewer = app.getNode("Viewer1")
+            if viewer is None:
+                viewer = app.createNode("fr.inria.built-in.Viewer")
+            require(viewer is not None, "a viewer exists to move the timeline")
+            py_viewer = app.getViewer(viewer.getScriptName())
+            require(py_viewer is not None, "the viewer has a Python handle")
+            _py_viewer["v"] = py_viewer
+        _py_viewer["v"].seek(frame)
+
     def steps():
         gt.section("setup")
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
@@ -428,7 +442,7 @@ try:
 
         require(start_spin() is not None, "the driver row has a Start field")
         check(start_animation() == 0, "an unkeyed Start shows constant (got %r)" % start_animation())
-        app.seek(1)
+        seek(1)
         ok = yield ("until", lambda: app.timelineGetTime() == 1, POLL_TIMEOUT_S)
         require(ok, "the timeline is at frame 1")
         seen = right_click(start_spin(), SET_KEY_ITEM, "loopdriver_start_key_menu.png")
@@ -440,7 +454,7 @@ try:
         ok = yield ("until", lambda: start_animation() == ON_KEY, POLL_TIMEOUT_S)
         check(ok, "at the key's frame Start shows keyed (got %r)" % start_animation())
 
-        app.seek(10)
+        seek(10)
         ok = yield ("until", lambda: start_animation() == ANIMATED, POLL_TIMEOUT_S)
         check(ok, "off a key Start shows animated (got %r)" % start_animation())
         commit_spin(start_spin(), "4")
@@ -453,7 +467,7 @@ try:
         yield ("sleep", 300)
         screen_crop("loopdriver_row_keyed", panel_of(blur))
 
-        app.seek(5)
+        seek(5)
         ok = yield ("until", lambda: start_animation() == ANIMATED, POLL_TIMEOUT_S)
         check(ok, "between the keys Start shows animated (got %r)" % start_animation())
         trigger_edit("undo")

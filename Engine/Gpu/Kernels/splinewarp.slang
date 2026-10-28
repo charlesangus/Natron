@@ -6,7 +6,8 @@ import resamplecore;
 // carries the Source, which is both the image sampled and the image blended under the mask and
 // mix, the destination and the mask; the parameter block in wrapAux carries the settings, the
 // field's window and table layout, and the inverse of a concatenated upstream matrix; fieldBuf
-// holds the tables SplineWarpField::getGpuTables() builds. SplineWarpGpuParams in
+// holds the tables SplineWarpField::getGpuTables() builds, after a table of the fields to average
+// with motion blur. SplineWarpGpuParams in
 // Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h mirrors the block's words.
 
 [[vk::binding(4, 0)]] StructuredBuffer<uint> fieldBuf;
@@ -41,6 +42,7 @@ struct SplineWarpParams
     uint feathers;
     uint featherStride;
     FF m[9];
+    uint subFrames;
 }
 
 SplineWarpParams splineWarpLoad(StructuredBuffer<uint> params)
@@ -60,7 +62,30 @@ SplineWarpParams splineWarpLoad(StructuredBuffer<uint> params)
     s.featherStride = params[11];
     for (uint k = 0; k < 9; ++k)
         s.m[k] = ffMake(asfloat(params[12 + 2 * k]), asfloat(params[13 + 2 * k]));
+    s.subFrames = params[30];
     return s;
+}
+
+// Words per entry of the sub-frame table at the start of fieldBuf (setSplineWarpGpuSubFrame()).
+static const uint kSubFrameWords = 11;
+
+// s with sub-frame i's field in place of its own.
+SplineWarpParams subFrameParams(SplineWarpParams s, uint i)
+{
+    const uint e = i * kSubFrameWords;
+    SplineWarpParams t = s;
+    t.flags = (s.flags & ~(kSplineWarpField | kSplineWarpFeathers)) | fieldBuf[e];
+    t.x1 = int(fieldBuf[e + 1]);
+    t.y1 = int(fieldBuf[e + 2]);
+    t.width = fieldBuf[e + 3];
+    t.height = fieldBuf[e + 4];
+    t.nx = fieldBuf[e + 5];
+    t.nodes = fieldBuf[e + 6];
+    t.columns = fieldBuf[e + 7];
+    t.rows = fieldBuf[e + 8];
+    t.feathers = fieldBuf[e + 9];
+    t.featherStride = fieldBuf[e + 10];
+    return t;
 }
 
 FF fieldFF(uint index)
@@ -212,7 +237,13 @@ struct SplineWarpOp : IPixelOp
 
     float4 apply(float4 v, int2 xy)
     {
-        return splineWarpSample(s, xy);
+        if (s.subFrames == 0)
+            return splineWarpSample(s, xy);
+        // Summed in sub-frame order then divided, as SplineWarp::renderOp does.
+        float4 sum = splineWarpSample(subFrameParams(s, 0), xy);
+        for (uint i = 1; i < s.subFrames; ++i)
+            sum += splineWarpSample(subFrameParams(s, i), xy);
+        return sum / float(s.subFrames);
     }
 }
 

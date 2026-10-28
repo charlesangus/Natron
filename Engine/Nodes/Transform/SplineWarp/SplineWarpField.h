@@ -198,6 +198,11 @@ typedef std::shared_ptr<const SplineWarpField> SplineWarpFieldConstPtr;
  **/
 class SplineWarpFieldCache {
 public:
+    explicit SplineWarpFieldCache(std::size_t capacity = 4)
+        : _cache(capacity)
+    {
+    }
+
     /**
      * @param warpHash Identifies the map and the boundaries: the sample set's hash combined with
      * whatever else the map was solved with.

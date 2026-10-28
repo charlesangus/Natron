@@ -55,9 +55,15 @@ struct SplineWarpGpuParams {
     uint32_t featherStride = 0;
     // Row-major, each entry a two-float pair (hi, lo).
     float matrix[18] = {};
+    // With motion blur, the number of fields averaged. The bound buffer then starts with one
+    // kSplineWarpGpuSubFrameWords entry per field (setSplineWarpGpuSubFrame()), which replaces the
+    // field words above, and the field flags, for that field.
+    uint32_t subFrames = 0;
 };
 
-static_assert(sizeof(SplineWarpGpuParams) == 30 * 4, "splinewarp.slang reads 30 words");
+static_assert(sizeof(SplineWarpGpuParams) == 31 * 4, "splinewarp.slang reads 31 words");
+
+inline constexpr uint32_t kSplineWarpGpuSubFrameWords = 11;
 
 // Set only for the filters Resampler::filterHonoursClamp() names.
 inline constexpr uint32_t kSplineWarpGpuClamp = 1;
@@ -86,6 +92,33 @@ setSplineWarpGpuField(const SplineWarpFieldGpuLayout& layout,
     params->rows = layout.rows;
     params->feathers = layout.feathers;
     params->featherStride = layout.featherStride;
+}
+
+// One sub-frame entry: the field flags, window and table offsets of a field whose tables start
+// at word `base` of the bound buffer. A null layout leaves every pixel its own source.
+inline void
+setSplineWarpGpuSubFrame(const SplineWarpFieldGpuLayout* layout,
+                         const RectI& window,
+                         uint32_t base,
+                         uint32_t entry[kSplineWarpGpuSubFrameWords])
+{
+    for (uint32_t k = 0; k < kSplineWarpGpuSubFrameWords; ++k) {
+        entry[k] = 0;
+    }
+    if (!layout) {
+        return;
+    }
+    entry[0] = kSplineWarpGpuField | ((layout->featherStride > 0) ? kSplineWarpGpuFeathers : 0u);
+    entry[1] = (uint32_t)window.x1;
+    entry[2] = (uint32_t)window.y1;
+    entry[3] = (uint32_t)window.width();
+    entry[4] = (uint32_t)window.height();
+    entry[5] = layout->nx;
+    entry[6] = base + layout->nodes;
+    entry[7] = base + layout->columns;
+    entry[8] = base + layout->rows;
+    entry[9] = (layout->featherStride > 0) ? base + layout->feathers : 0u;
+    entry[10] = layout->featherStride;
 }
 
 // inverse is row-major, mapping this node's input pixels to the upstream image's.

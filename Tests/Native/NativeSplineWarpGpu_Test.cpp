@@ -194,6 +194,8 @@ struct KernelCase {
     // The inverse of a concatenated upstream matrix, row-major, when set.
     bool hasMatrix = false;
     double matrix[9] = { 1., 0., 0., 0., 1., 0., 0., 0., 1. };
+    // With motion blur, the fields averaged in place of `field`, null for one that moves nothing.
+    std::vector<std::shared_ptr<const SplineWarpField>> subFrames;
 };
 
 std::string
@@ -201,7 +203,7 @@ describe(const KernelCase& c)
 {
     std::ostringstream s;
     s << c.name << " filter " << (int)c.filter << " clamp " << c.clamp << " blackOutside " << c.blackOutside << " matrix " << c.hasMatrix
-      << " nComps " << c.nComps;
+      << " nComps " << c.nComps << " sub-frames " << c.subFrames.size();
 
     return s.str();
 }
@@ -290,16 +292,16 @@ renderCpu(const KernelCase& c)
     std::vector<float> sy(width);
     std::vector<float> jacobian((std::size_t)width * 4);
     float* const jac = impulse ? NULL : jacobian.data();
-    for (int y = c.window.y1; y < c.window.y2; ++y) {
-        float* row = &out[(std::size_t)(y - c.window.y1) * width * c.nComps];
-        c.field->getRow(y, c.window.x1, c.window.x2, sx.data(), sy.data(), jac);
+    const SplineWarpField identity;
+    const auto sampleRow = [&](const SplineWarpField& field, int y, float* row) {
+        field.getRow(y, c.window.x1, c.window.x2, sx.data(), sy.data(), jac);
         if (c.hasMatrix) {
             mapRowThrough(c.matrix, width, sx.data(), sy.data(), jac);
         }
         Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), jac, width, c.filter, c.clamp, c.blackOutside, Resampler::eWrapNone,
                                          Resampler::eWrapNone, row, c.nComps);
         if (c.hasMatrix) {
-            continue;
+            return;
         }
         const float cy = (float)(y + 0.5);
         for (int i = 0; i < width; ++i) {
@@ -310,6 +312,26 @@ renderCpu(const KernelCase& c)
             for (int k = 0; k < c.nComps; ++k) {
                 row[(std::size_t)i * c.nComps + k] = pix ? pix[k] : 0.f;
             }
+        }
+    };
+    const std::size_t rowSize = (std::size_t)width * c.nComps;
+    std::vector<float> subRow(rowSize);
+    for (int y = c.window.y1; y < c.window.y2; ++y) {
+        float* row = &out[(std::size_t)(y - c.window.y1) * rowSize];
+        if (c.subFrames.empty()) {
+            sampleRow(*c.field, y, row);
+            continue;
+        }
+        // As SplineWarp::renderOp: summed in sub-frame order, then divided.
+        sampleRow(c.subFrames[0] ? *c.subFrames[0] : identity, y, row);
+        for (std::size_t f = 1; f < c.subFrames.size(); ++f) {
+            sampleRow(c.subFrames[f] ? *c.subFrames[f] : identity, y, subRow.data());
+            for (std::size_t k = 0; k < rowSize; ++k) {
+                row[k] += subRow[k];
+            }
+        }
+        for (std::size_t k = 0; k < rowSize; ++k) {
+            row[k] /= (float)c.subFrames.size();
         }
     }
 
@@ -358,9 +380,25 @@ renderGpu(GpuParityRuntime& runtime,
         | (c.blackOutside ? kSplineWarpGpuBlackOutside : 0u) | ((c.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
     std::vector<uint32_t> words;
     SplineWarpFieldGpuLayout layout;
-    c.field->getGpuTables(&words, &layout);
-    if (!words.empty()) {
-        setSplineWarpGpuField(layout, c.field->getWindow(), &params);
+    if (c.subFrames.empty()) {
+        c.field->getGpuTables(&words, &layout);
+        if (!words.empty()) {
+            setSplineWarpGpuField(layout, c.field->getWindow(), &params);
+        }
+    } else {
+        // As SplineWarp::renderOpGpu: the sub-frame table, then each field's tables.
+        words.assign(c.subFrames.size() * kSplineWarpGpuSubFrameWords, 0u);
+        for (std::size_t i = 0; i < c.subFrames.size(); ++i) {
+            std::vector<uint32_t> tables;
+            SplineWarpFieldGpuLayout subLayout;
+            if (c.subFrames[i]) {
+                c.subFrames[i]->getGpuTables(&tables, &subLayout);
+            }
+            setSplineWarpGpuSubFrame(tables.empty() ? NULL : &subLayout, tables.empty() ? RectI() : c.subFrames[i]->getWindow(), (uint32_t)words.size(),
+                                     &words[i * kSplineWarpGpuSubFrameWords]);
+            words.insert(words.end(), tables.begin(), tables.end());
+        }
+        params.subFrames = (uint32_t)c.subFrames.size();
     }
     if (c.hasMatrix) {
         setSplineWarpGpuMatrix(c.matrix, &params);
@@ -587,6 +625,35 @@ TEST(SplineWarpGpuKernel, ConcatenatedMatrixMatchesTheCpu)
         c.hasMatrix = true;
         std::copy(inverse, inverse + 9, c.matrix);
         expectParity(*runtime, c);
+    }
+#endif
+}
+
+// Motion blur: several fields, one moving nothing and one bounded, averaged in one dispatch.
+TEST(SplineWarpGpuKernel, AveragedSubFramesMatchTheCpu)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const std::vector<SplineWarpBoundaryShape> none;
+    const SplineWarpField first(translation(0.75, -0.25), none, kWindow, 1., 1., 4.);
+    std::vector<std::shared_ptr<const SplineWarpField>> subFrames;
+    subFrames.push_back(std::make_shared<const SplineWarpField>(first));
+    subFrames.push_back(std::shared_ptr<const SplineWarpField>());
+    subFrames.push_back(std::make_shared<const SplineWarpField>(translation(2.5, 1.25), none, kWindow, 1., 1., 4.));
+    subFrames.push_back(std::make_shared<const SplineWarpField>(bendMap(), squareBoundary(), kWindow, 1., 1., 2.));
+    subFrames.push_back(std::make_shared<const SplineWarpField>(affineMap(), none, kWindow, 1., 1., 3.));
+    for (int nComps : { 1, 4 }) {
+        for (Resampler::FilterEnum filter : { Resampler::eFilterImpulse, Resampler::eFilterBilinear, Resampler::eFilterCubic }) {
+            KernelCase c = makeCase("sub-frames", first, nComps);
+            c.filter = filter;
+            c.subFrames = subFrames;
+            expectParity(*runtime, c);
+        }
     }
 #endif
 }
@@ -914,6 +981,28 @@ TEST_F(NativeSplineWarpGpuTest, ConcatenatingATransformMatchesTheCpuFrame)
         ASSERT_TRUE(result.ok) << result.error;
         EXPECT_FALSE(result.ranInRegion(warp)) << (mesh ? "mesh" : "TPS");
         expectFramesMatch(result, mesh ? "Transform -> SplineWarp (mesh)" : "Transform -> SplineWarp (TPS)");
+    }
+}
+
+// With motion blur the fields of every sub-frame average on the GPU as on the CPU.
+TEST_F(NativeSplineWarpGpuTest, MotionBlurFrameMatchesTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    for (bool mesh : { false, true }) {
+        NodePtr warp = makeWarp(source, mesh);
+        ASSERT_TRUE(bool(warp));
+        KnobDouble* amount = dynamic_cast<KnobDouble*>(warp->getKnobByName(kSplineWarpParamAmount).get());
+        ASSERT_TRUE(amount != NULL);
+        amount->setValueAtTime(kTime, 0., ViewSpec::all(), 0);
+        amount->setValueAtTime(kTime + 1., 1., ViewSpec::all(), 0);
+        ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamMotionBlur, { 1. }));
+        ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamShutter, { 1. }));
+        SplineWarp* effect = dynamic_cast<SplineWarp*>(warp->getEffectInstance().get());
+        ASSERT_TRUE(effect != NULL);
+        ASSERT_EQ((std::size_t)Resampler::motionBlurMinSamples(1.), effect->getRenderTimes(kTime, ViewIdx(0)).size());
+        expectWarpRunsOnTheGpu(source, warp, mesh ? "motion blur, mesh" : "motion blur, TPS");
     }
 }
 

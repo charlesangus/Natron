@@ -161,6 +161,11 @@ typedef std::shared_ptr<const SplineWarpMesh> SplineWarpMeshConstPtr;
  **/
 class SplineWarpMeshCache {
 public:
+    explicit SplineWarpMeshCache(std::size_t capacity = 4)
+        : _cache(capacity)
+    {
+    }
+
     SplineWarpMeshConstPtr get(U64 sampleHash,
                                const std::vector<SplineWarpSamplePair>& pairs,
                                const std::vector<SplineWarpSamplePolyline>& polylines,

@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/Resampler.h"
@@ -51,11 +52,16 @@
 #define kSplineWarpParamCurveResolution "curveResolution"
 #define kSplineWarpParamFieldResolution "fieldResolution"
 #define kSplineWarpParamBBox "bbox"
+#define kSplineWarpParamMotionBlur "motionBlur"
+#define kSplineWarpParamShutter "shutter"
 
 #define kSplineWarpSolverTps "tps"
 #define kSplineWarpSolverMesh "mesh"
 #define kSplineWarpBBoxSource "source"
 #define kSplineWarpBBoxUnion "union"
+
+// The most sub-frames a motion-blurred render solves and averages.
+#define kSplineWarpMaxSubFrames 64
 
 #define kSplineWarpInputSource 0
 #define kSplineWarpInputMask 1
@@ -130,6 +136,13 @@ public:
      **/
     virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The times a render at time averages: with motion blur, the centres of motionBlur's
+     * stratified sub-frames over the shutter; otherwise, or when the warp is the same at every
+     * sub-frame, the one time whose warp it renders.
+     **/
+    std::vector<double> getRenderTimes(double time, ViewIdx view);
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -143,6 +156,10 @@ private:
         bool clamp = false;
         bool blackOutside = true;
         bool bboxUnion = false;
+        double motionBlur = 0.;
+        double shutter = 0.5;
+        Resampler::ShutterOffsetEnum shutterOffset = Resampler::eShutterOffsetStart;
+        double shutterCustomOffset = 0.;
     };
 
     // The solved warp at one time: its samples, the map of the chosen solver, and whether it moves
@@ -155,6 +172,12 @@ private:
         RectD meshBox;
         U64 hash = 0;
         bool identity = true;
+    };
+
+    // One time a render samples, with its warp.
+    struct TimedWarp {
+        double time = 0.;
+        Warp warp;
     };
 
     struct SampleKey {
@@ -235,6 +258,8 @@ private:
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void readSettings(double time, ViewIdx view, Settings* settings) const;
+    // Only the knobs the warp is solved from, which a sub-frame reads at its own time.
+    void readWarpSettings(double time, ViewIdx view, Settings* settings) const;
 
     // Samples and solves the warp; false when the node has no SplineWarp curve context.
     // The pairs sampled from the curves at time, cached by the curves' hash and the settings
@@ -246,7 +271,18 @@ private:
     // The Source's region of definition at full scale, null without a Source or when it fails.
     RectD getSourceBounds(double time, ViewIdx view);
 
-    SplineWarpFieldConstPtr computeField(const Warp& warp, double time, const Settings& settings, const RectI& window, double scaleX, double scaleY);
+    /**
+     * @brief The warps a render at time averages, as getRenderTimes() gives their times. False
+     * when the node has no SplineWarp curve context.
+     **/
+    bool computeShutterWarps(double time, ViewIdx view, const Settings& settings, std::vector<TimedWarp>* warps);
+
+    // Grows *extra by where the warp moves the edges of rod and by its destination curves, for
+    // the union bbox.
+    void growUnionRoD(const Warp& warp, const Settings& settings, const RectD& rod, RectD* extra, bool* any);
+
+    // The field over window, from the sub-frame cache when the render averages several.
+    SplineWarpFieldConstPtr computeField(const Warp& warp, double time, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
 
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
 
@@ -263,6 +299,10 @@ private:
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
     KnobChoiceWPtr _bbox;
+    KnobDoubleWPtr _motionBlur;
+    KnobDoubleWPtr _shutter;
+    KnobChoiceWPtr _shutterOffset;
+    KnobDoubleWPtr _shutterCustomOffset;
 
     SplineWarpLruCache<SampleKey, SplineWarpSampleSet> _samples;
     SplineWarpTpsCache _maps;
@@ -270,6 +310,7 @@ private:
     SplineWarpMeshCache _meshes;
     SplineWarpMeshCache _forwardMeshes;
     SplineWarpFieldCache _fields;
+    SplineWarpFieldCache _subFrameFields;
 };
 
 NATRON_NAMESPACE_EXIT

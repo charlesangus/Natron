@@ -68,6 +68,9 @@ namespace {
 // union bbox.
 const int kRoDEdgeSamples = 32;
 
+// Entries of the per-time caches: every sub-frame of one render, and a few renders more.
+const std::size_t kTimeCacheSize = kSplineWarpMaxSubFrames + 4;
+
 // Where a coordinate lands outside every image, so it reads black.
 const float kOutsideCoord = -1e9f;
 
@@ -130,6 +133,12 @@ mergePoint(RectD* r,
 
 SplineWarp::SplineWarp(NodePtr node)
     : StagedImageEffect(node)
+    , _samples(kTimeCacheSize)
+    , _maps(kTimeCacheSize)
+    , _forwardMaps(kTimeCacheSize)
+    , _meshes(kTimeCacheSize)
+    , _forwardMeshes(kTimeCacheSize)
+    , _subFrameFields(kSplineWarpMaxSubFrames)
 {
 }
 
@@ -306,6 +315,60 @@ SplineWarp::initializeKnobs()
     page->addKnob(bbox);
     _bbox = bbox;
 
+    KnobDoublePtr motionBlur = createKnob<KnobDouble>(tr("Motion Blur"));
+    motionBlur->setName(kSplineWarpParamMotionBlur);
+    motionBlur->setHintToolTip(tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down "
+                                  "rendering. The warp is solved at the larger of 13 and 40 × Motion Blur / 3 times spread evenly over the "
+                                  "shutter, at most %1, and the results are averaged.")
+                                   .arg(kSplineWarpMaxSubFrames));
+    motionBlur->setMinimum(0.);
+    motionBlur->setMaximum(100.);
+    motionBlur->setDisplayMinimum(0.);
+    motionBlur->setDisplayMaximum(4.);
+    motionBlur->setIncrement(0.01);
+    motionBlur->setDefaultValue(0.);
+    page->addKnob(motionBlur);
+    _motionBlur = motionBlur;
+
+    KnobDoublePtr shutter = createKnob<KnobDouble>(tr("Shutter"));
+    shutter->setName(kSplineWarpParamShutter);
+    shutter->setHintToolTip(tr("Controls how long (in frames) the shutter should remain open."));
+    shutter->setMinimum(0.);
+    shutter->setMaximum(2.);
+    shutter->setDisplayMinimum(0.);
+    shutter->setDisplayMaximum(2.);
+    shutter->setIncrement(0.01);
+    shutter->setDefaultValue(0.5);
+    page->addKnob(shutter);
+    _shutter = shutter;
+
+    KnobChoicePtr shutterOffset = createKnob<KnobChoice>(tr(kResamplerParamShutterOffsetLabel));
+    shutterOffset->setName(kResamplerParamShutterOffset);
+    shutterOffset->setHintToolTip(tr(kResamplerParamShutterOffsetHint));
+    {
+        const std::vector<Resampler::ChoiceOption>& offsets = Resampler::shutterOffsetOptions();
+        std::vector<ChoiceOption> options;
+        for (std::size_t i = 0; i < offsets.size(); ++i) {
+            options.push_back(ChoiceOption(offsets[i].id, offsets[i].label, offsets[i].hint));
+        }
+        shutterOffset->populateChoices(options);
+    }
+    shutterOffset->setDefaultValue((int)Resampler::eShutterOffsetStart);
+    page->addKnob(shutterOffset);
+    _shutterOffset = shutterOffset;
+
+    KnobDoublePtr shutterCustomOffset = createKnob<KnobDouble>(tr(kResamplerParamShutterCustomOffsetLabel));
+    shutterCustomOffset->setName(kResamplerParamShutterCustomOffset);
+    shutterCustomOffset->setHintToolTip(tr(kResamplerParamShutterCustomOffsetHint));
+    shutterCustomOffset->setMinimum(-1.);
+    shutterCustomOffset->setMaximum(1.);
+    shutterCustomOffset->setDisplayMinimum(-1.);
+    shutterCustomOffset->setDisplayMaximum(1.);
+    shutterCustomOffset->setIncrement(0.1);
+    shutterCustomOffset->setDefaultValue(0.);
+    page->addKnob(shutterCustomOffset);
+    _shutterCustomOffset = shutterCustomOffset;
+
     addStageKnobs(page);
 
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
@@ -373,21 +436,10 @@ SplineWarp::readSettings(double time,
                          ViewIdx view,
                          Settings* settings) const
 {
-    KnobDoublePtr amount = _amount.lock();
-    if (amount) {
-        settings->amount = std::max(0., std::min(1., amount->getValueAtTime(time, 0, view)));
-    }
-    KnobBoolPtr invert = _invert.lock();
-    if (invert) {
-        settings->invert = invert->getValueAtTime(time, 0, view);
-    }
+    readWarpSettings(time, view, settings);
     KnobChoicePtr solver = _solver.lock();
     if (solver) {
         settings->mesh = solver->getValueAtTime(time, 0, view) == 1;
-    }
-    KnobDoublePtr smoothness = _smoothness.lock();
-    if (smoothness) {
-        settings->smoothness = std::max(0., smoothness->getValueAtTime(time, 0, view));
     }
     KnobDoublePtr curveResolution = _curveResolution.lock();
     if (curveResolution) {
@@ -416,7 +468,45 @@ SplineWarp::readSettings(double time,
     if (bbox) {
         settings->bboxUnion = bbox->getValueAtTime(time, 0, view) == 1;
     }
+    KnobDoublePtr motionBlur = _motionBlur.lock();
+    if (motionBlur) {
+        settings->motionBlur = std::max(0., motionBlur->getValueAtTime(time, 0, view));
+    }
+    KnobDoublePtr shutter = _shutter.lock();
+    if (shutter) {
+        settings->shutter = std::max(0., shutter->getValueAtTime(time, 0, view));
+    }
+    KnobChoicePtr shutterOffset = _shutterOffset.lock();
+    if (shutterOffset) {
+        const int value = shutterOffset->getValueAtTime(time, 0, view);
+        if ((value >= (int)Resampler::eShutterOffsetCentered) && (value <= (int)Resampler::eShutterOffsetCustom)) {
+            settings->shutterOffset = (Resampler::ShutterOffsetEnum)value;
+        }
+    }
+    KnobDoublePtr shutterCustomOffset = _shutterCustomOffset.lock();
+    if (shutterCustomOffset) {
+        settings->shutterCustomOffset = shutterCustomOffset->getValueAtTime(time, 0, view);
+    }
 } // SplineWarp::readSettings
+
+void
+SplineWarp::readWarpSettings(double time,
+                             ViewIdx view,
+                             Settings* settings) const
+{
+    KnobDoublePtr amount = _amount.lock();
+    if (amount) {
+        settings->amount = std::max(0., std::min(1., amount->getValueAtTime(time, 0, view)));
+    }
+    KnobBoolPtr invert = _invert.lock();
+    if (invert) {
+        settings->invert = invert->getValueAtTime(time, 0, view);
+    }
+    KnobDoublePtr smoothness = _smoothness.lock();
+    if (smoothness) {
+        settings->smoothness = std::max(0., smoothness->getValueAtTime(time, 0, view));
+    }
+}
 
 RectD
 SplineWarp::getSourceBounds(double time,
@@ -519,25 +609,88 @@ SplineWarp::computeWarp(double time,
     return true;
 } // SplineWarp::computeWarp
 
+bool
+SplineWarp::computeShutterWarps(double time,
+                                ViewIdx view,
+                                const Settings& settings,
+                                std::vector<TimedWarp>* warps)
+{
+    warps->clear();
+    if ((settings.motionBlur == 0.) || (settings.shutter == 0.)) {
+        TimedWarp single;
+        single.time = time;
+        const bool ok = computeWarp(time, view, settings, &single.warp);
+        warps->push_back(single);
+
+        return ok;
+    }
+
+    double tStart, tEnd;
+    Resampler::shutterRange(time, settings.shutter, settings.shutterOffset, settings.shutterCustomOffset, &tStart, &tEnd);
+    const int count = std::min(kSplineWarpMaxSubFrames, Resampler::motionBlurMinSamples(settings.motionBlur));
+    warps->resize(count);
+    bool same = true;
+    for (int i = 0; i < count; ++i) {
+        TimedWarp& sub = (*warps)[i];
+        sub.time = tStart + (i + 0.5) * (tEnd - tStart) / count;
+        Settings at = settings;
+        readWarpSettings(sub.time, view, &at);
+        if (!computeWarp(sub.time, view, at, &sub.warp)) {
+            warps->clear();
+            warps->push_back(TimedWarp());
+            warps->back().time = time;
+
+            return false;
+        }
+        const Warp& first = (*warps)[0].warp;
+        same = same && (sub.warp.identity == first.identity) && (sub.warp.hash == first.hash);
+    }
+    // A warp that holds still through the shutter renders once.
+    if (same) {
+        warps->resize(1);
+    }
+
+    return true;
+} // SplineWarp::computeShutterWarps
+
+std::vector<double>
+SplineWarp::getRenderTimes(double time,
+                           ViewIdx view)
+{
+    Settings settings;
+    readSettings(time, view, &settings);
+    std::vector<TimedWarp> warps;
+    computeShutterWarps(time, view, settings, &warps);
+    std::vector<double> times;
+    for (std::size_t i = 0; i < warps.size(); ++i) {
+        times.push_back(warps[i].time);
+    }
+
+    return times;
+}
+
 SplineWarpFieldConstPtr
 SplineWarp::computeField(const Warp& warp,
                          double time,
                          const Settings& settings,
                          const RectI& window,
                          double scaleX,
-                         double scaleY)
+                         double scaleY,
+                         bool subFrame)
 {
     if (warp.identity || !warp.samples) {
         return SplineWarpFieldConstPtr();
     }
+    // Sub-frames have a cache of their own, so they never evict the unblurred fields.
+    SplineWarpFieldCache& cache = subFrame ? _subFrameFields : _fields;
     if (warp.mesh) {
-        return _fields.get(warp.hash, time, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+        return cache.get(warp.hash, time, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
     }
     if (!warp.map) {
         return SplineWarpFieldConstPtr();
     }
 
-    return _fields.get(warp.hash, time, *warp.map, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+    return cache.get(warp.hash, time, *warp.map, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
 }
 
 double
@@ -587,10 +740,33 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
     if (!settings.bboxUnion || rod->isNull()) {
         return status;
     }
-    Warp warp;
-    if (!computeWarp(time, view, settings, &warp) || warp.identity) {
+    std::vector<TimedWarp> warps;
+    if (!computeShutterWarps(time, view, settings, &warps)) {
         return status;
     }
+    RectD extra;
+    bool any = false;
+    for (std::size_t i = 0; i < warps.size(); ++i) {
+        if (!warps[i].warp.identity) {
+            Settings at = settings;
+            readWarpSettings(warps[i].time, view, &at);
+            growUnionRoD(warps[i].warp, at, *rod, &extra, &any);
+        }
+    }
+    if (any) {
+        rod->merge(extra);
+    }
+
+    return status;
+} // SplineWarp::getRegionOfDefinition
+
+void
+SplineWarp::growUnionRoD(const Warp& warp,
+                         const Settings& settings,
+                         const RectD& rod,
+                         RectD* extra,
+                         bool* any)
+{
     const SplineWarpSampleSet& samples = *warp.samples;
 
     // Nothing outside every boundary's feather moves.
@@ -619,15 +795,13 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
         return false;
     };
 
-    RectD extra;
-    bool any = false;
     for (int i = 0; i < samples.linkPairCount; ++i) {
         const Point& p = samples.pairs[i].destination;
         if (canMove(p.x, p.y)) {
-            mergePoint(&extra, &any, p.x, p.y);
+            mergePoint(extra, any, p.x, p.y);
         }
     }
-    if (!rod->isInfinite()) {
+    if (!rod.isInfinite()) {
         // The forward map sends Source positions to where the warp shows them.
         std::vector<SplineWarpSamplePair> swapped(samples.pairs.size());
         for (std::size_t i = 0; i < samples.pairs.size(); ++i) {
@@ -651,7 +825,7 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
             }
         }
         if (forward) {
-            const RectD edges = *rod;
+            const RectD& edges = rod;
             for (int k = 0; k <= kRoDEdgeSamples; ++k) {
                 const double t = (double)k / kRoDEdgeSamples;
                 const double x = edges.x1 + t * (edges.x2 - edges.x1);
@@ -662,17 +836,12 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
                         continue;
                     }
                     const Point q = forward(points[e].x, points[e].y);
-                    mergePoint(&extra, &any, q.x, q.y);
+                    mergePoint(extra, any, q.x, q.y);
                 }
             }
         }
     }
-    if (any) {
-        rod->merge(extra);
-    }
-
-    return status;
-} // SplineWarp::getRegionOfDefinition
+} // SplineWarp::growUnionRoD
 
 void
 SplineWarp::getRegionsOfInterest(double time,
@@ -694,14 +863,20 @@ SplineWarp::getRegionsOfInterest(double time,
     const OfxPointD s = scale.toOfxPointD();
 
     RectD region = renderWindow;
-    Warp warp;
-    if (computeWarp(time, view, settings, &warp) && !warp.identity) {
+    std::vector<TimedWarp> warps;
+    if (computeShutterWarps(time, view, settings, &warps)) {
         const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
-        SplineWarpFieldConstPtr field = computeField(warp, time, settings, window, s.x / par, s.y);
-        if (field && !field->isIdentity()) {
-            const double grow = Resampler::filterRoIExpansion(settings.filter);
-            const RectD bounds = field->getSourceBounds();
-            region.merge(bounds.x1 - grow * par / s.x, bounds.y1 - grow / s.y, bounds.x2 + grow * par / s.x, bounds.y2 + grow / s.y);
+        const bool subFrames = warps.size() > 1;
+        for (std::size_t i = 0; i < warps.size(); ++i) {
+            if (warps[i].warp.identity) {
+                continue;
+            }
+            SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, window, s.x / par, s.y, subFrames);
+            if (field && !field->isIdentity()) {
+                const double grow = Resampler::filterRoIExpansion(settings.filter);
+                const RectD bounds = field->getSourceBounds();
+                region.merge(bounds.x1 - grow * par / s.x, bounds.y1 - grow / s.y, bounds.x2 + grow * par / s.x, bounds.y2 + grow / s.y);
+            }
         }
     }
 
@@ -725,12 +900,17 @@ SplineWarp::isOpIdentity(double time,
     }
     Settings settings;
     readSettings(time, view, &settings);
-    Warp warp;
-    if (!computeWarp(time, view, settings, &warp)) {
+    std::vector<TimedWarp> warps;
+    if (!computeShutterWarps(time, view, settings, &warps)) {
         return true;
     }
+    for (std::size_t i = 0; i < warps.size(); ++i) {
+        if (!warps[i].warp.identity) {
+            return false;
+        }
+    }
 
-    return warp.identity;
+    return true;
 }
 
 StatusEnum
@@ -756,11 +936,14 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         return eStatusOK;
     }
 
-    Warp warp;
-    computeWarp(args.time, args.view, settings, &warp);
-    SplineWarpFieldConstPtr field = computeField(warp, args.time, settings, roi, s.x / par, s.y);
-    if (!field) {
-        field = std::make_shared<const SplineWarpField>();
+    // One field per time the render averages; a null one leaves every pixel in place.
+    std::vector<TimedWarp> warps;
+    computeShutterWarps(args.time, args.view, settings, &warps);
+    const bool subFrames = warps.size() > 1;
+    std::vector<SplineWarpFieldConstPtr> fields;
+    for (std::size_t i = 0; i < warps.size(); ++i) {
+        SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, roi, s.x / par, s.y, subFrames);
+        fields.push_back(field ? field : std::make_shared<const SplineWarpField>());
     }
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
@@ -881,10 +1064,37 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         std::vector<float> warpedRow(direct ? 0 : rowSize);
         std::vector<float> referenceRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
+        std::vector<float> subFrameRow(subFrames ? rowSize : 0);
         std::vector<float> sx(width);
         std::vector<float> sy(width);
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)width * 4);
         float* const jac = impulse ? NULL : jacobian.data();
+        const auto sampleField = [&](const SplineWarpField& field, int y, float* row) {
+            field.getRow(y, roi.x1, roi.x2, sx.data(), sy.data(), jac);
+            if (plane.concatenated) {
+                mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
+            }
+            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.blackOutside,
+                                             Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
+            if (plane.concatenated) {
+                return;
+            }
+            // A pixel the warp leaves in place is the Source pixel itself, which a filter would
+            // soften with its neighbours.
+            const float cy = (float)(y + 0.5);
+            for (int i = 0; i < width; ++i) {
+                if ((sx[i] != (float)(roi.x1 + i + 0.5)) || (sy[i] != cy)) {
+                    continue;
+                }
+                float* dst = &row[(std::size_t)i * nComps];
+                const float* pix = plane.source.pixel(roi.x1 + i, y);
+                if (pix) {
+                    std::copy(pix, pix + nComps, dst);
+                } else {
+                    std::fill(dst, dst + nComps, 0.f);
+                }
+            }
+        };
         for (int y = band.y1; y < band.y2; ++y) {
             if ((((y - band.y1) % PassExec::kAbortCheckLines) == 0) && cancel.check()) {
                 return;
@@ -897,27 +1107,18 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             if (!hasSource) {
                 std::fill(outRow, outRow + rowSize, 0.f);
             } else {
-                field->getRow(y, roi.x1, roi.x2, sx.data(), sy.data(), jac);
-                if (plane.concatenated) {
-                    mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
-                }
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.blackOutside,
-                                                 Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
-                if (!plane.concatenated) {
-                    // A pixel the warp leaves in place is the Source pixel itself, which a filter
-                    // would soften with its neighbours.
-                    const float cy = (float)(y + 0.5);
-                    for (int i = 0; i < width; ++i) {
-                        if ((sx[i] != (float)(roi.x1 + i + 0.5)) || (sy[i] != cy)) {
-                            continue;
+                sampleField(*fields[0], y, outRow);
+                if (subFrames) {
+                    // Summed in sub-frame order then divided, as splinewarp.slang does.
+                    for (std::size_t f = 1; f < fields.size(); ++f) {
+                        sampleField(*fields[f], y, subFrameRow.data());
+                        for (std::size_t k = 0; k < rowSize; ++k) {
+                            outRow[k] += subFrameRow[k];
                         }
-                        float* dst = &outRow[(std::size_t)i * nComps];
-                        const float* pix = plane.source.pixel(roi.x1 + i, y);
-                        if (pix) {
-                            std::copy(pix, pix + nComps, dst);
-                        } else {
-                            std::fill(dst, dst + nComps, 0.f);
-                        }
+                    }
+                    const float count = (float)fields.size();
+                    for (std::size_t k = 0; k < rowSize; ++k) {
+                        outRow[k] /= count;
                     }
                 }
             }
@@ -1076,13 +1277,38 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
 
     GpuImageView fieldView;
     if (params.flags & kSplineWarpGpuSample) {
-        Warp warp;
-        computeWarp(query.time, query.view, settings, &warp);
-        SplineWarpFieldConstPtr field = computeField(warp, query.time, settings, rect, s.x / par, s.y);
+        std::vector<TimedWarp> warps;
+        computeShutterWarps(query.time, query.view, settings, &warps);
+        const bool subFrames = warps.size() > 1;
         std::vector<uint32_t> words;
         SplineWarpFieldGpuLayout layout;
-        if (field) {
-            field->getGpuTables(&words, &layout);
+        SplineWarpFieldConstPtr field;
+        if (!subFrames) {
+            field = computeField(warps[0].warp, warps[0].time, settings, rect, s.x / par, s.y, false);
+            if (field) {
+                field->getGpuTables(&words, &layout);
+            }
+        } else {
+            // The sub-frame table, then each field's tables, at offsets the table gives.
+            const std::size_t count = warps.size();
+            words.assign(count * kSplineWarpGpuSubFrameWords, 0u);
+            std::vector<uint32_t> tables;
+            for (std::size_t i = 0; i < count; ++i) {
+                SplineWarpFieldConstPtr subField = computeField(warps[i].warp, warps[i].time, settings, rect, s.x / par, s.y, true);
+                SplineWarpFieldGpuLayout subLayout;
+                tables.clear();
+                if (subField) {
+                    subField->getGpuTables(&tables, &subLayout);
+                }
+                if (words.size() > (std::size_t)INT32_MAX) {
+                    return eStatusFailed;
+                }
+                const uint32_t base = (uint32_t)words.size();
+                setSplineWarpGpuSubFrame(tables.empty() ? nullptr : &subLayout, tables.empty() ? RectI() : subField->getWindow(), base,
+                                         &words[i * kSplineWarpGpuSubFrameWords]);
+                words.insert(words.end(), tables.begin(), tables.end());
+            }
+            params.subFrames = (uint32_t)count;
         }
         if (!words.empty()) {
             gpu::GpuRecordContext& ctx = args.context;
@@ -1108,7 +1334,9 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
             fieldView.bounds = RectI(0, 0, (int)words.size(), 1);
             fieldView.rowStrideFloats = (int)words.size();
             fieldView.nComps = 1;
-            setSplineWarpGpuField(layout, field->getWindow(), &params);
+            if (!subFrames) {
+                setSplineWarpGpuField(layout, field->getWindow(), &params);
+            }
         }
     }
 

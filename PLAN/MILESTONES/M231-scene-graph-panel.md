@@ -73,3 +73,7 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
   - size: L
 
 **Verification gate:** release gate green; panel GUI scripts pass under Xvfb; fold perf numbers recorded; screenshots (tree, attribute view, folded bbox) shared before sign-off.
+
+## Decisions
+
+- 2026-10-27: release gate green with the C++20 TfWeakPtr compare fix, the model re-entrancy fix and valid usda in the fold tests; next: GUI check and screenshots, then AppImage/UAT.

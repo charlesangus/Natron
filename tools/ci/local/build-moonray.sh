@@ -130,6 +130,24 @@ done
 if [ -d "${usd_prefix}/lib/cmake/Ptex" ]; then
     dep_dirs+=("-DPTex_DIR=${usd_prefix}/lib/cmake/Ptex")
 fi
+# USD was built by Conan, so pxrTargets.cmake names MaterialX's targets materialx::<Lib>; the image's
+# MaterialX config names them <Lib>. This include (run after every project()) adds the aliases, as
+# cmake/NatronUsd.cmake does, without patching MoonRay. IMPORTED_GLOBAL lets the alias be seen from
+# the subdirectory that calls find_package(pxr).
+mtlx_aliases="${work}/natron-mtlx-aliases.cmake"
+cat >"$mtlx_aliases" <<'MTLX_EOF'
+if(NOT TARGET materialx::MaterialXCore)
+    find_package(MaterialX CONFIG QUIET PATHS "${NATRON_MTLX_USD_PREFIX}/lib/cmake/MaterialX")
+    foreach(_natron_mtlx_lib MaterialXCore MaterialXFormat MaterialXGenShader MaterialXGenGlsl MaterialXRender)
+        if(TARGET ${_natron_mtlx_lib} AND NOT TARGET materialx::${_natron_mtlx_lib})
+            set_target_properties(${_natron_mtlx_lib} PROPERTIES IMPORTED_GLOBAL TRUE)
+            add_library(materialx::${_natron_mtlx_lib} ALIAS ${_natron_mtlx_lib})
+        endif()
+    endforeach()
+    unset(_natron_mtlx_lib)
+endif()
+MTLX_EOF
+
 boost_python="$(find "${usd_prefix}/lib" -maxdepth 1 -name 'libboost_python3*.so' -printf '%f\n' | head -n 1)"
 boost_python="${boost_python#libboost_}"
 boost_python="${boost_python%.so}"
@@ -144,6 +162,8 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_PREFIX_PATH="$usd_prefix" \
+    -DNATRON_MTLX_USD_PREFIX="$usd_prefix" \
+    -DCMAKE_PROJECT_INCLUDE="$mtlx_aliases" \
     -DCMAKE_CXX_FLAGS=-DUDPSYSLOG_NO_BOOST \
     -DCMAKE_ISPC_COMPILER="$ispc" \
     -DCMAKE_CUDA_COMPILER=NOTFOUND \

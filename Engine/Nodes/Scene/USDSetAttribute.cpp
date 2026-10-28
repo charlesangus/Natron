@@ -265,8 +265,13 @@ USDSetAttribute::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPt
     if (!serialization || !valueType) {
         return;
     }
-    for (const Serialization::KnobSerialization& knob : serialization->knobs) {
-        if ((knob.name == kUSDSetAttributeParamValueType) && knob.choiceOptionID) {
+    for (const Serialization::KnobSerialization& saved : serialization->knobs) {
+        if (saved.name != kUSDSetAttributeParamValueType) {
+            continue;
+        }
+        // A project file saves a choice by its option id, which completing the serialization reads.
+        const Serialization::KnobSerialization knob = completeKnobSerializationForKnob(*valueType, saved);
+        if (knob.choiceOptionID && !knob.choiceOptionID->empty()) {
             valueType->setValueFromID(*knob.choiceOptionID, 0);
             rebuildValueKnob();
             break;

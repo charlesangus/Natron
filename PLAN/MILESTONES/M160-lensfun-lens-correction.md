@@ -68,3 +68,7 @@ Licensing: lensfun is LGPL-3 and its database is CC-BY-SA; record both in `tools
   - size: M
 
 **Verification gate:** `ctest` is green, including `NativeLensCorrect`, `NativeLensCorrectGpu` and the extended `RawDecodeSupport` cases; the Xvfb script passes and the user has approved the screenshots.
+
+## Decisions
+
+- 2026-10-28: Phase 1 implemented (build pending). lensfun built from source (master 052c3ec6, v2 database) by fetch-assets.sh and bundled under Resources/lensfun, not the image's lensfun 0.3.4 (database from Feb 2022). Raw lens EXIF read with rawspeed's TIFF parser from standard EXIF tags only (exif/Make, Model, LensModel, FocalLength, FNumber, SubjectDistance); makernote lens names not decoded, so some older bodies need the lens typed in LensCorrect. Open to user: decode makernote lens names (needs exiv2) in phase 2?

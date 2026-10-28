@@ -6,7 +6,8 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
-#                            [--cmake-arg <arg>]...
+#                            [--cmake-arg <arg>]... [--gui "<script> ..."]
+#   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
 #   fast | release | debug -> the build preset, same meaning as in local/build.sh.
@@ -34,6 +35,19 @@
 #                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
 #                        the workflow as one space-separated input, so an arg
 #                        containing whitespace is rejected.
+#   --gui "<script> ..." -> after the build, run each Tests/gui/<name>.py script
+#                        (space-separated) under Xvfb against the AppImage, one
+#                        job per script in parallel, and download each one's
+#                        screenshots, results.txt and natron.log into
+#                        build/remote/<preset>/gui/<name>/. Prints a PASS/FAIL
+#                        line per script and fails if any script failed. Needs
+#                        the AppImage, so not with debug or --no-appimage.
+#   --from-run <run-id> -> skip the build and run the --gui scripts against the
+#                        <preset> AppImage of an earlier remote-build run, using
+#                        the scripts and fixtures of the commit that run built
+#                        (so its branch need not carry this workflow). Takes no
+#                        build or test options, and needs --gui. Only
+#                        build/remote/<preset>/gui/ is replaced.
 #   --mode            -> print the build mode (local or remote) and exit. Takes
 #                        no other arguments. The mode is the first non-blank,
 #                        non-# line of .local/build-mode at the repo root; a
@@ -50,7 +64,8 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]..." >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "       build.sh <fast|release> --from-run <run-id> --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
 
@@ -87,6 +102,9 @@ RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 SHUFFLE_SEEDS=""
 CMAKE_ARGS=""
+GUI_SCRIPTS=""
+FROM_RUN=""
+BUILD_OPTION=false
 
 if [[ " $* " == *" --mode "* ]]; then
     if [[ $# -ne 1 ]]; then
@@ -112,10 +130,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --tests)
             RUN_TESTS=true
+            BUILD_OPTION=true
             ;;
         --record-goldens)
             RECORD_GOLDENS=true
             RUN_TESTS=true
+            BUILD_OPTION=true
             ;;
         --shuffle-seeds)
             if [[ $# -eq 0 ]]; then
@@ -126,9 +146,11 @@ while [[ $# -gt 0 ]]; do
             SHUFFLE_SEEDS="$1"
             shift
             RUN_TESTS=true
+            BUILD_OPTION=true
             ;;
         --no-appimage)
             WANT_APPIMAGE=false
+            BUILD_OPTION=true
             ;;
         --cmake-arg)
             if [[ $# -eq 0 ]]; then
@@ -142,6 +164,32 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             CMAKE_ARGS="${CMAKE_ARGS:+${CMAKE_ARGS} }$1"
+            shift
+            BUILD_OPTION=true
+            ;;
+        --gui)
+            if [[ $# -eq 0 ]]; then
+                echo "build.sh: --gui needs a space-separated list of Tests/gui scripts" >&2
+                usage
+                exit 1
+            fi
+            for script in $1; do
+                if ! [[ "${script}" =~ ^Tests/gui/[A-Za-z0-9_][A-Za-z0-9_.-]*\.py$ ]]; then
+                    echo "build.sh: --gui takes Tests/gui/<name>.py paths relative to the repo root, got '${script}'" >&2
+                    usage
+                    exit 1
+                fi
+                GUI_SCRIPTS="${GUI_SCRIPTS:+${GUI_SCRIPTS} }${script}"
+            done
+            shift
+            ;;
+        --from-run)
+            if [[ $# -eq 0 || ! "$1" =~ ^[0-9]+$ ]]; then
+                echo "build.sh: --from-run needs a numeric run id" >&2
+                usage
+                exit 1
+            fi
+            FROM_RUN="$1"
             shift
             ;;
         -h|--help)
@@ -176,6 +224,29 @@ if [[ -n "${SHUFFLE_SEEDS}" ]] && ! [[ "${SHUFFLE_SEEDS}" =~ ^[1-9][0-9]{0,4}(,[
     exit 1
 fi
 
+if [[ -n "${FROM_RUN}" ]]; then
+    if [[ -z "${GUI_SCRIPTS}" ]]; then
+        echo "build.sh: --from-run skips the build, so it needs --gui" >&2
+        usage
+        exit 1
+    fi
+    if [[ "${BUILD_OPTION}" == "true" ]]; then
+        echo "build.sh: --from-run skips the build and tests; it takes no build or test options" >&2
+        usage
+        exit 1
+    fi
+    if [[ "${PRESET}" == "debug" ]]; then
+        echo "build.sh: the debug preset has no AppImage to run GUI scripts against" >&2
+        usage
+        exit 1
+    fi
+    WANT_APPIMAGE=false
+elif [[ -n "${GUI_SCRIPTS}" && ( "${PRESET}" == "debug" || "${WANT_APPIMAGE}" == "false" ) ]]; then
+    echo "build.sh: --gui runs against the AppImage, so it needs fast or release without --no-appimage" >&2
+    usage
+    exit 1
+fi
+
 if [[ "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
     echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container); behaving as --no-appimage" >&2
     WANT_APPIMAGE=false
@@ -202,6 +273,15 @@ if [[ "${HEAD_SHA}" != "${REMOTE_SHA}" ]]; then
     exit 1
 fi
 
+if [[ -z "${FROM_RUN}" ]]; then
+    for script in ${GUI_SCRIPTS}; do
+        if ! git cat-file -e "HEAD:${script}" 2>/dev/null; then
+            echo "build.sh: ${script} is not in the pushed commit" >&2
+            exit 1
+        fi
+    done
+fi
+
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "build.sh: warning: uncommitted changes are not part of the remote build" >&2
 fi
@@ -216,7 +296,9 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
-    -f "token=${TOKEN}"
+    -f "token=${TOKEN}" \
+    -f "gui_scripts=${GUI_SCRIPTS}" \
+    -f "from_run=${FROM_RUN}"
 
 # gh 2.23 prints no run ID on dispatch, so the run is found by the token that
 # the workflow echoes into its run name.
@@ -269,7 +351,13 @@ if [[ "${RUN_CONCLUSION}" != "success" ]]; then
 fi
 
 OUT_DIR="${REPO_ROOT}/build/remote/${PRESET}"
-rm -rf "${OUT_DIR}"
+GUI_DIR="${OUT_DIR}/gui"
+# A --from-run run builds nothing, so it keeps the AppImage and logs of the last build.
+if [[ -n "${FROM_RUN}" ]]; then
+    rm -rf "${GUI_DIR}"
+else
+    rm -rf "${OUT_DIR}"
+fi
 mkdir -p "${OUT_DIR}"
 
 # A missing artifact (step skipped, run cancelled early) must not replace the
@@ -326,7 +414,50 @@ if [[ "${RECORD_GOLDENS}" == "true" ]]; then
     fi
 fi
 
-if [[ "${RUN_STATUS}" -eq 0 ]]; then
+# The artifacts carry the tested commit's sha, which for --from-run is the other run's, so
+# they are looked up by prefix. A script passes only when its job succeeded.
+GUI_FAILED=0
+GUI_LINES=()
+if [[ -n "${GUI_SCRIPTS}" ]]; then
+    ARTIFACT_NAMES="$(gh api --paginate "repos/{owner}/{repo}/actions/runs/${RUN_ID}/artifacts" \
+        --jq '.artifacts[].name' 2>/dev/null || true)"
+    JOB_CONCLUSIONS="$(gh run view "${RUN_ID}" --json jobs \
+        --jq '.jobs[] | [.name, .conclusion] | @tsv' 2>/dev/null || true)"
+    for script in ${GUI_SCRIPTS}; do
+        name="$(basename "${script}" .py)"
+        dir="${GUI_DIR}/${name}"
+        artifact="$(grep -m1 -E "^gui-${name//./\\.}-${PRESET}-[0-9a-f]+\$" <<<"${ARTIFACT_NAMES}" || true)"
+        if [[ -n "${artifact}" ]]; then
+            download_artifact "${artifact}" "${dir}" || true
+        else
+            echo "build.sh: run ${RUN_ID} uploaded no output for ${script}" >&2
+        fi
+        conclusion="$(awk -F'\t' -v job="gui (${name})" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        detail=""
+        if [[ -f "${dir}/results.txt" ]]; then
+            detail="$(grep -c '^PASS' "${dir}/results.txt" || true) passed, $(grep -c '^FAIL' "${dir}/results.txt" || true) failed"
+        else
+            detail="no results.txt"
+        fi
+        if [[ "${conclusion}" == "success" ]]; then
+            GUI_LINES+=("PASS ${script} (${detail}): ${dir}")
+        else
+            GUI_LINES+=("FAIL ${script} (job ${conclusion:-missing}, ${detail}): ${dir}")
+            GUI_FAILED=1
+        fi
+    done
+    if [[ "${GUI_FAILED}" -ne 0 ]]; then
+        RUN_STATUS=1
+    fi
+fi
+
+if [[ -n "${FROM_RUN}" ]]; then
+    if [[ "${RUN_STATUS}" -eq 0 ]]; then
+        echo "== build.sh: GUI checks against run ${FROM_RUN} succeeded: ${RUN_URL} =="
+    else
+        echo "== build.sh: GUI checks against run ${FROM_RUN} FAILED: ${RUN_URL} ==" >&2
+    fi
+elif [[ "${RUN_STATUS}" -eq 0 ]]; then
     echo "== build.sh: remote build succeeded: ${RUN_URL} =="
     if [[ -n "${APPIMAGE}" ]]; then
         echo "AppImage: ${APPIMAGE}"
@@ -350,5 +481,8 @@ if [[ -n "${CTEST_LOG_DIR}" ]]; then
         done
     fi
 fi
+for line in "${GUI_LINES[@]}"; do
+    echo "gui: ${line}"
+done
 
 exit "${RUN_STATUS}"

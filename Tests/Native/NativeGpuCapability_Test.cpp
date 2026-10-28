@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Color/Threshold.h"
+#include "Engine/Nodes/Filter/Bilateral.h"
 #include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/EdgeBlur.h"
@@ -160,6 +161,7 @@ gpuCapableIds()
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
         PLUGINID_NATRON_MEDIAN,
+        PLUGINID_NATRON_BILATERAL,
     };
 
     return ids;

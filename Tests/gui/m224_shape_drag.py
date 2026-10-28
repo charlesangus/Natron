@@ -1,6 +1,6 @@
 """Roto shapes render while they are dragged, per the Roto Shape Drag Render preference.
 
-A Roto node draws a white square in the viewer. Each pass grabs the square's top-right corner
+A Roto node draws a square into its alpha, which the viewer displays as white. Each pass grabs the square's top-right corner
 point on screen and drags it right without releasing, waits, then samples a viewer pixel that is
 inside the dragged shape but outside the original square:
   - On Release: the pixel stays dark until the release, then turns white.
@@ -137,6 +137,8 @@ try:
         make_square(roto)
         yield ("sleep", RENDER_MS)
         box = Grab(gl).white_bbox()
+        if box is None:
+            gt.shot("m224_shape_drag_%s_no_square.png" % mode)
         require(box is not None, "%s: the square is on screen" % mode)
         x0, y0, x1, y1 = box
         report("NOTE %s: square at widget (%d, %d)-(%d, %d)" % (mode, x0, y0, x1, y1))
@@ -185,6 +187,21 @@ try:
                     return True
         return False
 
+    def display_alpha():
+        """Roto writes only the alpha channel by default, which the RGB display shows black."""
+        for w in gt.widgets_of("ComboBox") + gt.widgets_of("ChannelsComboBox"):
+            try:
+                if not (w.isVisible() and "Display Channels:" in (w.toolTip() or "")):
+                    continue
+                items = [str(i) for i in (w.property("natronItems") or [])]
+            except RuntimeError:
+                continue
+            if "Alpha" in items:
+                QMetaObject.invokeMethod(w, "setCurrentIndex", Q_ARG(int, items.index("Alpha")))
+                QApplication.processEvents()
+                return True
+        return False
+
     def steps():
         ok = yield ("until", lambda: main_window() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the main window is up")
@@ -214,6 +231,7 @@ try:
         _keep["gl"] = gl
         activate()
         require(untone_view(), "picked the Un-tone-mapped view")
+        require(display_alpha(), "the viewer displays the alpha channel")
         yield ("sleep", RENDER_MS)
 
         setting = NatronEngine.natron.getSettings().getParam("rotoShapeDragRender")

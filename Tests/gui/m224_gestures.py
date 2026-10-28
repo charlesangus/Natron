@@ -336,6 +336,16 @@ try:
         send_key(gl, Qt.Key_Escape)
         send_key(gl, Qt.Key_Q)
 
+    def drawing_tool():
+        # The viewer toolbar's shape-drawing button: (pressed, current tool) or None.
+        for b in gt.widgets_of("ViewerToolButton"):
+            if not b.isVisible() or b.defaultAction() is None:
+                continue
+            data = b.defaultAction().data()
+            if data and len(data) == 2 and data[0] == "EditBezierToolButton":
+                return (b.isDown(), data[1])
+        return None
+
     # ---- sections ----------------------------------------------------------------------------
 
     def tangent_sections(gl, ctx, vmap):
@@ -516,14 +526,23 @@ try:
         clear_shapes(ctx)
         select_tool(gl)
         send_key(gl, Qt.Key_V)
+        yield ("sleep", SETTLE_MS)
+        report("NOTE after V the drawing tool is %s" % (drawing_tool(),))
         send_key(gl, Qt.Key_S)
         yield ("sleep", SETTLE_MS)
+        tool = drawing_tool()
+        check(tool == (True, "DrawEllipseTool"), "V then S selects the ellipse tool (%s)" % (tool,))
         a = QPointF(w * 0.3, h * 0.3)
         with_modifiers(gl, Qt.ShiftModifier, lambda m: drag(gl, a, a + QPointF(120, 50), m))
         yield ("sleep", SETTLE_MS)
         made = shapes(ctx)
-        require(len(made) == 1 and made[0].getNumControlPoints() == 4,
-                "V then S selects the ellipse tool, and a drag draws a four-point ellipse")
+        names = [it.getScriptName() for it in ctx.getBaseLayer().getChildren()]
+        report("NOTE after the drag the base layer holds %s" % names)
+        if len(made) != 1 or made[0].getNumControlPoints() != 4:
+            gt.shot("m224_gestures_ellipse.png")
+        require(len(made) == 1, "a Shift+drag in the ellipse tool draws one shape (%d shapes)" % len(made))
+        require(made[0].getNumControlPoints() == 4,
+                "the drawn shape is a four-point ellipse (%d points)" % made[0].getNumControlPoints())
         xs = [point(made[0], i)[0] for i in range(4)]
         ys = [point(made[0], i)[1] for i in range(4)]
         wd, ht = max(xs) - min(xs), max(ys) - min(ys)

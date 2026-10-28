@@ -36,6 +36,7 @@ import socket
 import statistics
 import sys
 import tempfile
+import threading
 import time
 import traceback
 
@@ -90,6 +91,24 @@ try:
 
     def mono_ms():
         return time.monotonic() * 1000.0
+
+    # A single event that never returns can't be caught between events. This thread records the op
+    # as a timeout and ends the process once the op has run well past its budget.
+    _guard = {"until": None, "record": None}
+
+    def _guard_loop():
+        while True:
+            time.sleep(1.0)
+            until = _guard["until"]
+            if until is not None and time.monotonic() > until:
+                record = dict(_guard["record"])
+                record.update({"status": "timeout", "error": "an event did not return within %.0f s" % GUARD_S})
+                emit(record)
+                _out.close()
+                os._exit(3)
+
+    GUARD_S = OP_TIMEOUT_S * 2 + 60
+    threading.Thread(target=_guard_loop, daemon=True).start()
 
     # ---- host record ---------------------------------------------------------------------------
 
@@ -174,27 +193,70 @@ try:
         QMetaObject.invokeMethod(root_graph(), slot)
 
     def repaint():
-        root_graph().viewport().repaint()
+        graph = root_graph()
+        graph.viewport().repaint()
+
+    root_offset = [0.0, 0.0]
 
     def fit():
+        app.clearSelection()
         invoke("centerOnAllNodes")
         repaint()
+        # Framing moves the graph's root item so the top-left node sits at the scene origin.
+        positions = [c.getPosition() for c in app.getChildren()]
+        if positions:
+            root_offset[0] = -min(p[0] for p in positions)
+            root_offset[1] = -min(p[1] for p in positions)
 
     def to_view(x, y):
-        p = root_graph().mapFromScene(QPointF(x, y))
+        graph = root_graph()
+        p = graph.mapFromScene(QPointF(x + root_offset[0], y + root_offset[1]))
         return QPointF(p.x(), p.y())
 
+    def frame_on(name):
+        """Centres the graph on the node at scale 1, so a press at its centre cannot miss it."""
+        activate()
+        fit()
+        graph = root_graph()
+        x, y = node_centre(name)
+        graph.resetTransform()
+        graph.centerOn(x + root_offset[0], y + root_offset[1])
+        QApplication.processEvents()
+        return to_view(x, y)
+
+    def find_clickable(names):
+        """A node a press at its centre selects. Backdrops can cover a node, so each candidate is tried."""
+        order = sorted(range(len(names)), key=lambda i: abs(i - len(names) // 2))
+        for i in order[:25]:
+            name = names[i]
+            pos = frame_on(name)
+            mouse(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton)
+            QApplication.processEvents()
+            mouse(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
+            QApplication.processEvents()
+            mouse(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
+            QApplication.processEvents()
+            ok = name in [n.getScriptName() for n in app.getSelectedNodes()]
+            app.clearSelection()
+            if ok:
+                return name
+        raise RuntimeError("no node near the middle of the graph can be selected by a click")
+
     def node_centre(name):
+        """Where a press grabs the node: its left edge, away from the input and output edges that run
+        through its middle and take the press when it lands near them."""
         node = app.getNode(name)
         x, y = node.getPosition()
         w, h = node.getSize()
-        return x + w / 2.0, y + h / 2.0
+        return x + 8.0, y + h / 2.0
 
     def mouse(etype, pos, button, buttons, modifiers=Qt.NoModifier):
-        QApplication.sendEvent(root_graph().viewport(), QMouseEvent(etype, pos, button, buttons, modifiers))
+        graph = root_graph()
+        QApplication.sendEvent(graph.viewport(), QMouseEvent(etype, pos, button, buttons, modifiers))
 
     def wheel(pos, steps):
-        vp = root_graph().viewport()
+        graph = root_graph()
+        vp = graph.viewport()
         glob = QPointF(vp.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))))
         QApplication.sendEvent(vp, QWheelEvent(pos, glob, QPoint(0, 0), QPoint(0, 120 * steps), Qt.NoButton,
                                                Qt.NoModifier, Qt.NoScrollPhase, False))
@@ -291,7 +353,8 @@ try:
 
     def op_zoom_step():
         def events(ctx, st, rep):
-            vp = root_graph().viewport()
+            graph = root_graph()
+            vp = graph.viewport()
             centre = QPointF(vp.width() / 2.0, vp.height() / 2.0)
             for steps in [1] * 10 + [-1] * 10:
                 wheel(centre, steps)
@@ -304,7 +367,8 @@ try:
 
     def op_pan():
         def events(ctx, st, rep):
-            vp = root_graph().viewport()
+            graph = root_graph()
+            vp = graph.viewport()
             x, y = vp.width() / 2.0, vp.height() / 2.0
             mouse(QEvent.MouseButtonPress, QPointF(x, y), Qt.MiddleButton, Qt.MiddleButton)
             repaint()
@@ -324,7 +388,8 @@ try:
 
     def op_hover():
         def events(ctx, st, rep):
-            vp = root_graph().viewport()
+            graph = root_graph()
+            vp = graph.viewport()
             w, h = max(1, vp.width() - 1), max(1, vp.height() - 1)
             for i in range(200):
                 mouse(QEvent.MouseMove, QPointF((i * 37) % w, (i * 53) % h), Qt.NoButton, Qt.NoButton)
@@ -334,11 +399,13 @@ try:
 
     def op_click_select():
         def setup(ctx, st):
-            st["name"] = middle(ctx.processing, 1)[0]
-            app.clearSelection()
+            st["name"] = find_clickable(ctx.processing)
+            fit()
 
         def events(ctx, st, rep):
-            pos = to_view(*node_centre(st["name"]))
+            pos = frame_on(st["name"])
+            mouse(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton)
+            QApplication.processEvents()
             mouse(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
             repaint()
             yield None
@@ -347,7 +414,10 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            app.clearSelection()
+            hit = [n.getScriptName() for n in app.getSelectedNodes()]
+            fit()
+            if st["name"] not in hit:
+                raise RuntimeError("click did not select %s (selected %d)" % (st["name"], len(hit)))
         return {"setup": setup, "events": events, "after": after}
 
     def op_select_all():
@@ -402,16 +472,20 @@ try:
 
     def op_drag_move(count):
         def setup(ctx, st):
-            st["names"] = middle(ctx.processing, count)
+            st["names"] = [find_clickable(ctx.processing)] if count == 1 else middle(ctx.processing, count)
             st["grab"] = st["names"][len(st["names"]) // 2]
             st["record"] = {"count": len(st["names"])}
 
         def before(ctx, st, rep):
+            fit()
             select(st["names"])
             repaint()
 
         def events(ctx, st, rep):
-            start = to_view(*node_centre(st["grab"]))
+            start = frame_on(st["grab"]) if len(st["names"]) == 1 else to_view(*node_centre(st["grab"]))
+            st["pos0"] = app.getNode(st["grab"]).getPosition()
+            mouse(QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton)
+            QApplication.processEvents()
             mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
             repaint()
             yield None
@@ -425,6 +499,13 @@ try:
             yield None
 
         def after(ctx, st, rep):
+            pos1 = app.getNode(st["grab"]).getPosition()
+            if pos1 == st["pos0"]:
+                graph = root_graph()
+                pt = to_view(*node_centre(st["grab"]))
+                item = graph.itemAt(int(pt.x()), int(pt.y()))
+                raise RuntimeError("drag did not move %s (at %s, press at view %s, viewport %s, item %s, selected %d)" % (
+                    st["grab"], st["pos0"], (pt.x(), pt.y()), graph.viewport().size(), item, len(app.getSelectedNodes())))
             trigger("undo")
             app.clearSelection()
         return {"setup": setup, "before": before, "events": events, "after": after}
@@ -459,7 +540,6 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            trigger("undo")
             app.clearSelection()
             restore_root(st["before"])
         return {"setup": setup, "events": events, "after": after}
@@ -478,7 +558,6 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            trigger("undo")
             app.clearSelection()
             restore_root(st["before"])
         return {"setup": setup, "before": before, "events": events, "after": after}
@@ -609,12 +688,17 @@ try:
                 st["alt"] = names[0]
 
         def events(ctx, st, rep):
-            if not app.getNode(st["target"]).connectInput(0, app.getNode(st["alt"])):
+            target = app.getNode(st["target"])
+            target.disconnectInput(0)
+            if not target.connectInput(0, app.getNode(st["alt"])):
                 raise RuntimeError("could not rewire %s" % st["target"])
             yield None
 
         def after(ctx, st, rep):
-            app.getNode(st["target"]).connectInput(0, app.getNode(st["orig"]))
+            target = app.getNode(st["target"])
+            target.disconnectInput(0)
+            if not target.connectInput(0, app.getNode(st["orig"])):
+                raise RuntimeError("could not restore %s" % st["target"])
         return {"setup": setup, "events": events, "after": after}
 
     def op_frame_step():
@@ -663,7 +747,7 @@ try:
         return {"events": events, "reps": 1}
 
     INTERACTION_OPS = [
-        ("load", op_load), ("fit_all", op_fit_all), ("zoom_step", op_zoom_step), ("pan", op_pan),
+        ("fit_all", op_fit_all), ("zoom_step", op_zoom_step), ("pan", op_pan),
         ("hover", op_hover), ("click_select", op_click_select), ("select_all", op_select_all),
         ("rubber_band", op_rubber_band), ("drag_move_1", lambda: op_drag_move(1)),
         ("drag_move_50", lambda: op_drag_move(50)),
@@ -697,6 +781,9 @@ try:
         events_per_rep = 0
         status, error = "ok", None
         deadline = time.monotonic() + OP_TIMEOUT_S
+        _guard["record"] = {"type": "op", "op": name, "kind": kind, "topology": ctx.topology, "n": ctx.n,
+                            "reps": 0, "stalls": {"count": 0, "max_ms": 0.0, "total_ms": 0.0}}
+        _guard["until"] = time.monotonic() + GUARD_S
         try:
             if "setup" in op:
                 op["setup"](ctx, st)
@@ -740,6 +827,7 @@ try:
         except Exception:
             if status == "ok":
                 status, error = "error", "teardown: " + short_error()
+        _guard["until"] = None
         yield ("sleep", STALL_FLUSH_MS)
         record = {
             "type": "op", "op": name, "kind": kind, "topology": ctx.topology, "n": ctx.n,
@@ -804,6 +892,9 @@ try:
             after = root_names()
             check(after == before, "%s n=%d: the edit ops leave the root graph as they found it (%d -> %d nodes)" %
                   (topology, n, len(before), len(after)))
+        if selected("load"):
+            for cmd in run_op("load", op_load, ctx, "interaction"):
+                yield cmd
         if SELF_CHECK:
             for cmd in run_op("self_check", op_self_check, ctx, "check"):
                 yield cmd

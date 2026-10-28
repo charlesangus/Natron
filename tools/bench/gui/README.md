@@ -9,6 +9,7 @@ GUI, and records main-thread stalls while they run.
 | `gui_bench.py` | The driver. Runs inside the GUI and writes one JSON line per op. |
 | `run.sh` | Launches the driver under Xvfb in the container, or from an AppImage on your own display. |
 | `compare.py` | Compares two runs, or fits how each op scales with N. |
+| `merge.py` | Merges repeated runs into a median-of-runs baseline and prints each op's run-to-run spread. |
 | `baselines/` | Committed reference runs. |
 
 ## The two modes
@@ -106,6 +107,8 @@ machine changes. Don't re-baseline to make a regression go away.
 2. Run the full matrix three times with `--xvfb --wait`.
 3. Check that each run against the others passes `compare.py` at the chosen tolerance. The spread
    between them sets the tolerance: use at least twice the worst spread for that kind of op.
+   `merge.py --out baselines/xvfb.jsonl --spread run1.jsonl run2.jsonl run3.jsonl` writes the
+   median-of-runs file and the spread table.
 4. Commit the median-of-runs file as `baselines/xvfb.jsonl`. Record the spread, the tolerance and
    the `--scaling` table in `BASELINE.md`.
 

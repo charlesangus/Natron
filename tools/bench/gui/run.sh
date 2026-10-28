@@ -103,7 +103,7 @@ if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
     # The host name belongs to the machine, not the container.
     exec "$repo/tools/ci/local/devshell.sh" env GUI_BENCH_STAMP="$stamp" GUI_BENCH_HOSTNAME="$(hostname -s)" \
         GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-120}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
-        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" "$self" "${args[@]}" --wait
+        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" GUI_BENCH_WATCHDOG_S="${GUI_BENCH_WATCHDOG_S:-21600}" "$self" "${args[@]}" --wait
 fi
 
 host=${GUI_BENCH_HOSTNAME:-$(hostname -s)}

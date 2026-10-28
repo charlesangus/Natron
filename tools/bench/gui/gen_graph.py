@@ -203,6 +203,8 @@ class _Builder(object):
         for i in range(inner):
             stream = self._filter(stream, group, gname)
             stream.setPosition(0.0, (i + 1) * ROW_H)
+        if g_out.getInput(0) is not None:
+            g_out.disconnectInput(0)
         self._connect(g_out, 0, stream)
         g_out.setPosition(0.0, (inner + 1) * ROW_H)
         return group, inner

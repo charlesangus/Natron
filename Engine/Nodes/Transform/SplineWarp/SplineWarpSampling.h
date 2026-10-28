@@ -61,6 +61,21 @@ struct SplineWarpSamplePair {
 };
 
 /**
+ * @brief The pairs sampled along one curve, in order along it: indices into a sample set's pairs.
+ * A curve sampled to a single pair has one index.
+ **/
+struct SplineWarpSamplePolyline {
+    std::vector<int> pairs;
+    bool closed;
+
+    SplineWarpSamplePolyline()
+        : pairs()
+        , closed(false)
+    {
+    }
+};
+
+/**
  * @brief A boundary as closed polylines in canonical coordinates. Nothing outside feather moves;
  * inside curve the warp is whole, and between the two it eases to zero along the Roto feather
  * fall-off profile. With no feather both polylines are the same.
@@ -163,16 +178,19 @@ struct SplineWarpSampleSet {
     // Link pairs first, then boundary pairs, after merging and decimation.
     std::vector<SplineWarpSamplePair> pairs;
     int linkPairCount;
+    // Each link's destination curve, then each boundary's feather outline, after merging.
+    std::vector<SplineWarpSamplePolyline> polylines;
     std::vector<SplineWarpBoundaryShape> boundaries;
     // With boundaries: whether a link pair's destination lies inside a boundary's feather. When
     // none does the warp is the identity, as everything a link moves is held fixed.
     bool linkSamplesInsideBoundaries;
-    // Of the pairs and the boundary shapes.
+    // Of the pairs, the polylines and the boundary shapes.
     U64 hash;
 
     SplineWarpSampleSet()
         : pairs()
         , linkPairCount(0)
+        , polylines()
         , boundaries()
         , linkSamplesInsideBoundaries(false)
         , hash(0)

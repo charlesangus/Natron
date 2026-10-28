@@ -349,10 +349,12 @@ emitLinkPairs(const LinkPlan& plan,
 }
 
 // Merges pairs whose destinations are within kSplineWarpMergeDistance, averaging their sources.
-// Returns the number of merged pairs taken from the first firstCount.
+// Returns the number of merged pairs taken from the first firstCount; remap receives each pair's
+// merged index, -1 for a dropped pair.
 int
 mergePairs(std::vector<SplineWarpSamplePair>* pairs,
-           int firstCount)
+           int firstCount,
+           std::vector<int>* remap)
 {
     struct Cell {
         std::int64_t x, y;
@@ -376,6 +378,7 @@ mergePairs(std::vector<SplineWarpSamplePair>* pairs,
     merged.reserve(pairs->size());
     counts.reserve(pairs->size());
     int mergedFirst = 0;
+    remap->assign(pairs->size(), -1);
 
     for (std::size_t i = 0; i < pairs->size(); ++i) {
         const SplineWarpSamplePair& p = (*pairs)[i];
@@ -405,7 +408,9 @@ mergePairs(std::vector<SplineWarpSamplePair>* pairs,
             merged[found].source.x += p.source.x;
             merged[found].source.y += p.source.y;
             ++counts[found];
+            (*remap)[i] = found;
         } else {
+            (*remap)[i] = (int)merged.size();
             grid[c].push_back((int)merged.size());
             merged.push_back(p);
             counts.push_back(1);
@@ -422,6 +427,29 @@ mergePairs(std::vector<SplineWarpSamplePair>* pairs,
 
     return mergedFirst;
 } // mergePairs
+
+// The merged indices of the raw pairs first to last - 1, without repeats between neighbours.
+SplineWarpSamplePolyline
+mergedPolyline(const std::vector<int>& remap,
+               std::size_t first,
+               std::size_t last,
+               bool closed)
+{
+    SplineWarpSamplePolyline polyline;
+
+    for (std::size_t i = first; i < last; ++i) {
+        const int index = remap[i];
+        if ((index >= 0) && (polyline.pairs.empty() || (polyline.pairs.back() != index))) {
+            polyline.pairs.push_back(index);
+        }
+    }
+    if (closed && (polyline.pairs.size() > 1) && (polyline.pairs.back() == polyline.pairs.front())) {
+        polyline.pairs.pop_back();
+    }
+    polyline.closed = closed && (polyline.pairs.size() > 2);
+
+    return polyline;
+}
 } // anonymous namespace
 
 bool
@@ -579,9 +607,12 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
         }
     }
 
+    // Raw pair ranges of each link, then each boundary, with whether the curve is a loop.
+    std::vector<std::pair<std::size_t, bool>> rangeEnds;
     for (std::size_t i = 0; i < linkPlans.size(); ++i) {
         const double amount = settings.globalAmount * linkPlans[i].input->amount;
         emitLinkPairs(linkPlans[i], amount, settings.invert, &result.pairs);
+        rangeEnds.push_back(std::make_pair(result.pairs.size(), !linkPlans[i].includeEnd));
     }
     const int linkPairs = (int)result.pairs.size();
     for (std::size_t i = 0; i < boundaryPlans.size(); ++i) {
@@ -594,9 +625,16 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
             result.pairs.push_back(pair);
         }
         result.boundaries.push_back(plan.shape);
+        rangeEnds.push_back(std::make_pair(result.pairs.size(), true));
     }
 
-    result.linkPairCount = mergePairs(&result.pairs, linkPairs);
+    std::vector<int> remap;
+    result.linkPairCount = mergePairs(&result.pairs, linkPairs, &remap);
+    std::size_t rangeStart = 0;
+    for (std::size_t i = 0; i < rangeEnds.size(); ++i) {
+        result.polylines.push_back(mergedPolyline(remap, rangeStart, rangeEnds[i].first, rangeEnds[i].second));
+        rangeStart = rangeEnds[i].first;
+    }
 
     for (int i = 0; i < result.linkPairCount && !result.linkSamplesInsideBoundaries; ++i) {
         const Point& d = result.pairs[i].destination;
@@ -615,6 +653,14 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
         hash.append<double>(result.pairs[i].destination.y);
         hash.append<double>(result.pairs[i].source.x);
         hash.append<double>(result.pairs[i].source.y);
+    }
+    for (std::size_t p = 0; p < result.polylines.size(); ++p) {
+        const SplineWarpSamplePolyline& polyline = result.polylines[p];
+        hash.append<int>(polyline.closed ? 1 : 0);
+        hash.append<std::size_t>(polyline.pairs.size());
+        for (std::size_t i = 0; i < polyline.pairs.size(); ++i) {
+            hash.append<int>(polyline.pairs[i]);
+        }
     }
     for (std::size_t b = 0; b < result.boundaries.size(); ++b) {
         const SplineWarpBoundaryShape& shape = result.boundaries[b];

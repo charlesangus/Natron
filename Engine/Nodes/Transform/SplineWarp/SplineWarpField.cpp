@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
 NATRON_NAMESPACE_ENTER
@@ -177,7 +178,40 @@ SplineWarpField::SplineWarpField(const SplineWarpTps& map,
     , _nx(0)
     , _ny(0)
 {
-    if (window.isNull() || map.isIdentity()) {
+    build(&map, 0);
+}
+
+SplineWarpField::SplineWarpField(const SplineWarpMesh& mesh,
+                                 const std::vector<SplineWarpBoundaryShape>& boundaries,
+                                 const RectI& window,
+                                 double scaleX,
+                                 double scaleY,
+                                 double fieldResolution)
+    : _window(window)
+    , _scaleX((scaleX > 0.) ? scaleX : 1.)
+    , _scaleY((scaleY > 0.) ? scaleY : 1.)
+    , _step((fieldResolution > 0.) ? fieldResolution : 1.)
+    , _identity(true)
+    , _boundaries(boundaries)
+    , _i0(0)
+    , _j0(0)
+    , _nx(0)
+    , _ny(0)
+{
+    if (mesh.usesFallback()) {
+        build(&mesh.getFallback(), 0);
+    } else {
+        build(0, &mesh);
+    }
+}
+
+void
+SplineWarpField::build(const SplineWarpTps* map,
+                       const SplineWarpMesh* mesh)
+{
+    const RectI& window = _window;
+
+    if (window.isNull() || (map && map->isIdentity()) || (!map && (!mesh || mesh->isIdentity()))) {
         return;
     }
 
@@ -201,6 +235,9 @@ SplineWarpField::SplineWarpField(const SplineWarpTps& map,
     for (std::size_t b = 0; b < _boundaries.size(); ++b) {
         featherBounds.push_back(boundsOf(_boundaries[b].feather));
     }
+    if (!map) {
+        mesh->rasterize(_i0, _j0, _nx, _ny, _step, _sourceX.data(), _sourceY.data());
+    }
 
     bool moved = false;
     for (int j = 0; j < _ny; ++j) {
@@ -218,7 +255,7 @@ SplineWarpField::SplineWarpField(const SplineWarpTps& map,
                 _weight[idx] = w;
             }
             if (w > 0.) {
-                const Point s = map.evaluate(x, y);
+                const Point s = map ? map->evaluate(x, y) : makePoint(_sourceX[idx], _sourceY[idx]);
                 _sourceX[idx] = x + w * (s.x - x);
                 _sourceY[idx] = y + w * (s.y - y);
                 moved = moved || (_sourceX[idx] != x) || (_sourceY[idx] != y);
@@ -465,6 +502,7 @@ SplineWarpFieldCache::get(U64 warpHash,
 {
     Key key;
 
+    key.mesh = false;
     key.hash = warpHash;
     key.time = time;
     key.scaleX = scaleX;
@@ -474,6 +512,31 @@ SplineWarpFieldCache::get(U64 warpHash,
 
     return _cache.get(key, [&]() {
         return SplineWarpField(map, boundaries, window, scaleX, scaleY, fieldResolution);
+    });
+}
+
+SplineWarpFieldConstPtr
+SplineWarpFieldCache::get(U64 warpHash,
+                          double time,
+                          const SplineWarpMesh& mesh,
+                          const std::vector<SplineWarpBoundaryShape>& boundaries,
+                          const RectI& window,
+                          double scaleX,
+                          double scaleY,
+                          double fieldResolution)
+{
+    Key key;
+
+    key.mesh = true;
+    key.hash = warpHash;
+    key.time = time;
+    key.scaleX = scaleX;
+    key.scaleY = scaleY;
+    key.resolution = fieldResolution;
+    key.window = window;
+
+    return _cache.get(key, [&]() {
+        return SplineWarpField(mesh, boundaries, window, scaleX, scaleY, fieldResolution);
     });
 }
 

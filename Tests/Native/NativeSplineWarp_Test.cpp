@@ -355,6 +355,22 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     ASSERT_TRUE(bool(bbox));
     EXPECT_EQ(0, bbox->getValue());
     EXPECT_EQ("BBox", bbox->getLabel());
+
+    KnobChoicePtr solver = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kSplineWarpParamSolver));
+    ASSERT_TRUE(bool(solver));
+    const std::vector<ChoiceOption> solvers = solver->getEntries_mt_safe();
+    ASSERT_EQ(2u, solvers.size());
+    EXPECT_EQ(kSplineWarpSolverTps, solvers[0].id);
+    EXPECT_EQ(kSplineWarpSolverMesh, solvers[1].id);
+    EXPECT_EQ("Mesh", solvers[1].label);
+    EXPECT_EQ(0, solver->getValue());
+    KnobDoublePtr smoothness = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamSmoothness));
+    ASSERT_TRUE(bool(smoothness));
+    EXPECT_FALSE(smoothness->getIsSecret());
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpParamSolver, { 1. }));
+    EXPECT_TRUE(smoothness->getIsSecret());
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpParamSolver, { 0. }));
+    EXPECT_FALSE(smoothness->getIsSecret());
 }
 
 TEST_F(NativeSplineWarpTest, TranslationLinkMatchesTransform)
@@ -372,6 +388,35 @@ TEST_F(NativeSplineWarpTest, TranslationLinkMatchesTransform)
     ASSERT_TRUE(renderRGBA(warp, window, &warped));
     ASSERT_TRUE(renderRGBA(transform, window, &moved));
     EXPECT_LE(maxDiff(warped, moved, RectI(8, 8, 56, 40)), kWarpTolerance);
+}
+
+TEST_F(NativeSplineWarpTest, MeshMatchesTpsOnAnAffineLink)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr tps = makeSplineWarp(source);
+    NodePtr mesh = makeSplineWarp(source);
+    ASSERT_TRUE(source && tps && mesh);
+    // A similarity: every sample pair lies on one affine map, which both solvers reproduce inside the quad.
+    for (const NodePtr& warp : { tps, mesh }) {
+        SplineWarpContextPtr ctx = contextOf(warp);
+        ASSERT_TRUE(bool(ctx));
+        BezierPtr from = makeQuad(ctx, 16., 12., 28.);
+        BezierPtr to = makeQuad(ctx, 16., 12., 28., 1.5, -1., 1.1);
+        ASSERT_TRUE(from && to);
+        ASSERT_TRUE(bool(ctx->linkWithAlignment(from, to, 0., false)));
+        ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamFieldResolution, { 1. }));
+    }
+    ASSERT_TRUE(setKnobValues(mesh, kSplineWarpParamSolver, { 1. }));
+    EXPECT_FALSE(isIdentityOnSource(mesh));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane fromTps, fromMesh;
+    ASSERT_TRUE(renderRGBA(tps, window, &fromTps));
+    ASSERT_TRUE(renderRGBA(mesh, window, &fromMesh));
+    // Well inside the destination quad, so no field cell reaches past the mesh's hull.
+    EXPECT_LE(maxDiff(fromTps, fromMesh, RectI(22, 16, 42, 32)), kWarpTolerance);
+    EXPECT_GT(maxDiff(fromTps, fromMesh, window), 0.) << "outside the quad the solvers differ";
 }
 
 TEST_F(NativeSplineWarpTest, InvertGivesTheOppositeShift)

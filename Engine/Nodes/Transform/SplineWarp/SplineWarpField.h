@@ -41,6 +41,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class SplineWarpMesh;
 class SplineWarpTps;
 
 /**
@@ -70,6 +71,16 @@ public:
      * @param fieldResolution The grid step, in canonical pixels.
      **/
     SplineWarpField(const SplineWarpTps& map,
+                    const std::vector<SplineWarpBoundaryShape>& boundaries,
+                    const RectI& window,
+                    double scaleX,
+                    double scaleY,
+                    double fieldResolution);
+
+    /**
+     * @brief The same over a mesh: its triangles are scan-converted onto the grid.
+     **/
+    SplineWarpField(const SplineWarpMesh& mesh,
                     const std::vector<SplineWarpBoundaryShape>& boundaries,
                     const RectI& window,
                     double scaleX,
@@ -125,6 +136,8 @@ public:
     static double featherRamp(double t, double fallOff);
 
 private:
+    // Solves the grid through map, or through mesh when map is null.
+    void build(const SplineWarpTps* map, const SplineWarpMesh* mesh);
     // Lattice coordinates of canonical (x, y) relative to the grid's first point, clamped so the
     // cell (ix, iy)-(ix + 1, iy + 1) is in the grid.
     void cellOf(double x, double y, int* ix, int* iy, double* fx, double* fy) const;
@@ -152,7 +165,8 @@ private:
 typedef std::shared_ptr<const SplineWarpField> SplineWarpFieldConstPtr;
 
 /**
- * @brief Built fields by warp, time, render scale and window, shared by every render of a node.
+ * @brief Built fields by solver, warp, time, render scale and window, shared by every render of a
+ * node.
  **/
 class SplineWarpFieldCache {
 public:
@@ -169,6 +183,15 @@ public:
                                 double scaleY,
                                 double fieldResolution);
 
+    SplineWarpFieldConstPtr get(U64 warpHash,
+                                double time,
+                                const SplineWarpMesh& mesh,
+                                const std::vector<SplineWarpBoundaryShape>& boundaries,
+                                const RectI& window,
+                                double scaleX,
+                                double scaleY,
+                                double fieldResolution);
+
     void clear()
     {
         _cache.clear();
@@ -176,6 +199,7 @@ public:
 
 private:
     struct Key {
+        bool mesh;
         U64 hash;
         double time;
         double scaleX;
@@ -185,7 +209,7 @@ private:
 
         bool operator==(const Key& o) const
         {
-            return hash == o.hash && time == o.time && scaleX == o.scaleX && scaleY == o.scaleY && resolution == o.resolution && window == o.window;
+            return mesh == o.mesh && hash == o.hash && time == o.time && scaleX == o.scaleX && scaleY == o.scaleY && resolution == o.resolution && window == o.window;
         }
     };
 

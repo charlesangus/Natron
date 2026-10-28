@@ -202,6 +202,7 @@ target_link_libraries(NatronEngine
         OpenColorIO::OpenColorIO
         $<$<BOOL:${NATRON_GPU}>:NatronGpu>
         onnxruntime::headers
+        CDT
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}

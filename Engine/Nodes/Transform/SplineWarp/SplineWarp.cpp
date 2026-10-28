@@ -196,6 +196,11 @@ SplineWarp::initializeKnobs()
                                        tr("A thin-plate spline through the curve samples: the smoothest map that moves "
                                           "each sample where it is asked to.")
                                            .toStdString()));
+        options.push_back(ChoiceOption(kSplineWarpSolverMesh, tr("Mesh").toStdString(),
+                                       tr("A triangle mesh through the curve samples, its edges along the curves: "
+                                          "each triangle moves on its own, so the warp stays local to the curves "
+                                          "and eases out to the edges of the image.")
+                                           .toStdString()));
         solver->populateChoices(options);
     }
     solver->setDefaultValue(0);
@@ -295,6 +300,7 @@ SplineWarp::initializeKnobs()
     addStageKnobs(page);
 
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateSmoothnessVisibility();
 } // SplineWarp::initializeKnobs
 
 void
@@ -311,9 +317,22 @@ SplineWarp::updateClampEnabled(double time,
 }
 
 void
+SplineWarp::updateSmoothnessVisibility()
+{
+    KnobChoicePtr solver = _solver.lock();
+    KnobDoublePtr smoothness = _smoothness.lock();
+
+    if (!solver || !smoothness) {
+        return;
+    }
+    smoothness->setSecret(solver->getValue() == 1);
+}
+
+void
 SplineWarp::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateSmoothnessVisibility();
 }
 
 bool
@@ -327,6 +346,12 @@ SplineWarp::knobChanged(KnobI* k,
 
     if (filter && (k == filter.get())) {
         updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+
+        return true;
+    }
+    KnobChoicePtr solver = _solver.lock();
+    if (solver && (k == solver.get())) {
+        updateSmoothnessVisibility();
 
         return true;
     }
@@ -346,6 +371,10 @@ SplineWarp::readSettings(double time,
     KnobBoolPtr invert = _invert.lock();
     if (invert) {
         settings->invert = invert->getValueAtTime(time, 0, view);
+    }
+    KnobChoicePtr solver = _solver.lock();
+    if (solver) {
+        settings->mesh = solver->getValueAtTime(time, 0, view) == 1;
     }
     KnobDoublePtr smoothness = _smoothness.lock();
     if (smoothness) {
@@ -380,8 +409,27 @@ SplineWarp::readSettings(double time,
     }
 } // SplineWarp::readSettings
 
+RectD
+SplineWarp::getSourceBounds(double time,
+                            ViewIdx view)
+{
+    EffectInstancePtr input = getInput(kSplineWarpInputSource);
+    RectD rod;
+
+    if (!input) {
+        return rod;
+    }
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, &rod, &isProjectFormat) == eStatusFailed) {
+        return RectD();
+    }
+
+    return rod;
+}
+
 bool
 SplineWarp::computeWarp(double time,
+                        ViewIdx view,
                         const Settings& settings,
                         Warp* warp)
 {
@@ -424,11 +472,22 @@ SplineWarp::computeWarp(double time,
         return true;
     }
 
-    warp->map = _maps.get(samples.hash, settings.smoothness, samples.pairs);
-    warp->identity = !warp->map || warp->map->isIdentity();
     ContentHasher h;
     h.appendU64(samples.hash);
-    h.appendDouble(settings.smoothness);
+    h.appendBool(settings.mesh);
+    if (settings.mesh) {
+        warp->meshBox = SplineWarpMesh::paddedBox(samples.pairs, getSourceBounds(time, view));
+        warp->mesh = _meshes.get(samples.hash, samples.pairs, samples.polylines, warp->meshBox);
+        warp->identity = !warp->mesh || warp->mesh->isIdentity();
+        h.appendDouble(warp->meshBox.x1);
+        h.appendDouble(warp->meshBox.y1);
+        h.appendDouble(warp->meshBox.x2);
+        h.appendDouble(warp->meshBox.y2);
+    } else {
+        warp->map = _maps.get(samples.hash, settings.smoothness, samples.pairs);
+        warp->identity = !warp->map || warp->map->isIdentity();
+        h.appendDouble(settings.smoothness);
+    }
     warp->hash = h.finalize();
 
     return true;
@@ -442,7 +501,13 @@ SplineWarp::computeField(const Warp& warp,
                          double scaleX,
                          double scaleY)
 {
-    if (warp.identity || !warp.map || !warp.samples) {
+    if (warp.identity || !warp.samples) {
+        return SplineWarpFieldConstPtr();
+    }
+    if (warp.mesh) {
+        return _fields.get(warp.hash, time, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+    }
+    if (!warp.map) {
         return SplineWarpFieldConstPtr();
     }
 
@@ -497,7 +562,7 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
         return status;
     }
     Warp warp;
-    if (!computeWarp(time, settings, &warp) || warp.identity) {
+    if (!computeWarp(time, view, settings, &warp) || warp.identity) {
         return status;
     }
     const SplineWarpSampleSet& samples = *warp.samples;
@@ -543,8 +608,23 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
             swapped[i].destination = samples.pairs[i].source;
             swapped[i].source = samples.pairs[i].destination;
         }
-        SplineWarpTpsConstPtr forward = _forwardMaps.get(samples.hash, settings.smoothness, swapped);
-        if (forward && !forward->isIdentity()) {
+        std::function<Point(double, double)> forward;
+        if (settings.mesh) {
+            SplineWarpMeshConstPtr mesh = _forwardMeshes.get(samples.hash, swapped, samples.polylines, warp.meshBox);
+            if (mesh && !mesh->isIdentity()) {
+                forward = [mesh](double x, double y) {
+                    return mesh->evaluate(x, y);
+                };
+            }
+        } else {
+            SplineWarpTpsConstPtr map = _forwardMaps.get(samples.hash, settings.smoothness, swapped);
+            if (map && !map->isIdentity()) {
+                forward = [map](double x, double y) {
+                    return map->evaluate(x, y);
+                };
+            }
+        }
+        if (forward) {
             const RectD edges = *rod;
             for (int k = 0; k <= kRoDEdgeSamples; ++k) {
                 const double t = (double)k / kRoDEdgeSamples;
@@ -555,7 +635,7 @@ SplineWarp::getRegionOfDefinition(U64 /*hash*/,
                     if (!canMove(points[e].x, points[e].y)) {
                         continue;
                     }
-                    const Point q = forward->evaluate(points[e].x, points[e].y);
+                    const Point q = forward(points[e].x, points[e].y);
                     mergePoint(&extra, &any, q.x, q.y);
                 }
             }
@@ -589,7 +669,7 @@ SplineWarp::getRegionsOfInterest(double time,
 
     RectD region = renderWindow;
     Warp warp;
-    if (computeWarp(time, settings, &warp) && !warp.identity) {
+    if (computeWarp(time, view, settings, &warp) && !warp.identity) {
         const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
         SplineWarpFieldConstPtr field = computeField(warp, time, settings, window, s.x / par, s.y);
         if (field && !field->isIdentity()) {
@@ -620,7 +700,7 @@ SplineWarp::isOpIdentity(double time,
     Settings settings;
     readSettings(time, view, &settings);
     Warp warp;
-    if (!computeWarp(time, settings, &warp)) {
+    if (!computeWarp(time, view, settings, &warp)) {
         return true;
     }
 
@@ -651,7 +731,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     }
 
     Warp warp;
-    computeWarp(args.time, settings, &warp);
+    computeWarp(args.time, args.view, settings, &warp);
     SplineWarpFieldConstPtr field = computeField(warp, args.time, settings, roi, s.x / par, s.y);
     if (!field) {
         field = std::make_shared<const SplineWarpField>();

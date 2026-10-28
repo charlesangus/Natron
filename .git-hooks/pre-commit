@@ -9,7 +9,7 @@ export LANG=C
 
 EXTENSIONS="c,cc,cpp,h,hpp,mm"
 # Vendored upstream code must stay byte-identical to the pinned release.
-PATHSPEC=(-- . ':(exclude)Documentation/templates/' ':(exclude)libs/VulkanMemoryAllocator/' ':(exclude)libs/xxhash/')
+PATHSPEC=(-- . ':(exclude)Documentation/templates/' ':(exclude)libs/VulkanMemoryAllocator/' ':(exclude)libs/xxhash/' ':(exclude)libs/CDT/')
 PIN_VERSION="21.1.8"
 PIN_INSTALL_CMD="pip install --user --break-system-packages clang-format==$PIN_VERSION"
 

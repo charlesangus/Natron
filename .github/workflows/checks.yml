@@ -95,7 +95,7 @@ jobs:
           # HTML that Engine/ emits as string literals, kept so a human can
           # diff them against those literals. Reformatting would destroy
           # that verbatim property, so exclude the directory via pathspec.
-          # libs/VulkanMemoryAllocator/, libs/SPIRV-Reflect/, libs/xxhash/ and the noise spike's vendored
+          # libs/VulkanMemoryAllocator/, libs/SPIRV-Reflect/, libs/xxhash/, libs/CDT/ and the noise spike's vendored
           # FastNoise2, FastSIMD and FastNoiseLite
           # are vendored upstream code that must stay byte-identical to their
           # pinned releases, so exclude them too. Global/gladRel/ and
@@ -108,6 +108,7 @@ jobs:
                ':(exclude)libs/VulkanMemoryAllocator/' \
                ':(exclude)libs/SPIRV-Reflect/' \
                ':(exclude)libs/xxhash/' \
+               ':(exclude)libs/CDT/' \
                ':(exclude)Global/gladRel/' \
                ':(exclude)Global/gladDeb/' \
                ':(exclude)tools/spikes/noise/fn2lib/' \

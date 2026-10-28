@@ -37,6 +37,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -52,6 +53,7 @@
 #define kSplineWarpParamBBox "bbox"
 
 #define kSplineWarpSolverTps "tps"
+#define kSplineWarpSolverMesh "mesh"
 #define kSplineWarpBBoxSource "source"
 #define kSplineWarpBBoxUnion "union"
 
@@ -133,6 +135,7 @@ private:
     struct Settings {
         double amount = 1.;
         bool invert = false;
+        bool mesh = false;
         double smoothness = 0.;
         double curveResolution = 4.;
         double fieldResolution = 8.;
@@ -142,10 +145,14 @@ private:
         bool bboxUnion = false;
     };
 
-    // The solved warp at one time: its samples, the map, and whether it moves nothing.
+    // The solved warp at one time: its samples, the map of the chosen solver, and whether it moves
+    // nothing.
     struct Warp {
         std::shared_ptr<const SplineWarpSampleSet> samples;
         SplineWarpTpsConstPtr map;
+        SplineWarpMeshConstPtr mesh;
+        // The box whose corners the mesh pins.
+        RectD meshBox;
         U64 hash = 0;
         bool identity = true;
     };
@@ -194,13 +201,17 @@ private:
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
     // Samples and solves the warp; false when the node has no SplineWarp curve context.
-    bool computeWarp(double time, const Settings& settings, Warp* warp);
+    bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
+
+    // The Source's region of definition at full scale, null without a Source or when it fails.
+    RectD getSourceBounds(double time, ViewIdx view);
 
     SplineWarpFieldConstPtr computeField(const Warp& warp, double time, const Settings& settings, const RectI& window, double scaleX, double scaleY);
 
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
 
     void updateClampEnabled(double time, ViewIdx view);
+    void updateSmoothnessVisibility();
 
     KnobDoubleWPtr _amount;
     KnobBoolWPtr _invert;
@@ -216,6 +227,8 @@ private:
     SplineWarpLruCache<SampleKey, SplineWarpSampleSet> _samples;
     SplineWarpTpsCache _maps;
     SplineWarpTpsCache _forwardMaps;
+    SplineWarpMeshCache _meshes;
+    SplineWarpMeshCache _forwardMeshes;
     SplineWarpFieldCache _fields;
 };
 

@@ -334,6 +334,7 @@ future core work has solid ground to build on.
 | M270 | Lanczos Sinc Resampling Filters | todo | - |  | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | doing | - | bosley-native-nodes | E14 | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
+| M273 | RenderIsolation Exit Hang | todo | - |  | E6 | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 
 # Epics
 

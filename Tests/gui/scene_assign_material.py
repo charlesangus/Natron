@@ -52,12 +52,12 @@ def Xform "Asset"
 """
 
 try:
-    from PySide6.QtCore import QMetaObject
+    from PySide6.QtCore import QMetaObject, Q_ARG
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea
     from pxr import Usd, UsdShade
 
-    from guitest import OUT, check, close_all_panels, finish, plugin_problem, report, require, run, shot, widgets_of
+    from guitest import OUT, check, class_name, close_all_panels, finish, plugin_problem, report, require, run, shot, widgets_of
 
     work_dir = os.path.join(OUT, "work")
     if not os.path.isdir(work_dir):
@@ -146,6 +146,22 @@ try:
         views = [v for v in widgets_of("NodeGraph") if v.isVisible()]
         return views[0] if views else None
 
+    def show_node_graph():
+        """The probe renders raise the Progress panel over the node graph's tab; bring the graph back."""
+        view = next(iter(widgets_of("NodeGraph")), None)
+        if view is None:
+            return
+        tabs = view.parentWidget()
+        while tabs is not None and class_name(tabs) != "TabWidget":
+            tabs = tabs.parentWidget()
+        if tabs is None:
+            return
+        for index in range(8):
+            if view.isVisible():
+                break
+            QMetaObject.invokeMethod(tabs, "makeCurrentTab", Q_ARG(int, index))
+            QApplication.processEvents()
+
     def panel_of(node):
         label = node.getLabel()
         for panel in widgets_of("NodeSettingsPanel"):
@@ -185,6 +201,7 @@ try:
               "the moved box is still bound to /materials/Red (%r)" % bound(stage, "/T1/Asset/Box"))
         save_shots("scene_assign_material_moved")
 
+        show_node_graph()
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is on screen")
         close_all_panels()

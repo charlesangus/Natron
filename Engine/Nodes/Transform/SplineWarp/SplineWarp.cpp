@@ -446,6 +446,21 @@ SplineWarp::initializeKnobs()
     renderPage->addKnob(fieldResolution);
     _fieldResolution = fieldResolution;
 
+    KnobIntPtr previewResolution = createKnob<KnobInt>(tr("Preview Resolution"));
+    previewResolution->setName(kSplineWarpParamPreviewResolution);
+    previewResolution->setHintToolTip(tr("The quality, in percent, of the warp while a drag renders in draft: the field "
+                                         "step is Field Resolution × 100 / Preview Resolution, and the curves are sampled "
+                                         "more coarsely with it. At 100 the draft warp is solved and evaluated as finely as "
+                                         "the full render."));
+    previewResolution->setDefaultValue(25);
+    previewResolution->setMinimum(1);
+    previewResolution->setMaximum(100);
+    previewResolution->setDisplayMinimum(1);
+    previewResolution->setDisplayMaximum(100);
+    previewResolution->setAnimationEnabled(false);
+    renderPage->addKnob(previewResolution);
+    _previewResolution = previewResolution;
+
     KnobChoicePtr filter = createKnob<KnobChoice>(tr(kResamplerParamFilterTypeLabel));
     filter->setName(kResamplerParamFilterType);
     filter->setHintToolTip(tr(kResamplerParamFilterTypeHint));
@@ -1181,9 +1196,17 @@ SplineWarp::readSettings(double time,
     }
     settings->warped = !_ui || _ui->isOutputWarped();
     if (draft) {
-        settings->curveResolution *= 2.;
-        settings->boundaryCurveResolution *= 2.;
-        settings->fieldResolution *= 4.;
+        int preview = 25;
+        KnobIntPtr previewResolution = _previewResolution.lock();
+        if (previewResolution) {
+            preview = std::min(100, std::max(1, previewResolution->getValueAtTime(time, 0, view)));
+        }
+        const double fieldScale = 100. / preview;
+        // Curve sample counts grow with length, field points with area.
+        const double curveScale = std::sqrt(fieldScale);
+        settings->curveResolution *= curveScale;
+        settings->boundaryCurveResolution *= curveScale;
+        settings->fieldResolution *= fieldScale;
         settings->filter = Resampler::eFilterImpulse;
     }
 } // SplineWarp::readSettings

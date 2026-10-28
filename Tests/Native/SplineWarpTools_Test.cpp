@@ -1021,6 +1021,34 @@ TEST_F(SplineWarpToolsTest, ADraftRenderUsesTheCoarseField)
     EXPECT_LT(mean, 0.05);
 }
 
+TEST_F(SplineWarpToolsTest, PreviewResolutionSetsTheDraftFieldStep)
+{
+    NodePtr source = makeSource();
+    NodePtr node = makeSplineWarp(source);
+    ASSERT_TRUE(source && node);
+    SplineWarp* effect = dynamic_cast<SplineWarp*>(node->getEffectInstance().get());
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(effect && ctx);
+    BezierPtr from, to;
+    ASSERT_TRUE(bool(makeBentLink(ctx, &from, &to)));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    // previewResolution → the draft field step, from the default field step of 8.
+    const std::pair<int, double> cases[] = { { 50, 16. }, { 10, 80. }, { 100, 8. } };
+    for (const std::pair<int, double>& c : cases) {
+        ASSERT_TRUE(setKnobValues(node, kSplineWarpParamPreviewResolution, { (double)c.first }));
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error, true /*byPassCache*/, true /*draftMode*/)) << error;
+        ASSERT_EQ(std::size_t(1), planes.size());
+        const std::vector<double> resolutions = effect->getCachedFieldResolutions();
+        ASSERT_FALSE(resolutions.empty());
+        EXPECT_EQ(c.second, resolutions.front()) << "previewResolution " << c.first;
+    }
+}
+
 TEST_F(SplineWarpToolsTest, ThePanelShowsRolesAndPartners)
 {
     NodePtr node = makeSplineWarp(NodePtr());

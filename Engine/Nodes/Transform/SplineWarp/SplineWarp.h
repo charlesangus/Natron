@@ -58,6 +58,7 @@
 #define kSplineWarpParamLinkAmount "linkAmount"
 #define kSplineWarpParamBoundaryBBox "boundaryBBox"
 #define kSplineWarpParamFieldResolution "fieldResolution"
+#define kSplineWarpParamPreviewResolution "previewResolution"
 #define kSplineWarpParamBBox "bbox"
 #define kSplineWarpParamMotionBlur "motionBlur"
 #define kSplineWarpParamShutter "shutter"
@@ -353,8 +354,8 @@ private:
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // In draft, the curves are sampled half as finely, the field step is four times as coarse,
-    // and the filter is impulse.
+    // In draft, the field step is 100 / Preview Resolution times as coarse, the curves are sampled
+    // the square root of that as coarsely, and the filter is impulse.
     void readSettings(double time, ViewIdx view, Settings* settings, bool draft = false) const;
     // Only the knobs the warp is solved from, which a sub-frame reads at its own time.
     void readWarpSettings(double time, ViewIdx view, Settings* settings) const;
@@ -417,6 +418,7 @@ private:
     KnobDoubleWPtr _smoothness;
     KnobDoubleWPtr _curveResolution;
     KnobDoubleWPtr _fieldResolution;
+    KnobIntWPtr _previewResolution;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;

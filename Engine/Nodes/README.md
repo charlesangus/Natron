@@ -1221,7 +1221,9 @@ roiPixel)`, never with `getImage()` at a time of its own. `fetchInputAt()`
 checks the time against the declaration: a time that is not one of the frames
 a declared range plans (its min, then each whole frame up to its max) posts an
 error naming it and returns null, and the render fails instead of pulling an
-unplanned frame. The scheduler prefetches at most
+unplanned frame. A range is planned only when its bounds are whole frames or
+it is a single time, so a fractional time is declared as a range of its own.
+The scheduler prefetches at most
 `NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING` (4) frames per declared range, so a
 node needing scattered times declares one range per time; frames beyond the
 cap of one range are still fetched, but as unplanned pulls. On the GPU, the

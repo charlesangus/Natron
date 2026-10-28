@@ -249,56 +249,60 @@ try:
         views = [v for v in gt.widgets_of("DopeSheetView") if v.isVisible()] or gt.widgets_of("DopeSheetView")
         return views[0] if views else None
 
-    def driver_rows(tree, node_label):
-        """{row text: hidden} for the Driver rows under node_label's top row, by a QModelIndex walk;
-        a row counts as hidden when it or one of its parents is."""
-        rows = {}
+    def knob_row(tree, node_label, knob_label):
+        """(index, hidden) of the knob_label row under node_label's top row; hidden counts its parents.
+        Every numeric knob has Driver rows, so they must be read under the driven knob's row only."""
         if tree is None:
-            return rows
+            return None, True
         _held.append(tree)
         model = tree.model()
 
-        def walk(parent, hidden):
+        def find(parent, hidden):
             for r in range(model.rowCount(parent)):
                 idx = model.index(r, 0, parent)
                 h = hidden or tree.isRowHidden(r, parent)
-                text = str(model.data(idx))
-                if text.startswith("Driver"):
-                    rows[text] = h
-                walk(idx, h)
+                if str(model.data(idx)) == knob_label:
+                    return idx, h
+                sub = find(idx, h)
+                if sub[0] is not None:
+                    return sub
+            return None, True
 
         for top in range(model.rowCount(QModelIndex())):
             top_idx = model.index(top, 0, QModelIndex())
             if str(model.data(top_idx)) == node_label:
-                walk(top_idx, tree.isRowHidden(top, QModelIndex()))
+                found = find(top_idx, tree.isRowHidden(top, QModelIndex()))
+                if found[0] is not None:
+                    return found
+        return None, True
+
+    def driver_rows(tree, node_label, knob_label):
+        """{row text: hidden} for the Driver rows directly under knob_label's row in node_label;
+        a row counts as hidden when it or one of its parents is."""
+        rows = {}
+        idx, hidden = knob_row(tree, node_label, knob_label)
+        if idx is None:
+            return rows
+        model = tree.model()
+        for r in range(model.rowCount(idx)):
+            text = str(model.data(model.index(r, 0, idx)))
+            if text.startswith("Driver"):
+                rows[text] = hidden or tree.isRowHidden(r, idx)
         return rows
 
-    def select_row(tree, node_label, text):
-        """Selects only the row named text under node_label's top row."""
-        if tree is None:
+    def select_row(tree, node_label, knob_label, text):
+        """Selects only the row named text under knob_label's row in node_label."""
+        idx, _hidden = knob_row(tree, node_label, knob_label)
+        if idx is None:
             return False
         model = tree.model()
-        sel = tree.selectionModel()
-
-        def find(parent):
-            for r in range(model.rowCount(parent)):
-                idx = model.index(r, 0, parent)
-                if str(model.data(idx)) == text:
-                    return idx
-                sub = find(idx)
-                if sub is not None:
-                    return sub
-            return None
-
-        for top in range(model.rowCount(QModelIndex())):
-            top_idx = model.index(top, 0, QModelIndex())
-            if str(model.data(top_idx)) != node_label:
-                continue
-            idx = find(top_idx)
-            if idx is not None:
+        for r in range(model.rowCount(idx)):
+            child = model.index(r, 0, idx)
+            if str(model.data(child)) == text:
                 tree.expandAll()
+                sel = tree.selectionModel()
                 sel.clear()
-                sel.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+                sel.select(child, QItemSelectionModel.Select | QItemSelectionModel.Rows)
                 QApplication.processEvents()
                 return True
         return False
@@ -479,13 +483,14 @@ try:
         require(ok, "Start has one key on each dimension (got %r)" % (start_key_counts(size),))
         check(size.getDriverEndKeyCount(0) == 0 and size.getDriverEndKeyCount(1) == 0, "End has no keys")
         blur_label = blur.getLabel()
+        size_label = size.getLabel()
 
         require(curve_editor() is not None, "found the curve editor")
         check(make_tab_current(curve_editor(), "curve"), "brought the curve editor's tab to the front")
-        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(curve_editor_tree(), blur_label)), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(curve_editor_tree(), blur_label, size_label)), POLL_TIMEOUT_S)
         check(ok, "the curve editor shows Driver Start, with one key on both dimensions, and hides the other driver rows (got %r)"
-              % driver_rows(curve_editor_tree(), blur_label))
-        check(select_row(curve_editor_tree(), blur_label, "Driver Start"), "selected the curve editor's Driver Start row")
+              % driver_rows(curve_editor_tree(), blur_label, size_label))
+        check(select_row(curve_editor_tree(), blur_label, size_label, "Driver Start"), "selected the curve editor's Driver Start row")
         yield ("sleep", 400)
         gt.shot("loopdriver_curve_editor.png")
         require(curve_widget() is not None, "found the curve widget")
@@ -493,20 +498,20 @@ try:
         send_key(curve_widget(), Qt.Key_Backspace)
         ok = yield ("until", lambda: start_key_counts(size) == (0, 0), POLL_TIMEOUT_S)
         check(ok, "Ctrl+A, Backspace in the curve editor deletes the Start key of both dimensions (got %r)" % (start_key_counts(size),))
-        ok = yield ("until", lambda: driver_rows(curve_editor_tree(), blur_label).get("Driver Start") is True, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: driver_rows(curve_editor_tree(), blur_label, size_label).get("Driver Start") is True, POLL_TIMEOUT_S)
         check(ok, "without keys the curve editor hides Driver Start")
         trigger_edit("undo")
         ok = yield ("until", lambda: start_key_counts(size) == (1, 1), POLL_TIMEOUT_S)
         check(ok, "undo puts the curve editor's deleted keys back (got %r)" % (start_key_counts(size),))
         check(size.getDriverStartAtTime(1, 0) == default, "the restored key holds %g (got %s)" % (default, size.getDriverStartAtTime(1, 0)))
-        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(curve_editor_tree(), blur_label)), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(curve_editor_tree(), blur_label, size_label)), POLL_TIMEOUT_S)
         check(ok, "after undo the curve editor shows Driver Start again")
 
         require(hierarchy_view() is not None and dope_sheet_view() is not None, "found the dope sheet")
         check(make_tab_current(hierarchy_view(), "dope"), "brought the dope sheet's tab to the front")
-        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(hierarchy_view(), blur_label)), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(hierarchy_view(), blur_label, size_label)), POLL_TIMEOUT_S)
         check(ok, "the dope sheet shows Driver Start and hides the other driver rows (got %r)"
-              % driver_rows(hierarchy_view(), blur_label))
+              % driver_rows(hierarchy_view(), blur_label, size_label))
         hierarchy_view().expandAll()
         yield ("sleep", 400)
         gt.shot("loopdriver_dope_sheet.png")
@@ -514,12 +519,12 @@ try:
         send_key(dope_sheet_view(), Qt.Key_Backspace)
         ok = yield ("until", lambda: start_key_counts(size) == (0, 0), POLL_TIMEOUT_S)
         check(ok, "Ctrl+A, Backspace in the dope sheet deletes the Start key of both dimensions (got %r)" % (start_key_counts(size),))
-        ok = yield ("until", lambda: driver_rows(hierarchy_view(), blur_label).get("Driver Start") is True, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: driver_rows(hierarchy_view(), blur_label, size_label).get("Driver Start") is True, POLL_TIMEOUT_S)
         check(ok, "without keys the dope sheet hides Driver Start")
         trigger_edit("undo")
         ok = yield ("until", lambda: start_key_counts(size) == (1, 1), POLL_TIMEOUT_S)
         check(ok, "undo puts the dope sheet's deleted keys back (got %r)" % (start_key_counts(size),))
-        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(hierarchy_view(), blur_label)), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: one_start_key_rows_ok(driver_rows(hierarchy_view(), blur_label, size_label)), POLL_TIMEOUT_S)
         check(ok, "after undo the dope sheet shows Driver Start again")
 
         for node in (end, blur, begin, constant):

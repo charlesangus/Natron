@@ -59,4 +59,5 @@ Selection's viewer dropdown and M251 - Cycles Rendering.
 
 ## Decisions
 
+- 2026-10-28: Implemented (build pending). HydraRender::ProgressiveRender runs a background refine loop for any non-Storm renderer; stops at converged + cap, or no progress for 1 s. SceneStage::sync changes → invalidate(); edits coalesced (20 ms quiet, 100 ms cap); stale passes dropped. Deviation: Max Samples is a spin box in the viewer's Renderer submenu (M248 put renderer choice there), with Stop/Resume; changing it restarts. Edits wait while stopped. Render at nice 10 on effect CPU budget − 1. Open (user): menu spin box OK instead of a knob? 4K event-loop check hard-fail or record-only?
 - 2026-10-27 — **Restart on edit, refine to a cap (user):** matches Blender and Solaris viewports; an uncapped or time-boxed schedule was rejected.

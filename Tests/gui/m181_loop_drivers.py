@@ -81,9 +81,24 @@ try:
         return None
 
     def open_panel(node):
-        gt.close_all_panels()
-        app.selectNode(node, False)
-        QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
+        """Steps that open node's settings panel on its own, retrying once; returns whether it opened.
+        showSelectedNodeSettingsPanel does nothing unless node is the only selected node."""
+        for attempt in range(2):
+            gt.close_all_panels()
+            yield ("sleep", 300)
+            app.clearSelection()
+            app.selectNode(node, True)
+            QApplication.processEvents()
+            view = node_graph_view()
+            invoked = view is not None and QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+            if not invoked:
+                report("NOTE showSelectedNodeSettingsPanel was not invoked for %s (attempt %d)"
+                       % (node.getScriptName(), attempt + 1))
+            ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S / 2)
+            if ok:
+                return True
+            report("NOTE %s's settings panel did not open (attempt %d)" % (node.getScriptName(), attempt + 1))
+        return False
 
     def knob_field(panel, script_name):
         for w in panel.findChildren(QWidget):
@@ -316,8 +331,7 @@ try:
         size.setValue(10, 1)
 
         gt.section("drive")
-        open_panel(blur)
-        ok = yield ("until", lambda: panel_of(blur) is not None, POLL_TIMEOUT_S)
+        ok = yield from open_panel(blur)
         require(ok, "open Blur's settings panel")
         yield ("sleep", 600)
         field = knob_field(panel_of(blur), "size")
@@ -365,8 +379,7 @@ try:
             screen_crop("loopdriver_row_iteration3", panel_of(blur))
 
         gt.section("table")
-        open_panel(end)
-        ok = yield ("until", lambda: panel_of(end) is not None, POLL_TIMEOUT_S)
+        ok = yield from open_panel(end)
         require(ok, "open LoopEnd's settings panel")
         yield ("sleep", 600)
         table = child(panel_of(end), "LoopDriverTable")
@@ -392,7 +405,7 @@ try:
         yield ("sleep", 300)
         screen_crop("loopdriver_table_edited", panel_of(end))
 
-        open_panel(blur)
+        yield from open_panel(blur)
         ok = yield ("until", lambda: driver_row(panel_of(blur)) is not None, POLL_TIMEOUT_S)
         require(ok, "Blur's driver row shows again")
         ok = yield ("until", lambda: preview_text(panel_of(blur)).replace(" ", "") == "=7,10", POLL_TIMEOUT_S)

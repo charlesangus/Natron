@@ -30,6 +30,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QFont>
 #include <QGraphicsItem>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -38,11 +39,18 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+struct NodeGraphFontHeightCache {
+    QFont font;
+    int height = 0;
+    bool valid = false;
+};
+
 class NodeGraphTextItem
     : public QGraphicsTextItem
 {
     NodeGraph* _graph;
     bool _alwaysDrawText;
+    NodeGraphFontHeightCache _fontHeightCache;
 
 public:
 
@@ -60,6 +68,8 @@ class NodeGraphSimpleTextItem
 {
     NodeGraph* _graph;
     bool _alwaysDrawText;
+    bool _hiddenAtLowDetail;
+    NodeGraphFontHeightCache _fontHeightCache;
 
 public:
 
@@ -69,6 +79,12 @@ public:
 
     virtual ~NodeGraphSimpleTextItem();
 
+    // Not drawn while the graph is zoomed out to its low level of detail.
+    void setHiddenAtLowDetail(bool hidden)
+    {
+        _hiddenAtLowDetail = hidden;
+    }
+
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) OVERRIDE FINAL;
 };
 
@@ -76,12 +92,19 @@ class NodeGraphPixmapItem
     : public QGraphicsPixmapItem
 {
     NodeGraph* _graph;
+    bool _hiddenAtLowDetail;
 
 public:
     NodeGraphPixmapItem(NodeGraph* graph,
                         QGraphicsItem *parent);
 
     virtual ~NodeGraphPixmapItem();
+
+    // Not drawn while the graph is zoomed out to its low level of detail.
+    void setHiddenAtLowDetail(bool hidden)
+    {
+        _hiddenAtLowDetail = hidden;
+    }
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) OVERRIDE FINAL;
 };

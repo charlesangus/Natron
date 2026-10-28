@@ -32,9 +32,11 @@
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QMouseEvent>
-#include <QString>
 #include <QAction>
+#include <QMouseEvent>
+#include <QPainterPath>
+#include <QPolygonF>
+#include <QString>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
@@ -93,12 +95,83 @@ isEdgeChild(QGraphicsItem* item)
     }
 }
 
+static void
+adjustDegenerateRect(QRectF* rect)
+{
+    // As QGraphicsScene does, so that a horizontal or vertical line still has an area to meet.
+    if (!rect->width()) {
+        rect->adjust(qreal(-0.00001), 0, qreal(0.00001), 0);
+    }
+    if (!rect->height()) {
+        rect->adjust(0, qreal(-0.00001), 0, qreal(0.00001));
+    }
+}
+
+// Appends the items of the subtree rooted at item whose shape meets the query, which is what
+// QGraphicsScene::items() with Qt::IntersectsItemShape returns for that subtree.
+// queryParent bounds the query in item's parent's coordinates; pathScene is the query itself.
+static void
+collectItemsMeetingQuery(QGraphicsItem* item,
+                         const QRectF& queryParent,
+                         const QPainterPath& pathScene,
+                         bool skipText,
+                         std::vector<QGraphicsItem*>* hits)
+{
+    if (!item->isVisible()) {
+        return;
+    }
+    QRectF itemRect = item->boundingRect();
+    adjustDegenerateRect(&itemRect);
+    QRectF subtreeRect = item->mapRectToParent(itemRect.united(item->childrenBoundingRect()));
+    adjustDegenerateRect(&subtreeRect);
+    if (!subtreeRect.intersects(queryParent)) {
+        return;
+    }
+    QRectF queryLocal = item->mapRectFromParent(queryParent);
+    bool isText = (item->type() == QGraphicsTextItem::Type) || (item->type() == QGraphicsSimpleTextItem::Type);
+    if ((!skipText || !isText) && itemRect.intersects(queryLocal) && (item->effectiveOpacity() >= 0.001)) {
+        QPainterPath pathLocal = item->mapFromScene(pathScene);
+        // A node's badge letters are text like any other.
+        bool meets = (skipText && item->type() == NodeGuiDecorations::Type) ? static_cast<NodeGuiDecorations*>(item)->collidesWithPathIgnoringText(pathLocal) : item->collidesWithPath(pathLocal, Qt::IntersectsItemShape);
+        if (meets) {
+            hits->push_back(item);
+        }
+    }
+    const QList<QGraphicsItem*> children = item->childItems();
+    for (QList<QGraphicsItem*>::const_iterator it = children.begin(); it != children.end(); ++it) {
+        collectItemsMeetingQuery(*it, queryLocal, pathScene, skipText, hits);
+    }
+}
+
+// Nodes and edges are all children of _nodeRoot. Testing them through their bounds in its
+// coordinates, which panning leaves alone, costs a few rectangle tests per node, where a scene
+// query without an index visits every item of every node.
+void
+NodeGraph::getGraphItemsMeetingViewportRect(const QRect& rect,
+                                            bool skipText,
+                                            std::vector<QGraphicsItem*>* hits) const
+{
+    QPolygonF polygonScene = mapToScene(rect);
+    QPainterPath pathScene;
+    pathScene.addPolygon(polygonScene);
+    pathScene.closeSubpath();
+    if (!_imp->_nodeRoot->isVisible()) {
+        return;
+    }
+    QRectF queryRoot = _imp->_nodeRoot->mapRectFromScene(polygonScene.boundingRect());
+    const QList<QGraphicsItem*> children = _imp->_nodeRoot->childItems();
+    for (QList<QGraphicsItem*>::const_iterator it = children.begin(); it != children.end(); ++it) {
+        collectItemsMeetingQuery(*it, queryRoot, pathScene, skipText, hits);
+    }
+}
+
 void
 NodeGraph::getNodesWithinViewportRect(const QRect& rect,
                                       std::set<NodeGui*>* nodes) const
 {
-    QList<QGraphicsItem*> selectedItems = items(rect, Qt::IntersectsItemShape);
-    for (QList<QGraphicsItem*>::Iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+    std::vector<QGraphicsItem*> hits;
+    getGraphItemsMeetingViewportRect(rect, false, &hits);
+    for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
         NodeGui* n = isNodeGuiChild(*it);
         if (n) {
             nodes->insert(n);
@@ -115,14 +188,12 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
     *node = 0;
     *edge = 0;
     // if mouse is exactly on node, select it
-    QList<QGraphicsItem*> selectedItems = items(mousePosViewport);
+    // do not select text that may go beyond the Node box
+    // see https://github.com/MrKepzie/Natron/issues/1604
+    std::vector<QGraphicsItem*> hits;
+    getGraphItemsMeetingViewportRect(QRect(mousePosViewport, QSize(1, 1)), true, &hits);
     std::set<NodeGui*> nodes;
-    for (QList<QGraphicsItem*>::Iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
-        // do not select text that may go beyond the Node box
-        // see https://github.com/MrKepzie/Natron/issues/1604
-        if ((*it)->type() == QGraphicsTextItem::Type || (*it)->type() == QGraphicsSimpleTextItem::Type) {
-            continue;
-        }
+    for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
         NodeGui* n = isNodeGuiChild(*it);
         if (n) {
             nodes.insert(n);
@@ -137,14 +208,11 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
                         mousePosViewport.y() - tolerance,
                         2. * tolerance,
                         2. * tolerance);
-    selectedItems = items(toleranceRect, Qt::IntersectsItemShape);
+    hits.clear();
+    // text is decorative only, see https://github.com/MrKepzie/Natron/issues/1604
+    getGraphItemsMeetingViewportRect(toleranceRect, true, &hits);
     std::set<Edge*> edges;
-    for (QList<QGraphicsItem*>::Iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
-        // do not select text, which is decorative only
-        // see https://github.com/MrKepzie/Natron/issues/1604
-        if ((*it)->type() == QGraphicsTextItem::Type || (*it)->type() == QGraphicsSimpleTextItem::Type) {
-            continue;
-        }
+    for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
         Edge* isEdge = isEdgeChild(*it);
         if (isEdge) {
             edges.insert(isEdge);
@@ -415,7 +483,6 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         QPointF mousePosSceneCoordinates;
         bool insideNavigator = isNearbyNavigator(e->pos(), mousePosSceneCoordinates);
         if (insideNavigator) {
-            updateNavigator();
             _imp->_refreshOverlays = true;
             centerOn(mousePosSceneCoordinates);
             _imp->_evtState = eEventStateDraggingNavigator;

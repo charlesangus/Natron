@@ -229,7 +229,7 @@ AddMultipleNodesCommand::undo()
     for (std::list<ViewerInstance* >::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
         (*it)->renderCurrentFrame(true);
     }
-    _graph->updateNavigator();
+    _graph->invalidateNavigatorContent();
 }
 
 void
@@ -284,7 +284,7 @@ AddMultipleNodesCommand::redo()
     }
 
     _firstRedoCalled = true;
-    _graph->updateNavigator();
+    _graph->invalidateNavigatorContent();
 }
 
 RemoveMultipleNodesCommand::RemoveMultipleNodesCommand(NodeGraph* graph,
@@ -385,11 +385,10 @@ RemoveMultipleNodesCommand::undo()
     }
     _graph->getGui()->getApp()->triggerAutoSave();
     _graph->getGui()->getApp()->redrawAllViewers();
-    _graph->updateNavigator();
 
     _isRedone = false;
     _graph->scene()->update();
-    _graph->updateNavigator();
+    _graph->invalidateNavigatorContent();
 } // RemoveMultipleNodesCommand::undo
 
 void
@@ -485,10 +484,9 @@ RemoveMultipleNodesCommand::redo()
 
     _graph->getGui()->getApp()->triggerAutoSave();
     _graph->getGui()->getApp()->redrawAllViewers();
-    _graph->updateNavigator();
 
     _graph->scene()->update();
-    _graph->updateNavigator();
+    _graph->invalidateNavigatorContent();
 } // redo
 
 ConnectCommand::ConnectCommand(NodeGraph* graph,

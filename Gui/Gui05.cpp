@@ -230,6 +230,8 @@ Gui::createGroupGui(const NodePtr & group,
     }
 
     QGraphicsScene* scene = new QGraphicsScene(this);
+    // Panning moves the item every graph item descends from, so a BSP index would re-index the
+    // whole graph on every pan step; NodeGraph::getGraphItemsMeetingViewportRect() serves hit tests.
     scene->setItemIndexMethod(QGraphicsScene::NoIndex);
     NodeGraph* nodeGraph = new NodeGraph(this, collection, scene, this);
     nodeGraph->setObjectName( QString::fromUtf8( group->getLabel().c_str() ) );

@@ -27,14 +27,18 @@
 #include "NodeGraphPrivate.h"
 
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
 #include <QApplication>
+#include <QHelpEvent>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainterPath>
+#include <QPolygonF>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -195,6 +199,32 @@ NodeGraph::event(QEvent* e)
     }
 
     return QGraphicsView::event(e);
+}
+
+bool
+NodeGraph::viewportEvent(QEvent* e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        // A node's badges share one item: give it the tooltip of the badge under the cursor
+        // before the scene looks for the topmost item with a tooltip there.
+        QHelpEvent* he = static_cast<QHelpEvent*>(e);
+        QRect pointRect(he->pos(), QSize(1, 1));
+        std::vector<QGraphicsItem*> hits;
+        getGraphItemsMeetingViewportRect(pointRect, false, &hits);
+        if (!hits.empty()) {
+            QPolygonF polygonScene = mapToScene(pointRect);
+            QPainterPath pathScene;
+            pathScene.addPolygon(polygonScene);
+            pathScene.closeSubpath();
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                if ((*it)->type() == NodeGuiDecorations::Type) {
+                    static_cast<NodeGuiDecorations*>(*it)->refreshToolTipAt((*it)->mapFromScene(pathScene));
+                }
+            }
+        }
+    }
+
+    return QGraphicsView::viewportEvent(e);
 }
 
 void

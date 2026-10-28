@@ -151,6 +151,7 @@ EdgePrivate::initLabel()
 
     if ( (inputNb != -1) && dst ) {
         label = new NodeGraphSimpleTextItem(dst->getDagGui(), _publicInterface, false);
+        label->setHiddenAtLowDetail(true);
         label->setText( QString::fromUtf8( dst->getNode()->getInputLabel(inputNb).c_str() ) );
         QColor txt;
         double r, g, b;
@@ -196,6 +197,18 @@ Edge::setSource(const NodeGuiPtr & src)
     _imp->source = src;
     initLine();
     refreshState();
+    invalidateGraphNavigator();
+}
+
+void
+Edge::invalidateGraphNavigator()
+{
+    // An input without a source widens the nodes' bounds the navigator frames.
+    NodeGuiPtr dst = _imp->dest.lock();
+    NodeGraph* graph = dst ? dst->getDagGui() : NULL;
+    if (graph) {
+        graph->invalidateNavigatorContent();
+    }
 }
 
 int
@@ -299,6 +312,7 @@ Edge::setSourceAndDestination(const NodeGuiPtr & src,
     }
     refreshState();
     initLine();
+    invalidateGraphNavigator();
 }
 
 bool
@@ -837,18 +851,20 @@ Edge::paint(QPainter *painter,
             const QStyleOptionGraphicsItem * /*options*/,
             QWidget * /*parent*/)
 {
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
-
-    if (!antialias) {
-        painter->setRenderHint(QPainter::Antialiasing, false);
-    }
-
     QPen myPen = pen();
     NodeGuiPtr dst = _imp->dest.lock();
-    if (dst) {
-        if ( dst->getDagGui()->isDoingNavigatorRender() ) {
-            return;
-        }
+    NodeGraph* graph = dst ? dst->getDagGui() : NULL;
+    if (graph && graph->isDoingNavigatorRender()) {
+        return;
+    }
+    if (!graph) {
+        NodeGuiPtr src = _imp->source.lock();
+        graph = src ? src->getDagGui() : NULL;
+    }
+
+    bool antialias = graph ? graph->isAntiAliasingEnabled() : appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    if (!antialias) {
+        painter->setRenderHint(QPainter::Antialiasing, false);
     }
 
     if (_imp->paintWithDash) {
@@ -875,6 +891,10 @@ Edge::paint(QPainter *painter,
 
 
     painter->drawLine( line() );
+
+    if (graph && graph->isLowDetail()) {
+        return;
+    }
 
     myPen.setStyle(Qt::SolidLine);
     painter->setPen(myPen);
@@ -1044,7 +1064,12 @@ LinkArrow::paint(QPainter *painter,
                  const QStyleOptionGraphicsItem* /*options*/,
                  QWidget* /*parent*/)
 {
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    NodeGuiPtr node = _master.lock();
+    if (!node) {
+        node = _slave.lock();
+    }
+    NodeGraph* graph = node ? node->getDagGui() : NULL;
+    bool antialias = graph ? graph->isAntiAliasingEnabled() : appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
 
     if (!antialias) {
         painter->setRenderHint(QPainter::Antialiasing, false);

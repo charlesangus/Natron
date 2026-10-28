@@ -29,6 +29,9 @@
 #include <stdexcept>
 
 #include <QDebug>
+#include <QFontMetrics>
+#include <QPainter>
+#include <QPolygonF>
 #include <QStyleOption>
 
 #include "Engine/Settings.h"
@@ -41,6 +44,26 @@
 #define NODEGRAPH_PIXMAP_ITEM_MIN_HEIGHT_PX 10
 
 NATRON_NAMESPACE_ENTER
+
+// The height in device pixels of a line of text, measured with the painter's transform, which is
+// the item-to-viewport transform when the view paints. Measuring the font is cached because the
+// font rarely changes and QFontMetrics is costly to build on every paint of every item.
+static int
+paintedTextHeight(const QPainter* painter,
+                  const QFont& font,
+                  NodeGraphFontHeightCache* cache)
+{
+    if (!cache->valid || (cache->font != font)) {
+        cache->font = font;
+        cache->height = QFontMetrics(font).height();
+        cache->valid = true;
+    }
+    const QTransform& t = painter->worldTransform();
+    QPoint topLeft = t.map(QPointF(0, 0)).toPoint();
+    QPoint btmLeft = t.map(QPointF(0, cache->height)).toPoint();
+
+    return std::abs(btmLeft.y() - topLeft.y());
+}
 
 NodeGraphTextItem::NodeGraphTextItem(NodeGraph* graph,
                                      QGraphicsItem* parent,
@@ -69,16 +92,11 @@ NodeGraphTextItem::paint(QPainter *painter,
 {
     bool isTooSmall = false;
 
-    if (!_alwaysDrawText) {
-        if ( _graph->isDoingNavigatorRender() ) {
-            isTooSmall = true;
-        } else {
-            QFontMetrics fm( font() );
-            QPoint topLeft = _graph->mapFromScene( mapToScene( QPointF(0, 0) ) );
-            QPoint btmLeft = _graph->mapFromScene( mapToScene( QPointF( 0, fm.height() ) ) );
-            int height = std::abs( btmLeft.y() - topLeft.y() );
-            isTooSmall = height < NODEGRAPH_TEXT_ITEM_MIN_HEIGHT_PX;
-        }
+    if (_graph->isDoingNavigatorRender()) {
+        // The navigator thumbnail is too small for any text to be legible.
+        isTooSmall = true;
+    } else if (!_alwaysDrawText) {
+        isTooSmall = paintedTextHeight(painter, font(), &_fontHeightCache) < NODEGRAPH_TEXT_ITEM_MIN_HEIGHT_PX;
     }
     if (isTooSmall) {
         return;
@@ -92,6 +110,7 @@ NodeGraphSimpleTextItem::NodeGraphSimpleTextItem(NodeGraph* graph,
     : QGraphicsSimpleTextItem(parent)
     , _graph(graph)
     , _alwaysDrawText(alwaysDrawText)
+    , _hiddenAtLowDetail(false)
 {
     QFont f = font();
     bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
@@ -113,16 +132,13 @@ NodeGraphSimpleTextItem::paint(QPainter *painter,
 {
     bool isTooSmall = false;
 
-    if (!_alwaysDrawText) {
-        if ( _graph->isDoingNavigatorRender() ) {
-            isTooSmall = true;
-        } else {
-            QFontMetrics fm( font() );
-            QPoint topLeft = _graph->mapFromScene( mapToScene( QPointF(0, 0) ) );
-            QPoint btmLeft = _graph->mapFromScene( mapToScene( QPointF( 0, fm.height() ) ) );
-            int height = std::abs( btmLeft.y() - topLeft.y() );
-            isTooSmall = height < NODEGRAPH_SIMPLE_TEXT_ITEM_MIN_HEIGHT_PX;
-        }
+    if (_graph->isDoingNavigatorRender()) {
+        // The navigator thumbnail is too small for any text to be legible.
+        isTooSmall = true;
+    } else if (_hiddenAtLowDetail && _graph->isLowDetail()) {
+        isTooSmall = true;
+    } else if (!_alwaysDrawText) {
+        isTooSmall = paintedTextHeight(painter, font(), &_fontHeightCache) < NODEGRAPH_SIMPLE_TEXT_ITEM_MIN_HEIGHT_PX;
     }
     if (isTooSmall) {
         return;
@@ -134,6 +150,7 @@ NodeGraphPixmapItem::NodeGraphPixmapItem(NodeGraph* graph,
                                          QGraphicsItem* parent)
     : QGraphicsPixmapItem(parent)
     , _graph(graph)
+    , _hiddenAtLowDetail(false)
 {
 }
 
@@ -146,11 +163,10 @@ NodeGraphPixmapItem::paint(QPainter *painter,
                            const QStyleOptionGraphicsItem *option,
                            QWidget *widget)
 {
-    if ( _graph->isDoingNavigatorRender() ) {
+    if (_graph->isDoingNavigatorRender() || (_hiddenAtLowDetail && _graph->isLowDetail())) {
         return;
     }
-    QRect br = _graph->mapFromScene( mapToScene( boundingRect() ).boundingRect() ).boundingRect();
-    int height = br.height();
+    int height = painter->worldTransform().map(QPolygonF(boundingRect())).toPolygon().boundingRect().height();
     if (height < NODEGRAPH_PIXMAP_ITEM_MIN_HEIGHT_PX) {
         return;
     }

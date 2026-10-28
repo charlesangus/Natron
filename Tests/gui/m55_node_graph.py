@@ -42,6 +42,8 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 240
 SETTLE_MS = 400
+# Longer than the navigator thumbnail's re-render delay.
+NAVIGATOR_SETTLE_MS = 600
 MARGIN = 80.0
 MAX_ZOOM = 1.8
 GREEN_R_MAX = 110
@@ -51,9 +53,9 @@ DRAG_STEPS = 4
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QMetaObject, QPointF, Q_ARG, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMainWindow, QPushButton, QWidget
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
+    from PySide6.QtGui import QGuiApplication, QHelpEvent, QKeyEvent, QMouseEvent
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMainWindow, QPushButton, QToolTip, QWidget
 
     import guitest as gt
     from guitest import check, report
@@ -963,6 +965,69 @@ try:
             open_render_dialog_and(render_button_neg.click, configure_negative,
                                    "render-background-negative-range")
         yield ("sleep", SETTLE_MS)
+
+        # ---- navigator: the thumbnail in the bottom-right corner shows the graph when it does not
+        # fit the view, and is re-rendered shortly after a node is added out of view.
+        gt.section("navigator")
+        gt.close_all_panels()
+        nav_a = create("net.sf.cimg.CImgBlur", 6200, 1500)
+        nav_b = create("net.sf.cimg.CImgBlur", 6600, 1500)
+        app.clearSelection()
+        graph_n = root_graph()
+        frame(graph_n, [nav_a])
+        yield ("sleep", NAVIGATOR_SETTLE_MS)
+
+        def navigator_region():
+            _pix, img = viewport_image(graph_n)
+            w = int(img.width() * 0.2)
+            h = int(img.height() * 0.2)
+            return img.copy(img.width() - w, img.height() - h, w, h)
+
+        def distinct_colours(img, step=4):
+            colours = set()
+            for y in range(0, img.height(), step):
+                for x in range(0, img.width(), step):
+                    colours.add(img.pixel(x, y))
+            return len(colours)
+
+        before = navigator_region()
+        check(distinct_colours(before) > 2,
+              "navigator: the thumbnail draws the graph when it does not fit the view")
+        graph_shot(graph_n, "navigator-01-before")
+        create("net.sf.cimg.CImgBlur", 6200, -6000)
+        app.clearSelection()
+        yield ("sleep", NAVIGATOR_SETTLE_MS)
+        after = navigator_region()
+        check(after != before, "navigator: the thumbnail changes after a node is added out of view")
+        check(distinct_colours(after) > 2, "navigator: the re-rendered thumbnail is not blank")
+        graph_shot(graph_n, "navigator-02-after")
+
+        # ---- badge tooltip: a node's expression badge still shows its tooltip on hover.
+        gt.section("badge-tooltip")
+        size_b = nav_b.getParam("size")
+        set_ok = size_b is not None and size_b.setExpression("%s.size.get()[0]" % nav_a.getScriptName(), False, 0)
+        if check(bool(set_ok), "badge-tooltip: an expression on another node's parameter is set"):
+            frame(graph_n, [nav_b])
+            yield ("sleep", SETTLE_MS)
+            graph_shot(graph_n, "badge-01-expression")
+            bx, by, bw, _bh = box(nav_b)
+            badge_view = graph_n.mapFromScene(QPointF(bx + bw, by))
+            vp = graph_n.viewport()
+            QToolTip.hideText()
+            ev = QHelpEvent(QEvent.ToolTip, badge_view, vp.mapToGlobal(badge_view))
+            QApplication.sendEvent(vp, ev)
+            QApplication.processEvents()
+            tip = QToolTip.text() if QToolTip.isVisible() else ""
+            report("NOTE badge-tooltip: tooltip %r" % tip[:80])
+            check("expression" in tip, "badge-tooltip: hovering the expression badge shows its tooltip")
+            QToolTip.hideText()
+            off_view = graph_n.mapFromScene(QPointF(bx + bw / 2.0, by + 400.0))
+            ev = QHelpEvent(QEvent.ToolTip, off_view, vp.mapToGlobal(off_view))
+            QApplication.sendEvent(vp, ev)
+            QApplication.processEvents()
+            check(not QToolTip.isVisible() or "expression" not in QToolTip.text(),
+                  "badge-tooltip: empty graph space shows no badge tooltip")
+            QToolTip.hideText()
 
         faulthandler.cancel_dump_traceback_later()
 

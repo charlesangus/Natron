@@ -393,6 +393,8 @@ GuiPrivate::createNodeGraphGui()
 {
     QGraphicsScene* scene = new QGraphicsScene(_gui);
 
+    // Panning moves the item every graph item descends from, so a BSP index would re-index the
+    // whole graph on every pan step; NodeGraph::getGraphItemsMeetingViewportRect() serves hit tests.
     scene->setItemIndexMethod(QGraphicsScene::NoIndex);
     _nodeGraphArea = new NodeGraph(_gui, _appInstance.lock()->getProject(), scene, _gui);
     _nodeGraphArea->setScriptName(kNodeGraphObjectName);

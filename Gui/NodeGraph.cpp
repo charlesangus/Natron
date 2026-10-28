@@ -26,13 +26,14 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
-#include <cstdlib>
-#include <set>
-#include <map>
-#include <vector>
-#include <locale>
 #include <algorithm> // min, max
+#include <cmath>
+#include <cstdlib>
+#include <locale>
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <vector>
 
 #include "Engine/Backdrop.h"
 #include "Engine/CreateNodeArgs.h"
@@ -127,7 +128,7 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_nodeRoot = new NodeGraphTextItem(this, _imp->_root, false);
     scene->addItem(_imp->_root);
 
-    _imp->_navigator = new Navigator(0);
+    _imp->_navigator = new Navigator(&_imp->isDoingPreviewRender);
     scene->addItem(_imp->_navigator);
     _imp->_navigator->setFlag(QGraphicsItem::ItemIgnoresTransformations);
     _imp->_navigator->hide();
@@ -138,6 +139,11 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_cacheSizeText->setFlag(QGraphicsItem::ItemIgnoresTransformations);
     _imp->_cacheSizeText->setBrush( QColor(200, 200, 200) );
     _imp->_cacheSizeText->setVisible(false);
+
+    _imp->navigatorRenderTimer.setSingleShot(true);
+    QObject::connect(&_imp->navigatorRenderTimer, &QTimer::timeout, this, [this]() {
+        onNavigatorRenderTimerTimeout();
+    });
 
     QObject::connect( &_imp->refreshRenderStateTimer, SIGNAL(timeout()), this, SLOT(onRefreshNodesRenderStateTimerTimeout()) );
     _imp->refreshRenderStateTimer.start(NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS);
@@ -222,6 +228,7 @@ void
 NodeGraph::onSettingsSaved()
 {
     // Recolouring on save rather than on settingChanged() keeps a discarded Preferences edit off the graph.
+    _imp->antiAliasing = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
         (*it)->refreshEdgesDataKindPen(true);
@@ -241,6 +248,18 @@ bool
 NodeGraph::isDoingNavigatorRender() const
 {
     return _imp->isDoingPreviewRender;
+}
+
+bool
+NodeGraph::isAntiAliasingEnabled() const
+{
+    return _imp->antiAliasing;
+}
+
+bool
+NodeGraph::isLowDetail() const
+{
+    return _imp->lowDetail;
 }
 
 const std::list<NodeGuiPtr> &
@@ -279,6 +298,7 @@ NodeGraph::onNodesCleared()
         _imp->_nodes.clear();
         _imp->_nodesTrash.clear();
     }
+    invalidateNavigatorContent();
 
     _imp->_selection.clear();
     _imp->_magnifiedNode.reset();
@@ -307,7 +327,8 @@ NodeGraph::addNodesToCreationOf(const NodePtr& created,
 void
 NodeGraph::resizeEvent(QResizeEvent* e)
 {
-    _imp->_refreshOverlays = true;
+    // The thumbnail is rendered at the navigator's size, which follows the view's.
+    invalidateNavigatorContent();
     QGraphicsView::resizeEvent(e);
 }
 
@@ -352,6 +373,10 @@ NodeGraph::paintEvent(QPaintEvent* e)
         updateNavigator();
         _imp->_refreshOverlays = false;
     }
+
+    // A zoom repaints the whole view, so the items need no extra update when this flips.
+    _imp->lowDetail = std::abs(transform().m22()) * _imp->lowDetailFontHeight < NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX;
+
     QGraphicsView::paintEvent(e);
 
     if (drawLockedMode) {
@@ -451,6 +476,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
         QMutexLocker l(&_imp->_nodesMutex);
         _imp->_nodes.push_back(node_ui);
     }
+    invalidateNavigatorContent();
 
     //NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());;
     const std::list<NodePtr>& nodesBeingCreated = getGui()->getApp()->getNodesBeingCreated();

@@ -141,6 +141,8 @@ private:
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
 
+    void invalidateGraphNavigator();
+
     std::unique_ptr<EdgePrivate> _imp;
 };
 

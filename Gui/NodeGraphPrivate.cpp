@@ -26,12 +26,18 @@
 #include "NodeGraphPrivate.h"
 #include "NodeGraph.h"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
+
+#include <QApplication>
+#include <QFontMetrics>
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/Settings.h"
 
 #include "Gui/Edge.h"
 #include "Gui/Gui.h"
@@ -89,6 +95,16 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , lastSelectedViewer(0)
     , isDoingPreviewRender(false)
     , autoScrollTimer()
+    , refreshRenderStateTimer()
+    , navigatorContent()
+    , navigatorContentRect()
+    , navigatorContentDirty(true)
+    , navigatorRenderTimer()
+    , nodesBoundsInRoot()
+    , nodesBoundsDirty(true)
+    , antiAliasing(appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled())
+    , lowDetail(false)
+    , lowDetailFontHeight(QFontMetrics(QApplication::font()).height())
 {
     appPTR->getIcon(NATRON_PIXMAP_LOCKED, &unlockIcon);
     ThemedIcon::connectThemeChanged(_publicInterface, [this]() {
@@ -171,16 +187,74 @@ NodeGraphPrivate::setNodesBendPointsVisible(bool visible)
 QRectF
 NodeGraphPrivate::calcNodesBoundingRect()
 {
-    QRectF ret;
-    QMutexLocker l(&_nodesMutex);
+    if (nodesBoundsDirty) {
+        QRectF ret;
+        {
+            QMutexLocker l(&_nodesMutex);
 
-    for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        if ( (*it)->isVisible() ) {
-            ret = ret.united( (*it)->boundingRectWithEdges() );
+            for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+                if ((*it)->isVisible()) {
+                    ret = ret.united((*it)->boundingRectWithEdges());
+                }
+            }
         }
+        nodesBoundsInRoot = ret.isNull() ? QRectF() : _root->mapRectFromScene(ret);
+        nodesBoundsDirty = false;
     }
 
-    return ret;
+    return nodesBoundsInRoot.isNull() ? QRectF() : _root->mapRectToScene(nodesBoundsInRoot);
+}
+
+void
+NodeGraphPrivate::getNavigatorMapping(QRectF* sceneRect,
+                                      double* scale,
+                                      QPointF* offset) const
+{
+    NodeGraphPrivate* self = const_cast<NodeGraphPrivate*>(this);
+    QRectF sceneR = self->calcNodesBoundingRect().united(_publicInterface->visibleSceneRect());
+    int navWidth = std::ceil(_publicInterface->width() * NATRON_NAVIGATOR_BASE_WIDTH);
+    int navHeight = std::ceil(_publicInterface->height() * NATRON_NAVIGATOR_BASE_HEIGHT);
+    double xScale = navWidth / sceneR.width();
+    double yScale = navHeight / sceneR.height();
+    double scaleFactor = std::max(0.001, std::min(xScale, yScale));
+    int renderW = std::floor(sceneR.width() * scaleFactor);
+    int renderH = std::floor(sceneR.height() * scaleFactor);
+
+    *sceneRect = sceneR;
+    *scale = scaleFactor;
+    *offset = QPointF((navWidth - renderW) / 2, (navHeight - renderH) / 2);
+}
+
+void
+NodeGraphPrivate::renderNavigatorContent()
+{
+    QRectF nodesScene = calcNodesBoundingRect();
+
+    navigatorContentDirty = false;
+    if (nodesScene.isEmpty()) {
+        navigatorContent = QImage();
+        navigatorContentRect = QRectF();
+
+        return;
+    }
+
+    // Rendered at the navigator's own size: panning or zooming out only ever shrinks the nodes
+    // inside the navigator, so the thumbnail never needs more pixels than this.
+    int navWidth = std::ceil(_publicInterface->width() * NATRON_NAVIGATOR_BASE_WIDTH);
+    int navHeight = std::ceil(_publicInterface->height() * NATRON_NAVIGATOR_BASE_HEIGHT);
+    double scaleFactor = std::min(navWidth / nodesScene.width(), navHeight / nodesScene.height());
+    int w = std::max(1, (int)std::floor(nodesScene.width() * scaleFactor));
+    int h = std::max(1, (int)std::floor(nodesScene.height() * scaleFactor));
+
+    navigatorContent = QImage(w, h, QImage::Format_ARGB32_Premultiplied);
+    navigatorContent.fill(QColor(71, 71, 71, 255));
+    {
+        QPainter painter(&navigatorContent);
+        isDoingPreviewRender = true;
+        _publicInterface->scene()->render(&painter, navigatorContent.rect(), nodesScene, Qt::KeepAspectRatio);
+        isDoingPreviewRender = false;
+    }
+    navigatorContentRect = _root->mapRectFromScene(nodesScene);
 }
 
 void

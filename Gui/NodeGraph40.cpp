@@ -623,6 +623,7 @@ NodeGraph::deleteNodePermanantly(const NodeGuiPtr& n)
             _imp->_nodes.erase(it);
         }
     }
+    invalidateNavigatorContent();
 
     NodesGuiList::iterator found = std::find(_imp->_selection.begin(), _imp->_selection.end(), n);
     if ( found != _imp->_selection.end() ) {

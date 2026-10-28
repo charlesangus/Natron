@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <string>
 #include <list>
 #include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -91,14 +92,18 @@ public:
 
     void deselect();
 
-    QImage getFullSceneScreenShot();
-
     bool areAllNodesVisible();
 
     /**
-     * @brief Repaint the navigator
+     * @brief Recompose the navigator from its cached thumbnail and the visible rectangle
      **/
     void updateNavigator();
+
+    /**
+     * @brief Call when the nodes' bounds or appearance change: the navigator thumbnail is
+     * rendered again shortly after, once for any number of calls in between.
+     **/
+    void invalidateNavigatorContent();
 
     const NodesGuiList & getAllActiveNodes() const;
     NodesGuiList getAllActiveNodes_mt_safe() const;
@@ -182,6 +187,13 @@ public:
     QPointF getRootPos() const;
 
     bool isDoingNavigatorRender() const;
+
+    // The saved anti-aliasing preference, cached because the graph's items read it on every paint.
+    bool isAntiAliasingEnabled() const;
+
+    // True when the view is zoomed out past the point where node names become too small to read:
+    // nodes then draw their body only, and edges their line only.
+    bool isLowDetail() const;
 
 public Q_SLOTS:
 
@@ -278,6 +290,8 @@ private:
 
     void checkForSpliceHint();
 
+    void onNavigatorRenderTimerTimeout();
+
     void buildSplicePlan();
 
     void clearSpliceHint();
@@ -321,6 +335,7 @@ private:
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual bool event(QEvent* e) OVERRIDE FINAL;
+    virtual bool viewportEvent(QEvent* e) OVERRIDE FINAL;
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE FINAL;
@@ -344,6 +359,9 @@ private:
     };
 
     void getNodesWithinViewportRect(const QRect& rect, std::set<NodeGui*>* nodes) const;
+
+    // The graph items, text included unless skipText, whose shape meets a viewport rectangle.
+    void getGraphItemsMeetingViewportRect(const QRect& rect, bool skipText, std::vector<QGraphicsItem*>* hits) const;
 
     NearbyItemEnum hasItemNearbyMouse(const QPoint& mousePosViewport,
                                       NodeGui** node,

@@ -26,7 +26,7 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
-#include <cmath> // abs
+#include <cmath> // abs, ceil, floor
 #include <stdexcept>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -457,29 +457,91 @@ NodeGraph::clearSelection()
 void
 NodeGraph::updateNavigator()
 {
-    if ( !areAllNodesVisible() ) {
-        _imp->_navigator->setPixmap( QPixmap::fromImage( getFullSceneScreenShot() ) );
-        _imp->_navigator->show();
-    } else {
+    if (areAllNodesVisible()) {
         _imp->_navigator->hide();
+
+        return;
     }
+
+    if (_imp->navigatorContentDirty && !_imp->navigatorRenderTimer.isActive()) {
+        // Render at once the first time so the navigator never appears empty; later changes are
+        // coalesced so that a drag or a batch edit renders the scene once, not once per event.
+        _imp->navigatorRenderTimer.start(_imp->navigatorContent.isNull() ? 0 : NATRON_NAVIGATOR_RENDER_DELAY_MS);
+    }
+
+    QRectF sceneR;
+    double scaleFactor;
+    QPointF offset;
+    _imp->getNavigatorMapping(&sceneR, &scaleFactor, &offset);
+
+    int navWidth = std::ceil(width() * NATRON_NAVIGATOR_BASE_WIDTH);
+    int navHeight = std::ceil(height() * NATRON_NAVIGATOR_BASE_HEIGHT);
+    QImage img(navWidth, navHeight, QImage::Format_ARGB32_Premultiplied);
+    img.fill(QColor(71, 71, 71, 255));
+
+    {
+        QPainter painter(&img);
+        QRectF renderArea(offset, QSizeF(std::floor(sceneR.width() * scaleFactor), std::floor(sceneR.height() * scaleFactor)));
+        painter.setClipRect(renderArea);
+        painter.translate(offset);
+        painter.scale(scaleFactor, scaleFactor);
+        painter.translate(-sceneR.topLeft());
+
+        if (!_imp->navigatorContent.isNull()) {
+            QRectF contentScene = _imp->_root->mapRectToScene(_imp->navigatorContentRect);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            painter.drawImage(contentScene, _imp->navigatorContent);
+        }
+
+        QRectF viewRect = visibleSceneRect();
+        painter.resetTransform();
+        QRectF viewRectNav(offset.x() + (viewRect.x() - sceneR.x()) * scaleFactor,
+                           offset.y() + (viewRect.y() - sceneR.y()) * scaleFactor,
+                           viewRect.width() * scaleFactor,
+                           viewRect.height() * scaleFactor);
+        painter.fillRect(viewRectNav, QColor(200, 200, 200, 100));
+
+        QPen p;
+        p.setWidth(2);
+        p.setBrush(Qt::yellow);
+        painter.setPen(p);
+        viewRectNav.adjust(2, 2, -2, -2);
+        painter.drawRect(viewRectNav);
+    }
+
+    _imp->_navigator->setPixmap(QPixmap::fromImage(img));
+    _imp->_navigator->show();
+} // updateNavigator
+
+void
+NodeGraph::invalidateNavigatorContent()
+{
+    _imp->nodesBoundsDirty = true;
+    _imp->navigatorContentDirty = true;
+    _imp->_refreshOverlays = true;
+    if (!_imp->navigatorRenderTimer.isActive()) {
+        _imp->navigatorRenderTimer.start(NATRON_NAVIGATOR_RENDER_DELAY_MS);
+    }
+    viewport()->update();
+}
+
+void
+NodeGraph::onNavigatorRenderTimerTimeout()
+{
+    if (!_imp->navigatorContentDirty || areAllNodesVisible()) {
+        return;
+    }
+    _imp->renderNavigatorContent();
+    _imp->_refreshOverlays = true;
+    viewport()->update();
 }
 
 bool
 NodeGraph::areAllNodesVisible()
 {
-    QRectF rect = visibleSceneRect();
-    QMutexLocker l(&_imp->_nodesMutex);
+    QRectF nodes = _imp->calcNodesBoundingRect();
 
-    for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        if ( (*it)->isVisible() ) {
-            if ( !rect.contains( (*it)->boundingRectWithEdges() ) ) {
-                return false;
-            }
-        }
-    }
-
-    return true;
+    return nodes.isNull() || visibleSceneRect().contains(nodes);
 }
 
 NATRON_NAMESPACE_EXIT

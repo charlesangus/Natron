@@ -37,7 +37,7 @@ MARKER = "/NatronPickerMarker"
 try:
     import NatronEngine
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
-    from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QMainWindow,
+    from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QLabel, QMainWindow,
                                    QPushButton, QTreeView)
 
     from guitest import (FIXTURES, check, class_name, finish, menu_of, plugin_problem, require, run, shot,
@@ -104,13 +104,21 @@ try:
     def popup():
         for w in QApplication.topLevelWidgets():
             if isinstance(w, QDialog) and w.objectName() == "scenePrimPicker" and w.isVisible():
-                return w
+                return hold(w)
         return None
 
     def popup_tree():
         p = popup()
         try:
             return hold(p.findChild(QTreeView, "scenePrimPickerTree")) if p is not None else None
+        except RuntimeError:
+            return None
+
+    def popup_status():
+        p = popup()
+        try:
+            label = hold(p.findChild(QLabel, "scenePrimPickerStatus")) if p is not None else None
+            return str(label.text()) if label is not None else None
         except RuntimeError:
             return None
 
@@ -161,11 +169,11 @@ try:
         return None
 
     def popup_button(which):
-        box = popup().findChild(QDialogButtonBox, "scenePrimPickerButtons")
-        return box.button(which) if box is not None else None
+        box = hold(popup().findChild(QDialogButtonBox, "scenePrimPickerButtons"))
+        return hold(box.button(which)) if box is not None else None
 
     def use_viewer_button():
-        return popup().findChild(QPushButton, "scenePrimPickerUseViewer")
+        return hold(popup().findChild(QPushButton, "scenePrimPickerUseViewer"))
 
     def main_window():
         for w in QApplication.topLevelWidgets():
@@ -193,7 +201,8 @@ try:
         ok = yield ("until", lambda: popup() is not None and bool(popup().property("natronPickerSynced")), POLL_TIMEOUT_S)
         require(ok, "the picker opens and reads the input scene")
         ok = yield ("until", lambda: world_children(popup_tree()) == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
-        require(ok, "the picker lists Box, Ball and Cam under /World (got %r)" % (world_children(popup_tree()),))
+        require(ok, "the picker lists Box, Ball and Cam under /World (got %r, status %r)"
+                % (world_children(popup_tree()), popup_status()))
 
     def connect_viewer(node):
         """Points the viewer's input 0 at node: connectInput refuses an input that is already connected."""

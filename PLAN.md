@@ -178,7 +178,7 @@ future core work has solid ground to build on.
 | M246 | Vulkan Inference Provider | todo | M203, M204 | | E16 | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
 | M248 | Render Delegate Selection | doing | M20 | bosley-native-nodes | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
-| M249 | Bundle Cycles Delegate | doing | M19 | bosley-native-nodes | E9 | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
+| M249 | Bundle Cycles Delegate | doing | M19, M248 | bosley-native-nodes | E9 | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
 | M250 | Bundle MoonRay Delegate | todo | M19 |  | E9 | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
 | M251 | Cycles Rendering | todo | M248, M249 |  | E9 | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
 | M252 | MoonRay Rendering | todo | M248, M250 |  | E9 | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |

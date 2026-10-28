@@ -144,7 +144,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
 
 ## Phase 268.3: Node fixes
 
-- [ ] M268.P3.T1 — The format clamp in every whole-frame node
+- [x] M268.P3.T1 — The format clamp in every whole-frame node
   - files: `Engine/Nodes/Filter/DenoiseProfiled.cpp`, `Engine/Nodes/Filter/DenoiseProfiledGpu.cpp`, `Engine/Nodes/Color/ToneEqualizer.cpp`, `Engine/Nodes/Color/ColorEqualizer.cpp`, `Engine/Nodes/Filter/Retouch.cpp`, `Engine/Nodes/Filter/ContrastTexture.cpp`
   - approach:
     - Replace `effectRoDPixels` (DenoiseProfiled, ToneEqualizer), the RoD lookups in ColorEqualizer (`opPasses` halo, `getRegionsOfInterest`, `renderOp`, `recordGpu`'s `io.rod` frame) and the private `sourceRoD`s (Retouch, ContrastTexture) with `wholeFramePixels`.
@@ -154,7 +154,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
   - verify: each node's region test (P4) includes `expectInfiniteRoDClamped`. Existing suites unchanged.
   - size: M
 
-- [ ] M268.P3.T2 — ContrastTexture caches its full-frame map
+- [x] M268.P3.T2 — ContrastTexture caches its full-frame map
   - files: `Engine/Nodes/Filter/ContrastTexture.{h,cpp}`
   - approach:
     - Hold a `WholeFrameCache` member.
@@ -165,7 +165,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
   - verify: a test in `Tests/Native/NativeContrastTexture_Test.cpp` renders a 3×3 tiling on one node and counts exactly one compute via the frame-computed hook. A knob change gives a second compute.
   - size: M
 
-- [ ] M268.P3.T3 — Retouch caches its whole-frame result
+- [x] M268.P3.T3 — Retouch caches its whole-frame result
   - files: `Engine/Nodes/Filter/Retouch.{h,cpp}`
   - approach:
     - Same as P3.T2, around the whole-source read and `RC::process` (the processed 4-channel frame).
@@ -173,7 +173,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
   - verify: a test in `Tests/Native/NativeRetouch_Test.cpp` checks one compute per tiling, and a recompute after moving a shape's source.
   - size: M
 
-- [ ] M268.P3.T4 — GPU frame guards in `canRenderOpOnGpu`
+- [x] M268.P3.T4 — GPU frame guards in `canRenderOpOnGpu`
   - files: `Engine/Nodes/Filter/ContrastTexture.cpp`, `Engine/Nodes/Filter/Retouch.cpp`, `Engine/Nodes/Color/ColorEqualizer.{h,cpp}`
   - approach:
     - Each node refuses the GPU when `!wholeFrameFitsGpu(frame, floatsPerPixel, query.maxScratchBytes)`.
@@ -183,7 +183,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
   - verify: per-node GPU tests use a test source with a 70000×70000 RoD and expect `canRenderOnGpu` false, with no allocation.
   - size: S
 
-- [ ] M268.P3.T5 — Compute Variance measures the whole frame
+- [x] M268.P3.T5 — Compute Variance measures the whole frame
   - files: `Engine/Nodes/Filter/DenoiseProfiled.{h,cpp}`, `Engine/Nodes/Filter/docs/DenoiseProfiled.md`
   - approach (as recommended in open question 1):
     - In variance mode the RoI is the whole clamped frame.
@@ -201,13 +201,13 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
 
 Each task adds `RegionIndependent*` cases to that node's existing test files, so no two implementers share a file. Each case runs at scales 1 and 0.5 where the node supports render scale, and includes `expectInfiniteRoDClamped` where P3.T1 applies.
 
-- [ ] M268.P4.T1 — DenoiseProfiled
+- [x] M268.P4.T1 — DenoiseProfiled
   - files: `Tests/Native/NativeDenoiseProfiled_Test.cpp`, `Tests/Native/NativeDenoiseProfiledGpu_Test.cpp`
   - approach: run the CPU helper for Wavelets (every colour mode) and NLM. Run the GPU helper for both. The existing `TiledGpuRenderEqualsTheWholeGpuRender` becomes a call to the helper.
   - verify: the cases pass in the phase build.
   - size: S
 
-- [ ] M268.P4.T2 — Retouch
+- [x] M268.P4.T2 — Retouch
   - files: `Tests/Native/NativeRetouch_Test.cpp`, `Tests/Native/NativeRetouchGpu_Test.cpp`, `Tests/Native/RetouchTestSupport.h`
   - approach:
     - Cover clone, heal, blur and fill, with one shape crossing a tile seam and a shape sitting at a coarser wavelet scale, through the CPU and GPU helpers.
@@ -215,19 +215,19 @@ Each task adds `RegionIndependent*` cases to that node's existing test files, so
   - verify: the cases pass.
   - size: M
 
-- [ ] M268.P4.T3 — ToneEqualizer
+- [x] M268.P4.T3 — ToneEqualizer
   - files: `Tests/Native/NativeToneEqualizer_Test.cpp`, `Tests/Native/NativeToneEqualizerGpu_Test.cpp`
   - approach: cover the four filters (fast guided or EIGF, each with linear or geomean blending) and filter off, through the CPU and GPU helpers.
   - verify: the cases pass.
   - size: S
 
-- [ ] M268.P4.T4 — ContrastTexture
+- [x] M268.P4.T4 — ContrastTexture
   - files: `Tests/Native/NativeContrastTexture_Test.cpp`, `Tests/Native/NativeContrastTextureGpu_Test.cpp`
   - approach: cover the defaults plus two detail and halo-control settings that use every level, through the CPU and GPU helpers.
   - verify: the cases pass.
   - size: S
 
-- [ ] M268.P4.T5 — ColorEqualizer
+- [x] M268.P4.T5 — ColorEqualizer
   - files: `Tests/Native/NativeColorEqualizer_Test.cpp`, `Tests/Native/NativeColorEqualizerGpu_Test.cpp`
   - approach:
     - Replace `OutputDoesNotDependOnTheRequestedRegion` with the helper.
@@ -236,7 +236,7 @@ Each task adds `RegionIndependent*` cases to that node's existing test files, so
   - verify: the cases pass.
   - size: S
 
-- [ ] M268.P4.T6 — RawHighlights
+- [x] M268.P4.T6 — RawHighlights
   - files: `Tests/Native/NativeRawHighlights_Test.cpp`, `NativeRawHighlightsSegments_Test.cpp`, `NativeRawHighlightsInpaint_Test.cpp`, `NativeRawHighlightsLaplacian_Test.cpp`, `NativeRawHighlightsGpu_Test.cpp`
   - approach:
     - Swap each `expectTilesMatchTheFullFrame` for the helper's window set over `RawTestSource` at an offset origin with odd size, for every mode (clip, opposed, LCh, segments, inpaint, laplacian), on GBRG/RGGB and X-Trans.
@@ -261,6 +261,7 @@ Each task adds `RegionIndependent*` cases to that node's existing test files, so
 
 ## Decisions
 
+- 2026-10-28: Phases 3–4 implemented (build pending). ColorEqualizer's GPU guard via a new PassList::gpuAccepts hook. Variance cached as float; Compute Variance output is a pure pass-through. Retouch's cache key needs no extra field (node hash covers roto items). No heal pin: the GPU reduction is deterministic. ContrastTexture/Retouch skip the compute for windows outside the frame. DenoiseProfiled GPU vs CPU uses its statistical bounds via a gpuCompare option. Raw region tests use frame (−5, −3, W+2, H+4). Test-support access widened.
 - 2026-10-28: Phases 1–2 implemented (build pending). Merged heads: M210 aea7e922c, M211 a6c396ecc, M212 1b6bfba6f, M213 51b26e630, M215 27952108b (merges 441b5946e…3b78dd2a6); only make-reference.py and fixtures/raw/README.md conflicted (union). Test source is an in-memory noise source (finite or infinite extent), not Noise+Crop (Noise is format-bound; RawTestSource ignores render scale; no shipped generator is infinite). In-sequence renders keep the cache (bypassing clears the node cache). The infinite-RoD 'outside equals source' check holds for whole-frame nodes only; the Grade self-test uses defaults.
 - 2026-10-28: elaborated (consultant).
 - 2026-10-28 — **A whole-frame contract, not frame-origin parameters (consultant):**

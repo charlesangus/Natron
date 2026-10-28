@@ -92,12 +92,12 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Phase 274.1: Audit and page layout
 
-- [ ] M274.P1.T1 — Confirm the params audit against the code
+- [x] M274.P1.T1 — Confirm the params audit against the code
   - files: this table (report corrections to the PM, who edits the plan)
   - approach: re-read `SplineWarp.{h,cpp}`, `SplineWarpInteract.h` (m148) and the merged M146 RotoPanel columns on a geometry host. Correct any row that is wrong. Every row ends up as a task, "covered Mxxx", or "dropped (user …)".
   - verify: the corrections report lists every row as confirmed or changed.
   - size: S
-- [ ] M274.P1.T2 — Controls, Transform and Render pages
+- [x] M274.P1.T2 — Controls, Transform and Render pages
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`
   - approach:
     - **Controls page:** amount, invert, the Phase 2/3 knobs, and the stage knobs.
@@ -109,7 +109,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Phase 274.2: Amounts, activation and boundaries (field only; GPU unchanged)
 
-- [ ] M274.P2.T1 — Per-layer amount (`layerAmount`)
+- [x] M274.P2.T1 — Per-layer amount (`layerAmount`)
   - files: `SplineWarpContext.{h,cpp}` (per-layer animatable amount, serialization, warp hash), `SplineWarpSampling.cpp` (multiplied into each link's lerp), `SplineWarp.cpp`, `PySplineWarp.{h,cpp}`
   - approach:
     - A node knob tied to the selected layers, default 1, range 0–1.
@@ -117,7 +117,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - Nested layers multiply.
   - verify: `Tests/Native/SplineWarpModel_Test.cpp`: a layer at 0.5 halves the destination lerp, nesting multiplies, and keys survive save/load. `SplineWarpPython_Test.cpp`.
   - size: M
-- [ ] M274.P2.T2 — Link amount knob (`linkAmount`)
+- [x] M274.P2.T2 — Link amount knob (`linkAmount`)
   - files: `SplineWarp.cpp`, `SplineWarpContext.cpp` (`setLinkAmount`/`setLinkAmountAtTime` exist)
   - approach:
     - A node knob tied to the selection, default 1.
@@ -125,7 +125,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - It reloads when the selection changes.
   - verify: `SplineWarpModel_Test.cpp`: the selection drives the value, and an edit keys the link.
   - size: M
-- [ ] M274.P2.T3 — Honour Activated; Soft Boundary role
+- [x] M274.P2.T3 — Honour Activated; Soft Boundary role
   - files: `SplineWarpContext.{h,cpp}`, `SplineWarpSampling.cpp`, `SplineWarpMesh.cpp`, `Gui/SplineWarpPanelHook.cpp`, `SplineWarpInteract.cpp` (the Toggle Boundary action splits into Hard and Soft), bindings
   - approach:
     - Inactive curves and layers are skipped when building samples and boundaries.
@@ -135,7 +135,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - `SplineWarpSampling_Test.cpp`: a deactivated link gives identity; on a soft-boundary curve the field is zero while the far side still moves.
     - `SplineWarpMesh_Test.cpp` checks the same.
   - size: L
-- [ ] M274.P2.T4 — `boundaryBBox` and `boundaryCurveResolution`
+- [x] M274.P2.T4 — `boundaryBBox` and `boundaryCurveResolution`
   - files: `SplineWarpSampling.{h,cpp}`, `SplineWarp.cpp`, `SplineWarpCache.h` (key)
   - approach:
     - `boundaryBBox` (default on) adds the Source format rectangle as a soft boundary.
@@ -268,4 +268,5 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Decisions
 
+- 2026-10-28: Phases 1–2 implemented (build pending). Audit corrections: Activated was honoured for curves but not layers (now isDeactivatedRecursive); panel hook lives in Engine/Nodes/Transform/SplineWarp/; sample-cache key in SplineWarp.h; mask/mix in addMaskMixKnobs; SplineWarpMesh needed no change (open soft polylines are constrained edges). Pages: Controls (amount, invert, Layer Amount, Link Amount, Boundary BBox, stage knobs), Render (flat). Setting one boundary kind clears the other; opening a curve clears only a hard boundary; hard boundaries use boundaryCurveResolution (draft doubles it). "Only layers" = ≥1 layer selected and every selected curve inside one. linkAmount undo goes through the knob's own undo. Q1/Q2 provisionally as recommended (soft boundary built, boundaryBBox on, 4 px). Draft renders run on the GPU with the coarse field (merge 82bb13872). The mesh pins its padded-box corners, so a long soft curve's far side stays put (TPS test checks the far side moves).
 - 2026-10-28: elaborated (consultant). PM call: morph (Destination input, output modes, morph mix, A/B Type, Duplicate in B) stays dropped under the user's M147 decision (out of scope). The consultant's morph phase was struck, and the rows are marked "dropped (user, M147)". Deps widened to M149–M151, the branch this builds on. The Lanczos/Sinc task waits on M270.

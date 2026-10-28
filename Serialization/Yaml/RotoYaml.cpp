@@ -807,6 +807,136 @@ namespace YamlDetail {
             reader.finish();
         }
 
+        void
+        emitSplineWarpValue(YAML::Emitter& em,
+                            const SplineWarpAnimatedValueSerialization& value)
+        {
+            em << YAML::BeginMap;
+            emitKey(em, "value");
+            em << YAML::Value;
+            emitDouble(em, value.value);
+            if (!value.curve.keyframes.empty()) {
+                emitKey(em, "curve");
+                em << YAML::Value;
+                emitCurve(em, value.curve);
+            }
+            em << YAML::EndMap;
+        }
+
+        SplineWarpAnimatedValueSerialization
+        readSplineWarpValue(const YAML::Node& node,
+                            const std::string& context,
+                            YamlWarnings* warnings)
+        {
+            SplineWarpAnimatedValueSerialization value;
+            MapReader reader(node, context, warnings);
+            value.value = readDouble(reader.get("value"), context + ".value");
+            if (YAML::Node curve = reader.get("curve")) {
+                value.curve = readCurve(curve, context + ".curve");
+            }
+            reader.finish();
+
+            return value;
+        }
+
+        void
+        emitSplineWarp(YAML::Emitter& em,
+                       const SplineWarpSerialization& warp)
+        {
+            em << YAML::BeginMap;
+            if (!warp.boundaries.empty()) {
+                emitKey(em, "boundaries");
+                em << YAML::Value;
+                emitStringList(em, warp.boundaries);
+            }
+            if (!warp.links.empty()) {
+                emitKey(em, "links");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpLinkSerialization& link : warp.links) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "source");
+                    em << YAML::Value;
+                    emitString(em, link.source);
+                    emitKey(em, "destination");
+                    em << YAML::Value;
+                    emitString(em, link.destination);
+                    emitKey(em, "startOffset");
+                    em << YAML::Value;
+                    emitDouble(em, link.startOffset);
+                    emitKey(em, "reversed");
+                    em << YAML::Value;
+                    emitBool(em, link.reversed);
+                    emitKey(em, "amount");
+                    em << YAML::Value;
+                    emitSplineWarpValue(em, link.amount);
+                    if (!link.correspondences.empty()) {
+                        emitKey(em, "correspondences");
+                        em << YAML::Value << YAML::BeginSeq;
+                        for (const SplineWarpCorrespondenceSerialization& c : link.correspondences) {
+                            em << YAML::BeginMap;
+                            emitKey(em, "source");
+                            em << YAML::Value;
+                            emitSplineWarpValue(em, c.source);
+                            emitKey(em, "destination");
+                            em << YAML::Value;
+                            emitSplineWarpValue(em, c.destination);
+                            em << YAML::EndMap;
+                        }
+                        em << YAML::EndSeq;
+                    }
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
+            em << YAML::EndMap;
+        }
+
+        SplineWarpSerialization
+        readSplineWarp(const YAML::Node& node,
+                       const std::string& context,
+                       YamlWarnings* warnings)
+        {
+            SplineWarpSerialization warp;
+            MapReader reader(node, context, warnings);
+            if (YAML::Node boundaries = reader.get("boundaries")) {
+                warp.boundaries = readStringList(boundaries, context + ".boundaries");
+            }
+            if (YAML::Node links = reader.get("links")) {
+                if (!links.IsSequence()) {
+                    fail(links, context + ".links", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < links.size(); ++i) {
+                    const std::string linkContext = context + ".links[" + std::to_string(i) + "]";
+                    SplineWarpLinkSerialization link;
+                    MapReader linkReader(links[i], linkContext, warnings);
+                    link.source = readString(linkReader.get("source"), linkContext + ".source");
+                    link.destination = readString(linkReader.get("destination"), linkContext + ".destination");
+                    link.startOffset = readDouble(linkReader.get("startOffset"), linkContext + ".startOffset");
+                    link.reversed = readBool(linkReader.get("reversed"), linkContext + ".reversed");
+                    link.amount = readSplineWarpValue(linkReader.get("amount"), linkContext + ".amount", warnings);
+                    if (YAML::Node correspondences = linkReader.get("correspondences")) {
+                        if (!correspondences.IsSequence()) {
+                            fail(correspondences, linkContext + ".correspondences", "expected a sequence");
+                        }
+                        for (std::size_t c = 0; c < correspondences.size(); ++c) {
+                            const std::string cContext = linkContext + ".correspondences[" + std::to_string(c) + "]";
+                            SplineWarpCorrespondenceSerialization correspondence;
+                            MapReader cReader(correspondences[c], cContext, warnings);
+                            correspondence.source = readSplineWarpValue(cReader.get("source"), cContext + ".source", warnings);
+                            correspondence.destination = readSplineWarpValue(cReader.get("destination"), cContext + ".destination", warnings);
+                            cReader.finish();
+                            link.correspondences.push_back(correspondence);
+                        }
+                    }
+                    linkReader.finish();
+                    warp.links.push_back(link);
+                }
+            }
+            reader.finish();
+
+            return warp;
+        }
+
     } // namespace
 
     void
@@ -832,6 +962,11 @@ namespace YamlDetail {
         emitKey(em, "layer");
         em << YAML::Value;
         emitLayer(em, roto.baseLayer, std::string(), blobs);
+        if (roto.hasSplineWarp) {
+            emitKey(em, "splineWarp");
+            em << YAML::Value;
+            emitSplineWarp(em, roto.splineWarp);
+        }
         em << YAML::EndMap;
     }
 
@@ -851,6 +986,10 @@ namespace YamlDetail {
         }
         if (YAML::Node layer = reader.get("layer")) {
             readLayer(layer, &roto.baseLayer, std::string(), source, context + ".layer", warnings);
+        }
+        if (YAML::Node warp = reader.get("splineWarp")) {
+            roto.hasSplineWarp = true;
+            roto.splineWarp = readSplineWarp(warp, context + ".splineWarp", warnings);
         }
         reader.finish();
 

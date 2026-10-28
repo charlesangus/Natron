@@ -540,6 +540,12 @@ public:
         return 0;
     }
 
+    /**
+     * @brief Makes the curve context of a Geometry host, which may be a subclass holding the
+     * host's own data about its curves. Called once, when the node is created.
+     **/
+    virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const WARN_UNUSED_RETURN;
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**

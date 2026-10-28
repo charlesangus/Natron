@@ -52,6 +52,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 NATRON_NAMESPACE_ENTER
 
 struct RotoContextPrivate;
+class ContentHasher;
 
 /**
  * @class The curves of a node that hosts Roto shapes: layers, Beziers, their animation, the
@@ -171,6 +172,40 @@ public:
     virtual void onStructureChanged();
 
     /**
+     * @brief Called after addControlPointAfterIndex(afterIndex, t) split a segment of curve, on the
+     * main thread, outside the curve's lock.
+     **/
+    virtual void onControlPointInserted(const BezierPtr& /*curve*/,
+                                        int /*afterIndex*/,
+                                        double /*t*/)
+    {
+    }
+
+    /**
+     * @brief Called by removeControlPointByIndex() before it removes the point at index, on the
+     * main thread, outside the curve's lock. index may be out of range, in which case nothing is
+     * removed.
+     **/
+    virtual void onControlPointAboutToBeRemoved(const BezierPtr& /*curve*/,
+                                                int /*index*/)
+    {
+    }
+
+    /**
+     * @brief Called after setCurveFinished() opened or closed curve.
+     **/
+    virtual void onCurveFinishedChanged(const BezierPtr& /*curve*/)
+    {
+    }
+
+    /**
+     * @brief Called for the item and each of its descendants when removeItem() deletes it.
+     **/
+    virtual void onItemRemoved(const RotoItemPtr& /*item*/)
+    {
+    }
+
+    /**
      * @brief Removes the given item from the context. This also removes the item from the selection
      * if it was selected. If the item has children, this will also remove all the children.
      **/
@@ -227,13 +262,22 @@ public:
      **/
     U64 getContentHash() const;
 
-    void toSerialization(Serialization::RotoContextSerialization* serialization) const;
+    virtual void toSerialization(Serialization::RotoContextSerialization* serialization) const;
 
     /**
      * @brief Must be called on a context that holds nothing but its base layer.
      **/
-    void fromSerialization(const Serialization::RotoContextSerialization& serialization);
+    virtual void fromSerialization(const Serialization::RotoContextSerialization& serialization);
 
+protected:
+    /**
+     * @brief Appends what a subclass holds beside the items to getContentHash(). MT-safe.
+     **/
+    virtual void appendHostContentHash(ContentHasher& /*h*/) const
+    {
+    }
+
+public:
     /**
      * @brief This must be called by the GUI whenever an item is selected. This is recursive for layers.
      **/

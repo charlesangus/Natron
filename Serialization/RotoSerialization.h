@@ -28,6 +28,7 @@
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/SerializationFwd.h"
+#include "Serialization/SplineWarpSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -218,12 +219,18 @@ struct RotoContextSerialization {
     bool rippleEdit;
     bool featherLink;
 
+    // Set by a SplineWarp host's context only.
+    bool hasSplineWarp;
+    SplineWarpSerialization splineWarp;
+
     RotoContextSerialization()
         : baseLayer()
         , selectedItems()
         , autoKeying(false)
         , rippleEdit(false)
         , featherLink(false)
+        , hasSplineWarp(false)
+        , splineWarp()
     {
     }
 };

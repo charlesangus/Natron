@@ -6533,6 +6533,12 @@ EffectInstance::getCurveContextKind() const
     return eCurveContextKindNone;
 }
 
+RotoCurveContextPtr
+EffectInstance::createGeometryCurveContext(const NodePtr& node) const
+{
+    return RotoCurveContext::create(node);
+}
+
 namespace {
 // Points getInputMetadataAt() at the inputs' answers a derivation started from, or at nothing,
 // for as long as that derivation runs on this thread.

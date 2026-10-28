@@ -508,6 +508,7 @@ RotoCurveContext::removeItemRecursively(const RotoItemPtr& item,
             }
         }
     }
+    onItemRemoved(item);
     Q_EMIT itemRemoved(item, (int)reason);
 }
 
@@ -1617,6 +1618,7 @@ RotoCurveContext::getContentHash() const
     if (base) {
         h.appendU64(base->getContentHash());
     }
+    appendHostContentHash(h);
 
     return h.finalize();
 }

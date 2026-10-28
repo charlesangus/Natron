@@ -1533,6 +1533,11 @@ Bezier::addControlPointAfterIndex(int index,
 
     invalidateContentHash();
 
+    RotoCurveContextPtr context = getContext();
+    if (context) {
+        context->onControlPointInserted(this_shared, index, t);
+    }
+
     return p;
 } // addControlPointAfterIndex
 
@@ -1636,8 +1641,10 @@ Bezier::setCurveFinished(bool finished)
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    bool changed = false;
     if (!_imp->isOpenBezier) {
         QMutexLocker l(&itemMutex);
+        changed = (_imp->finished != finished);
         _imp->finished = finished;
     }
 
@@ -1645,6 +1652,11 @@ Bezier::setCurveFinished(bool finished)
 
     invalidateContentHash();
     invalidatePolygonOrientation();
+
+    RotoCurveContextPtr context = getContext();
+    if (changed && context) {
+        context->onCurveFinishedChanged(std::dynamic_pointer_cast<Bezier>(shared_from_this()));
+    }
 }
 
 bool
@@ -1661,6 +1673,10 @@ Bezier::removeControlPointByIndex(int index)
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    RotoCurveContextPtr context = getContext();
+    if (context) {
+        context->onControlPointAboutToBeRemoved(std::dynamic_pointer_cast<Bezier>(shared_from_this()), index);
+    }
 
     {
         QMutexLocker l(&itemMutex);

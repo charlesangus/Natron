@@ -29,6 +29,7 @@
 #include "PassThroughRoDTestEffect.h"
 #include "PerProcessUserDirs.h"
 #include "SceneTestEffect.h"
+#include "SplineWarpHostTestEffect.h"
 #include "TestBuiltInPlugins.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
@@ -185,6 +186,14 @@ registerCurveHostTestPlugins()
 }
 
 void
+registerSplineWarpHostTestPlugins()
+{
+    // Registered so SplineWarpModel_Test.cpp can edit SplineWarp links on a geometry curve host
+    // before the SplineWarp node exists.
+    registerTestBuiltInPlugin<SplineWarpHostTestEffect>();
+}
+
+void
 registerNativeMetadataTestPlugins()
 {
     // Registered so NativeMetadata_Test.cpp can inject metadata at the head of a native chain,
@@ -262,6 +271,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeParityTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
+    registerSplineWarpHostTestPlugins();
     registerCacheStressTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;

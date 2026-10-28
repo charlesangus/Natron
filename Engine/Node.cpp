@@ -259,7 +259,8 @@ Node::createRotoContextConditionnally()
         _imp->rotoContext = RotoContext::create( shared_from_this() );
         _imp->curveContext = _imp->rotoContext;
     } else {
-        _imp->curveContext = RotoCurveContext::create(shared_from_this());
+        _imp->curveContext = _imp->effect->createGeometryCurveContext(shared_from_this());
+        assert(_imp->curveContext);
     }
     _imp->effect->endChanges(true);
     _imp->curveContext->createBaseLayer();

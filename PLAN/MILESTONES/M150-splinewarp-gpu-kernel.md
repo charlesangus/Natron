@@ -49,5 +49,6 @@ Scouted facts (2026-10-20; re-check at promotion):
 
 ## Decisions
 
+- 2026-10-28: Implemented (build pending). The field goes to the GPU as a storage buffer of grid points and Jacobians (not a 2-channel texture), interpolated in two-float precision so it equals the CPU getRow() including the unfiltered copy of untouched pixels. Fields over the scratch limit decline to the CPU. GPU weight = gpuSizeScaledWeight of the largest link displacement, halved per mip level; weight uses cached samples only (sampleWarp()). PM call: like CornerPin/Transform/Reformat, SplineWarp declines the GPU when its input is concatenated (the framework doesn't pass the upstream matrix to renderOpGpu); the kernel supports a matrix for when it does. No motion-blur decline yet (M151).
 - 2026-10-20 — **A GPU kernel is in scope (user).**
 - 2026-10-20 — **Field built on the CPU, sampled on the GPU (planner):** one solver implementation, and the GPU only does the per-pixel work.

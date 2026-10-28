@@ -539,12 +539,13 @@ TEST_F(NativeDirBlurTest, DirectionalSmearsAlongDirection)
         EXPECT_GT(at(out, 20, y, 0), 0.f) << "y " << y;
     }
 
-    // Centred, it smears both ways.
+    // Centred, it smears both ways: the copies sit 1, 3, 5 and 7 pixels either side, each on a
+    // pixel centre.
     ASSERT_TRUE(setKnobValues(right, kDirBlurParamCentered, { 1. }));
     ASSERT_NO_FATAL_FAILURE(renderPair(source, right, &in, &out));
     EXPECT_NEAR(sumAll(in, 0), sumAll(out, 0), 1e-5);
-    EXPECT_GT(at(out, 14, 20, 0), 0.f);
-    EXPECT_GT(at(out, 26, 20, 0), 0.f);
+    EXPECT_GT(at(out, 13, 20, 0), 0.f);
+    EXPECT_GT(at(out, 27, 20, 0), 0.f);
 }
 
 // A point smears along the circle around Center, counter-clockwise for a positive length, and
@@ -764,8 +765,10 @@ TEST_F(NativeDirBlurTest, PixelOffsetShiftsTheZoom)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 0. }));
     ASSERT_TRUE(setKnobValues(node, kDirBlurParamPixelOffset, { 10. }));
-    RenderedPlane in, out;
-    ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+    // The copies all land between Center and the point, outside the point itself, so the window
+    // covers both rather than the node's region of definition alone.
+    RenderedPlane out;
+    ASSERT_TRUE(renderRGBA(node, RectI(30, 10, 64, 40), &out));
     EXPECT_GT(sumAll(out, 0), 0.);
     // Every copy moves the same way, towards Center.
     EXPECT_NEAR(0., sumWhere(out, 0, [](int x, int) {
@@ -828,6 +831,7 @@ TEST_F(NativeDirBlurTest, HoldoutLeavesCopiesOut)
     // wherever every copy comes from inside the format.
     NodePtr half = makeConstant(0.5, NULL);
     ASSERT_TRUE(bool(half));
+    disconnectNodes(holdout, node, true);
     connectNodes(half, node, kDirBlurInputHoldout, true);
     channel->set("rgba.R");
     ASSERT_TRUE(renderRGBA(node, window, &held));

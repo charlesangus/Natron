@@ -59,7 +59,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 130.1: Bokeh kernel library and Defocus
 
-- [ ] M131.P1.T1 — Write the bokeh kernel library
+- [x] M131.P1.T1 — Write the bokeh kernel library
   - files: `Engine/Nodes/Filter/BokehKernel.h`, `Engine/Nodes/Filter/BokehKernel.cpp`, `Tests/Native/BokehKernel_Test.cpp`
   - approach:
     - Generate a normalised 2-D kernel for a given radius from {disc, n-blade (blades, rotation, roundness), image}, with sub-pixel anti-aliased edges.
@@ -72,7 +72,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R BokehKernel` passes.
   - size: M
 
-- [ ] M131.P1.T2 — Write the native Defocus node (CPU)
+- [x] M131.P1.T2 — Write the native Defocus node (CPU)
   - files: `Engine/Nodes/Filter/Defocus.h`, `Engine/Nodes/Filter/Defocus.cpp`, `Engine/Nodes/Filter/Defocus.reg.inc`
   - approach:
     - Inputs: Source and an optional Kernel image.
@@ -81,7 +81,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeDefocus` (T3) passes.
   - size: M
 
-- [ ] M131.P1.T3 — Test Defocus on CPU
+- [x] M131.P1.T3 — Test Defocus on CPU
   - files: `Tests/Native/NativeDefocus_Test.cpp`
   - approach:
     - Size 0 is identity.
@@ -92,7 +92,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeDefocus` passes.
   - size: M
 
-- [ ] M131.P1.T4 — Defocus on the GPU
+- [x] M131.P1.T4 — Defocus on the GPU
   - files: `Engine/Gpu/Kernels/defocus.slang`, `Engine/Gpu/Kernels/defocus.cmake`, `Engine/Nodes/Filter/Defocus.cpp`, `Tests/Native/NativeDefocusGpu_Test.cpp`
   - approach: run a tiled 2-D gather with kernel weights in a storage buffer, plus the boost and unboost point ops. Refuse above the size cap.
   - verify: at the phase build, `ctest -R NativeDefocusGpu` passes on RADV within 1e-4 relative.
@@ -126,7 +126,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 130.3: ZDefocus
 
-- [ ] M131.P3.T1 — Write the depth-to-CoC model, with the manual and real-world lens modes
+- [x] M131.P3.T1 — Write the depth-to-CoC model, with the manual and real-world lens modes
   - files: `Engine/Nodes/Filter/DepthOfField.h`, `Engine/Nodes/Filter/DepthOfField.cpp`, `Tests/Native/DepthOfField_Test.cpp`
   - approach:
     - Engine-free functions. Manual mode: `focalPlane`, `depthOfField` and `size`, giving a pixel radius. Lens mode: focal length (mm), f-stop, film-back width (mm), focus distance, image width, using the formula in `## Scope`.
@@ -138,7 +138,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R DepthOfField` passes.
   - size: M
 
-- [ ] M131.P3.T2 — Write the native ZDefocus node with a layered gather (CPU)
+- [x] M131.P3.T2 — Write the native ZDefocus node with a layered gather (CPU)
   - files: `Engine/Nodes/Filter/ZDefocus.h`, `Engine/Nodes/Filter/ZDefocus.cpp`, `Engine/Nodes/Filter/ZDefocus.reg.inc`
   - approach:
     - Inputs: Source and an optional Kernel image.
@@ -154,7 +154,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeZDefocus` (T3) passes.
   - size: L
 
-- [ ] M131.P3.T3 — Test ZDefocus on CPU
+- [x] M131.P3.T3 — Test ZDefocus on CPU
   - files: `Tests/Native/NativeZDefocus_Test.cpp`
   - approach:
     - Depth all at the focal plane gives identity.
@@ -166,7 +166,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
   - verify: at the phase build, `ctest -R NativeZDefocus` passes.
   - size: M
 
-- [ ] M131.P3.T4 — ZDefocus on the GPU
+- [x] M131.P3.T4 — ZDefocus on the GPU
   - files: `Engine/Gpu/Kernels/zdefocus.slang`, `Engine/Gpu/Kernels/zdefocus.cmake`, `Engine/Nodes/Filter/ZDefocus.cpp`, `Tests/Native/NativeZDefocusGpu_Test.cpp`
   - approach:
     - Run the per-slice gather plus an occlusion-composite kernel. The slices are resident buffers from M84 - GPU Placement And Residency's pools.

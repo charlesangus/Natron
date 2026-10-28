@@ -29,3 +29,7 @@ Acceptance sketch:
 
 **Assumptions:**
 - ORT's Plugin EP API stays compatible across the ORT version M203 pins and the one the plugin is built against (upstream tests 1.29.0; M203 pins 1.31.1).
+
+## Decisions
+
+- 2026-10-28: claimed, elaborated by a consultant, then released to todo: M204 - AI Model Manager is still in UAT and upstream onnx-vulkan-rs has no versioned release or fp16 yet (the stub's blockers). The consultant's phases (installer, OrtLoader plugin registration, Vulkan device and Auto slot after vendor EPs, concrete-shape sessions with LRU 4, refusal fallback, per-model validation) are in the session transcript for re-use.

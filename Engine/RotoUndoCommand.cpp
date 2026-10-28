@@ -1165,6 +1165,71 @@ MoveFeatherBarUndoCommand::moveFeathers(double dx,
     roto->setSelection(_selectedCurves, _selectedPoints);
 }
 
+/////////////////////////
+
+RemoveFeatherUndoCommand::RemoveFeatherUndoCommand(const RotoCurveInteractPtr& roto,
+                                                   const std::list<RemoveFeatherData>& datas)
+    : UndoCommand()
+    , _roto(roto)
+    , _firstRedocalled(false)
+    , _datas(datas)
+{
+    for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
+        for (std::list<BezierCPPtr>::const_iterator it2 = it->newPoints.begin(); it2 != it->newPoints.end(); ++it2) {
+            it->oldPoints.push_back(BezierCPPtr(new BezierCP(**it2)));
+        }
+    }
+    setText(tr("Remove feather").toStdString());
+}
+
+RemoveFeatherUndoCommand::~RemoveFeatherUndoCommand()
+{
+}
+
+void
+RemoveFeatherUndoCommand::undo()
+{
+    for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
+        std::list<BezierCPPtr>::const_iterator itOld = it->oldPoints.begin();
+        for (std::list<BezierCPPtr>::const_iterator itNew = it->newPoints.begin();
+             itNew != it->newPoints.end(); ++itNew, ++itOld) {
+            (*itNew)->clone(**itOld);
+        }
+        it->curve->invalidateContentHash();
+    }
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (!roto) {
+        return;
+    }
+    roto->evaluate(true);
+}
+
+void
+RemoveFeatherUndoCommand::redo()
+{
+    for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
+        std::list<BezierCPPtr>::const_iterator itOld = it->oldPoints.begin();
+        for (std::list<BezierCPPtr>::const_iterator itNew = it->newPoints.begin();
+             itNew != it->newPoints.end(); ++itNew, ++itOld) {
+            (*itOld)->clone(**itNew);
+            try {
+                it->curve->removeFeatherAtIndex(it->curve->getFeatherPointIndex(*itNew));
+            } catch (...) {
+                /// the point doesn't exist anymore, just do nothing
+                return;
+            }
+        }
+    }
+    RotoCurveInteractPtr roto = _roto.lock();
+    if (!roto) {
+        return;
+    }
+
+    roto->evaluate(_firstRedocalled);
+
+    _firstRedocalled = true;
+}
+
 ////////////////////////////
 
 OpenCloseUndoCommand::OpenCloseUndoCommand(const RotoCurveInteractPtr& roto,

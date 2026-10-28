@@ -494,6 +494,9 @@ public:
 
     virtual void closeLoadProjectSplashScreen() {}
 
+    // A short transient message, such as why a viewer action was refused. The GUI shows it in its status bar.
+    virtual void showStatusMessage(const QString& /*message*/) { }
+
     std::string getAppIDString() const;
     const std::list<NodePtr>& getNodesBeingCreated() const;
     virtual bool isDraftRenderEnabled() const { return false; }

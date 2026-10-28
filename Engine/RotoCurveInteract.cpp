@@ -612,6 +612,10 @@ RotoCurveInteract::getToolForAction(const KnobButtonPtr& k,
         *tool = eRotoToolDrawEllipse;
     } else if (k == drawRectangleAction.lock()) {
         *tool = eRotoToolDrawRectangle;
+    } else if (k == drawOpenBezierAction.lock()) {
+        *tool = eRotoToolOpenBezier;
+    } else if (k == drawPointAction.lock()) {
+        *tool = eRotoToolDrawPoint;
     } else {
         ret = false;
     }
@@ -907,6 +911,34 @@ RotoCurveInteract::createToolbarKnobs(int toolSet)
             tool->setIsPersistent(false);
             editBezierToolButton->addKnob(tool);
             drawRectangleAction = tool;
+        }
+
+        if (toolSet & eRotoCurveToolSetOpenBezier) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamOpenBezierToolButtonActionLabel));
+            tool->setName(kRotoUIParamOpenBezierToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamOpenBezierToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/spline.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawOpenBezierAction = tool;
+        }
+
+        if (toolSet & eRotoCurveToolSetPoint) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamPointToolButtonActionLabel));
+            tool->setName(kRotoUIParamPointToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamPointToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/locate-fixed.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawPointAction = tool;
         }
     }
 
@@ -2059,6 +2091,18 @@ RotoCurveInteract::getBezierBeingBuild() const
     return builtBezier;
 }
 
+BezierPtr
+RotoCurveInteract::makePointCurve(double x,
+                                  double y,
+                                  double time)
+{
+    // Held here: without a GUI the push runs redo() and drops the command.
+    std::shared_ptr<MakePointCurveUndoCommand> cmd = std::make_shared<MakePointCurveUndoCommand>(shared_from_this(), x, y, time);
+    _host->pushUndoCommand(cmd);
+
+    return cmd->getCurve();
+}
+
 bool
 RotoCurveInteract::smoothSelectedCurve()
 {
@@ -3139,6 +3183,11 @@ RotoCurveInteract::onOverlayPenDown(double time,
     }
     case eRotoToolDrawBSpline:
 
+        break;
+    case eRotoToolDrawPoint:
+        makePointCurve(pos.x(), pos.y(), time);
+        evaluateOnPenUp = true;
+        didSomething = true;
         break;
     case eRotoToolDrawEllipse: {
         click = pos;

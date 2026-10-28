@@ -554,6 +554,37 @@ private:
     double _time;
 };
 
+// The point tool's click: a finished open curve of one control point.
+class MakePointCurveUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(MakePointCurveUndoCommand)
+
+public:
+    MakePointCurveUndoCommand(const RotoCurveInteractPtr& roto,
+                              double x,
+                              double y,
+                              double time);
+
+    virtual ~MakePointCurveUndoCommand();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+    BezierPtr getCurve() const
+    {
+        return _curve;
+    }
+
+private:
+    bool _firstRedoCalled;
+    RotoCurveInteractWPtr _roto;
+    RotoLayerPtr _parentLayer;
+    int _indexInLayer;
+    BezierPtr _curve;
+    double _x, _y;
+    double _time;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // ROTOUNDOCOMMAND_H

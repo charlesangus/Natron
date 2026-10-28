@@ -128,6 +128,14 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonActionLabel "Rectangle Tool"
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
 
+#define kRotoUIParamOpenBezierToolButtonAction "OpenBezierTool"
+#define kRotoUIParamOpenBezierToolButtonActionLabel "Open Bezier Tool"
+#define kRotoUIParamOpenBezierToolButtonActionHint "Draw an open Bezier. Press Escape or pick another tool to end it"
+
+#define kRotoUIParamPointToolButtonAction "PointTool"
+#define kRotoUIParamPointToolButtonActionLabel "Point Tool"
+#define kRotoUIParamPointToolButtonActionHint "Each click makes a curve of a single point"
+
 // The right click menu
 #define kRotoUIParamRightClickMenu kNatronOfxParamRightClickMenu
 
@@ -239,6 +247,7 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    eEventStateDraggingCorrespondence,
 };
 
 enum HoverStateEnum {
@@ -266,7 +275,8 @@ enum RotoRoleEnum {
     eRotoRolePaintBrush,
     eRotoRoleCloneBrush,
     eRotoRoleEffectBrush,
-    eRotoRoleMergeBrush
+    eRotoRoleMergeBrush,
+    eRotoRoleCorrespondence
 };
 
 enum RotoToolEnum {
@@ -299,7 +309,10 @@ enum RotoToolEnum {
     eRotoToolSmear,
 
     eRotoToolDodge,
-    eRotoToolBurn
+    eRotoToolBurn,
+
+    eRotoToolDrawPoint,
+    eRotoToolCorrespondence
 };
 
 // The curve tool groups RotoCurveInteract::createToolbarKnobs() can create, as a bitmask.
@@ -307,7 +320,10 @@ enum RotoCurveToolSetEnum {
     eRotoCurveToolSetSelection = 0x1,
     eRotoCurveToolSetPointsEdition = 0x2,
     eRotoCurveToolSetShapesDrawing = 0x4,
-    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing
+    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing,
+    // Extra tools of the Shapes Drawing group, which eRotoCurveToolSetAll leaves out.
+    eRotoCurveToolSetOpenBezier = 0x8,
+    eRotoCurveToolSetPoint = 0x10
 };
 
 /**
@@ -372,6 +388,8 @@ public:
     KnobButtonWPtr drawBezierAction;
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
+    KnobButtonWPtr drawOpenBezierAction;
+    KnobButtonWPtr drawPointAction;
 
     //////Right click menu
     KnobChoiceWPtr rightClickMenuKnob;
@@ -573,6 +591,12 @@ public:
                       std::list<std::pair<BezierCPPtr, BezierCPPtr>>* selectedCps);
 
     void setBuiltBezier(const BezierPtr& curve);
+
+    /**
+     * @brief What the point tool does on a click: makes a finished open curve of one control
+     * point at (x, y), selects it, and pushes the undo command.
+     **/
+    BezierPtr makePointCurve(double x, double y, double time);
 
     BezierPtr getBezierBeingBuild() const;
 

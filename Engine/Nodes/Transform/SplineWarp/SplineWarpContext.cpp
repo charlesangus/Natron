@@ -618,6 +618,36 @@ SplineWarpContext::setLinkAlignment(const SplineWarpLinkPtr& link,
 }
 
 void
+SplineWarpContext::swapLinkCurves(const SplineWarpLinkPtr& link,
+                                  double startOffset,
+                                  bool reversed)
+{
+    if (!link) {
+        return;
+    }
+    KnobContentWrite write;
+    {
+        BezierPtr source = link->getSource();
+        BezierPtr destination = link->getDestination();
+        if (!source || !destination) {
+            throw std::invalid_argument("SplineWarp: the link has lost a curve.");
+        }
+        if (!SplineWarpCurveShape::isClosedCurve(*source)) {
+            startOffset = 0.;
+        }
+        checkParam(startOffset, *source, "the start offset");
+        std::lock_guard<std::mutex> l(link->_mutex);
+        std::swap(link->_source, link->_destination);
+        for (std::size_t i = 0; i < link->_correspondences.size(); ++i) {
+            std::swap(link->_correspondences[i].source, link->_correspondences[i].destination);
+        }
+        link->_startOffset = startOffset;
+        link->_reversed = reversed;
+    }
+    warpDataChanged(true);
+}
+
+void
 SplineWarpContext::setLinkAmount(const SplineWarpLinkPtr& link,
                                  double amount,
                                  double time)

@@ -37,6 +37,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -128,6 +129,29 @@ public:
      **/
     virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    const SplineWarpInteractPtr& getInteract() const
+    {
+        return _ui;
+    }
+
+    virtual bool hasOverlay() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL;
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
+    virtual void drawOverlay(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
+    virtual bool onOverlayPenDown(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp, PenType pen) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayPenMotion(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayPenUp(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayPenDoubleClicked(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayKeyDown(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
+    virtual bool onOverlayKeyUp(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
+    virtual bool onOverlayFocusLost(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
+    virtual void onInteractViewportSelectionCleared() OVERRIDE FINAL;
+    virtual void onInteractViewportSelectionUpdated(const RectD& rectangle, bool onRelease) OVERRIDE FINAL;
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -212,6 +236,8 @@ private:
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
     KnobChoiceWPtr _bbox;
+
+    SplineWarpInteractPtr _ui;
 
     SplineWarpLruCache<SampleKey, SplineWarpSampleSet> _samples;
     SplineWarpTpsCache _maps;

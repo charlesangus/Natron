@@ -226,6 +226,13 @@ public:
     void setLinkAlignment(const SplineWarpLinkPtr& link, double startOffset, bool reversed);
 
     /**
+     * @brief Makes link's destination its source and the reverse, swaps the two ends of every
+     * correspondence, keys included, and sets the alignment on the new destination. Throws
+     * std::invalid_argument when startOffset is outside that curve's parameter range.
+     **/
+    void swapLinkCurves(const SplineWarpLinkPtr& link, double startOffset, bool reversed);
+
+    /**
      * @brief See SplineWarpAnimatedValue::setValue(). amount is clamped to [0, 1].
      **/
     void setLinkAmount(const SplineWarpLinkPtr& link, double amount, double time);

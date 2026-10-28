@@ -121,6 +121,9 @@ mergePoint(RectD* r,
 
 SplineWarp::SplineWarp(NodePtr node)
     : StagedImageEffect(node)
+    // Built here, as RotoPaint's is: Node::load() ends the knob bracket with endChanges(), which
+    // already calls knobChanged() and so forwards to the interact.
+    , _ui(SplineWarpInteract::create(this))
 {
 }
 
@@ -294,6 +297,12 @@ SplineWarp::initializeKnobs()
 
     addStageKnobs(page);
 
+    // The node's curve context exists by now (Node::createRotoContextConditionnally()).
+    _ui->connectToCurveContext();
+    _ui->createViewerButtonKnobs(page);
+    _ui->createToolbar();
+    _ui->createRightClickMenuKnobs(page);
+
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // SplineWarp::initializeKnobs
 
@@ -314,6 +323,11 @@ void
 SplineWarp::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+
+    KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
+    _ui->setCurrentTool(defaultAction);
+    _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
+    _ui->onToolChangedInternal(defaultAction);
 }
 
 bool
@@ -331,7 +345,124 @@ SplineWarp::knobChanged(KnobI* k,
         return true;
     }
 
+    bool ret = false;
+    if (k && _ui->onKnobChanged(k, time, &ret)) {
+        return ret;
+    }
+
     return false;
+}
+
+void
+SplineWarp::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
+    SplineWarpInteract::getToolbarShortcuts(shortcuts);
+    RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+}
+
+void
+SplineWarp::refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                              double time)
+{
+    StagedImageEffect::refreshExtraStateAfterTimeChanged(isPlayback, time);
+    _ui->refreshAfterTimeChanged(time);
+}
+
+void
+SplineWarp::drawOverlay(double time,
+                        const RenderScale& /*renderScale*/,
+                        ViewIdx /*view*/)
+{
+    _ui->drawOverlay(time);
+}
+
+bool
+SplineWarp::onOverlayPenDown(double time,
+                             const RenderScale& /*renderScale*/,
+                             ViewIdx /*view*/,
+                             const QPointF& /*viewportPos*/,
+                             const QPointF& pos,
+                             double pressure,
+                             double timestamp,
+                             PenType pen)
+{
+    return _ui->onOverlayPenDown(time, pos, pressure, timestamp, pen);
+}
+
+bool
+SplineWarp::onOverlayPenMotion(double time,
+                               const RenderScale& /*renderScale*/,
+                               ViewIdx /*view*/,
+                               const QPointF& /*viewportPos*/,
+                               const QPointF& pos,
+                               double pressure,
+                               double timestamp)
+{
+    return _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
+}
+
+bool
+SplineWarp::onOverlayPenUp(double /*time*/,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           const QPointF& /*viewportPos*/,
+                           const QPointF& /*pos*/,
+                           double /*pressure*/,
+                           double /*timestamp*/)
+{
+    return _ui->onOverlayPenUp();
+}
+
+bool
+SplineWarp::onOverlayPenDoubleClicked(double /*time*/,
+                                      const RenderScale& /*renderScale*/,
+                                      ViewIdx /*view*/,
+                                      const QPointF& /*viewportPos*/,
+                                      const QPointF& pos)
+{
+    return _ui->onOverlayPenDoubleClicked(pos);
+}
+
+bool
+SplineWarp::onOverlayKeyDown(double /*time*/,
+                             const RenderScale& /*renderScale*/,
+                             ViewIdx /*view*/,
+                             Key key,
+                             KeyboardModifiers /*modifiers*/)
+{
+    return _ui->onKeyDown(key);
+}
+
+bool
+SplineWarp::onOverlayKeyUp(double /*time*/,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           Key key,
+                           KeyboardModifiers /*modifiers*/)
+{
+    return _ui->onOverlayKeyUp(key);
+}
+
+bool
+SplineWarp::onOverlayFocusLost(double /*time*/,
+                               const RenderScale& /*renderScale*/,
+                               ViewIdx /*view*/)
+{
+    return _ui->onOverlayFocusLost();
+}
+
+void
+SplineWarp::onInteractViewportSelectionCleared()
+{
+    _ui->onViewportSelectionCleared();
+}
+
+void
+SplineWarp::onInteractViewportSelectionUpdated(const RectD& rectangle,
+                                               bool onRelease)
+{
+    _ui->onViewportSelectionUpdated(rectangle, onRelease);
 }
 
 void

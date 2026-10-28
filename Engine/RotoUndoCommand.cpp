@@ -1928,4 +1928,66 @@ MakeRectangleUndoCommand::mergeWith(const UndoCommandPtr &other)
     return true;
 }
 
+////////////////////////////////////
+
+MakePointCurveUndoCommand::MakePointCurveUndoCommand(const RotoCurveInteractPtr& roto,
+                                                     double x,
+                                                     double y,
+                                                     double time)
+    : UndoCommand()
+    , _firstRedoCalled(false)
+    , _roto(roto)
+    , _parentLayer()
+    , _indexInLayer(-1)
+    , _curve()
+    , _x(x)
+    , _y(y)
+    , _time(time)
+{
+    setText(tr("Draw Point").toStdString());
+}
+
+MakePointCurveUndoCommand::~MakePointCurveUndoCommand()
+{
+}
+
+void
+MakePointCurveUndoCommand::undo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto || !_curve) {
+        return;
+    }
+    roto->removeCurve(_curve);
+    roto->evaluate(true);
+    roto->setSelection(BezierPtr(), std::make_pair(CpPtr(), CpPtr()));
+}
+
+void
+MakePointCurveUndoCommand::redo()
+{
+    RotoCurveInteractPtr roto = _roto.lock();
+
+    if (!roto) {
+        return;
+    }
+    if (_firstRedoCalled) {
+        roto->getCurveContext()->addItem(_parentLayer, _indexInLayer, _curve, RotoItem::eSelectionReasonOverlayInteract);
+    } else {
+        _curve = roto->getCurveContext()->makeBezier(_x, _y, kRotoPointBaseName, _time, true);
+        if (!_curve) {
+            return;
+        }
+        _curve->setCurveFinished(true);
+        _parentLayer = _curve->getParentLayer();
+        if (_parentLayer) {
+            _indexInLayer = _parentLayer->getChildIndex(_curve);
+        }
+    }
+    _firstRedoCalled = true;
+    roto->evaluate(true);
+    roto->setSelection(_curve, std::make_pair(CpPtr(), CpPtr()));
+}
+
 NATRON_NAMESPACE_EXIT

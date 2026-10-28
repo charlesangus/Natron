@@ -146,12 +146,12 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Phase 274.3: Cookie cutters, output mask, crop to format (CPU + GPU)
 
-- [ ] M274.P3.T1 — Cookie Cutter flag
+- [x] M274.P3.T1 — Cookie Cutter flag
   - files: `SplineWarpContext.{h,cpp}`, `Gui/SplineWarpPanelHook.cpp` (column and action), bindings
   - approach: a per-curve flag, for closed curves only. It is serialized, part of the warp hash, and undoable.
   - verify: `SplineWarpModel_Test.cpp`: an open curve is refused, opening a curve clears the flag, and the flag round-trips through save/load.
   - size: M
-- [ ] M274.P3.T2 — Cookie mask and `cookieCutInput`
+- [x] M274.P3.T2 — Cookie mask and `cookieCutInput`
   - files: `SplineWarp.cpp`, `SplineWarpCookie.{h,cpp}` (new), `Engine/RotoContext.cpp` (reuse `renderBezier`/`renderFeather`), `splinewarp.slang`, `SplineWarpGpu.h`
   - approach:
     - Rasterise the union of the cookie curves, antialiased with feather and fall-off, at their source positions in the Source's RoI. Cache the mask per window by curve hash.
@@ -161,14 +161,14 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - `NativeSplineWarp_Test.cpp`: with zero warp, the output equals Source × mask.
     - `NativeSplineWarpGpu_Test.cpp`: GPU and CPU agree within the existing tolerance.
   - size: L
-- [ ] M274.P3.T3 — `outputMask`
+- [x] M274.P3.T3 — `outputMask`
   - files: `SplineWarp.{h,cpp}` (`getComponentsNeededAndProduced`, following `Nodes/Channel/AddLayers.h`), `splinewarp.slang`
   - approach:
     - A channel choice, default `SplineWarpMask.A`, disabled while there are no cookie cutters.
     - It writes the cookie mask warped through the same field, filter and motion-blur sub-frames.
   - verify: CPU and GPU tests check that the produced layer exists, matches the warped mask, and is absent when there are no cookie cutters.
   - size: L
-- [ ] M274.P3.T4 — `cropToFormat`
+- [x] M274.P3.T4 — `cropToFormat`
   - files: `SplineWarp.cpp` (RoD/RoI, after `LensDistortion.cpp`), `splinewarp.slang` (format rect and flag)
   - approach:
     - Default on.
@@ -181,7 +181,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Phase 274.4: Transform page
 
-- [ ] M274.P4.T1 — Transform knobs on the selection
+- [x] M274.P4.T1 — Transform knobs on the selection
   - files: `Engine/RotoContextPrivate.h` (move the transform-page block of `createPaintKnobs` into a base helper any host can opt into), `Engine/RotoCurveContext.{h,cpp}` (register for `selectInternal` tying), `SplineWarpContext.cpp`, `SplineWarp.cpp`
   - approach:
     - Add `translate`, `rotate`, `scale` (2D, with `uniform`), `skewx`, `skewy`, `skewOrder` (XY), `center` and `extraMatrix`, tied to the selected curves.
@@ -191,7 +191,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - a change to the item transform changes the field cache key;
     - undo restores the transform.
   - size: L
-- [ ] M274.P4.T2 — Layer transforms and transform links
+- [x] M274.P4.T2 — Layer transforms and transform links
   - files: `SplineWarpContext.{h,cpp}`, `SplineWarpCurve.cpp` (compose layer→curve), `Gui/SplineWarpPanelHook.cpp` (Transform Link column, "Link Transform To…"/"Unlink Transform"), bindings
   - approach:
     - A layer's transform composes with its children's.
@@ -199,7 +199,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - Links that would form a cycle are refused.
   - verify: `SplineWarpTransform_Test.cpp`: a layer rotate moves all its curves, a linked curve follows its source, and a cycle is refused.
   - size: L
-- [ ] M274.P4.T3 — Viewer transform overlay
+- [x] M274.P4.T3 — Viewer transform overlay
   - files: `SplineWarp.cpp` (`addTransformInteract`, as Transform does), `SplineWarpInteract.cpp`
   - approach:
     - Show the overlay when a single curve or layer is selected and the select tool is active.
@@ -268,5 +268,6 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Decisions
 
+- 2026-10-28: Phases 3–4 implemented (build pending). Cookie: hard-edged mask cached per curve state; a colour layer can't be the output mask; a linked cutter rasterises from its source curve; with Cookie Cut Input on, an upstream Transform isn't concatenated; mask uses frame time for all motion-blur sub-frames; mask layer declared via addProducedPlanes; no GPU parity test for the mask plane (renderEndToEnd compares colour). Crop To Format clips RoD before and after BBox growth and the RoI. Transform: Roto's transform block moved into a shared helper (Roto/RotoPaint unchanged, skewx/skewy kept); new curve centre = Source format centre (project format if unconnected). Layer transforms compose over children; transform links are one-way (target's transform replaces the item's; own layers still apply); cycles, self-links and curve↔own-layer links refused; unlinking keeps position; deleting the target drops the link. Panel: Transform Link column; "Link Transform to First" (others follow the first) and "Unlink Transform". Overlay shows for one curve or one layer (+its curves) with a select tool; curve editing wins over the handle. Open (user): mixed linked/unlinked selection edits all; first-is-target order; refusing curve↔own-layer links.
 - 2026-10-28: Phases 1–2 implemented (build pending). Audit corrections: Activated was honoured for curves but not layers (now isDeactivatedRecursive); panel hook lives in Engine/Nodes/Transform/SplineWarp/; sample-cache key in SplineWarp.h; mask/mix in addMaskMixKnobs; SplineWarpMesh needed no change (open soft polylines are constrained edges). Pages: Controls (amount, invert, Layer Amount, Link Amount, Boundary BBox, stage knobs), Render (flat). Setting one boundary kind clears the other; opening a curve clears only a hard boundary; hard boundaries use boundaryCurveResolution (draft doubles it). "Only layers" = ≥1 layer selected and every selected curve inside one. linkAmount undo goes through the knob's own undo. Q1/Q2 provisionally as recommended (soft boundary built, boundaryBBox on, 4 px). Draft renders run on the GPU with the coarse field (merge 82bb13872). The mesh pins its padded-box corners, so a long soft curve's far side stays put (TPS test checks the far side moves).
 - 2026-10-28: elaborated (consultant). PM call: morph (Destination input, output modes, morph mix, A/B Type, Duplicate in B) stays dropped under the user's M147 decision (out of scope). The consultant's morph phase was struck, and the rows are marked "dropped (user, M147)". Deps widened to M149–M151, the branch this builds on. The Lanczos/Sinc task waits on M270.

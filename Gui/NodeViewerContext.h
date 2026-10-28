@@ -131,6 +131,8 @@ public Q_SLOTS:
                                   int dimension,
                                   int reason);
 
+    void onToolActionStateChanged();
+
     void onNodeSettingsPanelClosed(bool closed);
 
     void onNodeSettingsPanelMinimized();

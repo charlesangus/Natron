@@ -127,6 +127,10 @@ public:
                             const std::string& iconPath,
                             ViewerToolButton** toolButton);
 
+    QString toolActionToolTip(const std::string& toolID,
+                              const std::string& roleShortcutID,
+                              const std::string& hintToolTip) const;
+
     void onToolActionTriggeredInternal(QAction* action, bool notifyNode);
 
     void toggleToolsSelection(ViewerToolButton* selected)
@@ -214,8 +218,13 @@ NodeViewerContext::createGui()
                         KnobButton* isButton = dynamic_cast<KnobButton*>( toolButtonChildren[j].get() );
                         if (isButton) {
                             QObject::connect( isButton->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec,int,int)), this, SLOT(onToolActionValueChanged(ViewSpec,int,int)) );
+                            QObject::connect(isButton->getSignalSlotHandler().get(), SIGNAL(enabledChanged()), this, SLOT(onToolActionStateChanged()));
+                            QObject::connect(isButton->getSignalSlotHandler().get(), SIGNAL(helpChanged()), this, SLOT(onToolActionStateChanged()));
                             const std::string& roleShortcutID = isGroup->getName();
                             QAction* act = _imp->addToolBarTool(isButton->getName(), isGroup->getName(), roleShortcutID, isButton->getLabel(), isButton->getHintToolTip(), isButton->getIconLabel(), &createdToolButton);
+                            if (act) {
+                                act->setEnabled(isButton->isEnabled(0));
+                            }
                             if ( act && createdToolButton && isButton->getValue() ) {
                                 createdToolButton->setDefaultAction(act);
                                 currentActionForGroup = QString::fromUtf8( isButton->getName().c_str() );
@@ -390,8 +399,6 @@ NodeViewerContextPrivate::addToolBarTool(const std::string& toolID,
 
     *createdToolButton = toolButton;
 
-
-    QString shortcutGroup = getNode()->getNode()->getPlugin()->getPluginShortcutGroup();
     QIcon icon;
     if ( !iconPath.empty() ) {
         QString iconPathStr = QString::fromUtf8( iconPath.c_str() );
@@ -412,26 +419,37 @@ NodeViewerContextPrivate::addToolBarTool(const std::string& toolID,
     data.push_back(qRoleId);
     data.push_back( QString::fromUtf8( toolID.c_str() ) );
     action->setData(data);
-    QString toolTip;
     if ( !hintToolTip.empty() ) {
-        toolTip.append( QString::fromUtf8("<p>") );
-        toolTip += QString::fromUtf8( hintToolTip.c_str() );
-        toolTip.append( QString::fromUtf8("</p>") );
-        if ( !roleShortcutID.empty() ) {
-            std::list<QKeySequence> keybinds = getKeybind( shortcutGroup, QString::fromUtf8( toolID.c_str() ) );
-            if (keybinds.size() >= 1) {
-                toolTip += QString::fromUtf8("<p><b>");
-                toolTip += tr("Keyboard shortcut: %1").arg( keybinds.front().toString(QKeySequence::NativeText) );
-                toolTip += QString::fromUtf8("</b></p>");
-            }
-        }
-        action->setToolTip(toolTip);
+        action->setToolTip(toolActionToolTip(toolID, roleShortcutID, hintToolTip));
     }
     QObject::connect( action, SIGNAL(triggered()), publicInterface, SLOT(onToolActionTriggered()) );
     toolButton->addAction(action);
 
     return action;
 } // NodeViewerContextPrivate::addToolBarTool
+
+QString
+NodeViewerContextPrivate::toolActionToolTip(const std::string& toolID,
+                                            const std::string& roleShortcutID,
+                                            const std::string& hintToolTip) const
+{
+    QString toolTip;
+
+    toolTip.append(QString::fromUtf8("<p>"));
+    toolTip += QString::fromUtf8(hintToolTip.c_str());
+    toolTip.append(QString::fromUtf8("</p>"));
+    if (!roleShortcutID.empty()) {
+        QString shortcutGroup = getNode()->getNode()->getPlugin()->getPluginShortcutGroup();
+        std::list<QKeySequence> keybinds = getKeybind(shortcutGroup, QString::fromUtf8(toolID.c_str()));
+        if (keybinds.size() >= 1) {
+            toolTip += QString::fromUtf8("<p><b>");
+            toolTip += tr("Keyboard shortcut: %1").arg(keybinds.front().toString(QKeySequence::NativeText));
+            toolTip += QString::fromUtf8("</b></p>");
+        }
+    }
+
+    return toolTip;
+}
 
 QToolBar*
 NodeViewerContext::getToolBar() const
@@ -620,6 +638,36 @@ NodeViewerContext::onToolActionValueChanged(ViewSpec /*view*/,
 
             return;
         }
+    }
+}
+
+void
+NodeViewerContext::onToolActionStateChanged()
+{
+    KnobSignalSlotHandler* caller = dynamic_cast<KnobSignalSlotHandler*>(sender());
+
+    if (!caller) {
+        return;
+    }
+    KnobIPtr knob = caller->getKnob();
+    KnobIPtr group = knob ? knob->getParentKnob() : KnobIPtr();
+    if (!group) {
+        return;
+    }
+    std::map<QString, ViewerToolButton*>::iterator found = _imp->toolButtons.find(QString::fromUtf8(group->getName().c_str()));
+    if (found == _imp->toolButtons.end()) {
+        return;
+    }
+    const QString toolID = QString::fromUtf8(knob->getName().c_str());
+    QList<QAction*> actions = found->second->actions();
+    for (QList<QAction*>::iterator it = actions.begin(); it != actions.end(); ++it) {
+        QStringList actionData = (*it)->data().toStringList();
+        if ((actionData.size() != 2) || (actionData[1] != toolID)) {
+            continue;
+        }
+        (*it)->setEnabled(knob->isEnabled(0));
+        const std::string hint = knob->getHintToolTip();
+        (*it)->setToolTip(hint.empty() ? QString() : _imp->toolActionToolTip(knob->getName(), group->getName(), hint));
     }
 }
 

@@ -976,7 +976,8 @@ KnobGui::isOnNewLine() const
 void
 KnobGui::setEnabledSlot()
 {
-    if ( !getGui() ) {
+    // A toolbar page's knobs get a KnobGui in the settings panel but no widgets.
+    if (!getGui() || !_imp->widgetCreated) {
         return;
     }
     if (!_imp->customInteract) {

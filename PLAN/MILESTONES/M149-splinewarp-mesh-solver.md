@@ -66,5 +66,6 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Decisions
 
+- 2026-10-28: Implemented (build pending). CDT 2.0.1 vendored header-only in libs/CDT (MPL-2.0; predicates.h BSD-3; portable_nth_element Apache-2.0 w/ LLVM exception — all compatible with Natron's GPLv2-or-later distributed as GPLv3), excluded from the format gate. Mesh box = Source full-size bounds plus all samples, padded by ¼ of the larger side (≥1 px); in the cache key and warp hash. <3 distinct or collinear destinations → TPS fallback. Crossing curves: CDT inserts a vertex taking the source of the first-inserted curve; unresolvable → unconstrained mesh → TPS. Outside the box the field is identity; folded triangles rendered as-is. Sample hash includes curve order.
 - 2026-10-20 — **Both solvers, user-selectable (user):** this milestone adds the mesh option.
 - 2026-10-20 — **CDT feeds the shared field (planner):** the GPU, motion blur and render paths stay solver-agnostic.

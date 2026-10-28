@@ -83,4 +83,5 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Decisions
 
+- 2026-10-28 — PM: JzAzBz GPU-vs-CPU parity is 1e-3 relative (UCS keeps 1e-4). Measured on lavapipe: JzAzBz's pow(·,134) and near-cancellation leave float round trips ~2.6e-4 from exact on CPU and GPU alike; two float evaluations differ by up to 3.75e-4 even with a precise pow. Ulp-level, not an architecture question.
 - 2026-10-27 — PM: the node grades in linear Rec.2020 (darktable's pipeline space), converting from and back to the working space; OCIO working spaces without a matrix stay on the CPU. Shared darktable colour helpers live in Engine/Nodes/Color/DtColorSpaces.h and Engine/Gpu/Kernels/dtcolorspaces.slang. 4 Ways are polar colour wheels (angle = hue, radius = chroma) in a 2x2 grid with luminance under each, so the tab doesn't scroll.

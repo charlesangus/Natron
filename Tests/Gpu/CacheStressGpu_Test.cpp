@@ -198,7 +198,7 @@ renderOnGpu(const NodePtr& root,
         }
         // The render's own inputs, so cached tasks stay on the CPU, with every region accepted.
         PlacementInputs inputs = makeRenderPlacementInputs(context);
-        inputs.isPriced = std::function<bool(const FrameGraph::Task&)>();
+        inputs.taskWeight = std::function<GpuWeight(const FrameGraph::Task&)>();
         inputs.regionGain = std::function<double(const FrameGraph&, const FrameGraph::Region&)>();
         placeGraph(graph, inputs);
     }

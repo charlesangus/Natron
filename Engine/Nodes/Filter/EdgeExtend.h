@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -144,6 +145,13 @@ struct EdgeExtendOp {
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;
+
+    /**
+     * @brief The Filter weight of the larger axis's size at the context's scale: the slices' FIR
+     * Gaussians run at full resolution, so their taps grow with it.
+     **/
+    std::optional<GpuWeight> gpuWeight(const Params& params,
+                                       const PassContext& context) const;
 
     KnobBoolWPtr sourcePremultiplied;
     KnobDoubleWPtr threshold;

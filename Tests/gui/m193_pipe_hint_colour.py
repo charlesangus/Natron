@@ -23,6 +23,12 @@ try:
     import guitest as gt
     from guitest import check, report
 
+    def main_window():
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, QMainWindow) and w.isVisible():
+                return w
+        return None
+
     def root_graph():
         graphs = [w for w in gt.widgets_of("NodeGraph") if w.isVisible()]
         return graphs[0] if graphs else None
@@ -48,7 +54,7 @@ try:
         return tuple(int(max(0.0, min(1.0, p.getValue(d))) * 255 + 0.5) for d in range(3))
 
     def set_selection(r, g, b):
-        NatronEngine.natron.getSettings().getParam("selection").set(r, g, b)
+        NatronEngine.natron.getSettings().getParam("selection").set(r, g, b, 1.0)
         QApplication.processEvents()
 
     def viewport_image(graph):
@@ -77,6 +83,15 @@ try:
 
     def steps():
         gt.section("pipe-hint-colour")
+        ok = yield ("until", lambda: root_graph() is not None, 60.0)
+        gt.require(ok, "node graph widget is up")
+        win = main_window()
+        gt.require(win is not None, "found the main window")
+        win.activateWindow()
+        win.raise_()
+        ok = yield ("until", lambda: win.isActiveWindow(), 10.0)
+        gt.require(ok, "the main window is active",
+                   "QGraphicsItem::isActive() is false in an inactive window, so the press misses the node")
         src = create("net.sf.openfx.ConstantPlugin", 0, 0)
         dst = create("net.sf.cimg.CImgBlur", 0, 300)
         dst.connectInput(0, src)

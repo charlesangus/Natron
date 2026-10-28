@@ -152,6 +152,7 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextRegionTestEffect>();
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
+    registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
 }
 
 void

@@ -28,9 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <QtCore/QMutex>
@@ -72,6 +74,11 @@
 #define kLoopEndParamDrivenKnobs "drivenKnobs"
 #define kLoopEndParamCrossFrame "crossFrame"
 #define kLoopEndParamStartFrame "startFrame"
+#define kLoopEndParamCacheFile "cacheFile"
+#define kLoopEndParamBakeEnd "bakeEnd"
+#define kLoopEndParamBake "bake"
+#define kLoopEndParamLoadFromCache "loadFromCache"
+#define kLoopEndParamClearCache "clearCache"
 
 #define kLoopEndDefaultMaxIterations 1024
 
@@ -169,6 +176,8 @@ public:
         // restricted to what this node reads.
         RenderContextPtr base;
         int frame = 0;
+        // The loop renders a whole frame: inside it, only the frame before is ever available.
+        bool driven = false;
     };
 
     /**
@@ -191,7 +200,11 @@ public:
      * @brief The loop's output at frame under base, Cross Frame: from the frame cache, else the
      * frames after the latest one cached (Start Frame when none is) rendered in order up to it,
      * each over the whole of its region of definition and stored. One render drives a simulation
-     * at a time; the others wait for it. Fails at a frame before Start Frame.
+     * at a time; the others wait for it. Fails at a frame before Start Frame. With Load From
+     * Cache on, a baked frame is read first, and the frames past the bake follow from the last
+     * one baked. fromDrivenFrame is set by a LoopBegin inside a whole frame of the loop: asking
+     * there for a frame other than the one before, which the render driving the simulation has
+     * not stored, fails at once with an error on this node, as waiting for it would never end.
      **/
     EffectInstance::RenderRoIRetCode crossFrameImage(const EffectInstance* consumer,
                                                      const RenderContextPtr& base,
@@ -199,7 +212,8 @@ public:
                                                      ViewIdx view,
                                                      const RenderScale& scale,
                                                      bool byPassCache,
-                                                     ImagePtr* image) WARN_UNUSED_RETURN;
+                                                     ImagePtr* image,
+                                                     bool fromDrivenFrame = false) WARN_UNUSED_RETURN;
 
     /**
      * @brief The region of definition of the loop's output at frame under base, Cross Frame: the
@@ -216,6 +230,42 @@ public:
      * @brief The frames Cross Frame has rendered.
      **/
     LoopFrameCache* crossFrameCache() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The hash of the simulation: the loop's input and its knobs, without Cache File, Bake
+     * End, Load From Cache or the buttons. Baked frames carry it.
+     **/
+    U64 simulationHash() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The file Cache File names for frame; empty when Cache File is.
+     **/
+    std::string bakedFramePath(int frame) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Renders Start Frame to Bake End in order on the calling thread and writes each frame
+     * to Cache File, with progress, which cancels it. progressStarted: the caller started the
+     * progress; it is ended either way. False with error on failure, cancellation or a bake
+     * running already; the frames written so far stay.
+     **/
+    bool bakeFrames(bool progressStarted,
+                    std::string* error) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief What Bake does: bakeFrames() on a thread of its own. False when a bake is running.
+     **/
+    bool startBake();
+
+    void cancelBake();
+
+    /**
+     * @brief Waits for the bake startBake() started, if any.
+     **/
+    void waitForBake();
+
+    bool isBaking() const WARN_UNUSED_RETURN;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
     /**
      * @brief True inside a task of the task-graph scheduler, whose frame store chains the
@@ -449,6 +499,63 @@ private:
                                       const RenderContextPtr& context,
                                       const std::string& loopName) WARN_UNUSED_RETURN;
 
+    struct CrossFrameOptions {
+        bool loadBaked = false;
+        bool showProgress = true;
+        bool fromDrivenFrame = false;
+    };
+
+    EffectInstance::RenderRoIRetCode crossFrameImageWith(const EffectInstance* consumer,
+                                                         const RenderContextPtr& base,
+                                                         int frame,
+                                                         ViewIdx view,
+                                                         const RenderScale& scale,
+                                                         bool byPassCache,
+                                                         const CrossFrameOptions& options,
+                                                         ImagePtr* image) WARN_UNUSED_RETURN;
+
+    // Load From Cache is on with a Cache File, under Cross Frame.
+    bool loadsBaked() const WARN_UNUSED_RETURN;
+
+    // The generation of the frame cache's series: the simulation's, or its continuation from a bake.
+    U64 seriesHash(bool loadBaked) const WARN_UNUSED_RETURN;
+
+    // The layer and pixel aspect ratio the loop renders at frame under base.
+    void crossFrameLayer(const RenderContextPtr& base,
+                         double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer,
+                         double* par);
+
+    // The frame baked at frame, at mipmapLevel; null when there is none. Warns when it was baked
+    // from another simulation than the current one.
+    ImagePtr loadBakedFrame(const RenderContextPtr& base,
+                            int frame,
+                            ViewIdx view,
+                            unsigned int mipmapLevel);
+
+    // Baked frames stand for the loop under base and view: the root context's, view 0.
+    bool isBakedContext(const RenderContextPtr& base,
+                        ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // The region of definition of the frame baked at frame; false when there is none.
+    bool bakedRegion(int frame,
+                     RectD* rod) const WARN_UNUSED_RETURN;
+
+    // Posts message on the node for the cross-frame frames, or clears the one posted when empty.
+    void refreshCrossFrameMessage(MessageTypeEnum type,
+                                  const std::string& message);
+
+    void refreshBakeMessage(MessageTypeEnum type,
+                            const std::string& message);
+
+    // bakeFrames() with the bake marked running by the caller.
+    bool bakeSequence(bool progressStarted,
+                      std::string* error) WARN_UNUSED_RETURN;
+
+    // After a bake: the loaded frames' generation moves on, and the viewers render again.
+    void onBakeFinished();
+
     // The fold of the loop at frame under base, over its whole region of definition.
     EffectInstance::RenderRoIRetCode renderCrossFrame(const EffectInstance* consumer,
                                                       const RenderContextPtr& base,
@@ -524,9 +631,16 @@ private:
     KnobStringWPtr _stopCondition;
     KnobBoolWPtr _crossFrame;
     KnobIntWPtr _startFrame;
+    KnobOutputFileWPtr _cacheFile;
+    KnobIntWPtr _bakeEnd;
+    KnobButtonWPtr _bake;
+    KnobBoolWPtr _loadFromCache;
+    KnobButtonWPtr _clearCache;
 
     mutable QMutex _messageMutex;
     std::string _postedMessage;
+    std::string _crossFramePosted;
+    std::string _bakePosted;
 
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;
@@ -567,6 +681,15 @@ private:
     // The regions crossFrameRegion() found, of the generation _regionsHash.
     std::map<LoopFrameSeries, std::map<int, RectD>> _crossFrameRegions;
     U64 _regionsHash = 0;
+
+    // Moves on with every bake, so frames continued from an earlier bake are not reused.
+    std::atomic<U64> _bakeGeneration;
+    std::atomic<bool> _baking;
+    std::atomic<bool> _bakeCancelled;
+    // The bake's render, aborted by cancelBake(); under _bakeMutex with the thread.
+    QMutex _bakeMutex;
+    AbortableRenderInfoPtr _bakeRender;
+    std::thread _bakeThread;
 };
 
 NATRON_NAMESPACE_EXIT

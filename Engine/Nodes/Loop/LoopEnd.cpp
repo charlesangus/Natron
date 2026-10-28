@@ -29,11 +29,19 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
+#include <QtCore/QMetaObject>
 #include <QtCore/QString>
 #include <QtCore/QThread>
 
@@ -42,12 +50,15 @@
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
+#include "Engine/Nodes/Loop/LoopFrameBake.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/PyRFV.h"
 #include "Engine/TLSHolder.h"
 #include "Global/PythonUtils.h"
@@ -208,12 +219,17 @@ alphaIndexOf(const ImageLayerDesc& layer)
 LoopEnd::LoopEnd(NodePtr node)
     : NativeEffectBase(node)
     , _frameCache(new LoopFrameCache(LoopFrameCache::defaultBudget()))
+    , _bakeGeneration(0)
+    , _baking(false)
+    , _bakeCancelled(false)
 {
     ++liveLoopEnds;
 }
 
 LoopEnd::~LoopEnd()
 {
+    cancelBake();
+    waitForBake();
     --liveLoopEnds;
 }
 
@@ -371,6 +387,7 @@ LoopEnd::crossFrameStepBefore(const RenderContextPtr& context,
     }
     U64 contextKey = 0;
     previous->frame = (int)std::ceil(outer) - 1;
+    previous->driven = (outer == std::floor(outer));
     previous->base = crossFrameBase(context, resolved.loopName, &contextKey);
 
     return true;
@@ -400,6 +417,468 @@ LoopEnd::crossFrameCache() const
     return _frameCache.get();
 }
 
+U64
+LoopEnd::simulationHash() const
+{
+    std::vector<std::pair<std::string, U64>> entries;
+
+    for (const KnobIPtr& knob : getKnobs_mt_safe()) {
+        if (!knob || !knob->isRenderHashed()) {
+            continue;
+        }
+        const std::string name = knob->getName();
+        // Where the frames are kept, and whether they are read, are not the simulation.
+        if ((name == kLoopEndParamCacheFile) || (name == kLoopEndParamLoadFromCache)) {
+            continue;
+        }
+        entries.push_back(std::make_pair(name, knob->getContentHash()));
+    }
+    std::sort(entries.begin(), entries.end());
+    ContentHasher h;
+    h.appendString(std::string("LoopEnd simulation"));
+    h.appendU64(entries.size());
+    for (const std::pair<std::string, U64>& entry : entries) {
+        h.appendString(entry.first);
+        h.appendU64(entry.second);
+    }
+    const NodePtr inputNode = getNode()->getInput(0);
+    const EffectInstancePtr input = inputNode ? inputNode->getEffectInstance() : EffectInstancePtr();
+    h.appendBool(bool(input));
+    if (input) {
+        h.appendU64(input->getHash());
+    }
+
+    return h.finalize();
+}
+
+bool
+LoopEnd::loadsBaked() const
+{
+    KnobBoolPtr loadFromCache = _loadFromCache.lock();
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+
+    // A bake renders the frames whatever the files hold.
+    return !_baking.load() && isCrossFrame() && loadFromCache && loadFromCache->getValue() && cacheFile && !cacheFile->getValue().empty();
+}
+
+U64
+LoopEnd::seriesHash(bool loadBaked) const
+{
+    const U64 simulation = simulationHash();
+
+    if (!loadBaked) {
+        return simulation;
+    }
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+    ContentHasher h;
+    h.appendU64(simulation);
+    h.appendString(std::string("bake"));
+    h.appendU64(_bakeGeneration.load());
+    h.appendString(cacheFile ? cacheFile->getValue() : std::string());
+
+    return h.finalize();
+}
+
+void
+LoopEnd::appendNodeContentHash(ContentHasher& h) const
+{
+    KnobBoolPtr loadFromCache = _loadFromCache.lock();
+    const bool loading = isCrossFrame() && loadFromCache && loadFromCache->getValue();
+
+    // The output reads the files of the latest bake.
+    h.appendBool(loading);
+    if (loading) {
+        h.appendU64(_bakeGeneration.load());
+    }
+}
+
+std::string
+LoopEnd::bakedFramePath(int frame) const
+{
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+
+    if (!cacheFile || cacheFile->getValue().empty()) {
+        return std::string();
+    }
+    std::string path = cacheFile->generateFileNameAtTime((SequenceTime)frame, ViewIdx(0)).toStdString();
+    const AppInstancePtr app = getApp();
+    if (app && app->getProject()) {
+        app->getProject()->canonicalizePath(path);
+    }
+
+    return path;
+}
+
+bool
+LoopEnd::isBakedContext(const RenderContextPtr& base,
+                        ViewIdx view) const
+{
+    if (view.value() != 0) {
+        return false;
+    }
+    const std::string loopName = getLoopName();
+    U64 key = 0;
+    U64 rootKey = 0;
+    (void)crossFrameBase(base, loopName, &key);
+    (void)crossFrameBase(RenderContextPtr(), loopName, &rootKey);
+
+    return key == rootKey;
+}
+
+void
+LoopEnd::crossFrameLayer(const RenderContextPtr& base,
+                         double time,
+                         ViewIdx view,
+                         ImageLayerDesc* layer,
+                         double* par)
+{
+    ImageLayerDesc pairedLayer;
+
+    *layer = ImageLayerDesc();
+    *par = 1.;
+    {
+        ActionContextScope actions(true, base);
+        NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+        if (metadata) {
+            getLayersFromMetadata(*metadata, -1, layer, &pairedLayer);
+            *par = metadata->getPixelAspectRatio(-1);
+        }
+    }
+    if (layer->getNumComponents() == 0) {
+        *layer = ImageLayerDesc::getRGBAComponents();
+    }
+}
+
+bool
+LoopEnd::bakedRegion(int frame,
+                     RectD* rod) const
+{
+    const std::string path = bakedFramePath(frame);
+
+    if (path.empty() || !QFileInfo(QString::fromUtf8(path.c_str())).isFile()) {
+        return false;
+    }
+    LoopFrameBake::FrameInfo info;
+    std::string error;
+    if (!LoopFrameBake::readFrameInfo(path, &info, &error)) {
+        return false;
+    }
+    *rod = info.regionOfDefinition;
+
+    return true;
+}
+
+ImagePtr
+LoopEnd::loadBakedFrame(const RenderContextPtr& base,
+                        int frame,
+                        ViewIdx view,
+                        unsigned int mipmapLevel)
+{
+    const std::string path = bakedFramePath(frame);
+
+    if (path.empty() || !QFileInfo(QString::fromUtf8(path.c_str())).isFile()) {
+        return ImagePtr();
+    }
+    ImageLayerDesc layer;
+    double par = 1.;
+    crossFrameLayer(base, (double)frame, view, &layer, &par);
+    LoopFrameBake::FrameInfo info;
+    std::string error;
+    ImagePtr full = LoopFrameBake::readFrame(path, layer, &info, &error);
+    if (!full) {
+        // Rendered instead, as past the bake.
+        refreshBakeMessage(eMessageTypeWarning, tr("Frame %1 could not be read from %2, so it is rendered: %3").arg(frame).arg(QString::fromUtf8(path.c_str())).arg(QString::fromUtf8(error.c_str())).toStdString());
+
+        return ImagePtr();
+    }
+    if (!info.hasHash || (info.hash != simulationHash())) {
+        refreshBakeMessage(eMessageTypeWarning, tr("Frame %1 of %2 was baked before the latest edit to the loop or to what "
+                                                   "is upstream of it, and is loaded as baked. Bake again to update it.")
+                                                    .arg(frame)
+                                                    .arg(QString::fromUtf8(path.c_str()))
+                                                    .toStdString());
+    } else {
+        refreshBakeMessage(eMessageTypeWarning, std::string());
+    }
+    if (mipmapLevel == 0) {
+        return full;
+    }
+    const RectI bounds = full->getBounds().downscalePowerOfTwoSmallestEnclosing(mipmapLevel);
+    ImagePtr scaled = std::make_shared<Image>(layer, full->getRoD(), bounds, mipmapLevel, full->getPixelAspectRatio(), eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    full->downscaleMipmap(full->getRoD(), full->getBounds(), 0, mipmapLevel, false, scaled.get());
+
+    return scaled;
+}
+
+void
+LoopEnd::refreshCrossFrameMessage(MessageTypeEnum type,
+                                  const std::string& message)
+{
+    QMutexLocker k(&_messageMutex);
+
+    if (message.empty() && _crossFramePosted.empty()) {
+        return;
+    }
+    refreshLoopMessage(getNode(), type, message, &_crossFramePosted);
+}
+
+void
+LoopEnd::refreshBakeMessage(MessageTypeEnum type,
+                            const std::string& message)
+{
+    QMutexLocker k(&_messageMutex);
+
+    if (message.empty() && _bakePosted.empty()) {
+        return;
+    }
+    refreshLoopMessage(getNode(), type, message, &_bakePosted);
+}
+
+bool
+LoopEnd::bakeFrames(bool progressStarted,
+                    std::string* error)
+{
+    if (progressStarted) {
+        return bakeSequence(true, error);
+    }
+    if (_baking.exchange(true)) {
+        *error = tr("A bake of this loop is running.").toStdString();
+
+        return false;
+    }
+    _bakeCancelled = false;
+    const bool ok = bakeSequence(false, error);
+    _baking = false;
+    onBakeFinished();
+
+    return ok;
+}
+
+bool
+LoopEnd::bakeSequence(bool progressStarted,
+                      std::string* error)
+{
+    const AppInstancePtr app = getApp();
+    const NodePtr node = getNode();
+    struct ProgressEnd {
+        AppInstancePtr app;
+        NodePtr node;
+        ~ProgressEnd()
+        {
+            if (app) {
+                app->progressEnd(node);
+            }
+        }
+    } progressEnd { progressStarted ? app : AppInstancePtr(), node };
+
+    if (!isCrossFrame()) {
+        *error = tr("Bake renders a Cross Frame loop: turn Cross Frame on.").toStdString();
+
+        return false;
+    }
+    const int start = crossFrameStart();
+    KnobIntPtr bakeEndKnob = _bakeEnd.lock();
+    const int end = bakeEndKnob ? bakeEndKnob->getValue() : start;
+    if (end < start) {
+        *error = tr("Bake End (%1) is before Start Frame (%2).").arg(end).arg(start).toStdString();
+
+        return false;
+    }
+    const std::string first = bakedFramePath(start);
+    if (first.empty()) {
+        *error = tr("Cache File is empty.").toStdString();
+
+        return false;
+    }
+    if (first == bakedFramePath(start + 1)) {
+        *error = tr("Cache File names every frame %1: put the frame number in it, as in sim.####.exr.")
+                     .arg(QString::fromUtf8(first.c_str()))
+                     .toStdString();
+
+        return false;
+    }
+    if (!crossFrameDriven((double)start)) {
+        const Resolved resolved = resolve();
+        *error = tr("The loop does not run: %1").arg(QString::fromUtf8(resolved.message.c_str())).toStdString();
+
+        return false;
+    }
+
+    const AbortableRenderInfoPtr render = AbortableRenderInfo::create(true, 0);
+    {
+        QMutexLocker k(&_bakeMutex);
+        _bakeRender = render;
+    }
+    struct RenderReset {
+        QMutex* mutex;
+        AbortableRenderInfoPtr* render;
+        ~RenderReset()
+        {
+            QMutexLocker k(mutex);
+            render->reset();
+        }
+    } renderReset { &_bakeMutex, &_bakeRender };
+    if (_bakeCancelled.load()) {
+        render->setAborted();
+    }
+    if (!progressStarted && app) {
+        progressEnd.app = app;
+        app->progressStart(node, tr("Baking frames %1 to %2 to %3").arg(start).arg(end).arg(QString::fromUtf8(first.c_str())).toStdString(), std::string(), true);
+    }
+    const std::function<bool()> cancelled = [this, render]() {
+        return _bakeCancelled.load() || render->isAborted();
+    };
+    U64 contextKey = 0;
+    const RenderContextPtr root = crossFrameBase(RenderContextPtr(), getLoopName(), &contextKey);
+    for (int frame = start; frame <= end; ++frame) {
+        if (cancelled()) {
+            *error = tr("The bake was cancelled before frame %1.").arg(frame).toStdString();
+
+            return false;
+        }
+        // The hash of what this frame renders from; an edit made meanwhile restarts the simulation.
+        const U64 hash = simulationHash();
+        ImagePtr image;
+        RenderRoIRetCode code = eRenderRoIRetCodeFailed;
+        RectI format;
+        {
+            ParallelRenderArgsSetter frameArgs((double)frame,
+                                               ViewIdx(0),
+                                               true /*isRenderUserInteraction*/,
+                                               false /*isSequential*/,
+                                               render,
+                                               node,
+                                               0 /*textureIndex*/,
+                                               app ? app->getTimeLine().get() : 0,
+                                               NodePtr(),
+                                               false /*isAnalysis*/,
+                                               false /*draftMode*/,
+                                               RenderStatsPtr());
+            // As a render of the whole frame plans it.
+            RectD window;
+            {
+                ActionContextScope actions(true, root);
+                bool isProjectFormat = false;
+                if (getRegionOfDefinition_public(getRenderHash(), (double)frame, RenderScale::identity, ViewIdx(0), &window, &isProjectFormat) == eStatusFailed) {
+                    window.clear();
+                }
+            }
+            if (!window.isNull()) {
+                FrameRequestMap request;
+                if (EffectInstance::computeRequestPass((double)frame, ViewIdx(0), 0, window, node, request) != eStatusFailed) {
+                    frameArgs.updateNodesRequest(request);
+                }
+            }
+            CrossFrameOptions options;
+            options.showProgress = false;
+            code = crossFrameImageWith(this, root, frame, ViewIdx(0), RenderScale::identity, false, options, &image);
+            ActionContextScope actions(true, root);
+            NodeMetadataConstPtr metadata = getRenderMetadata((double)frame, ViewIdx(0));
+            if (metadata) {
+                format = metadata->getOutputFormat();
+            }
+        }
+        if ((code == eRenderRoIRetCodeAborted) || cancelled()) {
+            *error = tr("The bake was cancelled at frame %1.").arg(frame).toStdString();
+
+            return false;
+        }
+        if ((code != eRenderRoIRetCodeOk) || !image) {
+            *error = tr("Frame %1 did not render.").arg(frame).toStdString();
+
+            return false;
+        }
+        const std::string path = bakedFramePath(frame);
+        QDir().mkpath(QFileInfo(QString::fromUtf8(path.c_str())).absolutePath());
+        std::string writeError;
+        if (!LoopFrameBake::writeFrame(path, *image, format, hash, cancelled, &writeError)) {
+            *error = cancelled() ? tr("The bake was cancelled at frame %1.").arg(frame).toStdString()
+                                 : tr("Frame %1 could not be written to %2: %3").arg(frame).arg(QString::fromUtf8(path.c_str())).arg(QString::fromUtf8(writeError.c_str())).toStdString();
+
+            return false;
+        }
+        if (app && !app->progressUpdate(node, (double)(frame - start + 1) / (double)(end - start + 1))) {
+            _bakeCancelled = true;
+            *error = tr("The bake was cancelled after frame %1.").arg(frame).toStdString();
+
+            return false;
+        }
+    }
+
+    return true;
+} // LoopEnd::bakeSequence
+
+bool
+LoopEnd::startBake()
+{
+    if (_baking.exchange(true)) {
+        return false;
+    }
+    waitForBake();
+    _bakeCancelled = false;
+    refreshBakeMessage(eMessageTypeWarning, std::string());
+    const AppInstancePtr app = getApp();
+    const NodePtr node = getNode();
+    if (app) {
+        app->progressStart(node, tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString(), std::string(), true);
+    }
+    const NodeWPtr weakNode = node;
+    _bakeThread = std::thread([this, weakNode]() {
+        std::string error;
+        const bool ok = bakeSequence(true, &error);
+        const bool wasCancelled = _bakeCancelled.load();
+        appPTR->getAppTLS()->cleanupTLSForThread();
+        _baking = false;
+        QMetaObject::invokeMethod(qApp, [weakNode, ok, wasCancelled, error]() {
+            NodePtr node = weakNode.lock();
+            LoopEnd* effect = node ? dynamic_cast<LoopEnd*>(node->getEffectInstance().get()) : 0;
+            if (!effect) {
+                return;
+            }
+            effect->onBakeFinished();
+            if (!ok && !wasCancelled) {
+                effect->refreshBakeMessage(eMessageTypeError, error);
+            } }, Qt::QueuedConnection);
+    });
+
+    return true;
+}
+
+void
+LoopEnd::cancelBake()
+{
+    _bakeCancelled = true;
+    QMutexLocker k(&_bakeMutex);
+    if (_bakeRender) {
+        _bakeRender->setAborted();
+    }
+}
+
+void
+LoopEnd::waitForBake()
+{
+    if (_bakeThread.joinable() && (_bakeThread.get_id() != std::this_thread::get_id())) {
+        _bakeThread.join();
+    }
+}
+
+bool
+LoopEnd::isBaking() const
+{
+    return _baking.load();
+}
+
+void
+LoopEnd::onBakeFinished()
+{
+    ++_bakeGeneration;
+    getNode()->markHashDirty();
+    const AppInstancePtr app = getApp();
+    if (app && qApp && (QThread::currentThread() == qApp->thread())) {
+        app->renderAllViewers(true);
+    }
+}
+
 StatusEnum
 LoopEnd::crossFrameRegion(const RenderContextPtr& base,
                           int frame,
@@ -417,6 +896,11 @@ LoopEnd::crossFrameRegion(const RenderContextPtr& base,
     series.hash = getHash();
     series.view = view;
     series.mipmapLevel = scale.toMipmapLevel();
+    // The series whose regions this thread is finding. Asked again inside, a region is one found
+    // already; one that is not would be found from inside itself, without end.
+    static thread_local std::vector<std::pair<const LoopEnd*, LoopFrameSeries>> finding;
+    const std::pair<const LoopEnd*, LoopFrameSeries> self(this, series);
+    const bool reentered = std::find(finding.begin(), finding.end(), self) != finding.end();
     int from = start;
     {
         QMutexLocker k(&_crossFrameMutex);
@@ -436,6 +920,25 @@ LoopEnd::crossFrameRegion(const RenderContextPtr& base,
             from = it->first + 1;
         }
     }
+    if (reentered) {
+        refreshCrossFrameMessage(eMessageTypeError,
+                                 tr("Frame %1 of loop %2 was asked while the regions of the frames before it are found: inside "
+                                    "a Cross Frame loop the body reads only the frame before, so a body node that changes "
+                                    "loops.%2.frame cannot be rendered.")
+                                     .arg(frame)
+                                     .arg(QString::fromUtf8(getLoopName().c_str()))
+                                     .toStdString());
+
+        return eStatusFailed;
+    }
+    finding.push_back(self);
+    struct FindingPop {
+        std::vector<std::pair<const LoopEnd*, LoopFrameSeries>>* finding;
+        ~FindingPop()
+        {
+            finding->pop_back();
+        }
+    } findingPop { &finding };
     // Frame j's region asks the LoopBegin's at j, which is frame j - 1's: known by then.
     for (int j = from; j <= frame; ++j) {
         RectD region;
@@ -463,7 +966,26 @@ LoopEnd::crossFrameImage(const EffectInstance* consumer,
                          ViewIdx view,
                          const RenderScale& scale,
                          bool byPassCache,
-                         ImagePtr* image)
+                         ImagePtr* image,
+                         bool fromDrivenFrame)
+{
+    CrossFrameOptions options;
+
+    options.loadBaked = loadsBaked();
+    options.fromDrivenFrame = fromDrivenFrame;
+
+    return crossFrameImageWith(consumer, base, frame, view, scale, byPassCache, options, image);
+}
+
+EffectInstance::RenderRoIRetCode
+LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
+                             const RenderContextPtr& base,
+                             int frame,
+                             ViewIdx view,
+                             const RenderScale& scale,
+                             bool byPassCache,
+                             const CrossFrameOptions& options,
+                             ImagePtr* image)
 {
     image->reset();
     const int start = crossFrameStart();
@@ -473,19 +995,31 @@ LoopEnd::crossFrameImage(const EffectInstance* consumer,
     LoopFrameSeries series;
     const RenderContextPtr restricted = crossFrameBase(base, getLoopName(), &series.contextKey);
     // Taken once: an edit made while the frames render does not mix generations in a series.
-    series.hash = getHash();
+    series.hash = seriesHash(options.loadBaked);
     series.view = view;
     series.mipmapLevel = scale.toMipmapLevel();
+    // Every series of the node shares the generation, baked or not, so none purges another's.
+    const bool fromFiles = options.loadBaked && isBakedContext(base, view);
     _frameCache->purgeOtherGenerations(series.hash);
     *image = _frameCache->lookup(series, frame);
     if (*image) {
         return eRenderRoIRetCodeOk;
+    }
+    if (fromFiles) {
+        *image = loadBakedFrame(restricted, frame, view, series.mipmapLevel);
+        if (*image) {
+            _frameCache->insert(series, start, frame, *image);
+
+            return eRenderRoIRetCodeOk;
+        }
     }
 
     const ParallelRenderArgsPtr frameArgs = consumer->getParallelRenderArgsTLS();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     QThread* const self = QThread::currentThread();
     std::shared_ptr<CrossFrameChain> chain;
+    int rendering = 0;
+    bool stalled = false;
     {
         QMutexLocker k(&_crossFrameMutex);
         _crossFrameChains.erase(std::remove_if(_crossFrameChains.begin(), _crossFrameChains.end(), [](const std::shared_ptr<CrossFrameChain>& c) { return !c->driver && (c.use_count() == 1); }), _crossFrameChains.end());
@@ -501,15 +1035,29 @@ LoopEnd::crossFrameImage(const EffectInstance* consumer,
 
             return eRenderRoIRetCodeOk;
         }
-        if (chain && (chain->driver == self)) {
-            // Asked for another frame from inside the one it renders: waiting would never end.
-            return eRenderRoIRetCodeFailed;
+        // Another frame, asked from inside the one being rendered: on its driving thread, or by
+        // the body of a whole frame of the same render, on another one. Its render waits for
+        // this one, so waiting for it would never end.
+        if (chain && chain->driver && ((chain->driver == self) || (options.fromDrivenFrame && render && (chain->render.lock() == render)))) {
+            stalled = true;
+            rendering = chain->frame + 1;
         }
         if (!chain) {
             chain = std::make_shared<CrossFrameChain>();
             chain->series = series;
             _crossFrameChains.push_back(chain);
         }
+    }
+    if (stalled) {
+        refreshCrossFrameMessage(eMessageTypeError,
+                                 tr("Frame %1 of loop %2 was asked while frame %3 renders: inside a Cross Frame loop the body "
+                                    "reads only the frame before, so a body node that changes loops.%2.frame cannot be rendered.")
+                                     .arg(frame)
+                                     .arg(QString::fromUtf8(getLoopName().c_str()))
+                                     .arg(rendering)
+                                     .toStdString());
+
+        return eRenderRoIRetCodeFailed;
     }
 
     while (!chain->driving.tryLock(50)) {
@@ -538,6 +1086,18 @@ LoopEnd::crossFrameImage(const EffectInstance* consumer,
     } else {
         previous.reset();
     }
+    if (fromFiles) {
+        // A later frame baked than any in RAM: the frames past the bake follow from it.
+        for (int j = frame - 1; j >= from; --j) {
+            ImagePtr baked = loadBakedFrame(restricted, j, view, series.mipmapLevel);
+            if (baked) {
+                _frameCache->insert(series, start, j, baked);
+                previous = baked;
+                from = j + 1;
+                break;
+            }
+        }
+    }
     {
         QMutexLocker k(&_crossFrameMutex);
         chain->driver = self;
@@ -558,7 +1118,7 @@ LoopEnd::crossFrameImage(const EffectInstance* consumer,
     const int total = frame - from + 1;
     const AppInstancePtr app = getApp();
     const NodePtr node = getNode();
-    const bool showProgress = app && (total > 2);
+    const bool showProgress = options.showProgress && app && (total > 2);
     struct ProgressEnd {
         AppInstancePtr app;
         NodePtr node;
@@ -594,9 +1154,10 @@ LoopEnd::crossFrameImage(const EffectInstance* consumer,
         }
     }
     *image = previous;
+    refreshCrossFrameMessage(eMessageTypeError, std::string());
 
     return eRenderRoIRetCodeOk;
-} // LoopEnd::crossFrameImage
+} // LoopEnd::crossFrameImageWith
 
 EffectInstance::RenderRoIRetCode
 LoopEnd::renderCrossFrame(const EffectInstance* consumer,
@@ -613,23 +1174,16 @@ LoopEnd::renderCrossFrame(const EffectInstance* consumer,
     const double time = (double)frame;
     const unsigned int mipmapLevel = scale.toMipmapLevel();
     Resolved resolved;
-    ImageLayerDesc layer, pairedLayer;
-    double par = 1.;
     {
         ActionContextScope actions(true, base);
         resolved = resolveAt(time);
-        NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-        if (metadata) {
-            getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
-            par = metadata->getPixelAspectRatio(-1);
-        }
     }
     if (!tail || (!resolved.message.empty() && (resolved.messageType == eMessageTypeError))) {
         return eRenderRoIRetCodeFailed;
     }
-    if (layer.getNumComponents() == 0) {
-        layer = ImageLayerDesc::getRGBAComponents();
-    }
+    ImageLayerDesc layer;
+    double par = 1.;
+    crossFrameLayer(base, time, view, &layer, &par);
     // The whole region of definition, unclipped: what leaves the format comes back.
     RectD window;
     if (crossFrameRegion(base, frame, scale, view, &window) == eStatusFailed) {
@@ -1282,6 +1836,54 @@ LoopEnd::initializeKnobs()
     page->addKnob(startFrame);
     _startFrame = startFrame;
 
+    KnobOutputFilePtr cacheFile = createKnob<KnobOutputFile>(tr("Cache File"));
+    cacheFile->setName(kLoopEndParamCacheFile);
+    cacheFile->setAsOutputImageFile();
+    cacheFile->setAnimationEnabled(false);
+    cacheFile->setHintToolTip(tr("The EXR sequence Bake writes the frames to and Load From Cache reads them from, "
+                                 "its frame number written #### or %04d, as in sim.####.exr. Each frame is stored "
+                                 "whole: the file's data window is the frame's region of definition, beyond the "
+                                 "format where it reaches past it."));
+    page->addKnob(cacheFile);
+    _cacheFile = cacheFile;
+
+    KnobIntPtr bakeEnd = createKnob<KnobInt>(tr("Bake End"));
+    bakeEnd->setName(kLoopEndParamBakeEnd);
+    bakeEnd->setAnimationEnabled(false);
+    bakeEnd->setHashExempt(true);
+    bakeEnd->setHintToolTip(tr("The last frame Bake writes: it renders Start Frame to Bake End in order."));
+    bakeEnd->setDisplayMinimum(1);
+    bakeEnd->setDisplayMaximum(1000);
+    bakeEnd->setDefaultValue(100);
+    page->addKnob(bakeEnd);
+    _bakeEnd = bakeEnd;
+
+    KnobButtonPtr bake = createKnob<KnobButton>(tr("Bake"));
+    bake->setName(kLoopEndParamBake);
+    bake->setHashExempt(true);
+    bake->setHintToolTip(tr("Renders Start Frame to Bake End in order, in the background, and writes each frame "
+                            "to Cache File as a float EXR stamped with the loop's hash. The progress panel shows "
+                            "it and cancels it; the frames written by then stay."));
+    page->addKnob(bake);
+    _bake = bake;
+
+    KnobBoolPtr loadFromCache = createKnob<KnobBool>(tr("Load From Cache"));
+    loadFromCache->setName(kLoopEndParamLoadFromCache);
+    loadFromCache->setAnimationEnabled(false);
+    loadFromCache->setHintToolTip(tr("Reads the frames Cache File holds instead of rendering them, and renders the "
+                                     "frames past the last one baked from it. Frames baked before an edit upstream "
+                                     "or in the loop still load, with a warning."));
+    loadFromCache->setDefaultValue(false);
+    page->addKnob(loadFromCache);
+    _loadFromCache = loadFromCache;
+
+    KnobButtonPtr clearCache = createKnob<KnobButton>(tr("Clear Cache"));
+    clearCache->setName(kLoopEndParamClearCache);
+    clearCache->setHashExempt(true);
+    clearCache->setHintToolTip(tr("Forgets the frames kept in RAM. The files in Cache File stay."));
+    page->addKnob(clearCache);
+    _clearCache = clearCache;
+
     KnobStringPtr stopCondition = createKnob<KnobString>(tr("Stop Condition"));
     stopCondition->setName(kLoopEndParamStopCondition);
     stopCondition->setAnimationEnabled(false);
@@ -1658,6 +2260,11 @@ LoopEnd::refreshKnobVisibility()
         std::make_pair(KnobIPtr(_frameEnd.lock()), frames),
         std::make_pair(KnobIPtr(_frameStep.lock()), frames),
         std::make_pair(KnobIPtr(_startFrame.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_cacheFile.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_bakeEnd.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_bake.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_loadFromCache.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_clearCache.lock()), crossFrame),
     };
     for (const std::pair<KnobIPtr, bool>& knob : visibility) {
         if (knob.first) {
@@ -1726,6 +2333,27 @@ LoopEnd::knobChanged(KnobI* k,
                      double time,
                      bool /*originatedFromMainThread*/)
 {
+    KnobButtonPtr bake = _bake.lock();
+    if (bake && (k == bake.get())) {
+        startBake();
+
+        return true;
+    }
+    KnobButtonPtr clearCache = _clearCache.lock();
+    if (clearCache && (k == clearCache.get())) {
+        _frameCache->clear();
+
+        return true;
+    }
+    KnobBoolPtr loadFromCache = _loadFromCache.lock();
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+    if ((loadFromCache && (k == loadFromCache.get())) || (cacheFile && (k == cacheFile.get()))) {
+        // A warning about other frames than those now loaded, if any.
+        refreshBakeMessage(eMessageTypeWarning, std::string());
+
+        return true;
+    }
+
     const KnobIPtr resolving[] = {
         _iterations.lock(),
         _maxIterations.lock(),
@@ -1978,6 +2606,10 @@ LoopEnd::getRegionOfDefinition(U64 hash,
         return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
     }
     const RenderContextPtr context = getCurrentRenderContext();
+    // A baked frame loads whole, over the region it was baked with.
+    if (loadsBaked() && crossFrameDriven(time) && isBakedContext(context, view) && bakedRegion((int)time, rod)) {
+        return eStatusOK;
+    }
     if (context && context->find(foldStepName())) {
         // Every step covers the whole fold's region, so a step's output holds the accumulator
         // wherever the next one reads it. Asked once, under no step, and cached there.

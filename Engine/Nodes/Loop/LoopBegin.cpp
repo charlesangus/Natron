@@ -379,7 +379,7 @@ LoopBegin::forwardsOutput(const RenderRoIArgs& args,
     ImagePtr src;
     const bool fromStore = !crossFrameEnd && LoopEnd::feedbackUsesFrameStore() && plannedAt(this, args.time, args.view);
     if (crossFrameEnd) {
-        *code = crossFrameEnd->crossFrameImage(this, crossFrame.base, crossFrame.frame, args.view, args.scale, args.byPassCache, &src);
+        *code = crossFrameEnd->crossFrameImage(this, crossFrame.base, crossFrame.frame, args.view, args.scale, args.byPassCache, &src, crossFrame.driven);
         if (*code != eRenderRoIRetCodeOk) {
             return true;
         }
@@ -430,7 +430,7 @@ LoopBegin::render(const RenderActionArgs& args)
     }
     ImagePtr src;
     if (crossFrameEnd) {
-        const RenderRoIRetCode code = crossFrameEnd->crossFrameImage(this, crossFrame.base, crossFrame.frame, args.view, args.mappedScale, args.byPassCache, &src);
+        const RenderRoIRetCode code = crossFrameEnd->crossFrameImage(this, crossFrame.base, crossFrame.frame, args.view, args.mappedScale, args.byPassCache, &src, crossFrame.driven);
         if (code == eRenderRoIRetCodeAborted) {
             return eStatusOK;
         }

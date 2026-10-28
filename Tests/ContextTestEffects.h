@@ -58,6 +58,7 @@
 #define kTestPluginIDContextRegion "test.natron.built-in.ContextRegion"
 #define kTestPluginIDContextUnion "test.natron.built-in.ContextUnion"
 #define kTestPluginIDContextSet "test.natron.built-in.ContextSet"
+#define kTestPluginIDContextLoopFrameShift "test.natron.built-in.ContextLoopFrameShift"
 
 NATRON_NAMESPACE_ENTER
 
@@ -951,6 +952,88 @@ private:
     }
 
     KnobDoubleWPtr _value;
+};
+
+/**
+ * @brief Requests its input with the frame of the loop named "shifted" two frames on, as a body
+ * node of a Cross Frame loop cannot. Its output is its input.
+ **/
+class ContextLoopFrameShiftTestEffect
+    : public ContextTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ContextLoopFrameShiftTestEffect(n);
+    }
+
+    explicit ContextLoopFrameShiftTestEffect(NodePtr n)
+        : ContextTestEffectBase(n)
+    {
+    }
+
+    static RenderContextName shiftedFrame()
+    {
+        return RenderContextName::loops("shifted", "frame");
+    }
+
+    virtual bool getInputContexts(int inputNb,
+                                  double /*time*/,
+                                  ViewIdx /*view*/,
+                                  const RenderContextPtr& context,
+                                  std::vector<RenderContextPtr>* contexts) const OVERRIDE FINAL
+    {
+        const RenderContextValue* value = context ? context->find(shiftedFrame()) : 0;
+        const double* frame = value ? std::get_if<double>(value) : 0;
+        if ((inputNb != 0) || !frame) {
+            return false;
+        }
+        contexts->push_back(RenderContext::Builder(context).set(shiftedFrame(), RenderContextValue(*frame + 2.)).build());
+
+        return true;
+    }
+
+    virtual RenderContextReadSet getOverriddenContextVariables(int inputNb) const OVERRIDE FINAL
+    {
+        RenderContextReadSet overridden;
+        if (inputNb == 0) {
+            overridden.add(shiftedFrame());
+        }
+
+        return overridden;
+    }
+
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL
+    {
+        RenderContextReadSet reads;
+        reads.add(shiftedFrame());
+
+        return reads;
+    }
+
+private:
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual double value(const RenderContextPtr& /*context*/) const OVERRIDE FINAL
+    {
+        return 0.;
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDContextLoopFrameShift,
+        .label = "Test Context Loop Frame Shift",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
 };
 
 NATRON_NAMESPACE_EXIT

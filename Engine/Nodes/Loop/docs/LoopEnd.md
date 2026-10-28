@@ -122,7 +122,59 @@ M259 - GPU Placement Under Render Contexts.
   adding the frame's image onto the LoopBegin's leaves a trail of the frames from
   `frameStart` to `frameEnd`. A time offset in the body offsets each iteration again: a node
   reading the LoopBegin one frame back, over three iterations, reads the loop's input three
-  frames back. Feedback from one output frame to the next is not supported.
+  frames back. Feedback from one output frame to the next is `crossFrame`: see
+  [Cross Frame](#cross-frame).
+
+## Cross Frame
+
+- `crossFrame` feeds each output frame into the next: after `startFrame`, the LoopBegin outputs
+  this LoopEnd's output at the frame before instead of its input, under Accumulate at every
+  iteration and under Feedback at the first. At `startFrame` and before it, the LoopBegin
+  outputs its input. A trail or a simulation builds up from `startFrame`, the iterations of a
+  frame being its substeps: four Feedback iterations make four substeps a frame.
+- A frame needs every frame before it back to `startFrame`. Rendering frame f renders, in
+  order, the frames from the latest one kept before f, or from `startFrame`, to f, on one
+  thread; the progress panel shows a run of more than two frames, and cancelling it fails that
+  render, keeping the frames rendered so far.
+- The stored window is the LoopEnd's region of definition, unclipped: a frame is kept whole,
+  beyond the format where it reaches past it, so what leaves the format comes back.
+- Memory: each frame's output is kept in RAM under a budget, by default a quarter of what the
+  image cache may use. Over the budget the least recently used frames go first and the
+  checkpoints last: the frames at `startFrame + k * interval`, the interval a power of two
+  chosen so the checkpoints of every series fit in a quarter of the budget. A frame no longer
+  kept is rendered again from the checkpoint before it. Editing the loop, its body or anything
+  upstream of it starts a new series and drops the frames kept for the old one.
+- The body reads only the frame before. A body node that asks its LoopBegin for another frame,
+  by changing `loops.<name>.frame`, would wait for a frame its own render holds up: the render
+  fails at once instead, with an error on the LoopEnd naming `loops.<name>.frame`.
+- Each view, proxy level and render context renders its own series.
+
+## Bake
+
+- `bake` renders `startFrame` to `bakeEnd` in order on a background thread and writes each
+  frame to `cacheFile`, an EXR sequence with its frame number written `####` or `%04d`
+  (`sim.####.exr`). The progress panel shows the bake and cancels it; the frames written by
+  then stay, and a cancelled bake posts no message. A bake that fails, with Cross Frame off,
+  `bakeEnd` before `startFrame`, an empty `cacheFile` or one without a frame number, posts an
+  error on the LoopEnd. While a bake runs, the LoopEnd's own renders compute rather than load.
+- Each file is a float EXR of the LoopEnd's output layer whose data window is the frame's
+  region of definition, unclipped: it can extend outside the format. It carries
+  `natron:loopHash`, the loop's simulation hash when the frame rendered: the LoopEnd's
+  parameters, the body and everything upstream. The bake renders view 0 at full scale, in the
+  root render context.
+- `loadFromCache` reads a baked frame instead of rendering it, ahead of the driver: frames up to
+  the last one baked render none of the body. A frame past the bake continues from the last
+  frame baked before it. Frames load for view 0 in the root render context; other views and
+  contexts render.
+- A frame whose `natron:loopHash` differs from the loop's current hash, after an edit to the
+  loop or upstream of it, still loads, as baked, and the LoopEnd shows a persistent warning
+  until the frames read match again; bake again to update them. A file that cannot be read is
+  rendered instead, with a warning.
+- `clearCache` forgets the frames kept in RAM; the files stay. A bake, and turning
+  `loadFromCache` on or off, starts a new series, so frames rendered before it are not mixed
+  with frames read from the files.
+- An upstream node whose hash changes between sessions, such as one holding a per-session
+  salt, warns on every load after a relaunch.
 
 ## Stop condition
 

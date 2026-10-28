@@ -39,6 +39,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -81,7 +82,7 @@ inline constexpr NodeSpec kSplineWarpNodeSpec = {
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_SPLINEWARP,
     .minorVersion = 0,
-    .internal = true,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/SplineWarp.png",
     .inputs = kSplineWarpInputs,
 };
 
@@ -114,6 +115,7 @@ public:
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The Source's region of definition; with the bbox knob at union, grown by where the
@@ -254,6 +256,7 @@ private:
     KnobChoiceWPtr _bbox;
 
     SplineWarpInteractPtr _ui;
+    std::unique_ptr<SplineWarpPanelHook> _panelHook;
     // Whether a drag of the interact turned the viewer's draft render on.
     bool _draftDrag;
 

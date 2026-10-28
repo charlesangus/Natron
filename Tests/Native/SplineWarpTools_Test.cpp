@@ -44,6 +44,7 @@
 #include "Serialization/ProjectBundleTestHelpers.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -53,9 +54,12 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoCurveInteract.h"
+#include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/UndoCommand.h"
@@ -972,4 +976,130 @@ TEST_F(SplineWarpToolsTest, ADraftRenderUsesTheCoarseField)
     EXPECT_GT(largest, 0.);
     EXPECT_LT(largest, 0.3);
     EXPECT_LT(mean, 0.05);
+}
+
+TEST_F(SplineWarpToolsTest, ThePanelShowsRolesAndPartners)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(bool(ctx));
+    RotoCurvePanelHook* hook = node->getEffectInstance()->getCurvePanelHook();
+    ASSERT_TRUE(hook != nullptr);
+
+    const std::vector<RotoCurvePanelHook::Column> columns = hook->getColumns();
+    ASSERT_EQ(std::size_t(2), columns.size());
+    EXPECT_EQ(std::string("Role"), columns[SplineWarpPanelHook::eColumnRole].header);
+    EXPECT_EQ(std::string("Linked To"), columns[SplineWarpPanelHook::eColumnLinkedTo].header);
+
+    BezierPtr source = makeQuad(ctx, 10., 10., 10.);
+    BezierPtr destination = makeQuad(ctx, 30., 10., 10.);
+    BezierPtr boundary = makeQuad(ctx, 0., 0., 60.);
+    BezierPtr loose = makeOpenLine(ctx, 5., 40.);
+    ASSERT_TRUE(source && destination && boundary && loose);
+    ASSERT_TRUE(bool(ctx->linkWithAlignment(source, destination, 0., false)));
+    ctx->setBoundary(boundary, true);
+    source->setLabel("Lip");
+    destination->setLabel("LipTarget");
+
+    EXPECT_EQ(std::string("Source"), hook->getItemText(source, SplineWarpPanelHook::eColumnRole));
+    EXPECT_EQ(std::string("LipTarget"), hook->getItemText(source, SplineWarpPanelHook::eColumnLinkedTo));
+    EXPECT_EQ(std::string("Destination"), hook->getItemText(destination, SplineWarpPanelHook::eColumnRole));
+    EXPECT_EQ(std::string("Lip"), hook->getItemText(destination, SplineWarpPanelHook::eColumnLinkedTo));
+    EXPECT_EQ(std::string("Boundary"), hook->getItemText(boundary, SplineWarpPanelHook::eColumnRole));
+    EXPECT_EQ(std::string(), hook->getItemText(boundary, SplineWarpPanelHook::eColumnLinkedTo));
+    EXPECT_EQ(std::string(), hook->getItemText(loose, SplineWarpPanelHook::eColumnRole));
+    EXPECT_EQ(std::string(), hook->getItemText(loose, SplineWarpPanelHook::eColumnLinkedTo));
+    EXPECT_EQ(std::string(), hook->getItemText(ctx->getOrCreateBaseLayer(), SplineWarpPanelHook::eColumnRole));
+
+    // Swapping the link swaps the roles.
+    SplineWarpInteractPtr ui = interactOf(node);
+    ASSERT_TRUE(bool(ui));
+    select(ui, source);
+    ASSERT_EQ(std::string(), ui->swapSelected());
+    EXPECT_EQ(std::string("Destination"), hook->getItemText(source, SplineWarpPanelHook::eColumnRole));
+    EXPECT_EQ(std::string("Source"), hook->getItemText(destination, SplineWarpPanelHook::eColumnRole));
+}
+
+TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(bool(ctx));
+    RotoCurvePanelHook* hook = node->getEffectInstance()->getCurvePanelHook();
+    ASSERT_TRUE(hook != nullptr);
+
+    BezierPtr a = makeQuad(ctx, 10., 10., 10.);
+    BezierPtr b = makeQuad(ctx, 30., 10., 10.);
+    BezierPtr open = makeOpenLine(ctx, 5., 40.);
+    ASSERT_TRUE(a && b && open);
+
+    struct Expected {
+        const char* id;
+        bool enabled;
+    };
+    const auto check = [hook](const std::list<RotoItemPtr>& items,
+                              const std::vector<Expected>& expected) {
+        const std::vector<RotoCurvePanelHook::MenuAction> actions = hook->getItemMenuActions(items);
+        ASSERT_EQ(expected.size(), actions.size());
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            EXPECT_EQ(std::string(expected[i].id), actions[i].id);
+            EXPECT_FALSE(actions[i].label.empty()) << expected[i].id;
+            EXPECT_EQ(expected[i].enabled, actions[i].enabled) << expected[i].id;
+        }
+    };
+
+    // Two unlinked curves: Link; the open one cannot be a boundary.
+    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false } });
+    // One closed unlinked curve: Duplicate and Link, Toggle Boundary.
+    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", true } });
+    // A layer in the selection is not a curve.
+    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false } });
+
+    // The items' order picks the source.
+    hook->onItemMenuActionTriggered("link", std::list<RotoItemPtr> { b, open });
+    SplineWarpLinkPtr link = ctx->getLink(b);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(b, link->getSource());
+    EXPECT_EQ(open, link->getDestination());
+    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleBoundary", false } });
+
+    hook->onItemMenuActionTriggered("swap", std::list<RotoItemPtr> { open });
+    link = ctx->getLink(b);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(open, link->getSource());
+
+    hook->onItemMenuActionTriggered("unlink", std::list<RotoItemPtr> { b });
+    EXPECT_FALSE(bool(ctx->getLink(b)));
+    EXPECT_FALSE(bool(ctx->getLink(open)));
+
+    hook->onItemMenuActionTriggered("toggleBoundary", std::list<RotoItemPtr> { a });
+    EXPECT_TRUE(ctx->isBoundary(a));
+
+    // A refused action changes nothing.
+    const U64 hash = ctx->getContentHash();
+    hook->onItemMenuActionTriggered("duplicateAndLink", std::list<RotoItemPtr> { a });
+    EXPECT_EQ(hash, ctx->getContentHash());
+    EXPECT_FALSE(bool(ctx->getLink(a)));
+
+    hook->onItemMenuActionTriggered("duplicateAndLink", std::list<RotoItemPtr> { b });
+    link = ctx->getLink(b);
+    ASSERT_TRUE(bool(link));
+    EXPECT_EQ(b, link->getSource());
+}
+
+TEST_F(SplineWarpToolsTest, SplineWarpIsListedInTheTransformMenu)
+{
+    const PluginsMap& plugins = appPTR->getPluginsList();
+    const PluginsMap::const_iterator it = plugins.find(PLUGINID_NATRON_SPLINEWARP);
+
+    ASSERT_TRUE(it != plugins.end());
+    ASSERT_FALSE(it->second.empty());
+    const Plugin* plugin = *it->second.begin();
+    EXPECT_FALSE(plugin->getIsForInternalUseOnly());
+    const QStringList grouping = plugin->getGrouping();
+    ASSERT_FALSE(grouping.isEmpty());
+    EXPECT_EQ(QString::fromUtf8(PLUGIN_GROUP_TRANSFORM), grouping.front());
+    EXPECT_TRUE(plugin->getIconFilePath().endsWith(QString::fromUtf8("SplineWarp.png")));
 }

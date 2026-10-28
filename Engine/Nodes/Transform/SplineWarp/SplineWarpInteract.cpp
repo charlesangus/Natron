@@ -268,12 +268,13 @@ SplineWarpInteract::push(const UndoCommandPtr& command,
     }
 }
 
+namespace {
 std::list<BezierPtr>
-SplineWarpInteract::getSelectedBeziers() const
+beziersOf(const std::list<RotoItemPtr>& items)
 {
     std::list<BezierPtr> ret;
 
-    for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+    for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
         BezierPtr curve = std::dynamic_pointer_cast<Bezier>(*it);
         if (curve) {
             ret.push_back(curve);
@@ -283,7 +284,23 @@ SplineWarpInteract::getSelectedBeziers() const
     return ret;
 }
 
-namespace {
+// The links of curves, each once.
+std::vector<SplineWarpLinkPtr>
+linksOf(const SplineWarpContext& context,
+        const std::list<BezierPtr>& curves)
+{
+    std::vector<SplineWarpLinkPtr> links;
+
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        SplineWarpLinkPtr link = context.getLink(*it);
+        if (link && (std::find(links.begin(), links.end(), link) == links.end())) {
+            links.push_back(link);
+        }
+    }
+
+    return links;
+}
+
 QString
 curveName(const BezierPtr& curve)
 {
@@ -323,22 +340,27 @@ distanceTo(const Point& p,
 }
 } // anonymous namespace
 
+std::list<RotoItemPtr>
+SplineWarpInteract::getSelectedRotoItems() const
+{
+    return std::list<RotoItemPtr>(selectedItems.begin(), selectedItems.end());
+}
+
+std::list<BezierPtr>
+SplineWarpInteract::getSelectedBeziers() const
+{
+    return beziersOf(getSelectedRotoItems());
+}
+
 std::string
 SplineWarpInteract::duplicateAndLink(UndoCommandPtr* pushed)
 {
-    SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
+    const std::string refusal = getRefusal(eSplineWarpActionDuplicateAndLink, getSelectedRotoItems());
 
-    if (!context || (curves.size() != 1) || (selectedItems.size() != 1)) {
-        return refuse(tr("Duplicate and Link needs exactly one selected curve."));
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
     }
-    const BezierPtr& curve = curves.front();
-    if (context->getLink(curve)) {
-        return refuse(tr("Duplicate and Link: %1 is already linked.").arg(curveName(curve)));
-    }
-    if (context->isBoundary(curve)) {
-        return refuse(tr("Duplicate and Link: %1 is a boundary.").arg(curveName(curve)));
-    }
+    const BezierPtr curve = getSelectedBeziers().front();
     push(std::make_shared<SplineWarpDuplicateAndLinkUndoCommand>(shared_from_this(), curve), pushed);
 
     return std::string();
@@ -347,20 +369,13 @@ SplineWarpInteract::duplicateAndLink(UndoCommandPtr* pushed)
 std::string
 SplineWarpInteract::linkSelected(UndoCommandPtr* pushed)
 {
+    const std::string refusal = getRefusal(eSplineWarpActionLink, getSelectedRotoItems());
+
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
+    }
     SplineWarpContextPtr context = getWarpContext();
     std::list<BezierPtr> curves = getSelectedBeziers();
-
-    if (!context || (curves.size() != 2) || (selectedItems.size() != 2)) {
-        return refuse(tr("Link needs exactly two selected curves: the source, then the destination."));
-    }
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        if (context->getLink(*it)) {
-            return refuse(tr("Link: %1 is already linked.").arg(curveName(*it)));
-        }
-        if (context->isBoundary(*it)) {
-            return refuse(tr("Link: %1 is a boundary.").arg(curveName(*it)));
-        }
-    }
     const BezierPtr source = curves.front();
     const BezierPtr destination = curves.back();
     push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Link").toStdString(), [context, source, destination]() {
@@ -374,19 +389,13 @@ SplineWarpInteract::linkSelected(UndoCommandPtr* pushed)
 std::string
 SplineWarpInteract::unlinkSelected(UndoCommandPtr* pushed)
 {
-    SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
-    std::vector<SplineWarpLinkPtr> links;
+    const std::string refusal = getRefusal(eSplineWarpActionUnlink, getSelectedRotoItems());
 
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); context && it != curves.end(); ++it) {
-        SplineWarpLinkPtr link = context->getLink(*it);
-        if (link && (std::find(links.begin(), links.end(), link) == links.end())) {
-            links.push_back(link);
-        }
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
     }
-    if (links.empty()) {
-        return refuse(tr("Unlink: none of the selected curves is linked."));
-    }
+    SplineWarpContextPtr context = getWarpContext();
+    const std::vector<SplineWarpLinkPtr> links = linksOf(*context, getSelectedBeziers());
     push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Unlink").toStdString(), [context, links]() {
              for (std::size_t i = 0; i < links.size(); ++i) {
                  context->removeLink(links[i]);
@@ -400,19 +409,13 @@ SplineWarpInteract::unlinkSelected(UndoCommandPtr* pushed)
 std::string
 SplineWarpInteract::swapSelected(UndoCommandPtr* pushed)
 {
-    SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
-    std::vector<SplineWarpLinkPtr> links;
+    const std::string refusal = getRefusal(eSplineWarpActionSwap, getSelectedRotoItems());
 
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); context && it != curves.end(); ++it) {
-        SplineWarpLinkPtr link = context->getLink(*it);
-        if (link && (std::find(links.begin(), links.end(), link) == links.end())) {
-            links.push_back(link);
-        }
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
     }
-    if (links.empty()) {
-        return refuse(tr("Swap: none of the selected curves is linked."));
-    }
+    SplineWarpContextPtr context = getWarpContext();
+    const std::vector<SplineWarpLinkPtr> links = linksOf(*context, getSelectedBeziers());
     const double time = getCurrentTime();
     push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Swap Source/Destination").toStdString(), [context, links, time]() {
              for (std::size_t i = 0; i < links.size(); ++i) {
@@ -437,24 +440,81 @@ SplineWarpInteract::swapSelected(UndoCommandPtr* pushed)
 }
 
 std::string
-SplineWarpInteract::canToggleBoundary() const
+SplineWarpInteract::getRefusal(SplineWarpActionEnum action,
+                               const std::list<RotoItemPtr>& items) const
 {
     SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
+    const std::list<BezierPtr> curves = beziersOf(items);
 
-    if (!context || curves.empty() || (curves.size() != selectedItems.size())) {
-        return tr("Toggle Boundary needs selected curves.").toStdString();
+    switch (action) {
+    case eSplineWarpActionDuplicateAndLink:
+    case eSplineWarpActionLink: {
+        const bool duplicate = (action == eSplineWarpActionDuplicateAndLink);
+        const std::size_t count = duplicate ? 1 : 2;
+        const QString name = duplicate ? tr("Duplicate and Link") : tr("Link");
+        if (!context || (curves.size() != count) || (items.size() != count)) {
+            return duplicate ? tr("Duplicate and Link needs exactly one selected curve.").toStdString()
+                             : tr("Link needs exactly two selected curves: the source, then the destination.").toStdString();
+        }
+        for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+            if (context->getLink(*it)) {
+                return tr("%1: %2 is already linked.").arg(name, curveName(*it)).toStdString();
+            }
+            if (context->isBoundary(*it)) {
+                return tr("%1: %2 is a boundary.").arg(name, curveName(*it)).toStdString();
+            }
+        }
+        break;
     }
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        if (context->getLink(*it)) {
-            return tr("Toggle Boundary: %1 is linked.").arg(curveName(*it)).toStdString();
+    case eSplineWarpActionUnlink:
+    case eSplineWarpActionSwap:
+        if (!context || linksOf(*context, curves).empty()) {
+            return (action == eSplineWarpActionUnlink) ? tr("Unlink: none of the selected curves is linked.").toStdString()
+                                                       : tr("Swap: none of the selected curves is linked.").toStdString();
         }
-        if (!SplineWarpCurveShape::isClosedCurve(**it)) {
-            return tr("Toggle Boundary: %1 is not closed.").arg(curveName(*it)).toStdString();
+        break;
+    case eSplineWarpActionToggleBoundary:
+        if (!context || curves.empty() || (curves.size() != items.size())) {
+            return tr("Toggle Boundary needs selected curves.").toStdString();
         }
+        for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+            if (context->getLink(*it)) {
+                return tr("Toggle Boundary: %1 is linked.").arg(curveName(*it)).toStdString();
+            }
+            if (!SplineWarpCurveShape::isClosedCurve(**it)) {
+                return tr("Toggle Boundary: %1 is not closed.").arg(curveName(*it)).toStdString();
+            }
+        }
+        break;
     }
 
     return std::string();
+}
+
+std::string
+SplineWarpInteract::runAction(SplineWarpActionEnum action,
+                              UndoCommandPtr* pushed)
+{
+    switch (action) {
+    case eSplineWarpActionDuplicateAndLink:
+        return duplicateAndLink(pushed);
+    case eSplineWarpActionLink:
+        return linkSelected(pushed);
+    case eSplineWarpActionUnlink:
+        return unlinkSelected(pushed);
+    case eSplineWarpActionSwap:
+        return swapSelected(pushed);
+    case eSplineWarpActionToggleBoundary:
+        return toggleBoundarySelected(pushed);
+    }
+
+    return std::string();
+}
+
+std::string
+SplineWarpInteract::canToggleBoundary() const
+{
+    return getRefusal(eSplineWarpActionToggleBoundary, getSelectedRotoItems());
 }
 
 std::string

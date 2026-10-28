@@ -63,6 +63,15 @@ enum SplineWarpShowEnum {
     eSplineWarpShowBoth,
 };
 
+// The warp actions on the selected curves.
+enum SplineWarpActionEnum {
+    eSplineWarpActionDuplicateAndLink = 0,
+    eSplineWarpActionLink,
+    eSplineWarpActionUnlink,
+    eSplineWarpActionSwap,
+    eSplineWarpActionToggleBoundary,
+};
+
 class SplineWarpInteract;
 typedef std::shared_ptr<SplineWarpInteract> SplineWarpInteractPtr;
 
@@ -150,6 +159,12 @@ public:
     // Why toggleBoundarySelected() would refuse the current selection, empty when it would not.
     std::string canToggleBoundary() const;
 
+    // Why action would refuse items as the selection, in that order; empty when it would not.
+    std::string getRefusal(SplineWarpActionEnum action, const std::list<RotoItemPtr>& items) const;
+
+    // Runs action on the current selection, as its own function does.
+    std::string runAction(SplineWarpActionEnum action, UndoCommandPtr* pushed = 0);
+
     /**
      * @brief What the correspondence tool does on a press at pos, tolerance away at most: picks the
      * nearest correspondence end, or else makes a correspondence on the nearest linked curve,
@@ -190,6 +205,8 @@ private:
     std::string refuse(const QString& message);
 
     void push(const UndoCommandPtr& command, UndoCommandPtr* pushed);
+
+    std::list<RotoItemPtr> getSelectedRotoItems() const;
 
     // The selected Beziers in the order they were selected.
     std::list<BezierPtr> getSelectedBeziers() const;

@@ -289,6 +289,8 @@ private:
     void checkLinkable(const BezierPtr& curve, const char* what) const;
     void remapCurveParams(const BezierPtr& curve, const std::function<double(double)>& f);
     void warpDataChanged(bool evaluate);
+    // Tells the panel the Role and Linked To columns may have changed.
+    void rolesChanged();
 
     mutable std::mutex _warpMutex;
     std::vector<SplineWarpLinkPtr> _links;

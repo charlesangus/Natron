@@ -30,8 +30,10 @@
 #include <stdexcept>
 #include <string>
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
 #include <QtCore/QString>
+#include <QtCore/QThread>
 
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
@@ -426,6 +428,17 @@ SplineWarpContext::warpDataChanged(bool evaluate)
     }
 }
 
+void
+SplineWarpContext::rolesChanged()
+{
+    // The panel's columns are refreshed by a direct connection, so only from the main thread.
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (app && (QThread::currentThread() == app->thread())) {
+        emitItemPanelColumnsChanged(RotoItemPtr());
+    }
+}
+
 SplineWarpCurveRoleEnum
 SplineWarpContext::getRole(const BezierPtr& curve) const
 {
@@ -481,6 +494,7 @@ SplineWarpContext::setBoundary(const BezierPtr& curve,
         }
     }
     warpDataChanged(true);
+    rolesChanged();
 }
 
 std::list<BezierPtr>
@@ -538,6 +552,7 @@ SplineWarpContext::linkWithAlignment(const BezierPtr& source,
         _links.push_back(ret);
     }
     warpDataChanged(true);
+    rolesChanged();
 
     return ret;
 }
@@ -568,6 +583,7 @@ SplineWarpContext::removeLink(const SplineWarpLinkPtr& link)
         _links.erase(it);
     }
     warpDataChanged(true);
+    rolesChanged();
 }
 
 SplineWarpLinkPtr
@@ -645,6 +661,7 @@ SplineWarpContext::swapLinkCurves(const SplineWarpLinkPtr& link,
         link->_reversed = reversed;
     }
     warpDataChanged(true);
+    rolesChanged();
 }
 
 void
@@ -1013,6 +1030,7 @@ SplineWarpContext::onCurveFinishedChanged(const BezierPtr& curve)
     }
     if (changed) {
         warpDataChanged(true);
+        rolesChanged();
     }
 }
 
@@ -1043,6 +1061,7 @@ SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
     }
     if (changed) {
         warpDataChanged(true);
+        rolesChanged();
     }
 }
 
@@ -1116,6 +1135,7 @@ SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
         }
     }
     warpDataChanged(true);
+    rolesChanged();
 }
 
 void
@@ -1243,6 +1263,7 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
     }
     _loading = false;
     warpDataChanged(false);
+    rolesChanged();
 }
 
 NATRON_NAMESPACE_EXIT

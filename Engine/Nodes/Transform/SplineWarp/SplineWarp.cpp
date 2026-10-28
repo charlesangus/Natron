@@ -125,6 +125,7 @@ SplineWarp::SplineWarp(NodePtr node)
     // Built here, as RotoPaint's is: Node::load() ends the knob bracket with endChanges(), which
     // already calls knobChanged() and so forwards to the interact.
     , _ui(SplineWarpInteract::create(this))
+    , _panelHook(new SplineWarpPanelHook(_ui))
     , _draftDrag(false)
 {
 }
@@ -165,6 +166,12 @@ RotoCurveContextPtr
 SplineWarp::createGeometryCurveContext(const NodePtr& node) const
 {
     return SplineWarpContext::create(node);
+}
+
+RotoCurvePanelHook*
+SplineWarp::getCurvePanelHook() const
+{
+    return _panelHook.get();
 }
 
 void

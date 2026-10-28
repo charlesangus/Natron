@@ -125,6 +125,10 @@ struct Request {
     // calling task; any count when 0. Cycles and MoonRay take it when the owner's engine is
     // made.
     int threads = 0;
+    // The delegate's settings (UsdImagingGLEngine::SetRendererSetting) that differ from its
+    // defaults. The owner's engine is made again when they change: Cycles restarts a converged
+    // render only for some of its settings.
+    std::map<std::string, PXR_NS::VtValue> settings;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -240,12 +244,20 @@ bool renderWindow(const Request& request,
 bool packsOnGpu();
 
 /**
- * @brief Render settings (UsdImagingGLEngine::SetRendererSetting) every engine of renderer gets
- * before it first renders; an engine made under other settings is made again. Until the settings
- * knobs exist only tests use it, to fix a path tracer's sample count and seed.
+ * @brief Render settings every engine of renderer gets on top of its request's; for tests, to fix
+ * a path tracer's sample count and seed whatever the node's knobs say.
  **/
 void setRendererSettings(const std::string& renderer,
                          const std::map<std::string, PXR_NS::VtValue>& settings);
+
+/**
+ * @brief The setting key of owner's engine as its delegate reports it
+ * (UsdImagingGLEngine::GetRendererSetting), waiting for the engine's thread. False if owner has
+ * no engine.
+ **/
+bool engineSetting(const void* owner,
+                   const std::string& key,
+                   PXR_NS::VtValue* value) WARN_UNUSED_RETURN;
 
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);

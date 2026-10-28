@@ -39,13 +39,19 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -85,6 +91,18 @@ primIdKey(std::uint32_t hash)
     std::snprintf(hex, sizeof(hex), "%08x", hash);
 
     return std::string(kUSDRenderMetadataPrimIdPrefix) + hex;
+}
+
+const RenderSettingsKnobs::Curated*
+curatedSettings(const std::string& rendererId)
+{
+    if (CyclesAovs::isCycles(rendererId)) {
+        return &CyclesSettings::curated();
+    } else if (MoonRayAovs::isMoonRay(rendererId)) {
+        return &MoonRaySettings::curated();
+    }
+
+    return nullptr;
 }
 } // anon namespace
 
@@ -175,6 +193,13 @@ USDRender::initializeKnobs()
     renderer->setAnimationEnabled(false);
     page->addKnob(renderer);
     _renderer = renderer;
+
+    _settings.reset(new RenderSettingsKnobs(this, page));
+    for (const std::string& id : RenderSettingsKnobs::rendererIds()) {
+        _settings->addRenderer(id, RenderSettingsKnobs::descriptors(id), curatedSettings(id));
+    }
+    _settings->finish();
+    _settings->showRenderer(rendererId());
 } // USDRender::initializeKnobs
 
 void
@@ -182,7 +207,31 @@ USDRender::onKnobsLoaded()
 {
     NativeEffectBase::onKnobsLoaded();
     keepLoadedRenderer();
+    if (_settings) {
+        _settings->knobsLoaded(getNode()->getScriptName_mt_safe());
+        _settings->showRenderer(rendererId());
+    }
     scheduleCameraMenuRefresh();
+}
+
+bool
+USDRender::knobChanged(KnobI* k,
+                       ValueChangedReasonEnum /*reason*/,
+                       ViewSpec /*view*/,
+                       double /*time*/,
+                       bool /*originatedFromMainThread*/)
+{
+    KnobChoicePtr renderer = _renderer.lock();
+
+    if (renderer && (k == renderer.get())) {
+        if (_settings) {
+            _settings->showRenderer(rendererId());
+        }
+
+        return true;
+    }
+
+    return _settings && _settings->knobChanged(k);
 }
 
 void
@@ -486,6 +535,9 @@ USDRender::prepareRender(double time,
     setup->request.width = setup->pixels.width();
     setup->request.height = setup->pixels.height();
     setup->request.renderer = rendererId();
+    if (_settings) {
+        setup->request.settings = _settings->values(setup->request.renderer);
+    }
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(cameraPath), timeCode, aspect, fit, &setup->request.frustum, error)) {
         return false;

@@ -63,7 +63,9 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
@@ -318,7 +320,7 @@ protected:
                               HydraRender::Request* request)
     {
         std::string error;
-        if (reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &request->scene, &error) != eRenderRoIRetCodeOk) {
+        if (reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &request->scene, &error) != EffectInstance::eRenderRoIRetCodeOk) {
             ADD_FAILURE() << error;
 
             return false;
@@ -575,4 +577,148 @@ TEST_F(USDRenderCyclesTest, MatchesReferenceRender)
     const double mean = sum / (double)reference.pixels.size();
     EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from " << path << "; worst " << worst;
     EXPECT_LE(mean, kMeanTolerance) << "mean difference from " << path << "; worst " << worst;
+}
+
+namespace {
+const RenderSettingsKnobs*
+cyclesSettingsOf(const NodePtr& node)
+{
+    USDRender* render = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+
+    return render ? render->renderSettings() : nullptr;
+}
+
+// What Cycles' engine for node reports for key; empty if node has no engine.
+PXR_NS::VtValue
+cyclesReported(const NodePtr& node,
+               const std::string& key)
+{
+    PXR_NS::VtValue value;
+    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+
+    if (!HydraRender::engineSetting(owner, key, &value)) {
+        return PXR_NS::VtValue();
+    }
+
+    return value;
+}
+
+// Moves an enabled int, float or bool knob off its default.
+bool
+nudgeCyclesKnob(KnobI* k)
+{
+    if (KnobBool* b = dynamic_cast<KnobBool*>(k)) {
+        b->setValue(!b->getDefaultValue(0));
+    } else if (KnobInt* i = dynamic_cast<KnobInt*>(k)) {
+        i->setValue(i->getDefaultValue(0) + 1);
+    } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k)) {
+        d->setValue(d->getDefaultValue(0) + 0.5);
+    } else {
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
+// Cycles' samples knob changes the node's hash, and the next render is made with the new count,
+// as Cycles' engine reports it.
+TEST_F(USDRenderCyclesTest, SamplesKnobChangesTheHashAndTheRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobInt* samples = dynamic_cast<KnobInt*>(settings->knob(kRenderDelegateCyclesId, CyclesSettings::samplesKey()).get());
+    ASSERT_TRUE(samples != nullptr);
+    EXPECT_EQ(std::string("cyclesSamples"), samples->getName());
+    EXPECT_FALSE(samples->getIsSecret());
+    samples->setValue(3);
+    const U64 hash = node->getHashValue();
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    EXPECT_EQ(PXR_NS::VtValue(3), cyclesReported(node, CyclesSettings::samplesKey()));
+
+    samples->setValue(5);
+    EXPECT_NE(hash, node->getHashValue());
+    planes.clear();
+    ASSERT_TRUE(renderAll(node, &planes));
+    EXPECT_EQ(PXR_NS::VtValue(5), cyclesReported(node, CyclesSettings::samplesKey()));
+}
+
+// Each knob of the Cycles group sends its setting, which Cycles' engine reports back.
+TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const std::string denoise = "cycles:integrator:use_denoise";
+    std::vector<std::string> nudged;
+    for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
+        KnobIPtr k = settings->knob(kRenderDelegateCyclesId, c.key);
+        ASSERT_TRUE(bool(k)) << c.key;
+        EXPECT_EQ(std::string("cyclesSettings"), k->getParentKnob() ? k->getParentKnob()->getName() : std::string()) << c.key;
+        if (!c.disabledReason.empty()) {
+            EXPECT_FALSE(k->isEnabled(0)) << c.key;
+            continue;
+        }
+        // Denoising is checked on its own: it needs OpenImageDenoise in Cycles' build.
+        if ((c.key == denoise) || (c.key == CyclesSettings::samplesKey())) {
+            continue;
+        }
+        ASSERT_TRUE(nudgeCyclesKnob(k.get())) << c.key;
+        nudged.push_back(c.key);
+    }
+    KnobInt* samples = dynamic_cast<KnobInt*>(settings->knob(kRenderDelegateCyclesId, CyclesSettings::samplesKey()).get());
+    ASSERT_TRUE(samples != nullptr);
+    samples->setValue(2);
+    nudged.push_back(CyclesSettings::samplesKey());
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    RenderSettingsKnobs::Values sent = settings->values(kRenderDelegateCyclesId);
+    for (const std::string& key : nudged) {
+        ASSERT_EQ(1u, sent.count(key)) << key << " is not sent";
+        EXPECT_EQ(sent[key], cyclesReported(node, key)) << key << " sent " << RenderSettingsKnobs::valueText(sent[key]);
+    }
+
+    KnobBool* useDenoise = dynamic_cast<KnobBool*>(settings->knob(kRenderDelegateCyclesId, denoise).get());
+    ASSERT_TRUE(useDenoise != nullptr);
+    useDenoise->setValue(true);
+    planes.clear();
+    std::string error;
+    // Without OpenImageDenoise the render may fail; the setting still reaches the delegate.
+    (void)renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error);
+    EXPECT_EQ(PXR_NS::VtValue(true), cyclesReported(node, denoise)) << error;
+}
+
+// Every setting Cycles declares is reached by a knob of the Cycles group or of Other Settings,
+// and none by both.
+TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const std::vector<std::pair<std::string, std::string>> audit = settings->audit(kRenderDelegateCyclesId);
+    EXPECT_FALSE(audit.empty());
+    std::set<std::string> names;
+    for (const std::pair<std::string, std::string>& reach : audit) {
+        std::printf("[  AUDIT   ] Cycles %s -> %s\n", reach.first.c_str(), reach.second.empty() ? "UNREACHABLE" : reach.second.c_str());
+        EXPECT_FALSE(reach.second.empty()) << reach.first;
+        if (reach.second != "(set by Natron)") {
+            EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
+        }
+    }
 }

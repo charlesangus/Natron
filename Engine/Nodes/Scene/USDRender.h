@@ -51,6 +51,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class RenderSettingsKnobs;
+
 class USDRender
     : public NativeEffectBase {
 public:
@@ -140,10 +142,21 @@ public:
      **/
     void refreshCameraMenu();
 
+    // The knobs of every renderer's settings; null before the knobs are made.
+    const RenderSettingsKnobs* renderSettings() const
+    {
+        return _settings.get();
+    }
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual StatusEnum getPreferredMetadataAt(double time,
@@ -180,6 +193,7 @@ private:
     KnobIntWPtr _formatSize;
     KnobDoubleWPtr _formatPar;
     std::atomic<bool> _cameraMenuRefreshPending;
+    std::unique_ptr<RenderSettingsKnobs> _settings;
 };
 
 NATRON_NAMESPACE_EXIT

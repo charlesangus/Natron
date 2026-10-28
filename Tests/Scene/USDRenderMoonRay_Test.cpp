@@ -64,6 +64,8 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
@@ -573,5 +575,155 @@ TEST_F(USDRenderMoonRayTest, RerunIsIdentical)
             differing += (bitsOf(first[plane].pixels[i]) != bitsOf(second[plane].pixels[i])) ? 1 : 0;
         }
         EXPECT_EQ(0u, differing) << "plane " << plane << " differs between two renders on this host";
+    }
+}
+
+namespace {
+const RenderSettingsKnobs*
+moonRaySettingsOf(const NodePtr& node)
+{
+    USDRender* render = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+
+    return render ? render->renderSettings() : nullptr;
+}
+
+// What MoonRay's engine for node reports for key; empty if node has no engine.
+PXR_NS::VtValue
+moonRayReported(const NodePtr& node,
+                const std::string& key)
+{
+    PXR_NS::VtValue value;
+    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+
+    if (!HydraRender::engineSetting(owner, key, &value)) {
+        return PXR_NS::VtValue();
+    }
+
+    return value;
+}
+
+// Moves an enabled menu, int, float or bool knob off its default.
+bool
+nudgeMoonRayKnob(KnobI* k)
+{
+    if (KnobChoice* c = dynamic_cast<KnobChoice*>(k)) {
+        if (c->getNumEntries() < 2) {
+            return false;
+        }
+        c->setValue((c->getDefaultValue(0) + 1) % c->getNumEntries());
+    } else if (KnobBool* b = dynamic_cast<KnobBool*>(k)) {
+        b->setValue(!b->getDefaultValue(0));
+    } else if (KnobInt* i = dynamic_cast<KnobInt*>(k)) {
+        i->setValue(i->getDefaultValue(0) + 1);
+    } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k)) {
+        d->setValue(d->getDefaultValue(0) + 0.5);
+    } else {
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
+// MoonRay's pixel samples knob changes the node's hash, and the next render is made with the new
+// count, as MoonRay's engine reports it.
+TEST_F(USDRenderMoonRayTest, PixelSamplesKnobChangesTheHashAndTheRender)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = moonRaySettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobInt* samples = dynamic_cast<KnobInt*>(settings->knob(kMoonRayRendererId, MoonRaySettings::samplesKey()).get());
+    ASSERT_TRUE(samples != nullptr);
+    EXPECT_EQ(std::string("moonrayPixelSamples"), samples->getName());
+    EXPECT_FALSE(samples->getIsSecret());
+    samples->setValue(2);
+    const U64 hash = node->getHashValue();
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    EXPECT_EQ(PXR_NS::VtValue(2), moonRayReported(node, MoonRaySettings::samplesKey()));
+
+    samples->setValue(3);
+    EXPECT_NE(hash, node->getHashValue());
+    planes.clear();
+    ASSERT_TRUE(renderAll(node, &planes));
+    EXPECT_EQ(PXR_NS::VtValue(3), moonRayReported(node, MoonRaySettings::samplesKey()));
+}
+
+// Each knob of the MoonRay group sends its setting, which MoonRay's engine reports back.
+TEST_F(USDRenderMoonRayTest, CuratedKnobsReachTheDelegate)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = moonRaySettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const std::string denoise = "enableDenoise";
+    std::vector<std::string> nudged;
+    for (const RenderSettingsKnobs::CuratedSetting& c : MoonRaySettings::curated().settings) {
+        KnobIPtr k = settings->knob(kMoonRayRendererId, c.key);
+        ASSERT_TRUE(bool(k)) << c.key;
+        EXPECT_EQ(std::string("moonraySettings"), k->getParentKnob() ? k->getParentKnob()->getName() : std::string()) << c.key;
+        if (!c.disabledReason.empty()) {
+            EXPECT_FALSE(k->isEnabled(0)) << c.key;
+            continue;
+        }
+        // Denoising is checked on its own: it needs OpenImageDenoise in MoonRay's build.
+        if ((c.key == denoise) || (c.key == MoonRaySettings::samplesKey())) {
+            continue;
+        }
+        ASSERT_TRUE(nudgeMoonRayKnob(k.get())) << c.key;
+        nudged.push_back(c.key);
+    }
+    KnobInt* samples = dynamic_cast<KnobInt*>(settings->knob(kMoonRayRendererId, MoonRaySettings::samplesKey()).get());
+    ASSERT_TRUE(samples != nullptr);
+    samples->setValue(2);
+    nudged.push_back(MoonRaySettings::samplesKey());
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    RenderSettingsKnobs::Values sent = settings->values(kMoonRayRendererId);
+    for (const std::string& key : nudged) {
+        ASSERT_EQ(1u, sent.count(key)) << key << " is not sent";
+        EXPECT_EQ(sent[key], moonRayReported(node, key)) << key << " sent " << RenderSettingsKnobs::valueText(sent[key]);
+    }
+
+    KnobBool* enableDenoise = dynamic_cast<KnobBool*>(settings->knob(kMoonRayRendererId, denoise).get());
+    ASSERT_TRUE(enableDenoise != nullptr);
+    enableDenoise->setValue(true);
+    planes.clear();
+    std::string error;
+    // Without OpenImageDenoise the render may fail; the settings still reach the delegate.
+    (void)renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error);
+    EXPECT_EQ(PXR_NS::VtValue(true), moonRayReported(node, denoise)) << error;
+    EXPECT_EQ(PXR_NS::VtValue(true), moonRayReported(node, "enableOIDN")) << error;
+}
+
+// Every setting MoonRay declares, but those Natron sets itself, is reached by a knob of the
+// MoonRay group or of Other Settings, and none by two.
+TEST_F(USDRenderMoonRayTest, EveryDeclaredSettingHasAKnob)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = moonRaySettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const std::vector<std::pair<std::string, std::string>> audit = settings->audit(kMoonRayRendererId);
+    EXPECT_FALSE(audit.empty());
+    std::set<std::string> names;
+    for (const std::pair<std::string, std::string>& reach : audit) {
+        std::printf("[  AUDIT   ] MoonRay %s -> %s\n", reach.first.c_str(), reach.second.empty() ? "UNREACHABLE" : reach.second.c_str());
+        EXPECT_FALSE(reach.second.empty()) << reach.first;
+        if (reach.second != "(set by Natron)") {
+            EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
+        }
     }
 }

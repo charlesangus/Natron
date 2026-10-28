@@ -126,7 +126,7 @@ struct EngineEntry {
     std::unique_ptr<UsdImagingGLEngine> engine;
     // Whether the engine lights the stage with a headlight, as Storm's does when the stage has no light.
     bool headlight = false;
-    // The render settings the engine was made with (setRendererSettings()).
+    // The render settings the engine was made with: the request's, setRendererSettings()'s on top.
     std::map<std::string, VtValue> settings;
     // The AOV depth is read from, and whether the delegate renders the normal AOV, which only some
     // do, and whether it writes that in camera space rather than Hydra's world space.
@@ -405,6 +405,20 @@ public:
     std::string contextDescription() const
     {
         return _context ? _context->description() : std::string();
+    }
+
+    // The setting key of owner's engine; false if owner has none.
+    bool engineSetting(const void* owner,
+                       const TfToken& key,
+                       VtValue* value) const
+    {
+        std::map<const void*, EngineEntry>::const_iterator found = _engines.find(owner);
+        if ((found == _engines.end()) || !found->second.engine) {
+            return false;
+        }
+        *value = found->second.engine->GetRendererSetting(key);
+
+        return true;
     }
 
     void releaseEngine(const void* owner)
@@ -777,7 +791,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (_gl && (edited || !entry.engine)) {
         headlight = !hasSceneLight(stage);
     }
-    const RendererSettings settings = rendererSettings(renderer);
+    RendererSettings settings = request.settings;
+    for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
+        settings[setting.first] = setting.second;
+    }
     // A headlight once set cannot be taken back, so the engine is made again when the stage gains
     // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
     // when they change, so an engine is made again under new ones too.
@@ -1852,6 +1869,23 @@ setRendererSettings(const std::string& renderer,
     } else {
         gSettings[renderer] = settings;
     }
+}
+
+bool
+engineSetting(const void* owner,
+              const std::string& key,
+              VtValue* value)
+{
+    for (RenderThread* thread : { &RenderThread::storm(), &RenderThread::cpu() }) {
+        // Posted without starting a thread that never ran, which holds no engine.
+        std::promise<bool> read;
+        std::future<bool> done = read.get_future();
+        if (thread->post([thread, owner, &key, value, &read]() { read.set_value(thread->engineSetting(owner, TfToken(key), value)); }, false) && done.get()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void

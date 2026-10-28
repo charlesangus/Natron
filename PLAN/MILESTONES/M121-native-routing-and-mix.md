@@ -53,7 +53,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 **Edge cases:**
 - KeyMix with A unconnected is identity on B. With the mask unconnected, A covers everywhere (mask = 1), the same as Nuke.
-- Difference with A missing passes B through with alpha 0. With B missing it outputs black.
+- Difference with A missing passes B through with alpha 0. With B missing it outputs black. (superseded 2026-10-28: with A missing, B is compared with itself, alpha = max(0, −offset); see Decisions)
 - AdjustBBox with negative padding crops. Nearest boundary repeats the source edge; Black fills 0.
 
 **Assumptions:**
@@ -159,6 +159,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-28: a native node that routes to black with nothing connected gives an empty output (identity −1, no plane), as Switch and STMap do; tests follow that. GPU parity is checked over the node's RoD (production never renders outside it).
 - 2026-10-28: implemented (build pending). Phase 1 needed tests only (identity nodes already share their input's GPU image). KeyMix gets setBBox (union/B/A, default union) as Nuke; A missing → B; no inputs → black; A reads zero outside its region. Difference changes from OFX: no A compares B with itself (alpha = max(0, −offset)); outside A's region A reads zero; the matte is not clamped above 1. AdjustBBox is a Passes op (halo pass for Nearest), numpixels in canonical units, no mask/mix (as Nuke). PyPlugs (LightWrap, PIKColor, ZMask, ZRemap) use fr.natron.Switch; its channels setup dropped (native Switch has none).
 - 2026-10-13 — Switch drops `automatic` (user): only `which` is kept, since no bundled PyPlug uses automatic.
 - 2026-10-13 — CopyRectangle and NoOp stay on OFX (user): low use, and CopyRectangle is a useful OFX test fixture for M120 - Native Node Port Kit.

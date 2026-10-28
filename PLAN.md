@@ -227,7 +227,7 @@ future core work has solid ground to build on.
 | M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
 | M131 | Native Defocus Family | doing | M120 | bosley-native-nodes | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |
-| M133 | ZDefocus Lens Aberrations | todo | M131 |  | E3 | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
+| M133 | ZDefocus Lens Aberrations | doing | M131 | bosley-native-nodes | E3 | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
 | M117 | GUI Perf Harness And Baseline | doing | - | bosley-native-nodes | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
 | M118 | Large Graph GUI Responsiveness | doing | M117, M56 | bosley-native-nodes | E10 | [M118-large-graph-gui-responsiveness.md](PLAN/MILESTONES/M118-large-graph-gui-responsiveness.md) |
 | M119 | Trackball Panel Layout | done | M56, M69 | bosley-native-nodes | E10 | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
@@ -261,8 +261,8 @@ future core work has solid ground to build on.
 | M162 | OFX CUDA And OpenCL Suites | todo | M86 |  | E5 | [M162-ofx-cuda-and-opencl-suites.md](PLAN/MILESTONES/M162-ofx-cuda-and-opencl-suites.md) |
 | M171 | GPU Correctness Fixes | done | - | gpu | E5 | [M171-gpu-correctness-fixes.md](PLAN/MILESTONES/M171-gpu-correctness-fixes.md) |
 | M163 | Incremental Bezier Edits | done | - | bosley-native-nodes | E6 | [M163-incremental-bezier-edits.md](PLAN/MILESTONES/M163-incremental-bezier-edits.md) |
-| M164 | Viewer Node Knobs | todo | M16, M107 |  | E3 | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
-| M165 | Rich Viewer Overlays | todo | M80 |  | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
+| M164 | Viewer Node Knobs | doing | M16, M107 | bosley-native-nodes | E3 | [M164-viewer-node-knobs.md](PLAN/MILESTONES/M164-viewer-node-knobs.md) |
+| M165 | Rich Viewer Overlays | doing | M80 | bosley-native-nodes | E3 | [M165-rich-viewer-overlays.md](PLAN/MILESTONES/M165-rich-viewer-overlays.md) |
 | M166 | Non-Float Plane Model | todo | - |  | E14 | [M166-non-float-plane-model.md](PLAN/MILESTONES/M166-non-float-plane-model.md) |
 | M172 | GL Widget Context Loss | done | - | bosley-native-nodes | E10 | [M172-gl-widget-context-loss.md](PLAN/MILESTONES/M172-gl-widget-context-loss.md) |
 | M167 | Per-Frame Node Metadata | done | M100 |  | E14 | [M167-per-frame-node-metadata.md](PLAN/MILESTONES/M167-per-frame-node-metadata.md) |

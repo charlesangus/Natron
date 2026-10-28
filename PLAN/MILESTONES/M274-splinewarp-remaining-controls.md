@@ -209,7 +209,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Phase 274.5: Preview, filters, audit test, GUI, docs
 
-- [ ] M274.P5.T1 — `previewResolution`
+- [x] M274.P5.T1 — `previewResolution`
   - files: `SplineWarp.cpp`, `SplineWarpField.cpp`
   - approach:
     - A percentage, 1–100, on the Render page.
@@ -224,12 +224,12 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - Confirm the new entries appear in the menu.
   - verify: the parity test passes for every filter.
   - size: S
-- [ ] M274.P5.T3 — Knob audit test
+- [x] M274.P5.T3 — Knob audit test
   - files: `Tests/Native/SplineWarpKnobs_Test.cpp` (new)
   - approach: one row per knob in the audit table, checking script name, label (= readable script name), default and page.
   - verify: the test itself passes.
   - size: S
-- [ ] M274.P5.T4 — GUI check
+- [x] M274.P5.T4 — GUI check
   - files: `Tests/gui/m274_splinewarp_controls.py` (new)
   - approach: at 1920x1080, take screenshots of:
     - the three pages, which must fit;
@@ -239,7 +239,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
     - crop on and off.
   - verify: the script passes on the remote GUI runner, and the screenshots are shared.
   - size: M
-- [ ] M274.P5.T5 — Docs
+- [x] M274.P5.T5 — Docs
   - files: `Engine/Nodes/Transform/docs/SplineWarp.md`
   - approach: document every new knob and role, the page layout, and the differences from Nuke: curveResolution units, the solver default, Lanczos6, and the dropped morph controls.
   - verify: `grep` finds each knob's script name in the doc.
@@ -268,6 +268,7 @@ Natron extras with no Nuke control, kept: `invert`, `smoothness`, `fieldResoluti
 
 ## Decisions
 
+- 2026-10-28: Phase 5 implemented except P5.T2 (M270 not merged; waits on it). previewResolution default 25; draft field step = fieldResolution×100/previewResolution; curve/boundary sampling coarsened by the square root of that factor (25 → field ×4, curves ×2 = the old draft); draft keeps the Impulse filter even at 100. Knob audit test expects the shared knobs' current labels: maskInvert "Invert Mask", black_outside "Black outside", shutterCustomOffset "Custom Offset" — these break the label = readable-script-name rule across all native nodes (put to the user). Docs carry the Python API (no separate API docs exist). m148_splinewarp.py reads Role/Linked To as the last two columns; on this branch two more columns exist — needs a header lookup.
 - 2026-10-28: Phases 3–4 implemented (build pending). Cookie: hard-edged mask cached per curve state; a colour layer can't be the output mask; a linked cutter rasterises from its source curve; with Cookie Cut Input on, an upstream Transform isn't concatenated; mask uses frame time for all motion-blur sub-frames; mask layer declared via addProducedPlanes; no GPU parity test for the mask plane (renderEndToEnd compares colour). Crop To Format clips RoD before and after BBox growth and the RoI. Transform: Roto's transform block moved into a shared helper (Roto/RotoPaint unchanged, skewx/skewy kept); new curve centre = Source format centre (project format if unconnected). Layer transforms compose over children; transform links are one-way (target's transform replaces the item's; own layers still apply); cycles, self-links and curve↔own-layer links refused; unlinking keeps position; deleting the target drops the link. Panel: Transform Link column; "Link Transform to First" (others follow the first) and "Unlink Transform". Overlay shows for one curve or one layer (+its curves) with a select tool; curve editing wins over the handle. Open (user): mixed linked/unlinked selection edits all; first-is-target order; refusing curve↔own-layer links.
 - 2026-10-28: Phases 1–2 implemented (build pending). Audit corrections: Activated was honoured for curves but not layers (now isDeactivatedRecursive); panel hook lives in Engine/Nodes/Transform/SplineWarp/; sample-cache key in SplineWarp.h; mask/mix in addMaskMixKnobs; SplineWarpMesh needed no change (open soft polylines are constrained edges). Pages: Controls (amount, invert, Layer Amount, Link Amount, Boundary BBox, stage knobs), Render (flat). Setting one boundary kind clears the other; opening a curve clears only a hard boundary; hard boundaries use boundaryCurveResolution (draft doubles it). "Only layers" = ≥1 layer selected and every selected curve inside one. linkAmount undo goes through the knob's own undo. Q1/Q2 provisionally as recommended (soft boundary built, boundaryBBox on, 4 px). Draft renders run on the GPU with the coarse field (merge 82bb13872). The mesh pins its padded-box corners, so a long soft curve's far side stays put (TPS test checks the far side moves).
 - 2026-10-28: elaborated (consultant). PM call: morph (Destination input, output modes, morph mix, A/B Type, Duplicate in B) stays dropped under the user's M147 decision (out of scope). The consultant's morph phase was struck, and the rows are marked "dropped (user, M147)". Deps widened to M149–M151, the branch this builds on. The Lanczos/Sinc task waits on M270.

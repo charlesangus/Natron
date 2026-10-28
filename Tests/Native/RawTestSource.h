@@ -58,6 +58,7 @@
 #include "RenderBothWays.h"
 
 #define kRawTestSourceID "test.natron.built-in.RawTestSource"
+#define kImageTestSourceID "test.natron.built-in.ImageTestSource"
 
 NATRON_NAMESPACE_ENTER
 
@@ -146,17 +147,18 @@ public:
         return eStatusOK;
     }
 
+protected:
+    virtual const NodeSpec* nodeSpec() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
 private:
     static constexpr NodeSpec kNodeSpec = {
         .id = kRawTestSourceID,
         .label = "Test Raw Source",
         .outputKind = eDataKindRaw,
     };
-
-    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return staticNodeSpec<kNodeSpec>();
-    }
 
     virtual void initializeKnobs() OVERRIDE FINAL
     {
@@ -226,7 +228,55 @@ private:
 };
 
 /**
- * @brief Registers RawTestSource with the application's plug-ins, once per process.
+ * @brief RawTestSource delivering eDataKindImage, for the image nodes that a raw source cannot
+ * feed without a RawToImage, which would replace the alpha.
+ **/
+class ImageTestSource
+    : public RawTestSource {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ImageTestSource(n);
+    }
+
+    explicit ImageTestSource(NodePtr n)
+        : RawTestSource(n)
+    {
+    }
+
+protected:
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kImageNodeSpec>();
+    }
+
+private:
+    static constexpr NodeSpec kImageNodeSpec = {
+        .id = kImageTestSourceID,
+        .label = "Test Image Source",
+        .outputKind = eDataKindImage,
+    };
+};
+
+template <typename SOURCE>
+void
+registerTestSource()
+{
+    EffectInstancePtr node(SOURCE::BuildEffect(NodePtr()));
+    std::map<std::string, void (*)()> functions;
+    functions.insert(std::make_pair("BuildEffect", (void (*)())&SOURCE::BuildEffect));
+    LibraryBinary* binary = new LibraryBinary(functions);
+    Plugin* p = appPTR->registerPlugin(QString(), QStringList(QString::fromUtf8("Other")), QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                       QString(), QStringList(), node->isReader(), node->isWriter(), binary, false, node->getMajorVersion(), node->getMinorVersion(), false);
+    // Registered after AppManager::load(), so the label the script name is made from was
+    // never assigned.
+    p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+    p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+}
+
+/**
+ * @brief Registers RawTestSource and ImageTestSource with the application's plug-ins, once per
+ * process.
  **/
 inline void
 registerRawTestSourceOnce()
@@ -234,16 +284,8 @@ registerRawTestSourceOnce()
     static std::once_flag once;
 
     std::call_once(once, []() {
-        EffectInstancePtr node(RawTestSource::BuildEffect(NodePtr()));
-        std::map<std::string, void (*)()> functions;
-        functions.insert(std::make_pair("BuildEffect", (void (*)())&RawTestSource::BuildEffect));
-        LibraryBinary* binary = new LibraryBinary(functions);
-        Plugin* p = appPTR->registerPlugin(QString(), QStringList(QString::fromUtf8("Other")), QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
-                                           QString(), QStringList(), node->isReader(), node->isWriter(), binary, false, node->getMajorVersion(), node->getMinorVersion(), false);
-        // Registered after AppManager::load(), so the label the script name is made from was
-        // never assigned.
-        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
-        p->setOpenGLRenderSupport(node->supportsOpenGLRender());
+        registerTestSource<RawTestSource>();
+        registerTestSource<ImageTestSource>();
     });
 }
 

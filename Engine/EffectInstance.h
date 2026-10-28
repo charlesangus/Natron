@@ -2490,6 +2490,8 @@ public:
 
     bool onOverlayPenUp_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
 
+    bool onOverlayWheel_public(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double delta, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
+
     bool onOverlayKeyDown_public(double time, const RenderScale & renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
 
     bool onOverlayKeyUp_public(double time, const RenderScale & renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
@@ -3127,6 +3129,21 @@ protected:
                                 const QPointF & /*pos*/,
                                 double /*pressure*/,
                                 double /*timestamp*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief A mouse wheel turn over the viewer, delta in notches, positive away from the user.
+     * Returning true consumes it, so the viewer does not zoom. OpenFX has no wheel action.
+     **/
+    virtual bool onOverlayWheel(double /*time*/,
+                                const RenderScale& /*renderScale*/,
+                                ViewIdx /*view*/,
+                                const QPointF& /*viewportPos*/,
+                                const QPointF& /*pos*/,
+                                double /*delta*/,
+                                KeyboardModifiers /*modifiers*/) WARN_UNUSED_RETURN
     {
         return false;
     }

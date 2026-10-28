@@ -240,6 +240,25 @@ struct SceneGraphModel::Implementation {
     U64 lastEditCount = 0;
     int itemCount = 0;
     int resetCount = 0;
+    // Set while the model changes rows: a slot connected to the change signals must not fetch,
+    // since children are not yet a prefix of childNames and a nested insert would land inside
+    // the change in flight.
+    int changing = 0;
+
+    struct ChangeScope {
+        explicit ChangeScope(Implementation* imp)
+            : imp(imp)
+        {
+            ++imp->changing;
+        }
+
+        ~ChangeScope()
+        {
+            --imp->changing;
+        }
+
+        Implementation* imp;
+    };
 
     explicit Implementation(SceneGraphModel* model)
         : model(model)
@@ -437,6 +456,7 @@ struct SceneGraphModel::Implementation {
 
     void applyUpdates(std::vector<ItemUpdate>& updates)
     {
+        ChangeScope scope(this);
         bool layoutChanged = false;
 
         for (ItemUpdate& update : updates) {
@@ -454,6 +474,7 @@ struct SceneGraphModel::Implementation {
     void resetTo(bool hasStage,
                  const PrimData& rootData)
     {
+        ChangeScope scope(this);
         model->beginResetModel();
         root.children.clear();
         root.childNames.clear();
@@ -469,7 +490,7 @@ struct SceneGraphModel::Implementation {
     bool fetch(Item* item,
                std::size_t upTo)
     {
-        if (!source) {
+        if (!source || changing) {
             return false;
         }
         std::vector<std::unique_ptr<Item>> fetched;
@@ -494,6 +515,7 @@ struct SceneGraphModel::Implementation {
                 fetched.push_back(makeChild(item, allNames[i], readPrimData(stage->GetPrimAtPath(path))));
             }
         });
+        ChangeScope scope(this);
         if (namesRead && !item->namesRead) {
             item->namesRead = true;
             item->childNames = std::move(names);
@@ -861,7 +883,7 @@ SceneGraphModel::flags(const QModelIndex& index) const
 bool
 SceneGraphModel::canFetchMore(const QModelIndex& parent) const
 {
-    if (parent.isValid() && (parent.column() != 0)) {
+    if ((parent.isValid() && (parent.column() != 0)) || _imp->changing) {
         return false;
     }
     const Item* item = _imp->itemOf(parent);

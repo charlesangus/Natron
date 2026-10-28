@@ -28,12 +28,15 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring> // strlen
 #include <fstream>
 #include <limits>
 #include <list>
 #include <map>
+#include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -183,7 +186,66 @@ public:
     // Files saved for render processes that a task may still restart from, guarded by renderQueueMutex.
     QStringList renderSaveFiles;
     mutable QMutex invalidExprKnobsMutex;
-    std::list<KnobIWPtr> invalidExprKnobs;
+    // Knobs with an invalid expression, indexed by the names their invalid expressions mention
+    // so that a change rechecks only those that may mention it. Those whose names cannot be
+    // read from the text are rechecked on every change.
+    struct InvalidExprEntry {
+        KnobIWPtr knob;
+        std::set<std::string> names;
+        bool always;
+
+        InvalidExprEntry()
+            : knob()
+            , names()
+            , always(false)
+        {
+        }
+    };
+
+    std::map<const KnobI*, InvalidExprEntry> invalidExprKnobs;
+    std::unordered_map<std::string, std::set<const KnobI*>> invalidExprKnobsByName;
+    std::set<const KnobI*> invalidExprKnobsAlways;
+    U64 invalidExprRechecks;
+
+    void unindexInvalidExpressionKnob(const KnobI* knob, const InvalidExprEntry& entry)
+    {
+        for (std::set<std::string>::const_iterator it = entry.names.begin(); it != entry.names.end(); ++it) {
+            std::unordered_map<std::string, std::set<const KnobI*>>::iterator found = invalidExprKnobsByName.find(*it);
+            if (found != invalidExprKnobsByName.end()) {
+                found->second.erase(knob);
+                if (found->second.empty()) {
+                    invalidExprKnobsByName.erase(found);
+                }
+            }
+        }
+        invalidExprKnobsAlways.erase(knob);
+    }
+
+    void indexInvalidExpressionKnob(const KnobI* knob, const InvalidExprEntry& entry)
+    {
+        std::map<const KnobI*, InvalidExprEntry>::iterator found = invalidExprKnobs.find(knob);
+        if (found != invalidExprKnobs.end()) {
+            unindexInvalidExpressionKnob(knob, found->second);
+            found->second = entry;
+        } else {
+            invalidExprKnobs.insert(std::make_pair(knob, entry));
+        }
+        for (std::set<std::string>::const_iterator it = entry.names.begin(); it != entry.names.end(); ++it) {
+            invalidExprKnobsByName[*it].insert(knob);
+        }
+        if (entry.always) {
+            invalidExprKnobsAlways.insert(knob);
+        }
+    }
+
+    void eraseInvalidExpressionKnob(const KnobI* knob)
+    {
+        std::map<const KnobI*, InvalidExprEntry>::iterator found = invalidExprKnobs.find(knob);
+        if (found != invalidExprKnobs.end()) {
+            unindexInvalidExpressionKnob(knob, found->second);
+            invalidExprKnobs.erase(found);
+        }
+    }
 
     ProjectBeingLoadedInfo projectBeingLoaded;
 
@@ -212,6 +274,9 @@ public:
         , renderSaveFiles()
         , invalidExprKnobsMutex()
         , invalidExprKnobs()
+        , invalidExprKnobsByName()
+        , invalidExprKnobsAlways()
+        , invalidExprRechecks(0)
         , projectBeingLoaded()
         , creationContext()
         , undoRecorder()
@@ -2747,17 +2812,116 @@ AppInstance::newProject()
     return app;
 }
 
+namespace {
+
+bool
+isNameStart(char c)
+{
+    return c == '_' || ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z'));
+}
+
+bool
+isNameChar(char c)
+{
+    return isNameStart(c) || ((c >= '0') && (c <= '9'));
+}
+
+// Names that let an expression reach nodes or parameters other than through their names in its
+// text, or read state other than names.
+bool
+nameReachesAnything(const std::string& name)
+{
+    static const char* const prefixes[] = {
+        "getInput", "getOutput", "metadata", 0
+    };
+    static const char* const names[] = {
+        "getNode", "getNodes", "getChildren", "getattr", "globals", "locals", "eval", "exec", "rfv", 0
+    };
+
+    for (int i = 0; prefixes[i]; ++i) {
+        if (name.compare(0, std::strlen(prefixes[i]), prefixes[i]) == 0) {
+            return true;
+        }
+    }
+    for (int i = 0; names[i]; ++i) {
+        if (name == names[i]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The identifiers in the knob's invalid expressions, quoted ones included, with thisNode and
+// thisParam read as the name of the knob's node.
+void
+readInvalidExpressionNames(const KnobIPtr& knob,
+                           std::set<std::string>* names,
+                           bool* always)
+{
+    std::string ownerName;
+    {
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+        NodePtr node = effect ? effect->getNode() : NodePtr();
+        if (node) {
+            ownerName = node->getScriptName_mt_safe();
+        }
+    }
+    *always = false;
+    for (int d = 0; d < knob->getDimension(); ++d) {
+        if (knob->isExpressionValid(d, 0)) {
+            continue;
+        }
+        const std::string expr = knob->getExpression(d);
+        std::size_t i = 0;
+        while (i < expr.size()) {
+            if (!isNameStart(expr[i])) {
+                // Skip the rest of a number such as 1e5 so its letters are not read as a name.
+                if ((expr[i] >= '0') && (expr[i] <= '9')) {
+                    while ((i < expr.size()) && isNameChar(expr[i])) {
+                        ++i;
+                    }
+                } else {
+                    ++i;
+                }
+                continue;
+            }
+            std::size_t end = i + 1;
+            while ((end < expr.size()) && isNameChar(expr[end])) {
+                ++end;
+            }
+            const std::string name = expr.substr(i, end - i);
+            i = end;
+            if (nameReachesAnything(name)) {
+                *always = true;
+            } else if ((name == "thisNode") || (name == "thisParam")) {
+                if (!ownerName.empty()) {
+                    names->insert(ownerName);
+                }
+            } else {
+                names->insert(name);
+            }
+        }
+    }
+    if (names->empty()) {
+        *always = true;
+    }
+}
+
+} // anon namespace
+
 void
 AppInstance::addInvalidExpressionKnob(const KnobIPtr& knob)
 {
-    QMutexLocker k(&_imp->invalidExprKnobsMutex);
-
-    for (std::list<KnobIWPtr>::iterator it = _imp->invalidExprKnobs.begin(); it != _imp->invalidExprKnobs.end(); ++it) {
-        if (it->lock() == knob) {
-            return;
-        }
+    if (!knob) {
+        return;
     }
-    _imp->invalidExprKnobs.push_back(knob);
+    AppInstancePrivate::InvalidExprEntry entry;
+    entry.knob = knob;
+    readInvalidExpressionNames(knob, &entry.names, &entry.always);
+
+    QMutexLocker k(&_imp->invalidExprKnobsMutex);
+    _imp->indexInvalidExpressionKnob(knob.get(), entry);
 }
 
 void
@@ -2765,41 +2929,77 @@ AppInstance::removeInvalidExpressionKnob(const KnobI* knob)
 {
     QMutexLocker k(&_imp->invalidExprKnobsMutex);
 
-    for (std::list<KnobIWPtr>::iterator it = _imp->invalidExprKnobs.begin(); it != _imp->invalidExprKnobs.end(); ++it) {
-        if (it->lock().get() == knob) {
-            _imp->invalidExprKnobs.erase(it);
-            break;
-        }
-    }
+    _imp->eraseInvalidExpressionKnob(knob);
 }
 
 void
 AppInstance::recheckInvalidExpressions()
 {
+    recheckInvalidExpressionsInternal(0);
+}
+
+void
+AppInstance::recheckInvalidExpressionsReferencing(const std::set<std::string>& names)
+{
+    recheckInvalidExpressionsInternal(&names);
+}
+
+void
+AppInstance::recheckInvalidExpressionsInternal(const std::set<std::string>* names)
+{
     if (getProject()->isProjectClosing()) {
         return;
     }
-    std::list<KnobIPtr> knobs;
+    std::vector<std::pair<const KnobI*, KnobIPtr>> knobs;
     {
         QMutexLocker k(&_imp->invalidExprKnobsMutex);
-        for (std::list<KnobIWPtr>::iterator it = _imp->invalidExprKnobs.begin(); it != _imp->invalidExprKnobs.end(); ++it) {
-            KnobIPtr k = it->lock();
-            if (k) {
-                knobs.push_back(k);
+        std::set<const KnobI*> selected;
+        if (names) {
+            selected = _imp->invalidExprKnobsAlways;
+            for (std::set<std::string>::const_iterator it = names->begin(); it != names->end(); ++it) {
+                std::unordered_map<std::string, std::set<const KnobI*>>::const_iterator found = _imp->invalidExprKnobsByName.find(*it);
+                if (found != _imp->invalidExprKnobsByName.end()) {
+                    selected.insert(found->second.begin(), found->second.end());
+                }
+            }
+        } else {
+            for (std::map<const KnobI*, AppInstancePrivate::InvalidExprEntry>::const_iterator it = _imp->invalidExprKnobs.begin(); it != _imp->invalidExprKnobs.end(); ++it) {
+                selected.insert(it->first);
+            }
+        }
+        for (std::set<const KnobI*>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+            std::map<const KnobI*, AppInstancePrivate::InvalidExprEntry>::const_iterator found = _imp->invalidExprKnobs.find(*it);
+            if (found != _imp->invalidExprKnobs.end()) {
+                knobs.push_back(std::make_pair(*it, found->second.knob.lock()));
+                if (knobs.back().second) {
+                    ++_imp->invalidExprRechecks;
+                }
             }
         }
     }
-    std::list<KnobIWPtr> newInvalidKnobs;
 
-    for (std::list<KnobIPtr>::iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        if ( !(*it)->checkInvalidExpressions() ) {
-            newInvalidKnobs.push_back(*it);
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        const KnobIPtr& knob = knobs[i].second;
+        if (knob && !knob->checkInvalidExpressions()) {
+            // Its expressions were set again: index it by what they mention now.
+            addInvalidExpressionKnob(knob);
+        } else {
+            QMutexLocker k(&_imp->invalidExprKnobsMutex);
+            std::map<const KnobI*, AppInstancePrivate::InvalidExprEntry>::iterator found = _imp->invalidExprKnobs.find(knobs[i].first);
+            // Unless another knob took the address since.
+            if ((found != _imp->invalidExprKnobs.end()) && (found->second.knob.lock() == knob)) {
+                _imp->eraseInvalidExpressionKnob(knobs[i].first);
+            }
         }
     }
-    {
-        QMutexLocker k(&_imp->invalidExprKnobsMutex);
-        _imp->invalidExprKnobs = newInvalidKnobs;
-    }
+}
+
+U64
+AppInstance::getInvalidExpressionRechecksCount() const
+{
+    QMutexLocker k(&_imp->invalidExprKnobsMutex);
+
+    return _imp->invalidExprRechecks;
 }
 
 NATRON_NAMESPACE_EXIT

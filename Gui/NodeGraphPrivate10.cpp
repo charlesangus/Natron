@@ -30,6 +30,7 @@
 #include <limits>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 
 #include <QDebug>
 
@@ -99,6 +100,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         std::map<std::string, std::string> oldNewScriptNamesMapping;
         {
             CreatingNodeTreeFlag_RAII createNodeTree( _publicInterface->getGui()->getApp() );
+            const NodeCollection::NamingBatch namingBatch(group.lock());
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
@@ -175,19 +177,6 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
     }
 } // pasteNodesInternal
 
-// Trim underscore followed by digits at the end of baseName (see #732).
-static
-void trimNumber(std::string &baseName)
-{
-    std::size_t found_underscore = baseName.rfind('_');
-    if (found_underscore != std::string::npos && found_underscore != (baseName.size() - 1)) {
-        std::size_t found_nondigit = baseName.find_last_not_of("0123456789");
-        if (found_nondigit == found_underscore) {
-            baseName.erase(found_underscore);
-        }
-    }
-}
-
 NodeGuiPtr
 NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
                             const NodePtr& sourceNode,
@@ -223,30 +212,10 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
         // We pasted the node in the same group, give it another label.
         // If the label is available, use it as is.
         // Else look for a similar name by adding a (different) number suffix.
-        std::string name = internalSerialization->label;
-        if ( grp->checkIfNodeLabelExists( name, n.get() ) ) {
-            std::string baseName = name;
-            trimNumber(baseName);
-            int no = 1;
-            do {
-                name = baseName;
-                if (no > 1) {
-                    name += '_';
-                    std::stringstream ss;
-                    ss << no;
-                    name += ss.str();
-                }
-                ++no;
-            } while ( grp->checkIfNodeLabelExists( name, n.get() ) );
-        }
-        n->setLabel(name);
+        n->setLabel(grp->findAvailableNodeName(internalSerialization->label, true, n.get()));
     } else {
         //If we paste the node in a different graph, it can keep its scriptname/label
     }
-
-    //All nodes that are reachable via expressions
-    NodesList allNodes;
-    _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
     if (internalSerialization->layout.hasPosition && !offset.isNull()) {
         double x, y;
@@ -293,6 +262,11 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
                 sourceCollection = sourceNode->getGroup();
             }
         }
+        // All nodes that are reachable via expressions
+        NodesList allNodes;
+        _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
+
+        const NodeCollection::NamingBatch namingBatch(collection);
         std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>> newNodesMap;
         std::list<std::pair<std::string, NodeGuiPtr>> newNodes;
         for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
@@ -330,6 +304,13 @@ NodeGraphPrivate::restoreConnections(const std::list<Serialization::NodeSerializ
     ///For all nodes restore its connections
     std::list<Serialization::NodeSerializationPtr>::const_iterator itSer = serializations.begin();
 
+    // The first new node with each script-name.
+    std::unordered_map<std::string, NodePtr> newNodesByName;
+    for (std::list<std::pair<std::string, NodeGuiPtr>>::const_iterator it = newNodes.begin(); it != newNodes.end(); ++it) {
+        NodePtr node = it->second->getNode();
+        newNodesByName.insert(std::make_pair(node->getScriptName(), node));
+    }
+
     assert( serializations.size() == newNodes.size() );
     for (std::list<std::pair<std::string, NodeGuiPtr> >::const_iterator it = newNodes.begin();
          it != newNodes.end(); ++it, ++itSer) {
@@ -355,12 +336,9 @@ NodeGraphPrivate::restoreConnections(const std::list<Serialization::NodeSerializ
 
             ///find a node  containing the same name. It should not match exactly because there's already
             /// the "-copy" that was added to its name
-            for (std::list<std::pair<std::string, NodeGuiPtr> >::const_iterator it3 = newNodes.begin();
-                 it3 != newNodes.end(); ++it3) {
-                if (it3->second->getNode()->getScriptName() == inputScriptName) {
-                    NodeCollection::connectNodes( index, it3->second->getNode(), it->second->getNode() );
-                    break;
-                }
+            std::unordered_map<std::string, NodePtr>::const_iterator foundInput = newNodesByName.find(inputScriptName);
+            if (foundInput != newNodesByName.end()) {
+                NodeCollection::connectNodes(index, foundInput->second, it->second->getNode());
             }
         }
     }

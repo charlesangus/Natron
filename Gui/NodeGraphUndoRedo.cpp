@@ -267,7 +267,13 @@ AddMultipleNodesCommand::redo()
         _graph->setSelection(nodes);
     }
 
-    _graph->getGui()->getApp()->recheckInvalidExpressions();
+    {
+        std::set<std::string> names;
+        for (std::list<NodeGuiPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            names.insert((*it)->getNode()->getScriptName_mt_safe());
+        }
+        _graph->getGui()->getApp()->recheckInvalidExpressionsReferencing(names);
+    }
     _graph->getGui()->getApp()->triggerAutoSave();
 
     for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {

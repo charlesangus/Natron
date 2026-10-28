@@ -849,7 +849,12 @@ Node::connectInput(const NodePtr & input,
         input->connectOutput( useGuiInputs, shared_from_this() );
     }
 
-    getApp()->recheckInvalidExpressions();
+    {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        names.insert(input->getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 
     ///Get notified when the input name has changed
     QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );

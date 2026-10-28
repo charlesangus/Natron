@@ -65,6 +65,7 @@ set(Tests_SOURCES
     GpuResidency_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
+    GraphScalingGuiEdits_Test.cpp
     GraphScalingNaming_Test.cpp
     GraphScalingTLS_Test.cpp
     Hash64_Test.cpp

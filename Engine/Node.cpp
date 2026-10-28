@@ -4515,6 +4515,12 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = false;
     }
+    {
+        NodeCollectionPtr collection = getGroup();
+        if (collection) {
+            collection->notifyNodeNamesFreed(this);
+        }
+    }
     emitLinksChanged(NodesList());
 
     ///If the node is a group, deactivate all nodes within the group
@@ -4616,8 +4622,11 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     emitLinksChanged(NodesList());
 
     declareAllPythonAttributes();
-    getApp()->recheckInvalidExpressions();
-
+    {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 
     ///If the node is a group, activate all nodes within the group first
     NodeGroup* isGrp = dynamic_cast<NodeGroup*>( _imp->effect.get() );
@@ -8984,6 +8993,7 @@ Node::declareNodeVariableToPython(const std::string& nodeName)
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     if ( NATRON_PYTHON_NAMESPACE::isKeyword(nodeName) ) {
         throw std::runtime_error(nodeName + " is a Python keyword");
     }
@@ -9029,6 +9039,7 @@ Node::setNodeVariableToPython(const std::string& oldName,
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     QString appID = QString::fromUtf8( getApp()->getAppIDString().c_str() );
     QString str = QString( appID + QString::fromUtf8(".%1 = ") + appID + QString::fromUtf8(".%2\ndel ") + appID + QString::fromUtf8(".%2\n") ).arg( QString::fromUtf8( newName.c_str() ) ).arg( QString::fromUtf8( oldName.c_str() ) );
     std::string script = str.toStdString();
@@ -9051,6 +9062,7 @@ Node::deleteNodeVariableToPython(const std::string& nodeName)
    if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     if ( getParentMultiInstance() ) {
         return;
     }
@@ -9087,6 +9099,7 @@ Node::declarePythonFields()
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     PythonGILLocker pgl;
 
     if ( !getGroup() ) {
@@ -9147,6 +9160,7 @@ Node::removeParameterFromPython(const std::string& parameterName)
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     PythonGILLocker pgl;
     std::string appID = getApp()->getAppIDString();
     std::string nodeName = getFullyQualifiedName();

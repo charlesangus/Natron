@@ -44,6 +44,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
@@ -643,6 +644,7 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
 {
     {
         CreatingNodeTreeFlag_RAII createNodeTree( getGui()->getApp() );
+        const NodeCollection::NamingBatch namingBatch(group);
         NodeClipBoard clipboard;
         _imp->copyNodesInternal(nodes, clipboard);
 

@@ -140,6 +140,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         return !mustShowErrorsLog;
     }
     appInst->updateProjectLoadStatus( tr("Creating nodes in group: %1").arg(groupName) );
+    const NamingBatch namingBatch(group);
 
     ///If a parent of a multi-instance node doesn't exist anymore but the children do, we must recreate the parent.
     ///Problem: we have lost the nodes connections. To do so we restore them using the serialization of a child.

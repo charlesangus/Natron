@@ -28,12 +28,13 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
+#include <cstddef> // for NULL
+#include <limits>
 #include <list>
+#include <set>
 #include <string>
 #include <utility>
-#include <limits>
-#include <cstddef>              // for NULL
+#include <vector>
 
 #include <QtGlobal>      // for Q_UNUSED
 #include <QObject>  // for Q_OBJECT, Q_SIGNALS, Q_SLOTS
@@ -420,6 +421,21 @@ public:
     void removeInvalidExpressionKnob(const KnobI* knob);
     void recheckInvalidExpressions();
 
+    /**
+     * @brief Rechecks only the invalid expressions that mention one of the given node or
+     * parameter script names, and those whose names cannot be read from their text.
+     **/
+    void recheckInvalidExpressionsReferencing(const std::set<std::string>& names);
+
+    /**
+     * @brief For tests: how many knobs the rechecks above have rechecked.
+     **/
+    U64 getInvalidExpressionRechecksCount() const;
+
+private:
+    void recheckInvalidExpressionsInternal(const std::set<std::string>* names);
+
+public:
     virtual void clearViewersLastRenderedTexture() {}
 
     virtual void toggleAutoHideGraphInputs() {}

@@ -244,7 +244,7 @@ future core work has solid ground to build on.
 | M144 | ~~Render-Thread Metadata Refresh~~ | cancelled | M100 |  | E14 | [M144-render-thread-metadata-refresh.md](PLAN/MILESTONES/M144-render-thread-metadata-refresh.md) |
 | M145 | OFX Fork Plugin Purge | todo | M113, M121, M122, M123, M124, M125, M127, M128, M129, M130, M132, M140, M143 |  | E3 | [M145-ofx-fork-plugin-purge.md](PLAN/MILESTONES/M145-ofx-fork-plugin-purge.md) |
 | M146 | Roto Hosting For Any Node | done | M137 | bosley-native-nodes | E14 | [M146-roto-hosting-for-any-node.md](PLAN/MILESTONES/M146-roto-hosting-for-any-node.md) |
-| M147 | SplineWarp Node Core | todo | M146, M113, M120, M137 |  | E3 | [M147-splinewarp-node-core.md](PLAN/MILESTONES/M147-splinewarp-node-core.md) |
+| M147 | SplineWarp Node Core | doing | M146, M113, M120, M137 | bosley-native-nodes | E3 | [M147-splinewarp-node-core.md](PLAN/MILESTONES/M147-splinewarp-node-core.md) |
 | M148 | SplineWarp Viewer Tools | todo | M147 |  | E3 | [M148-splinewarp-viewer-tools.md](PLAN/MILESTONES/M148-splinewarp-viewer-tools.md) |
 | M149 | SplineWarp Mesh Solver | todo | M147 |  | E3 | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
 | M150 | SplineWarp GPU Kernel | todo | M147 |  | E3 | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
@@ -285,11 +285,11 @@ future core work has solid ground to build on.
 | M188 | Variable Median And DirBlur | blocked | M130, M184 |  | E15 | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
 | M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
 | M190 | Cross-Frame Feedback | doing | M182 | bosley-native-nodes | E15 | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
-| M191 | Native VectorBlur | todo | M120, M137 |  | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
+| M191 | Native VectorBlur | doing | M120, M137 | bosley-native-nodes | E3 | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | done | M167 |  | E14 | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
 | M192 | Reliable Pipe Pick-Up | done | - |  | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
 | M193 | Pipe Hint Highlight Colour | doing | M176 | bosley-native-nodes | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
-| M194 | Kiss Connections | todo | M192, M193 |  | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
+| M194 | Kiss Connections | doing | M192, M193 | bosley-native-nodes | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
 | M195 | Shake And Cut Disconnect | todo | M194 |  | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
 | M196 | Copy-Compute Contention | doing | M156 | gpu | E5 | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
 | M197 | Python Undo Step API | todo | M114 |  | E7 | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
@@ -331,7 +331,7 @@ future core work has solid ground to build on.
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
 | M266 | Expression Namespace Spike | todo | M262 |  | E14 | [M266-expression-namespace-spike.md](PLAN/MILESTONES/M266-expression-namespace-spike.md) |
 | M267 | RFVSwitch Match Choice Button | doing | M72 | bosley-native-nodes | E13 | [M267-rfvswitch-match-choice-button.md](PLAN/MILESTONES/M267-rfvswitch-match-choice-button.md) |
-| M270 | Lanczos Sinc Resampling Filters | todo | - |  | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
+| M270 | Lanczos Sinc Resampling Filters | doing | - | bosley-native-nodes | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | doing | - | bosley-native-nodes | E14 | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |

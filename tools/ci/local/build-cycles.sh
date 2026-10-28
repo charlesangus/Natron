@@ -145,7 +145,11 @@ for lib in libusd_hd libtbb libOpenImageIO libOpenEXR libembree4 libopenvdb; do
         exit 1
     fi
 done
-dupes="$(awk '/=>/ { print $1 }' <<<"$deps" | sed -e 's/\.so.*$//' -e 's/-[0-9_]*$//' | sort | uniq -d)"
+# libjpeg is exempt: the image's libjpeg-turbo (libjpeg.so.8, /usr/local) sits next to the system
+# libjpeg.so.62 that the system libtiff.so.5 (/lib64) needs. Natron.bin carries the same pair, the
+# sonames differ so they do not clash at runtime, and the image has no /usr/local libtiff to
+# replace the system one.
+dupes="$(awk '/=>/ { print $1 }' <<<"$deps" | sed -e 's/\.so.*$//' -e 's/-[0-9_]*$//' | sort | uniq -d | grep -vx 'libjpeg' || true)"
 if [ -n "$dupes" ]; then
     echo "build-cycles: more than one version of: ${dupes}" >&2
     exit 1

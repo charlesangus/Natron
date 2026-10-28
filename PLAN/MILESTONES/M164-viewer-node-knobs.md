@@ -80,4 +80,5 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Decisions
 
+- 2026-10-28: Phase 1 implemented (build pending). Upstream hashes never include the viewer, but the viewer's own hash keys its cached frames, so every viewer knob is hash-exempt. Display/view/look are text knobs (a missing OCIO name survives; empty = project default) — departs from choice-by-ID. Gain in f-stops (default 0); toolbar 1× / gamma 1 turn the enable toggle off. RB-3 names: clipToFormat, enableRegionOfInterest, enableCheckerBoard, desiredFps; downscale = enableDownscale + downscaleLevel (2–32); wipe angle in radians; wipe centre and RoI canonical. Fps/in/out default from the project at creation. Page "Viewer UI Controls". Phase 2 must stop the toolbar's refresh fallbacks overwriting a saved missing layer/display.
 - 2026-10-28: elaborated (consultant); can start before Q1–Q3.

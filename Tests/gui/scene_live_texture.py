@@ -54,22 +54,38 @@ try:
         return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
                 and not v.property("natronSceneError"))
 
-    def centre_colour():
+    def centre_samples():
+        """Colours on a 7x7 grid 48 px across around the view centre. The card sits at the origin, so
+        the exact centre pixel is where the world axes cross it; a patch reads the card itself."""
         v = view()
         if v is None:
-            return None
+            return []
         QApplication.processEvents()
         centre = v.mapToGlobal(v.rect().center())
         image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
-        c = image.pixelColor(centre.x(), centre.y())
-        return (c.red(), c.green(), c.blue())
+        samples = []
+        for dy in range(-24, 25, 8):
+            for dx in range(-24, 25, 8):
+                c = image.pixelColor(centre.x() + dx, centre.y() + dy)
+                samples.append((c.red(), c.green(), c.blue()))
+        return samples
+
+    def centre_colour():
+        samples = centre_samples()
+        if not samples:
+            return None
+        return tuple(sorted(c[i] for c in samples)[len(samples) // 2] for i in range(3))
 
     def dominated_by(channel):
-        c = centre_colour()
-        if c is None:
+        samples = centre_samples()
+        if not samples:
             return False
-        others = [c[i] for i in range(3) if i != channel]
-        return c[channel] > 40 and all(c[channel] > 2 * o for o in others)
+        hits = 0
+        for c in samples:
+            others = [c[i] for i in range(3) if i != channel]
+            if c[channel] > 40 and all(c[channel] > 2 * o for o in others):
+                hits += 1
+        return hits * 4 >= len(samples) * 3
 
     def save_shots(name):
         shot(name + ".png")

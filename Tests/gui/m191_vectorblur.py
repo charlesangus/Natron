@@ -47,7 +47,7 @@ POINT_LEFT, POINT_BOTTOM, POINT_SIZE = 952, 532, 16
 VECTOR_PX = 60.0
 NEAR_LEFT, NEAR_BOTTOM, NEAR_SIZE = 940, 520, 40
 OCCLUSION_SHARP_TOL = 10
-COLOUR_LAYER = "uk.co.thefoundry.OfxImagePlaneColour"  # rgba
+COLOUR_LAYER = "rgba"  # rgba
 MOTION_LAYER = "uk.co.thefoundry.OfxImagePlaneForwardMotionVector"  # the built-in Forward layer (U, V); VectorBlur Auto picks it
 EXTENT_MIN = 20  # sampled viewer pixels (stride 2 => 40 px)
 

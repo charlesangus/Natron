@@ -50,7 +50,10 @@
 #include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/DtColorSpaces.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -67,6 +70,16 @@ const char* const kLinearRec2020 = "Linear Rec.2020";
  **/
 const double kReferenceMean = 1e-3;
 const double kReferenceMax = 2e-2;
+
+/**
+ * Where the reference crop lies in darktable's develop of the CR2, as the references'
+ * ImageDescription and tools/raw/make-reference.py record it: darktable's guided filters subsample
+ * that whole image, so their grid is set by it, not by the crop.
+ **/
+const int kDevelopedWidth = 5794;
+const int kDevelopedHeight = 3868;
+const int kCropLeft = 3072;
+const int kCropTop = 1728;
 
 struct KnobSetting {
     std::string name;
@@ -85,6 +98,36 @@ referencePath(const std::string& module,
               const std::string& suffix)
 {
     return std::string(NATRON_TESTS_FIXTURES_DIR "/raw/reference/canon-eos-5d-mark-iii-") + module + "-" + suffix + ".tif";
+}
+
+// darktable's subsampling factor for a guided filter of this sigma (scaling() in colorequal.c).
+int
+guidedFilterFactor(float sigma)
+{
+    return (int)std::max(1.f, std::min(4.f, std::floor(sigma - 1.5f)));
+}
+
+/**
+ * The offset from `from` of the first pixel darktable's interpolate_bilinear() samples along a side
+ * of `size` pixels subsampled by `factor`: sample j reads pixel j / (size / factor) * size.
+ **/
+int
+darktableGridOffset(int size,
+                    int factor,
+                    int from)
+{
+    if (factor <= 1) {
+        return 0;
+    }
+    const int subsampled = (int)((float)size / (float)factor);
+    for (int j = 0; j < subsampled; ++j) {
+        const int x = (int)std::floor((float)j / (float)subsampled * (float)size);
+        if (x >= from) {
+            return x - from;
+        }
+    }
+
+    return 0;
 }
 
 std::string
@@ -347,8 +390,10 @@ TEST_F(NativeColorEqualizerTest, SaturationWeight)
     EXPECT_NEAR(-0.015 + 0.3 * 0.25, d.threshold, 1e-6);
 }
 
-// At the defaults a flat colour inside the gamut, with or without the filter, comes back as it went
-// in, alpha untouched.
+// With flat curves a flat colour inside the gamut, with or without the filter, comes back as it
+// went in, alpha untouched. darktable's curve through the eight default nodes is not flat: it dips
+// to about 0.9985 between them, so at the defaults a colour moves by up to the saturation effect
+// (twice the curve's ripple) of itself, as in darktable.
 TEST_F(NativeColorEqualizerTest, DefaultsAreTheIdentityOnFlatColours)
 {
     const float colours[][3] = { { 0.18f, 0.18f, 0.18f }, { 0.3f, 0.2f, 0.15f }, { 0.1f, 0.2f, 0.25f }, { 0.5f, 0.45f, 0.3f }, { 0.02f, 0.03f, 0.02f } };
@@ -358,13 +403,32 @@ TEST_F(NativeColorEqualizerTest, DefaultsAreTheIdentityOnFlatColours)
     for (bool filter : { true, false }) {
         ColorEqualizerParams p;
         p.useFilter = filter;
+        const ColorEqualizerData defaults = ColorEqualizer::commit(p);
+        float ripple = 0.f;
+        for (int i = 0; i < DtColorSpaces::kGamutLutSize; ++i) {
+            ripple = std::max(ripple, std::fabs(1.f - defaults.lutSaturation[i]));
+            ripple = std::max(ripple, std::fabs(1.f - defaults.lutBrightness[i]));
+        }
+        EXPECT_LT(ripple, 2e-3f);
+        ColorEqualizerData flatCurves = defaults;
+        flatCurves.lutHue.fill(0.f);
+        flatCurves.lutSaturation.fill(1.f);
+        flatCurves.lutBrightness.fill(1.f);
+
         for (const auto& c : colours) {
             const std::vector<float> in = flat(c, w, h);
+            std::vector<float> identity(in.size());
+            ColorEqualizerFrame frame;
+            frame.width = w;
+            frame.height = h;
+            ColorEqualizer::process(flatCurves, 1.f, in.data(), identity.data(), w, h, frame, EdgeAware::serialFor);
             const std::vector<float> out = runProcess(p, in, w, h);
             for (size_t k = 0; k < (size_t)w * h; ++k) {
                 for (int ch = 0; ch < 3; ++ch) {
-                    EXPECT_NEAR(in[4 * k + ch], out[4 * k + ch], 1e-4 + 1e-3 * in[4 * k + ch]) << "filter " << filter << " pixel " << k << " channel " << ch;
+                    EXPECT_NEAR(in[4 * k + ch], identity[4 * k + ch], 1e-5 + 1e-4 * in[4 * k + ch]) << "filter " << filter << " pixel " << k << " channel " << ch;
+                    EXPECT_NEAR(in[4 * k + ch], out[4 * k + ch], 1e-5 + 2.f * ripple * in[4 * k + ch]) << "filter " << filter << " pixel " << k << " channel " << ch;
                 }
+                EXPECT_EQ(0.5f, identity[4 * k + 3]);
                 EXPECT_EQ(0.5f, out[4 * k + 3]);
             }
         }
@@ -515,8 +579,22 @@ TEST_F(NativeColorEqualizerTest, RenderMatchesTheKernel)
     const int h = window.height();
     ASSERT_EQ((size_t)w * h * 4, in[0].pixels.size());
     ASSERT_EQ((size_t)w * h * 4, out[0].pixels.size());
-    const std::vector<float>& rgba = in[0].pixels;
-    const std::vector<float> want = runProcess(effect->getParams(kTime, ViewIdx(0)), rgba, w, h);
+    // The guided filter amplifies input differences a few hundred times at some pixels, so the
+    // kernel gets the render's own float conversions to linear Rec.2020 and back.
+    DtColorSpaces::Mat3 toPipe;
+    DtColorSpaces::Mat3 fromPipe;
+    ASSERT_TRUE(ColorEqualizer::pipeMatrices(effect, &toPipe, &fromPipe));
+    std::vector<float> rgba(in[0].pixels.size());
+    for (size_t k = 0; k < (size_t)w * h; ++k) {
+        DtColorSpaces::apply(toPipe, &in[0].pixels[4 * k], &rgba[4 * k]);
+        rgba[4 * k + 3] = in[0].pixels[4 * k + 3];
+    }
+    std::vector<float> want = runProcess(effect->getParams(kTime, ViewIdx(0)), rgba, w, h);
+    for (size_t k = 0; k < (size_t)w * h; ++k) {
+        float rgb[3];
+        DtColorSpaces::apply(fromPipe, &want[4 * k], rgb);
+        std::copy(rgb, rgb + 3, &want[4 * k]);
+    }
     size_t mismatches = 0;
     for (size_t k = 0; k < (size_t)w * h; ++k) {
         for (int c = 0; c < 4; ++c) {
@@ -532,10 +610,80 @@ TEST_F(NativeColorEqualizerTest, RenderMatchesTheKernel)
     EXPECT_EQ(0u, mismatches);
 }
 
+// Two overlapping windows of a frame larger than the guided filters' reach, at sizes where they
+// subsample, agree on their overlap: the filters run over the whole frame, not the window's reach.
+TEST_F(NativeColorEqualizerTest, OutputDoesNotDependOnTheRequestedRegion)
+{
+    setWorkingSpace(kLinearRec2020);
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr reformat = createNode(QString::fromUtf8(PLUGINID_NATRON_REFORMAT), PLUGIN_MAJOR_NATRON_REFORMAT);
+    ASSERT_TRUE(bool(source) && bool(reformat));
+    setParitySourceComponents(source, "rgba");
+    setParitySourceNoise(source, true);
+    connectNodes(source, reformat, 0, true);
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, kReformatParamTypeOptionToBox));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 640., 480. }));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 1. }));
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, kReformatParamResizeOptionDistort));
+
+    // One node a window, so that neither reuses the frame the other computed.
+    NodePtr nodes[2];
+    for (NodePtr& node : nodes) {
+        node = makeNode();
+        ASSERT_TRUE(bool(node));
+        connectNodes(reformat, node, kColorEqualizerInputSource, true);
+        ColorEqualizer* effect = effectOf(node);
+        ASSERT_TRUE(effect != NULL);
+        // Kodachrome 64-like subsamples its parameter filter by 4.
+        effect->applyPresetAt(1);
+        const ColorEqualizerScaled sigmas = ColorEqualizer::scaled(ColorEqualizer::commit(effect->getParams(kTime, ViewIdx(0))), 1.f);
+        ASSERT_EQ(4, guidedFilterFactor(sigmas.paramSigma));
+    }
+
+    RectD rod;
+    bool isProjectFormat = false;
+    EffectInstancePtr effect = nodes[0]->getEffectInstance();
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    ASSERT_EQ(640., rod.width());
+    ASSERT_EQ(480., rod.height());
+
+    const RectI windows[2] = { RectI(100, 100, 300, 260), RectI(105, 103, 305, 263) };
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> out[2];
+    std::string error;
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_TRUE(renderNodePlanesDirect(nodes[i], kTime, ViewIdx(0), 0, windows[i], layers, &out[i], &error)) << error;
+        ASSERT_EQ(1u, out[i].size());
+        ASSERT_EQ((size_t)windows[i].width() * windows[i].height() * 4, out[i][0].pixels.size());
+    }
+
+    const RectI overlap = windows[0].intersect(windows[1]);
+    size_t mismatches = 0;
+    for (int y = overlap.y1; y < overlap.y2; ++y) {
+        for (int x = overlap.x1; x < overlap.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                const float a = out[0][0].pixels[((size_t)(y - windows[0].y1) * windows[0].width() + x - windows[0].x1) * 4 + c];
+                const float b = out[1][0].pixels[((size_t)(y - windows[1].y1) * windows[1].width() + x - windows[1].x1) * 4 + c];
+                const bool same = (std::isnan(a) && std::isnan(b)) || (std::fabs(a - b) <= 1e-6f);
+                if (!same && (mismatches++ == 0)) {
+                    ADD_FAILURE() << "first mismatch at (" << x << ", " << y << ") channel " << c << ": " << a << " and " << b;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0u, mismatches);
+}
+
 /**
  * Each make-reference.py colorequal job against process() in linear Rec. 2020, fed colour balance
- * rgb's "base" crop (the same develop without the module). darktable ran its guided filters over the
- * whole developed image, so only the crop's interior, a halo in from each edge, is compared.
+ * rgb's "base" crop (the same develop without the module). Both run the guided filters over the whole
+ * image they are given, and subsample it on that image's grid; darktable's image was the whole
+ * develop, which the references only hold a crop of. So only the crop's interior, a halo in from
+ * each edge, is compared, and at large sizes, where the filters subsample, process() is given the
+ * part of the crop whose own grid is darktable's.
  * Skipped until the references are rendered.
  **/
 TEST_F(NativeColorEqualizerTest, MatchesDarktable)
@@ -582,18 +730,22 @@ TEST_F(NativeColorEqualizerTest, MatchesDarktable)
         jobs.push_back(job);
     }
 
-    // The base crop, top row first, as process()'s bottom-up RGBA.
-    std::vector<float> rgba((size_t)width * height * 4);
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            const size_t from = ((size_t)y * width + x) * 3;
-            const size_t to = ((size_t)(height - 1 - y) * width + x) * 4;
-            rgba[to + 0] = base[from + 0];
-            rgba[to + 1] = base[from + 1];
-            rgba[to + 2] = base[from + 2];
-            rgba[to + 3] = 1.f;
+    // The base crop's x0, y0, w x h window, top row first, as process()'s bottom-up RGBA.
+    const auto window = [&](int x0, int y0, int w, int h) {
+        std::vector<float> rgba((size_t)w * h * 4);
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t from = ((size_t)(y0 + y) * width + x0 + x) * 3;
+                const size_t to = ((size_t)(h - 1 - y) * w + x) * 4;
+                rgba[to + 0] = base[from + 0];
+                rgba[to + 1] = base[from + 1];
+                rgba[to + 2] = base[from + 2];
+                rgba[to + 3] = 1.f;
+            }
         }
-    }
+
+        return rgba;
+    };
 
     for (const ReferenceJob& job : jobs) {
         std::vector<float> expected;
@@ -615,8 +767,20 @@ TEST_F(NativeColorEqualizerTest, MatchesDarktable)
             return;
         }
         const ColorEqualizerParams params = effect->getParams(kTime, ViewIdx(0));
-        const std::vector<float> out = runProcess(params, rgba, width, height);
         const int margin = std::min(ColorEqualizer::halo(params, 1.f), width / 2 - 8);
+
+        // The image process() is given starts at the first pixel of darktable's subsampled grid and
+        // has sides whole multiples of the subsampling factor, so that its grid is darktable's.
+        const ColorEqualizerScaled sigmas = ColorEqualizer::scaled(ColorEqualizer::commit(params), 1.f);
+        const int hueFactor = guidedFilterFactor(sigmas.hueSigma);
+        const int factor = guidedFilterFactor(sigmas.paramSigma);
+        ASSERT_TRUE((hueFactor == 1) || (hueFactor == factor)) << job.suffix << ": the two guided filters subsample by " << hueFactor << " and " << factor;
+        const int x0 = darktableGridOffset(kDevelopedWidth, factor, kCropLeft);
+        const int y0 = darktableGridOffset(kDevelopedHeight, factor, kCropTop);
+        const int subWidth = (width - x0) / factor * factor;
+        const int subHeight = (height - y0) / factor * factor;
+        ASSERT_TRUE((x0 <= margin) && (y0 <= margin) && (x0 + subWidth >= width - margin) && (y0 + subHeight >= height - margin)) << job.suffix;
+        const std::vector<float> out = runProcess(params, window(x0, y0, subWidth, subHeight), subWidth, subHeight);
 
         double sum = 0.;
         double level = 0.;
@@ -628,7 +792,7 @@ TEST_F(NativeColorEqualizerTest, MatchesDarktable)
             for (int x = margin; x < width - margin; ++x) {
                 for (int c = 0; c < 3; ++c) {
                     const double want = expected[((size_t)y * width + x) * 3 + c];
-                    const double got = out[((size_t)(height - 1 - y) * width + x) * 4 + c];
+                    const double got = out[((size_t)(y0 + subHeight - 1 - y) * subWidth + x - x0) * 4 + c];
                     const double diff = RawReference::halfFloatError(got, want);
                     level += std::fabs(want);
                     sum += diff;

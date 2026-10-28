@@ -40,6 +40,8 @@
 
 #include <array>
 #include <list>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -162,8 +164,10 @@ struct ColorEqualizerFrame {
  * UCS, over eight hue nodes, the selection smoothed by a guided filter on chromaticity.
  *
  * The node works in linear Rec.2020, darktable's pipeline space, converting from and back to the
- * project's working space. The whole buffer (the render window and the guided filter's reach) is
- * processed at once, as darktable processes a tile.
+ * project's working space. The whole region of definition is processed at once, as darktable
+ * processes the whole image, so that the guided filters' subsampling grid and their edges are the
+ * image's and a pixel does not depend on the window it is rendered in. The CPU path keeps the last
+ * whole-frame result and cuts every window out of it.
  **/
 class ColorEqualizer
     : public StagedImageEffect {
@@ -229,6 +233,13 @@ public:
                         const ColorEqualizerFrame& frame,
                         const EdgeAware::ParallelFor& parallel);
 
+    /**
+     * @brief The matrices renderOp applies before and after process() to go from the project's
+     * working space to linear Rec.2020 and back; false, with neither written, when the working
+     * space reaches XYZ only through OCIO processors.
+     **/
+    static bool pipeMatrices(const KnobHolder* holder, DtColorSpaces::Mat3* toPipe, DtColorSpaces::Mat3* fromPipe) WARN_UNUSED_RETURN;
+
     static int presetCount() WARN_UNUSED_RETURN;
     static const char* presetLabel(int index) WARN_UNUSED_RETURN;
     static ColorEqualizerParams presetParams(int index) WARN_UNUSED_RETURN;
@@ -254,8 +265,16 @@ private:
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
-    // One pass without work carrying the halo: the region actions grow by it, and renderOp()
-    // processes the whole buffer itself.
+    // The source's region of definition: the passes' halo reaches it from any window.
+    virtual void getRegionsOfInterest(double time,
+                                      const RenderScale& scale,
+                                      const RectD& outputRoD,
+                                      const RectD& renderWindow,
+                                      ViewIdx view,
+                                      RoIMap* ret) OVERRIDE FINAL;
+    // One pass without work carrying a halo that reaches the whole source from any window inside
+    // it: the region actions grow by it, the buffer is the whole region of definition, and
+    // renderOp() processes it itself.
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -281,6 +300,12 @@ private:
     KnobDoubleWPtr _chromaSize;
     KnobDoubleWPtr _paramSize;
     KnobChoiceWPtr _output;
+
+    // The last whole-frame result renderOp() computed, the processed planes over the region of
+    // definition, under the key of what it depends on.
+    mutable std::mutex _frameMutex;
+    std::string _frameKey;
+    std::shared_ptr<const std::vector<float>> _frame;
 };
 
 NATRON_NAMESPACE_EXIT

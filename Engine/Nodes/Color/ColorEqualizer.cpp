@@ -1149,6 +1149,22 @@ ColorEqualizer::process(const ColorEqualizerData& data,
     });
 }
 
+bool
+ColorEqualizer::pipeMatrices(const KnobHolder* holder,
+                             Mat3* toPipe,
+                             Mat3* fromPipe)
+{
+    const WorkingSpace ws = resolveWorkingSpace(holder);
+
+    if (!ws.matrix) {
+        return false;
+    }
+    *toPipe = ws.toPipe;
+    *fromPipe = ws.fromPipe;
+
+    return true;
+}
+
 int
 ColorEqualizer::presetCount()
 {
@@ -1490,7 +1506,20 @@ ColorEqualizer::opPasses(double time,
 {
     const ColorEqualizerParams params = getParams(time, view);
     const float s = (float)scale.toOfxPointD().x;
-    const int h = halo(params, s);
+    int h = halo(params, s);
+    // The node's region of definition is the source's, which is not asked of this effect here: its
+    // own region action builds these passes.
+    const int sourceInput = getSourceInput();
+    EffectInstancePtr input = (sourceInput >= 0) ? getInput(sourceInput) : EffectInstancePtr();
+    if (input) {
+        RectD sourceRoD;
+        bool isProjectFormat = false;
+        const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+        if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) != eStatusFailed) {
+            const RectI rod = toPixelEnclosing(sourceRoD, scale, getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+            h = std::max(h, std::max(rod.width(), rod.height()));
+        }
+    }
     PassList list;
     Pass carrier = Pass::gather(h, h, true, std::function<PassRowFn(const PassScratch&)>());
 
@@ -1509,6 +1538,30 @@ ColorEqualizer::opPasses(double time,
 #endif
 
     return list;
+}
+
+void
+ColorEqualizer::getRegionsOfInterest(double time,
+                                     const RenderScale& scale,
+                                     const RectD& outputRoD,
+                                     const RectD& renderWindow,
+                                     ViewIdx view,
+                                     RoIMap* ret)
+{
+    StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    const int sourceInput = getSourceInput();
+    EffectInstancePtr input = (sourceInput >= 0) ? getInput(sourceInput) : EffectInstancePtr();
+    if (!input) {
+        return;
+    }
+    RoIMap::iterator found = ret->find(input);
+    RectD sourceRoD;
+    bool isProjectFormat = false;
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    if ((found != ret->end()) && (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) != eStatusFailed)) {
+        found->second.clipIfOverlaps(sourceRoD);
+    }
 }
 
 StatusEnum
@@ -1531,6 +1584,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
     }
 
     std::vector<PlaneJob> jobs;
+    std::vector<std::string> layerIds;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         PlaneJob job;
         job.dst = it->second;
@@ -1558,6 +1612,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
             return eStatusFailed;
         }
         jobs.push_back(job);
+        layerIds.push_back(it->first.getLayerID());
     }
     if (!isFloatImage(mask)) {
         return eStatusFailed;
@@ -1590,10 +1645,8 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
         processWindow.y2 = processWindow.y1;
     }
     const bool processing = !isEmptyRect(processWindow);
-    RectI bufferRect(0, 0, 0, 0);
-    if (processing) {
-        intersectRects(passListSourceRoI(processWindow, list), rod, &bufferRect);
-    }
+    // The passes' halo reaches the whole region of definition from any window.
+    const RectI bufferRect = processing ? rod : RectI(0, 0, 0, 0);
     const int width = std::max(0, bufferRect.width());
     const int height = std::max(0, bufferRect.height());
     const std::size_t planeSize = (std::size_t)width * height;
@@ -1605,15 +1658,34 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
     };
 
     ColorEqualizerFrame frame;
-    frame.x = bufferRect.x1 - rod.x1;
-    frame.y = bufferRect.y1 - rod.y1;
     frame.width = rod.width();
     frame.height = rod.height();
 
-    for (const PlaneJob& job : jobs) {
+    // What the whole-frame result depends on besides the layer and channels: the node's controls and
+    // its source through the render hash, the working space, and where and how the frame is rendered.
+    const EffectInstancePtr input = (sourceInput >= 0) ? getInput(sourceInput) : EffectInstancePtr();
+    const ProjectPtr project = getApp() ? getApp()->getProject() : ProjectPtr();
+    const std::string frameKey = std::to_string(getRenderHash()) + '|' + std::to_string(input ? input->getRenderHash() : 0) + '|' + std::to_string(args.time) + '|'
+        + std::to_string((int)args.view) + '|' + std::to_string(args.mappedScale.toOfxPointD().x) + '|' + std::to_string(args.mappedScale.toOfxPointD().y) + '|'
+        + std::to_string(rod.x1) + ',' + std::to_string(rod.y1) + ',' + std::to_string(rod.x2) + ',' + std::to_string(rod.y2) + '|'
+        + (project ? project->getWorkingColorSpace() : std::string()) + '|' + plan.divisorLayer.getLayerID() + '|' + std::to_string(plan.divisorChannel);
+
+    for (std::size_t j = 0; j < jobs.size(); ++j) {
+        const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
-        std::vector<float> result;
+        std::shared_ptr<const std::vector<float>> values;
+        std::unique_lock<std::mutex> frameLock(_frameMutex, std::defer_lock);
+        const std::string key = frameKey + '|' + layerIds[j] + '|' + std::to_string(job.nComps) + '|' + std::to_string(job.channels.to_ulong());
         if (processing && planeSize && (planes.count() > 0)) {
+            // Concurrent windows wait for the one computing the frame, then share it.
+            frameLock.lock();
+            if (_frame && (_frameKey == key)) {
+                values = _frame;
+            }
+        }
+        if (frameLock.owns_lock() && !values) {
+            std::shared_ptr<std::vector<float>> computed = std::make_shared<std::vector<float>>();
+            std::vector<float>& result = *computed;
             const int nComps = job.nComps;
             PlaneJob full = job;
             full.channels.reset();
@@ -1696,6 +1768,12 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
                     return eStatusOK;
                 }
             }
+            _frame = computed;
+            _frameKey = key;
+            values = computed;
+        }
+        if (frameLock.owns_lock()) {
+            frameLock.unlock();
         }
 
         WindowLayout layout;
@@ -1703,7 +1781,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
         layout.processWindow = processWindow;
         layout.processing = processing;
         layout.bufferRect = bufferRect;
-        layout.buffer = result.empty() ? NULL : result.data();
+        layout.buffer = (values && !values->empty()) ? values->data() : NULL;
         layout.mix = (float)plan.mix;
         writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {

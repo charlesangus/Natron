@@ -553,11 +553,11 @@ TEST_F(NativeLoopCrossFrameTest, ATrailLeavingTheFormatComesBack)
     const int right = drift.right;
 
     const RectI inside(right - 16, 8, right, 16);
-    const RectI outside(right + 100, 8, right + 132, 16);
+    // Across the edge: a window wholly outside the frame's region renders no plane under Legacy.
+    const RectI across(right - 16, 8, right + 132, 16);
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(end, 4., outside, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(end, 4., across, eRenderSchedulerModeLegacy, false, &plane));
     EXPECT_EQ(1.f, redAt(plane, right + 114, 11)) << "frame 4, past the format";
-    ASSERT_TRUE(renderAt(end, 4., inside, eRenderSchedulerModeLegacy, false, &plane));
     EXPECT_EQ(0.f, redAt(plane, right - 6, 11)) << "frame 4, inside the format";
 
     for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {

@@ -124,6 +124,30 @@ Acceptance sketch:
   - verify: erode and dilate of an image with a bright border pixel, both modes, CPU == GPU.
   - size: M
 
+- [ ] M136.P4.T4 — Warp nodes edge mode
+  - files: `Engine/Nodes/Transform/CornerPin.cpp`, `CornerPin.h`, `CornerPinKnobs.h`, `ITransform.cpp`, `ICornerPin.cpp`, `IWarp.cpp`, `IWarp.h`, `IDistort.cpp`, `IDistort.h`, `STMap.cpp`, `STMap.h`, `LensDistortion.cpp`, `LensDistortion.h`, `Mirror.cpp`, `WarpGpu.h`; their `Tests/Native/` tests
+  - approach: Replace each `black_outside`/`blackOutside` boolean with the Phase 136.3 Edge knob; ITransform and ICornerPin follow Transform's and CornerPin's knob. `WarpSettings::blackOutside` and the `kWarpGpuBlackOutside`/`kIWarpGpuBlackOutside`/`kLensDistortionGpuBlackOutside` flags become the shared mode. STMap's Wrap U/V stay (the mode applies only under Wrap None). Mirror drops its hard-wired flag and forwards the bit. `expandRoD` and LensDistortion's margin key off the resolved mode. See `Engine/Nodes/docs/edge-policy.md` §1.2.
+  - verify: each node, a setting with taps outside the source under Stretch and Black inputs, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T5 — Sharpen and EdgeExtend edge mode
+  - files: `Engine/Nodes/Filter/Sharpen.cpp`, `Sharpen.h`, `EdgeExtend.cpp`, `EdgeExtend.h`, `Engine/Gpu/Kernels/sharpen.slang`, `edgeextend.slang`; their `Tests/Native/` tests
+  - approach: Add the Edge knob; replace the fixed Nearest boundary and Neumann line ends (`Sharpen.cpp:252, 503`, `EdgeExtend.cpp:511, 516`) and the kernels' own clamped fills with the shared samplers.
+  - verify: a constant image shows no border response under Stretch and one under Black, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T6 — Glow and Bloom edge mode
+  - files: `Engine/Nodes/Filter/Glow.cpp`, `Glow.h`, `Bloom.cpp`, `Bloom.h`, `BloomKernels.cpp`, `BloomKernels.h`, `Engine/Gpu/Kernels/glow.slang`, `glow_frame.slang`, `bloom.slang`; their `Tests/Native/` tests
+  - approach: Add the Edge knob; Glow's fixed Zero (`Glow.cpp:1016`) and Bloom's fixed Nearest (`Bloom.cpp:75`, `BloomKernels.cpp:224`) follow the resolved mode through the shared samplers.
+  - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T7 — IBlur, IErodeDilate and EdgeBlur edge mode
+  - files: `Engine/Nodes/Filter/IBlur.cpp`, `IBlur.h`, `IErodeDilate.cpp`, `IErodeDilate.h`, `EdgeBlur.cpp`, `EdgeBlur.h`, `VariableBlurKernels.cpp`, `VariableBlurKernels.h`, `Engine/Gpu/Kernels/iblur.slang`, `ierodedilate.slang`; their `Tests/Native/` tests
+  - approach: Add the Edge knob for the source input; the fixed Zero source fill and the summed-area table's zero outside follow the resolved mode. Map inputs follow the answer to the design note's Q1. EdgeBlur's matte keeps EdgeDetect's rule.
+  - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
+  - size: M
+
 ## Phase 136.5: Matrix and acceptance
 
 - [ ] M136.P5.T1 — Per-node CPU/GPU parity matrix over both bit values

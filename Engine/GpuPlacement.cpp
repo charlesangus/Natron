@@ -757,6 +757,10 @@ makeGpuTaskPlanes(const FrameGraph::Task& task,
     if (!native || !native->opKind() || (nodeRequest == request->end()) || !nodeRequest->second || !fvRequest) {
         return false;
     }
+    // renderRoI() fails such a task and posts the missing channel; the GPU would render it without a word.
+    if (!node->checkSelectedChannelsPresent(task.key.time, task.key.view, nullptr)) {
+        return false;
+    }
 
     // What renderRoI() renders and passes through.
     EffectInstance::ComponentsNeededMap comps;

@@ -266,3 +266,31 @@ TEST_F(NativeGpuChainTest, ShuffleReadingAnotherLayerOfTheReadKeepsOneRegion)
     }
     EXPECT_TRUE(greenFromLayer) << "the CPU render's green does not come from the " << kOtherLayer << " layer";
 }
+
+// A frame the region delivers retires the channel-selector error an older render posted, as renderRoI() does for a
+// frame the CPU delivers, so scrubbing back to a good frame clears the error whichever device renders it.
+TEST_F(NativeGpuChainTest, ShuffleDeliveredByTheRegionRetiresAnOlderChannelError)
+{
+    Chain chain;
+    makeChain(kPatternFixture, &chain);
+    if (HasFatalFailure()) {
+        return;
+    }
+    chain.shuffle->setChannelSelectorMessage("channel error of an older render");
+    ASSERT_TRUE(chain.shuffle->hasPersistentMessage());
+
+    bool errorAfterGpuFrame = true;
+    const GpuFrameDone readError = [&]() {
+        errorAfterGpuFrame = chain.shuffle->hasPersistentMessage();
+    };
+    const RectI window = windowOf(chain.shuffle);
+    ASSERT_FALSE(window.isNull());
+    const std::vector<NodePtr> nodes({ chain.read, chain.reformat, chain.grade, chain.shuffle, chain.write });
+    const EndToEndResult result = renderEndToEnd(nodes, chain.shuffle, window, kTime, GpuContextReady(), readError);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(1, gpuRunsOf(result, chain.shuffle)) << "the Shuffle fell back to the CPU, whose renderRoI() retires the error itself";
+    EXPECT_FALSE(errorAfterGpuFrame) << "a frame the GPU delivered left the older render's channel error";
+}

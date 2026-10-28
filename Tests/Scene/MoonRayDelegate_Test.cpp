@@ -119,8 +119,8 @@ TEST(MoonRayDelegate, RegistryListsMoonRay)
     });
     ASSERT_TRUE(moonRay != descs.end());
     EXPECT_EQ(std::string("Moonray"), moonRay->displayName);
-    // Below Storm, so that nothing renders with MoonRay unless asked for it by id.
-    EXPECT_LT(moonRay->priority, 0);
+    // USD defaults to the lowest priority; above Storm's 0, MoonRay renders only when asked for by id.
+    EXPECT_GT(moonRay->priority, 0);
 }
 
 TEST(MoonRayDelegate, CreatesHeadlessRenderDelegate)

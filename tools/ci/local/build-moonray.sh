@@ -113,13 +113,10 @@ if grep -q '102 -> 103' "${usd_prefix}/include/pxr/imaging/hd/version.h"; then
     done
 fi
 
-# Both plug-ins declare priority 99, which would make MoonRay USD's default renderer
-# (HdRendererPluginRegistry::GetDefaultPluginId) for every engine built without an explicit id,
-# Natron's viewer included. Below Storm's 0 it is only used when asked for by id.
+# USD sorts render delegates by ascending priority and defaults to the first that loads, so
+# upstream's 99 keeps MoonRay behind Storm (0); it is only used when asked for by id.
 for plugin in hd_moonray hd_moonray_debug; do
-    file="${src}/moonray/hydra/hdMoonray/plugin/${plugin}/plugInfo.json.in"
-    grep -q '"priority": 99' "$file"
-    sed -i 's/"priority": 99/"priority": -1/' "$file"
+    grep -q '"priority": 99' "${src}/moonray/hydra/hdMoonray/plugin/${plugin}/plugInfo.json.in"
 done
 
 # The image's pxrConfig.cmake still names the Conan build tree for each dependency's <Pkg>_DIR;
@@ -133,6 +130,24 @@ done
 if [ -d "${usd_prefix}/lib/cmake/Ptex" ]; then
     dep_dirs+=("-DPTex_DIR=${usd_prefix}/lib/cmake/Ptex")
 fi
+# USD was built by Conan, so pxrTargets.cmake names MaterialX's targets materialx::<Lib>; the image's
+# MaterialX config names them <Lib>. This include (run after every project()) adds the aliases, as
+# cmake/NatronUsd.cmake does, without patching MoonRay. IMPORTED_GLOBAL lets the alias be seen from
+# the subdirectory that calls find_package(pxr).
+mtlx_aliases="${work}/natron-mtlx-aliases.cmake"
+cat >"$mtlx_aliases" <<'MTLX_EOF'
+if(NOT TARGET materialx::MaterialXCore)
+    find_package(MaterialX CONFIG QUIET PATHS "${NATRON_MTLX_USD_PREFIX}/lib/cmake/MaterialX")
+    foreach(_natron_mtlx_lib MaterialXCore MaterialXFormat MaterialXGenShader MaterialXGenGlsl MaterialXRender)
+        if(TARGET ${_natron_mtlx_lib} AND NOT TARGET materialx::${_natron_mtlx_lib})
+            set_target_properties(${_natron_mtlx_lib} PROPERTIES IMPORTED_GLOBAL TRUE)
+            add_library(materialx::${_natron_mtlx_lib} ALIAS ${_natron_mtlx_lib})
+        endif()
+    endforeach()
+    unset(_natron_mtlx_lib)
+endif()
+MTLX_EOF
+
 boost_python="$(find "${usd_prefix}/lib" -maxdepth 1 -name 'libboost_python3*.so' -printf '%f\n' | head -n 1)"
 boost_python="${boost_python#libboost_}"
 boost_python="${boost_python%.so}"
@@ -144,8 +159,11 @@ test -n "$boost_python"
 # the image happens to carry a toolkit.
 cmake -S "$src" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_PREFIX_PATH="$usd_prefix" \
+    -DNATRON_MTLX_USD_PREFIX="$usd_prefix" \
+    -DCMAKE_PROJECT_INCLUDE="$mtlx_aliases" \
     -DCMAKE_CXX_FLAGS=-DUDPSYSLOG_NO_BOOST \
     -DCMAKE_ISPC_COMPILER="$ispc" \
     -DCMAKE_CUDA_COMPILER=NOTFOUND \
@@ -183,7 +201,7 @@ for file in plugin/hd_moonray.so plugin/hd_moonray_debug.so plugin/pxr/plugInfo.
     fi
 done
 grep -q '"HdMoonrayRendererPlugin"' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
-grep -q '"priority": -1' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
+grep -q '"priority": 99' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
 dso_count="$(find "${prefix}/rdl2dso" -maxdepth 1 -name '*.so' | wc -l)"
 proxy_count="$(find "${prefix}/rdl2dso" -maxdepth 1 -name '*.so.proxy' | wc -l)"
 if [ "$dso_count" -eq 0 ] || [ "$proxy_count" -eq 0 ]; then

@@ -104,6 +104,7 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Decisions
 
+- 2026-10-28: Phase 224.4 implemented (build pending). Ripple range defaults 1–100, bounds in either order, red border drawn by the roto overlay. Ellipse/rectangle: Shift = square, Ctrl+Shift = from centre. Moved pivot resets on selection change, not undoable. Increase Feather (E) moves feather 10 screen px out; S cycles the current tool group; RotoPaint merge brush moved from E to D. Sketch (Ctrl+drag) keeps a point every ~12 screen px, smoothed, open shape. Ctrl during a draw drag latches for the drag. Not copied from Nuke: I (colour pick), T (onion skin; T shows the transform box), Ctrl+Shift corner pin (needs a new transform kind), B-spline tension (no B-spline tool).
 - 2026-10-28: **P4.T1 gesture parity audit (awaiting user approval of the adopt list).** Source: Nuke 17 hotkeys (Roto/RotoPaint), "Using the Bezier tools", "Transforming", "Ellipse and Rectangle tools", "Rippling keyframes". Natron side: `RotoCurveInteract` toolbar/menu shortcuts, pen and key handlers; `RotoPaintInteract` pen-down.
 
   | Nuke | Natron before P4 | Status | Proposal |

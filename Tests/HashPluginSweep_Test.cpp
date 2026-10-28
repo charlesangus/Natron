@@ -325,10 +325,16 @@ protected:
 
             return false;
         }
-        // Plugins may add or remove knobs while reacting to an edit, so iterate over a copy.
+        // Plugins may add or remove knobs while reacting to an edit, so iterate over a copy and
+        // sweep the knob the node holds under each name now: an edit may have replaced it.
         const KnobsVec knobs = node->getKnobs();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            const KnobIPtr& knob = *it;
+            if (!*it) {
+                continue;
+            }
+            const KnobsVec& live = node->getKnobs();
+            const bool held = std::find(live.begin(), live.end(), *it) != live.end();
+            const KnobIPtr knob = held ? *it : node->getKnobByName((*it)->getName());
             if (!knob) {
                 continue;
             }

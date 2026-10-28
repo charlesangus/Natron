@@ -1,0 +1,47 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Camera "Cam"
+    {
+        float focalLength = 35
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "Asset" (
+        variants = {
+            string look = "left"
+        }
+        prepend variantSets = "look"
+    )
+    {
+        def Cube "Geo"
+        {
+            double size = 2
+        }
+
+        variantSet "look" = {
+            "left" {
+                over "Geo"
+                {
+                    color3f[] primvars:displayColor = [(1, 0, 0)]
+                    double3 xformOp:translate = (-3, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate"]
+                }
+            }
+            "right" {
+                over "Geo"
+                {
+                    color3f[] primvars:displayColor = [(0, 0, 1)]
+                    double3 xformOp:translate = (3, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate"]
+                }
+            }
+        }
+    }
+}

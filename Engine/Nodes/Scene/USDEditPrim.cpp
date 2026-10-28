@@ -368,8 +368,13 @@ USDEditPrim::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& s
     if (!serialization || !schema) {
         return;
     }
-    for (const Serialization::KnobSerialization& knob : serialization->knobs) {
-        if ((knob.name == kUSDEditPrimParamSchema) && knob.choiceOptionID) {
+    for (const Serialization::KnobSerialization& saved : serialization->knobs) {
+        if (saved.name != kUSDEditPrimParamSchema) {
+            continue;
+        }
+        // A project file saves a choice by its option id, which completing the serialization reads.
+        const Serialization::KnobSerialization knob = completeKnobSerializationForKnob(*schema, saved);
+        if (knob.choiceOptionID && !knob.choiceOptionID->empty()) {
             schema->setValueFromID(*knob.choiceOptionID, 0);
             rebuildSchemaKnobs();
             refreshVisibility();

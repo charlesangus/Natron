@@ -195,7 +195,16 @@ TEST_F(Variant3DTest, TheMenusListTheSetsAndVariantsOfTheFirstMatch)
     EXPECT_FALSE(variants->getIsPersistent());
 
     // Picking a variant from the menu names it.
-    variants->setValueFromID("blue", 0);
+    // The Gui's menu sends no change for the entry already shown, only a reselection.
+    const std::vector<std::string> ids = getEntryIds(variants);
+    const int blue = (int)(std::find(ids.begin(), ids.end(), std::string("blue")) - ids.begin());
+    ASSERT_LT(blue, (int)ids.size());
+    if (blue == variants->getValue()) {
+        ASSERT_TRUE(variants->getNotifiesOnReselect());
+        variants->setValue(blue, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0, true);
+    } else {
+        variants->setValue(blue, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
+    }
     EXPECT_EQ(std::string("blue"), getKnob<KnobString>(node, kUSDVariantParamVariant)->getValue());
     ScenePayload payload;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload));

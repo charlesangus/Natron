@@ -379,6 +379,7 @@ getKnobScriptName(const AttributeKnob& knob)
         }
         name.erase(begin, end - begin);
     }
+    std::replace(name.begin(), name.end(), ':', '_');
 
     return NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(name);
 }

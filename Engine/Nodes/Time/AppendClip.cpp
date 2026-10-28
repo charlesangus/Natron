@@ -607,6 +607,17 @@ AppendClip::getOpGpuInputLayer(int /*inputNb*/,
     return true;
 }
 
+bool
+AppendClip::readsGpuInput(int inputNb,
+                          const ImageLayerDesc& /*plane*/,
+                          double time,
+                          ViewIdx /*view*/) const
+{
+    const Blend blend = blendAt(time);
+
+    return std::find(blend.inputs.begin(), blend.inputs.end(), inputNb) != blend.inputs.end();
+}
+
 StatusEnum
 AppendClip::renderOpGpu(const GpuRenderArgs& args)
 {

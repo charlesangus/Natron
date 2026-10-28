@@ -216,6 +216,12 @@ private:
                                     ViewIdx view,
                                     ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // Only the clips shown at time are read; the others have no task at that time.
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     AppendClipSettings settings() const WARN_UNUSED_RETURN;

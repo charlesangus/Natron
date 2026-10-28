@@ -39,10 +39,13 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/DenoiseProfiled.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
@@ -51,6 +54,7 @@
 #include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Nodes/Raw/RawTemperature.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
@@ -128,6 +132,41 @@ TEST_F(RawDevelopTest, BuildsTheSixNodesInOrderInABackdrop)
     EXPECT_EQ((int)eRawHighlightsModeOpposed, chain.highlights->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode)->getValue());
     EXPECT_EQ((int)eRawDemosaicBayerRCD, chain.demosaic->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamBayerMethod)->getValue());
     EXPECT_EQ((int)eRawDemosaicXTransMarkesteijn1, chain.demosaic->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawDemosaicParamXTransMethod)->getValue());
+}
+
+// The developRawDenoise preference puts DenoiseProfiled where darktable's pipe runs its denoise
+// (profiled): on camera RGB, after the demosaic and before the input colour profile.
+TEST_F(RawDevelopTest, DenoisePreferenceInsertsDenoiseProfiledAfterTheDemosaic)
+{
+    KnobBoolPtr preference = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobBool>("developRawDenoise");
+    ASSERT_TRUE(bool(preference));
+    EXPECT_FALSE(preference->getDefaultValue(0));
+    EXPECT_FALSE(appPTR->getCurrentSettings()->isDevelopRawDenoiseEnabled());
+
+    NodePtr plainRead = createRawRead();
+    ASSERT_TRUE(bool(plainRead));
+    const RawDevelop::Chain plain = RawDevelop::buildChain(plainRead);
+    ASSERT_TRUE(plain.complete());
+    EXPECT_FALSE(bool(plain.denoise));
+    EXPECT_EQ(plain.demosaic, plain.inputColor->getInput(0));
+
+    preference->setValue(true);
+    NodePtr read = createRawRead();
+    RawDevelop::Chain chain;
+    if (read) {
+        chain = RawDevelop::buildChain(read);
+    }
+    preference->setValue(false);
+    ASSERT_TRUE(bool(read));
+    ASSERT_TRUE(chain.complete());
+    ASSERT_TRUE(bool(chain.denoise));
+
+    EXPECT_EQ(std::string(PLUGINID_NATRON_DENOISEPROFILED), chain.denoise->getPluginID());
+    EXPECT_EQ(chain.highlights, chain.demosaic->getInput(0));
+    EXPECT_EQ(chain.demosaic, chain.denoise->getInput(0));
+    EXPECT_EQ(chain.denoise, chain.inputColor->getInput(0));
+    EXPECT_EQ(chain.inputColor, chain.colorCalibration->getInput(0));
+    EXPECT_EQ(read->getGroup(), chain.denoise->getGroup());
 }
 
 // Only a node the user creates in the interface asks for the chain: never Python's createNode(),

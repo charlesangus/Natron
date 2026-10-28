@@ -84,6 +84,10 @@ struct GpuQuery {
     // Whether the frame renders in draft quality.
     bool draftMode;
 
+    // The largest scratch buffer the device binds, as GpuRecordContext::maxScratchBytes() reports it;
+    // unbounded when placement has no device.
+    uint64_t maxScratchBytes;
+
     GpuQuery()
         : time(0.)
         , view(0)
@@ -98,6 +102,7 @@ struct GpuQuery {
         , unPremultInPlane(false)
         , hasConcatenatedInput(false)
         , draftMode(false)
+        , maxScratchBytes(UINT64_MAX)
     {
         for (int i = 0; i < 4; ++i) {
             processChannels[i] = true;

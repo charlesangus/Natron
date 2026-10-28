@@ -69,6 +69,7 @@
 #define kRawMetadataSensorWhiteLevel "raw/sensor_white_level"
 #define kRawMetadataCatApplied "raw/cat_applied"
 #define kRawMetadataMonochrome "raw/monochrome"
+#define kRawMetadataHighlightPreservation "raw/highlight_preservation"
 
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
@@ -325,6 +326,14 @@ void setModel(ImageMetadata* metadata, const std::string& model);
  **/
 double getLinearResponseLimit(const ImageMetadata& metadata);
 void setLinearResponseLimit(ImageMetadata* metadata, double limit);
+
+/**
+ * @brief raw/highlight_preservation: how many EV the camera underexposed by to protect
+ * highlights (Canon ALO, Fujifilm DR, Nikon Active D-Lighting, Pentax DR expansion), from the
+ * makernote as darktable's exif reader takes it. 0 or absent when the camera recorded none.
+ **/
+std::optional<double> getHighlightPreservation(const ImageMetadata& metadata);
+void setHighlightPreservation(ImageMetadata* metadata, double ev);
 
 /**
  * @brief raw/dng_d65_matrix: the matrix a DNG's embedded colour tags give for D65 (darktable's

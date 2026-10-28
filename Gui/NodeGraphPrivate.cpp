@@ -105,6 +105,10 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , antiAliasing(appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled())
     , lowDetail(false)
     , lowDetailFontHeight(QFontMetrics(QApplication::font()).height())
+    , stackingBatchDepth(0)
+    , stackingPending()
+    , stackingPendingSet()
+    , renderStateDirty()
 {
     appPTR->getIcon(NATRON_PIXMAP_LOCKED, &unlockIcon);
     ThemedIcon::connectThemeChanged(_publicInterface, [this]() {
@@ -129,23 +133,47 @@ NodeGraphPrivate::resetSelection()
 }
 
 void
+NodeGraphPrivate::replaceSelection(const NodesGuiList& nodes)
+{
+    // A node that stays selected is not deselected first: that would refresh it twice to the same state.
+    std::unordered_set<NodeGui*> kept;
+    kept.reserve(nodes.size());
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        kept.insert(it->get());
+    }
+    for (NodesGuiList::iterator it = _selection.begin(); it != _selection.end(); ++it) {
+        if (kept.find(it->get()) == kept.end()) {
+            (*it)->setUserSelected(false);
+        }
+    }
+    _selection.clear();
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (_selection.push_back(*it)) {
+            (*it)->setUserSelected(true);
+        }
+    }
+}
+
+void
 NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
 {
-    if (!addToSelection) {
-        resetSelection();
-    }
-
     const QRectF& selection = _selectionRect;
+    NodesGuiList inside;
 
     for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         QRectF bbox = (*it)->mapToScene((*it)->outlineBoundingRect()).boundingRect();
         if ( selection.contains(bbox) ) {
-            NodesGuiList::iterator foundInSel = std::find(_selection.begin(), _selection.end(), *it);
-            if ( foundInSel != _selection.end() ) {
-                continue;
-            }
+            inside.push_back(*it);
+        }
+    }
 
-            _selection.push_back(*it);
+    if (!addToSelection) {
+        replaceSelection(inside);
+
+        return;
+    }
+    for (NodesGuiList::iterator it = inside.begin(); it != inside.end(); ++it) {
+        if (_selection.push_back(*it)) {
             (*it)->setUserSelected(true);
         }
     }

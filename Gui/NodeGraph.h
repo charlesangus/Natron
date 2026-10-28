@@ -195,6 +195,26 @@ public:
     // nodes then draw their body only, and edges their line only.
     bool isLowDetail() const;
 
+    /**
+     * @brief While a batch is open, a node that moves or resizes does not restack itself above
+     * the nodes it overlaps at once: the outermost endNodeStackingBatch() does it in one pass for
+     * every node that moved meanwhile.
+     **/
+    void beginNodeStackingBatch();
+    void endNodeStackingBatch();
+
+    // Returns false when no batch is open, in which case the caller restacks the node itself.
+    bool deferNodeStacking(NodeGui* node);
+
+    // Stacks each node above the visible nodes it overlaps, in order.
+    void stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes);
+
+    /**
+     * @brief Queues a refresh of the node's state indicator and rendering edges. The refresh
+     * timer only runs while nodes are queued.
+     **/
+    void scheduleNodeRenderStateRefresh(NodeGui* node);
+
 public Q_SLOTS:
 
     void deleteSelection();
@@ -433,6 +453,31 @@ private:
     virtual void changeEvent(QEvent* e) OVERRIDE FINAL;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     std::unique_ptr<EditNodeNameDialogPrivate> _imp;
+};
+
+// Opens a node stacking batch on graph, if any, for the scope.
+class NodeStackingBatch {
+public:
+    explicit NodeStackingBatch(NodeGraph* graph)
+        : _graph(graph)
+    {
+        if (_graph) {
+            _graph->beginNodeStackingBatch();
+        }
+    }
+
+    ~NodeStackingBatch()
+    {
+        if (_graph) {
+            _graph->endNodeStackingBatch();
+        }
+    }
+
+    NodeStackingBatch(const NodeStackingBatch&) = delete;
+    NodeStackingBatch& operator=(const NodeStackingBatch&) = delete;
+
+private:
+    NodeGraph* _graph;
 };
 
 NATRON_NAMESPACE_EXIT

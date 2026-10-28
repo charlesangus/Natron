@@ -142,7 +142,7 @@ void
 NodeGraph::buildSplicePlan()
 {
     _imp->_splicePlanBuilt = true;
-    _imp->_splicePlanSelection = _imp->_selection;
+    _imp->_splicePlanSelection = _imp->_selection.list();
     _imp->_spliceEntry.reset();
     _imp->_spliceEntryInput = -1;
     _imp->_spliceExit.reset();
@@ -212,7 +212,7 @@ NodeGraph::checkForSpliceHint()
         return;
     }
 
-    if (!_imp->_splicePlanBuilt || (_imp->_splicePlanSelection != _imp->_selection)) {
+    if (!_imp->_splicePlanBuilt || (_imp->_splicePlanSelection != _imp->_selection.list())) {
         clearSpliceHint();
         buildSplicePlan();
     }
@@ -370,26 +370,28 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
     double dxScene = newPos.x() - lastMousePosScene.x();
     double dyScene = newPos.y() - lastMousePosScene.y();
 
-
-    //Move all nodes
     bool deltaSet = false;
-    for (std::set<NodeGuiPtr>::iterator it = nodesToMove.begin();
-         it != nodesToMove.end(); ++it) {
-        //The current position
-        QPointF pos = (*it)->getPos_mt_safe();
+    {
+        // Move all nodes, then restack them once
+        NodeStackingBatch stackingBatch(this);
+        for (std::set<NodeGuiPtr>::iterator it = nodesToMove.begin();
+             it != nodesToMove.end(); ++it) {
+            // The current position
+            QPointF pos = (*it)->getPos_mt_safe();
 
-        //if ignoreMagnet == true, we do not snap nodes to horizontal/vertical positions
-        (*it)->refreshPosition(pos.x() + dxScene, pos.y() + dyScene, ignoreMagnet, newPos);
+            // if ignoreMagnet == true, we do not snap nodes to horizontal/vertical positions
+            (*it)->refreshPosition(pos.x() + dxScene, pos.y() + dyScene, ignoreMagnet, newPos);
 
-        //The new position
-        QPointF newNodePos = (*it)->getPos_mt_safe();
-        if (!ignoreMagnet) {
-            //Magnet only works when selection is only for a single node
-            //Adjust the delta since mouse press by the new position after snapping
-            assert(nodesToMove.size() == 1);
-            _imp->_deltaSinceMousePress.rx() += newNodePos.x() - pos.x();
-            _imp->_deltaSinceMousePress.ry() += newNodePos.y() - pos.y();
-            deltaSet = true;
+            // The new position
+            QPointF newNodePos = (*it)->getPos_mt_safe();
+            if (!ignoreMagnet) {
+                // Magnet only works when selection is only for a single node
+                // Adjust the delta since mouse press by the new position after snapping
+                assert(nodesToMove.size() == 1);
+                _imp->_deltaSinceMousePress.rx() += newNodePos.x() - pos.x();
+                _imp->_deltaSinceMousePress.ry() += newNodePos.y() - pos.y();
+                deltaSet = true;
+            }
         }
     }
 

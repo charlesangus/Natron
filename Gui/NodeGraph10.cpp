@@ -386,11 +386,8 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
             if ( !selectedNode->getIsSelected() ) {
                 selectNode( selectedNode, modCASIsShift(e) );
             } else if ( modCASIsShift(e) ) {
-                NodesGuiList::iterator it = std::find(_imp->_selection.begin(),
-                                                      _imp->_selection.end(), selectedNode);
-                if ( it != _imp->_selection.end() ) {
-                    (*it)->setUserSelected(false);
-                    _imp->_selection.erase(it);
+                if (_imp->_selection.remove(selectedNode.get())) {
+                    selectedNode->setUserSelected(false);
                 }
             }
             if ( groupEdited && (_imp->_evtState != eEventStateResizingBackdrop) ) {

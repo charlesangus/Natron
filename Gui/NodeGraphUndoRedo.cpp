@@ -27,6 +27,7 @@
 
 #include <algorithm> // min, max
 #include <limits>
+#include <memory>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -91,11 +92,15 @@ MoveMultipleNodesCommand::move(double dx,
                                double dy)
 {
     bool movedAny = false;
+    std::unique_ptr<NodeStackingBatch> stackingBatch;
 
     for (std::list<NodeGuiWPtr>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         NodeGuiPtr node = it->lock();
         if (!node) {
             continue;
+        }
+        if (!stackingBatch) {
+            stackingBatch.reset(new NodeStackingBatch(node->getDagGui()));
         }
         QPointF pos = node->getPos_mt_safe();
         node->setPosition(pos.x() + dx, pos.y() + dy);
@@ -1263,9 +1268,13 @@ RearrangeNodesCommand::RearrangeNodesCommand(const std::list<NodeGuiPtr> & nodes
 void
 RearrangeNodesCommand::undo()
 {
+    std::unique_ptr<NodeStackingBatch> stackingBatch;
     for (std::list<NodeToRearrange>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         NodeGuiPtr node = it->node.lock();
         if (node) {
+            if (!stackingBatch) {
+                stackingBatch.reset(new NodeStackingBatch(node->getDagGui()));
+            }
             node->refreshPosition(it->oldPos.x(), it->oldPos.y(), true);
         }
     }
@@ -1274,9 +1283,13 @@ RearrangeNodesCommand::undo()
 void
 RearrangeNodesCommand::redo()
 {
+    std::unique_ptr<NodeStackingBatch> stackingBatch;
     for (std::list<NodeToRearrange>::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         NodeGuiPtr node = it->node.lock();
         if (node) {
+            if (!stackingBatch) {
+                stackingBatch.reset(new NodeStackingBatch(node->getDagGui()));
+            }
             node->refreshPosition(it->newPos.x(), it->newPos.y(), true);
         }
     }

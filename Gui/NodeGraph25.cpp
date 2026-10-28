@@ -369,11 +369,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                 if ( inputs[i]->hasSource() ) {
                     NodeGuiPtr input = inputs[i]->getSource();
                     if ( input->getIsSelected() && modCASIsShift(e) ) {
-                        NodesGuiList::iterator found = std::find(_imp->_selection.begin(),
-                                                                 _imp->_selection.end(), lastSelected);
-                        if ( found != _imp->_selection.end() ) {
+                        if (_imp->_selection.remove(lastSelected.get())) {
                             lastSelected->setUserSelected(false);
-                            _imp->_selection.erase(found);
                         }
                     } else {
                         selectNode( inputs[i]->getSource(), modCASIsShift(e) );
@@ -395,11 +392,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                     NodeGuiPtr output = std::dynamic_pointer_cast<NodeGui>(output_i);
                     if (output) {
                         if ( output->getIsSelected() && modCASIsShift(e) ) {
-                            NodesGuiList::iterator found = std::find(_imp->_selection.begin(),
-                                                                     _imp->_selection.end(), lastSelected);
-                            if ( found != _imp->_selection.end() ) {
+                            if (_imp->_selection.remove(lastSelected.get())) {
                                 lastSelected->setUserSelected(false);
-                                _imp->_selection.erase(found);
                             }
                         } else {
                             selectNode( output, modCASIsShift(e) );
@@ -529,24 +523,23 @@ NodeGraph::toggleAutoTurbo()
 void
 NodeGraph::selectAllNodes(bool onlyInVisiblePortion)
 {
-    _imp->resetSelection();
+    NodesGuiList nodes;
     if (onlyInVisiblePortion) {
         QRectF r = visibleSceneRect();
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
             QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
             if ( r.intersects(bbox) && (*it)->isActive() && (*it)->isVisible() ) {
-                (*it)->setUserSelected(true);
-                _imp->_selection.push_back(*it);
+                nodes.push_back(*it);
             }
         }
     } else {
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
             if ( (*it)->isActive() && (*it)->isVisible() ) {
-                (*it)->setUserSelected(true);
-                _imp->_selection.push_back(*it);
+                nodes.push_back(*it);
             }
         }
     }
+    _imp->replaceSelection(nodes);
 }
 
 NATRON_NAMESPACE_EXIT

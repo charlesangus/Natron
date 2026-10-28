@@ -26,8 +26,11 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <cassert>
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
@@ -73,21 +76,16 @@ void
 NodeGraph::moveToTrash(NodeGui* node)
 {
     assert(node);
-    for (NodesGuiList::iterator it = _imp->_selection.begin();
-         it != _imp->_selection.end(); ++it) {
-        if (it->get() == node) {
-            (*it)->setUserSelected(false);
-            _imp->_selection.erase(it);
-            break;
-        }
+    NodeGuiPtr deselected = _imp->_selection.remove(node);
+    if (deselected) {
+        deselected->setUserSelected(false);
     }
 
-    QMutexLocker l(&_imp->_nodesMutex);
-    for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        if ( (*it).get() == node ) {
-            _imp->_nodesTrash.push_back(*it);
-            _imp->_nodes.erase(it);
-            break;
+    {
+        QMutexLocker l(&_imp->_nodesMutex);
+        NodeGuiPtr removed = _imp->_nodes.remove(node);
+        if (removed) {
+            _imp->_nodesTrash.push_back(removed);
         }
     }
     invalidateNavigatorContent();
@@ -97,12 +95,11 @@ void
 NodeGraph::restoreFromTrash(NodeGui* node)
 {
     assert(node);
-    QMutexLocker l(&_imp->_nodesMutex);
-    for (NodesGuiList::iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
-        if ( (*it).get() == node ) {
-            _imp->_nodes.push_back(*it);
-            _imp->_nodesTrash.erase(it);
-            break;
+    {
+        QMutexLocker l(&_imp->_nodesMutex);
+        NodeGuiPtr restored = _imp->_nodesTrash.remove(node);
+        if (restored) {
+            _imp->_nodes.push_back(restored);
         }
     }
     invalidateNavigatorContent();
@@ -170,10 +167,107 @@ NodeGraph::updateCacheSizeText()
 }
 
 void
+NodeGraph::scheduleNodeRenderStateRefresh(NodeGui* node)
+{
+    if (!node) {
+        return;
+    }
+    _imp->renderStateDirty[node] = node->weak_from_this();
+    if (!_imp->refreshRenderStateTimer.isActive()) {
+        _imp->refreshRenderStateTimer.start(NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS);
+    }
+}
+
+void
 NodeGraph::onRefreshNodesRenderStateTimerTimeout()
 {
+    std::map<NodeGui*, NodeGuiWPtr> dirty;
+    dirty.swap(_imp->renderStateDirty);
+    for (std::map<NodeGui*, NodeGuiWPtr>::const_iterator it = dirty.begin(); it != dirty.end(); ++it) {
+        NodeGuiPtr node = it->second.lock();
+        if (node) {
+            node->refreshRenderingIndicator();
+        }
+    }
+}
+
+void
+NodeGraph::beginNodeStackingBatch()
+{
+    ++_imp->stackingBatchDepth;
+}
+
+void
+NodeGraph::endNodeStackingBatch()
+{
+    assert(_imp->stackingBatchDepth > 0);
+    if (--_imp->stackingBatchDepth > 0) {
+        return;
+    }
+    std::vector<NodeGuiWPtr> pending;
+    pending.swap(_imp->stackingPending);
+    _imp->stackingPendingSet.clear();
+
+    std::vector<NodeGuiPtr> alive;
+    std::vector<NodeGui*> nodes;
+    alive.reserve(pending.size());
+    nodes.reserve(pending.size());
+    for (std::vector<NodeGuiWPtr>::const_iterator it = pending.begin(); it != pending.end(); ++it) {
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            alive.push_back(node);
+            nodes.push_back(node.get());
+        }
+    }
+    stackNodesAboveOverlapping(nodes);
+}
+
+bool
+NodeGraph::deferNodeStacking(NodeGui* node)
+{
+    if (_imp->stackingBatchDepth <= 0) {
+        return false;
+    }
+    NodeGuiWPtr weak = node->weak_from_this();
+    if (weak.expired()) {
+        return false;
+    }
+    if (_imp->stackingPendingSet.insert(node).second) {
+        _imp->stackingPending.push_back(weak);
+    }
+
+    return true;
+}
+
+void
+NodeGraph::stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes)
+{
+    if (nodes.empty()) {
+        return;
+    }
+    std::vector<QRectF> bboxes;
+    bboxes.reserve(nodes.size());
+    QRectF all;
+    for (std::vector<NodeGui*>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        QRectF bbox = (*it)->mapRectToScene((*it)->boundingRect());
+        bboxes.push_back(bbox);
+        all = all.united(bbox);
+    }
+    // One walk over the graph finds the few nodes near any of them; the margin keeps a node whose
+    // edge only grazes the union, as rounded in another item's coordinates, a candidate.
+    all.adjust(-1, -1, 1, 1);
+    std::vector<NodeGui*> candidates;
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        (*it)->refreshRenderingIndicator();
+        if ((*it)->isVisible() && all.intersects((*it)->mapRectToScene((*it)->boundingRect()))) {
+            candidates.push_back(it->get());
+        }
+    }
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        for (std::vector<NodeGui*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+            if ((*it != nodes[i]) && (*it)->intersects(bboxes[i])) {
+                nodes[i]->setAboveItem(*it);
+            }
+        }
     }
 }
 

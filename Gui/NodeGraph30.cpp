@@ -113,7 +113,7 @@ NodeGraph::connectCurrentViewerToSelection(int inputNB,
     NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(gui_i);
     assert(gui);
     ///if there's no selected node or the viewer is selected, then try refreshing that input nb if it is connected.
-    bool viewerAlreadySelected = std::find(_imp->_selection.begin(), _imp->_selection.end(), gui) != _imp->_selection.end();
+    bool viewerAlreadySelected = _imp->_selection.contains(gui);
     if (_imp->_selection.empty() || (_imp->_selection.size() > 1) || viewerAlreadySelected) {
         v->setActiveInputAndRefresh(inputNB, isASide);
         gui->refreshEdges();
@@ -363,10 +363,7 @@ NodeGraph::deselectNode(const NodeGuiPtr& n)
 {
     {
         QMutexLocker k(&_imp->_nodesMutex);
-        NodesGuiList::iterator it = std::find(_imp->_selection.begin(), _imp->_selection.end(), n);
-        if ( it != _imp->_selection.end() ) {
-            _imp->_selection.erase(it);
-        }
+        _imp->_selection.remove(n.get());
     }
     n->setUserSelected(false);
 
@@ -384,8 +381,7 @@ NodeGraph::selectNode(const NodeGuiPtr & n,
     if ( !n->isVisible() ) {
         return;
     }
-    bool alreadyInSelection = std::find(_imp->_selection.begin(), _imp->_selection.end(), n) != _imp->_selection.end();
-
+    bool alreadyInSelection = _imp->_selection.contains(n);
 
     assert(n);
     if (addToSelection && !alreadyInSelection) {
@@ -411,8 +407,7 @@ NodeGraph::selectNode(const NodeGuiPtr & n,
 
     bool magnifiedNodeSelected = false;
     if (_imp->_magnifiedNode) {
-        magnifiedNodeSelected = std::find(_imp->_selection.begin(), _imp->_selection.end(), _imp->_magnifiedNode)
-                                != _imp->_selection.end();
+        magnifiedNodeSelected = _imp->_selection.contains(_imp->_magnifiedNode);
     }
     if (magnifiedNodeSelected && _imp->_magnifOn) {
         _imp->_magnifOn = false;

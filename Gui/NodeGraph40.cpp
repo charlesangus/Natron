@@ -610,25 +610,16 @@ void
 NodeGraph::deleteNodePermanantly(const NodeGuiPtr& n)
 {
     assert(n);
-    NodesGuiList::iterator it = std::find(_imp->_nodesTrash.begin(), _imp->_nodesTrash.end(), n);
-
-    if ( it != _imp->_nodesTrash.end() ) {
-        _imp->_nodesTrash.erase(it);
-    }
+    _imp->_nodesTrash.remove(n.get());
 
     {
         QMutexLocker l(&_imp->_nodesMutex);
-        NodesGuiList::iterator it = std::find(_imp->_nodes.begin(), _imp->_nodes.end(), n);
-        if ( it != _imp->_nodes.end() ) {
-            _imp->_nodes.erase(it);
-        }
+        _imp->_nodes.remove(n.get());
     }
     invalidateNavigatorContent();
 
-    NodesGuiList::iterator found = std::find(_imp->_selection.begin(), _imp->_selection.end(), n);
-    if ( found != _imp->_selection.end() ) {
+    if (_imp->_selection.remove(n.get())) {
         n->setUserSelected(false);
-        _imp->_selection.erase(found);
     }
 } // deleteNodePermanantly
 

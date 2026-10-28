@@ -28,11 +28,14 @@
 
 #include "Global/Macros.h"
 
-#include <set>
 #include <list>
 #include <map>
-#include <utility>
+#include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -81,6 +84,80 @@ enum EventStateEnum
     eEventStateDraggingNode,
     eEventStateResizingBackdrop,
     eEventStateSelectionRect,
+};
+
+// A list of nodes in insertion order that finds and removes a node in constant time. A node is
+// in it at most once.
+class IndexedNodeGuiList {
+public:
+    typedef NodesGuiList::iterator iterator;
+    typedef NodesGuiList::const_iterator const_iterator;
+    typedef NodesGuiList::const_reverse_iterator const_reverse_iterator;
+
+    operator const NodesGuiList&() const { return _list; }
+    const NodesGuiList& list() const { return _list; }
+
+    iterator begin() { return _list.begin(); }
+    iterator end() { return _list.end(); }
+    const_iterator begin() const { return _list.begin(); }
+    const_iterator end() const { return _list.end(); }
+    const_reverse_iterator rbegin() const { return _list.rbegin(); }
+    const_reverse_iterator rend() const { return _list.rend(); }
+
+    bool empty() const { return _list.empty(); }
+    std::size_t size() const { return _list.size(); }
+    const NodeGuiPtr& front() const { return _list.front(); }
+    const NodeGuiPtr& back() const { return _list.back(); }
+
+    bool contains(const NodeGui* node) const
+    {
+        return _index.find(const_cast<NodeGui*>(node)) != _index.end();
+    }
+
+    bool contains(const NodeGuiPtr& node) const { return contains(node.get()); }
+
+    // Returns false, leaving the order alone, if the node is already in the list.
+    bool push_back(const NodeGuiPtr& node)
+    {
+        if (!node || contains(node)) {
+            return false;
+        }
+        _list.push_back(node);
+        _index[node.get()] = --_list.end();
+
+        return true;
+    }
+
+    iterator erase(iterator it)
+    {
+        _index.erase(it->get());
+
+        return _list.erase(it);
+    }
+
+    // Returns the removed node, or a null pointer if the node was not in the list.
+    NodeGuiPtr remove(const NodeGui* node)
+    {
+        std::unordered_map<NodeGui*, iterator>::iterator found = _index.find(const_cast<NodeGui*>(node));
+        if (found == _index.end()) {
+            return NodeGuiPtr();
+        }
+        NodeGuiPtr ret = *found->second;
+        _list.erase(found->second);
+        _index.erase(found);
+
+        return ret;
+    }
+
+    void clear()
+    {
+        _list.clear();
+        _index.clear();
+    }
+
+private:
+    NodesGuiList _list;
+    std::unordered_map<NodeGui*, iterator> _index;
 };
 
 // The navigator overlay. It paints its own border and nothing at all while the graph renders its
@@ -170,8 +247,8 @@ public:
     bool _magnifOn;
     Edge* _arrowSelected;
     mutable QMutex _nodesMutex;
-    NodesGuiList _nodes;
-    NodesGuiList _nodesTrash;
+    IndexedNodeGuiList _nodes;
+    IndexedNodeGuiList _nodesTrash;
 
     /// Enables the create-node shortcut that opens the tab menu.
     /// This is set to true on enterEvent and set back to false on leaveEvent
@@ -212,7 +289,7 @@ public:
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
-    NodesGuiList _selection;
+    IndexedNodeGuiList _selection; //< in the order the nodes were selected
 
     //To avoid calling unsetCursor too much
     bool cursorSet;
@@ -245,6 +322,14 @@ public:
     bool antiAliasing;
     bool lowDetail;
     int lowDetailFontHeight;
+
+    int stackingBatchDepth;
+    std::vector<NodeGuiWPtr> stackingPending;
+    std::unordered_set<NodeGui*> stackingPendingSet;
+
+    // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
+    // last fired, keyed by address so that a node queued twice is refreshed once.
+    std::map<NodeGui*, NodeGuiWPtr> renderStateDirty;
 
     NodeGraphPrivate(NodeGraph* p,
                      const NodeCollectionPtr& group);
@@ -294,6 +379,9 @@ public:
     void editSelectionFromSelectionRectangle(bool addToSelection);
 
     void resetSelection();
+
+    // Makes nodes, in their order, the selection.
+    void replaceSelection(const NodesGuiList& nodes);
 
     void setNodesBendPointsVisible(bool visible);
 

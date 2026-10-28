@@ -315,6 +315,9 @@ public:
     /*Returns true if the bounding box of the node intersects the given rectangle in scene coordinates.*/
     bool intersects(const QRectF & rect) const;
 
+    // Stacks this node, and its edges, above item, unless either is a backdrop or this node is hidden.
+    void setAboveItem(QGraphicsItem* item);
+
     /*returns a QPainterPath indicating the global shape of the node.
        This must be provided so the QGraphicsView framework recognises the
        item correctly.*/
@@ -700,6 +703,9 @@ public Q_SLOTS:
 
     void refreshRenderingIndicator();
 
+    // Queues refreshRenderingIndicator() on the graph when a render starts or ends here.
+    void onRenderingStateChanged();
+
     void beginEditKnobs();
 
     void centerGraphOnIt();
@@ -807,8 +813,6 @@ private:
 
     void ensurePreviewCreated();
 
-    void setAboveItem(QGraphicsItem* item);
-
     void populateMenu();
 
     void refreshCurrentBrush();
@@ -878,6 +882,7 @@ private:
     int _previewW, _previewH;
     QGraphicsSimpleTextItem* _persistentMessage;
     NodeGraphRectItem* _stateIndicator;
+    bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed
     NodeGuiIndicatorPtr _streamIssuesWarning;
     NodeGuiDisabledCross* _disabledCross;
     NodeGuiDecorations* _indicatorLayer;
@@ -898,6 +903,21 @@ private:
     bool _hasUserColor;
     QColor _userColor;
     bool _nameItemHasUserFontColor; //< the label has a font colour the user picked, which wins over body contrast
+    // The inputs setNameItemHtml() last laid the name item out from.
+    struct NameItemInputs {
+        QString name, label, channelsExtraLabel;
+        bool framed;
+        bool antialias;
+        QFont applicationFont;
+        QColor userFontColor;
+
+        bool operator==(const NameItemInputs& o) const
+        {
+            return name == o.name && label == o.label && channelsExtraLabel == o.channelsExtraLabel && framed == o.framed && antialias == o.antialias && applicationFont == o.applicationFont;
+        }
+    };
+    bool _nameItemInputsSet;
+    NameItemInputs _nameItemInputs;
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
 

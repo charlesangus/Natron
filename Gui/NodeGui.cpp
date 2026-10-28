@@ -28,7 +28,11 @@
 #include <algorithm> // min, max
 #include <cassert>
 #include <cmath>
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <tuple>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -369,6 +373,7 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _previewH(NATRON_PREVIEW_HEIGHT)
     , _persistentMessage(NULL)
     , _stateIndicator(NULL)
+    , _stateIndicatorSelected(false)
     , _streamIssuesWarning()
     , _disabledCross(NULL)
     , _indicatorLayer(NULL)
@@ -382,6 +387,8 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _hasUserColor(false)
     , _userColor()
     , _nameItemHasUserFontColor(false)
+    , _nameItemInputsSet(false)
+    , _nameItemInputs()
     , _wasBeginEditCalled(false)
     , positionMutex()
     , _linkLines()
@@ -432,6 +439,11 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(activated(bool)), this, SLOT(activate(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
     QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
+    // Emitted from render threads; the indicators are refreshed in batches on the graph's timer.
+    QObject::connect(internalNode.get(), SIGNAL(renderingStarted()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(renderingEnded()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(inputNIsRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(inputNIsFinishedRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
     QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
@@ -1381,15 +1393,8 @@ NodeGui::refreshPositionEnd(double x,
     setPos(x, y);
     // A resize leaves the position, and so itemChange(), untouched.
     invalidateGraphNavigator();
-    if (_graph) {
-        QRectF bbox = mapRectToScene( boundingRect() );
-        const NodesGuiList & allNodes = _graph->getAllActiveNodes();
-
-        for (NodesGuiList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
-            if ( (*it)->isVisible() && (it->get() != this) && (*it)->intersects(bbox) ) {
-                setAboveItem( it->get() );
-            }
-        }
+    if (_graph && !_graph->deferNodeStacking(this)) {
+        _graph->stackNodesAboveOverlapping(std::vector<NodeGui*>(1, this));
     }
     refreshAttachedEdgesAndLinks();
 }
@@ -2634,6 +2639,9 @@ NodeGui::onPersistentMessageChanged()
     for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
         (*it)->getViewer()->updatePersistentMessage();
     }
+
+    // Covers the message kinds handled above without a refresh of the indicator.
+    _graph->scheduleNodeRenderStateRefresh(this);
 }
 
 QVBoxLayout*
@@ -2734,7 +2742,8 @@ NodeGui::refreshStateIndicator()
     if (!_stateIndicator) {
         return;
     }
-    invalidateGraphNavigator();
+    const QBrush oldBrush = _stateIndicator->brush();
+    const bool wasShown = _stateIndicator->isVisible();
     QString message;
     int type;
     NodePtr node = getNode();
@@ -2768,12 +2777,25 @@ NodeGui::refreshStateIndicator()
             (*it)->setUseSelected(isSelected);
         }
     }
+    // The thumbnail shows the indicator and the selected look of the edges.
+    if ((showIndicator != wasShown) || (showIndicator && (_stateIndicator->brush() != oldBrush)) || (isSelected != _stateIndicatorSelected)) {
+        invalidateGraphNavigator();
+    }
+    _stateIndicatorSelected = isSelected;
     if ( showIndicator && !_stateIndicator->isVisible() ) {
         _stateIndicator->show();
     } else if ( !showIndicator && _stateIndicator->isVisible() ) {
         _stateIndicator->hide();
     } else {
         update();
+    }
+}
+
+void
+NodeGui::onRenderingStateChanged()
+{
+    if (_graph) {
+        _graph->scheduleNodeRenderStateRefresh(this);
     }
 }
 
@@ -3095,19 +3117,29 @@ NodeGui::onKnobsLinksChanged()
     // so rebuilding as a node moves leaves the lines whose ends stay alone.
     LinkLines oldLines;
     oldLines.swap(_linkLines);
+    // Keyed by (kind, partner), in list order, so that a node with many links rebuilds in linear time.
+    typedef std::pair<int, const Node*> LineKey;
+    std::multimap<LineKey, LinkLines::iterator> oldArrows;
+    for (LinkLines::iterator it = oldLines.begin(); it != oldLines.end(); ++it) {
+        if (it->arrow) {
+            oldArrows.insert(std::make_pair(LineKey(it->kind, it->partner.lock().get()), it));
+        }
+    }
     NodeGuiPtr thisShared;
-    const auto takeArrow = [&oldLines, &thisShared, this](LinkLineKindEnum kind, const NodePtr& partner, const NodeGuiPtr& partnerGui) {
-        for (LinkLines::iterator it = oldLines.begin(); it != oldLines.end(); ++it) {
-            if (it->arrow && (it->kind == kind) && (it->partner.lock() == partner)) {
-                LinkArrow* arrow = it->arrow;
-                it->arrow = 0;
+    const auto takeArrow = [&oldArrows, &thisShared, this](LinkLineKindEnum kind, const NodePtr& partner, const NodeGuiPtr& partnerGui) {
+        std::multimap<LineKey, LinkLines::iterator>::iterator found = oldArrows.find(LineKey(kind, partner.get()));
+        if (found != oldArrows.end()) {
+            LinkArrow* arrow = found->second->arrow;
+            found->second->arrow = 0;
+            oldArrows.erase(found);
 
-                return arrow;
-            }
+            return arrow;
         }
 
         return new LinkArrow(partnerGui, thisShared, parentItem());
     };
+    std::map<LineKey, LinkLines::iterator> lineIndex;
+    std::map<std::tuple<const LinkLine*, const KnobI*, const KnobI*>, std::list<LinkedKnob>::iterator> knobIndex;
 
     typedef std::list<Node::KnobLink> InternalLinks;
     InternalLinks links;
@@ -3127,6 +3159,10 @@ NodeGui::onKnobsLinksChanged()
         thisShared = shared_from_this();
         NodesList linkedNodes;
         node->getLinkedNodes(&linkedNodes);
+        std::set<const Node*> linkedNodeSet;
+        for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+            linkedNodeSet.insert(it->get());
+        }
 
         const NodesList linkedNodeLines = higherNeighbours(node, nearestMemberNeighbours(node, linkedNodes));
         for (NodesList::const_iterator it = linkedNodeLines.begin(); it != linkedNodeLines.end(); ++it) {
@@ -3145,10 +3181,11 @@ NodeGui::onKnobsLinksChanged()
             line.arrow->setDashed(false);
             line.arrow->setToolTip(tr("<p>%1 and %2 are Linked Nodes</p>").arg(QString::fromUtf8(node->getLabel().c_str())).arg(QString::fromUtf8(partner->getLabel().c_str())));
             _linkLines.push_back(line);
+            lineIndex.insert(std::make_pair(LineKey(line.kind, partner.get()), --_linkLines.end()));
         }
 
         // The nodes this node draws a knob-link line to, per link group.
-        std::map<KnobLinkGroup*, NodesList> knobLinkLines;
+        std::map<KnobLinkGroup*, std::set<const Node*>> knobLinkLines;
         for (InternalLinks::iterator it = links.begin(); it != links.end(); ++it) {
             // Knobs slaved by a node's own internals (Roto, Tracker...) draw no line.
             if (it->kind == Node::eKnobLinkKindSlave) {
@@ -3161,7 +3198,7 @@ NodeGui::onKnobsLinksChanged()
             LinkLineKindEnum kind = eLinkLineKindExpression;
             if (it->kind == Node::eKnobLinkKindLinkGroup) {
                 // The partner draws the line, or the pair are Linked Nodes, whose own lines stand for it.
-                if ((partner.get() < node.get()) || (std::find(linkedNodes.begin(), linkedNodes.end(), partner) != linkedNodes.end())) {
+                if ((partner.get() < node.get()) || linkedNodeSet.count(partner.get())) {
                     continue;
                 }
                 KnobIPtr slave = it->slave.lock();
@@ -3169,22 +3206,25 @@ NodeGui::onKnobsLinksChanged()
                 if (!group) {
                     continue;
                 }
-                std::map<KnobLinkGroup*, NodesList>::iterator lines = knobLinkLines.find(group.get());
+                std::map<KnobLinkGroup*, std::set<const Node*>>::iterator lines = knobLinkLines.find(group.get());
                 if (lines == knobLinkLines.end()) {
-                    lines = knobLinkLines.insert(std::make_pair(group.get(), higherNeighbours(node, nearestMemberNeighbours(node, linkGroupMemberNodes(*group))))).first;
+                    const NodesList members = higherNeighbours(node, nearestMemberNeighbours(node, linkGroupMemberNodes(*group)));
+                    std::set<const Node*> memberSet;
+                    for (NodesList::const_iterator m = members.begin(); m != members.end(); ++m) {
+                        memberSet.insert(m->get());
+                    }
+                    lines = knobLinkLines.insert(std::make_pair(group.get(), memberSet)).first;
                 }
-                if (std::find(lines->second.begin(), lines->second.end(), partner) == lines->second.end()) {
+                if (!lines->second.count(partner.get())) {
                     continue;
                 }
                 kind = eLinkLineKindKnobLink;
             }
 
             LinkLines::iterator found = _linkLines.end();
-            for (LinkLines::iterator it2 = _linkLines.begin(); it2 != _linkLines.end(); ++it2) {
-                if ((it2->kind == kind) && (it2->partner.lock() == partner)) {
-                    found = it2;
-                    break;
-                }
+            std::map<LineKey, LinkLines::iterator>::const_iterator indexed = lineIndex.find(LineKey(kind, partner.get()));
+            if (indexed != lineIndex.end()) {
+                found = indexed->second;
             }
             if (found == _linkLines.end()) {
                 NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>(partner->getNodeGui());
@@ -3202,18 +3242,17 @@ NodeGui::onKnobsLinksChanged()
                 _linkLines.push_back(line);
                 found = _linkLines.end();
                 --found;
+                lineIndex.insert(std::make_pair(LineKey(kind, partner.get()), found));
             }
 
             KnobIPtr slave = it->slave.lock();
             KnobIPtr master = it->master.lock();
-            std::list<LinkedKnob>::iterator foundKnob = found->knobs.end();
-            for (std::list<LinkedKnob>::iterator it2 = found->knobs.begin(); it2 != found->knobs.end(); ++it2) {
-                if ((it2->slave.lock() == slave) && (it2->master.lock() == master)) {
-                    foundKnob = it2;
-                    break;
-                }
-            }
-            if (foundKnob == found->knobs.end()) {
+            const std::tuple<const LinkLine*, const KnobI*, const KnobI*> knobKey(&*found, slave.get(), master.get());
+            std::list<LinkedKnob>::iterator foundKnob;
+            std::map<std::tuple<const LinkLine*, const KnobI*, const KnobI*>, std::list<LinkedKnob>::iterator>::const_iterator indexedKnob = knobIndex.find(knobKey);
+            if (indexedKnob != knobIndex.end()) {
+                foundKnob = indexedKnob->second;
+            } else {
                 LinkedKnob k;
                 k.slave = slave;
                 k.master = master;
@@ -3221,6 +3260,7 @@ NodeGui::onKnobsLinksChanged()
                 found->knobs.push_back(k);
                 foundKnob = found->knobs.end();
                 --foundKnob;
+                knobIndex.insert(std::make_pair(knobKey, foundKnob));
             }
             foundKnob->dimensions.insert(it->dimension);
         }
@@ -3975,6 +4015,24 @@ NodeGui::setNameItemHtml(const QString & name,
     if ( !_graph->getGui() || !_nameItem) {
         return;
     }
+
+    NameItemInputs inputs;
+    inputs.name = name;
+    inputs.label = label;
+    inputs.channelsExtraLabel = _channelsExtraLabel;
+    inputs.framed = mustFrameName();
+    inputs.antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    inputs.applicationFont = QApplication::font();
+    if (_nameItemInputsSet && (inputs == _nameItemInputs)) {
+        // Same text, font and layout: only the body colour the text contrasts with may have moved.
+        const QColor color = _nameItemHasUserFontColor ? _nameItemInputs.userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
+        if (_nameItem->defaultTextColor() != color) {
+            _nameItem->setDefaultTextColor(color);
+        }
+
+        return;
+    }
+
     QString textLabel;
 
     if ( !label.isEmpty() ) {
@@ -4056,11 +4114,9 @@ NodeGui::setNameItemHtml(const QString & name,
     _nameItemHasUserFontColor = takeUserLabelFontColor(&finalText, &userFontColor);
     const bool hasFontTag = finalText.indexOf(QString::fromUtf8(kFontSizeTag)) != -1;
 
-    QString oldText = _nameItem->toHtml();
-    if (finalText == oldText) {
-        // Nothing changed
-        return;
-    }
+    inputs.userFontColor = userFontColor;
+    _nameItemInputs = inputs;
+    _nameItemInputsSet = true;
 
     QFont f;
     QColor color = _nameItemHasUserFontColor ? userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
@@ -4070,8 +4126,7 @@ NodeGui::setNameItemHtml(const QString & name,
     } else {
         f = QApplication::font();
     }
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
-    if (!antialias) {
+    if (!inputs.antialias) {
         f.setStyleStrategy(QFont::NoAntialias);
     }
     _nameItem->setDefaultTextColor(color);

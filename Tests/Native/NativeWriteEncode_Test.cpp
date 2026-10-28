@@ -50,6 +50,7 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
@@ -557,6 +558,29 @@ TEST_F(NativeWriteEncodeTest, WritesTheInputFormatNotTheProjectFormat)
     EXPECT_EQ(640, file.spec.full_width);
     EXPECT_EQ(360, file.spec.full_height);
     EXPECT_EQ(RectI(0, 0, 640, 360), OiioReadSupport::dataWindowOf(file.spec));
+}
+
+TEST_F(NativeWriteEncodeTest, WriterMadeForANodeIsConnectedToItAndWritesItsFormat)
+{
+    disconnectNodes(_checker, _writer, true);
+    CreateNodeArgs args(PLUGINID_NATRON_WRITE, getApp()->getProject());
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr made = getApp()->createWriterFor(_checker, args);
+    ASSERT_TRUE(bool(made));
+    EXPECT_EQ(_checker, made->getInput(0)) << "a Write with no input has no format, so it would write nothing";
+
+    _writer = made;
+    const std::string path = pathOf("renderSelected.exr");
+    setFile(path);
+    renderFrame();
+
+    FileImage file;
+    std::string error;
+    ASSERT_TRUE(readBack(path, &file, &error)) << error;
+    EXPECT_EQ(kWidth, file.spec.full_width);
+    EXPECT_EQ(kHeight, file.spec.full_height);
 }
 
 TEST_F(NativeWriteEncodeTest, OverwriteOffLeavesAnExistingFileUntouched)

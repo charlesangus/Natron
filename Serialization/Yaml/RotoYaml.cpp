@@ -849,6 +849,31 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitStringList(em, warp.boundaries);
             }
+            if (!warp.softBoundaries.empty()) {
+                emitKey(em, "softBoundaries");
+                em << YAML::Value;
+                emitStringList(em, warp.softBoundaries);
+            }
+            if (!warp.cookieCutters.empty()) {
+                emitKey(em, "cookieCutters");
+                em << YAML::Value;
+                emitStringList(em, warp.cookieCutters);
+            }
+            if (!warp.layerAmounts.empty()) {
+                emitKey(em, "layerAmounts");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpLayerAmountSerialization& layer : warp.layerAmounts) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "layer");
+                    em << YAML::Value;
+                    emitString(em, layer.layer);
+                    emitKey(em, "amount");
+                    em << YAML::Value;
+                    emitSplineWarpValue(em, layer.amount);
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
             if (!warp.links.empty()) {
                 emitKey(em, "links");
                 em << YAML::Value << YAML::BeginSeq;
@@ -900,6 +925,26 @@ namespace YamlDetail {
             MapReader reader(node, context, warnings);
             if (YAML::Node boundaries = reader.get("boundaries")) {
                 warp.boundaries = readStringList(boundaries, context + ".boundaries");
+            }
+            if (YAML::Node softBoundaries = reader.get("softBoundaries")) {
+                warp.softBoundaries = readStringList(softBoundaries, context + ".softBoundaries");
+            }
+            if (YAML::Node cookieCutters = reader.get("cookieCutters")) {
+                warp.cookieCutters = readStringList(cookieCutters, context + ".cookieCutters");
+            }
+            if (YAML::Node layerAmounts = reader.get("layerAmounts")) {
+                if (!layerAmounts.IsSequence()) {
+                    fail(layerAmounts, context + ".layerAmounts", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < layerAmounts.size(); ++i) {
+                    const std::string layerContext = context + ".layerAmounts[" + std::to_string(i) + "]";
+                    SplineWarpLayerAmountSerialization layer;
+                    MapReader layerReader(layerAmounts[i], layerContext, warnings);
+                    layer.layer = readString(layerReader.get("layer"), layerContext + ".layer");
+                    layer.amount = readSplineWarpValue(layerReader.get("amount"), layerContext + ".amount", warnings);
+                    layerReader.finish();
+                    warp.layerAmounts.push_back(layer);
+                }
             }
             if (YAML::Node links = reader.get("links")) {
                 if (!links.IsSequence()) {

@@ -219,6 +219,48 @@ TEST_F(SplineWarpModelTest, ABoundaryMustBeClosedAndUnlinked)
     EXPECT_FALSE(ctx->isBoundary(boundary));
 }
 
+TEST_F(SplineWarpModelTest, ACookieCutterMustBeClosedAndMayBeLinked)
+{
+    NodePtr host;
+    SplineWarpContextPtr ctx = makeHost(&host);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr open = makeOpenLine(ctx, 0., 0.);
+    BezierPtr a = makeQuad(ctx, 0., 0., 100.);
+    BezierPtr b = makeQuad(ctx, 30., 20., 90.);
+    ASSERT_TRUE(bool(open) && bool(a) && bool(b));
+    ASSERT_TRUE(bool(ctx->link(a, b, true)));
+
+    EXPECT_THROW(ctx->setCookieCutter(open, true), std::invalid_argument);
+    EXPECT_FALSE(ctx->isCookieCutter(open));
+    EXPECT_FALSE(ctx->hasActiveCookieCutter(kTime));
+
+    const RotoCurveContextHostStatePtr before = ctx->saveHostState();
+    const U64 hashBefore = ctx->getContentHash();
+    ctx->setCookieCutter(a, true);
+    EXPECT_TRUE(ctx->isCookieCutter(a));
+    EXPECT_EQ(eSplineWarpCurveRoleLinked, ctx->getRole(a));
+    EXPECT_TRUE(ctx->hasActiveCookieCutter(kTime));
+    EXPECT_NE(hashBefore, ctx->getContentHash());
+
+    // Undo restores the saved state.
+    ctx->restoreHostState(before);
+    EXPECT_FALSE(ctx->isCookieCutter(a));
+    EXPECT_EQ(hashBefore, ctx->getContentHash());
+
+    // A deactivated cookie cutter keeps its flag but is not active.
+    ctx->setCookieCutter(b, true);
+    b->setActivated(false, kTime);
+    EXPECT_TRUE(ctx->isCookieCutter(b));
+    EXPECT_FALSE(ctx->hasActiveCookieCutter(kTime));
+    b->setActivated(true, kTime);
+    EXPECT_TRUE(ctx->hasActiveCookieCutter(kTime));
+
+    // Opening a cookie cutter clears its flag; its link stays.
+    b->setCurveFinished(false);
+    EXPECT_FALSE(ctx->isCookieCutter(b));
+    EXPECT_TRUE(bool(ctx->getLink(b)));
+}
+
 TEST_F(SplineWarpModelTest, InsertingAPointKeepsCorrespondencesInPlace)
 {
     NodePtr host;
@@ -440,6 +482,7 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
 
     ctx->setBoundary(boundary, true);
     ctx->setSoftBoundary(soft, true);
+    ctx->setCookieCutter(a, true);
 
     RotoLayerPtr layer = ctx->addLayer();
     ASSERT_TRUE(bool(layer));
@@ -453,6 +496,7 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_EQ(std::size_t(3), saved.splineWarp.links.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.boundaries.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.softBoundaries.size());
+    ASSERT_EQ(std::size_t(1), saved.splineWarp.cookieCutters.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.layerAmounts.size());
 
     const std::string hostName = host->getScriptName();
@@ -558,6 +602,10 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_TRUE(bool(loadedSoft));
     EXPECT_TRUE(loadedCtx->isSoftBoundary(loadedSoft));
     EXPECT_EQ(eSplineWarpCurveRoleSoftBoundary, loadedCtx->getRole(loadedSoft));
+    ASSERT_TRUE(bool(curveNamed(aName)));
+    EXPECT_TRUE(loadedCtx->isCookieCutter(curveNamed(aName)));
+    EXPECT_FALSE(loadedCtx->isCookieCutter(curveNamed(bName)));
+    EXPECT_EQ(std::size_t(1), loadedCtx->getCookieCutters().size());
 
     RotoLayerPtr loadedLayer = std::dynamic_pointer_cast<RotoLayer>(loadedCtx->getItemByName(layerName));
     ASSERT_TRUE(bool(loadedLayer));

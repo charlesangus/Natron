@@ -37,8 +37,9 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The parameter block of splinewarp.slang, word for word: the sampling settings, the
- * field's window and the layout of its tables (SplineWarpField::getGpuTables()), and the inverse
- * of a concatenated upstream matrix that the field's coordinates go through.
+ * field's window and the layout of its tables (SplineWarpField::getGpuTables()), the inverse
+ * of a concatenated upstream matrix that the field's coordinates go through, and where the image
+ * sampled lies in its buffer.
  **/
 struct SplineWarpGpuParams {
     uint32_t filter = 0;
@@ -59,9 +60,18 @@ struct SplineWarpGpuParams {
     // kSplineWarpGpuSubFrameWords entry per field (setSplineWarpGpuSubFrame()), which replaces the
     // field words above, and the field flags, for that field.
     uint32_t subFrames = 0;
+    // The image sampled, in floats from the start of its buffer, nComps floats per pixel of
+    // [sampleX1, sampleX2) x [sampleY1, sampleY2).
+    uint32_t sampleOffset = 0;
+    uint32_t sampleStride = 0;
+    int32_t sampleX1 = 0;
+    int32_t sampleY1 = 0;
+    int32_t sampleX2 = 0;
+    int32_t sampleY2 = 0;
+    uint32_t sampleNComps = 0;
 };
 
-static_assert(sizeof(SplineWarpGpuParams) == 31 * 4, "splinewarp.slang reads 31 words");
+static_assert(sizeof(SplineWarpGpuParams) == 38 * 4, "splinewarp.slang reads 38 words");
 
 inline constexpr uint32_t kSplineWarpGpuSubFrameWords = 11;
 
@@ -75,6 +85,25 @@ inline constexpr uint32_t kSplineWarpGpuSample = 8;
 inline constexpr uint32_t kSplineWarpGpuField = 16;
 inline constexpr uint32_t kSplineWarpGpuFeathers = 32;
 inline constexpr uint32_t kSplineWarpGpuMatrix = 64;
+// The dispatch writes the Source times the cookie mask, which is the image sampled, instead.
+inline constexpr uint32_t kSplineWarpGpuCutPass = 128;
+
+// The image sampled: offset and stride in floats, bounds in pixels.
+inline void
+setSplineWarpGpuSample(uint64_t offsetFloats,
+                       int strideFloats,
+                       const RectI& bounds,
+                       int nComps,
+                       SplineWarpGpuParams* params)
+{
+    params->sampleOffset = (uint32_t)offsetFloats;
+    params->sampleStride = (uint32_t)strideFloats;
+    params->sampleX1 = bounds.x1;
+    params->sampleY1 = bounds.y1;
+    params->sampleX2 = bounds.x2;
+    params->sampleY2 = bounds.y2;
+    params->sampleNComps = (uint32_t)nComps;
+}
 
 inline void
 setSplineWarpGpuField(const SplineWarpFieldGpuLayout& layout,

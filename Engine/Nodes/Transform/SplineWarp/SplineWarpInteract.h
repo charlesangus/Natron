@@ -71,6 +71,7 @@ enum SplineWarpActionEnum {
     eSplineWarpActionSwap,
     eSplineWarpActionToggleHardBoundary,
     eSplineWarpActionToggleSoftBoundary,
+    eSplineWarpActionToggleCookieCutter,
 };
 
 class SplineWarpInteract;
@@ -161,6 +162,12 @@ public:
 
     // Why toggleBoundarySelected(soft) would refuse the current selection, empty when it would not.
     std::string canToggleBoundary(bool soft) const;
+
+    /**
+     * @brief Makes every selected curve a cookie cutter, or, when they all are, none of them.
+     * Refuses an open curve.
+     **/
+    std::string toggleCookieCutterSelected(UndoCommandPtr* pushed = 0);
 
     // Why action would refuse items as the selection, in that order; empty when it would not.
     std::string getRefusal(SplineWarpActionEnum action, const std::list<RotoItemPtr>& items) const;

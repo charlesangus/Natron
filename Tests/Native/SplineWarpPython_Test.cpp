@@ -311,6 +311,33 @@ TEST_F(SplineWarpPythonTest, SoftBoundariesAndLayerAmounts)
     EXPECT_DOUBLE_EQ(1., ctx->getInheritedLayerAmount(links[0]->getSource(), 10.));
 }
 
+// Cookie cutters, set from Python, reach the model; an open curve is refused.
+TEST_F(SplineWarpPythonTest, CookieCutters)
+{
+    resetProject();
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+
+    expectScript(std::string(kPythonHelpers) + "n = " + pythonName(node) + "\n"
+                                                                           "roto = n.getRotoContext()\n"
+                                                                           "sw = n.getSplineWarp()\n"
+                                                                           "a = quad(roto, 20., 15., 10.)\n"
+                                                                           "b = quad(roto, 20., 15., 10., 3., -2.)\n"
+                                                                           "l = sw.link(a, b)\n"
+                                                                           "sw.setCookieCutter(a, True)\n"
+                                                                           "assert sw.isCookieCutter(a)\n"
+                                                                           "assert not sw.isCookieCutter(b)\n"
+                                                                           "line = roto.createBezier(2., 2., 1.)\n"
+                                                                           "line.addControlPoint(40., 2.)\n"
+                                                                           "assert raises(lambda: sw.setCookieCutter(line, True)), 'open cookie cutter'\n"
+                                                                           "assert not sw.isCookieCutter(line)\n");
+
+    SplineWarpContextPtr ctx = std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext());
+    ASSERT_TRUE(bool(ctx));
+    EXPECT_EQ(1u, ctx->getCookieCutters().size());
+    EXPECT_EQ(1u, ctx->getLinks().size());
+}
+
 TEST_F(SplineWarpPythonTest, OtherNodesHaveNoSplineWarp)
 {
     resetProject();

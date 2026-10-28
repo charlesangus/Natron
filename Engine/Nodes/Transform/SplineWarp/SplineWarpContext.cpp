@@ -357,6 +357,7 @@ SplineWarpContext::SplineWarpContext(const NodePtr& node)
     , _links()
     , _boundaries()
     , _softBoundaries()
+    , _cookieCutters()
     , _layerAmounts()
     , _loading(false)
 {
@@ -582,6 +583,66 @@ SplineWarpContext::getSoftBoundaries() const
     std::lock_guard<std::mutex> l(_warpMutex);
 
     return lockedCurves(_softBoundaries);
+}
+
+bool
+SplineWarpContext::isCookieCutter(const BezierPtr& curve) const
+{
+    if (!curve) {
+        return false;
+    }
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    return containsCurve(_cookieCutters, curve.get());
+}
+
+void
+SplineWarpContext::setCookieCutter(const BezierPtr& curve,
+                                   bool cookieCutter)
+{
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        const bool isNow = curve && containsCurve(_cookieCutters, curve.get());
+        if (isNow == cookieCutter) {
+            return;
+        }
+        if (cookieCutter) {
+            if (!ownsCurve(curve)) {
+                throw std::invalid_argument("SplineWarp: a cookie cutter must be a curve of this node.");
+            }
+            if (!SplineWarpCurveShape::isClosedCurve(*curve)) {
+                throw std::invalid_argument("SplineWarp: a cookie cutter must be a closed curve.");
+            }
+            _cookieCutters.push_back(curve);
+        } else {
+            eraseCurve(&_cookieCutters, curve.get());
+        }
+    }
+    warpDataChanged(true);
+    rolesChanged();
+}
+
+std::list<BezierPtr>
+SplineWarpContext::getCookieCutters() const
+{
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    return lockedCurves(_cookieCutters);
+}
+
+bool
+SplineWarpContext::hasActiveCookieCutter(double time) const
+{
+    const std::list<BezierPtr> curves = getCookieCutters();
+
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        if ((*it)->isActivated(time) && !(*it)->isDeactivatedRecursive()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 double
@@ -1209,6 +1270,7 @@ SplineWarpContext::onCurveFinishedChanged(const BezierPtr& curve)
                 break;
             }
         }
+        changed = eraseCurve(&_cookieCutters, curve.get()) || changed;
     }
     if (getLink(curve)) {
         // Opening drops the closing segment; closing adds one, so every parameter stays valid.
@@ -1258,6 +1320,7 @@ SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
         std::lock_guard<std::mutex> l(_warpMutex);
         changed = eraseCurve(&_boundaries, curve.get());
         changed = eraseCurve(&_softBoundaries, curve.get()) || changed;
+        changed = eraseCurve(&_cookieCutters, curve.get()) || changed;
         SplineWarpLinkPtr link = findLinkLocked(curve.get());
         if (link) {
             _links.erase(std::find(_links.begin(), _links.end(), link));
@@ -1286,6 +1349,7 @@ struct SplineWarpHostState
     std::vector<SavedLink> links;
     std::list<BezierWPtr> boundaries;
     std::list<BezierWPtr> softBoundaries;
+    std::list<BezierWPtr> cookieCutters;
     std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> layerAmounts;
 };
 } // anonymous namespace
@@ -1298,6 +1362,7 @@ SplineWarpContext::saveHostState() const
 
     state->boundaries = _boundaries;
     state->softBoundaries = _softBoundaries;
+    state->cookieCutters = _cookieCutters;
     state->layerAmounts = _layerAmounts;
     for (std::size_t i = 0; i < _links.size(); ++i) {
         const SplineWarpLink& link = *_links[i];
@@ -1329,6 +1394,7 @@ SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
         std::lock_guard<std::mutex> l(_warpMutex);
         _boundaries = saved->boundaries;
         _softBoundaries = saved->softBoundaries;
+        _cookieCutters = saved->cookieCutters;
         _layerAmounts = saved->layerAmounts;
         _links.clear();
         for (std::size_t i = 0; i < saved->links.size(); ++i) {
@@ -1362,6 +1428,11 @@ SplineWarpContext::appendHostContentHash(ContentHasher& h) const
     }
     h.appendU64((U64)_softBoundaries.size());
     for (std::list<BezierWPtr>::const_iterator it = _softBoundaries.begin(); it != _softBoundaries.end(); ++it) {
+        BezierPtr curve = it->lock();
+        h.appendString(curve ? curve->getScriptName() : std::string());
+    }
+    h.appendU64((U64)_cookieCutters.size());
+    for (std::list<BezierWPtr>::const_iterator it = _cookieCutters.begin(); it != _cookieCutters.end(); ++it) {
         BezierPtr curve = it->lock();
         h.appendString(curve ? curve->getScriptName() : std::string());
     }
@@ -1412,6 +1483,12 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
             warp.softBoundaries.push_back(curve->getScriptName());
         }
     }
+    for (std::list<BezierWPtr>::const_iterator it = _cookieCutters.begin(); it != _cookieCutters.end(); ++it) {
+        BezierPtr curve = it->lock();
+        if (curve) {
+            warp.cookieCutters.push_back(curve->getScriptName());
+        }
+    }
     for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::const_iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
         RotoLayerPtr layer = it->first.lock();
         if (layer) {
@@ -1453,6 +1530,7 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
         _links.clear();
         _boundaries.clear();
         _softBoundaries.clear();
+        _cookieCutters.clear();
         _layerAmounts.clear();
     }
     _loading = true;
@@ -1482,6 +1560,14 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
                 continue;
             }
             _softBoundaries.push_back(curve);
+        }
+        for (std::list<std::string>::const_iterator it = warp.cookieCutters.begin(); it != warp.cookieCutters.end(); ++it) {
+            BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
+            if (!curve || !SplineWarpCurveShape::isClosedCurve(*curve) || containsCurve(_cookieCutters, curve.get())) {
+                logDropped("SplineWarp: dropped cookie cutter " + *it + ": no closed curve has that name.");
+                continue;
+            }
+            _cookieCutters.push_back(curve);
         }
         for (std::list<Serialization::SplineWarpLayerAmountSerialization>::const_iterator it = warp.layerAmounts.begin(); it != warp.layerAmounts.end(); ++it) {
             RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(getItemByName(it->layer));

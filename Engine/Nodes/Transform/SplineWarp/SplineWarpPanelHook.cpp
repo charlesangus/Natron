@@ -46,6 +46,7 @@ const ActionInfo kActions[] = {
     { eSplineWarpActionSwap, "swap" },
     { eSplineWarpActionToggleHardBoundary, "toggleHardBoundary" },
     { eSplineWarpActionToggleSoftBoundary, "toggleSoftBoundary" },
+    { eSplineWarpActionToggleCookieCutter, "toggleCookieCutter" },
 };
 } // anonymous namespace
 
@@ -61,7 +62,7 @@ SplineWarpPanelHook::~SplineWarpPanelHook()
 std::vector<RotoCurvePanelHook::Column>
 SplineWarpPanelHook::getColumns() const
 {
-    std::vector<Column> columns(2);
+    std::vector<Column> columns(3);
 
     columns[eColumnRole].header = tr("Role").toStdString();
     columns[eColumnRole].toolTip = tr("Source or Destination for a curve in a link, Hard Boundary or Soft Boundary for a boundary. "
@@ -69,6 +70,10 @@ SplineWarpPanelHook::getColumns() const
                                        .toStdString();
     columns[eColumnLinkedTo].header = tr("Linked To").toStdString();
     columns[eColumnLinkedTo].toolTip = tr("The other curve of the link the curve is in.").toStdString();
+    columns[eColumnCookieCutter].header = tr("Cookie Cutter").toStdString();
+    columns[eColumnCookieCutter].toolTip = tr("Yes for a closed curve that cuts the Source to its shape (Cookie Cut Input) "
+                                              "and makes the Output Mask, whatever its role.")
+                                               .toStdString();
 
     return columns;
 }
@@ -106,6 +111,11 @@ SplineWarpPanelHook::getItemText(const RotoItemPtr& item,
             }
         }
         break;
+    case eColumnCookieCutter:
+        if (context->isCookieCutter(curve)) {
+            return tr("Yes").toStdString();
+        }
+        break;
     default:
         break;
     }
@@ -129,6 +139,7 @@ SplineWarpPanelHook::getItemMenuActions(const std::list<RotoItemPtr>& items) con
         tr("Swap Source/Destination"),
         tr("Toggle Hard Boundary"),
         tr("Toggle Soft Boundary"),
+        tr("Toggle Cookie Cutter"),
     };
     for (std::size_t i = 0; i < sizeof(kActions) / sizeof(kActions[0]); ++i) {
         MenuAction action;

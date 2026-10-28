@@ -3,14 +3,19 @@ import coordmap;
 import resamplecore;
 
 // SplineWarp::renderOp per pixel, SplineWarpField::getRow() included. The wrap's push block
-// carries the Source, which is both the image sampled and the image blended under the mask and
-// mix, the destination and the mask; the parameter block in wrapAux carries the settings, the
-// field's window and table layout, and the inverse of a concatenated upstream matrix; fieldBuf
-// holds the tables SplineWarpField::getGpuTables() builds, after a table of the fields to average
-// with motion blur. SplineWarpGpuParams in
+// carries the Source, the image blended under the mask and mix, the destination and the mask;
+// the parameter block in wrapAux carries the settings, the field's window and table layout, the
+// inverse of a concatenated upstream matrix and the geometry of sampleBuf; fieldBuf holds the
+// tables SplineWarpField::getGpuTables() builds, after a table of the fields to average with
+// motion blur; sampleBuf holds the image sampled: the Source cropped to its format, the Source
+// cut by the cookie mask, or the cookie mask itself. SplineWarpGpuParams in
 // Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h mirrors the block's words.
+//
+// With kSplineWarpCutPass the dispatch instead writes the Source times the cookie mask in
+// sampleBuf, the image a later dispatch samples.
 
 [[vk::binding(4, 0)]] StructuredBuffer<uint> fieldBuf;
+[[vk::binding(5, 0)]] StructuredBuffer<float> sampleBuf;
 
 static const uint kSplineWarpClamp = 1;
 static const uint kSplineWarpBlackOutside = 2;
@@ -19,6 +24,7 @@ static const uint kSplineWarpSample = 8;
 static const uint kSplineWarpField = 16;
 static const uint kSplineWarpFeathers = 32;
 static const uint kSplineWarpMatrix = 64;
+static const uint kSplineWarpCutPass = 128;
 
 // Where SplineWarp's mapRowThrough sends a coordinate the matrix maps behind the camera.
 static const float kOutsideCoord = -1e9;
@@ -43,6 +49,13 @@ struct SplineWarpParams
     uint featherStride;
     FF m[9];
     uint subFrames;
+    uint sampleOffset;
+    uint sampleStride;
+    int sampleX1;
+    int sampleY1;
+    int sampleX2;
+    int sampleY2;
+    uint sampleNComps;
 }
 
 SplineWarpParams splineWarpLoad(StructuredBuffer<uint> params)
@@ -63,6 +76,13 @@ SplineWarpParams splineWarpLoad(StructuredBuffer<uint> params)
     for (uint k = 0; k < 9; ++k)
         s.m[k] = ffMake(asfloat(params[12 + 2 * k]), asfloat(params[13 + 2 * k]));
     s.subFrames = params[30];
+    s.sampleOffset = params[31];
+    s.sampleStride = params[32];
+    s.sampleX1 = int(params[33]);
+    s.sampleY1 = int(params[34]);
+    s.sampleX2 = int(params[35]);
+    s.sampleY2 = int(params[36]);
+    s.sampleNComps = params[37];
     return s;
 }
 
@@ -186,17 +206,30 @@ void mapThrough(SplineWarpParams s, inout float2 coord, inout float4 J)
 ResampleSource splineWarpSource(SplineWarpParams s)
 {
     ResampleSource src;
-    src.buf = wrapSrc;
-    src.offset = wrap.srcOffset;
-    src.stride = wrap.srcStride;
-    src.x1 = wrap.srcX1;
-    src.y1 = wrap.srcY1;
-    src.x2 = wrap.srcX2;
-    src.y2 = wrap.srcY2;
-    src.nComps = wrap.nComps;
-    src.valid = (s.flags & kSplineWarpSample) != 0 && wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
+    src.buf = sampleBuf;
+    src.offset = s.sampleOffset;
+    src.stride = s.sampleStride;
+    src.x1 = s.sampleX1;
+    src.y1 = s.sampleY1;
+    src.x2 = s.sampleX2;
+    src.y2 = s.sampleY2;
+    src.nComps = s.sampleNComps;
+    src.valid = (s.flags & kSplineWarpSample) != 0 && s.sampleX2 > s.sampleX1 && s.sampleY2 > s.sampleY1;
     src.blackOutside = (s.flags & kSplineWarpBlackOutside) != 0;
     return src;
+}
+
+// The pixel of sampleBuf at p in channel-bit order, zero outside it.
+float4 readSample(SplineWarpParams s, int2 p)
+{
+    float4 v = float4(0.0, 0.0, 0.0, 0.0);
+    if (!wrapInside(p, s.sampleX1, s.sampleY1, s.sampleX2, s.sampleY2))
+        return v;
+    const uint n = s.sampleNComps;
+    const uint base = s.sampleOffset + uint(p.y - s.sampleY1) * s.sampleStride + uint(p.x - s.sampleX1) * n;
+    for (uint c = 0; c < n && c < 4; ++c)
+        v[wrapChannelBit(n, c)] = sampleBuf[base + c];
+    return v;
 }
 
 // The sample in channel-bit order, a one-channel pixel being alpha.
@@ -216,12 +249,12 @@ float4 splineWarpSample(SplineWarpParams s, int2 p)
     {
         // A pixel the warp leaves in place is the Source pixel itself, which a filter would soften
         // with its neighbours.
-        return wrapReadSource(p);
+        return readSample(s, p);
     }
     const bool jacobian = (s.flags & kSplineWarpJacobian) != 0;
     const float4 v = sampleAt(splineWarpSource(s), coord.x, coord.y, J, jacobian, s.filter, (s.flags & kSplineWarpClamp) != 0, kWrapNone,
                               kWrapNone, int4(0, 0, 0, 0));
-    if (wrap.nComps == 1)
+    if (s.sampleNComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);
     return v;
 }
@@ -237,6 +270,8 @@ struct SplineWarpOp : IPixelOp
 
     float4 apply(float4 v, int2 xy)
     {
+        if ((s.flags & kSplineWarpCutPass) != 0)
+            return wrapReadSource(xy) * readSample(s, xy).w;
         if (s.subFrames == 0)
             return splineWarpSample(s, xy);
         // Summed in sub-frame order then divided, as SplineWarp::renderOp does.

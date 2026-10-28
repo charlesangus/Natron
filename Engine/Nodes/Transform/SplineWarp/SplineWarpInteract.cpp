@@ -490,6 +490,18 @@ SplineWarpInteract::getRefusal(SplineWarpActionEnum action,
         }
         break;
     }
+    case eSplineWarpActionToggleCookieCutter: {
+        const QString name = tr("Toggle Cookie Cutter");
+        if (!context || curves.empty() || (curves.size() != items.size())) {
+            return tr("%1 needs selected curves.").arg(name).toStdString();
+        }
+        for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+            if (!SplineWarpCurveShape::isClosedCurve(**it)) {
+                return tr("%1: %2 is not closed.").arg(name, curveName(*it)).toStdString();
+            }
+        }
+        break;
+    }
     }
 
     return std::string();
@@ -512,6 +524,8 @@ SplineWarpInteract::runAction(SplineWarpActionEnum action,
         return toggleBoundarySelected(false, pushed);
     case eSplineWarpActionToggleSoftBoundary:
         return toggleBoundarySelected(true, pushed);
+    case eSplineWarpActionToggleCookieCutter:
+        return toggleCookieCutterSelected(pushed);
     }
 
     return std::string();
@@ -546,6 +560,30 @@ SplineWarpInteract::toggleBoundarySelected(bool soft,
                  } else {
                      context->setBoundary(*it, !allBoundaries);
                  }
+             }
+         }),
+         pushed);
+
+    return std::string();
+}
+
+std::string
+SplineWarpInteract::toggleCookieCutterSelected(UndoCommandPtr* pushed)
+{
+    const std::string refusal = getRefusal(eSplineWarpActionToggleCookieCutter, getSelectedRotoItems());
+
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
+    }
+    SplineWarpContextPtr context = getWarpContext();
+    std::list<BezierPtr> curves = getSelectedBeziers();
+    bool allCookieCutters = true;
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        allCookieCutters = allCookieCutters && context->isCookieCutter(*it);
+    }
+    push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Toggle Cookie Cutter").toStdString(), [context, curves, allCookieCutters]() {
+             for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+                 context->setCookieCutter(*it, !allCookieCutters);
              }
          }),
          pushed);

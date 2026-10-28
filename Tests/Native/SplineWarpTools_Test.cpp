@@ -1031,9 +1031,10 @@ TEST_F(SplineWarpToolsTest, ThePanelShowsRolesAndPartners)
     ASSERT_TRUE(hook != nullptr);
 
     const std::vector<RotoCurvePanelHook::Column> columns = hook->getColumns();
-    ASSERT_EQ(std::size_t(2), columns.size());
+    ASSERT_EQ(std::size_t(3), columns.size());
     EXPECT_EQ(std::string("Role"), columns[SplineWarpPanelHook::eColumnRole].header);
     EXPECT_EQ(std::string("Linked To"), columns[SplineWarpPanelHook::eColumnLinkedTo].header);
+    EXPECT_EQ(std::string("Cookie Cutter"), columns[SplineWarpPanelHook::eColumnCookieCutter].header);
 
     BezierPtr source = makeQuad(ctx, 10., 10., 10.);
     BezierPtr destination = makeQuad(ctx, 30., 10., 10.);
@@ -1097,11 +1098,11 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     };
 
     // Two unlinked curves: Link; the open one cannot be a hard boundary, but can be a soft one.
-    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", true } });
+    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", true }, { "toggleCookieCutter", false } });
     // One closed unlinked curve: Duplicate and Link, both boundaries.
-    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", true }, { "toggleSoftBoundary", true } });
+    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", true }, { "toggleSoftBoundary", true }, { "toggleCookieCutter", true } });
     // A layer in the selection is not a curve.
-    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", false } });
+    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", false }, { "toggleCookieCutter", false } });
 
     // The items' order picks the source.
     hook->onItemMenuActionTriggered("link", std::list<RotoItemPtr> { b, open });
@@ -1109,7 +1110,7 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     ASSERT_TRUE(bool(link));
     EXPECT_EQ(b, link->getSource());
     EXPECT_EQ(open, link->getDestination());
-    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", false } });
+    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleHardBoundary", false }, { "toggleSoftBoundary", false }, { "toggleCookieCutter", false } });
 
     hook->onItemMenuActionTriggered("swap", std::list<RotoItemPtr> { open });
     link = ctx->getLink(b);
@@ -1124,6 +1125,11 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     EXPECT_TRUE(ctx->isBoundary(a));
     hook->onItemMenuActionTriggered("toggleSoftBoundary", std::list<RotoItemPtr> { open });
     EXPECT_TRUE(ctx->isSoftBoundary(open));
+    hook->onItemMenuActionTriggered("toggleCookieCutter", std::list<RotoItemPtr> { a });
+    EXPECT_TRUE(ctx->isCookieCutter(a));
+    EXPECT_TRUE(ctx->isBoundary(a));
+    EXPECT_EQ(std::string("Yes"), hook->getItemText(a, SplineWarpPanelHook::eColumnCookieCutter));
+    EXPECT_EQ(std::string(), hook->getItemText(open, SplineWarpPanelHook::eColumnCookieCutter));
 
     // A refused action changes nothing.
     const U64 hash = ctx->getContentHash();

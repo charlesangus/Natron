@@ -184,8 +184,8 @@ typedef std::shared_ptr<SplineWarpContext> SplineWarpContextPtr;
  * layer holding its destination curve.
  *
  * Correspondence parameters and start offsets follow control-point insertions and removals so they
- * keep their place on the curve. Deleting a curve deletes its link or its boundary role, and
- * opening a boundary curve clears its role.
+ * keep their place on the curve. Deleting a curve deletes its link, its boundary role and its cookie
+ * cutter flag; opening a curve clears its hard boundary role and its cookie cutter flag.
  **/
 class SplineWarpContext
     : public RotoCurveContext {
@@ -220,6 +220,20 @@ public:
     void setSoftBoundary(const BezierPtr& curve, bool softBoundary);
 
     std::list<BezierPtr> getSoftBoundaries() const;
+
+    /**
+     * @brief A cookie cutter cuts the Source to its shape and makes the output mask, whatever its
+     * role. Throws std::invalid_argument when making a cookie cutter of a curve that is open or not
+     * in this context.
+     **/
+    bool isCookieCutter(const BezierPtr& curve) const;
+    void setCookieCutter(const BezierPtr& curve, bool cookieCutter);
+    std::list<BezierPtr> getCookieCutters() const;
+
+    /**
+     * @brief Whether a cookie cutter is active at time (deactivated curves are ignored).
+     **/
+    bool hasActiveCookieCutter(double time) const;
 
     /**
      * @brief The layer's own amount at time, 1 unless set.
@@ -354,6 +368,7 @@ private:
     std::vector<SplineWarpLinkPtr> _links;
     std::list<BezierWPtr> _boundaries;
     std::list<BezierWPtr> _softBoundaries;
+    std::list<BezierWPtr> _cookieCutters;
     std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> _layerAmounts;
     bool _loading;
 };

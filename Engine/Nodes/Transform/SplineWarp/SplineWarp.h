@@ -37,9 +37,10 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpCookie.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
-#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
@@ -60,6 +61,13 @@
 #define kSplineWarpParamBBox "bbox"
 #define kSplineWarpParamMotionBlur "motionBlur"
 #define kSplineWarpParamShutter "shutter"
+#define kSplineWarpParamCookieCutInput "cookieCutInput"
+#define kSplineWarpParamOutputMask "outputMask"
+#define kSplineWarpParamCropToFormat "cropToFormat"
+
+// The channel outputMask writes the warped cookie mask to by default.
+#define kSplineWarpOutputMaskLayer "SplineWarpMask"
+#define kSplineWarpOutputMaskChannel "A"
 
 #define kSplineWarpSolverTps "tps"
 #define kSplineWarpSolverMesh "mesh"
@@ -144,6 +152,17 @@ public:
     virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief The outputMask layer, while a curve is an active cookie cutter and outputMask names
+     * a channel of a layer other than colour.
+     **/
+    virtual void addProducedPlanes(double time, ViewIdx view, std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
+
+    /**
+     * @brief The outputMask layer, one channel, when addProducedPlanes() produces it.
+     **/
+    bool getOutputMaskLayer(double time, ViewIdx view, ImageLayerDesc* layer) const;
+
+    /**
      * @brief The times a render at time averages: with motion blur, the centres of motionBlur's
      * stratified sub-frames over the shutter; otherwise, or when the warp is the same at every
      * sub-frame, the one time whose warp it renders.
@@ -202,6 +221,11 @@ private:
         Resampler::ShutterOffsetEnum shutterOffset = Resampler::eShutterOffsetStart;
         double shutterCustomOffset = 0.;
         bool warped = true;
+        // cookieCutInput is on and some curve is an active cookie cutter.
+        bool cookieCut = false;
+        // The Source's format in canonical coordinates, which the Source is sampled inside; null
+        // when cropToFormat is off.
+        RectD cropFormat;
     };
 
     // The solved warp at one time: its samples, the map of the chosen solver, and whether it moves
@@ -220,6 +244,19 @@ private:
     struct TimedWarp {
         double time = 0.;
         Warp warp;
+    };
+
+    struct CookieKey {
+        U64 contextHash;
+        double time;
+        RectI window;
+        double scaleX;
+        double scaleY;
+
+        bool operator==(const CookieKey& o) const
+        {
+            return contextHash == o.contextHash && time == o.time && window == o.window && scaleX == o.scaleX && scaleY == o.scaleY;
+        }
     };
 
     struct SampleKey {
@@ -286,6 +323,12 @@ private:
      **/
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The outputMask plane is made from the cookie cutters alone.
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool getOpGpuInputLayer(int inputNb,
                                     const ImageLayerDesc& plane,
                                     double time,
@@ -317,6 +360,17 @@ private:
 
     bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
 
+    // The Source's format in canonical coordinates, null without a Source.
+    RectD getSourceFormat(double time, ViewIdx view) const;
+    /**
+     * @brief The cookie mask at time over the cookie cutters' pixels at the scale, inside the
+     * Source's format when cropping; null without an active cookie cutter.
+     **/
+    SplineWarpCookieMaskConstPtr computeCookieMask(double time, const Settings& settings, const RenderScale& scale, double par);
+    // Whether the outputMask channel names a plane this render is asked for.
+    bool isOutputMaskPlane(const ImageLayerDesc& plane, double time, ViewIdx view) const;
+    // Enables cookieCutInput and outputMask while some curve is a cookie cutter.
+    void updateCookieKnobsEnabled();
     // The Source's region of definition at full scale, null without a Source or when it fails.
     RectD getSourceBounds(double time, ViewIdx view);
 
@@ -362,6 +416,9 @@ private:
     KnobDoubleWPtr _linkAmount;
     KnobBoolWPtr _boundaryBBox;
     KnobDoubleWPtr _boundaryCurveResolution;
+    KnobBoolWPtr _cookieCutInput;
+    KnobChannelSelectWPtr _outputMask;
+    KnobBoolWPtr _cropToFormat;
     // While syncAmountKnobs() sets the amount knobs, which must not write back.
     bool _syncingAmounts;
 
@@ -377,6 +434,7 @@ private:
     SplineWarpMeshCache _forwardMeshes;
     SplineWarpFieldCache _fields;
     SplineWarpFieldCache _subFrameFields;
+    SplineWarpLruCache<CookieKey, SplineWarpCookieMask> _cookieMasks;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -43,7 +43,7 @@ NATRON_NAMESPACE_ENTER
 class SplineWarpInteract;
 
 /**
- * @brief What SplineWarp adds to its curve list: the Role and Linked To columns, and the warp
+ * @brief What SplineWarp adds to its curve list: the Role, Linked To and Cookie Cutter columns, and the warp
  * actions in an item's context menu, disabled when they would refuse the selection.
  **/
 class SplineWarpPanelHook
@@ -54,6 +54,7 @@ public:
     enum ColumnEnum {
         eColumnRole = 0,
         eColumnLinkedTo,
+        eColumnCookieCutter,
     };
 
     explicit SplineWarpPanelHook(const std::shared_ptr<SplineWarpInteract>& interact);

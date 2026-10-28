@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cmath>
 #include <functional>
 #include <list>
@@ -47,6 +48,8 @@
 #include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -342,6 +345,9 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
         kSplineWarpParamLinkAmount,
         kSplineWarpParamBoundaryBBox,
         kSplineWarpParamBoundaryCurveResolution,
+        kSplineWarpParamCookieCutInput,
+        kSplineWarpParamOutputMask,
+        kSplineWarpParamCropToFormat,
     };
     for (const char* name : names) {
         EXPECT_TRUE(bool(node->getKnobByName(name))) << name;
@@ -386,11 +392,26 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     ASSERT_TRUE(bool(boundaryCurveResolution));
     EXPECT_EQ("Boundary Curve Resolution", boundaryCurveResolution->getLabel());
     EXPECT_EQ(4., boundaryCurveResolution->getValue());
+    KnobBoolPtr cookieCutInput = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kSplineWarpParamCookieCutInput));
+    ASSERT_TRUE(bool(cookieCutInput));
+    EXPECT_EQ("Cookie Cut Input", cookieCutInput->getLabel());
+    EXPECT_FALSE(cookieCutInput->getValue());
+    EXPECT_FALSE(cookieCutInput->isEnabled(0)) << "no cookie cutter";
+    KnobChannelSelectPtr outputMask = std::dynamic_pointer_cast<KnobChannelSelect>(node->getKnobByName(kSplineWarpParamOutputMask));
+    ASSERT_TRUE(bool(outputMask));
+    EXPECT_EQ("Output Mask", outputMask->getLabel());
+    EXPECT_EQ(std::string(kSplineWarpOutputMaskLayer) + "." + kSplineWarpOutputMaskChannel, outputMask->get());
+    EXPECT_FALSE(outputMask->isEnabled(0)) << "no cookie cutter";
+    KnobBoolPtr cropToFormat = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kSplineWarpParamCropToFormat));
+    ASSERT_TRUE(bool(cropToFormat));
+    EXPECT_EQ("Crop To Format", cropToFormat->getLabel());
+    EXPECT_TRUE(cropToFormat->getValue());
 
     // The warp's own controls on the first page, how it is rendered on the Render page.
     KnobPagePtr controls = amount->getTopLevelPage();
     ASSERT_TRUE(bool(controls));
-    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, kSplineWarpParamBoundaryBBox }) {
+    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, kSplineWarpParamBoundaryBBox,
+                              kSplineWarpParamCookieCutInput, kSplineWarpParamOutputMask, kSplineWarpParamCropToFormat }) {
         KnobIPtr knob = node->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_EQ(controls, knob->getTopLevelPage()) << name;
@@ -422,6 +443,18 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     EXPECT_TRUE(smoothness->getIsSecret());
     ASSERT_TRUE(setKnobValues(node, kSplineWarpParamSolver, { 0. }));
     EXPECT_FALSE(smoothness->getIsSecret());
+
+    // A cookie cutter enables the cookie knobs; removing the last disables them again.
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr cutter = makeRectangle(ctx, 16., 12., 48., 36.);
+    ASSERT_TRUE(bool(cutter));
+    ctx->setCookieCutter(cutter, true);
+    EXPECT_TRUE(cookieCutInput->isEnabled(0));
+    EXPECT_TRUE(outputMask->isEnabled(0));
+    ctx->setCookieCutter(cutter, false);
+    EXPECT_FALSE(cookieCutInput->isEnabled(0));
+    EXPECT_FALSE(outputMask->isEnabled(0));
 }
 
 TEST_F(NativeSplineWarpTest, TranslationLinkMatchesTransform)
@@ -580,6 +613,8 @@ TEST_F(NativeSplineWarpTest, RoDFollowsTheBBox)
     expectRectNear(sourceRoD, rodOf(warp), "bbox source");
 
     ASSERT_TRUE(setKnobValue(warp, kSplineWarpParamBBox, kSplineWarpBBoxUnion));
+    expectRectNear(sourceRoD, rodOf(warp), "bbox union, cropped to the format");
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { 0. }));
     RectD expected = sourceRoD;
     expected.merge(sourceRoD.x1 + 10., sourceRoD.y1 + 5., sourceRoD.x2 + 10., sourceRoD.y2 + 5.);
     expectRectNear(expected, rodOf(warp), "bbox union");
@@ -694,4 +729,164 @@ TEST_F(NativeSplineWarpTest, ConcatenatesAPrecedingTransform)
     const RectI inside(28, 21, 38, 29);
     EXPECT_LE(maxDiff(concatenated, reference, inside), kWarpTolerance);
     EXPECT_GT(maxDiff(doubled, reference, inside), 1e-3) << "a double resample should soften the image";
+}
+
+namespace {
+
+ImageLayerDesc
+outputMaskLayer()
+{
+    return ImageLayerDesc(kSplineWarpOutputMaskLayer, kSplineWarpOutputMaskLayer, "", std::vector<std::string>(1, kSplineWarpOutputMaskChannel));
+}
+
+bool
+renderLayer(const NodePtr& node,
+            const RectI& window,
+            const ImageLayerDesc& layer,
+            RenderedPlane* plane)
+{
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, layer), &planes, &error);
+    EXPECT_TRUE(ok) << node->getScriptName() << ": " << error;
+    if (!ok || (planes.size() != 1) || (planes[0].channels.size() != (std::size_t)layer.getNumComponents())) {
+        return false;
+    }
+    *plane = planes[0];
+
+    return true;
+}
+
+// Whether node produces layerID, among the planes it outputs.
+bool
+producesLayer(const NodePtr& node,
+              const std::string& layerID)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    EffectInstance::ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInput = -1;
+
+    effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), kTime, ViewIdx(0), &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    for (const ImageLayerDesc& layer : comps[-1]) {
+        if (layer.getLayerID() == layerID) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+// Cookie Cut Input multiplies the Source by the cutter's mask, and Output Mask writes that mask:
+// with no link the warp moves nothing, so both are exact.
+TEST_F(NativeSplineWarpTest, CookieCutterCutsTheSourceAndWritesTheMask)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    SplineWarpContextPtr ctx = contextOf(warp);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr cutter = makeRectangle(ctx, 16., 12., 48., 36.);
+    ASSERT_TRUE(bool(cutter));
+    EXPECT_FALSE(producesLayer(warp, kSplineWarpOutputMaskLayer)) << "no cookie cutter";
+
+    ctx->setCookieCutter(cutter, true);
+    EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 1. }));
+    EXPECT_FALSE(isIdentityOnSource(warp));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane original, cut, mask;
+    ASSERT_TRUE(renderRGBA(source, window, &original));
+    ASSERT_TRUE(renderRGBA(warp, window, &cut));
+    ASSERT_TRUE(renderLayer(warp, window, outputMaskLayer(), &mask));
+    ASSERT_EQ(1u, mask.channels.size());
+    std::size_t wrong = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const float m = mask.pixels[(std::size_t)(y - window.y1) * window.width() + (x - window.x1)];
+            if ((x >= 18) && (x < 46) && (y >= 14) && (y < 34)) {
+                EXPECT_EQ(1.f, m) << x << ", " << y << " is well inside the cutter";
+            } else if ((x < 14) || (x >= 50) || (y < 10) || (y >= 38)) {
+                EXPECT_EQ(0.f, m) << x << ", " << y << " is well outside the cutter";
+            }
+            const float* src = pixelAt(original, x, y);
+            const float* got = pixelAt(cut, x, y);
+            for (int c = 0; c < 4; ++c) {
+                if (got[c] != src[c] * m) {
+                    ++wrong;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0u, wrong) << "the output is not the Source times the mask";
+
+    // Off, the Source is not cut; the mask is still written.
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 0. }));
+    RenderedPlane uncut;
+    ASSERT_TRUE(renderRGBA(warp, window, &uncut));
+    EXPECT_EQ(0., maxDiff(original, uncut, window));
+    EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+
+    // A deactivated cutter is ignored but keeps its role.
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCookieCutInput, { 1. }));
+    cutter->setActivated(false, kTime);
+    EXPECT_TRUE(ctx->isCookieCutter(cutter));
+    EXPECT_FALSE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+    EXPECT_TRUE(isIdentityOnSource(warp));
+    cutter->setActivated(true, kTime);
+    EXPECT_TRUE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+
+    // Output Mask set to none writes nothing.
+    KnobChannelSelectPtr outputMask = std::dynamic_pointer_cast<KnobChannelSelect>(warp->getKnobByName(kSplineWarpParamOutputMask));
+    ASSERT_TRUE(bool(outputMask));
+    outputMask->setNone();
+    EXPECT_FALSE(producesLayer(warp, kSplineWarpOutputMaskLayer));
+}
+
+// Crop To Format samples the Source only inside its format and keeps the output there; off, the
+// warp pulls in the Source's pixels outside the format.
+TEST_F(NativeSplineWarpTest, CropToFormat)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    setParitySourceOrigin(source, -8, -8);
+    ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterType, { (double)Resampler::eFilterImpulse }));
+    ASSERT_TRUE(bool(linkTranslation(contextOf(warp), 20., 15., 16., 3., 0.)));
+    expectRectNear(RectD(-8., -8., 56., 40.), rodOf(source), "source");
+
+    expectRectNear(RectD(0., 0., 56., 40.), rodOf(warp), "cropped");
+    const RectI window(-8, -8, 56, 40);
+    RenderedPlane original, cropped, uncropped;
+    ASSERT_TRUE(renderRGBA(source, window, &original));
+    ASSERT_TRUE(renderRGBA(warp, window, &cropped));
+    for (int y = 4; y < 36; y += 5) {
+        // Pixel 1 samples the Source's pixel -2, outside the format.
+        const float* src = pixelAt(original, -2, y);
+        ASSERT_GT(std::abs(src[0]) + std::abs(src[3]), 1e-3) << "the Source is black at -2, " << y;
+        const float* got = pixelAt(cropped, 1, y);
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_EQ(0.f, got[c]) << "1, " << y << " channel " << c;
+        }
+    }
+
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { 0. }));
+    expectRectNear(RectD(-8., -8., 56., 40.), rodOf(warp), "not cropped");
+    ASSERT_TRUE(renderRGBA(warp, window, &uncropped));
+    for (int y = 4; y < 36; y += 5) {
+        const float* src = pixelAt(original, -2, y);
+        const float* got = pixelAt(uncropped, 1, y);
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(src[c], got[c], kWarpTolerance) << "1, " << y << " channel " << c;
+        }
+    }
 }

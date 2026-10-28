@@ -114,6 +114,10 @@ public:
     void setSoftBoundary(BezierCurve* curve, bool boundary);
     bool isSoftBoundary(BezierCurve* curve) const;
 
+    // A cookie cutter, closed curves only, cuts the Source and makes the output mask.
+    void setCookieCutter(BezierCurve* curve, bool cookieCutter);
+    bool isCookieCutter(BezierCurve* curve) const;
+
     // A layer's amount scales every link whose destination curve is inside it.
     double getLayerAmount(Layer* layer, double time) const;
     void setLayerAmount(Layer* layer, double value, double time);

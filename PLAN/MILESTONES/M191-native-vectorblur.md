@@ -49,6 +49,7 @@ A native motion blur from motion vectors (user, 2026-10-25, split from M188 - Va
 
 ## Decisions
 
+- 2026-10-28: implemented (build pending; goldens to record). No OFX VectorBlur exists (openfx-misc has VectorToColor only); the milestone's knob list plus Nuke's VectorBlur docs are the spec. Vectors read from a Source layer (Auto: "motion", then forward motion). Samples = min(Max Samples, max(Samples, ceil(length))), midpoint-spaced bilinear taps, black outside; Max Samples knob added (128). Occlusion: depth ≤0/non-finite = infinitely far; samples >1% nearer dropped unless their own streak passes within 1 px; all dropped → unchanged. Clamp warning posted by CPU renders only. GPU tolerance 1e-5 abs + 1e-4 rel.
 - 2026-10-25 — **One u/v layer and a continuous offset (user):** two vector passes give kinked blur; the offset knob places the streak anywhere from starting to ending at the pixel.
 - 2026-10-25 — **Depth-aware occlusion, optional (user):** plain gather by default.
 

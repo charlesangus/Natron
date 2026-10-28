@@ -127,6 +127,7 @@ set(Tests_SOURCES
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp

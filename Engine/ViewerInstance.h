@@ -41,6 +41,39 @@
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
 
+// Script names of the Viewer node's knobs.
+#define kViewerParamEnableGain "enableGain"
+#define kViewerParamGain "gain"
+#define kViewerParamEnableGamma "enableGamma"
+#define kViewerParamGamma "gamma"
+#define kViewerParamAutoContrast "autoContrast"
+#define kViewerParamCheckerboard "enableCheckerBoard"
+#define kViewerParamDisplay "display"
+#define kViewerParamView "view"
+#define kViewerParamLook "look"
+#define kViewerParamDisplayChannels "displayChannels"
+#define kViewerParamDisplayChannelsB "displayChannelsB"
+#define kViewerParamLayer "layer"
+#define kViewerParamAlphaChannel "alphaChannel"
+#define kViewerParamAInput "aInput"
+#define kViewerParamBInput "bInput"
+#define kViewerParamOperation "operation"
+#define kViewerParamWipeCenter "wipeCenter"
+#define kViewerParamWipeAmount "wipeAmount"
+#define kViewerParamWipeAngle "wipeAngle"
+#define kViewerParamActiveView "activeView"
+#define kViewerParamEnableFps "enableFps"
+#define kViewerParamFps "desiredFps"
+#define kViewerParamInPoint "inPoint"
+#define kViewerParamOutPoint "outPoint"
+#define kViewerParamEnableUserRoI "enableRegionOfInterest"
+#define kViewerParamUserRoIBottomLeft "userRoIBottomLeft"
+#define kViewerParamUserRoISize "userRoISize"
+#define kViewerParamClipToFormat "clipToFormat"
+#define kViewerParamFullFrame "fullFrame"
+#define kViewerParamEnableDownscale "enableDownscale"
+#define kViewerParamDownscaleLevel "downscaleLevel"
+
 NATRON_NAMESPACE_ENTER
 
 class UpdateViewerParams; // ViewerInstancePrivate
@@ -428,6 +461,13 @@ public:
 
     bool isViewerPaused(int texIndex) const;
 
+    /**
+     * @brief How many renders knob edits have asked for since the viewer was created, whether or
+     * not a viewer UI was there to run them. Lets a test tell processing knobs, which re-render,
+     * from display state that only redraws or is only stored. Main thread only.
+     **/
+    unsigned int getKnobRenderRequestCount() const WARN_UNUSED_RETURN;
+
 public Q_SLOTS:
 
 
@@ -450,6 +490,12 @@ public Q_SLOTS:
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
+
+private Q_SLOTS:
+
+    // Keeps the aInput/bInput knobs equal to the inspector's active inputs, which input
+    // connections also move.
+    void onInspectorActiveInputsChanged();
 
 Q_SIGNALS:
 
@@ -560,6 +606,23 @@ private:
 
 
     virtual RenderEngine* createRenderEngine() OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    // Re-resolves the layer and alpha knobs against what the A input carries; a value that
+    // resolves to nothing keeps the previous description. Returns whether a description changed.
+    bool refreshResolvedLayers();
+
+    void requestRenderFromKnob();
+    void redrawOrRenderForColorChange();
+    // Makes inputNb the inspector's active input on side 0 (A) or 1 (B), without touching the knob.
+    void applyActiveInput(int side, int inputNb);
 
 private:
 

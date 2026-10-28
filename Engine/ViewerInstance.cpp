@@ -34,6 +34,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -60,6 +61,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 #include "Engine/Image.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/Lut.h"
 #include "Engine/MemoryFile.h"
@@ -227,6 +231,7 @@ ViewerInstance::ViewerInstance(NodePtr node)
         QObject::connect(node.get(), SIGNAL(dataKindChanged()), this, SLOT(refreshActiveInputDataKind()));
         if (dynamic_cast<InspectorNode*>(node.get())) {
             QObject::connect(node.get(), SIGNAL(activeInputsChanged()), this, SLOT(refreshActiveInputDataKind()));
+            QObject::connect(node.get(), SIGNAL(activeInputsChanged()), this, SLOT(onInspectorActiveInputsChanged()));
         }
     }
 }
@@ -337,6 +342,545 @@ int
 ViewerInstance::getNInputs() const
 {
     return 10;
+}
+
+namespace {
+template <class K>
+std::shared_ptr<K>
+createViewerKnob(KnobHolder* holder,
+                 const KnobPagePtr& page,
+                 const QString& label,
+                 const char* name,
+                 const QString& hint,
+                 int dimension = 1)
+{
+    std::shared_ptr<K> knob = AppManager::createKnob<K>(holder, label, dimension);
+
+    knob->setName(name);
+    knob->setHintToolTip(hint.toStdString());
+    knob->setAnimationEnabled(false);
+    knob->setEvaluateOnChange(false);
+    // The viewer's own hash is the tree version of every FrameKey it caches, so a hashed viewer
+    // knob would drop the cached viewer textures on each edit. Upstream hashes never include it.
+    knob->setHashExempt(true);
+    page->addKnob(knob);
+
+    return knob;
+}
+
+// The order of the toolbar's channel menu, which the knob shares so a menu index is a knob index.
+const DisplayChannelsEnum kDisplayChannelsByIndex[] = {
+    eDisplayChannelsY,
+    eDisplayChannelsRGB,
+    eDisplayChannelsR,
+    eDisplayChannelsG,
+    eDisplayChannelsB,
+    eDisplayChannelsA,
+    eDisplayChannelsMatte,
+};
+const int kDisplayChannelsCount = sizeof(kDisplayChannelsByIndex) / sizeof(kDisplayChannelsByIndex[0]);
+
+int
+displayChannelsIndex(DisplayChannelsEnum channels)
+{
+    for (int i = 0; i < kDisplayChannelsCount; ++i) {
+        if (kDisplayChannelsByIndex[i] == channels) {
+            return i;
+        }
+    }
+
+    return 1;
+}
+
+DisplayChannelsEnum
+displayChannelsAt(int index)
+{
+    return ((index >= 0) && (index < kDisplayChannelsCount)) ? kDisplayChannelsByIndex[index] : eDisplayChannelsRGB;
+}
+
+// The selection a layer knob stores for a description handed to the viewer. The toolbar hands the
+// colour storage plane, which only its views name.
+std::string
+layerSelectionID(const ImageLayerDesc& layer)
+{
+    if (layer.isColorLayer()) {
+        return ImageLayerDesc::colorViewForNComps(layer.getNumComponents()).getLayerID();
+    }
+
+    return layer.getLayerID();
+}
+
+// Knobs whose edit re-runs the viewer render.
+bool
+knobRequestsRender(const std::string& name)
+{
+    static const char* const names[] = {
+        kViewerParamAutoContrast,
+        kViewerParamDisplayChannels,
+        kViewerParamDisplayChannelsB,
+        kViewerParamLayer,
+        kViewerParamAlphaChannel,
+        kViewerParamAInput,
+        kViewerParamBInput,
+        kViewerParamEnableUserRoI,
+        kViewerParamUserRoIBottomLeft,
+        kViewerParamUserRoISize,
+        kViewerParamClipToFormat,
+        kViewerParamFullFrame,
+        kViewerParamEnableDownscale,
+        kViewerParamDownscaleLevel,
+    };
+
+    for (std::size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (name == names[i]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Knobs applied when the frame is drawn: in 8-bit the display transform is baked into the
+// texture, so they re-render there and only redraw otherwise.
+bool
+knobChangesDisplay(const std::string& name)
+{
+    return (name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook);
+}
+
+class SetterKnobWrites {
+public:
+    explicit SetterKnobWrites(int* depth)
+        : _depth(depth)
+    {
+        ++*_depth;
+    }
+
+    ~SetterKnobWrites()
+    {
+        --*_depth;
+    }
+
+private:
+    int* _depth;
+};
+} // namespace
+
+void
+ViewerInstance::initializeKnobs()
+{
+    KnobPagePtr page = AppManager::createKnob<KnobPage>(this, tr("Viewer UI Controls"));
+    page->setName("viewerUIControls");
+
+    ViewerInstancePrivate::Knobs& k = _imp->knobs;
+
+    KnobBoolPtr enableGain = createViewerKnob<KnobBool>(this, page, tr("Enable Gain"), kViewerParamEnableGain,
+                                                        tr("Applies Gain. Off shows the image at a gain of 0 f-stops and keeps the Gain value."));
+    k.enableGain = enableGain;
+
+    KnobDoublePtr gain = createViewerKnob<KnobDouble>(this, page, tr("Gain"), kViewerParamGain,
+                                                      tr("Gain in f-stops: the image is multiplied by pow(2, Gain) before display."));
+    gain->setDisplayMinimum(-6.);
+    gain->setDisplayMaximum(6.);
+    k.gain = gain;
+
+    KnobBoolPtr enableGamma = createViewerKnob<KnobBool>(this, page, tr("Enable Gamma"), kViewerParamEnableGamma,
+                                                         tr("Applies Gamma. Off shows the image at a gamma of 1 and keeps the Gamma value."));
+    k.enableGamma = enableGamma;
+
+    KnobDoublePtr gamma = createViewerKnob<KnobDouble>(this, page, tr("Gamma"), kViewerParamGamma,
+                                                       tr("Gamma correction, applied after gain and before the display transform."));
+    gamma->setDefaultValue(1.);
+    gamma->setMinimum(0.);
+    gamma->setDisplayMinimum(0.);
+    gamma->setDisplayMaximum(5.);
+    k.gamma = gamma;
+
+    KnobBoolPtr autoContrast = createViewerKnob<KnobBool>(this, page, tr("Auto Contrast"), kViewerParamAutoContrast,
+                                                          tr("Sets gain and offset so the darkest and brightest values of the "
+                                                             "image map to black and white. Gain and Gamma are ignored while it is on."));
+    k.autoContrast = autoContrast;
+
+    KnobBoolPtr checkerboard = createViewerKnob<KnobBool>(this, page, tr("Enable Checker Board"), kViewerParamCheckerboard,
+                                                          tr("Draws a checkerboard under input A instead of black."));
+    k.checkerboard = checkerboard;
+
+    KnobStringPtr display = createViewerKnob<KnobString>(this, page, tr("Display"), kViewerParamDisplay,
+                                                         tr("The display of the project's OpenColorIO config the image is shown on. "
+                                                            "Empty uses the project's default display and view."));
+    k.display = display;
+
+    KnobStringPtr view = createViewerKnob<KnobString>(this, page, tr("View"), kViewerParamView,
+                                                      tr("The view transform of the display. Empty uses the project's default display and view."));
+    k.view = view;
+
+    KnobStringPtr look = createViewerKnob<KnobString>(this, page, tr("Look"), kViewerParamLook,
+                                                      tr("The OpenColorIO look applied before the view. Empty applies none."));
+    k.look = look;
+
+    std::vector<ChoiceOption> channelEntries;
+    channelEntries.push_back(ChoiceOption("Luminance", tr("Luminance").toStdString(), ""));
+    channelEntries.push_back(ChoiceOption("RGB", tr("RGB").toStdString(), ""));
+    channelEntries.push_back(ChoiceOption("R", tr("R").toStdString(), ""));
+    channelEntries.push_back(ChoiceOption("G", tr("G").toStdString(), ""));
+    channelEntries.push_back(ChoiceOption("B", tr("B").toStdString(), ""));
+    channelEntries.push_back(ChoiceOption("A", tr("A").toStdString(), ""));
+    channelEntries.push_back(ChoiceOption("Matte", tr("Matte").toStdString(), ""));
+    assert((int)channelEntries.size() == kDisplayChannelsCount);
+    for (int i = 0; i < 2; ++i) {
+        KnobChoicePtr channels = createViewerKnob<KnobChoice>(this, page, i == 0 ? tr("Display Channels") : tr("Display Channels B"),
+                                                              i == 0 ? kViewerParamDisplayChannels : kViewerParamDisplayChannelsB,
+                                                              i == 0 ? tr("The channels of the layer shown for input A.")
+                                                                     : tr("The channels of the layer shown for input B."));
+        channels->populateChoices(channelEntries);
+        channels->setDefaultValue(displayChannelsIndex(eDisplayChannelsRGB));
+        k.displayChannels[i] = channels;
+    }
+
+    KnobLayerSelectPtr layer = AppManager::createKnob<KnobLayerSelect>(this, tr("Layer"));
+    layer->setWithChannelButtons(false);
+    layer->setAllowNone(true);
+    layer->setName(kViewerParamLayer);
+    layer->setHintToolTip(tr("The layer of input A the viewer shows. A saved layer the input lacks is kept.").toStdString());
+    k.layer = layer;
+
+    KnobChannelSelectPtr alphaChannel = AppManager::createKnob<KnobChannelSelect>(this, tr("Alpha Channel"));
+    alphaChannel->setName(kViewerParamAlphaChannel);
+    alphaChannel->setHintToolTip(tr("The channel shown as alpha when Display Channels is A or Matte. "
+                                    "A saved channel the input lacks is kept.")
+                                     .toStdString());
+    k.alphaChannel = alphaChannel;
+
+    const KnobIPtr layerKnobs[2] = { layer, alphaChannel };
+    for (int i = 0; i < 2; ++i) {
+        layerKnobs[i]->setAnimationEnabled(false);
+        layerKnobs[i]->setEvaluateOnChange(false);
+        layerKnobs[i]->setHashExempt(true);
+        page->addKnob(layerKnobs[i]);
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        KnobIntPtr input = createViewerKnob<KnobInt>(this, page, i == 0 ? tr("A Input") : tr("B Input"),
+                                                     i == 0 ? kViewerParamAInput : kViewerParamBInput,
+                                                     i == 0 ? tr("The input shown as A, -1 for none.") : tr("The input shown as B, -1 for none."));
+        input->setDefaultValue(-1);
+        input->setMinimum(-1);
+        input->setMaximum(getNInputs() - 1);
+        k.inputs[i] = input;
+    }
+
+    KnobChoicePtr operation = createViewerKnob<KnobChoice>(this, page, tr("Operation"), kViewerParamOperation,
+                                                           tr("Operation applied between inputs A and B. a and b are the alphas of "
+                                                              "the inputs, d the wipe dissolve factor (Wipe Amount)."));
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("-", "-", tr("No wipe or composite: A").toStdString()));
+        entries.push_back(ChoiceOption("Wipe Under", tr("Wipe Under").toStdString(), "A(1 - d) + Bd"));
+        entries.push_back(ChoiceOption("Wipe Over", tr("Wipe Over").toStdString(), "A + B(1 - a)d"));
+        entries.push_back(ChoiceOption("Wipe Minus", tr("Wipe Minus").toStdString(), "A - B"));
+        entries.push_back(ChoiceOption("Wipe Onion skin", tr("Wipe Onion skin").toStdString(), "A + B"));
+        entries.push_back(ChoiceOption("Stack Under", tr("Stack Under").toStdString(), "B"));
+        entries.push_back(ChoiceOption("Stack Over", tr("Stack Over").toStdString(), "A + B(1 - a)"));
+        entries.push_back(ChoiceOption("Stack Minus", tr("Stack Minus").toStdString(), "A - B"));
+        entries.push_back(ChoiceOption("Stack Onion skin", tr("Stack Onion skin").toStdString(), "A + B"));
+        operation->populateChoices(entries);
+    }
+    operation->setDefaultValue((int)eViewerCompositingOperatorNone);
+    k.operation = operation;
+
+    KnobDoublePtr wipeCenter = createViewerKnob<KnobDouble>(this, page, tr("Wipe Center"), kViewerParamWipeCenter,
+                                                            tr("The centre of the wipe handle, in canonical coordinates."), 2);
+    k.wipeCenter = wipeCenter;
+
+    KnobDoublePtr wipeAmount = createViewerKnob<KnobDouble>(this, page, tr("Wipe Amount"), kViewerParamWipeAmount,
+                                                            tr("The wipe dissolve factor d."));
+    wipeAmount->setDefaultValue(1.);
+    wipeAmount->setMinimum(0.);
+    wipeAmount->setMaximum(1.);
+    k.wipeAmount = wipeAmount;
+
+    KnobDoublePtr wipeAngle = createViewerKnob<KnobDouble>(this, page, tr("Wipe Angle"), kViewerParamWipeAngle,
+                                                           tr("The angle of the wipe line, in radians."));
+    k.wipeAngle = wipeAngle;
+
+    KnobIntPtr activeView = createViewerKnob<KnobInt>(this, page, tr("Active View"), kViewerParamActiveView,
+                                                      tr("The index of the project view the viewer shows."));
+    activeView->setMinimum(0);
+    k.activeView = activeView;
+
+    double projectFps = 24.;
+    double projectFirst = 1., projectLast = 1.;
+    if (AppInstancePtr app = getApp()) {
+        if (ProjectPtr project = app->getProject()) {
+            projectFps = project->getProjectFrameRate();
+            project->getFrameRange(&projectFirst, &projectLast);
+        }
+    }
+
+    KnobBoolPtr enableFps = createViewerKnob<KnobBool>(this, page, tr("Enable Fps"), kViewerParamEnableFps,
+                                                       tr("Plays back at Desired Fps. Off follows the project frame rate."));
+    k.enableFps = enableFps;
+
+    KnobDoublePtr fps = createViewerKnob<KnobDouble>(this, page, tr("Desired Fps"), kViewerParamFps,
+                                                     tr("The playback frame rate, in frames per second, while Enable Fps is on."));
+    fps->setDefaultValue(projectFps);
+    fps->setMinimum(0.);
+    fps->setDisplayMinimum(0.);
+    fps->setDisplayMaximum(120.);
+    k.fps = fps;
+
+    KnobIntPtr inPoint = createViewerKnob<KnobInt>(this, page, tr("In Point"), kViewerParamInPoint, tr("The first frame of playback."));
+    inPoint->setDefaultValue((int)projectFirst);
+    k.inPoint = inPoint;
+
+    KnobIntPtr outPoint = createViewerKnob<KnobInt>(this, page, tr("Out Point"), kViewerParamOutPoint, tr("The last frame of playback."));
+    outPoint->setDefaultValue((int)projectLast);
+    k.outPoint = outPoint;
+
+    KnobBoolPtr enableUserRoI = createViewerKnob<KnobBool>(this, page, tr("Enable Region Of Interest"), kViewerParamEnableUserRoI,
+                                                           tr("Renders only the region of interest set by User RoI Bottom Left and User RoI Size."));
+    k.enableUserRoI = enableUserRoI;
+
+    KnobDoublePtr userRoIBottomLeft = createViewerKnob<KnobDouble>(this, page, tr("User RoI Bottom Left"), kViewerParamUserRoIBottomLeft,
+                                                                   tr("The bottom-left corner of the region of interest, in canonical coordinates."), 2);
+    k.userRoIBottomLeft = userRoIBottomLeft;
+
+    KnobDoublePtr userRoISize = createViewerKnob<KnobDouble>(this, page, tr("User RoI Size"), kViewerParamUserRoISize,
+                                                             tr("The width and height of the region of interest, in canonical coordinates."), 2);
+    userRoISize->setMinimum(0., 0);
+    userRoISize->setMinimum(0., 1);
+    k.userRoISize = userRoISize;
+
+    KnobBoolPtr clipToFormat = createViewerKnob<KnobBool>(this, page, tr("Clip To Format"), kViewerParamClipToFormat,
+                                                          tr("Shows only the part of the image inside the format of input A."));
+    clipToFormat->setDefaultValue(true);
+    k.clipToFormat = clipToFormat;
+
+    KnobBoolPtr fullFrame = createViewerKnob<KnobBool>(this, page, tr("Full Frame"), kViewerParamFullFrame,
+                                                       tr("Renders the whole image at full resolution, not just the visible part. "
+                                                          "Downscale Level has no effect while it is on."));
+    k.fullFrame = fullFrame;
+
+    KnobBoolPtr enableDownscale = createViewerKnob<KnobBool>(this, page, tr("Enable Downscale"), kViewerParamEnableDownscale,
+                                                             tr("Renders downscaled by Downscale Level to speed up rendering."));
+    k.enableDownscale = enableDownscale;
+
+    KnobChoicePtr downscaleLevel = createViewerKnob<KnobChoice>(this, page, tr("Downscale Level"), kViewerParamDownscaleLevel,
+                                                                tr("The factor the image is downscaled by in both dimensions while Enable Downscale is on."));
+    {
+        std::vector<ChoiceOption> entries;
+        for (int factor = 2; factor <= 32; factor *= 2) {
+            const std::string id = QString::number(factor).toStdString();
+            entries.push_back(ChoiceOption(id, id, ""));
+        }
+        downscaleLevel->populateChoices(entries);
+    }
+    k.downscaleLevel = downscaleLevel;
+
+    if (NodePtr node = getNode()) {
+        node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
+        node->declareLayerKnob(alphaChannel, 0, LayerKnobSpec::eRoleInputBound);
+    }
+} // ViewerInstance::initializeKnobs
+
+bool
+ViewerInstance::knobChanged(KnobI* k,
+                            ValueChangedReasonEnum reason,
+                            ViewSpec /*view*/,
+                            double /*time*/,
+                            bool /*originatedFromMainThread*/)
+{
+    if (!k || (_imp->knobWritesFromSetter > 0) || (reason == eValueChangedReasonTimeChanged)) {
+        return false;
+    }
+    const std::string name = k->getName();
+
+    if (knobChangesDisplay(name)) {
+        redrawOrRenderForColorChange();
+
+        return true;
+    }
+    if ((name == kViewerParamLayer) || (name == kViewerParamAlphaChannel)) {
+        refreshResolvedLayers();
+    } else if ((name == kViewerParamAInput) || (name == kViewerParamBInput)) {
+        const int side = (name == kViewerParamAInput) ? 0 : 1;
+        KnobIntPtr knob = _imp->knobs.inputs[side].lock();
+        if (knob) {
+            applyActiveInput(side, knob->getValue());
+        }
+    }
+    if (knobRequestsRender(name)) {
+        requestRenderFromKnob();
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+ViewerInstance::onKnobsLoaded()
+{
+    refreshResolvedLayers();
+}
+
+unsigned int
+ViewerInstance::getKnobRenderRequestCount() const
+{
+    return _imp->knobRenderRequests;
+}
+
+void
+ViewerInstance::requestRenderFromKnob()
+{
+    ++_imp->knobRenderRequests;
+    if (_imp->uiContext && !getApp()->getProject()->isLoadingProject()) {
+        renderCurrentFrame(true);
+    }
+}
+
+void
+ViewerInstance::redrawOrRenderForColorChange()
+{
+    if (!_imp->uiContext) {
+        return;
+    }
+    if ((_imp->uiContext->getBitDepth() == eImageBitDepthByte) && !getApp()->getProject()->isLoadingProject()) {
+        renderCurrentFrame(true);
+    } else {
+        _imp->uiContext->redraw();
+    }
+}
+
+bool
+ViewerInstance::refreshResolvedLayers()
+{
+    NodePtr node = getNode();
+    KnobLayerSelectPtr layerKnob = _imp->knobs.layer.lock();
+    KnobChannelSelectPtr alphaKnob = _imp->knobs.alphaChannel.lock();
+
+    if (!node || !layerKnob || !alphaKnob) {
+        return false;
+    }
+
+    const std::string layerID = layerKnob->getLayer();
+    std::optional<ImageLayerDesc> layer;
+    if (layerID.empty()) {
+        layer = ImageLayerDesc::getNoneComponents();
+    } else {
+        std::list<ImageLayerDesc> present;
+        node->listLayersForKnob(layerKnob, &present);
+        ResolvedLayer resolved;
+        if (layerKnob->resolve(present, &resolved)) {
+            layer = resolved.desc;
+        }
+    }
+
+    const std::string alphaID = alphaKnob->get();
+    std::optional<ImageLayerDesc> alphaLayer;
+    std::string alphaChannelName;
+    if (alphaID.empty()) {
+        alphaLayer = ImageLayerDesc::getNoneComponents();
+    } else {
+        std::list<ImageLayerDesc> present;
+        node->listLayersForKnob(alphaKnob, &present);
+        ImageLayerDesc resolved;
+        int channelIndex = -1;
+        if (alphaKnob->resolve(present, &resolved, &channelIndex) && (channelIndex >= 0) && (channelIndex < (int)resolved.getChannels().size())) {
+            alphaLayer = resolved;
+            alphaChannelName = resolved.getChannels()[channelIndex];
+        }
+    }
+
+    bool changed = false;
+    QMutexLocker l(&_imp->viewerParamsMutex);
+    if (layer && ((_imp->viewerParamsLayerID != layerID) || (_imp->viewerParamsLayer != *layer))) {
+        _imp->viewerParamsLayerID = layerID;
+        _imp->viewerParamsLayer = *layer;
+        changed = true;
+    }
+    if (alphaLayer && ((_imp->viewerParamsAlphaID != alphaID) || (_imp->viewerParamsAlphaLayer != *alphaLayer) || (_imp->viewerParamsAlphaChannelName != alphaChannelName))) {
+        _imp->viewerParamsAlphaID = alphaID;
+        _imp->viewerParamsAlphaLayer = *alphaLayer;
+        _imp->viewerParamsAlphaChannelName = alphaChannelName;
+        changed = true;
+    }
+
+    return changed;
+} // ViewerInstance::refreshResolvedLayers
+
+void
+ViewerInstance::applyActiveInput(int side,
+                                 int inputNb)
+{
+    NodePtr n = getNode();
+    InspectorNode* isInspector = dynamic_cast<InspectorNode*>(n.get());
+
+    assert(isInspector);
+    if (isInspector) {
+        if (side == 0) {
+            isInspector->setInputA(inputNb);
+        } else {
+            isInspector->setInputB(inputNb);
+        }
+        if (side == 0) {
+            KnobLayerSelectPtr layer = _imp->knobs.layer.lock();
+            KnobChannelSelectPtr alpha = _imp->knobs.alphaChannel.lock();
+            const int listedInput = std::max(inputNb, 0);
+            if (layer) {
+                n->setLayerKnobInput(layer, listedInput);
+            }
+            if (alpha) {
+                n->setLayerKnobInput(alpha, listedInput);
+            }
+        }
+    }
+
+    refreshActiveInputDataKind();
+    Q_EMIT availableComponentsChanged();
+}
+
+void
+ViewerInstance::onInspectorActiveInputsChanged()
+{
+    NodePtr node = getNode();
+    InspectorNode* isInspector = dynamic_cast<InspectorNode*>(node.get());
+    if (!isInspector) {
+        return;
+    }
+    int active[2] = { -1, -1 };
+    isInspector->getActiveInputs(active[0], active[1]);
+
+    KnobIntPtr knobs[2] = { _imp->knobs.inputs[0].lock(), _imp->knobs.inputs[1].lock() };
+    if (!knobs[0] || !knobs[1]) {
+        return;
+    }
+
+    if (getApp()->getProject()->isLoadingProject()) {
+        // A load reconnects the inputs one at a time, and each connection moves the inspector's
+        // active inputs: the saved inputs win once they are connected.
+        for (int side = 0; side < 2; ++side) {
+            const int saved = knobs[side]->getValue();
+            if ((saved != active[side]) && ((saved < 0) || node->getInput(saved))) {
+                applyActiveInput(side, saved);
+            }
+        }
+
+        return;
+    }
+
+    SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+    for (int side = 0; side < 2; ++side) {
+        knobs[side]->setValue(active[side]);
+    }
+    KnobLayerSelectPtr layer = _imp->knobs.layer.lock();
+    KnobChannelSelectPtr alpha = _imp->knobs.alphaChannel.lock();
+    if (layer) {
+        node->setLayerKnobInput(layer, std::max(active[0], 0));
+    }
+    if (alpha) {
+        node->setLayerKnobInput(alpha, std::max(active[0], 0));
+    }
 }
 
 void
@@ -1230,12 +1774,12 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     outArgs->params->textureIndex = textureIndex;
 
     // These are the user settings from the viewer UI
+    outArgs->autoContrast = isAutoContrastEnabled();
+    outArgs->channels = getChannels(textureIndex);
+    outArgs->params->gain = getGain();
+    outArgs->params->gamma = getGamma();
     {
         QMutexLocker locker(&_imp->viewerParamsMutex);
-        outArgs->autoContrast = _imp->viewerParamsAutoContrast;
-        outArgs->channels = _imp->viewerParamsChannels[textureIndex];
-        outArgs->params->gain = _imp->viewerParamsGain;
-        outArgs->params->gamma = _imp->viewerParamsGamma;
         outArgs->params->layer = _imp->viewerParamsLayer;
         outArgs->params->alphaLayer = _imp->viewerParamsAlphaLayer;
         outArgs->params->alphaChannelName = _imp->viewerParamsAlphaChannelName;
@@ -3756,32 +4300,33 @@ ViewerInstance::onGammaChanged(double value)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    bool changed = false;
+    KnobBoolPtr enable = _imp->knobs.enableGamma.lock();
+    KnobDoublePtr gamma = _imp->knobs.gamma.lock();
+    if (!enable || !gamma || (getGamma() == value)) {
+        return;
+    }
     {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-
-        if (_imp->viewerParamsGamma != value) {
-            _imp->viewerParamsGamma = value;
-            changed = true;
+        // A gamma of 1 switches gamma off and keeps the last value for re-enabling.
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        enable->setValue(value != 1.);
+        if (value != 1.) {
+            gamma->setValue(value);
         }
     }
-    assert(_imp->uiContext);
-    if (changed) {
-        if ( (_imp->uiContext->getBitDepth() == eImageBitDepthByte)
-             && !getApp()->getProject()->isLoadingProject() ) {
-            renderCurrentFrame(true);
-        } else {
-            _imp->uiContext->redraw();
-        }
-    }
+    redrawOrRenderForColorChange();
 }
 
 double
 ViewerInstance::getGamma() const
 {
-    QMutexLocker l(&_imp->viewerParamsMutex);
+    KnobBoolPtr enable = _imp->knobs.enableGamma.lock();
+    KnobDoublePtr gamma = _imp->knobs.gamma.lock();
 
-    return _imp->viewerParamsGamma;
+    if (!enable || !gamma || !enable->getValue()) {
+        return 1.;
+    }
+
+    return gamma->getValue();
 }
 
 void
@@ -3789,24 +4334,21 @@ ViewerInstance::onGainChanged(double exp)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-
-    bool changed = false;
+    KnobBoolPtr enable = _imp->knobs.enableGain.lock();
+    KnobDoublePtr gain = _imp->knobs.gain.lock();
+    if (!enable || !gain || (getGain() == exp) || (exp <= 0.)) {
+        return;
+    }
     {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        if (_imp->viewerParamsGain != exp) {
-            _imp->viewerParamsGain = exp;
-            changed = true;
+        // exp is the linear multiplier; the knob holds f-stops. A multiplier of 1 switches gain
+        // off and keeps the last f-stop value for re-enabling.
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        enable->setValue(exp != 1.);
+        if (exp != 1.) {
+            gain->setValue(std::log2(exp));
         }
     }
-    if (changed) {
-        assert(_imp->uiContext);
-        if ( ( (_imp->uiContext->getBitDepth() == eImageBitDepthByte) )
-             && !getApp()->getProject()->isLoadingProject() ) {
-            renderCurrentFrame(true);
-        } else {
-            _imp->uiContext->redraw();
-        }
-    }
+    redrawOrRenderForColorChange();
 }
 
 void
@@ -3814,12 +4356,16 @@ ViewerInstance::onMipmapLevelChanged(unsigned int level)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        if (_imp->viewerMipmapLevel == level) {
-            return;
-        }
-        _imp->viewerMipmapLevel = level;
+    KnobBoolPtr enable = _imp->knobs.enableDownscale.lock();
+    KnobChoicePtr downscale = _imp->knobs.downscaleLevel.lock();
+    if (!enable || !downscale || (getMipmapLevel() == level)) {
+        return;
+    }
+    // Level 0 switches downscaling off and keeps the factor for re-enabling.
+    SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+    enable->setValue(level > 0);
+    if (level > 0) {
+        downscale->setValue((int)std::min(level, 5u) - 1);
     }
 }
 
@@ -3829,15 +4375,15 @@ ViewerInstance::onAutoContrastChanged(bool autoContrast,
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    bool changed = false;
-    {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        if (_imp->viewerParamsAutoContrast != autoContrast) {
-            _imp->viewerParamsAutoContrast = autoContrast;
-            changed = true;
-        }
+    KnobBoolPtr knob = _imp->knobs.autoContrast.lock();
+    if (!knob || (knob->getValue() == autoContrast)) {
+        return;
     }
-    if ( changed && refresh && !getApp()->getProject()->isLoadingProject() ) {
+    {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(autoContrast);
+    }
+    if (refresh && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
     }
 }
@@ -3846,9 +4392,9 @@ bool
 ViewerInstance::isAutoContrastEnabled() const
 {
     // MT-safe
-    QMutexLocker l(&_imp->viewerParamsMutex);
+    KnobBoolPtr knob = _imp->knobs.autoContrast.lock();
 
-    return _imp->viewerParamsAutoContrast;
+    return knob ? knob->getValue() : false;
 }
 
 void
@@ -3858,22 +4404,20 @@ ViewerInstance::setDisplayTransform(const std::string& display,
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-
+    KnobStringPtr knobs[3] = { _imp->knobs.display.lock(), _imp->knobs.view.lock(), _imp->knobs.look.lock() };
+    const std::string values[3] = { display, view, look };
+    bool changed = false;
     {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        if ((_imp->viewerParamsDisplay == display) && (_imp->viewerParamsView == view) && (_imp->viewerParamsLook == look)) {
-            return;
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        for (int i = 0; i < 3; ++i) {
+            if (knobs[i] && (knobs[i]->getValue() != values[i])) {
+                knobs[i]->setValue(values[i]);
+                changed = true;
+            }
         }
-        _imp->viewerParamsDisplay = display;
-        _imp->viewerParamsView = view;
-        _imp->viewerParamsLook = look;
     }
-    assert(_imp->uiContext);
-    if ( ( (_imp->uiContext->getBitDepth() == eImageBitDepthByte) )
-         && !getApp()->getProject()->isLoadingProject() ) {
-        renderCurrentFrame(true);
-    } else {
-        _imp->uiContext->redraw();
+    if (changed) {
+        redrawOrRenderForColorChange();
     }
 }
 
@@ -3884,21 +4428,14 @@ ViewerInstance::setDisplayChannels(DisplayChannelsEnum channels,
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
+    const int index = displayChannelsIndex(channels);
     bool changed = false;
     {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        if (!bothInputs) {
-            if (_imp->viewerParamsChannels[0] != channels) {
-                _imp->viewerParamsChannels[0] = channels;
-                changed = true;
-            }
-        } else {
-            if (_imp->viewerParamsChannels[0] != channels) {
-                _imp->viewerParamsChannels[0] = channels;
-                changed = true;
-            }
-            if (_imp->viewerParamsChannels[1] != channels) {
-                _imp->viewerParamsChannels[1] = channels;
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        for (int i = 0; i < (bothInputs ? 2 : 1); ++i) {
+            KnobChoicePtr knob = _imp->knobs.displayChannels[i].lock();
+            if (knob && (knob->getValue() != index)) {
+                knob->setValue(index);
                 changed = true;
             }
         }
@@ -3914,6 +4451,7 @@ ViewerInstance::setActiveLayer(const ImageLayerDesc& layer,
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+    const std::string layerID = (layer.getNumComponents() == 0) ? std::string() : layerSelectionID(layer);
     bool changed = false;
     {
         QMutexLocker l(&_imp->viewerParamsMutex);
@@ -3921,6 +4459,12 @@ ViewerInstance::setActiveLayer(const ImageLayerDesc& layer,
             _imp->viewerParamsLayer = layer;
             changed = true;
         }
+        _imp->viewerParamsLayerID = layerID;
+    }
+    KnobLayerSelectPtr knob = _imp->knobs.layer.lock();
+    if (knob && (knob->getLayer() != layerID)) {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setLayer(layerID);
     }
     if ( doRender && changed && !getApp()->getProject()->isLoadingProject() ) {
         renderCurrentFrame(true);
@@ -3942,6 +4486,8 @@ ViewerInstance::setAlphaChannel(const ImageLayerDesc& layer,
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+    const bool none = (layer.getNumComponents() == 0) || channelName.empty();
+    const std::string alphaID = none ? std::string() : layerSelectionID(layer) + "." + channelName;
     bool changed = false;
     {
         QMutexLocker l(&_imp->viewerParamsMutex);
@@ -3953,6 +4499,12 @@ ViewerInstance::setAlphaChannel(const ImageLayerDesc& layer,
             _imp->viewerParamsAlphaChannelName = channelName;
             changed = true;
         }
+        _imp->viewerParamsAlphaID = alphaID;
+    }
+    KnobChannelSelectPtr knob = _imp->knobs.alphaChannel.lock();
+    if (knob && (knob->get() != alphaID)) {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->set(alphaID);
     }
     if ( changed && doRender && !getApp()->getProject()->isLoadingProject() ) {
         renderCurrentFrame(true);
@@ -4035,13 +4587,12 @@ ViewerInstance::redrawViewerNow()
 ProjectColorManagement::DisplayProcessorPtr
 ViewerInstance::getDisplayProcessor() const
 {
-    std::string display, view, look;
-    {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        display = _imp->viewerParamsDisplay;
-        view = _imp->viewerParamsView;
-        look = _imp->viewerParamsLook;
-    }
+    KnobStringPtr displayKnob = _imp->knobs.display.lock();
+    KnobStringPtr viewKnob = _imp->knobs.view.lock();
+    KnobStringPtr lookKnob = _imp->knobs.look.lock();
+    std::string display = displayKnob ? displayKnob->getValue() : std::string();
+    std::string view = viewKnob ? viewKnob->getValue() : std::string();
+    const std::string look = lookKnob ? lookKnob->getValue() : std::string();
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
@@ -4059,41 +4610,49 @@ double
 ViewerInstance::getGain() const
 {
     // MT-SAFE: called from main thread and Serialization (pooled) thread
+    KnobBoolPtr enable = _imp->knobs.enableGain.lock();
+    KnobDoublePtr gain = _imp->knobs.gain.lock();
 
-    QMutexLocker l(&_imp->viewerParamsMutex);
+    if (!enable || !gain || !enable->getValue()) {
+        return 1.;
+    }
 
-    return _imp->viewerParamsGain;
+    return std::pow(2., gain->getValue());
 }
 
 unsigned int
 ViewerInstance::getMipmapLevel() const
 {
     // MT-SAFE: called from main thread and Serialization (pooled) thread
+    KnobBoolPtr enable = _imp->knobs.enableDownscale.lock();
+    KnobChoicePtr downscale = _imp->knobs.downscaleLevel.lock();
 
-    QMutexLocker l(&_imp->viewerParamsMutex);
+    if (!enable || !downscale || !enable->getValue()) {
+        return 0;
+    }
 
-    return _imp->viewerMipmapLevel;
+    return (unsigned int)std::max(downscale->getValue(), 0) + 1;
 }
 
 DisplayChannelsEnum
 ViewerInstance::getChannels(int texIndex) const
 {
     // MT-SAFE: called from main thread and Serialization (pooled) thread
+    KnobChoicePtr knob = _imp->knobs.displayChannels[texIndex].lock();
 
-    QMutexLocker l(&_imp->viewerParamsMutex);
-
-    return _imp->viewerParamsChannels[texIndex];
+    return knob ? displayChannelsAt(knob->getValue()) : eDisplayChannelsRGB;
 }
 
 void
 ViewerInstance::setFullFrameProcessingEnabled(bool fullFrame)
 {
+    KnobBoolPtr knob = _imp->knobs.fullFrame.lock();
+    if (!knob || (knob->getValue() == fullFrame)) {
+        return;
+    }
     {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        if (_imp->fullFrameProcessingEnabled == fullFrame) {
-            return;
-        }
-        _imp->fullFrameProcessingEnabled = fullFrame;
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(fullFrame);
     }
     if ( !getApp()->getProject()->isLoadingProject() ) {
         renderCurrentFrame(true);
@@ -4103,9 +4662,9 @@ ViewerInstance::setFullFrameProcessingEnabled(bool fullFrame)
 bool
 ViewerInstance::isFullFrameProcessingEnabled() const
 {
-    QMutexLocker l(&_imp->viewerParamsMutex);
+    KnobBoolPtr knob = _imp->knobs.fullFrame.lock();
 
-    return _imp->fullFrameProcessingEnabled;
+    return knob ? knob->getValue() : false;
 }
 
 void
@@ -4162,6 +4721,7 @@ ViewerInstance::isViewerPaused(int texIndex) const
 void
 ViewerInstance::onInputChanged(int /*inputNb*/)
 {
+    refreshResolvedLayers();
     refreshActiveInputDataKind();
     Q_EMIT clipPreferencesChanged();
 }
@@ -4317,31 +4877,21 @@ ViewerInstance::getUpstreamNodesWithPersistentMessage(NodesList* nodes) const
 void
 ViewerInstance::setInputA(int inputNb)
 {
-    NodePtr n = getNode();
-    InspectorNode* isInspector = dynamic_cast<InspectorNode*>( n.get() );
-
-    assert(isInspector);
-    if (isInspector) {
-        isInspector->setInputA(inputNb);
+    if (KnobIntPtr knob = _imp->knobs.inputs[0].lock()) {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(inputNb);
     }
-
-    refreshActiveInputDataKind();
-    Q_EMIT availableComponentsChanged();
+    applyActiveInput(0, inputNb);
 }
 
 void
 ViewerInstance::setInputB(int inputNb)
 {
-    NodePtr n = getNode();
-    InspectorNode* isInspector = dynamic_cast<InspectorNode*>( n.get() );
-
-    assert(isInspector);
-    if (isInspector) {
-        isInspector->setInputB(inputNb);
+    if (KnobIntPtr knob = _imp->knobs.inputs[1].lock()) {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(inputNb);
     }
-
-    refreshActiveInputDataKind();
-    Q_EMIT availableComponentsChanged();
+    applyActiveInput(1, inputNb);
 }
 
 int
@@ -4374,11 +4924,7 @@ ViewerInstance::getMipmapLevelWithoutDraft() const
     if (isFullFrameProcessingEnabled()) {
         return 0;
     }
-    unsigned int proxyLevel;
-    {
-        QMutexLocker l(&_imp->viewerParamsMutex);
-        proxyLevel = _imp->viewerMipmapLevel;
-    }
+    const unsigned int proxyLevel = getMipmapLevel();
 
     // The nearest mipmap level higher in quality than the zoom factor: 48% renders at 50%
     // (level 1), 51% at 100% (level 0).

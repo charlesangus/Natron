@@ -134,18 +134,14 @@ public:
         , isViewerPausedMutex()
         , isViewerPaused()
         , viewerParamsMutex()
-        , viewerParamsGain(1.)
-        , viewerParamsGamma(1.)
-        , viewerParamsDisplay()
-        , viewerParamsView()
-        , viewerParamsLook()
-        , viewerParamsAutoContrast(false)
-        , viewerParamsChannels()
+        , viewerParamsLayerID()
         , viewerParamsLayer( ImageLayerDesc::getRGBAComponents() )
+        , viewerParamsAlphaID()
         , viewerParamsAlphaLayer( ImageLayerDesc::getRGBAComponents() )
         , viewerParamsAlphaChannelName("a")
-        , viewerMipmapLevel(0)
-        , fullFrameProcessingEnabled(false)
+        , knobWritesFromSetter(0)
+        , knobRenderRequests(0)
+        , knobs()
         , activateInputChangedFromViewer(false)
         , lastRenderParamsMutex()
         , lastRenderParams()
@@ -163,7 +159,6 @@ public:
             displayAge[i] = 0;
             lastRequestSequential[i] = false;
             isViewerPaused[i] = false;
-            viewerParamsChannels[i] = eDisplayChannelsRGB;
             lastSceneOk[i] = false;
         }
     }
@@ -455,21 +450,56 @@ public:
     //wait the entire time. This flag is here to make the renderViewer() thread wait
     //until the texture upload is finished by the main thread.
 
-
-    // viewerParams: The viewer parameters that may be accessed from the GUI
-    mutable QMutex viewerParamsMutex; //< protects viewerParamsGain, viewerParamsDisplay/View/Look, viewerParamsAutoContrast, viewerParamsChannels
-    double viewerParamsGain;           /*!< Current gain setting in the GUI. Not affected by autoContrast. */
-    double viewerParamsGamma;          /*!< Current gamma setting in the GUI. Not affected by autoContrast. */
-    std::string viewerParamsDisplay; // empty: the project's default display and view
-    std::string viewerParamsView;
-    std::string viewerParamsLook; // empty: no look override
-    bool viewerParamsAutoContrast;
-    DisplayChannelsEnum viewerParamsChannels[2];
+    // The layer and alpha knobs store IDs; rendering needs the descriptions they resolved to. Each
+    // description is kept with the knob value it came from, and a value that resolves to nothing
+    // keeps the previous description, so a missing layer renders as before without the saved ID
+    // being overwritten.
+    mutable QMutex viewerParamsMutex; //< protects the resolved layer fields and the partial-update fields
+    std::string viewerParamsLayerID;
     ImageLayerDesc viewerParamsLayer;
+    std::string viewerParamsAlphaID;
     ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
-    unsigned int viewerMipmapLevel; //< the mipmap level the viewer should render at (0 == no downscaling)
-    bool fullFrameProcessingEnabled;
+
+    // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
+    // change itself, so knobChanged() must not apply it a second time.
+    int knobWritesFromSetter;
+    unsigned int knobRenderRequests; // main thread only
+
+    struct Knobs {
+        KnobBoolWPtr enableGain;
+        KnobDoubleWPtr gain; // f-stops
+        KnobBoolWPtr enableGamma;
+        KnobDoubleWPtr gamma;
+        KnobBoolWPtr autoContrast;
+        KnobBoolWPtr checkerboard;
+        KnobStringWPtr display; // empty: the project's default display and view
+        KnobStringWPtr view;
+        KnobStringWPtr look; // empty: no look
+
+        KnobChoiceWPtr displayChannels[2];
+        KnobLayerSelectWPtr layer;
+        KnobChannelSelectWPtr alphaChannel;
+        KnobIntWPtr inputs[2]; // input numbers, -1 for none
+        KnobChoiceWPtr operation;
+        KnobDoubleWPtr wipeCenter;
+        KnobDoubleWPtr wipeAmount;
+        KnobDoubleWPtr wipeAngle; // radians
+        KnobIntWPtr activeView;
+
+        KnobBoolWPtr enableFps;
+        KnobDoubleWPtr fps;
+        KnobIntWPtr inPoint;
+        KnobIntWPtr outPoint;
+        KnobBoolWPtr enableUserRoI;
+        KnobDoubleWPtr userRoIBottomLeft;
+        KnobDoubleWPtr userRoISize;
+        KnobBoolWPtr clipToFormat;
+        KnobBoolWPtr fullFrame;
+        KnobBoolWPtr enableDownscale;
+        KnobChoiceWPtr downscaleLevel;
+    };
+    Knobs knobs;
 
     ///Only accessed from MT
     bool activateInputChangedFromViewer;

@@ -141,6 +141,7 @@ test -n "$boost_python"
 # the image happens to carry a toolkit.
 cmake -S "$src" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_PREFIX_PATH="$usd_prefix" \
     -DCMAKE_CXX_FLAGS=-DUDPSYSLOG_NO_BOOST \

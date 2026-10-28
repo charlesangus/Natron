@@ -29,6 +29,8 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <vector>
+
 #include <QPointF>
 #include <QRectF>
 
@@ -313,6 +315,88 @@ public:
     virtual void removeCurve(const RotoDrawableItemPtr& curve) OVERRIDE FINAL;
 
 private:
+    /**
+     * @brief A stroke as the overlay draws it until its render catches up: dabs placed, sized and shaded by the stroke
+     * renderer's rules, in canonical coordinates.
+     **/
+    struct StrokePreview {
+        struct Dab {
+            double x, y;
+            double innerRadius, outerRadius;
+            // Flat at opacities[0] when solid, else the renderer's nine ramp stops from innerRadius to outerRadius.
+            bool solid;
+            float opacities[9];
+            // The point ending the segment the dab lies on.
+            int pointIndex;
+        };
+
+        struct Vertex {
+            float x, y;
+            unsigned char rgba[4];
+        };
+
+        // Tools other than the solid brush show where they act, not what they do.
+        bool footprintOnly;
+        unsigned char colour[3];
+        double opacity, size, hardness, spacing;
+        bool pressureOpacity, pressureSize, pressureHardness, buildUp;
+
+        int pointCount;
+        double lastX, lastY, lastPressure, distToNext;
+        std::vector<Dab> dabs;
+        double bbox[4];
+
+        // The stroke this preview stands in for, once the engine has it.
+        bool engineStarted;
+        RotoStrokeItemWPtr item;
+        int multiStrokeIndex;
+        bool neatRenderRequested;
+
+        // Dab triangles, appended as dabs arrive and rebuilt when the zoom calls for another tessellation.
+        std::vector<Vertex> vertices;
+        std::vector<std::size_t> dabFirstVertex;
+        double tessellationScale;
+    };
+
+    struct DeferredPenEvent {
+        enum TypeEnum {
+            eTypeDown,
+            eTypeMotion,
+            eTypeUp
+        };
+
+        TypeEnum type;
+        QPointF pos;
+        double pressure;
+        double timestamp;
+        RotoToolEnum tool;
+    };
+
+    std::list<StrokePreview> strokePreviews;
+
+    // The preview of the stroke the engine is building, if any.
+    StrokePreview* engineStrokePreview;
+
+    // Pen events of strokes begun while the previous stroke's neat render runs, replayed once it lands.
+    std::list<DeferredPenEvent> deferredPenEvents;
+    bool neatRenderPending;
+
+    bool mustDeferPenEvents() const
+    {
+        return neatRenderPending || !deferredPenEvents.empty();
+    }
+
+    void beginStrokePreview(const QPointF& pos, double pressure);
+    static void addStrokePreviewPoint(StrokePreview& preview, double x, double y, double pressure);
+    static void tessellateStrokePreview(StrokePreview& preview, std::size_t firstDab, double pixelScale);
+    void drawStrokePreviews();
+
+    void beginStroke(const QPointF& pos, double pressure, double timestamp);
+    bool continueStroke(const QPointF& pos, double pressure, double timestamp);
+    void finishStroke();
+    void onNeatRenderLanded();
+    void replayDeferredPenEvents();
+
     RotoPaintInteractPtr shared_from_this_paint()
     {
         return std::static_pointer_cast<RotoPaintInteract>(shared_from_this());

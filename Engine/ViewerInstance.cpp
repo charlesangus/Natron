@@ -829,9 +829,12 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 int currentlyPaintedStrokeMultiIndex;
                 getApp()->getStrokeAndMultiStrokeIndex(&currentlyPaintedStroke, &currentlyPaintedStrokeMultiIndex);
 
+                // A render queued for a stroke the user has since replaced has nothing left to draw.
+                if (currentlyPaintedStroke != activeStroke) {
+                    args[i].reset();
 
-                //If this crashes here that means the user could start a new stroke while this one is not done rendering.
-                assert(currentlyPaintedStroke == activeStroke);
+                    return eViewerRenderRetCodeRedraw;
+                }
 
                 //the multi-stroke index in case of a stroke containing multiple strokes from the user
                 int strokeIndex;

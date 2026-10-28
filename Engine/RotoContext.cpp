@@ -34,8 +34,9 @@
 #include <cstring> // for std::memcpy, std::memset
 #include <sstream> // stringstream
 
-#include <QLineF>
 #include <QDebug>
+#include <QLineF>
+#include <QTimer>
 
 //#define ROTO_RENDER_TRIANGLES_ONLY
 
@@ -480,37 +481,160 @@ RotoContext::mustDoNeatRender() const
     return _imp->mustDoNeatRender;
 }
 
-void
+bool
 RotoContext::setIsDoingNeatRender(bool doing)
 {
-    QMutexLocker k(&_imp->doingNeatRenderMutex);
+    bool landed = false;
+    {
+        QMutexLocker k(&_imp->doingNeatRenderMutex);
 
-    if (doing && _imp->mustDoNeatRender) {
-        assert(!_imp->doingNeatRender);
-        _imp->doingNeatRender = true;
-        _imp->mustDoNeatRender = false;
-    } else if (_imp->doingNeatRender) {
+        if (doing) {
+            if (!_imp->mustDoNeatRender || _imp->doingNeatRender) {
+                return false;
+            }
+            _imp->doingNeatRender = true;
+            _imp->mustDoNeatRender = false;
+
+            return true;
+        }
+        landed = _imp->doingNeatRender;
         _imp->doingNeatRender = false;
-        _imp->doingNeatRenderCond.wakeAll();
+    }
+    if (landed) {
+        // Renders end on worker threads; callbacks belong to the main thread.
+        RotoContextWPtr weakThis = std::dynamic_pointer_cast<RotoContext>(shared_from_this());
+        QMetaObject::invokeMethod(qApp, [weakThis]() {
+            if (RotoContextPtr self = weakThis.lock()) {
+                self->onNeatRenderLanded();
+            } }, Qt::QueuedConnection);
+    }
+
+    return false;
+}
+
+// A neat frame that never reaches the screen (its viewer stopped, or a newer frame superseded it before display)
+// must not keep the stroke preview and the queued pen events forever.
+static const int kNeatDisplayTimeoutMs = 1000;
+
+void
+RotoContext::notifyNeatRenderFrameProduced()
+{
+    unsigned int generation;
+    {
+        QMutexLocker k(&_imp->doingNeatRenderMutex);
+        _imp->doingNeatRender = false;
+        _imp->awaitingNeatDisplay = true;
+        generation = ++_imp->neatDisplayGeneration;
+    }
+    RotoContextWPtr weakThis = std::dynamic_pointer_cast<RotoContext>(shared_from_this());
+    QMetaObject::invokeMethod(qApp, [weakThis, generation]() { QTimer::singleShot(kNeatDisplayTimeoutMs, qApp, [weakThis, generation]() {
+                                                                   RotoContextPtr self = weakThis.lock();
+                                                                   if (!self) {
+                                                                       return;
+                                                                   }
+                                                                   {
+                                                                       QMutexLocker k(&self->_imp->doingNeatRenderMutex);
+                                                                       if (!self->_imp->awaitingNeatDisplay || (self->_imp->neatDisplayGeneration != generation)) {
+                                                                           return;
+                                                                       }
+                                                                       self->_imp->awaitingNeatDisplay = false;
+                                                                   }
+                                                                   self->onNeatRenderLanded();
+                                                               }); }, Qt::QueuedConnection);
+}
+
+void
+RotoContext::noteNeatRenderDisplayed()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker k(&_imp->doingNeatRenderMutex);
+        if (!_imp->awaitingNeatDisplay) {
+            return;
+        }
+        _imp->awaitingNeatDisplay = false;
+    }
+    onNeatRenderLanded();
+}
+
+void
+RotoContext::onNeatRenderLanded()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker k(&_imp->doingNeatRenderMutex);
+        // Another stroke asked for a neat render since, or this one's frame is not up yet; that landing runs the callbacks.
+        if (_imp->doingNeatRender || _imp->mustDoNeatRender || _imp->awaitingNeatDisplay) {
+            return;
+        }
+    }
+    std::list<std::function<void()>> callbacks;
+    callbacks.swap(_imp->neatRenderLandedCallbacks);
+    for (std::list<std::function<void()>>::iterator it = callbacks.begin(); it != callbacks.end(); ++it) {
+        (*it)();
     }
 }
 
 void
-RotoContext::evaluateNeatStrokeRender()
+RotoContext::evaluateNeatStrokeRender(const std::function<void()>& onLanded)
 {
+    assert(QThread::currentThread() == qApp->thread());
+    if (onLanded) {
+        _imp->neatRenderLandedCallbacks.push_back(onLanded);
+    }
     {
         QMutexLocker k(&_imp->doingNeatRenderMutex);
         _imp->mustDoNeatRender = true;
     }
     evaluateChange();
 
-    //EvaluateChange will call setIsDoingNeatRender(true);
-    {
-        QMutexLocker k(&_imp->doingNeatRenderMutex);
-        while (_imp->doingNeatRender) {
-            _imp->doingNeatRenderCond.wait(k.mutex());
+    // Viewer render requests are queued events too, so this runs after every viewer had its chance to take the
+    // neat render. A request nobody took (hidden or paused-and-cached viewer, playback) must not linger.
+    RotoContextWPtr weakThis = std::dynamic_pointer_cast<RotoContext>(shared_from_this());
+    QMetaObject::invokeMethod(qApp, [weakThis]() {
+        RotoContextPtr self = weakThis.lock();
+        if (!self) {
+            return;
         }
+        {
+            QMutexLocker k(&self->_imp->doingNeatRenderMutex);
+            if (!self->_imp->mustDoNeatRender) {
+                return;
+            }
+            self->_imp->mustDoNeatRender = false;
+        }
+        self->onNeatRenderLanded(); }, Qt::QueuedConnection);
+}
+
+void
+RotoContext::noteStrokeDisplayed(const RotoStrokeItemPtr& stroke,
+                                 int multiStrokeIndex,
+                                 int age)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!stroke || (multiStrokeIndex < 0)) {
+        return;
     }
+    if (_imp->displayedStroke.lock() != stroke) {
+        _imp->displayedStroke = stroke;
+        _imp->displayedStrokeAges.clear();
+    }
+    if ((int)_imp->displayedStrokeAges.size() <= multiStrokeIndex) {
+        _imp->displayedStrokeAges.resize(multiStrokeIndex + 1, -1);
+    }
+    _imp->displayedStrokeAges[multiStrokeIndex] = std::max(_imp->displayedStrokeAges[multiStrokeIndex], age);
+}
+
+int
+RotoContext::getDisplayedStrokeAge(const RotoStrokeItemPtr& stroke,
+                                   int multiStrokeIndex) const
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!stroke || (multiStrokeIndex < 0) || (multiStrokeIndex >= (int)_imp->displayedStrokeAges.size()) || (_imp->displayedStroke.lock() != stroke)) {
+        return -1;
+    }
+
+    return _imp->displayedStrokeAges[multiStrokeIndex];
 }
 
 CairoImageWrapper::~CairoImageWrapper()
@@ -1400,7 +1524,7 @@ RotoContextPrivate::renderDot(cairo_t* cr,
     cairo_fill(cr);
 }
 
-static void
+void
 getRenderDotParams(double alpha,
                    double brushSizePixel,
                    double brushHardness,
@@ -1411,8 +1535,8 @@ getRenderDotParams(double alpha,
                    bool pressureAffectsHardness,
                    double* internalDotRadius,
                    double* externalDotRadius,
-                   double * spacing,
-                   std::vector<std::pair<double, double> >* opacityStops)
+                   double* spacing,
+                   std::vector<std::pair<double, double>>* opacityStops)
 {
     if (pressureAffectsSize) {
         brushSizePixel *= pressure;

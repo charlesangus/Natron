@@ -382,7 +382,6 @@ RotoStrokeItem::appendPoint(bool newStroke,
         int nk = stroke->xCurve->getKeyFramesCount();
         double t;
         if (nk == 0) {
-            qDebug() << "start stroke!";
             t = 0.;
             // set time origin for this curve
             _imp->curveT0 = p.timestamp();
@@ -395,12 +394,10 @@ RotoStrokeItem::appendPoint(bool newStroke,
             //Clamp timestamps difference to 1e-3 in case Qt delivers its events all at once
             double dt = t - _imp->lastTimestamp;
             if (dt < 0.01) {
-                qDebug() << "dt is lower than 0.01!";
                 t = _imp->lastTimestamp + 0.01;
             }
         }
         _imp->lastTimestamp = t;
-        qDebug("t[%d]=%g", nk, t);
 
         bool addKeyFrameOk; // did we add a new keyframe (normally yes, but just in case)
         int ki; // index of the new keyframe (normally nk, but just in case)

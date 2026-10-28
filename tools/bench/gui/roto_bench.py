@@ -9,7 +9,7 @@ Ops, each with GUI_BENCH_REPS repetitions:
     stroke_<B>px   (topology roto-<format>, n = upstream nodes) a paced brush stroke on a RotoPaint
                    node, for every brush size B, project format and upstream graph size
     pen_up         (topology roto-<format>, n = upstream nodes) a short 50 px stroke; times the
-                   release, which waits for the stroke's final render
+                   release, which hands the neat render off asynchronously
     drag_point, drag_tangent, drag_feather, transform_box, hover
                    (topology roto-shapes, n = shapes) on one Roto node holding n shapes of
                    ROTO_BENCH_POINTS points keyed on ROTO_BENCH_KEYS frames; every drag is undone
@@ -583,7 +583,7 @@ try:
             for p in pts[1:]:
                 move(sc.gl, p, Qt.LeftButton)
                 yield ("sleep", PEN_INTERVAL_MS)
-            # The release waits for the stroke's final render on the main thread.
+            # The release hands the neat render off; it does not wait for it.
             t0 = mono_ms()
             QApplication.sendEvent(sc.gl, QMouseEvent(QEvent.MouseButtonRelease, QPointF(pts[-1]), Qt.LeftButton,
                                                       Qt.NoButton, Qt.NoModifier))

@@ -267,7 +267,13 @@ try:
     # ---- shape helpers ---------------------------------------------------------------------
 
     def shapes(ctx):
-        return [it for it in ctx.getBaseLayer().getChildren() if isinstance(it, NatronEngine.BezierCurve)]
+        # Layer.getChildren() wraps every item as a plain ItemBase; getItemByName gives the BezierCurve.
+        found = []
+        for it in ctx.getBaseLayer().getChildren():
+            item = ctx.getItemByName(it.getScriptName())
+            if isinstance(item, NatronEngine.BezierCurve):
+                found.append(item)
+        return found
 
     def clear_shapes(ctx):
         layer = ctx.getBaseLayer()

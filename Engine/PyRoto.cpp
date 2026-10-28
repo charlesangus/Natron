@@ -692,6 +692,10 @@ Roto::createEllipse(double x,
     BezierPtr  ret = _ctx->makeEllipse(x, y, diameter, fromCenter, time);
 
     if (ret) {
+        // A finished shape, so render and redraw it as setCurveFinished(true) does.
+        _ctx->emitRefreshViewerOverlays();
+        _ctx->evaluateChange();
+
         return new BezierCurve(ret);
     }
 
@@ -710,6 +714,10 @@ Roto::createRectangle(double x,
     BezierPtr  ret = _ctx->makeSquare(x, y, size, time);
 
     if (ret) {
+        // A finished shape, so render and redraw it as setCurveFinished(true) does.
+        _ctx->emitRefreshViewerOverlays();
+        _ctx->evaluateChange();
+
         return new BezierCurve(ret);
     }
 

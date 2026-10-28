@@ -33,6 +33,7 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
 
 ## Decisions
 
+- 2026-10-28: blocked on scope (PM): interpolateSuper/supersampleLevels and filterOptions() are shared by STMap, IDistort, IWarp, LensDistortion (resampleRowFromCoords; coordmap.slang/iwarp.slang use resamplecore.slang) and CornerPin/ITransform/ICornerPin (staged resampleRow), contradicting the Assumptions/Out list. Asked the user to choose replace-everywhere vs split.
 - 2026-10-28 — Scale-aware kernels replace supersampling for all filters: no backward compat in the fork (user), so existing ten need not stay bit-identical to OFX; ulp and minification goldens are re-recorded, not treated as a framework change.
 - 2026-10-28 — No Hermite entry: Hermite is the zero-tangent cubic Natron already calls Cubic, equal to Bicubic at B = 0, C = 0; adding it would duplicate an entry.
 - 2026-10-28 — Lobe count exposed as fixed Lanczos 2/3/4 entries plus a Sinc entry with a Lobes knob (user).

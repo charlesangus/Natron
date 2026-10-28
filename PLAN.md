@@ -331,7 +331,7 @@ future core work has solid ground to build on.
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
 | M266 | Expression Namespace Spike | todo | M262 |  | E14 | [M266-expression-namespace-spike.md](PLAN/MILESTONES/M266-expression-namespace-spike.md) |
 | M267 | RFVSwitch Match Choice Button | doing | M72 | bosley-native-nodes | E13 | [M267-rfvswitch-match-choice-button.md](PLAN/MILESTONES/M267-rfvswitch-match-choice-button.md) |
-| M270 | Lanczos Sinc Resampling Filters | doing | - | bosley-native-nodes | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
+| M270 | Lanczos Sinc Resampling Filters | blocked | - | bosley-native-nodes | E3 | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | doing | - | bosley-native-nodes | E14 | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
@@ -360,6 +360,7 @@ future core work has solid ground to build on.
 | E18 | Motion Vectors | Generate dense motion vectors natively and move Roto, paint and SplineWarp curves along them. |
 
 # Open questions
+- M270 - Lanczos Sinc Resampling Filters (bosley-native-nodes): the shared resampler and Filter menu are also used by STMap, IDistort, IWarp, LensDistortion, CornerPin, ITransform, ICornerPin — (a) new kernels and filters everywhere (recommended; matches "replace supersampling for all filters" but contradicts the milestone's Out list), (b) split by caller, or (c) new kernels on existing Jacobians without new menu entries? Also: run phases 270.1 and 270.2 in one build so CPU/GPU parity tests don't break in between.
 
 - M238 - EdgeExtend Options (bosley-native-nodes): which Nuke options to add (recommend all five), replace Size/Slices with push-pull (recommend yes), edge mask in an output channel (recommend yes). See the milestone's Open questions.
 - M79 - Layered Document Readers (bosley-native-nodes): library choice (recommend in-tree OIIO ImageInputs on ZipStore + QXmlStreamReader), layer model and XCF composite, fixture authoring. See the milestone's Open questions.

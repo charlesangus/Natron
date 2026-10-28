@@ -655,6 +655,9 @@ try:
               "the render dialog lists the new Write (%r)" % render_seen.get("writers"))
         check(created[0].getPluginID() == WRITE_ID, "the created node is a native Write (%s)" % created[0].getPluginID())
         check(str(created[0].getParam("filename").getValue()) == SELECTED, "its file is the one chosen (%r)" % created[0].getParam("filename").getValue())
+        src = created[0].getInput(0)
+        check(src is not None and src.getScriptName() == constant.getScriptName(),
+              "the created Write's input is the selected Constant (%r)" % (src.getScriptName() if src else None,))
         ok = yield ("until", lambda: os.path.isfile(SELECTED) and os.path.getsize(SELECTED) > 0, POLL_TIMEOUT_S)
         check(ok, "Render Selected wrote the file")
 

@@ -16,7 +16,7 @@ import os
 import statistics
 
 UHD_MPX = 3840 * 2160 / 1e6
-SKIPPED_PLUGINS = ("net.sf.openfx.Ramp",)
+SKIPPED_PLUGINS = ("Ramp",)
 
 
 def records(path):

@@ -1,8 +1,8 @@
 """GUI check that the colour picker's output rect path honours the image's pixel aspect ratio.
 
-A Rectangle generator with nothing connected to its Source is viewed, so the Ctrl+Shift rectangle
-pick has no input to read and falls back to the displayed image (getColorAtRect), marked "out".
-The generator fills the left half of the frame with one colour over a different background, on a
+A Ramp generator, which has no inputs, is viewed, so the Ctrl+Shift rectangle pick has no input
+to read and falls back to the displayed image (getColorAtRect), marked "out". The Ramp steps from
+one colour in the left half of the frame to a different one in the right half, on a
 pixel-aspect-ratio 2 format and then on a pixel-aspect-ratio 1 format. For each half, a box wholly
 inside it is rect-picked (the mean must equal that half's colour) and the same half is
 point-picked with Ctrl+Alt as the control (getColorAt, which already divides by the ratio).
@@ -176,21 +176,21 @@ try:
         viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
         require(viewer is not None, "a Viewer node exists")
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
-        rect = app.createNode("net.sf.openfx.Rectangle", -1, None, props)
-        require(rect is not None, "create a Rectangle", gt.plugin_problem("net.sf.openfx.Rectangle"))
+        ramp = app.createNode("Ramp", -1, None, props)
+        require(ramp is not None, "create a Ramp", gt.plugin_problem("Ramp"))
         gt.close_all_panels()
-        rect.getParam("bottomLeft").setValue(0.0, 0)
-        rect.getParam("bottomLeft").setValue(0.0, 1)
-        # Canonical units: the 200x100 format spans 200*par canonical units across.
+        # Canonical units: the 200x100 format spans 200*par canonical units across. The ramp
+        # spans one canonical unit across the middle, so it is a step between the two halves.
         half_width = 100.0 * par
-        rect.getParam("size").setValue(half_width, 0)
-        rect.getParam("size").setValue(100.0, 1)
-        rect.getParam("softness").setValue(0.0)
-        set_rgba(rect.getParam("color1"), RED + (1.0,))
-        set_rgba(rect.getParam("color0"), BLUE + (1.0,))
+        ramp.getParam("point0").setValue(half_width - 0.5, 0)
+        ramp.getParam("point0").setValue(50.0, 1)
+        ramp.getParam("point1").setValue(half_width + 0.5, 0)
+        ramp.getParam("point1").setValue(50.0, 1)
+        set_rgba(ramp.getParam("color0"), RED + (1.0,))
+        set_rgba(ramp.getParam("color1"), BLUE + (1.0,))
         if viewer.getInput(0) is not None:
             viewer.disconnectInput(0)
-        require(viewer.connectInput(0, rect), "the Viewer shows the Rectangle")
+        require(viewer.connectInput(0, ramp), "the Viewer shows the Ramp")
         yield ("sleep", RENDER_MS)
 
         gl = visible_of("ViewerGL")[0] if visible_of("ViewerGL") else None
@@ -237,7 +237,7 @@ try:
                   % (par, half, want[half], rgba))
             widget_shot(info_bar(), "m134-par%d-%s-point" % (par, half))
 
-        rect.destroy()
+        ramp.destroy()
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
 

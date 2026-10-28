@@ -150,7 +150,7 @@ def merge(name, op, a, b):
 
 
 def ramp(name, c0, c1):
-    n = make("net.sf.openfx.Ramp", name)
+    n = make("Ramp", name)
     p(n, "point0").set(0.0, 0.0)
     p(n, "point1").set(3840.0, 2160.0)
     p(n, "color0").set(*c0)
@@ -167,7 +167,7 @@ def moving_ramp(name, c0, c1, speed=0.01):
 
 
 def rectangle(name, color, x, y, w, h, soft=0.2, dx=0.0):
-    n = make("net.sf.openfx.Rectangle", name)
+    n = make("Rectangle", name)
     p(n, "color0").set(*color)
     p(n, "softness").set(soft)
     p(n, "size").set(w, h)
@@ -176,7 +176,8 @@ def rectangle(name, color, x, y, w, h, soft=0.2, dx=0.0):
 
 
 def radial(name, color, speed=0.01):
-    n = make("net.sf.openfx.Radial", name)
+    n = make("Radial", name)
+    p(n, "softness").set(1080.0)
     p(n, "color0").set(*color)
     prm = p(n, "color0")
     for d in range(3):

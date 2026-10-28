@@ -133,8 +133,7 @@ def deep(width, height):
         return
     app.getProjectParam("outputFormat").set("HD")
     src = image(1)
-    z = make("net.sf.openfx.Ramp")
-    z.connectInput(0, src)
+    z = make("Ramp")
     param(z, "point0").set(0.0, 0.0)
     param(z, "point1").set(float(width), float(height))
     param(z, "color0").set(1.0, 1.0, 1.0, 1.0)

@@ -27,6 +27,7 @@
 
 #include <cstdlib>
 #include <list>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -39,12 +40,18 @@
 #include "NativePluginIdentity.h"
 #include "NativeShapeTestSupport.h"
 
+#include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/HostOverlaySupport.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/ColorWheel.h"
 #include "Engine/Nodes/Generator/Radial.h"
+#include "Engine/Nodes/Generator/Ramp.h"
 #include "Engine/Nodes/Generator/Rectangle.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/OfxRetired.h"
+#include "Engine/Project.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_USING
@@ -114,6 +121,40 @@ TEST_F(NativeShapesTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_RADIAL, PLUGIN_MAJOR_NATRON_RADIAL, "Radial");
     expectNativeIdentity(PLUGINID_NATRON_RECTANGLE, PLUGIN_MAJOR_NATRON_RECTANGLE, "Rectangle");
+}
+
+// The OFX shape generators are retired in favour of the native ones; ColorBars, which has no
+// native port, still loads.
+TEST_F(NativeShapesTest, OfxShapeGeneratorsAreRetiredForTheNativeOnes)
+{
+    struct Retired {
+        const char* ofxId;
+        const char* nativeId;
+    };
+    static const Retired retired[] = {
+        { "net.sf.openfx.Ramp", PLUGINID_NATRON_RAMP },
+        { "net.sf.openfx.Radial", PLUGINID_NATRON_RADIAL },
+        { "net.sf.openfx.Rectangle", PLUGINID_NATRON_RECTANGLE },
+        { "net.sf.openfx.ColorWheel", PLUGINID_NATRON_COLORWHEEL },
+    };
+
+    for (const Retired& r : retired) {
+        const std::map<std::string, std::string>::const_iterator marker = retiredOfxPlugins().find(r.ofxId);
+        ASSERT_TRUE(marker != retiredOfxPlugins().end()) << r.ofxId;
+        EXPECT_EQ(std::string(r.nativeId), marker->second) << r.ofxId;
+
+        CreateNodeArgs args(r.ofxId, getApp()->getProject());
+        args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+        EXPECT_FALSE(bool(getApp()->createNode(args))) << r.ofxId;
+
+        NodePtr native = createNode(QString::fromUtf8(r.nativeId), 1);
+        ASSERT_TRUE(bool(native)) << r.nativeId;
+        EXPECT_TRUE(isNative(native)) << r.nativeId;
+    }
+
+    EXPECT_FALSE(isRetiredOfxPluginId("net.sf.openfx.ColorBars"));
+    NodePtr colorBars = createNode(QString::fromUtf8("net.sf.openfx.ColorBars"));
+    EXPECT_TRUE(bool(colorBars));
 }
 
 // The shape is the extent's box, so both start in Size extent with the box overlay live, the box

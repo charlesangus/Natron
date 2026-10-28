@@ -221,21 +221,21 @@ def main():
         last = configure(NODE, 0)
         count = 1
     else:
-        source = make("net.sf.openfx.Ramp", "np_source")
+        source = make("Ramp", "np_source")
         param(source, "point0").set(0.0, 0.0)
         param(source, "point1").set(3840.0, 2160.0)
         animate(param(source, "color0"), (0.1, 0.2, 0.3, 1.0), (0.01, 0.0, 0.0, 0.0))
         param(source, "color1").set(0.9, 0.8, 0.7, 1.0)
         other = None
         if NODE in TWO_INPUTS:
-            other = make("net.sf.openfx.Ramp", "np_source2")
+            other = make("Ramp", "np_source2")
             param(other, "point0").set(3840.0, 0.0)
             param(other, "point1").set(0.0, 2160.0)
             param(other, "color0").set(0.8, 0.1, 0.2, 1.0)
             param(other, "color1").set(0.1, 0.7, 0.9, 1.0)
         size_map = None
         if NODE in MAP_INPUTS:
-            size_map = make("net.sf.openfx.Ramp", "np_map")
+            size_map = make("Ramp", "np_map")
             param(size_map, "point0").set(0.0, 0.0)
             param(size_map, "point1").set(3840.0, 0.0)
             param(size_map, "color0").set(0.0, 0.0, 0.0, 0.0)
@@ -245,7 +245,7 @@ def main():
             raise RuntimeError("NP_CHAIN must be 2 or more with the GPU on, or the node renders on the CPU")
         uv = None
         if NODE in UV_INPUTS:
-            uv = make("net.sf.openfx.Ramp", "np_uv")
+            uv = make("Ramp", "np_uv")
             param(uv, "point0").set(0.0, 0.0)
             param(uv, "point1").set(3840.0, 2160.0)
             param(uv, "color0").set(0.0, 0.0, 0.0, 1.0)

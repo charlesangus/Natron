@@ -346,13 +346,11 @@ TEST_F(SplineWarpModelTest, EveryEditChangesTheHash)
     BezierPtr boundary = makeQuad(ctx, -50., -50., 300.);
     ASSERT_TRUE(bool(a) && bool(b) && bool(boundary));
 
-    std::set<U64> contextHashes;
-    std::set<U64> nodeHashes;
-    int edits = 0;
+    std::vector<U64> contextHashes;
+    std::vector<U64> nodeHashes;
     const auto record = [&]() {
-        ++edits;
-        contextHashes.insert(ctx->getContentHash());
-        nodeHashes.insert(host->getHashValue());
+        contextHashes.push_back(ctx->getContentHash());
+        nodeHashes.push_back(host->getHashValue());
     };
 
     record();
@@ -367,6 +365,7 @@ TEST_F(SplineWarpModelTest, EveryEditChangesTheHash)
     record();
     ctx->setLinkAmountAtTime(link, 10., 0.25);
     record();
+    const std::size_t beforeCorrespondence = contextHashes.size() - 1;
     ASSERT_EQ(0, ctx->addCorrespondence(link, 1., 2.));
     record();
     ctx->setCorrespondence(link, 0, 1.5, 2., kTime);
@@ -375,6 +374,7 @@ TEST_F(SplineWarpModelTest, EveryEditChangesTheHash)
     record();
     ctx->removeCorrespondence(link, 0);
     record();
+    const std::size_t beforeBoundary = contextHashes.size() - 1;
     ctx->setBoundary(boundary, true);
     record();
     ctx->setBoundary(boundary, false);
@@ -382,9 +382,18 @@ TEST_F(SplineWarpModelTest, EveryEditChangesTheHash)
     ctx->unlink(a);
     record();
 
-    // Back to no link and no boundary, as at the start: the first and last hashes may match.
-    EXPECT_GE(contextHashes.size(), std::size_t(edits - 1));
-    EXPECT_GE(nodeHashes.size(), std::size_t(edits - 1));
+    for (std::size_t i = 1; i < contextHashes.size(); ++i) {
+        EXPECT_NE(contextHashes[i - 1], contextHashes[i]) << "edit " << i;
+        EXPECT_NE(nodeHashes[i - 1], nodeHashes[i]) << "edit " << i;
+    }
+    // Undoing an edit restores the earlier warp model, so it restores the earlier hash.
+    EXPECT_EQ(contextHashes[beforeCorrespondence], contextHashes[beforeBoundary]);
+    EXPECT_EQ(contextHashes[beforeBoundary], contextHashes[beforeBoundary + 2]);
+    EXPECT_EQ(contextHashes.front(), contextHashes.back());
+    EXPECT_EQ(nodeHashes[beforeCorrespondence], nodeHashes[beforeBoundary]);
+    EXPECT_EQ(nodeHashes[beforeBoundary], nodeHashes[beforeBoundary + 2]);
+    EXPECT_EQ(nodeHashes.front(), nodeHashes.back());
+    EXPECT_EQ(std::size_t(10), std::set<U64>(contextHashes.begin(), contextHashes.end()).size());
 }
 
 TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)

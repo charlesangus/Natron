@@ -60,4 +60,5 @@ Deps: M209 - Edge-Aware Filter Library, M214 - Colour Balance RGB. See `DECISION
 
 ## Decisions
 
+- 2026-10-27: release gate green (run 40620856879) with the whole-frame guided filter and the 640x480 Noise region test; next: GUI check and screenshots, then AppImage/UAT.
 - 2026-10-28 — PM: output must not depend on the requested region. The guided filter's subsampling grid (factors 2–4 at large sizes) is anchored to the image origin and the input region padded to grid-aligned bounds, matching darktable's whole-image subsampling. Defaults are not an exact identity in darktable either (curve through eight 1s dips to 0.99854); tests check exact identity with flat curves and bound the default dip.

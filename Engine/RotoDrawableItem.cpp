@@ -1445,6 +1445,21 @@ void
 RotoDrawableItem::getTransformAtTime(double time,
                                      Transform::Matrix3x3* matrix) const
 {
+    RotoCurveContextPtr context = getContext();
+    if (!context) {
+        getLocalTransformAtTime(time, matrix);
+
+        return;
+    }
+    Transform::Matrix3x3 local;
+    getLocalTransformAtTime(time, &local);
+    context->composeItemTransform(*this, time, local, matrix);
+}
+
+void
+RotoDrawableItem::getLocalTransformAtTime(double time,
+                                          Transform::Matrix3x3* matrix) const
+{
     double tx = _imp->translate->getValueAtTime(time, 0);
     double ty = _imp->translate->getValueAtTime(time, 1);
     double sx = _imp->scale->getValueAtTime(time, 0);
@@ -1537,8 +1552,14 @@ RotoDrawableItem::setExtraMatrix(bool setKeyframe,
 void
 RotoDrawableItem::resetTransformCenter()
 {
-    double time = getContext()->getNode()->getApp()->getTimeLine()->currentFrame();
-    RectD bbox =  getBoundingBox(time);
+    RotoCurveContextPtr context = getContext();
+    double time = context->getNode()->getApp()->getTimeLine()->currentFrame();
+    double centerX, centerY;
+    if (!context->getDefaultTransformCenter(time, &centerX, &centerY)) {
+        RectD bbox = getBoundingBox(time);
+        centerX = (bbox.x1 + bbox.x2) / 2.;
+        centerY = (bbox.y1 + bbox.y2) / 2.;
+    }
     KnobDoublePtr centerKnob = _imp->center;
 
     centerKnob->beginChanges();
@@ -1551,7 +1572,7 @@ RotoDrawableItem::resetTransformCenter()
     }
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 0);
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 1);
-    centerKnob->setValues( (bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited );
+    centerKnob->setValues(centerX, centerY, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     if (hasMaster.second) {
         for (int i = 0; i < centerKnob->getDimension(); ++i) {
             dynamic_cast<KnobI*>( centerKnob.get() )->slaveTo(i, hasMaster.second, i);

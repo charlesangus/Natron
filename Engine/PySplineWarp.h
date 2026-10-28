@@ -123,6 +123,18 @@ public:
     void setLayerAmount(Layer* layer, double value, double time);
     void setLayerAmountAtTime(Layer* layer, double time, double value);
 
+    /**
+     * @brief Makes item, a curve or layer, take target's transform in place of its own. Raises
+     * ValueError for a link that would form a cycle or join an item to a layer it is in.
+     **/
+    void linkTransform(ItemBase* item, ItemBase* target);
+
+    // Ends item's transform link, item keeping the values it followed.
+    void unlinkTransform(ItemBase* item);
+
+    // The curve or layer whose transform item takes, None when none.
+    ItemBase* getTransformLink(ItemBase* item) const;
+
 private:
     bool refuses() const;
 

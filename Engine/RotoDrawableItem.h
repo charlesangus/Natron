@@ -166,7 +166,16 @@ public:
 
     virtual RectD getBoundingBox(double time) const = 0;
 
+    /**
+     * @brief The item's transform as drawn and rendered: its own, through the context's
+     * composeItemTransform().
+     **/
     void getTransformAtTime(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief The transform the item's own knobs make.
+     **/
+    void getLocalTransformAtTime(double time, Transform::Matrix3x3* matrix) const;
 
     /**
      * @brief Set the transform at the given time

@@ -204,6 +204,7 @@ toGpuWrapView(const GpuImageView& view)
 SplineWarp::SplineWarp(NodePtr node)
     : StagedImageEffect(node)
     , _syncingAmounts(false)
+    , _syncingTransform(false)
     // Built here, as RotoPaint's is: Node::load() ends the knob bracket with endChanges(), which
     // already calls knobChanged() and so forwards to the interact.
     , _ui(SplineWarpInteract::create(this))
@@ -262,6 +263,8 @@ SplineWarp::getCurvePanelHook() const
 {
     return _panelHook.get();
 }
+
+static SplineWarpContextPtr splineWarpContext(const SplineWarp& effect);
 
 void
 SplineWarp::initializeKnobs()
@@ -361,6 +364,14 @@ SplineWarp::initializeKnobs()
     boundaryBBox->setAnimationEnabled(false);
     page->addKnob(boundaryBBox);
     _boundaryBBox = boundaryBBox;
+
+    const KnobPagePtr transformPage = createKnob<KnobPage>(tr("Transform"));
+    if (RotoCurveContextPtr context = getNode()->getCurveContext()) {
+        context->createTransformKnobs(transformPage);
+        const RotoCurveContext::TransformKnobs knobs = context->getTransformKnobs();
+        getNode()->addTransformInteract(knobs.translate, knobs.scale, knobs.scaleUniform, knobs.rotate, knobs.skewX, knobs.skewY,
+                                        knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/, knobs.interactive);
+    }
 
     const KnobPagePtr renderPage = createKnob<KnobPage>(tr("Render"));
 
@@ -553,11 +564,16 @@ SplineWarp::initializeKnobs()
     if (curveContext) {
         QObject::connect(curveContext.get(), &RotoCurveContext::selectionChanged, this, [this](int) {
             syncAmountKnobs();
+            if (SplineWarpContextPtr context = splineWarpContext(*this)) {
+                context->refreshSelectedTransformTies();
+            }
+            syncTransformKnobs();
         });
         // Linking and unlinking change which selections linkAmount edits.
         // So does setting cookie cutters, which enable the cookie knobs.
         QObject::connect(curveContext.get(), &RotoCurveContext::itemPanelColumnsChanged, this, [this](const RotoItemPtr&) {
             syncAmountKnobs();
+            syncTransformKnobs();
             updateCookieKnobsEnabled();
         });
     }
@@ -711,12 +727,177 @@ SplineWarp::writeAmountKnob(const KnobDoublePtr& knob,
     }
 }
 
+namespace {
+// The Transform page's value knobs, in SplineWarpTransform's order.
+std::list<KnobIPtr>
+transformValueKnobs(const RotoCurveContext::TransformKnobs& knobs)
+{
+    std::list<KnobIPtr> ret;
+    const KnobIPtr all[] = { knobs.translate, knobs.rotate, knobs.scale, knobs.scaleUniform, knobs.skewX, knobs.skewY, knobs.skewOrder, knobs.center, knobs.extraMatrix };
+
+    for (const KnobIPtr& knob : all) {
+        if (knob) {
+            ret.push_back(knob);
+        }
+    }
+
+    return ret;
+}
+
+struct TransformTargets {
+    // The items whose own transform the Transform page edits besides the tied curves: each
+    // selected layer, and each linked curve, resolved through its links.
+    std::list<RotoItemPtr> sources;
+    // The selected curves whose knobs are tied to the page.
+    std::list<RotoItemPtr> tied;
+};
+
+TransformTargets
+transformTargets(const SplineWarpContext& context)
+{
+    TransformTargets targets;
+    const std::list<RotoItemPtr> selected = context.getSelectedItems();
+    std::list<RotoLayerPtr> layers;
+
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(*it)) {
+            layers.push_back(layer);
+        }
+    }
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        bool insideLayer = false;
+        for (RotoLayerPtr layer = (*it)->getParentLayer(); layer && !insideLayer; layer = layer->getParentLayer()) {
+            insideLayer = std::find(layers.begin(), layers.end(), layer) != layers.end();
+        }
+        if (insideLayer) {
+            continue;
+        }
+        const bool isLayer = bool(std::dynamic_pointer_cast<RotoLayer>(*it));
+        if (!isLayer && !context.getTransformLink(*it)) {
+            targets.tied.push_back(*it);
+            continue;
+        }
+        RotoItemPtr source = context.getTransformSource(*it);
+        if (std::find(targets.sources.begin(), targets.sources.end(), source) == targets.sources.end()) {
+            targets.sources.push_back(source);
+        }
+    }
+
+    return targets;
+}
+} // anonymous namespace
+
+void
+SplineWarp::syncTransformKnobs()
+{
+    SplineWarpContextPtr context = splineWarpContext(*this);
+
+    if (!context) {
+        return;
+    }
+    const std::list<KnobIPtr> knobs = transformValueKnobs(context->getTransformKnobs());
+    const TransformTargets targets = transformTargets(*context);
+    // With a tied curve the page already shows it, and a write would reach it.
+    if (knobs.empty() || targets.sources.empty() || !targets.tied.empty()) {
+        return;
+    }
+    _syncingTransform = true;
+    context->getOwnTransform(targets.sources.front()).writeKnobs(knobs);
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        (*it)->setAllDimensionsEnabled(true);
+    }
+    _syncingTransform = false;
+}
+
+void
+SplineWarp::writeTransformKnobs()
+{
+    SplineWarpContextPtr context = splineWarpContext(*this);
+
+    if (!context) {
+        return;
+    }
+    const TransformTargets targets = transformTargets(*context);
+    if (targets.sources.empty()) {
+        return;
+    }
+    SplineWarpTransform transform;
+    transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
+    for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
+        // A tied source curve already took the edit through its slaved knobs.
+        if (std::find(targets.tied.begin(), targets.tied.end(), *it) == targets.tied.end()) {
+            context->setOwnTransform(*it, transform);
+        }
+    }
+}
+
+void
+SplineWarp::autoKeyTransformKnob(KnobI* knob,
+                                 double time)
+{
+    SplineWarpContextPtr context = splineWarpContext(*this);
+    Knob<double>* isDouble = dynamic_cast<Knob<double>*>(knob);
+
+    if (!context || !isDouble || !context->isAutoKeyingEnabled()) {
+        return;
+    }
+    _syncingTransform = true;
+    for (int d = 0; d < knob->getDimension(); ++d) {
+        if (!knob->isAnimated(d, ViewIdx(0))) {
+            isDouble->setValueAtTime(time, isDouble->getValue(d, ViewIdx(0)), ViewSpec::all(), d);
+        }
+    }
+    _syncingTransform = false;
+}
+
+bool
+SplineWarp::shouldDrawHostOverlay() const
+{
+    SplineWarpContextPtr context = splineWarpContext(*this);
+
+    if (!context || (_ui->getSelectedTool() > eRotoToolSelectFeatherPoints)) {
+        return false;
+    }
+    const std::list<RotoItemPtr> selected = context->getSelectedItems();
+    RotoLayerPtr layer;
+    int layers = 0, curves = 0;
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it)) {
+            layer = isLayer;
+            ++layers;
+        } else {
+            ++curves;
+        }
+    }
+    if (layers == 0) {
+        return curves == 1;
+    }
+    if (layers > 1) {
+        return false;
+    }
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (*it == layer) {
+            continue;
+        }
+        bool inside = false;
+        for (RotoLayerPtr parent = (*it)->getParentLayer(); parent && !inside; parent = parent->getParentLayer()) {
+            inside = parent == layer;
+        }
+        if (!inside) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void
 SplineWarp::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
     syncAmountKnobs();
+    syncTransformKnobs();
     updateCookieKnobsEnabled();
 
     KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
@@ -727,7 +908,7 @@ SplineWarp::onKnobsLoaded()
 
 bool
 SplineWarp::knobChanged(KnobI* k,
-                        ValueChangedReasonEnum /*reason*/,
+                        ValueChangedReasonEnum reason,
                         ViewSpec view,
                         double time,
                         bool /*originatedFromMainThread*/)
@@ -750,6 +931,19 @@ SplineWarp::knobChanged(KnobI* k,
     if ((layerAmount && (k == layerAmount.get())) || (linkAmount && (k == linkAmount.get()))) {
         if (!_syncingAmounts) {
             writeAmountKnob(layerAmount && (k == layerAmount.get()) ? layerAmount : linkAmount, layerAmount && (k == layerAmount.get()));
+        }
+
+        return true;
+    }
+
+    RotoCurveContextPtr curveContext = getNode()->getCurveContext();
+    if (k && curveContext && curveContext->isTransformKnob(k)) {
+        if (!curveContext->onTransformButtonPressed(k) && !_syncingTransform) {
+            // Only the transform handle edits with this reason.
+            if (reason == eValueChangedReasonNatronGuiEdited) {
+                autoKeyTransformKnob(k, time);
+            }
+            writeTransformKnobs();
         }
 
         return true;

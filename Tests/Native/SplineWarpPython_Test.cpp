@@ -44,11 +44,13 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoItem.h"
 #include "Engine/ViewIdx.h"
 
@@ -315,6 +317,46 @@ TEST_F(SplineWarpPythonTest, SoftBoundariesAndLayerAmounts)
     ASSERT_TRUE(bool(links[0]->getDestination()));
     EXPECT_DOUBLE_EQ(0.25, ctx->getInheritedLayerAmount(links[0]->getDestination(), 10.));
     EXPECT_DOUBLE_EQ(1., ctx->getInheritedLayerAmount(links[0]->getSource(), 10.));
+}
+
+// Transform links made from Python reach the model; a cycle raises ValueError.
+TEST_F(SplineWarpPythonTest, TransformLinks)
+{
+    resetProject();
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+
+    expectScript(std::string(kPythonHelpers) + "n = " + pythonName(node) + "\n"
+                                                                           "roto = n.getRotoContext()\n"
+                                                                           "sw = n.getSplineWarp()\n"
+                                                                           "a = quad(roto, 20., 15., 10.)\n"
+                                                                           "b = quad(roto, 30., 5., 8.)\n"
+                                                                           "layer = roto.createLayer()\n"
+                                                                           "assert sw.getTransformLink(a) is None\n"
+                                                                           "sw.linkTransform(a, b)\n"
+                                                                           "sw.linkTransform(layer, b)\n"
+                                                                           "assert sw.getTransformLink(a).getScriptName() == b.getScriptName()\n"
+                                                                           "assert raises(lambda: sw.linkTransform(b, a)), 'cycle'\n"
+                                                                           "assert raises(lambda: sw.linkTransform(a, a)), 'self'\n"
+                                                                           "b.getParam('translate').set(2., 5.)\n"
+                                                                           "sw.unlinkTransform(layer)\n"
+                                                                           "assert sw.getTransformLink(layer) is None\n");
+
+    SplineWarpContextPtr ctx = std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext());
+    ASSERT_TRUE(bool(ctx));
+    const std::list<RotoDrawableItemPtr> curves = ctx->getCurvesByRenderOrder(false);
+    int linked = 0;
+    for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        RotoItemPtr target = ctx->getTransformLink(*it);
+        if (target) {
+            ++linked;
+            KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(std::dynamic_pointer_cast<RotoDrawableItem>(target)->getKnobByName("translate"));
+            ASSERT_TRUE(bool(translate));
+            EXPECT_DOUBLE_EQ(2., translate->getValue(0));
+            EXPECT_DOUBLE_EQ(5., translate->getValue(1));
+        }
+    }
+    EXPECT_EQ(1, linked);
 }
 
 // Cookie cutters, set from Python, reach the model; an open curve is refused.

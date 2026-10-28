@@ -913,6 +913,49 @@ namespace YamlDetail {
                 }
                 em << YAML::EndSeq;
             }
+            if (!warp.layerTransforms.empty()) {
+                emitKey(em, "layerTransforms");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpLayerTransformSerialization& layer : warp.layerTransforms) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "layer");
+                    em << YAML::Value;
+                    emitString(em, layer.layer);
+                    emitKey(em, "values");
+                    em << YAML::Value << YAML::BeginSeq;
+                    for (const SplineWarpTransformValueSerialization& v : layer.values) {
+                        em << YAML::BeginMap;
+                        emitKey(em, "knob");
+                        em << YAML::Value;
+                        emitString(em, v.knob);
+                        emitKey(em, "dimension");
+                        em << YAML::Value;
+                        emitInt(em, v.dimension);
+                        emitKey(em, "value");
+                        em << YAML::Value;
+                        emitSplineWarpValue(em, v.value);
+                        em << YAML::EndMap;
+                    }
+                    em << YAML::EndSeq;
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
+            if (!warp.transformLinks.empty()) {
+                emitKey(em, "transformLinks");
+                em << YAML::Value << YAML::BeginSeq;
+                for (const SplineWarpTransformLinkSerialization& link : warp.transformLinks) {
+                    em << YAML::BeginMap;
+                    emitKey(em, "item");
+                    em << YAML::Value;
+                    emitString(em, link.item);
+                    emitKey(em, "target");
+                    em << YAML::Value;
+                    emitString(em, link.target);
+                    em << YAML::EndMap;
+                }
+                em << YAML::EndSeq;
+            }
             em << YAML::EndMap;
         }
 
@@ -975,6 +1018,47 @@ namespace YamlDetail {
                     }
                     linkReader.finish();
                     warp.links.push_back(link);
+                }
+            }
+            if (YAML::Node layerTransforms = reader.get("layerTransforms")) {
+                if (!layerTransforms.IsSequence()) {
+                    fail(layerTransforms, context + ".layerTransforms", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < layerTransforms.size(); ++i) {
+                    const std::string layerContext = context + ".layerTransforms[" + std::to_string(i) + "]";
+                    SplineWarpLayerTransformSerialization layer;
+                    MapReader layerReader(layerTransforms[i], layerContext, warnings);
+                    layer.layer = readString(layerReader.get("layer"), layerContext + ".layer");
+                    YAML::Node values = layerReader.get("values");
+                    if (!values || !values.IsSequence()) {
+                        fail(values, layerContext + ".values", "expected a sequence");
+                    }
+                    for (std::size_t v = 0; v < values.size(); ++v) {
+                        const std::string vContext = layerContext + ".values[" + std::to_string(v) + "]";
+                        SplineWarpTransformValueSerialization value;
+                        MapReader vReader(values[v], vContext, warnings);
+                        value.knob = readString(vReader.get("knob"), vContext + ".knob");
+                        value.dimension = readInt(vReader.get("dimension"), vContext + ".dimension");
+                        value.value = readSplineWarpValue(vReader.get("value"), vContext + ".value", warnings);
+                        vReader.finish();
+                        layer.values.push_back(value);
+                    }
+                    layerReader.finish();
+                    warp.layerTransforms.push_back(layer);
+                }
+            }
+            if (YAML::Node transformLinks = reader.get("transformLinks")) {
+                if (!transformLinks.IsSequence()) {
+                    fail(transformLinks, context + ".transformLinks", "expected a sequence");
+                }
+                for (std::size_t i = 0; i < transformLinks.size(); ++i) {
+                    const std::string linkContext = context + ".transformLinks[" + std::to_string(i) + "]";
+                    SplineWarpTransformLinkSerialization link;
+                    MapReader linkReader(transformLinks[i], linkContext, warnings);
+                    link.item = readString(linkReader.get("item"), linkContext + ".item");
+                    link.target = readString(linkReader.get("target"), linkContext + ".target");
+                    linkReader.finish();
+                    warp.transformLinks.push_back(link);
                 }
             }
             reader.finish();

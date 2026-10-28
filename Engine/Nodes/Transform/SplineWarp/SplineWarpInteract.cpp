@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -432,6 +433,75 @@ SplineWarpInteract::swapSelected(UndoCommandPtr* pushed)
                  // destination starts where the old pairing put that point.
                  const double startOffset = sourceShape.clampParam(splineWarpPairedParam(input, false, 0.));
                  context->swapLinkCurves(link, startOffset, link->isReversed());
+             }
+         }),
+         pushed);
+
+    return std::string();
+}
+
+std::string
+SplineWarpInteract::getTransformLinkRefusal(bool link,
+                                            const std::list<RotoItemPtr>& items) const
+{
+    SplineWarpContextPtr context = getWarpContext();
+
+    if (!link) {
+        for (std::list<RotoItemPtr>::const_iterator it = items.begin(); context && (it != items.end()); ++it) {
+            if (context->getTransformLink(*it)) {
+                return std::string();
+            }
+        }
+
+        return tr("Unlink Transform: none of the selected items is transform-linked.").toStdString();
+    }
+    const QString name = tr("Link Transform to First");
+    if (!context || (items.size() < 2)) {
+        return tr("%1 needs the curve or layer to follow, then the items that follow it.").arg(name).toStdString();
+    }
+    for (std::list<RotoItemPtr>::const_iterator it = std::next(items.begin()); it != items.end(); ++it) {
+        const std::string refusal = context->getTransformLinkRefusal(*it, items.front());
+        if (!refusal.empty()) {
+            return refusal;
+        }
+    }
+
+    return std::string();
+}
+
+std::string
+SplineWarpInteract::linkTransform(const std::list<RotoItemPtr>& items,
+                                  UndoCommandPtr* pushed)
+{
+    const std::string refusal = getTransformLinkRefusal(true, items);
+
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
+    }
+    SplineWarpContextPtr context = getWarpContext();
+    push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Link Transform").toStdString(), [context, items]() {
+             for (std::list<RotoItemPtr>::const_iterator it = std::next(items.begin()); it != items.end(); ++it) {
+                 context->linkTransform(*it, items.front());
+             }
+         }),
+         pushed);
+
+    return std::string();
+}
+
+std::string
+SplineWarpInteract::unlinkTransform(const std::list<RotoItemPtr>& items,
+                                    UndoCommandPtr* pushed)
+{
+    const std::string refusal = getTransformLinkRefusal(false, items);
+
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
+    }
+    SplineWarpContextPtr context = getWarpContext();
+    push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Unlink Transform").toStdString(), [context, items]() {
+             for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                 context->unlinkTransform(*it);
              }
          }),
          pushed);

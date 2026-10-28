@@ -35,14 +35,20 @@
 #include <QtCore/QString>
 #include <QtCore/QThread>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/ContentHasher.h"
+#include "Engine/Format.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpAlign.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
+#include "Engine/Project.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/Transform.h"
 
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/SplineWarpSerialization.h"
@@ -195,6 +201,175 @@ SplineWarpAnimatedValue::fromSerialization(const Serialization::SplineWarpAnimat
     _value = serialization.value;
     _curve.clearKeyFrames();
     _curve.fromSerialization(serialization.curve);
+}
+
+// ---------------------------------------------------------------------------------------------
+// SplineWarpTransform
+
+namespace {
+struct TransformKnobEntry {
+    const char* name;
+    int dimensions;
+};
+
+// The item knobs RotoDrawableItem makes, in value order.
+const TransformKnobEntry kTransformKnobs[] = {
+    { "translate", 2 },
+    { "rotate", 1 },
+    { "scale", 2 },
+    { "uniform", 1 },
+    { "skewx", 1 },
+    { "skewy", 1 },
+    { "skewOrder", 1 },
+    { "center", 2 },
+    { "extraMatrix", 9 },
+};
+
+enum TransformValueIndex {
+    eTranslate = 0,
+    eRotate = 2,
+    eScale = 3,
+    eUniform = 5,
+    eSkewX = 6,
+    eSkewY = 7,
+    eSkewOrder = 8,
+    eCenter = 9,
+    eExtraMatrix = 11,
+};
+} // anonymous namespace
+
+SplineWarpTransform::SplineWarpTransform()
+{
+    _values[eScale] = SplineWarpAnimatedValue(1.);
+    _values[eScale + 1] = SplineWarpAnimatedValue(1.);
+    _values[eUniform] = SplineWarpAnimatedValue(1.);
+    _values[eExtraMatrix] = SplineWarpAnimatedValue(1.);
+    _values[eExtraMatrix + 4] = SplineWarpAnimatedValue(1.);
+    _values[eExtraMatrix + 8] = SplineWarpAnimatedValue(1.);
+}
+
+const std::vector<std::string>&
+SplineWarpTransform::knobNames()
+{
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> ret;
+        for (const TransformKnobEntry& entry : kTransformKnobs) {
+            ret.push_back(entry.name);
+        }
+
+        return ret;
+    }();
+
+    return names;
+}
+
+int
+SplineWarpTransform::indexOf(const std::string& name,
+                             int* dimensions)
+{
+    int index = 0;
+
+    for (const TransformKnobEntry& entry : kTransformKnobs) {
+        if (name == entry.name) {
+            *dimensions = entry.dimensions;
+
+            return index;
+        }
+        index += entry.dimensions;
+    }
+
+    return -1;
+}
+
+void
+SplineWarpTransform::getMatrixAt(double time,
+                                 Transform::Matrix3x3* matrix) const
+{
+    const double sx = _values[eScale].getValueAt(time);
+    const double sy = (_values[eUniform].getValueAt(time) != 0.) ? sx : _values[eScale + 1].getValueAt(time);
+    const bool skewOrderYX = std::lround(_values[eSkewOrder].getValueAt(time)) == 1;
+
+    *matrix = Transform::matTransformCanonical(_values[eTranslate].getValueAt(time), _values[eTranslate + 1].getValueAt(time),
+                                               sx, sy, _values[eSkewX].getValueAt(time), _values[eSkewY].getValueAt(time),
+                                               skewOrderYX, Transform::toRadians(_values[eRotate].getValueAt(time)),
+                                               _values[eCenter].getValueAt(time), _values[eCenter + 1].getValueAt(time));
+    Transform::Matrix3x3 extra;
+    extra.a = _values[eExtraMatrix].getValueAt(time);
+    extra.b = _values[eExtraMatrix + 1].getValueAt(time);
+    extra.c = _values[eExtraMatrix + 2].getValueAt(time);
+    extra.d = _values[eExtraMatrix + 3].getValueAt(time);
+    extra.e = _values[eExtraMatrix + 4].getValueAt(time);
+    extra.f = _values[eExtraMatrix + 5].getValueAt(time);
+    extra.g = _values[eExtraMatrix + 6].getValueAt(time);
+    extra.h = _values[eExtraMatrix + 7].getValueAt(time);
+    extra.i = _values[eExtraMatrix + 8].getValueAt(time);
+    *matrix = Transform::matMul(*matrix, extra);
+}
+
+void
+SplineWarpTransform::readKnobs(const std::list<KnobIPtr>& knobs)
+{
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        int dimensions = 0;
+        const int index = indexOf((*it)->getName(), &dimensions);
+        if ((index < 0) || ((*it)->getDimension() != dimensions)) {
+            continue;
+        }
+        Knob<double>* isDouble = dynamic_cast<Knob<double>*>(it->get());
+        Knob<bool>* isBool = dynamic_cast<Knob<bool>*>(it->get());
+        Knob<int>* isInt = dynamic_cast<Knob<int>*>(it->get());
+        for (int d = 0; d < dimensions; ++d) {
+            double value = 0.;
+            if (isDouble) {
+                value = isDouble->getValue(d, ViewIdx(0));
+            } else if (isBool) {
+                value = isBool->getValue(d, ViewIdx(0)) ? 1. : 0.;
+            } else if (isInt) {
+                value = isInt->getValue(d, ViewIdx(0));
+            }
+            const std::shared_ptr<Curve> curve = (*it)->getCurve(ViewIdx(0), d);
+            _values[index + d].assign(value, curve ? *curve : Curve());
+        }
+    }
+}
+
+void
+SplineWarpTransform::writeKnobs(const std::list<KnobIPtr>& knobs) const
+{
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        int dimensions = 0;
+        const int index = indexOf((*it)->getName(), &dimensions);
+        if ((index < 0) || ((*it)->getDimension() != dimensions)) {
+            continue;
+        }
+        Knob<double>* isDouble = dynamic_cast<Knob<double>*>(it->get());
+        Knob<bool>* isBool = dynamic_cast<Knob<bool>*>(it->get());
+        Knob<int>* isInt = dynamic_cast<Knob<int>*>(it->get());
+        (*it)->beginChanges();
+        for (int d = 0; d < dimensions; ++d) {
+            const SplineWarpAnimatedValue& value = _values[index + d];
+            (*it)->removeAnimation(ViewSpec::all(), d);
+            if (isDouble) {
+                isDouble->setValue(value.getStaticValue(), ViewSpec::all(), d, true);
+            } else if (isBool) {
+                isBool->setValue(value.getStaticValue() != 0., ViewSpec::all(), d, true);
+            } else if (isInt) {
+                isInt->setValue((int)std::lround(value.getStaticValue()), ViewSpec::all(), d, true);
+            }
+            if (value.isAnimated()) {
+                (*it)->cloneCurve(ViewSpec::all(), d, value.getCurve());
+            }
+        }
+        (*it)->endChanges();
+    }
+}
+
+void
+SplineWarpTransform::appendContentHash(ContentHasher& h) const
+{
+    for (int i = 0; i < kValueCount; ++i) {
+        _values[i].appendContentHash(h);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -359,6 +534,8 @@ SplineWarpContext::SplineWarpContext(const NodePtr& node)
     , _softBoundaries()
     , _cookieCutters()
     , _layerAmounts()
+    , _layerTransforms()
+    , _transformLinks()
     , _loading(false)
 {
 }
@@ -744,6 +921,412 @@ SplineWarpContext::assignLayerAmounts(const std::list<RotoLayerPtr>& layers,
         }
     }
     warpDataChanged(true);
+}
+
+bool
+SplineWarpContext::ownsItem(const RotoItemPtr& item) const
+{
+    return item && (item->getContext().get() == this) && (std::dynamic_pointer_cast<RotoLayer>(item) || std::dynamic_pointer_cast<RotoDrawableItem>(item));
+}
+
+const SplineWarpTransform*
+SplineWarpContext::findLayerTransformLocked(const RotoItem* layer) const
+{
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::const_iterator it = _layerTransforms.begin(); it != _layerTransforms.end(); ++it) {
+        if (it->first.lock().get() == layer) {
+            return &it->second;
+        }
+    }
+
+    return 0;
+}
+
+bool
+SplineWarpContext::transformLinkReachesLocked(const RotoItem* from,
+                                              const RotoItem* to) const
+{
+    const RotoItem* current = from;
+
+    for (std::size_t steps = 0; current && (steps <= _transformLinks.size()); ++steps) {
+        if (current == to) {
+            return true;
+        }
+        const RotoItem* next = 0;
+        for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+            if (it->first.lock().get() == current) {
+                next = it->second.lock().get();
+                break;
+            }
+        }
+        current = next;
+    }
+
+    return false;
+}
+
+RotoItemPtr
+SplineWarpContext::resolveTransformLinkLocked(const RotoItem* item) const
+{
+    RotoItemPtr source;
+    const RotoItem* current = item;
+    // Links never form a cycle; the bound only guards against a bug turning into a hang.
+    for (std::size_t steps = 0; steps <= _transformLinks.size(); ++steps) {
+        RotoItemPtr next;
+        for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+            if (it->first.lock().get() == current) {
+                next = it->second.lock();
+                break;
+            }
+        }
+        if (!next) {
+            break;
+        }
+        source = next;
+        current = next.get();
+    }
+
+    return source;
+}
+
+SplineWarpTransform
+SplineWarpContext::getLayerTransform(const RotoLayerPtr& layer) const
+{
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        if (const SplineWarpTransform* stored = findLayerTransformLocked(layer.get())) {
+            return *stored;
+        }
+    }
+    SplineWarpTransform transform;
+    double x, y;
+    if (getDefaultTransformCenter(getTimelineCurrentTime(), &x, &y)) {
+        transform.value(eCenter).assign(x, Curve());
+        transform.value(eCenter + 1).assign(y, Curve());
+    }
+
+    return transform;
+}
+
+void
+SplineWarpContext::setLayerTransform(const RotoLayerPtr& layer,
+                                     const SplineWarpTransform& transform)
+{
+    assignLayerTransforms(std::list<RotoLayerPtr>(1, layer), transform);
+}
+
+void
+SplineWarpContext::assignLayerTransforms(const std::list<RotoLayerPtr>& layers,
+                                         const SplineWarpTransform& transform)
+{
+    for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (!*it || ((*it)->getContext().get() != this)) {
+            throw std::invalid_argument("SplineWarp: the layer is not in this node.");
+        }
+    }
+    if (layers.empty()) {
+        return;
+    }
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+            bool found = false;
+            for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::iterator lt = _layerTransforms.begin(); lt != _layerTransforms.end(); ++lt) {
+                if (lt->first.lock() == *it) {
+                    lt->second = transform;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                _layerTransforms.push_back(std::make_pair(RotoLayerWPtr(*it), transform));
+            }
+        }
+    }
+    warpDataChanged(true);
+}
+
+RotoItemPtr
+SplineWarpContext::getTransformLink(const RotoItemPtr& item) const
+{
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+        if (item && (it->first.lock() == item)) {
+            return it->second.lock();
+        }
+    }
+
+    return RotoItemPtr();
+}
+
+std::list<RotoItemPtr>
+SplineWarpContext::getTransformLinkedItems(const RotoItemPtr& target) const
+{
+    std::list<RotoItemPtr> items;
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+        RotoItemPtr item = it->first.lock();
+        if (item && target && (it->second.lock() == target)) {
+            items.push_back(item);
+        }
+    }
+
+    return items;
+}
+
+RotoItemPtr
+SplineWarpContext::getTransformSource(const RotoItemPtr& item) const
+{
+    std::lock_guard<std::mutex> l(_warpMutex);
+    RotoItemPtr source = resolveTransformLinkLocked(item.get());
+
+    return source ? source : item;
+}
+
+SplineWarpTransform
+SplineWarpContext::getOwnTransform(const RotoItemPtr& item) const
+{
+    if (RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(item)) {
+        return getLayerTransform(layer);
+    }
+    SplineWarpTransform transform;
+    if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item)) {
+        transform.readKnobs(drawable->getKnobs());
+    }
+
+    return transform;
+}
+
+void
+SplineWarpContext::setOwnTransform(const RotoItemPtr& item,
+                                   const SplineWarpTransform& transform)
+{
+    if (RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(item)) {
+        setLayerTransform(layer, transform);
+    } else if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item)) {
+        transform.writeKnobs(drawable->getKnobs());
+    }
+}
+
+namespace {
+bool
+isInsideLayer(const RotoItemPtr& item,
+              const RotoItemPtr& layer)
+{
+    for (RotoLayerPtr parent = item->getParentLayer(); parent; parent = parent->getParentLayer()) {
+        if (parent == layer) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anonymous namespace
+
+std::string
+SplineWarpContext::getTransformLinkRefusal(const RotoItemPtr& item,
+                                           const RotoItemPtr& target) const
+{
+    if (!ownsItem(item) || !ownsItem(target)) {
+        return "SplineWarp: a transform link joins two curves or layers of this node.";
+    }
+    if (item == target) {
+        return "SplineWarp: an item cannot follow its own transform.";
+    }
+    // The parent layers of item apply on top of what it follows, so one inside the other would
+    // apply a transform twice.
+    if (isInsideLayer(item, target) || isInsideLayer(target, item)) {
+        return "SplineWarp: " + item->getLabel() + " and " + target->getLabel() + " are one inside the other.";
+    }
+    std::lock_guard<std::mutex> l(_warpMutex);
+    if (transformLinkReachesLocked(target.get(), item.get())) {
+        return "SplineWarp: " + target->getLabel() + " already follows the transform of " + item->getLabel() + ".";
+    }
+
+    return std::string();
+}
+
+void
+SplineWarpContext::linkTransform(const RotoItemPtr& item,
+                                 const RotoItemPtr& target)
+{
+    const std::string refusal = getTransformLinkRefusal(item, target);
+
+    if (!refusal.empty()) {
+        throw std::invalid_argument(refusal);
+    }
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        if (transformLinkReachesLocked(target.get(), item.get())) {
+            throw std::invalid_argument("SplineWarp: " + target->getLabel() + " already follows the transform of " + item->getLabel() + ".");
+        }
+        bool found = false;
+        for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+            if (it->first.lock() == item) {
+                it->second = target;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            _transformLinks.push_back(std::make_pair(std::weak_ptr<RotoItem>(item), std::weak_ptr<RotoItem>(target)));
+        }
+    }
+    transformLinksChanged();
+}
+
+void
+SplineWarpContext::unlinkTransform(const RotoItemPtr& item)
+{
+    RotoItemPtr source;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        source = resolveTransformLinkLocked(item.get());
+    }
+    if (!source) {
+        return;
+    }
+    KnobContentWrite write;
+    // Outside _warpMutex: a curve's values live in its knobs.
+    setOwnTransform(item, getOwnTransform(source));
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+            if (it->first.lock() == item) {
+                _transformLinks.erase(it);
+                break;
+            }
+        }
+    }
+    transformLinksChanged();
+}
+
+void
+SplineWarpContext::transformLinksChanged()
+{
+    warpDataChanged(true);
+    rolesChanged();
+    refreshSelectedTransformTies();
+}
+
+void
+SplineWarpContext::refreshSelectedTransformTies()
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (!app || (QThread::currentThread() != app->thread())) {
+        return;
+    }
+    const std::list<RotoItemPtr> selected = getSelectedItems();
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it)) {
+            refreshTransformKnobTies(drawable);
+        }
+    }
+}
+
+bool
+SplineWarpContext::tiesTransformKnobs(const RotoDrawableItem& item) const
+{
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    return !resolveTransformLinkLocked(&item);
+}
+
+bool
+SplineWarpContext::getDefaultTransformCenter(double time,
+                                             double* x,
+                                             double* y) const
+{
+    NodePtr node = getNode();
+    SplineWarp* effect = node ? dynamic_cast<SplineWarp*>(node->getEffectInstance().get()) : 0;
+    RectD format = effect ? effect->getSourceFormat(time, ViewIdx(0)) : RectD();
+
+    if (format.isNull() && node && node->getApp()) {
+        Format projectFormat;
+        node->getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        format = projectFormat.toCanonicalFormat();
+    }
+    if (format.isNull()) {
+        return false;
+    }
+    *x = (format.x1 + format.x2) / 2.;
+    *y = (format.y1 + format.y2) / 2.;
+
+    return true;
+}
+
+void
+SplineWarpContext::onItemCreated(const RotoDrawableItemPtr& item,
+                                 bool connectNodes)
+{
+    RotoCurveContext::onItemCreated(item, connectNodes);
+    // A loaded or copied item brings its own centre afterwards.
+    if (item && !_loading) {
+        item->resetTransformCenter();
+    }
+}
+
+void
+SplineWarpContext::composeItemTransform(const RotoDrawableItem& item,
+                                        double time,
+                                        const Transform::Matrix3x3& local,
+                                        Transform::Matrix3x3* matrix) const
+{
+    std::vector<RotoLayerPtr> layers;
+    for (RotoLayerPtr layer = item.getParentLayer(); layer; layer = layer->getParentLayer()) {
+        layers.push_back(layer);
+    }
+    // Snapshot under _warpMutex; a curve source's knobs are read after it is released.
+    RotoItemPtr itemSource;
+    std::vector<RotoItemPtr> layerSources(layers.size());
+    std::vector<SplineWarpTransform> layerValues(layers.size());
+    std::vector<bool> layerIsStored(layers.size(), false);
+    SplineWarpTransform itemValues;
+    bool itemIsStored = false;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        itemSource = resolveTransformLinkLocked(&item);
+        if (itemSource) {
+            if (const SplineWarpTransform* stored = findLayerTransformLocked(itemSource.get())) {
+                itemValues = *stored;
+                itemIsStored = true;
+            }
+        }
+        for (std::size_t i = 0; i < layers.size(); ++i) {
+            RotoItemPtr source = resolveTransformLinkLocked(layers[i].get());
+            layerSources[i] = source ? source : RotoItemPtr(layers[i]);
+            if (const SplineWarpTransform* stored = findLayerTransformLocked(layerSources[i].get())) {
+                layerValues[i] = *stored;
+                layerIsStored[i] = true;
+            }
+        }
+    }
+    const auto ownMatrix = [time](const RotoItemPtr& source, const SplineWarpTransform& values, bool stored, Transform::Matrix3x3* m) {
+        RotoDrawableItem* drawable = dynamic_cast<RotoDrawableItem*>(source.get());
+        if (drawable) {
+            drawable->getLocalTransformAtTime(time, m);
+        } else if (stored) {
+            values.getMatrixAt(time, m);
+        } else {
+            // A layer without a stored transform.
+            m->setIdentity();
+        }
+    };
+
+    if (itemSource) {
+        ownMatrix(itemSource, itemValues, itemIsStored, matrix);
+    } else {
+        *matrix = local;
+    }
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        Transform::Matrix3x3 layerMatrix;
+        ownMatrix(layerSources[i], layerValues[i], layerIsStored[i], &layerMatrix);
+        *matrix = Transform::matMul(layerMatrix, *matrix);
+    }
 }
 
 SplineWarpLinkPtr
@@ -1289,6 +1872,23 @@ SplineWarpContext::onCurveFinishedChanged(const BezierPtr& curve)
 void
 SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
 {
+    bool linksChanged = false;
+    {
+        // Items that followed item's transform go back to their own.
+        KnobContentWrite write;
+        std::lock_guard<std::mutex> l(_warpMutex);
+        for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::iterator it = _transformLinks.begin(); it != _transformLinks.end();) {
+            if ((it->first.lock() == item) || (it->second.lock() == item)) {
+                it = _transformLinks.erase(it);
+                linksChanged = true;
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (linksChanged) {
+        transformLinksChanged();
+    }
     RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(item);
     if (layer) {
         KnobContentWrite write;
@@ -1298,6 +1898,13 @@ SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
             for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
                 if (it->first.lock() == layer) {
                     _layerAmounts.erase(it);
+                    changed = true;
+                    break;
+                }
+            }
+            for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::iterator it = _layerTransforms.begin(); it != _layerTransforms.end(); ++it) {
+                if (it->first.lock() == layer) {
+                    _layerTransforms.erase(it);
                     changed = true;
                     break;
                 }
@@ -1351,6 +1958,8 @@ struct SplineWarpHostState
     std::list<BezierWPtr> softBoundaries;
     std::list<BezierWPtr> cookieCutters;
     std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> layerAmounts;
+    std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>> layerTransforms;
+    std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>> transformLinks;
 };
 } // anonymous namespace
 
@@ -1364,6 +1973,8 @@ SplineWarpContext::saveHostState() const
     state->softBoundaries = _softBoundaries;
     state->cookieCutters = _cookieCutters;
     state->layerAmounts = _layerAmounts;
+    state->layerTransforms = _layerTransforms;
+    state->transformLinks = _transformLinks;
     for (std::size_t i = 0; i < _links.size(); ++i) {
         const SplineWarpLink& link = *_links[i];
         std::lock_guard<std::mutex> ll(link._mutex);
@@ -1396,6 +2007,8 @@ SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
         _softBoundaries = saved->softBoundaries;
         _cookieCutters = saved->cookieCutters;
         _layerAmounts = saved->layerAmounts;
+        _layerTransforms = saved->layerTransforms;
+        _transformLinks = saved->transformLinks;
         _links.clear();
         for (std::size_t i = 0; i < saved->links.size(); ++i) {
             const SplineWarpHostState::SavedLink& entry = saved->links[i];
@@ -1411,8 +2024,7 @@ SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
             _links.push_back(entry.link);
         }
     }
-    warpDataChanged(true);
-    rolesChanged();
+    transformLinksChanged();
 }
 
 void
@@ -1441,6 +2053,19 @@ SplineWarpContext::appendHostContentHash(ContentHasher& h) const
         RotoLayerPtr layer = it->first.lock();
         h.appendString(layer ? layer->getScriptName() : std::string());
         it->second.appendContentHash(h);
+    }
+    h.appendU64((U64)_layerTransforms.size());
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::const_iterator it = _layerTransforms.begin(); it != _layerTransforms.end(); ++it) {
+        RotoLayerPtr layer = it->first.lock();
+        h.appendString(layer ? layer->getScriptName() : std::string());
+        it->second.appendContentHash(h);
+    }
+    h.appendU64((U64)_transformLinks.size());
+    for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+        RotoItemPtr item = it->first.lock();
+        RotoItemPtr target = it->second.lock();
+        h.appendString(item ? item->getScriptName() : std::string());
+        h.appendString(target ? target->getScriptName() : std::string());
     }
     h.appendU64((U64)_links.size());
     for (std::size_t i = 0; i < _links.size(); ++i) {
@@ -1498,6 +2123,37 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
             warp.layerAmounts.push_back(s);
         }
     }
+    const std::vector<std::string>& names = SplineWarpTransform::knobNames();
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>>::const_iterator it = _layerTransforms.begin(); it != _layerTransforms.end(); ++it) {
+        RotoLayerPtr layer = it->first.lock();
+        if (!layer) {
+            continue;
+        }
+        Serialization::SplineWarpLayerTransformSerialization s;
+        s.layer = layer->getScriptName();
+        for (std::size_t n = 0; n < names.size(); ++n) {
+            int dimensions = 0;
+            const int index = SplineWarpTransform::indexOf(names[n], &dimensions);
+            for (int d = 0; d < dimensions; ++d) {
+                Serialization::SplineWarpTransformValueSerialization v;
+                v.knob = names[n];
+                v.dimension = d;
+                it->second.value(index + d).toSerialization(&v.value);
+                s.values.push_back(v);
+            }
+        }
+        warp.layerTransforms.push_back(s);
+    }
+    for (std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>>::const_iterator it = _transformLinks.begin(); it != _transformLinks.end(); ++it) {
+        RotoItemPtr item = it->first.lock();
+        RotoItemPtr target = it->second.lock();
+        if (item && target) {
+            Serialization::SplineWarpTransformLinkSerialization s;
+            s.item = item->getScriptName();
+            s.target = target->getScriptName();
+            warp.transformLinks.push_back(s);
+        }
+    }
     for (std::size_t i = 0; i < _links.size(); ++i) {
         const SplineWarpLink& link = *_links[i];
         std::lock_guard<std::mutex> ll(link._mutex);
@@ -1532,6 +2188,8 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
         _softBoundaries.clear();
         _cookieCutters.clear();
         _layerAmounts.clear();
+        _layerTransforms.clear();
+        _transformLinks.clear();
     }
     _loading = true;
     RotoCurveContext::fromSerialization(serialization);
@@ -1602,6 +2260,38 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
                 link->_correspondences.push_back(corr);
             }
             _links.push_back(link);
+        }
+        for (std::list<Serialization::SplineWarpLayerTransformSerialization>::const_iterator it = warp.layerTransforms.begin(); it != warp.layerTransforms.end(); ++it) {
+            RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(getItemByName(it->layer));
+            if (!layer || findLayerTransformLocked(layer.get())) {
+                logDropped("SplineWarp: dropped the transform of layer " + it->layer + ": no other layer has that name.");
+                continue;
+            }
+            SplineWarpTransform transform;
+            for (std::list<Serialization::SplineWarpTransformValueSerialization>::const_iterator v = it->values.begin(); v != it->values.end(); ++v) {
+                int dimensions = 0;
+                const int index = SplineWarpTransform::indexOf(v->knob, &dimensions);
+                if ((index < 0) || (v->dimension < 0) || (v->dimension >= dimensions)) {
+                    logDropped("SplineWarp: dropped value " + v->knob + "." + std::to_string(v->dimension) + " of the transform of layer " + it->layer + ".");
+                    continue;
+                }
+                transform.value(index + v->dimension).fromSerialization(v->value);
+            }
+            _layerTransforms.push_back(std::make_pair(RotoLayerWPtr(layer), transform));
+        }
+        for (std::list<Serialization::SplineWarpTransformLinkSerialization>::const_iterator it = warp.transformLinks.begin(); it != warp.transformLinks.end(); ++it) {
+            RotoItemPtr item = getItemByName(it->item);
+            RotoItemPtr target = getItemByName(it->target);
+            const std::string name = it->item + " -> " + it->target;
+            if (!ownsItem(item) || !ownsItem(target) || (item == target) || resolveTransformLinkLocked(item.get())) {
+                logDropped("SplineWarp: dropped transform link " + name + ": an item is missing or already linked.");
+                continue;
+            }
+            if (transformLinkReachesLocked(target.get(), item.get())) {
+                logDropped("SplineWarp: dropped transform link " + name + ": it would form a cycle.");
+                continue;
+            }
+            _transformLinks.push_back(std::make_pair(std::weak_ptr<RotoItem>(item), std::weak_ptr<RotoItem>(target)));
         }
     }
     _loading = false;

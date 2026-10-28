@@ -169,6 +169,20 @@ public:
      **/
     std::string toggleCookieCutterSelected(UndoCommandPtr* pushed = 0);
 
+    /**
+     * @brief Makes each of items after the first, curves or layers, take the first's transform in
+     * place of its own. Refuses a link that would form a cycle.
+     **/
+    std::string linkTransform(const std::list<RotoItemPtr>& items, UndoCommandPtr* pushed = 0);
+
+    /**
+     * @brief Ends the transform links of items, each keeping the values it followed.
+     **/
+    std::string unlinkTransform(const std::list<RotoItemPtr>& items, UndoCommandPtr* pushed = 0);
+
+    // Why linkTransform(items), or unlinkTransform(items) when !link, would refuse; empty when it would not.
+    std::string getTransformLinkRefusal(bool link, const std::list<RotoItemPtr>& items) const;
+
     // Why action would refuse items as the selection, in that order; empty when it would not.
     std::string getRefusal(SplineWarpActionEnum action, const std::list<RotoItemPtr>& items) const;
 

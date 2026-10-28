@@ -74,6 +74,25 @@ wrapCurve(const BezierPtr& curve)
     return curve ? new BezierCurve(curve) : 0;
 }
 
+RotoItemPtr
+rotoItemOf(ItemBase* item)
+{
+    return item ? item->getInternalItem() : RotoItemPtr();
+}
+
+ItemBase*
+wrapItem(const RotoItemPtr& item)
+{
+    if (std::dynamic_pointer_cast<RotoLayer>(item)) {
+        return new Layer(item);
+    }
+    if (std::dynamic_pointer_cast<Bezier>(item)) {
+        return new BezierCurve(item);
+    }
+
+    return item ? new ItemBase(item) : 0;
+}
+
 // Runs f, turning the model's std::invalid_argument into a Python ValueError.
 template <typename F>
 bool
@@ -411,6 +430,31 @@ SplineWarpCurves::setLayerAmountAtTime(Layer* layer,
         return;
     }
     runRaising([&]() { _ctx->setLayerAmountAtTime(rotoLayerOf(layer), time, value); });
+}
+
+void
+SplineWarpCurves::linkTransform(ItemBase* item,
+                                ItemBase* target)
+{
+    if (refuses()) {
+        return;
+    }
+    runRaising([&]() { _ctx->linkTransform(rotoItemOf(item), rotoItemOf(target)); });
+}
+
+void
+SplineWarpCurves::unlinkTransform(ItemBase* item)
+{
+    if (refuses()) {
+        return;
+    }
+    _ctx->unlinkTransform(rotoItemOf(item));
+}
+
+ItemBase*
+SplineWarpCurves::getTransformLink(ItemBase* item) const
+{
+    return wrapItem(_ctx->getTransformLink(rotoItemOf(item)));
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

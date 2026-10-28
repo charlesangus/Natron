@@ -264,6 +264,93 @@ public:
                                      double* endTime,
                                      double* timeStep) const;
 
+public:
+    /**
+     * @brief The knobs of the Transform page, which edit the selected items' transforms like the
+     * other context knobs. Members are null until createTransformKnobs() is called.
+     **/
+    struct TransformKnobs {
+        KnobDoublePtr translate;
+        KnobDoublePtr rotate;
+        KnobDoublePtr scale;
+        KnobBoolPtr scaleUniform;
+        KnobDoublePtr skewX;
+        KnobDoublePtr skewY;
+        KnobChoicePtr skewOrder;
+        KnobDoublePtr center;
+        KnobDoublePtr extraMatrix;
+        KnobBoolPtr interactive;
+        KnobButtonPtr resetCenter;
+        KnobButtonPtr resetTransform;
+    };
+
+    /**
+     * @brief Creates the Transform page's knobs on page. The paint context makes them itself; any
+     * other host calls this once, from its initializeKnobs().
+     **/
+    void createTransformKnobs(const KnobPagePtr& page);
+    TransformKnobs getTransformKnobs() const;
+    bool isTransformKnob(const KnobI* knob) const;
+
+    /**
+     * @brief Sets center to getDefaultTransformCenter(), or else to the centre of the selected
+     * items' bounding box, at the current time.
+     **/
+    void resetTransformCenter();
+
+    /**
+     * @brief Resets the transform knobs, except Interactive, to their defaults.
+     **/
+    void resetTransform();
+
+    /**
+     * @brief Runs the reset buttons of the Transform page. Returns false when k is not one of them.
+     **/
+    bool onTransformButtonPressed(const KnobI* k);
+
+    /**
+     * @brief The center an item's transform starts at, when the host has one; otherwise the item
+     * takes the centre of its bounding box. MT-safe.
+     **/
+    virtual bool getDefaultTransformCenter(double /*time*/, double* /*x*/, double* /*y*/) const
+    {
+        return false;
+    }
+
+    /**
+     * @brief The transform item is drawn and rendered with, from local, the one its own knobs
+     * make. The host may replace local or compose it with transforms it holds. MT-safe.
+     **/
+    virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
+
+protected:
+    /**
+     * @brief False when the Transform page must not edit item's own transform knobs, so selecting
+     * the item leaves them untied. See refreshTransformKnobTies().
+     **/
+    virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
+    {
+        return true;
+    }
+
+    /**
+     * @brief Ties or unties a selected item's transform knobs after tiesTransformKnobs() changed
+     * for it. An item inside a selected layer ends up untied, so edits reach only the layer.
+     **/
+    void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
+
+    void resetTransformInternal(const KnobDoublePtr& translate,
+                                const KnobDoublePtr& scale,
+                                const KnobDoublePtr& center,
+                                const KnobDoublePtr& rotate,
+                                const KnobDoublePtr& skewX,
+                                const KnobDoublePtr& skewY,
+                                const KnobBoolPtr& scaleUniform,
+                                const KnobChoicePtr& skewOrder,
+                                const KnobDoublePtr& extraMatrix);
+
+    static void setCenterKnob(const KnobDoublePtr& center, double x, double y);
+
 protected:
     void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, RectD* rod) const;
 
@@ -454,6 +541,8 @@ public Q_SLOTS:
 private:
     void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
     void deselectInternal(RotoItemPtr b);
+    void tieItemKnob(const KnobIPtr& itemKnob, const KnobIPtr& contextKnob, bool slave);
+    void untieItemKnob(const KnobIPtr& itemKnob, bool copyState);
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

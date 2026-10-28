@@ -2437,6 +2437,27 @@
                 }
             </inject-code>
         </modify-function>
+        <modify-function signature="linkTransform(ItemBase*,ItemBase*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlinkTransform(ItemBase*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getTransformLink(ItemBase*)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
     </object-type>
     <object-type name="Roto">
         <modify-function signature="getBaseLayer()const">

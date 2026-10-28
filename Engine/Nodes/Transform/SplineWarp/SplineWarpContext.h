@@ -32,6 +32,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -113,6 +114,62 @@ public:
 private:
     double _value;
     Curve _curve;
+};
+
+/**
+ * @brief The values of the Transform page's knobs, one per dimension of translate, rotate, scale,
+ * uniform, skewx, skewy, skewOrder, center and extraMatrix, in that order. A layer holds one; a
+ * curve holds the same values in its own knobs. Not MT-safe on its own.
+ **/
+class SplineWarpTransform {
+public:
+    static const int kValueCount = 20;
+
+    /**
+     * @brief The identity, centred at the origin.
+     **/
+    SplineWarpTransform();
+
+    /**
+     * @brief The transform knobs' script names, in value order.
+     **/
+    static const std::vector<std::string>& knobNames();
+
+    /**
+     * @brief The index of the first value of the knob called name, or -1 when it is not a
+     * transform knob. *dimensions gets the knob's dimension count.
+     **/
+    static int indexOf(const std::string& name, int* dimensions);
+
+    SplineWarpAnimatedValue& value(int index)
+    {
+        return _values[index];
+    }
+
+    const SplineWarpAnimatedValue& value(int index) const
+    {
+        return _values[index];
+    }
+
+    /**
+     * @brief The matrix the values make at time, as RotoDrawableItem::getLocalTransformAtTime().
+     **/
+    void getMatrixAt(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief Takes the values, keyframes included, of the knobs of knobs named as transform knobs.
+     **/
+    void readKnobs(const std::list<KnobIPtr>& knobs);
+
+    /**
+     * @brief Gives the knobs of knobs named as transform knobs these values and keyframes.
+     **/
+    void writeKnobs(const std::list<KnobIPtr>& knobs) const;
+
+    void appendContentHash(ContentHasher& h) const;
+
+private:
+    SplineWarpAnimatedValue _values[kValueCount];
 };
 
 /**
@@ -260,6 +317,70 @@ public:
     void assignLayerAmounts(const std::list<RotoLayerPtr>& layers, double value, const Curve& curve);
 
     /**
+     * @brief The layer's own transform, which applies on top of its children's: the identity
+     * centred at getDefaultTransformCenter() unless set.
+     **/
+    SplineWarpTransform getLayerTransform(const RotoLayerPtr& layer) const;
+
+    /**
+     * @brief Throws std::invalid_argument when layer is not in this context.
+     **/
+    void setLayerTransform(const RotoLayerPtr& layer, const SplineWarpTransform& transform);
+    void assignLayerTransforms(const std::list<RotoLayerPtr>& layers, const SplineWarpTransform& transform);
+
+    /**
+     * @brief The curve or layer whose transform item takes in place of its own, null when none.
+     * The parent layers of item still apply on top.
+     **/
+    RotoItemPtr getTransformLink(const RotoItemPtr& item) const;
+
+    /**
+     * @brief The items whose transform link is target.
+     **/
+    std::list<RotoItemPtr> getTransformLinkedItems(const RotoItemPtr& target) const;
+
+    /**
+     * @brief Makes item, a curve or a layer, take target's transform in place of its own, and
+     * whatever target follows in turn. Replaces item's previous link. Throws
+     * std::invalid_argument with getTransformLinkRefusal(item, target) when that is not empty.
+     **/
+    void linkTransform(const RotoItemPtr& item, const RotoItemPtr& target);
+
+    /**
+     * @brief Why linkTransform(item, target) would throw, empty when it would not: either is null
+     * or not a curve or layer of this context, they are the same, one is inside the other, or
+     * target already follows item.
+     **/
+    std::string getTransformLinkRefusal(const RotoItemPtr& item, const RotoItemPtr& target) const;
+
+    /**
+     * @brief Ends item's transform link, giving item the values it followed, so it stays in place.
+     **/
+    void unlinkTransform(const RotoItemPtr& item);
+
+    /**
+     * @brief The item whose own transform item takes: the end of its chain of transform links,
+     * item itself without one.
+     **/
+    RotoItemPtr getTransformSource(const RotoItemPtr& item) const;
+
+    /**
+     * @brief The values of item's own transform: a curve's knobs or a layer's stored values.
+     **/
+    SplineWarpTransform getOwnTransform(const RotoItemPtr& item) const;
+
+    /**
+     * @brief Gives item's own transform these values: a curve's knobs or a layer's stored values.
+     **/
+    void setOwnTransform(const RotoItemPtr& item, const SplineWarpTransform& transform);
+
+    /**
+     * @brief Ties the transform knobs of each selected curve that is neither transform-linked nor
+     * inside a selected layer, and unties the others. Main thread only.
+     **/
+    void refreshSelectedTransformTies();
+
+    /**
      * @brief Links source to destination, aligned by computeSplineWarpAlignment() at the current
      * time, or at offset 0 and not reversed for a duplicate. Throws std::invalid_argument when
      * either curve is null, not in this context, a boundary or already linked, or when both are
@@ -339,6 +460,17 @@ public:
     virtual void onControlPointAboutToBeRemoved(const BezierPtr& curve, int index) OVERRIDE;
     virtual void onCurveFinishedChanged(const BezierPtr& curve) OVERRIDE;
     virtual void onItemRemoved(const RotoItemPtr& item) OVERRIDE;
+    virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes) OVERRIDE;
+
+    /**
+     * @brief The centre of the Source's format, or else of the project's.
+     **/
+    virtual bool getDefaultTransformCenter(double time, double* x, double* y) const OVERRIDE;
+
+    /**
+     * @brief Replaces local by the transform item follows, if any, then applies its layers'.
+     **/
+    virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
     /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer
@@ -353,6 +485,11 @@ public:
 protected:
     virtual void appendHostContentHash(ContentHasher& h) const OVERRIDE;
 
+    /**
+     * @brief False for a transform-linked item, whose own transform knobs are not used.
+     **/
+    virtual bool tiesTransformKnobs(const RotoDrawableItem& item) const OVERRIDE;
+
 private:
     bool ownsCurve(const BezierPtr& curve) const;
     void setBoundaryRole(const BezierPtr& curve, bool soft, bool on);
@@ -361,6 +498,14 @@ private:
     void checkLinkable(const BezierPtr& curve, const char* what) const;
     void remapCurveParams(const BezierPtr& curve, const std::function<double(double)>& f);
     void warpDataChanged(bool evaluate);
+    // The end of item's chain of transform links, null when item has none. _warpMutex is held.
+    RotoItemPtr resolveTransformLinkLocked(const RotoItem* item) const;
+    // Whether from, or an item it follows through transform links, is to. _warpMutex is held.
+    bool transformLinkReachesLocked(const RotoItem* from, const RotoItem* to) const;
+    // A layer's stored transform, or null. _warpMutex is held.
+    const SplineWarpTransform* findLayerTransformLocked(const RotoItem* layer) const;
+    bool ownsItem(const RotoItemPtr& item) const;
+    void transformLinksChanged();
     // Tells the panel the Role and Linked To columns may have changed.
     void rolesChanged();
 
@@ -370,6 +515,9 @@ private:
     std::list<BezierWPtr> _softBoundaries;
     std::list<BezierWPtr> _cookieCutters;
     std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> _layerAmounts;
+    std::list<std::pair<RotoLayerWPtr, SplineWarpTransform>> _layerTransforms;
+    // Each item with the item whose transform it takes.
+    std::list<std::pair<std::weak_ptr<RotoItem>, std::weak_ptr<RotoItem>>> _transformLinks;
     bool _loading;
 };
 

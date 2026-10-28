@@ -48,6 +48,9 @@ const ActionInfo kActions[] = {
     { eSplineWarpActionToggleSoftBoundary, "toggleSoftBoundary" },
     { eSplineWarpActionToggleCookieCutter, "toggleCookieCutter" },
 };
+
+const char kLinkTransformId[] = "linkTransform";
+const char kUnlinkTransformId[] = "unlinkTransform";
 } // anonymous namespace
 
 SplineWarpPanelHook::SplineWarpPanelHook(const std::shared_ptr<SplineWarpInteract>& interact)
@@ -62,7 +65,7 @@ SplineWarpPanelHook::~SplineWarpPanelHook()
 std::vector<RotoCurvePanelHook::Column>
 SplineWarpPanelHook::getColumns() const
 {
-    std::vector<Column> columns(3);
+    std::vector<Column> columns(4);
 
     columns[eColumnRole].header = tr("Role").toStdString();
     columns[eColumnRole].toolTip = tr("Source or Destination for a curve in a link, Hard Boundary or Soft Boundary for a boundary. "
@@ -74,6 +77,8 @@ SplineWarpPanelHook::getColumns() const
     columns[eColumnCookieCutter].toolTip = tr("Yes for a closed curve that cuts the Source to its shape (Cookie Cut Input) "
                                               "and makes the Output Mask, whatever its role.")
                                                .toStdString();
+    columns[eColumnTransformLink].header = tr("Transform Link").toStdString();
+    columns[eColumnTransformLink].toolTip = tr("The curve or layer whose transform the item takes in place of its own.").toStdString();
 
     return columns;
 }
@@ -86,6 +91,11 @@ SplineWarpPanelHook::getItemText(const RotoItemPtr& item,
     SplineWarpContextPtr context = ui ? ui->getWarpContext() : SplineWarpContextPtr();
     BezierPtr curve = std::dynamic_pointer_cast<Bezier>(item);
 
+    if (context && (column == eColumnTransformLink)) {
+        RotoItemPtr target = context->getTransformLink(item);
+
+        return target ? target->getLabel() : std::string();
+    }
     if (!context || !curve) {
         return std::string();
     }
@@ -148,6 +158,16 @@ SplineWarpPanelHook::getItemMenuActions(const std::list<RotoItemPtr>& items) con
         action.enabled = ui->getRefusal(kActions[i].action, items).empty();
         actions.push_back(action);
     }
+    MenuAction link;
+    link.id = kLinkTransformId;
+    link.label = tr("Link Transform to First").toStdString();
+    link.enabled = ui->getTransformLinkRefusal(true, items).empty();
+    actions.push_back(link);
+    MenuAction unlink;
+    unlink.id = kUnlinkTransformId;
+    unlink.label = tr("Unlink Transform").toStdString();
+    unlink.enabled = ui->getTransformLinkRefusal(false, items).empty();
+    actions.push_back(unlink);
 
     return actions;
 }
@@ -159,6 +179,17 @@ SplineWarpPanelHook::onItemMenuActionTriggered(const std::string& actionId,
     std::shared_ptr<SplineWarpInteract> ui = _interact.lock();
 
     if (!ui) {
+        return;
+    }
+    // Layers can take part, so these work on items rather than on the viewer's selection.
+    if (actionId == kLinkTransformId) {
+        ui->linkTransform(items);
+
+        return;
+    }
+    if (actionId == kUnlinkTransformId) {
+        ui->unlinkTransform(items);
+
         return;
     }
     for (std::size_t i = 0; i < sizeof(kActions) / sizeof(kActions[0]); ++i) {

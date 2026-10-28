@@ -45,6 +45,7 @@
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -706,6 +707,183 @@ RotoCurveContext::getGlobalMotionBlurSettings(const double time,
 }
 
 void
+RotoCurveContext::createTransformKnobs(const KnobPagePtr& page)
+{
+    assert(_imp->transformKnobs.empty());
+    _imp->createTransformKnobs(page);
+}
+
+RotoCurveContext::TransformKnobs
+RotoCurveContext::getTransformKnobs() const
+{
+    TransformKnobs knobs;
+
+    knobs.translate = _imp->translateKnob.lock();
+    knobs.rotate = _imp->rotateKnob.lock();
+    knobs.scale = _imp->scaleKnob.lock();
+    knobs.scaleUniform = _imp->scaleUniformKnob.lock();
+    knobs.skewX = _imp->skewXKnob.lock();
+    knobs.skewY = _imp->skewYKnob.lock();
+    knobs.skewOrder = _imp->skewOrderKnob.lock();
+    knobs.center = _imp->centerKnob.lock();
+    knobs.extraMatrix = _imp->extraMatrixKnob.lock();
+    knobs.interactive = _imp->transformInteractiveKnob.lock();
+    knobs.resetCenter = _imp->resetCenterKnob.lock();
+    knobs.resetTransform = _imp->resetTransformKnob.lock();
+
+    return knobs;
+}
+
+bool
+RotoCurveContext::isTransformKnob(const KnobI* knob) const
+{
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->transformKnobs.begin(); it != _imp->transformKnobs.end(); ++it) {
+        if (it->lock().get() == knob) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+RotoCurveContext::setCenterKnob(const KnobDoublePtr& center,
+                                double x,
+                                double y)
+{
+    center->beginChanges();
+    dynamic_cast<KnobI*>(center.get())->removeAnimation(ViewSpec::all(), 0);
+    dynamic_cast<KnobI*>(center.get())->removeAnimation(ViewSpec::all(), 1);
+    center->setValues(x, y, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    center->endChanges();
+}
+
+void
+RotoCurveContext::resetTransformCenter()
+{
+    KnobDoublePtr center = _imp->centerKnob.lock();
+
+    if (!center) {
+        return;
+    }
+    const double time = getNode()->getApp()->getTimeLine()->currentFrame();
+    double x, y;
+    if (!getDefaultTransformCenter(time, &x, &y)) {
+        RectD bbox;
+        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
+        x = (bbox.x1 + bbox.x2) / 2.;
+        y = (bbox.y1 + bbox.y2) / 2.;
+    }
+    setCenterKnob(center, x, y);
+}
+
+void
+RotoCurveContext::resetTransformInternal(const KnobDoublePtr& translate,
+                                         const KnobDoublePtr& scale,
+                                         const KnobDoublePtr& center,
+                                         const KnobDoublePtr& rotate,
+                                         const KnobDoublePtr& skewX,
+                                         const KnobDoublePtr& skewY,
+                                         const KnobBoolPtr& scaleUniform,
+                                         const KnobChoicePtr& skewOrder,
+                                         const KnobDoublePtr& extraMatrix)
+{
+    std::list<KnobI*> knobs;
+
+    knobs.push_back(translate.get());
+    knobs.push_back(scale.get());
+    knobs.push_back(center.get());
+    knobs.push_back(rotate.get());
+    knobs.push_back(skewX.get());
+    knobs.push_back(skewY.get());
+    knobs.push_back(scaleUniform.get());
+    knobs.push_back(skewOrder.get());
+    if (extraMatrix) {
+        knobs.push_back(extraMatrix.get());
+    }
+    bool wasEnabled = translate->isEnabled(0);
+    for (std::list<KnobI*>::iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int i = 0; i < (*it)->getDimension(); ++i) {
+            (*it)->resetToDefaultValue(i);
+        }
+        (*it)->setAllDimensionsEnabled(wasEnabled);
+    }
+}
+
+void
+RotoCurveContext::resetTransform()
+{
+    if (!_imp->translateKnob.lock()) {
+        return;
+    }
+    resetTransformInternal(_imp->translateKnob.lock(), _imp->scaleKnob.lock(), _imp->centerKnob.lock(), _imp->rotateKnob.lock(),
+                           _imp->skewXKnob.lock(), _imp->skewYKnob.lock(), _imp->scaleUniformKnob.lock(), _imp->skewOrderKnob.lock(),
+                           _imp->extraMatrixKnob.lock());
+}
+
+bool
+RotoCurveContext::onTransformButtonPressed(const KnobI* k)
+{
+    KnobButtonPtr resetCenter = _imp->resetCenterKnob.lock();
+    KnobButtonPtr reset = _imp->resetTransformKnob.lock();
+
+    if (resetCenter && (k == resetCenter.get())) {
+        resetTransformCenter();
+
+        return true;
+    }
+    if (reset && (k == reset.get())) {
+        resetTransform();
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+RotoCurveContext::composeItemTransform(const RotoDrawableItem& /*item*/,
+                                       double /*time*/,
+                                       const Transform::Matrix3x3& local,
+                                       Transform::Matrix3x3* matrix) const
+{
+    *matrix = local;
+}
+
+void
+RotoCurveContext::refreshTransformKnobTies(const RotoDrawableItemPtr& item)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    bool viaLayer = false;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        if (std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), item) == _imp->selectedItems.end()) {
+            return;
+        }
+        for (RotoLayerPtr layer = item->getParentLayer(); layer && !viaLayer; layer = layer->getParentLayer()) {
+            viaLayer = std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), layer) != _imp->selectedItems.end();
+        }
+    }
+    const bool tie = tiesTransformKnobs(*item) && !viaLayer;
+    const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = itemKnobs.begin(); it != itemKnobs.end(); ++it) {
+        for (std::list<KnobIWPtr>::const_iterator it2 = _imp->transformKnobs.begin(); it2 != _imp->transformKnobs.end(); ++it2) {
+            KnobIPtr contextKnob = it2->lock();
+            if (!contextKnob || (contextKnob->getName() != (*it)->getName())) {
+                continue;
+            }
+            const bool tied = (*it)->getMaster(0).second == contextKnob;
+            if (tie && !tied) {
+                tieItemKnob(*it, contextKnob, true);
+            } else if (!tie && tied) {
+                untieItemKnob(*it, true);
+            }
+            break;
+        }
+    }
+}
+
+void
 RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items,
                                              double time,
                                              ViewIdx /*view*/,
@@ -1003,38 +1181,15 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
             }
         }
 
+        const bool tieTransform = tiesTransformKnobs(*isDrawable);
         const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
         for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
             for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
                 KnobIPtr thisKnob = it2->lock();
                 if (thisKnob->getName() == (*it)->getName()) {
-                    // Clone current state
-                    thisKnob->cloneAndUpdateGui(it->get());
-
-                    // Slave internal knobs of the bezier
-                    if (slaveKnobs) {
-                        assert((*it)->getDimension() == thisKnob->getDimension());
-                        for (int i = 0; i < (*it)->getDimension(); ++i) {
-                            (*it)->slaveTo(i, thisKnob, i);
-                        }
+                    if (tieTransform || !isTransformKnob(thisKnob.get())) {
+                        tieItemKnob(*it, thisKnob, slaveKnobs);
                     }
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(animationRemoved(ViewSpec, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(derivativeMoved(double, ViewSpec, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    // A value written to the item at a time it already has a key emits no keyFrameSet, and
-                    // the slaved item reads the context knob, so the write would be lost without this.
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)),
-                                     this, SLOT(onSelectedKnobValueChanged()));
-
                     break;
                 }
             }
@@ -1148,6 +1303,64 @@ RotoCurveContext::onSelectedKnobValueChanged()
 }
 
 void
+RotoCurveContext::tieItemKnob(const KnobIPtr& itemKnob,
+                              const KnobIPtr& contextKnob,
+                              bool slave)
+{
+    // Clone current state
+    contextKnob->cloneAndUpdateGui(itemKnob.get());
+
+    // Slave internal knobs of the bezier
+    if (slave) {
+        assert(itemKnob->getDimension() == contextKnob->getDimension());
+        for (int i = 0; i < itemKnob->getDimension(); ++i) {
+            itemKnob->slaveTo(i, contextKnob, i);
+        }
+    }
+    KnobSignalSlotHandler* handler = itemKnob->getSignalSlotHandler().get();
+    QObject::connect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    // A value written to the item at a time it already has a key emits no keyFrameSet, and
+    // the slaved item reads the context knob, so the write would be lost without this.
+    QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                     this, SLOT(onSelectedKnobValueChanged()));
+}
+
+void
+RotoCurveContext::untieItemKnob(const KnobIPtr& itemKnob,
+                                bool copyState)
+{
+    for (int i = 0; i < itemKnob->getDimension(); ++i) {
+        itemKnob->unSlave(i, copyState);
+    }
+    KnobSignalSlotHandler* handler = itemKnob->getSignalSlotHandler().get();
+    QObject::disconnect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                        this, SLOT(onSelectedKnobValueChanged()));
+}
+
+void
 RotoCurveContext::deselectInternal(RotoItemPtr b)
 {
     /// only called on the main-thread
@@ -1184,34 +1397,18 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
     if (isDrawable) {
         /// first-off set the context knobs to the value of this bezier
 
+        const bool tieTransform = tiesTransformKnobs(*isDrawable);
         const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
         for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
             for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
                 KnobIPtr knob = it2->lock();
                 if (knob->getName() == (*it)->getName()) {
-                    // Clone current state
-                    knob->cloneAndUpdateGui(it->get());
-
-                    // Slave internal knobs of the bezier
-                    assert((*it)->getDimension() == knob->getDimension());
-                    for (int i = 0; i < (*it)->getDimension(); ++i) {
-                        (*it)->unSlave(i, isBezier ? !bezierDirty : !strokeDirty);
+                    if (tieTransform || !isTransformKnob(knob.get())) {
+                        // Clone current state
+                        knob->cloneAndUpdateGui(it->get());
                     }
-
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(animationRemoved(ViewSpec, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(derivativeMoved(double, ViewSpec, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)),
-                                        this, SLOT(onSelectedKnobValueChanged()));
+                    assert((*it)->getDimension() == knob->getDimension());
+                    untieItemKnob(*it, isBezier ? !bezierDirty : !strokeDirty);
                     break;
                 }
             }

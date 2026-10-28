@@ -200,6 +200,15 @@ public:
     // The field steps of the cached coordinate fields, for tests.
     std::vector<double> getCachedFieldResolutions() const;
 
+    // The Source's format in canonical coordinates, null without a Source.
+    RectD getSourceFormat(double time, ViewIdx view) const;
+
+    /**
+     * @brief The transform handle shows while a select tool is active and the selection is one
+     * curve, or one layer and curves inside it.
+     **/
+    virtual bool shouldDrawHostOverlay() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -360,8 +369,6 @@ private:
 
     bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
 
-    // The Source's format in canonical coordinates, null without a Source.
-    RectD getSourceFormat(double time, ViewIdx view) const;
     /**
      * @brief The cookie mask at time over the cookie cutters' pixels at the scale, inside the
      * Source's format when cropping; null without an active cookie cutter.
@@ -397,6 +404,12 @@ private:
     void syncAmountKnobs();
     // Writes knob, layerAmount when layer and linkAmount otherwise, to the selected targets.
     void writeAmountKnob(const KnobDoublePtr& knob, bool layer);
+    // Shows the selected layers' or linked curves' transform on the Transform page.
+    void syncTransformKnobs();
+    // Writes the Transform page to the selected layers and the sources of linked selected items.
+    void writeTransformKnobs();
+    // Keys a transform-handle drag when auto-key is on.
+    void autoKeyTransformKnob(KnobI* knob, double time);
 
     KnobDoubleWPtr _amount;
     KnobBoolWPtr _invert;
@@ -421,6 +434,8 @@ private:
     KnobBoolWPtr _cropToFormat;
     // While syncAmountKnobs() sets the amount knobs, which must not write back.
     bool _syncingAmounts;
+    // While syncTransformKnobs() or autoKeyTransformKnob() set the transform knobs.
+    bool _syncingTransform;
 
     SplineWarpInteractPtr _ui;
     std::unique_ptr<SplineWarpPanelHook> _panelHook;

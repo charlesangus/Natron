@@ -46,6 +46,13 @@
 #define kRFVSwitchParamVariableLabel "Variable"
 #define kRFVSwitchParamVariableHint "The name of the Reverse-Flow Variable whose value chooses the input, as rfv reads it: " \
                                     "the value the nearest Set node below sets on the path being rendered, otherwise the project's."
+#define kRFVSwitchParamMatchVariable "matchVariable"
+#define kRFVSwitchParamMatchVariableLabel "Match Variable"
+#define kRFVSwitchParamMatchVariableHint "Writes one pattern row per option of the project's Choice variable named in Variable, " \
+                                         "in menu order, so input N follows option N, and overwrites the rows already there. A "  \
+                                         "label holding *, ? or [, or starting with re:, is written as an escaped re: pattern. "  \
+                                         "Inputs stay where they are. The rows do not follow later edits to the options: press "  \
+                                         "again to rewrite them. At most 16 options are written."
 #define kRFVSwitchParamPatternCount "patternCount"
 #define kRFVSwitchParamPatternCountLabel "Pattern Count"
 #define kRFVSwitchParamPatternCountHint "How many pattern rows the node shows."
@@ -103,6 +110,7 @@ public:
     explicit RFVSwitch(NodePtr node)
         : NativeEffectBase(node)
         , _variable()
+        , _matchVariable()
         , _patternCount()
         , _patterns()
         , _addAfter()
@@ -115,6 +123,7 @@ public:
         , _postedMessage()
         , _compiledMutex()
         , _compiled()
+        , _matchNote()
     {
     }
 
@@ -208,8 +217,18 @@ private:
      **/
     void reportOutcome(const Outcome& outcome);
 
-    // Takes back the message reportOutcome() posted, if the node still shows it.
+    // Takes back the message reportOutcome() or postMatchNote() posted, if the node still shows it.
     void clearPostedMessage();
+
+    /**
+     * @brief Writes one row per option of the project's Choice variable named in Variable, leaving
+     * the inputs connected where they are. Posts why when it writes nothing, and how many options
+     * it left out past the last row.
+     **/
+    void matchVariableOptions();
+
+    // Posts note as a warning, shown until a knob or input changes unless a render posts an error.
+    void postMatchNote(const std::string& note);
 
     int patternCount() const;
 
@@ -230,6 +249,7 @@ private:
     void refreshInputsVisibility();
 
     KnobStringWPtr _variable;
+    KnobButtonWPtr _matchVariable;
     KnobIntWPtr _patternCount;
     std::vector<KnobStringWPtr> _patterns;
     std::vector<KnobButtonWPtr> _addAfter;
@@ -244,6 +264,8 @@ private:
 
     mutable QMutex _compiledMutex;
     mutable std::shared_ptr<const RFV::CompiledPatterns> _compiled;
+    // What the last Match Variable press reported, shown while no render has anything to say.
+    std::string _matchNote;
 };
 
 NATRON_NAMESPACE_EXIT

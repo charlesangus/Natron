@@ -132,3 +132,32 @@ TEST(RFVPatternMatch, InvalidRegexNeverMatchesAndIsReported)
     EXPECT_EQ(0, RFV::firstMatch("sh010", std::vector<std::string> { "re:sh010" }, &error));
     EXPECT_TRUE(error.empty());
 }
+
+TEST(RFVPatternMatch, PatternForLabelMatchesExactlyTheLabel)
+{
+    struct LabelCase {
+        const char* label;
+        const char* nearMiss;
+    };
+    const LabelCase cases[] = {
+        { "High Quality", "High Qualityx" },
+        { "a*b", "aXb" },
+        { "x?", "xy" },
+        { "[v1]", "v" },
+        { "re:x", "x" },
+        { "1.5 (a+b)", "1x5 (a+b)" },
+        { "^$.|?*+()[]{}\\", "^$.|?*+()[]{}" },
+    };
+    for (const LabelCase& c : cases) {
+        const std::string pattern = RFV::patternForLabel(c.label);
+        EXPECT_EQ(0, RFV::firstMatch(c.label, std::vector<std::string> { pattern })) << c.label << " as " << pattern;
+        EXPECT_EQ(-1, RFV::firstMatch(c.nearMiss, std::vector<std::string> { pattern })) << c.label << " as " << pattern;
+    }
+
+    // A label a glob matches only itself with stays a glob; the others become escaped regexes.
+    EXPECT_EQ(std::string("High Quality"), RFV::patternForLabel("High Quality"));
+    EXPECT_EQ(std::string("1.5 (a+b)"), RFV::patternForLabel("1.5 (a+b)"));
+    EXPECT_EQ(std::string("re:a\\*b"), RFV::patternForLabel("a*b"));
+    EXPECT_EQ(std::string("re:re:x"), RFV::patternForLabel("re:x"));
+    EXPECT_EQ(std::string(), RFV::patternForLabel(""));
+}

@@ -184,7 +184,12 @@ Layer::removeItem(ItemBase* item)
     if (refusesShapeEdit(_layer->getContext())) {
         return;
     }
-    _layer->removeItem( item->getInternalItem() );
+    RotoItemPtr internalItem = item ? item->getInternalItem() : RotoItemPtr();
+    if (!internalItem || (internalItem->getParentLayer() != _layer)) {
+        return;
+    }
+    // Through the context, so the item leaves the selection and its host data goes with it.
+    _layer->getContext()->removeItem(internalItem);
 }
 
 std::list<ItemBase*>

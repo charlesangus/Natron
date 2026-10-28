@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -43,6 +44,7 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class RotoCurveContextHostState;
 class RotoCurveInteract;
 class RotoPaintInteract;
 
@@ -197,6 +199,7 @@ private:
 
     bool _firstRedoCalled;
     std::list<CurveDesc > _curves;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 
@@ -226,6 +229,7 @@ private:
     RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     std::list<RemovedCurve> _curves;
+    std::shared_ptr<RotoCurveContextHostState> _hostState;
 };
 
 class AddStrokeUndoCommand

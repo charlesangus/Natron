@@ -1016,6 +1016,78 @@ SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
     }
 }
 
+namespace {
+struct SplineWarpHostState
+    : public RotoCurveContextHostState {
+    struct SavedLink {
+        SplineWarpLinkPtr link;
+        BezierWPtr source;
+        BezierWPtr destination;
+        double startOffset;
+        bool reversed;
+        SplineWarpAnimatedValue amount;
+        std::vector<SplineWarpCorrespondence> correspondences;
+    };
+
+    std::vector<SavedLink> links;
+    std::list<BezierWPtr> boundaries;
+};
+} // anonymous namespace
+
+RotoCurveContextHostStatePtr
+SplineWarpContext::saveHostState() const
+{
+    std::shared_ptr<SplineWarpHostState> state = std::make_shared<SplineWarpHostState>();
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    state->boundaries = _boundaries;
+    for (std::size_t i = 0; i < _links.size(); ++i) {
+        const SplineWarpLink& link = *_links[i];
+        std::lock_guard<std::mutex> ll(link._mutex);
+        SplineWarpHostState::SavedLink saved;
+        saved.link = _links[i];
+        saved.source = link._source;
+        saved.destination = link._destination;
+        saved.startOffset = link._startOffset;
+        saved.reversed = link._reversed;
+        saved.amount = link._amount;
+        saved.correspondences = link._correspondences;
+        state->links.push_back(saved);
+    }
+
+    return state;
+}
+
+void
+SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
+{
+    const SplineWarpHostState* saved = dynamic_cast<const SplineWarpHostState*>(state.get());
+
+    if (!saved) {
+        return;
+    }
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        _boundaries = saved->boundaries;
+        _links.clear();
+        for (std::size_t i = 0; i < saved->links.size(); ++i) {
+            const SplineWarpHostState::SavedLink& entry = saved->links[i];
+            {
+                std::lock_guard<std::mutex> ll(entry.link->_mutex);
+                entry.link->_source = entry.source;
+                entry.link->_destination = entry.destination;
+                entry.link->_startOffset = entry.startOffset;
+                entry.link->_reversed = entry.reversed;
+                entry.link->_amount = entry.amount;
+                entry.link->_correspondences = entry.correspondences;
+            }
+            _links.push_back(entry.link);
+        }
+    }
+    warpDataChanged(true);
+}
+
 void
 SplineWarpContext::appendHostContentHash(ContentHasher& h) const
 {

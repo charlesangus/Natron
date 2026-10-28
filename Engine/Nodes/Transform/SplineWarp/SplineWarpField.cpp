@@ -280,6 +280,27 @@ SplineWarpField::cellOf(double x,
     *fy = std::max(0., std::min(1., gy - j));
 }
 
+RectD
+SplineWarpField::getSourceBounds() const
+{
+    RectD bounds(_window.x1 / _scaleX, _window.y1 / _scaleY, _window.x2 / _scaleX, _window.y2 / _scaleY);
+
+    // The field is bilinear between grid points, so the grid's sources bound the pixels'; each
+    // grows by half the pixel footprint its Jacobian gives, which a filter may read.
+    for (std::size_t k = 0; k < _sourceX.size(); ++k) {
+        double hx = 0.;
+        double hy = 0.;
+        if (_jacobian.size() == _sourceX.size() * 4) {
+            const double* J = &_jacobian[k * 4];
+            hx = 0.5 * (std::fabs(J[0]) / _scaleX + std::fabs(J[1]) / _scaleY);
+            hy = 0.5 * (std::fabs(J[2]) / _scaleX + std::fabs(J[3]) / _scaleY);
+        }
+        bounds.merge(_sourceX[k] - hx, _sourceY[k] - hy, _sourceX[k] + hx, _sourceY[k] + hy);
+    }
+
+    return bounds;
+}
+
 Point
 SplineWarpField::getSource(double x,
                            double y) const

@@ -330,6 +330,8 @@ class PageParam;
 class ParametricParam;
 class Roto;
 class SeparatorParam;
+class SplineWarpCurveLink;
+class SplineWarpCurves;
 class StringParam;
 class Track;
 class Tracker;

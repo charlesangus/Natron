@@ -43,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoFeatherDrag.h"
 #include "Engine/RotoLayer.h"
@@ -516,6 +517,9 @@ RemovePointUndoCommand::undo()
         }
         selection.push_back(it->curve);
     }
+    if (_hostState) {
+        roto->getCurveContext()->restoreHostState(_hostState);
+    }
 
     roto->setSelection(selection, cpSelection);
     roto->evaluate(true);
@@ -530,6 +534,7 @@ RemovePointUndoCommand::redo()
         return;
     }
 
+    _hostState = roto->getCurveContext()->saveHostState();
     ///clone the curve
     for (std::list<CurveDesc >::iterator it = _curves.begin(); it != _curves.end(); ++it) {
         it->oldCurve->clone( it->curve.get() );
@@ -550,6 +555,7 @@ RemovePointUndoCommand::redo()
                 isBezier->setCurveFinished(false);
             } else if (cpCount == 0) {
                 it->curveRemoved = true;
+                it->indexInLayer = std::max(0, it->parentLayer->getChildIndex(it->curve));
                 std::list<BezierPtr>::iterator found = std::find( toRemove.begin(), toRemove.end(), it->curve );
                 if ( found == toRemove.end() ) {
                     toRemove.push_back(isBezier);
@@ -612,6 +618,9 @@ RemoveCurveUndoCommand::undo()
             selection.push_back(isBezier);
         }
     }
+    if (_hostState) {
+        roto->getCurveContext()->restoreHostState(_hostState);
+    }
 
     SelectedCpList cpList;
     if ( !selection.empty() ) {
@@ -629,6 +638,7 @@ RemoveCurveUndoCommand::redo()
         return;
     }
 
+    _hostState = roto->getCurveContext()->saveHostState();
     for (std::list<RemovedCurve>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
         roto->removeCurve(it->curve);
     }

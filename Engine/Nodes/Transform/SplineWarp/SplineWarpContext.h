@@ -264,6 +264,12 @@ public:
     virtual void onCurveFinishedChanged(const BezierPtr& curve) OVERRIDE;
     virtual void onItemRemoved(const RotoItemPtr& item) OVERRIDE;
 
+    /**
+     * @brief Saves the links (the same objects, with their values) and the boundaries.
+     **/
+    virtual RotoCurveContextHostStatePtr saveHostState() const OVERRIDE;
+    virtual void restoreHostState(const RotoCurveContextHostStatePtr& state) OVERRIDE;
+
     virtual void toSerialization(Serialization::RotoContextSerialization* serialization) const OVERRIDE;
     virtual void fromSerialization(const Serialization::RotoContextSerialization& serialization) OVERRIDE;
 

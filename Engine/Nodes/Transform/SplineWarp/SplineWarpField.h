@@ -36,6 +36,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -87,6 +88,12 @@ public:
     {
         return _window;
     }
+
+    /**
+     * @brief A canonical box holding the source of every pixel of the window, grown by half the
+     * pixel footprint its Jacobian gives, and the window.
+     **/
+    RectD getSourceBounds() const;
 
     /**
      * @brief The source of canonical point (x, y), which should lie within the window.

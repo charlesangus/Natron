@@ -1325,6 +1325,11 @@
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
+        <modify-function signature="getSplineWarp()const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
     </object-type>
 
     
@@ -2253,6 +2258,151 @@
                 PyList_SET_ITEM(ret, idx, item);
                 }
                 return ret;
+            </inject-code>
+        </modify-function>
+    </object-type>
+    <object-type name="SplineWarpCurveLink">
+        <modify-function signature="getSource()const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="getDestination()const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="setAmount(double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setAmountAtTime(double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setAlignment(double,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="addCorrespondence(double,double)">
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setCorrespondence(int,double,double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setCorrespondenceAtTime(int,double,double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="removeCorrespondence(int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getCorrespondences(double,std::list&lt;double&gt;*)const">
+            <modify-argument index="2">
+                <remove-argument/>
+            </modify-argument>
+            <modify-argument index="return">
+                <replace-type modified-type="PyList"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                std::list&lt;double&gt; params;
+                %CPPSELF.%FUNCTION_NAME(%1, &amp;params);
+                PyObject* ret = PyList_New((int) (params.size() / 2));
+                int idx = 0;
+                for (std::list&lt;double&gt;::iterator it = params.begin(); it != params.end(); ++idx) {
+                    const double s = *it++;
+                    const double d = *it++;
+                    PyList_SET_ITEM(ret, idx, Py_BuildValue("(dd)", s, d));
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="remove()">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+    </object-type>
+    <object-type name="SplineWarpCurves">
+        <modify-function signature="link(BezierCurve*,BezierCurve*,bool)">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlink(BezierCurve*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getLink(BezierCurve*)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="getLinks()const">
+            <inject-code class="target" position="beginning">
+                std::list&lt;SplineWarpCurveLink*&gt; links = %CPPSELF.%FUNCTION_NAME();
+                PyObject* ret = PyList_New((int) links.size());
+                int idx = 0;
+                for (std::list&lt;SplineWarpCurveLink*&gt;::iterator it = links.begin(); it != links.end(); ++it, ++idx) {
+                    PyObject* item = %CONVERTTOPYTHON[SplineWarpCurveLink*](*it);
+                    Shiboken::Object::getOwnership(item);
+                    PyList_SET_ITEM(ret, idx, item);
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setBoundary(BezierCurve*,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
             </inject-code>
         </modify-function>
     </object-type>

@@ -55,6 +55,17 @@ struct RotoContextPrivate;
 class ContentHasher;
 
 /**
+ * @brief Host data a subclass keeps about its curves (links, roles), saved by undo commands that
+ * edit curves so undoing the edit also restores what the hooks below changed.
+ **/
+class RotoCurveContextHostState {
+public:
+    virtual ~RotoCurveContextHostState() { }
+};
+
+typedef std::shared_ptr<RotoCurveContextHostState> RotoCurveContextHostStatePtr;
+
+/**
  * @class The curves of a node that hosts Roto shapes: layers, Beziers, their animation, the
  * selection, the feather and the serialization. It builds no render node; RotoContext adds the
  * RotoPaint render tree, the strokes and the paint pages on top of it.
@@ -202,6 +213,18 @@ public:
      * @brief Called for the item and each of its descendants when removeItem() deletes it.
      **/
     virtual void onItemRemoved(const RotoItemPtr& /*item*/)
+    {
+    }
+
+    /**
+     * @brief Returns null when the context keeps no host data.
+     **/
+    virtual RotoCurveContextHostStatePtr saveHostState() const
+    {
+        return RotoCurveContextHostStatePtr();
+    }
+
+    virtual void restoreHostState(const RotoCurveContextHostStatePtr& /*state*/)
     {
     }
 

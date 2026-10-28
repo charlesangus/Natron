@@ -81,8 +81,10 @@
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Time/AppendClip.h"
 #include "Engine/Nodes/Time/FrameBlend.h"
 #include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/SlitScan.h"
 #include "Engine/Nodes/Time/TimeBlur.h"
 #include "Engine/Nodes/Time/TimeWarp.h"
 #include "Engine/Nodes/Transform/AutoStraighten.h"
@@ -174,6 +176,8 @@ gpuCapableIds()
         PLUGINID_NATRON_CONTRASTTEXTURE,
         PLUGINID_NATRON_FRAMEBLEND,
         PLUGINID_NATRON_TIMEBLUR,
+        PLUGINID_NATRON_APPENDCLIP,
+        PLUGINID_NATRON_SLITSCAN,
     };
 
     return ids;

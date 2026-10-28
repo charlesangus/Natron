@@ -146,6 +146,7 @@ Do this phase last: it removes the fixtures' old source. Native nodes are in fro
 
 ## Decisions
 
+- 2026-10-28: phases 1–4 implemented (builds pending). CompareMetadata compares by displayed text; PassiveKnobUpdate shared by both display nodes; CompareMetadata outputs A's metadata. Test-only OFX bridge plug-ins (natronTestMetadata, raw OFX C API, host via OfxPlugin::setHost, grouped under Other) replace openfx-metadata. PM call: no Engine/OfxRetired markers for the three org.openfx.examples.metadata* IDs (a marker means the bundle still ships; no backward compatibility) — fetch-assets deletes stale copies.
 - 2026-10-19 — **Native Contribute namespace**: the demo keys move to `fr.natron.ContributeMetadata.*` (the native node ID), and the string-vector `tags` becomes one comma-joined string because `ImageMetadata` has no string vector. The OFX test plug-in keeps the `org.openfx.examples.metadataContribute.*` prefix so the bridge tests' key lists stay as they are.
 - 2026-10-19 — **Whole openfx-metadata build goes**: with Compare, Contribute and TimeCode native and Print replaced by the in-tree test plug-in, nothing needs the fork's examples, so the pin, clone, build and `TestPlugins/` are all removed rather than trimmed.
 - 2026-10-19 — **Test plug-in uses the raw C API**: the in-repo OpenFX tree has no metadata C++ wrapper (`ofxsMetadata.h` lives only in the openfx-metadata fork), so the bundle is plain C-style code against `libs/OpenFX/include`, and doubles as direct coverage of the suite entry points.

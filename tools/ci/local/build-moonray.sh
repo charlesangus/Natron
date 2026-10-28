@@ -157,6 +157,9 @@ test -n "$boost_python"
 # 1.87 removed; its POSIX-socket variant is selected instead.
 # CMAKE_CUDA_COMPILER=NOTFOUND stops the top-level check_language(CUDA) from enabling CUDA because
 # the image happens to carry a toolkit.
+# MoonRay was written against older libstdc++ headers that pulled <algorithm>, <cstdint>, <cstring> and
+# <limits> (and more) in transitively; GCC 14's do not, so the common standard headers are force-included
+# for every C++ unit.
 cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -164,7 +167,7 @@ cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_PREFIX_PATH="$usd_prefix" \
     -DNATRON_MTLX_USD_PREFIX="$usd_prefix" \
     -DCMAKE_PROJECT_INCLUDE="$mtlx_aliases" \
-    -DCMAKE_CXX_FLAGS=-DUDPSYSLOG_NO_BOOST \
+    -DCMAKE_CXX_FLAGS="-DUDPSYSLOG_NO_BOOST -include algorithm -include array -include atomic -include chrono -include cmath -include cstdint -include cstdio -include cstdlib -include cstring -include functional -include iomanip -include limits -include memory -include mutex -include numeric -include optional -include sstream -include stdexcept -include string -include thread -include utility -include vector" \
     -DCMAKE_ISPC_COMPILER="$ispc" \
     -DCMAKE_CUDA_COMPILER=NOTFOUND \
     -DPXR_USD_LOCATION="$usd_prefix" \
@@ -184,7 +187,8 @@ jobs=$((mem_kb / (2 * 1024 * 1024)))
 if [ "$jobs" -gt "$(nproc)" ]; then jobs="$(nproc)"; fi
 if [ "$jobs" -lt 1 ]; then jobs=1; fi
 SECONDS=0
-cmake --build "$build" -j "$jobs"
+# -k reports every failing unit in one image build instead of stopping at the first.
+cmake --build "$build" -j "$jobs" -- -k
 echo "build-moonray: compiled in $((SECONDS / 60)) min with ${jobs} jobs"
 cmake --install "$build" --prefix "$prefix" >/dev/null
 install -m 0644 "${src}/LICENSE" "${prefix}/LICENSE"

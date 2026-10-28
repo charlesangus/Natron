@@ -26,3 +26,5 @@ Run the Xvfb GUI check scripts (Tests/gui/*.py) on GitHub Actions instead of the
 
 - 2026-10-27: first dispatch (run 40625390115, from M215's run 40620856879) ran 3 scripts in parallel in ~4 min; Xvfb/GL works on hosted runners (m215 87/87, m55 148/148; m214 1 real failure). Code d6762db96. The GUI backlog of 17 milestones is dispatched from this branch with from_run.
 - 2026-10-27: user asked to run the container-queue GUI work on Actions in parallel instead of waiting on the local container. Benches stay local.
+
+Shipped 2026-10-28: PR #141, squash 932c072c9.

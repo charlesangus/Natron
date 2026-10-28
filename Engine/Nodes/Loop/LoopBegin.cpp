@@ -25,7 +25,6 @@
 
 #include "LoopBegin.h"
 
-#include <iostream> // M182-DIAG
 #include <set>
 
 #include <QtCore/QString>
@@ -348,7 +347,6 @@ LoopBegin::forwardsOutput(const RenderRoIArgs& args,
     if (fromStore) {
         noteFrameStoreHit();
     }
-    std::cerr << "M182-DIAG LoopBegin::forwardsOutput k=" << previous.iteration + 1 << "/" << previous.count << " layer " << layers.front().getChannelsLabel() << std::endl; // M182-DIAG
     refreshConformMessage(std::string());
     outputLayers->insert(std::make_pair(layers.front(), src));
     *code = eRenderRoIRetCodeOk;
@@ -430,10 +428,6 @@ LoopBegin::render(const RenderActionArgs& args)
         if (!dst) {
             return eStatusFailed;
         }
-        // M182-DIAG
-        std::cerr << "M182-DIAG LoopBegin::render k=" << previous.iteration + 1 << "/" << previous.count << " layer " << it->first.getChannelsLabel()
-                  << " src " << (src ? src->getComponents().getChannelsLabel() : std::string("<null>")) << " (" << (src ? (int)src->getComponentsCount() : -1) << ")"
-                  << " dst " << dst->getComponents().getChannelsLabel() << " (" << (int)dst->getComponentsCount() << ")" << std::endl; // M182-DIAG
         const RectI covered = src ? args.roi.intersect(src->getBounds()) : RectI();
         if (covered != args.roi) {
             dst->fillZero(args.roi);
@@ -454,7 +448,6 @@ LoopBegin::render(const RenderActionArgs& args)
         const int srcComps = (int)src->getComponentsCount();
         src->convertToFormat(covered, (srcComps == 4) ? 3 : ((srcComps == 1) ? 0 : -1), false, dst.get());
     }
-    std::cerr << "M182-DIAG LoopBegin::render k=" << previous.iteration + 1 << "/" << previous.count << " conform message: \"" << conformMessage << "\"" << std::endl; // M182-DIAG
     refreshConformMessage(conformMessage);
 
     return eStatusOK;

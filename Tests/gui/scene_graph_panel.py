@@ -169,6 +169,11 @@ try:
         return dict((str(m.index(r, 0).data()), (str(m.index(r, 1).data()), str(m.index(r, 3).data())))
                     for r in range(m.rowCount()))
 
+    def view_input(node):
+        """Points the viewer's input 0 at node: connectInput refuses an input that is already connected."""
+        viewer.disconnectInput(0)
+        return viewer.connectInput(0, node)
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -262,7 +267,7 @@ try:
         pin.click()
         ok = yield ("until", lambda: bool(p.property("natronSceneGraphPinned")) and WORLD in top_paths(), POLL_TIMEOUT_S)
         check(ok, "the pin button pins the panel to the viewed USDRead (got %r)" % (top_paths(),))
-        require(viewer.connectInput(0, camera), "switch the Viewer to the USDCamera")
+        require(view_input(camera), "switch the Viewer to the USDCamera")
         ok = yield ("until", lambda: scene_drawn() and view() is not None, POLL_TIMEOUT_S)
         yield ("sleep", SETTLE_MS * 2)
         check(top_paths() == [WORLD] and str(p.property("natronSceneGraphNode")) == usd.getScriptName(),

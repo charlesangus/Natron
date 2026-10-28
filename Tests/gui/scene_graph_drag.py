@@ -123,10 +123,15 @@ try:
         return sorted(path_of(i) for i in rows(world)) if world.isValid() else []
 
     def field_showing(text):
-        """The KnobLineEdit showing text in an open settings panel."""
-        for w in widgets_of("KnobLineEdit"):
-            if w.isVisible() and w.text() == text:
-                return w
+        """The line edit showing text in an open settings panel.
+
+        KnobLineEdit has no Q_OBJECT, so its meta-object class name is its base's; match any QLineEdit."""
+        for w in QApplication.allWidgets():
+            try:
+                if w.inherits("QLineEdit") and w.isVisible() and w.text() == text:
+                    return hold(w)
+            except RuntimeError:
+                continue
         return None
 
     def main_window():

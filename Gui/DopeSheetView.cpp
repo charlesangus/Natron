@@ -2593,7 +2593,8 @@ DopeSheetViewPrivate::createContextMenu()
     viewMenu->addAction(frameSelectionAction);
 } // DopeSheetViewPrivate::createContextMenu
 
-// Walks upstream from the active viewer's A and B inputs. A TimeOffset with a constant shift adds
+// Walks upstream from the active viewer's A and B inputs, or the first viewer's until one is
+// clicked. A TimeOffset with a constant shift adds
 // it for everything above it; FrameRange is the identity inside its range; the other time remaps
 // have no single shift, so nothing above them is moved. A node reached along several paths keeps
 // the shift of the shortest one.
@@ -2602,6 +2603,9 @@ DopeSheetViewPrivate::refreshKeyTimeOffsets()
 {
     keyTimeOffsets.clear();
     ViewerTab* viewerTab = gui ? gui->getActiveViewer() : 0;
+    if (!viewerTab && gui && !gui->getViewersList().empty()) {
+        viewerTab = gui->getViewersList().front();
+    }
     ViewerInstance* viewer = viewerTab ? viewerTab->getInternalNode() : 0;
     if (!viewer) {
         return;
@@ -2715,6 +2719,7 @@ DopeSheetView::DopeSheetView(DopeSheet *model,
 
     if (gui) {
         connect(gui, SIGNAL(viewersChanged()), this, SLOT(onViewersChanged()));
+        connect(gui, SIGNAL(activeViewerChanged()), this, SLOT(update()));
         onViewersChanged();
     }
 }
@@ -3126,6 +3131,8 @@ DopeSheetView::onViewersChanged()
         NodePtr viewerNode = viewer ? viewer->getNode() : NodePtr();
         if (viewerNode) {
             connect(viewerNode.get(), SIGNAL(inputChanged(int)), this, SLOT(update()), Qt::UniqueConnection);
+            connect(viewerNode.get(), SIGNAL(activeInputsChanged()), this, SLOT(update()), Qt::UniqueConnection);
+            connect(viewerNode.get(), SIGNAL(refreshOptionalState()), this, SLOT(update()), Qt::UniqueConnection);
         }
     }
     update();

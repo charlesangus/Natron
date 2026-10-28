@@ -157,6 +157,8 @@ test -n "$boost_python"
 # 1.87 removed; its POSIX-socket variant is selected instead.
 # CMAKE_CUDA_COMPILER=NOTFOUND stops the top-level check_language(CUDA) from enabling CUDA because
 # the image happens to carry a toolkit.
+# MoonRay was written against older libstdc++ headers that pulled <algorithm>, <cstdint>, <cstring> and
+# <limits> in transitively; GCC 14's do not, so they are force-included for every C++ unit.
 cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -164,7 +166,7 @@ cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_PREFIX_PATH="$usd_prefix" \
     -DNATRON_MTLX_USD_PREFIX="$usd_prefix" \
     -DCMAKE_PROJECT_INCLUDE="$mtlx_aliases" \
-    -DCMAKE_CXX_FLAGS=-DUDPSYSLOG_NO_BOOST \
+    -DCMAKE_CXX_FLAGS="-DUDPSYSLOG_NO_BOOST -include algorithm -include cstdint -include cstring -include limits" \
     -DCMAKE_ISPC_COMPILER="$ispc" \
     -DCMAKE_CUDA_COMPILER=NOTFOUND \
     -DPXR_USD_LOCATION="$usd_prefix" \

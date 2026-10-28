@@ -37,7 +37,8 @@ try:
     import faulthandler
 
     import NatronEngine
-    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel
+    from PySide6.QtCore import QMetaObject
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit
 
     import guitest as gt
     from guitest import check, require
@@ -71,14 +72,37 @@ try:
         for panel in gt.widgets_of("NodeSettingsPanel"):
             if not panel.isVisible():
                 continue
-            for w in panel.findChildren(QLabel):
-                if w.text() == label:
-                    _held.append(panel)
-                    return panel
+            for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                try:
+                    if w.text() == label:
+                        _held.append(panel)
+                        return panel
+                except RuntimeError:
+                    continue
             if label in (panel.windowTitle() or ""):
                 _held.append(panel)
                 return panel
         return None
+
+    def open_panel(node):
+        """Steps that open node's settings panel on its own, retrying once; returns whether it opened.
+        showSelectedNodeSettingsPanel does nothing unless node is the only selected node."""
+        for attempt in range(2):
+            gt.close_all_panels()
+            yield ("sleep", 300)
+            app.clearSelection()
+            activate_main_window()
+            app.selectNode(node, True)
+            QApplication.processEvents()
+            view = graph_view()
+            invoked = view is not None and QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+            if not invoked:
+                gt.report("NOTE showSelectedNodeSettingsPanel was not invoked (attempt %d)" % (attempt + 1))
+            ok = yield ("until", lambda: node_panel(node) is not None, POLL_TIMEOUT_S / 2)
+            if ok:
+                return True
+            gt.report("NOTE %s's settings panel did not open (attempt %d)" % (node.getScriptName(), attempt + 1))
+        return False
 
     def match_button(panel):
         for b in panel.findChildren(QAbstractButton):
@@ -123,11 +147,7 @@ try:
         count, rows = pattern_rows(switch)
         check(count == 1 and rows == [""], "before the press the node has one empty row (got %d %r)" % (count, rows))
 
-        activate_main_window()
-        app.selectNode(switch, True)
-        from PySide6.QtCore import QMetaObject
-        QMetaObject.invokeMethod(graph_view(), "showSelectedNodeSettingsPanel")
-        ok = yield ("until", lambda: node_panel(switch) is not None, POLL_TIMEOUT_S)
+        ok = yield from open_panel(switch)
         require(ok, "RFVSwitch's panel opens")
         yield ("sleep", SETTLE_MS)
         panel = node_panel(switch)

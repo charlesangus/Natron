@@ -62,24 +62,38 @@ try:
     viewer.setPosition(0, 150)
     camera_root = "/" + str(camera.getParam("primPath").getValue()).strip("/").split("/")[0]
 
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
-        return views[0] if views else None
+        return hold(views[0]) if views else None
 
     def panel():
         panels = widgets_of("SceneGraphPanel")
-        return panels[0] if panels else None
+        return hold(panels[0]) if panels else None
 
     def child(cls, name):
         p = panel()
-        return p.findChild(cls, name) if p is not None else None
+        try:
+            return hold(p.findChild(cls, name)) if p is not None else None
+        except RuntimeError:
+            return None
 
     def tree():
         return child(QTreeView, "sceneGraphTree")
 
     def model():
         t = tree()
-        return t.model() if t is not None else None
+        try:
+            return hold(t.model()) if t is not None else None
+        except RuntimeError:
+            return None
 
     def scene_drawn():
         v = view()
@@ -92,12 +106,16 @@ try:
         return sorted(str(p) for p in value) if value else []
 
     def rows(parent=QModelIndex()):
+        """parent's child rows; none while the tree is being rebuilt."""
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
-            m.fetchMore(parent)
-        return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
+        try:
+            while m.canFetchMore(parent):
+                m.fetchMore(parent)
+            return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
+        except RuntimeError:
+            return []
 
     def path_of(index):
         return str(index.data(PATH_ROLE))

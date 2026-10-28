@@ -63,5 +63,6 @@ set than Cycles, so this milestone is mostly dependency work; no Natron node cod
 
 ## Decisions
 
+- 2026-10-28: Implemented (image build + gate pending). openmoonray v2026.29.1 (Apache-2.0) built CPU-only into /opt/moonray (CUDA/OptiX off; ISPC v1.21.0 downloaded for the build only; -DUDPSYSLOG_NO_BOOST). Dropped: distributed Arras, sdr plug-ins (USD 26.08 removed Ndr), Houdini plug-ins, moonshine_usd, profile viewer, upstream tests. hdMoonray's removed IsSupported override stripped by the build script. Plug-in priority patched 99 → -1 so Storm stays the default. MoonRay is compiled -march=core-avx2: registered only on AVX2 CPUs. Registered directly at start-up (PXR_PLUGINPATH_NAME is read once at USD load, too late); MoonRay dirs first on RDL2_DSO_PATH/ARRAS_SESSION_PATH/PATH. Debug delegate in the image, not the bundle. Estimate +60–100 MB compressed AppImage. Will conflict with M249 in stage-bundle.sh and check-startup.sh (both add an OpenImageDenoise block).
 - 2026-10-27 — **Bundle in the AppImage (user):** MoonRay ships in the release, accepting its heavy dependency set.
 - 2026-10-27 — **CPU first (user):** XPU/GPU deferred.

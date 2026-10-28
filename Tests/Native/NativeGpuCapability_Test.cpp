@@ -83,6 +83,7 @@
 #include "Engine/Nodes/Transform/ICornerPin.h"
 #include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/ITransform.h"
+#include "Engine/Nodes/Transform/LensCorrect.h"
 #include "Engine/Nodes/Transform/LensDistortion.h"
 #include "Engine/Nodes/Transform/Mirror.h"
 #include "Engine/Nodes/Transform/Position.h"
@@ -126,6 +127,7 @@ gpuCapableIds()
         PLUGINID_NATRON_STMAP,
         PLUGINID_NATRON_IDISTORT,
         PLUGINID_NATRON_LENSDISTORTION,
+        PLUGINID_NATRON_LENSCORRECT,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,

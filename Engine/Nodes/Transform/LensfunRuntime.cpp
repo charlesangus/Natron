@@ -111,6 +111,14 @@ database(std::string* error)
 
     return loaded.database.get();
 }
+
+std::mutex&
+queryMutex()
+{
+    static std::mutex mutex;
+
+    return mutex;
+}
 } // namespace LensfunRuntime
 
 NATRON_NAMESPACE_EXIT

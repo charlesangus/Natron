@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <mutex>
 #include <string>
 
 struct lfDatabase;
@@ -56,6 +57,12 @@ std::string databasePath();
  * error is not null.
  **/
 const lfDatabase* database(std::string* error = nullptr);
+
+/**
+ * @brief Held around every query of database(): lensfun records each match's score in the
+ * database's own entries while it searches.
+ **/
+std::mutex& queryMutex();
 } // namespace LensfunRuntime
 
 NATRON_NAMESPACE_EXIT

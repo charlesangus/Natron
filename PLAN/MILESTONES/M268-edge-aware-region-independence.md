@@ -11,3 +11,4 @@ Filed 2026-10-28 from the audit after M215 - Colour Equalizer's guided filter pr
 - M210 Compute Variance readout covers "the last region rendered": measure over the whole frame or label it as viewer-region.
 
 Deps: M209, M210, M211, M212, M213, M215.
+- M215 ColorEqualizer now processes the whole RoD per window (CPU cached; GPU recomputes per window): add a frame-size guard for the GPU path like ToneEqualizer's UINT32 check in canRenderOpOnGpu, and consider a device-side cache.

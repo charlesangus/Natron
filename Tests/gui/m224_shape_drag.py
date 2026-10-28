@@ -85,8 +85,10 @@ try:
 
     def select_tool(gl):
         # Roto starts in the Bezier drawing tool, where a press on the corner starts a new shape.
+        # Escape leaves it for the last select tool (Select All) and does nothing once a select
+        # tool is active. Q is not used: with the select group already active it cycles to the
+        # group's next tool (Select Points, then Select Shapes, then Select Feather Points).
         send_key(gl, Qt.Key_Escape)
-        send_key(gl, Qt.Key_Q)
 
     class Grab(object):
         """The screen under widget, read in widget coordinates. A widget grab of the GL viewer can

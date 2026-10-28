@@ -148,6 +148,13 @@ public:
         return eCurveContextKindGeometry;
     }
 
+    // A geometry context registers no host transform interact, so without this the viewer never
+    // calls the overlay actions below.
+    virtual bool hasOverlay() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void onCurveItemCreated(const RotoDrawableItemPtr& item) OVERRIDE FINAL;

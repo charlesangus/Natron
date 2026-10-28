@@ -30,6 +30,10 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -113,10 +117,19 @@ RadialOp::row(const Params& params,
 }
 
 GpuOpRef
-RadialOp::gpu(const Params& /*params*/,
-              const PassContext& /*context*/) const
+RadialOp::gpu(const Params& params,
+              const PassContext& context) const
 {
+#ifdef NATRON_HAVE_GPU
+    const OfxPointD renderScale = context.scale.toOfxPointD();
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::radial, pixelParams(params, renderScale.x, renderScale.y));
+#else
+    Q_UNUSED(params);
+    Q_UNUSED(context);
+
     return GpuOpRef::none();
+#endif
 }
 
 NATRON_NAMESPACE_EXIT

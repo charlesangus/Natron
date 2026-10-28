@@ -32,6 +32,10 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -134,10 +138,19 @@ RectangleOp::row(const Params& params,
 }
 
 GpuOpRef
-RectangleOp::gpu(const Params& /*params*/,
-                 const PassContext& /*context*/) const
+RectangleOp::gpu(const Params& params,
+                 const PassContext& context) const
 {
+#ifdef NATRON_HAVE_GPU
+    const OfxPointD renderScale = context.scale.toOfxPointD();
+
+    return GpuOpRef::compiled((int)gpu::GpuKernelId::rectangle, pixelParams(params, renderScale.x, renderScale.y));
+#else
+    Q_UNUSED(params);
+    Q_UNUSED(context);
+
     return GpuOpRef::none();
+#endif
 }
 
 NATRON_NAMESPACE_EXIT

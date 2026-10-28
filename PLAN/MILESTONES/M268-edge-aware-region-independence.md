@@ -79,7 +79,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
 
 ## Phase 268.1: Integration branch
 
-- [ ] M268.P1.T1 — Merge M210, M211, M212, M213 and M215 onto one branch
+- [x] M268.P1.T1 — Merge M210, M211, M212, M213 and M215 onto one branch
   - files: the branch `milestone/m268-edge-aware-region-independence` (from `origin/main`). Expected conflicts:
     - `Tests/Native/RawReferenceSupport.h` (m210, m212, m213, m215);
     - `Tests/Native/NativeGpuCapability_Test.cpp` (m213, m215);
@@ -99,7 +99,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
 
 ## Phase 268.2: Contract and shared support
 
-- [ ] M268.P2.T1 — Document the whole-frame contract in the library
+- [x] M268.P2.T1 — Document the whole-frame contract in the library
   - files: `Engine/Nodes/Filter/EdgeAware/EdgeAwareCommon.h`, `BoxFilter.h`, `GuidedFilter.h`, `Eigf.h`, `Wavelets.h`, `PoissonHeal.h`, `EdgeAwareGpu.h`
   - approach:
     - In the `EdgeAwareCommon.h` namespace comment, state that every function treats its buffer as the whole image. Its subsampling grids, tile grids, border rules and recursions are anchored to the buffer's top-left corner and size. A caller that passes anything but the node's whole frame (`WholeFrame.h`) gets output that depends on the window.
@@ -108,7 +108,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
   - verify: the build passes. Review checks the wording against P2.T2's helper.
   - size: S
 
-- [ ] M268.P2.T2 — `WholeFrame` helper: frame rect, format clamp, result cache and GPU fit
+- [x] M268.P2.T2 — `WholeFrame` helper: frame rect, format clamp, result cache and GPU fit
   - files: `Engine/Nodes/Image/WholeFrame.{h,cpp}` (new), `Engine/CMakeLists.txt`, `Tests/Native/WholeFrame_Test.cpp` (new), the tests CMake list
   - approach:
     - `bool wholeFramePixels(const EffectInstance&, int sourceInput, double time, ViewIdx, const RenderScale&, RectI* pixels, RectI* fullScalePixels)`. It takes the source's RoD at identity scale. If the RoD is infinite, it intersects it with `getOutputFormat()` as canonical (the `ContrastTexture::sourceRoD` logic). The result is pixel-enclosing at the render scale and at full scale, honouring the source's PAR. Null → false.
@@ -124,7 +124,7 @@ Scouted facts (2026-10-28, `origin/main` at `9185c8bae` plus the five branch hea
     - `wholeFrameFitsGpu` boundaries.
   - size: M
 
-- [ ] M268.P2.T3 — Region-independence test support
+- [x] M268.P2.T3 — Region-independence test support
   - files: `Tests/Native/RegionIndependenceSupport.h` (new)
   - approach: `expectRegionIndependent(makeNode, options)`.
     - `makeNode` builds a fresh source and node chain.
@@ -261,6 +261,7 @@ Each task adds `RegionIndependent*` cases to that node's existing test files, so
 
 ## Decisions
 
+- 2026-10-28: Phases 1–2 implemented (build pending). Merged heads: M210 aea7e922c, M211 a6c396ecc, M212 1b6bfba6f, M213 51b26e630, M215 27952108b (merges 441b5946e…3b78dd2a6); only make-reference.py and fixtures/raw/README.md conflicted (union). Test source is an in-memory noise source (finite or infinite extent), not Noise+Crop (Noise is format-bound; RawTestSource ignores render scale; no shipped generator is infinite). In-sequence renders keep the cache (bypassing clears the node cache). The infinite-RoD 'outside equals source' check holds for whole-frame nodes only; the Grade self-test uses defaults.
 - 2026-10-28: elaborated (consultant).
 - 2026-10-28 — **A whole-frame contract, not frame-origin parameters (consultant):**
   - The library's filters reach the whole image: Deriche IIR edge starts, a bilinear resample ratio that depends on the full size, colour guided-filter tiles anchored at the origin, and dwt scale caps. With a frame origin and full size, a window would still need whole-frame data to be exact, so the API would promise more than it can deliver.

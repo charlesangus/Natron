@@ -46,8 +46,22 @@
 #define kSplineWarpUIParamCorrespondenceToolLabel "Correspondence Tool"
 #define kSplineWarpUIParamCorrespondenceToolHint "Click a linked curve to pin that point to its partner on the other curve of the link. " \
                                                  "Drag either end of a correspondence along its curve. Delete or Backspace removes the selected one"
+#define kSplineWarpUIParamShow "show"
+#define kSplineWarpUIParamShowLabel "Show"
+#define kSplineWarpUIParamShowHint "Which curves of the links the viewer shows: the sources, the destinations, or both, joined by " \
+                                   "lines between the points that pair up. Boundaries and unlinked curves are always shown"
+#define kSplineWarpUIParamOutputWarped "outputWarped"
+#define kSplineWarpUIParamOutputWarpedLabel "Output Warped"
+#define kSplineWarpUIParamOutputWarpedHint "When off, the node outputs its Source unwarped, so you can compare. It is not saved, " \
+                                           "and is on again when the project is loaded"
 
 NATRON_NAMESPACE_ENTER
+
+enum SplineWarpShowEnum {
+    eSplineWarpShowSource = 0,
+    eSplineWarpShowDestination,
+    eSplineWarpShowBoth,
+};
 
 class SplineWarpInteract;
 typedef std::shared_ptr<SplineWarpInteract> SplineWarpInteractPtr;
@@ -67,6 +81,8 @@ class SplineWarpInteract
 public:
     KnobGroupWPtr correspondenceToolGroup;
     KnobButtonWPtr correspondenceAction;
+    KnobChoiceWPtr showChoice;
+    KnobButtonWPtr outputWarpedButton;
 
 private:
     struct MakeSharedEnabler;
@@ -88,6 +104,17 @@ public:
     KnobPagePtr createToolbar();
 
     static void getToolbarShortcuts(std::list<PluginActionShortcut>* shortcuts);
+
+    /**
+     * @brief The show choice and the output toggle, on page and in the viewer. Neither is saved;
+     * the toggle drives the render.
+     **/
+    void createDisplayKnobs(const KnobPagePtr& page);
+
+    SplineWarpShowEnum getShow() const;
+
+    // The output toggle, read by renders on any thread.
+    bool isOutputWarped() const;
 
     SplineWarpContextPtr getWarpContext() const;
 
@@ -155,6 +182,9 @@ protected:
     virtual bool onPaintToolPenDown(double time, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL;
     virtual bool onPaintStatePenMotion(const QPointF& pos, double pressure, double timestamp, double dx, double dy) OVERRIDE FINAL;
     virtual bool onPaintStatePenUp() OVERRIDE FINAL;
+    virtual bool isCurveShown(const BezierPtr& curve) const OVERRIDE FINAL;
+    virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const OVERRIDE FINAL;
+    virtual void drawOverlayExtras(double time, double screenPixelRatio, const std::pair<double, double>& pixelScale) OVERRIDE FINAL;
 
 private:
     std::string refuse(const QString& message);
@@ -165,6 +195,9 @@ private:
     std::list<BezierPtr> getSelectedBeziers() const;
 
     void setCorrespondenceParams(double sourceParam, double destinationParam, double time);
+
+    // Drops the curves the show choice now hides from the selection.
+    void deselectHiddenCurves();
 
     std::weak_ptr<SplineWarpLink> _selectedLink;
     int _selectedIndex;

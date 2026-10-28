@@ -36,10 +36,12 @@
 
 #include <QPointF>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
+#include "Serialization/ProjectBundleTestHelpers.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
@@ -179,6 +181,59 @@ renderRGBA(const NodePtr& node,
     *plane = planes[0];
 
     return true;
+}
+
+// The largest and the mean RGB difference over the pixels at least margin away from the window's
+// edges.
+void
+interiorRGBDiff(const RenderedPlane& a,
+                const RenderedPlane& b,
+                int margin,
+                double* largest,
+                double* mean)
+{
+    *largest = 1e9;
+    *mean = 1e9;
+    EXPECT_EQ(a.pixels.size(), b.pixels.size());
+    EXPECT_EQ(std::size_t(4), a.channels.size());
+    if ((a.pixels.size() != b.pixels.size()) || (a.channels.size() != 4)) {
+        return;
+    }
+    const int width = a.window.width();
+    const int height = a.window.height();
+    double sum = 0.;
+    int count = 0;
+    *largest = 0.;
+    for (int y = margin; y < height - margin; ++y) {
+        for (int x = margin; x < width - margin; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const std::size_t i = ((std::size_t)y * width + x) * 4 + c;
+                const double diff = std::abs(a.pixels[i] - b.pixels[i]);
+                *largest = std::max(*largest, diff);
+                sum += diff;
+                ++count;
+            }
+        }
+    }
+    *mean = count ? sum / count : 0.;
+}
+
+// A quad and a copy of it with one corner moved, so the warp between them is not affine.
+SplineWarpLinkPtr
+makeBentLink(const SplineWarpContextPtr& ctx,
+             BezierPtr* from,
+             BezierPtr* to)
+{
+    *from = makeQuad(ctx, 20., 15., 16.);
+    std::vector<std::pair<double, double>> points = quadPoints(20., 15., 16.);
+    points[2].first += 4.;
+    points[2].second += 3.;
+    *to = makeCurve(ctx, points, true);
+    if (!*from || !*to) {
+        return SplineWarpLinkPtr();
+    }
+
+    return ctx->linkWithAlignment(*from, *to, 0., false);
 }
 
 double
@@ -764,4 +819,157 @@ TEST_F(SplineWarpToolsTest, CorrespondencesFollowAutoKeying)
     expected.push_back(third);
     EXPECT_EQ(expected, values[0].destination.getKeyFrameTimes());
     EXPECT_NEAR(1.4, values[0].destination.getValueAt(third), 1e-3);
+}
+
+TEST_F(SplineWarpToolsTest, TheDisplayKnobsAreInTheViewerAndNeverSaved)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+
+    KnobChoicePtr show = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kSplineWarpUIParamShow));
+    ASSERT_TRUE(bool(show));
+    EXPECT_EQ(std::string(kSplineWarpUIParamShowLabel), show->getLabel());
+    EXPECT_EQ((int)eSplineWarpShowBoth, show->getValue());
+    EXPECT_FALSE(show->getIsPersistent());
+    EXPECT_FALSE(show->getEvaluateOnChange());
+
+    KnobButtonPtr output = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(kSplineWarpUIParamOutputWarped));
+    ASSERT_TRUE(bool(output));
+    EXPECT_EQ(std::string(kSplineWarpUIParamOutputWarpedLabel), output->getLabel());
+    EXPECT_TRUE(output->getValue());
+    EXPECT_FALSE(output->getIsPersistent());
+    // Never saved, yet a change of it still re-renders.
+    EXPECT_TRUE(output->isRenderHashed());
+
+    const KnobsVec viewerKnobs = node->getEffectInstance()->getViewerUIKnobs();
+    bool showInViewer = false, outputInViewer = false;
+    for (KnobsVec::const_iterator it = viewerKnobs.begin(); it != viewerKnobs.end(); ++it) {
+        showInViewer |= *it == show;
+        outputInViewer |= *it == output;
+    }
+    EXPECT_TRUE(showInViewer);
+    EXPECT_TRUE(outputInViewer);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpUIParamShow, { (double)eSplineWarpShowSource }));
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpUIParamOutputWarped, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpParamInvert, { 1. }));
+    std::string yaml;
+    ASSERT_TRUE(saveProjectBundle(getApp()->getProject(), tmp, QString::fromUtf8("splinewarp-display.ntpz"), &yaml));
+    EXPECT_NE(std::string::npos, yaml.find(kSplineWarpParamInvert)) << yaml;
+    EXPECT_EQ(std::string::npos, yaml.find(kSplineWarpUIParamOutputWarped)) << yaml;
+    EXPECT_EQ(std::string::npos, yaml.find(" " kSplineWarpUIParamShow ":")) << yaml;
+}
+
+TEST_F(SplineWarpToolsTest, OutputUnwarpedIsAnIdentityOfTheSource)
+{
+    NodePtr source = makeSource();
+    NodePtr node = makeSplineWarp(source);
+    ASSERT_TRUE(source && node);
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr from, to;
+    ASSERT_TRUE(bool(makeBentLink(ctx, &from, &to)));
+
+    EffectInstancePtr effect = node->getEffectInstance();
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    double inputTime = 0.;
+    ViewIdx inputView(0);
+    int inputNb = -1;
+    EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
+    RenderedPlane warped, plain, unwarped;
+    ASSERT_TRUE(renderRGBA(node, &warped));
+    ASSERT_TRUE(renderRGBA(source, &plain));
+    EXPECT_GT(maxDiff(warped, plain), 0.);
+
+    const U64 hashBefore = effect->getRenderHash();
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpUIParamOutputWarped, { 0. }));
+    EXPECT_NE(hashBefore, effect->getRenderHash());
+    inputNb = -1;
+    EXPECT_TRUE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_EQ(kSplineWarpInputSource, inputNb);
+    ASSERT_TRUE(renderRGBA(node, &unwarped));
+    EXPECT_EQ(0., maxDiff(unwarped, plain));
+
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpUIParamOutputWarped, { 1. }));
+    EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
+}
+
+TEST_F(SplineWarpToolsTest, ShowHidesTheOtherSideFromSelectionAndTools)
+{
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+    SplineWarpInteractPtr ui = interactOf(node);
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(ui && ctx);
+    BezierPtr from, to;
+    SplineWarpLinkPtr link = makeBentLink(ctx, &from, &to);
+    ASSERT_TRUE(bool(link));
+    BezierPtr loose = makeOpenLine(ctx, 5., 40.);
+    ASSERT_TRUE(bool(loose));
+
+    std::list<BezierPtr> all;
+    all.push_back(from);
+    all.push_back(to);
+    all.push_back(loose);
+    select(ui, all);
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpUIParamShow, { (double)eSplineWarpShowSource }));
+    EXPECT_EQ(eSplineWarpShowSource, ui->getShow());
+    std::list<RotoDrawableItemPtr> expected;
+    expected.push_back(from);
+    expected.push_back(loose);
+    EXPECT_EQ(expected, std::list<RotoDrawableItemPtr>(ui->selectedItems.begin(), ui->selectedItems.end()));
+
+    // The moved corner of the destination, away from every point of the source.
+    const QPointF corner = pointOf(to, 2.);
+    EXPECT_FALSE(ui->pressCorrespondence(corner, kTime, 1.));
+    EXPECT_EQ(0, link->getCorrespondenceCount());
+
+    ASSERT_TRUE(setKnobValues(node, kSplineWarpUIParamShow, { (double)eSplineWarpShowBoth }));
+    EXPECT_TRUE(ui->pressCorrespondence(corner, kTime, 1.));
+    EXPECT_TRUE(ui->releaseCorrespondence());
+    EXPECT_EQ(1, link->getCorrespondenceCount());
+}
+
+TEST_F(SplineWarpToolsTest, ADraftRenderUsesTheCoarseField)
+{
+    NodePtr source = makeSource();
+    NodePtr node = makeSplineWarp(source);
+    ASSERT_TRUE(source && node);
+    SplineWarp* effect = dynamic_cast<SplineWarp*>(node->getEffectInstance().get());
+    SplineWarpContextPtr ctx = contextOf(node);
+    ASSERT_TRUE(effect && ctx);
+    EXPECT_TRUE(node->getEffectInstance()->supportsRenderQuality());
+    BezierPtr from, to;
+    ASSERT_TRUE(bool(makeBentLink(ctx, &from, &to)));
+
+    RenderedPlane full;
+    ASSERT_TRUE(renderRGBA(node, &full));
+    std::vector<double> resolutions = effect->getCachedFieldResolutions();
+    ASSERT_FALSE(resolutions.empty());
+    EXPECT_EQ(8., resolutions.front());
+    EXPECT_EQ(resolutions.end(), std::find(resolutions.begin(), resolutions.end(), 32.));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error, true /*byPassCache*/, true /*draftMode*/)) << error;
+    ASSERT_EQ(std::size_t(1), planes.size());
+    resolutions = effect->getCachedFieldResolutions();
+    ASSERT_FALSE(resolutions.empty());
+    // Four times the default field step of 8.
+    EXPECT_EQ(32., resolutions.front());
+
+    // On the Source's smooth colour ramps, away from the edges the warp pulls black in from, the
+    // draft stays close to the full render: within 0.3 anywhere, the ramps spanning 2 over the
+    // frame, and within 0.05 on average. A model of the solve puts them near 0.15 and 0.03, from
+    // the bilinear field missing the bend by up to 3.5 pixels near the moved corner.
+    double largest = 0., mean = 0.;
+    interiorRGBDiff(full, planes[0], 8, &largest, &mean);
+    EXPECT_GT(largest, 0.);
+    EXPECT_LT(largest, 0.3);
+    EXPECT_LT(mean, 0.05);
 }

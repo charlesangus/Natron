@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
@@ -124,6 +125,7 @@ SplineWarp::SplineWarp(NodePtr node)
     // Built here, as RotoPaint's is: Node::load() ends the knob bracket with endChanges(), which
     // already calls knobChanged() and so forwards to the interact.
     , _ui(SplineWarpInteract::create(this))
+    , _draftDrag(false)
 {
 }
 
@@ -300,6 +302,7 @@ SplineWarp::initializeKnobs()
     // The node's curve context exists by now (Node::createRotoContextConditionnally()).
     _ui->connectToCurveContext();
     _ui->createViewerButtonKnobs(page);
+    _ui->createDisplayKnobs(page);
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
 
@@ -399,6 +402,15 @@ SplineWarp::onOverlayPenMotion(double time,
                                double pressure,
                                double timestamp)
 {
+    // A drag renders in draft until the pen is up.
+    if (!_draftDrag && (_ui->state != eEventStateNone)) {
+        AppInstancePtr app = getApp();
+        if (app && !app->isDraftRenderEnabled()) {
+            app->setDraftRenderEnabled(true);
+            _draftDrag = true;
+        }
+    }
+
     return _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
 }
 
@@ -411,6 +423,13 @@ SplineWarp::onOverlayPenUp(double /*time*/,
                            double /*pressure*/,
                            double /*timestamp*/)
 {
+    if (_draftDrag) {
+        _draftDrag = false;
+        getApp()->setDraftRenderEnabled(false);
+        // The full-quality render supersedes the draft one, even with nothing left to change.
+        _ui->evaluateOnPenUp = true;
+    }
+
     return _ui->onOverlayPenUp();
 }
 
@@ -449,6 +468,12 @@ SplineWarp::onOverlayFocusLost(double /*time*/,
                                const RenderScale& /*renderScale*/,
                                ViewIdx /*view*/)
 {
+    if (_draftDrag) {
+        _draftDrag = false;
+        getApp()->setDraftRenderEnabled(false);
+        incrHashAndEvaluate(true, false);
+    }
+
     return _ui->onOverlayFocusLost();
 }
 
@@ -465,10 +490,25 @@ SplineWarp::onInteractViewportSelectionUpdated(const RectD& rectangle,
     _ui->onViewportSelectionUpdated(rectangle, onRelease);
 }
 
+std::vector<double>
+SplineWarp::getCachedFieldResolutions() const
+{
+    return _fields.getResolutions();
+}
+
+bool
+SplineWarp::isDraftRender() const
+{
+    ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->draftMode;
+}
+
 void
 SplineWarp::readSettings(double time,
                          ViewIdx view,
-                         Settings* settings) const
+                         Settings* settings,
+                         bool draft) const
 {
     KnobDoublePtr amount = _amount.lock();
     if (amount) {
@@ -509,6 +549,12 @@ SplineWarp::readSettings(double time,
     if (bbox) {
         settings->bboxUnion = bbox->getValueAtTime(time, 0, view) == 1;
     }
+    settings->warped = !_ui || _ui->isOutputWarped();
+    if (draft) {
+        settings->curveResolution *= 2.;
+        settings->fieldResolution *= 4.;
+        settings->filter = Resampler::eFilterImpulse;
+    }
 } // SplineWarp::readSettings
 
 bool
@@ -522,7 +568,7 @@ SplineWarp::computeWarp(double time,
     if (!context) {
         return false;
     }
-    if (settings.amount == 0.) {
+    if ((settings.amount == 0.) || !settings.warped) {
         return true;
     }
 
@@ -714,7 +760,7 @@ SplineWarp::getRegionsOfInterest(double time,
         return;
     }
     Settings settings;
-    readSettings(time, view, &settings);
+    readSettings(time, view, &settings, isDraftRender());
     const double par = getOutputPixelAspectRatio(time, view);
     const OfxPointD s = scale.toOfxPointD();
 
@@ -748,8 +794,9 @@ SplineWarp::isOpIdentity(double time,
     if (!getInput(kSplineWarpInputSource)) {
         return true;
     }
+    // A draft identity is cached under the drag's hash, which the full render after it changes.
     Settings settings;
-    readSettings(time, view, &settings);
+    readSettings(time, view, &settings, isDraftRender());
     Warp warp;
     if (!computeWarp(time, settings, &warp)) {
         return true;
@@ -767,10 +814,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
     const int sourceInput = plan.sourceInput;
     Settings settings;
-    readSettings(args.time, args.view, &settings);
-    if (args.draftMode) {
-        settings.filter = Resampler::eFilterImpulse;
-    }
+    readSettings(args.time, args.view, &settings, args.draftMode);
     const bool impulse = settings.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double par = getOutputPixelAspectRatio(args.time, args.view);

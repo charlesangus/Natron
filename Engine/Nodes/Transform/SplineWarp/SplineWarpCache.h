@@ -94,6 +94,19 @@ public:
         _entries.clear();
     }
 
+    // The cached keys, most recently used first.
+    std::list<Key> getKeys() const
+    {
+        std::lock_guard<std::mutex> l(_mutex);
+        std::list<Key> keys;
+
+        for (typename std::list<Entry>::const_iterator it = _entries.begin(); it != _entries.end(); ++it) {
+            keys.push_back(it->first);
+        }
+
+        return keys;
+    }
+
 private:
     typedef std::pair<Key, std::shared_future<ValuePtr>> Entry;
 
@@ -111,7 +124,7 @@ private:
     }
 
     std::size_t _capacity;
-    std::mutex _mutex;
+    mutable std::mutex _mutex;
     std::list<Entry> _entries;
 };
 

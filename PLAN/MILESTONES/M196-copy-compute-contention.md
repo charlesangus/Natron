@@ -51,7 +51,7 @@ Scouted facts (2026-10-25; re-check at promotion):
 
 ## Phase 196.2: Fix
 
-- [ ] M196.P2.T1 — Land the winning configuration as the default
+- [x] M196.P2.T1 — Land the winning configuration as the default
   - files: `Engine/Gpu/GpuDevice.cpp`, `Engine/GpuRegionTask.cpp`, `Engine/Gpu/GpuTransfer.cpp`, `Tests/Gpu/` (queue-selection test)
   - approach: Make the configuration that Phase 196.1 shows recovers the isolated rate the default and remove the switch and the losing prototype. If neither recovers it, land nothing, record the numbers and why in `## Decisions`, and skip to the re-bench. Keep the no-transfer-family fallback unchanged, and add a lavapipe-runnable test that the queue-selection logic picks the expected families for a synthetic family list.
   - verify: ctest green on both scheduler legs (lavapipe, `NATRON_TEST_REQUIRE_GPU`); the new queue-selection test passes.
@@ -87,3 +87,5 @@ Scouted facts (2026-10-25; re-check at promotion):
   - **Bench caveat:** the "8k" cases (`BENCH_COMP_SIZES=7680x4320`) rendered at UHD, with output bytes identical to the UHD cases. The gate re-runs at a real 8K.
 
 - 2026-10-28 — **P2.T1 lands (a) with no switch (gpu):** Natron always adds `transfer_queue` to `RADV_PERFTEST` before instance creation, appending to any existing value. It routes region copies to a transfer-only family whenever the device exposes one. Other drivers ignore the variable, and a device with no such family keeps today's compute-queue path. Prototype (b) is removed. Setting it ourselves rather than documenting it follows the hard-cut rule: the win (0.54–0.93× comp wall) shouldn't depend on users knowing a RADV flag.
+
+- 2026-10-28 — **P2.T1 verified on RADV (gpu, debug, 3e96a2749 on main 50ee71b60):** `Gpu.GpuQueuePlan` and `Gpu.GpuPerftestToken` pass on both GPU legs. The nine failing suites are exactly the ones main fails on RADV, all owned by M240 - Float Trap And Denormal Audit or M271 - Persistent Message Test Failures. P2.T1 adds no new failures. PR CI covers lavapipe.

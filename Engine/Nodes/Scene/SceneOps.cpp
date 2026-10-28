@@ -526,6 +526,72 @@ frameToTimeCode(const ScenePayload& payload,
     return frame * payload.getMetadata().timeCodesPerSecond / framesPerSecond;
 }
 
+bool
+parsePrimExpression(const std::string& text,
+                    PXR_NS::SdfPathExpression* expression,
+                    std::string* errorMessage)
+{
+    *expression = PXR_NS::SdfPathExpression();
+    if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
+        return true;
+    }
+    PXR_NS::SdfPathExpression parsed;
+    {
+        PXR_NS::TfErrorMark mark;
+        parsed = PXR_NS::SdfPathExpression(text);
+        mark.Clear();
+    }
+    if (!parsed.GetParseError().empty()) {
+        *errorMessage = "\"" + text + "\" is not a valid prim selection: " + parsed.GetParseError();
+
+        return false;
+    }
+    if (!parsed.IsAbsolute()) {
+        *errorMessage = "\"" + text + "\" holds a relative path; prim selections name absolute paths such as /World/Geo or //*Light*.";
+
+        return false;
+    }
+    if (parsed.ContainsExpressionReferences()) {
+        *errorMessage = "\"" + text + "\" references a collection (%), which a prim selection cannot resolve.";
+
+        return false;
+    }
+    *expression = parsed;
+
+    return true;
+}
+
+bool
+selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+            const std::string& expression,
+            std::vector<PXR_NS::SdfPath>* paths,
+            std::string* errorMessage)
+{
+    paths->clear();
+    PXR_NS::SdfPathExpression parsed;
+    if (!parsePrimExpression(expression, &parsed, errorMessage)) {
+        return false;
+    }
+    if (!stage || parsed.IsEmpty()) {
+        return true;
+    }
+    const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
+    PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+    PXR_NS::UsdPrimRange range = stage->Traverse();
+    for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+        const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
+        if (result.GetValue()) {
+            paths->push_back(it->GetPath());
+        } else if (result.IsConstant()) {
+            // Nothing below can match: a literal path such as /World/Box costs its depth, not
+            // the stage's size.
+            it.PruneChildren();
+        }
+    }
+
+    return true;
+}
+
 namespace {
     // The defined, non-abstract root prims of input's composed stage, and the properties under
     // them its link index lists whose composed targets leave their root. Pure overs define nothing

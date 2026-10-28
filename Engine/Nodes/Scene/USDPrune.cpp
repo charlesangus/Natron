@@ -58,13 +58,7 @@ USDPrune::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
-    primPattern->setName(kUSDPruneParamPrimPattern);
-    primPattern->setHintToolTip(tr("The prims to remove: absolute prim paths separated by spaces, whose names may use * "
-                                   "(any run of characters) and ? (any one character), such as /World/Geo/*."));
-    primPattern->setAnimationEnabled(false);
-    page->addKnob(primPattern);
-    _primPattern = primPattern;
+    _primPattern.create(this, page, kUSDPruneParamPrimPattern, tr("Prim Pattern"), tr("The prims to remove."));
 
     KnobChoicePtr mode = createKnob<KnobChoice>(tr("Mode"));
     mode->setName(kUSDPruneParamMode);
@@ -93,13 +87,17 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
                       std::string* errorMessage)
 {
     const ScenePayload upstream = args.getInputScene(0);
-    KnobStringPtr patternKnob = _primPattern.lock();
     KnobChoicePtr modeKnob = _mode.lock();
-    const std::string pattern = patternKnob ? patternKnob->getValue() : std::string();
+    const std::string pattern = _primPattern.getExpression();
     const ModeEnum mode = (modeKnob && (modeKnob->getValue() == (int)eModeHide)) ? eModeHide : eModeDeactivate;
 
+    if (!PrimSelector::validate(pattern, errorMessage)) {
+        setPersistentMessage(eMessageTypeError, *errorMessage);
+
+        return eStatusFailed;
+    }
     std::vector<PXR_NS::SdfPath> matches;
-    if (!upstream.isEmpty() && (pattern.find_first_not_of(" \t\r\n") != std::string::npos)) {
+    if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
         PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
@@ -111,7 +109,7 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
             return eStatusFailed;
         }
         std::vector<PXR_NS::SdfPath> found;
-        if (!SceneNodeAuthoring::matchPrims(stage, pattern, &found, errorMessage)) {
+        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

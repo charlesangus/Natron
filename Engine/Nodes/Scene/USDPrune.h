@@ -30,6 +30,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -42,7 +43,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Removes the prims a prim pattern names from its input scene, without deleting anything
+ * @brief Removes the prims a prim pattern (a USD path expression) selects from its input scene, without deleting anything
  * the input authors: Deactivate authors active = false on each match, which drops it and its
  * descendants from the composed stage; Hide authors visibility = invisible on each match that
  * can be hidden, which keeps it on the stage but undrawn. A pattern that matches no prim leaves
@@ -63,7 +64,8 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDPRUNE,
         .label = "USDPrune",
-        .description = "Remove the prims a pattern names (paths, with * and ? wildcards) from the input scene. "
+        .description = "Remove the prims a pattern selects (a USD path expression: paths with * and ? wildcards, // for any "
+                       "depth, set operators) from the input scene. "
                        "Deactivate drops them and their descendants from the stage; Hide keeps them but makes them "
                        "invisible.",
         .grouping = PLUGIN_GROUP_3D_USD,
@@ -91,7 +93,7 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    KnobStringWPtr _primPattern;
+    PrimSelector _primPattern;
     KnobChoiceWPtr _mode;
 };
 

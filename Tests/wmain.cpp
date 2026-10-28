@@ -135,6 +135,8 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestSource>();
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
+    // A pass-through op holding an AuthoredKnobSet, for Scene/AuthoredKnobSet_Test.cpp.
+    registerTestBuiltInPlugin<SceneTestAuthored>();
 }
 
 void

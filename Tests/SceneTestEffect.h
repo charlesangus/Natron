@@ -37,6 +37,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/AuthoredKnobSet.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/ScenePayload.h"
@@ -44,6 +45,7 @@
 #define kTestPluginIDSceneSource "test.natron.built-in.SceneSource"
 #define kTestPluginIDSceneOp "test.natron.built-in.SceneOp"
 #define kTestPluginIDSceneGeometry "test.natron.built-in.SceneGeometry"
+#define kTestPluginIDSceneAuthored "test.natron.built-in.SceneAuthored"
 
 // What a failing SceneSource reports, so a test can find it in the action's message.
 #define kSceneTestSourceFailureMessage "SceneSource was set to fail"
@@ -269,6 +271,87 @@ private:
 
     KnobIntWPtr _value;
     KnobIntWPtr _upstreamRead;
+};
+
+/**
+ * @brief A pass-through scene op whose three value knobs form an AuthoredKnobSet, for
+ * Scene/AuthoredKnobSet_Test.cpp.
+ **/
+class SceneTestAuthored
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new SceneTestAuthored(n);
+    }
+
+    explicit SceneTestAuthored(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    const AuthoredKnobSet& getAuthoredKnobs() const
+    {
+        return _authored;
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindScene, .optional = false },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDSceneAuthored,
+        .label = "Test Scene Authored",
+        .outputKind = eDataKindScene,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+
+        KnobDoublePtr size = createKnob<KnobDouble>(std::string("Size"));
+        size->setName("size");
+        size->setDefaultValue(1.);
+        _authored.add(this, page, size);
+
+        KnobIntPtr count = createKnob<KnobInt>(std::string("Count"));
+        count->setName("count");
+        count->setAnimationEnabled(false);
+        count->setDefaultValue(3);
+        _authored.add(this, page, count);
+
+        KnobStringPtr tag = createKnob<KnobString>(std::string("Tag"));
+        tag->setName("tag");
+        tag->setAnimationEnabled(false);
+        _authored.add(this, page, tag);
+    }
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec /*view*/,
+                             double /*time*/,
+                             bool /*originatedFromMainThread*/) OVERRIDE FINAL
+    {
+        return _authored.onKnobChanged(k, reason);
+    }
+
+    virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
+                                   ScenePayload* outputScene,
+                                   std::string* /*errorMessage*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        *outputScene = args.getInputScene(0);
+
+        return eStatusOK;
+    }
+
+    AuthoredKnobSet _authored;
 };
 
 /**

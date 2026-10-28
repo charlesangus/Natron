@@ -279,6 +279,30 @@ std::uint64_t getFileLayerReloadCount();
 double frameToTimeCode(const ScenePayload& payload,
                        double frame,
                        double framesPerSecond);
+
+/**
+ * @brief Parses text as the USD path expression a prim selector holds (SdfPathExpression): paths
+ * whose names may hold glob wildcards (/World/*, /World/B?x), // for any depth (/World//*,
+ * //*Light*), predicates in braces ({isa:Mesh}), and the set operators: whitespace or + for union,
+ * & for intersection, - for difference, ~ for complement, with parentheses. Blank text is the empty
+ * expression, which selects nothing. Returns false with *errorMessage naming the failure when
+ * text does not parse, holds a relative path, or references a collection (%name), which a node's
+ * selector has nothing to resolve against.
+ **/
+bool parsePrimExpression(const std::string& text,
+                         PXR_NS::SdfPathExpression* expression,
+                         std::string* errorMessage);
+
+/**
+ * @brief The prims of stage that expression (parsePrimExpression()) selects, in depth-first stage
+ * order. Only active, loaded, defined, non-abstract prims are visited, so a prim under an inactive one
+ * never matches. Returns false with *errorMessage set, and *paths empty, when expression does not
+ * parse; blank text selects nothing.
+ **/
+bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& expression,
+                 std::vector<PXR_NS::SdfPath>* paths,
+                 std::string* errorMessage);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

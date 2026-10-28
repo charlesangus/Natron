@@ -310,18 +310,8 @@ TEST_F(USDEditTransformTest, TheMatrixTurnsAndScalesAboutThePivot)
     EXPECT_NEAR(0., ordered[2], 1e-9);
 }
 
-TEST_F(USDEditTransformTest, GlobsMatchNamesAndPatternsMatchPrims)
+TEST_F(USDEditTransformTest, PatternsSelectPrimsThroughPathExpressions)
 {
-    using SceneNodeAuthoring::matchesGlob;
-    EXPECT_TRUE(matchesGlob("Box", "Box"));
-    EXPECT_TRUE(matchesGlob("Box", "*"));
-    EXPECT_TRUE(matchesGlob("Box", "B?x"));
-    EXPECT_TRUE(matchesGlob("Box_01", "*_0*"));
-    EXPECT_TRUE(matchesGlob("aXbXc", "a*c"));
-    EXPECT_FALSE(matchesGlob("Box", "Ball"));
-    EXPECT_FALSE(matchesGlob("Box", "B?"));
-    EXPECT_FALSE(matchesGlob("Box", "*a*"));
-
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateInMemory();
     ASSERT_TRUE(bool(stage));
     PXR_NS::UsdGeomXform::Define(stage, PXR_NS::SdfPath("/World/Geo/Box"));
@@ -331,13 +321,13 @@ TEST_F(USDEditTransformTest, GlobsMatchNamesAndPatternsMatchPrims)
 
     std::vector<PXR_NS::SdfPath> paths;
     std::string error;
-    ASSERT_TRUE(SceneNodeAuthoring::matchPrims(stage, "/World/*/B*  /World/Lights/Key /World/Geo/Box", &paths, &error)) << error;
+    ASSERT_TRUE(SceneOps::selectPrims(stage, "/World/*/B*  /World/Lights/Key /World/Geo/Box", &paths, &error)) << error;
     // Inactive prims do not match, and each prim is listed once.
     ASSERT_EQ((std::size_t)2, paths.size());
     EXPECT_EQ(PXR_NS::SdfPath("/World/Geo/Box"), paths[0]);
     EXPECT_EQ(PXR_NS::SdfPath("/World/Lights/Key"), paths[1]);
-    EXPECT_TRUE(SceneNodeAuthoring::matchPrims(stage, "   ", &paths, &error));
+    EXPECT_TRUE(SceneOps::selectPrims(stage, "   ", &paths, &error));
     EXPECT_TRUE(paths.empty());
-    EXPECT_FALSE(SceneNodeAuthoring::matchPrims(stage, "World/Geo", &paths, &error));
+    EXPECT_FALSE(SceneOps::selectPrims(stage, "World/Geo", &paths, &error));
     EXPECT_FALSE(error.empty());
 }

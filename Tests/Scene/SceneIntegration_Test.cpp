@@ -33,6 +33,7 @@
 #include <list>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -344,6 +345,60 @@ TEST_F(SceneIntegrationTest, USDWriteRoundTripsTheSceneInBothModes)
 
 // Layered mode refers to the file USDRead reads, relative to the written file or absolute, rather
 // than copying it.
+// The scene nodes' prim patterns are USD path expressions: the space-separated list of paths a
+// picker writes selects each of them, and a pattern that does not parse is a node error naming it
+// until it parses again.
+TEST_F(SceneIntegrationTest, PrimPatternsAreUSDPathExpressions)
+{
+    NodePtr reader = createReader(kReferenceScene);
+    NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    ASSERT_TRUE(reader && prune && transform);
+    KnobString* prunePattern = getKnob<KnobString>(prune, kUSDPruneParamPrimPattern);
+    KnobString* transformPattern = getKnob<KnobString>(transform, kUSDEditTransformParamPrimPattern);
+    ASSERT_TRUE(prunePattern && transformPattern);
+    ASSERT_TRUE(prune->connectInput(reader, 0));
+    ASSERT_TRUE(transform->connectInput(reader, 0));
+
+    const auto isActive = [](const PXR_NS::UsdStageRefPtr& stage, const char* path) {
+        return stage->GetPrimAtPath(PXR_NS::SdfPath(path)).IsActive();
+    };
+
+    prunePattern->setValue(std::string("/World/Box /World/Cam"));
+    PXR_NS::UsdStageRefPtr stage = composeOutput(prune);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(isActive(stage, "/World/Box"));
+    EXPECT_FALSE(isActive(stage, "/World/Cam"));
+    EXPECT_TRUE(isActive(stage, "/World/Ball"));
+
+    prunePattern->setValue(std::string("//B*"));
+    stage = composeOutput(prune);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(isActive(stage, "/World/Box"));
+    EXPECT_FALSE(isActive(stage, "/World/Ball"));
+    EXPECT_TRUE(isActive(stage, "/World/Cam"));
+
+    const std::pair<NodePtr, KnobString*> nodes[] = { { prune, prunePattern }, { transform, transformPattern } };
+    for (const std::pair<NodePtr, KnobString*>& node : nodes) {
+        node.second->setValue(std::string("/World/Box &"));
+        ScenePayload payload;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed,
+                  node.first->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error));
+        EXPECT_NE(std::string::npos, error.find("/World/Box &")) << error;
+        ASSERT_TRUE(node.first->hasPersistentMessage());
+        QString message;
+        int type = 0;
+        node.first->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type);
+        EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Box &"))) << message.toStdString();
+
+        node.second->setValue(std::string("/World/Box"));
+        EXPECT_TRUE(bool(composeOutput(node.first)));
+        EXPECT_FALSE(node.first->hasPersistentMessage());
+    }
+}
+
 TEST_F(SceneIntegrationTest, USDWriteLayeredSublayersTheReadFile)
 {
     QTemporaryDir tmp;

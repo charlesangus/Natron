@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -50,7 +51,7 @@ NATRON_NAMESPACE_ENTER
 struct SceneLayerEdit;
 
 /**
- * @brief Transforms the prims a prim pattern names in its input scene. Every match gets the same
+ * @brief Transforms the prims a prim pattern (a USD path expression) selects in its input scene. Every match gets the same
  * xformOp:transform:<node name> op (numbered if the prim already has an op of that name) as the
  * strongest opinion: in Append mode it goes after the prim's existing ops, so it acts in the
  * prim's local space under them; in Replace mode !resetXformStack! precedes it, discarding the
@@ -73,7 +74,8 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDEDITTRANSFORM,
         .label = "USDEditTransform",
-        .description = "Transform the prims a pattern names (paths, with * and ? wildcards) in the input scene. "
+        .description = "Transform the prims a pattern selects (a USD path expression: paths with * and ? wildcards, // for any "
+                       "depth, set operators) in the input scene. "
                        "Append adds the transform after each prim's existing ops, in its local space; Replace discards "
                        "the existing ops and the parent transform. The transform turns and scales about a pivot. "
                        "While its settings panel is open, the Viewer's 3D view shows move, rotate and scale handles.",
@@ -135,7 +137,7 @@ private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 
-    KnobStringWPtr _primPattern;
+    PrimSelector _primPattern;
     KnobChoiceWPtr _mode;
     KnobDoubleWPtr _pivot;
     KnobButtonWPtr _centrePivot;

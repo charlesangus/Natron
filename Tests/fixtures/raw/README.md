@@ -96,6 +96,58 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `toneequal-source.tif` | Synthetic 128x96 linear Rec. 709 RGB half float source of the toneequal jobs, written by `make-reference.py` (`toneequal_scene()`): -10 EV to +1 EV left to right with ripples, hard-edged patches and texture, three tints by row band | (source) |
 | `toneequal-{bands,details-*,estimator-*,compensations-*,smoothing-diffusion,quantization}.tif` | toneequal on the source, whole frame, RGB half float (~50 KB); colorin (input and working profile linear Rec. 709) and colorout (linear Rec. 709) are identities around it. Every job sets the bands to 1.2, 0.9, 0.6, 0.3, 0, -0.2, -0.5, -0.8, -1 EV; `bands` is darktable's defaults otherwise (EIGF, euclidean norm, smoothing diameter 5 %, curve smoothing sqrt 2); `details-*` each preserve details mode, `estimator-*` each luminance estimator; `compensations-guided` guided filter with mask exposure 1.5 EV and contrast 0.8 EV, `compensations-eigf` -0.5 EV and 0.6 EV; `smoothing-diffusion` curve smoothing 2^0.75, 3 iterations, feathering 20, diameter 10 %; `quantization` mask quantization 0.5 | ToneEqualizer |
 
+### Color balance rgb
+
+`canon-eos-5d-mark-iii-colorbalancergb-*.tif` (`make-reference.py --only colorbalancergb`, 34
+jobs) are the CR2 developed with RCD in darktable's linear Rec. 2020 working space (colorin's
+work profile) and exported as linear Rec. 2020 (colorout and `--icc-type LIN_REC2020`), the
+space color balance rgb grades in. `-base.tif` is the develop without the module;
+`Tests/Native/NativeColorBalanceRGB_Test.cpp` feeds it to ColorBalanceRGB in a Linear Rec.2020
+project and compares the result with every other job, each the same develop with the module on
+(params version 5, every field not listed at its default). All are the 192x192 camera crop;
+`-base.tif` is RGB float, the test's input, and the graded jobs are RGB half float (~190 KB), so
+the test counts each sample's error beyond the half float rounding:
+
+| File | color balance rgb |
+| --- | --- |
+| `-preset-{legacy,natural-skin,vibrant-colors,standard}.tif` | darktable's four "basic colorfulness" presets |
+| `-defaults-{jzazbz,ucs}.tif` | Defaults under each saturation formula |
+| `-4ways-{offset,lift,gain,power}.tif` | One wheel each: luminance, chroma and hue (global 0.02, 0.005, 40; shadows 0.15, 0.2, 200; highlights -0.1, 0.1, 80; mid-tones 0.1, 0.05, 300) |
+| `-{saturation,brilliance}-{global,shadows,midtones,highlights}-{jzazbz,ucs}.tif` | One range each at 0.3, 0.4, -0.3, 0.5, under each formula |
+| `-chroma.tif` | Linear chroma global 0.2, shadows 0.3, mid-tones -0.2, highlights 0.4 |
+| `-hue-shift.tif` | Hue shift 25 degrees |
+| `-{vibrance,contrast}-{plus,minus}.tif` | Vibrance and contrast +0.4 and -0.4 |
+| `-masks.tif` | Shadows and highlights fall-off 2 and 0.5, mask grey fulcrum 0.3, white fulcrum 1.5 EV, contrast grey fulcrum 0.25 with contrast 0.2, and lift, gain and power luminance to show them |
+
+Render them alone with `tools/raw/make-reference.sh --only colorbalancergb`; the other
+references do not change.
+
+### Color equalizer
+
+`canon-eos-5d-mark-iii-colorequal-*.tif` (`make-reference.py --only colorequal`, 20 jobs) are the
+same develop as color balance rgb's with color equalizer on (params version 4, every field not
+listed at its default), RGB half float 192x192 crops. `Tests/Native/NativeColorEqualizer_Test.cpp`
+feeds colour balance rgb's `-base.tif` to ColorEqualizer in a Linear Rec.2020 project. darktable
+runs the guided filters over the whole developed image, so the test compares only the crop's
+interior, the node's halo in from each edge. Busy is hue 20, -15, 10, 35, -25, 12, -8, 30;
+saturation 1.3, 0.7, 1.1, 0.6, 1.4, 0.9, 1.2, 0.8; brightness 1.2, 0.85, 1.1, 0.75, 1.15, 0.9,
+1.05, 0.8 (red to magenta):
+
+| File | color equalizer |
+| --- | --- |
+| `-defaults.tif` | Defaults |
+| `-node-{red,orange,yellow,green,cyan,blue,lavender,magenta}.tif` | One node each: hue +30 (red, yellow, cyan, lavender) or -30, saturation 1.4, brightness 1.25 |
+| `-busy.tif` | Busy |
+| `-filter-off.tif` | Busy, use filter off |
+| `-node-placement.tif` | Busy, node placement 15 |
+| `-hue-smoothing.tif` | Busy, hue curve smoothing 0.3 |
+| `-threshold-contrast.tif` | Busy, saturation threshold 0.2, contrast 0.5 |
+| `-white-level.tif` | Busy, white level 4 EV |
+| `-sizes.tif` | Busy, chroma size 6, param size 12 |
+| `-preset-{bleach-bypass,kodachrome-64-like,kodak-portra-400-like,teal-and-orange}.tif` | darktable's four presets |
+
+Render them alone with `tools/raw/make-reference.sh --only colorequal`.
+
 ### darktable settings
 
 Each render's history sets only what differs from darktable's per-image defaults, so rawprepare
@@ -218,6 +270,40 @@ SHA-256 of every file in `reference/`:
 | `canon-eos-5d-mark-iii-cacorrect-iterations-5.tif` | 401489 | `6346eeb471b53268a35815fbb15dfc77038c5dbbd0821b3218d88b0ddafb3dc4` |
 | `canon-eos-5d-mark-iii-capture-sharpen-auto-t0.3.tif` | 402162 | `86506865f2173c2eb0c528e80489f965a56bcb1953ed327ae21a608befc996bb` |
 | `canon-eos-5d-mark-iii-capture-sharpen-r0.7-t0.3.tif` | 402048 | `15c94162f0769ef4cbb5a64aa6de7f887ed9b8672ae185784758f76e895d2c9b` |
+| `canon-eos-5d-mark-iii-colorbalancergb-4ways-gain.tif` | 190201 | `390fb8a87a412a9d777938b88f218f58011cbf284b6688f7aa22786fe4c1d023` |
+| `canon-eos-5d-mark-iii-colorbalancergb-4ways-lift.tif` | 189192 | `551c043993918e2a6983f1e5a071cf5312f1c950fc037a213589790bc06854b4` |
+| `canon-eos-5d-mark-iii-colorbalancergb-4ways-offset.tif` | 183601 | `985ccbf6fc86cafb4e01a46f2b43d00118a4ea100ab38b1ede50cf1d8a873a93` |
+| `canon-eos-5d-mark-iii-colorbalancergb-4ways-power.tif` | 188808 | `84fd8ac17bc44d41b55a2f5870834d021c4f3beb9c93d5118eba344c9e2e83ab` |
+| `canon-eos-5d-mark-iii-colorbalancergb-base.tif` | 399401 | `14bf3f8777cf4304eb9639cdf1e101d0745bcb8a189cbfde2e6adef067a48208` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-global-jzazbz.tif` | 189786 | `eda0f4ef4c8af85715b961a09cd9f01bef7af6972c526f465aa6c4b7bb4c5d32` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-global-ucs.tif` | 190941 | `dde9aa2b422faf93f448531593c316bb76b42f4a46e30152210a3ddb45802030` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-highlights-jzazbz.tif` | 191029 | `cfbd5efc47f67e35f7f90eaf33d5c7a2680fd991327951f072d0f46e0c0727db` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-highlights-ucs.tif` | 191775 | `0ff5b99821ca95164051665adb63ce8c0bed4f95ca99c117e8fe2ba2e5807127` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-midtones-jzazbz.tif` | 189159 | `3c19a6b73a9c27d30a1b240db3052e6593ccd806823d96f90cd923a61aa92fbe` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-midtones-ucs.tif` | 188710 | `46a1f0d29752aacbdd19b61b5aa2c8b789ffed2cade4edacec074efcc6bcbe06` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-shadows-jzazbz.tif` | 189369 | `5e2fe5053224a98d8e9c9d5a72f80914cf939e10e8a89490ba5a86bcae61f233` |
+| `canon-eos-5d-mark-iii-colorbalancergb-brilliance-shadows-ucs.tif` | 189882 | `fa30cd631a6d9e07d735b57d4ceafff9cde034b781728c7dc2131936590156a7` |
+| `canon-eos-5d-mark-iii-colorbalancergb-chroma.tif` | 194074 | `116bdbfecb8dcb45e514cc27ec16f0057ec0c4924ddc68adb5fed0b0c195985d` |
+| `canon-eos-5d-mark-iii-colorbalancergb-contrast-minus.tif` | 183787 | `1b3de5abe10cdfe6ca33c9272ee5e38ed7d5319c60445e24f62a67f34caaa575` |
+| `canon-eos-5d-mark-iii-colorbalancergb-contrast-plus.tif` | 194054 | `d61b8ea7a5a830405ece2de0331134e5493d6270e2ccf4ad5a8198a4ff6aa3c2` |
+| `canon-eos-5d-mark-iii-colorbalancergb-defaults-jzazbz.tif` | 190787 | `3899e58b6454f7805b9858fa5460d4010ebbdfd72d10536bc54ccf3b8707f70e` |
+| `canon-eos-5d-mark-iii-colorbalancergb-defaults-ucs.tif` | 190777 | `3e66eae88725001613957e20db8683e673145432f5c1ffb1d3fc95e664d235a9` |
+| `canon-eos-5d-mark-iii-colorbalancergb-hue-shift.tif` | 191077 | `6ba1cc9af87fa7ee77f03605340cc43e1fcd3b9124fd6bd587fbd1a9a678f1dc` |
+| `canon-eos-5d-mark-iii-colorbalancergb-masks.tif` | 191010 | `ac3dedf3aa23a09b2aab61d56c47b90dafce39eca56d409e638ad214db7a9661` |
+| `canon-eos-5d-mark-iii-colorbalancergb-preset-legacy.tif` | 193132 | `67a76034018d6382d109c14a5e2617c48cde0c838af9375483106112d09ef48d` |
+| `canon-eos-5d-mark-iii-colorbalancergb-preset-natural-skin.tif` | 193742 | `0975c735f0650c12701acf8683b3aba1b2607aea229342d36fad21cf2be4dafb` |
+| `canon-eos-5d-mark-iii-colorbalancergb-preset-standard.tif` | 193512 | `6aaff5eec0955a799165ab98f737a180756636ad9bb6ebd632ba69adbbbd7982` |
+| `canon-eos-5d-mark-iii-colorbalancergb-preset-vibrant-colors.tif` | 195045 | `aa44d667bb3adaf9c80d901c5f6fc6fb8ce30698bafd06bf3745048a706be1e8` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-global-jzazbz.tif` | 194589 | `7be0037d212cd0970477926e809c8aba1d072d3ed088d6272fae34e90575c8ff` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-global-ucs.tif` | 192826 | `645515039eb8c2b14687d93b1cba6a1b1be36c02574796a431fb098a60e4beb8` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-highlights-jzazbz.tif` | 190730 | `a2a79178a3f3b37fcfc4fc2aa82216ccb362f312c40a0a485a5cf2c382ce87e7` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-highlights-ucs.tif` | 190988 | `ddec292179149860ca8554cf4ed07cd038e3dd13eaa9a43cffc04a53ca6ebef4` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-midtones-jzazbz.tif` | 190314 | `c90104aa5e55d460e5f1430c5344db965f7ae1db3f7edd49e49a28789ba3e3cd` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-midtones-ucs.tif` | 190541 | `31f5743c963d10dbfe90548ca688531a6966a94713820e6d3fcb143ce1eeffca` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-shadows-jzazbz.tif` | 195236 | `0cc15fa1655582da9d64fa62f69679f054f2420a0038c635aeccab8188ba058f` |
+| `canon-eos-5d-mark-iii-colorbalancergb-saturation-shadows-ucs.tif` | 193436 | `05883d133bafd2e87763a1b1cc1fcae477af9a93d02c205cf02c6fa741720148` |
+| `canon-eos-5d-mark-iii-colorbalancergb-vibrance-minus.tif` | 188307 | `873acf306db3dcd86289b2766c06d8ef5fdfdcba1aeef7017fd35e1991ff5c56` |
+| `canon-eos-5d-mark-iii-colorbalancergb-vibrance-plus.tif` | 192385 | `bad2cb16ba234aebeccc484bb1f285b227e1ef2e5b0aa77edc54040048b01043` |
 | `canon-eos-5d-mark-iii-colorcal-adaptation-bradford.tif` | 400981 | `990169d410329c3f2788c38b601f6bc23a691016b0897c06f37e45d479f1d9ca` |
 | `canon-eos-5d-mark-iii-colorcal-adaptation-cat16.tif` | 400939 | `4fb14fedb6802e184442675e744ceb6a8b6f61da74c242520b286d6d35a61982` |
 | `canon-eos-5d-mark-iii-colorcal-adaptation-full-bradford.tif` | 401000 | `6543987f50d77f76e14d6287bf60085c6d19194a172715c6a4ee9b3dc437a151` |

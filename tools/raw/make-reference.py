@@ -247,13 +247,13 @@ def history_entry(num, operation, enabled, version, params):
 
 
 def develop_entries(demosaic, highlights="opposed", input_profile=DT_COLORSPACE_STANDARD_MATRIX, normalize=0,
-                    demosaic_options=None, highlights_options=None, extra=()):
+                    demosaic_options=None, highlights_options=None, extra=(), work_profile=DT_COLORSPACE_LIN_REC709):
     entries = [
         ("flip", 0, 2, flip_params()),
         ("highlights", 0 if highlights == "unclipped" else 1, 4, highlights_params(highlights, **(highlights_options or {}))),
         ("demosaic", 1, 6, demosaic_params(demosaic, **(demosaic_options or {}))),
-        ("colorin", 1, 7, colorin_params(input_profile, normalize)),
-        ("colorout", 1, 5, colorout_params()),
+        ("colorin", 1, 7, colorin_params(input_profile, normalize, work_profile)),
+        ("colorout", 1, 5, colorout_params(work_profile)),
     ]
     return entries + list(extra)
 
@@ -734,6 +734,172 @@ def contrastntexture_jobs():
     return jobs
 
 
+# dt_iop_colorbalancergb_params_t, version 5, in field order, with darktable's defaults; the last
+# field, saturation_formula, is an int (0 JzAzBz, 1 darktable UCS).
+COLORBALANCERGB_FIELDS = [
+    ("shadows_Y", 0.0), ("shadows_C", 0.0), ("shadows_H", 0.0),
+    ("midtones_Y", 0.0), ("midtones_C", 0.0), ("midtones_H", 0.0),
+    ("highlights_Y", 0.0), ("highlights_C", 0.0), ("highlights_H", 0.0),
+    ("global_Y", 0.0), ("global_C", 0.0), ("global_H", 0.0),
+    ("shadows_weight", 1.0), ("white_fulcrum", 0.0), ("highlights_weight", 1.0),
+    ("chroma_shadows", 0.0), ("chroma_highlights", 0.0), ("chroma_global", 0.0), ("chroma_midtones", 0.0),
+    ("saturation_global", 0.0), ("saturation_highlights", 0.0), ("saturation_midtones", 0.0),
+    ("saturation_shadows", 0.0), ("hue_angle", 0.0),
+    ("brilliance_global", 0.0), ("brilliance_highlights", 0.0), ("brilliance_midtones", 0.0),
+    ("brilliance_shadows", 0.0), ("mask_grey_fulcrum", 0.1845),
+    ("vibrance", 0.0), ("grey_fulcrum", 0.1845), ("contrast", 0.0),
+]
+COLORBALANCERGB_FORMULAS = {"jzazbz": 0, "ucs": 1}
+# init_presets() in src/iop/colorbalancergb.c: every other field at its default.
+COLORBALANCERGB_PRESETS = [
+    ("legacy", {"formula": "jzazbz", "chroma_global": 0.2, "saturation_shadows": 0.1,
+                "saturation_midtones": 0.05, "saturation_highlights": -0.05}),
+    ("natural-skin", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.30,
+                      "saturation_midtones": 0.0, "saturation_highlights": -0.5}),
+    ("vibrant-colors", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.5,
+                        "saturation_midtones": 0.0, "saturation_highlights": -0.25}),
+    ("standard", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.25,
+                  "saturation_midtones": 0.0, "saturation_highlights": -0.25}),
+]
+
+
+def colorbalancergb_params(formula="ucs", **fields):
+    unknown = set(fields) - {name for name, _ in COLORBALANCERGB_FIELDS}
+    if unknown:
+        raise ValueError("unknown colorbalancergb fields %s" % sorted(unknown))
+    values = [float(fields.get(name, default)) for name, default in COLORBALANCERGB_FIELDS]
+    return struct.pack("<%dfi" % len(values), *values, COLORBALANCERGB_FORMULAS[formula])
+
+
+def colour_balance_rgb_jobs():
+    """Color balance rgb on the CR2's crop, in darktable's linear Rec. 2020 working space.
+
+    Every job exports linear Rec. 2020. The "base" job is the same develop without the module:
+    NativeColorBalanceRGB_Test feeds it to ColorBalanceRGB in a linear Rec. 2020 project and
+    compares the result with each graded job. The base stays float, the test's input; the graded
+    jobs are stored as half float.
+    """
+    def develop(extra=()):
+        return develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=list(extra))
+
+    def graded(suffix, what, **params):
+        entry = ("colorbalancergb", 1, 5, colorbalancergb_params(**params))
+        return camera_job(CR2, "colorbalancergb-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
+                          "balance rgb %s" % (BASE_DEMOSAIC[CR2], what), develop([entry]), icc="LIN_REC2020",
+                          half=True)
+
+    jobs = [camera_job(CR2, "colorbalancergb-base", "demosaic %s, working space linear Rec. 2020, no color balance "
+                       "rgb" % BASE_DEMOSAIC[CR2], develop(), icc="LIN_REC2020")]
+    for name, fields in COLORBALANCERGB_PRESETS:
+        jobs.append(graded("preset-" + name, "preset %s %s" % (name, sorted(fields.items())), **fields))
+    for formula in ("jzazbz", "ucs"):
+        jobs.append(graded("defaults-" + formula, "defaults, %s" % formula, formula=formula))
+    # The 4 ways: luminance, chroma and hue of each wheel.
+    wheels = [("offset", "global", 0.02, 0.005, 40.0), ("lift", "shadows", 0.15, 0.2, 200.0),
+              ("gain", "highlights", -0.1, 0.1, 80.0), ("power", "midtones", 0.1, 0.05, 300.0)]
+    for name, field, y, c, h in wheels:
+        params = {field + "_Y": y, field + "_C": c, field + "_H": h}
+        jobs.append(graded("4ways-" + name, "%s %s" % (name, sorted(params.items())), **params))
+    for formula in ("jzazbz", "ucs"):
+        for kind in ("saturation", "brilliance"):
+            for zone, amount in (("global", 0.3), ("shadows", 0.4), ("midtones", -0.3), ("highlights", 0.5)):
+                field = "%s_%s" % (kind, zone)
+                jobs.append(graded("%s-%s-%s" % (kind, zone, formula), "%s %+g, %s" % (field, amount, formula),
+                                   formula=formula, **{field: amount}))
+    chroma = {"chroma_global": 0.2, "chroma_shadows": 0.3, "chroma_midtones": -0.2, "chroma_highlights": 0.4}
+    jobs.append(graded("chroma", "chroma %s" % sorted(chroma.items()), **chroma))
+    jobs.append(graded("hue-shift", "hue shift 25", hue_angle=25.0))
+    for sign, amount in (("plus", 0.4), ("minus", -0.4)):
+        jobs.append(graded("vibrance-" + sign, "vibrance %+g" % amount, vibrance=amount))
+        jobs.append(graded("contrast-" + sign, "contrast %+g" % amount, contrast=amount))
+    masks = {"shadows_weight": 2.0, "highlights_weight": 0.5, "mask_grey_fulcrum": 0.3, "white_fulcrum": 1.5,
+             "grey_fulcrum": 0.25, "shadows_Y": 0.2, "highlights_Y": -0.2, "midtones_Y": 0.1, "contrast": 0.2}
+    jobs.append(graded("masks", "mask and fulcrum controls %s" % sorted(masks.items()), **masks))
+    return jobs
+
+
+
+# dt_iop_colorequal_params_t, version 4, in field order, with darktable's defaults; use_filter is a
+# gboolean (int), every other field a float.
+COLOREQUAL_NODES = ["red", "orange", "yellow", "green", "cyan", "blue", "lavender", "magenta"]
+COLOREQUAL_FIELDS = ([("threshold", 0.1), ("smoothing_hue", 1.0), ("contrast", 0.0), ("white_level", 1.0),
+                      ("chroma_size", 1.5), ("param_size", 1.0), ("use_filter", 1)]
+                     + [("sat_" + n, 1.0) for n in COLOREQUAL_NODES]
+                     + [("hue_" + n, 0.0) for n in COLOREQUAL_NODES]
+                     + [("bright_" + n, 1.0) for n in COLOREQUAL_NODES]
+                     + [("hue_shift", 0.0)])
+
+
+def colorequal_nodes(kind, values):
+    return {"%s_%s" % (kind, n): v for n, v in zip(COLOREQUAL_NODES, values)}
+
+
+# init_presets() in src/iop/colorequal.c: every other field at its default.
+COLOREQUAL_PRESETS = [
+    ("bleach-bypass", dict(threshold=0.0, smoothing_hue=1.0, contrast=0.0, param_size=1.0, hue_shift=0.0,
+                           **colorequal_nodes("sat", [1 - .2215, 1 - .1772, 1 - .3861, 1 - .3924, 1 - .4557, 1 - .4177,
+                                                      1 - .2468, 1 - .2532]),
+                           **colorequal_nodes("hue", [15.46, 0.0, -2.21, 28.72, 16.57, 0.0, 0.0, 0.0]),
+                           **colorequal_nodes("bright", [.75, .75, .75, .65, .65, .75, .75, .75]))),
+    ("kodachrome-64-like", dict(threshold=0.193, smoothing_hue=1.0, contrast=-0.345, param_size=19.0, hue_shift=0.0,
+                                **colorequal_nodes("sat", [1.2390, 1.0377, 1 - .1761, 1 - .1635, 1 - .0126, 1.0126, 1.0,
+                                                           1.1384]),
+                                **colorequal_nodes("hue", [-2.20, -17.56, -3.29, 32.93, 14.27, 6.59, -7.68, 0.0]),
+                                **colorequal_nodes("bright", [1 - .0063, 1.1824, 1 - .1950, 1 - .2390, 1 - .2453,
+                                                              1.0377, 1 - .1572, 1 - .1384]))),
+    ("kodak-portra-400-like", dict(threshold=0.199, smoothing_hue=1.0, contrast=-0.375, param_size=1.0, hue_shift=-23.0,
+                                   **colorequal_nodes("sat", [1.0692, 1.0503, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+                                   **colorequal_nodes("hue", [9.88, -4.39, 15.37, 8.78, 2.20, -19.76, -3.29, 0.0]),
+                                   **colorequal_nodes("bright", [1.0881, 1.0629, 1.0629, 1 - .1069, 1 - .1069,
+                                                                 1 - .1006, 1 - .0189, 1.0]))),
+    ("teal-and-orange", dict(threshold=0.184, smoothing_hue=0.52, contrast=-0.3, param_size=1.0, hue_shift=0.0,
+                             **colorequal_nodes("sat", [1.1572, 1 - .0063, 1 - .3270, 1 - .0377, 1.0, 1.0126, 1.0, 1.0]),
+                             **colorequal_nodes("hue", [15.37, -24.15, 75.74, 42.81, 2.20, -36.22, 2.20, 42.81]),
+                             **colorequal_nodes("bright", [1.0] * 8))),
+]
+# Every node moved, the settings the option jobs start from.
+COLOREQUAL_BUSY = dict(**colorequal_nodes("hue", [20.0, -15.0, 10.0, 35.0, -25.0, 12.0, -8.0, 30.0]),
+                       **colorequal_nodes("sat", [1.3, 0.7, 1.1, 0.6, 1.4, 0.9, 1.2, 0.8]),
+                       **colorequal_nodes("bright", [1.2, 0.85, 1.1, 0.75, 1.15, 0.9, 1.05, 0.8]))
+
+
+def colorequal_params(**fields):
+    unknown = set(fields) - {name for name, _ in COLOREQUAL_FIELDS}
+    if unknown:
+        raise ValueError("unknown colorequal fields %s" % sorted(unknown))
+    values = [fields.get(name, default) for name, default in COLOREQUAL_FIELDS]
+    return struct.pack("<6fi25f", *[float(v) for v in values[:6]], int(values[6]), *[float(v) for v in values[7:]])
+
+
+def colour_equalizer_jobs():
+    """Color equalizer on the CR2's crop, in darktable's linear Rec. 2020 working space.
+
+    NativeColorEqualizer_Test feeds colour balance rgb's "base" job (the same develop without the
+    module) to ColorEqualizer in a linear Rec. 2020 project and compares the result with each job
+    away from the crop's edges, where darktable's guided filters saw the rest of the image. Stored
+    as half float.
+    """
+    def equalized(suffix, what, **params):
+        entry = ("colorequal", 1, 4, colorequal_params(**params))
+        develop = develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=[entry])
+        return camera_job(CR2, "colorequal-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
+                          "equalizer %s" % (BASE_DEMOSAIC[CR2], what), develop, icc="LIN_REC2020", half=True)
+
+    jobs = [equalized("defaults", "defaults")]
+    for i, node in enumerate(COLOREQUAL_NODES):
+        params = {"hue_" + node: 30.0 if i % 2 == 0 else -30.0, "sat_" + node: 1.4, "bright_" + node: 1.25}
+        jobs.append(equalized("node-" + node, "%s" % sorted(params.items()), **params))
+    options = [("busy", {}), ("filter-off", {"use_filter": 0}), ("node-placement", {"hue_shift": 15.0}),
+               ("hue-smoothing", {"smoothing_hue": 0.3}), ("threshold-contrast", {"threshold": 0.2, "contrast": 0.5}),
+               ("white-level", {"white_level": 4.0}), ("sizes", {"chroma_size": 6.0, "param_size": 12.0})]
+    for suffix, extra in options:
+        params = dict(COLOREQUAL_BUSY, **extra)
+        jobs.append(equalized(suffix, "every node moved, %s" % sorted(extra.items()), **params))
+    for name, fields in COLOREQUAL_PRESETS:
+        jobs.append(equalized("preset-" + name, "preset %s" % name, **fields))
+    return jobs
+
+
 def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc="LIN_REC709"):
     if os.path.exists(output):
         os.remove(output)
@@ -1164,7 +1330,8 @@ def revision(ref):
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + denoiseprofile_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs) + retouch_jobs() + toneequal_jobs() + contrastntexture_jobs())
+            + colour_calibration_jobs(coeffs) + retouch_jobs() + toneequal_jobs() + contrastntexture_jobs()
+            + colour_balance_rgb_jobs() + colour_equalizer_jobs())
 
 
 def main():

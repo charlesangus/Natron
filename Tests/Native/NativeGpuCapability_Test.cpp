@@ -41,7 +41,9 @@
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Clamp.h"
+#include "Engine/Nodes/Color/ColorBalanceRGB.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/ColorMatrix.h"
@@ -107,6 +109,8 @@ gpuCapableIds()
         PLUGINID_NATRON_INVERT,
         PLUGINID_NATRON_COLORLOOKUP,
         PLUGINID_NATRON_COLORCORRECT,
+        PLUGINID_NATRON_COLORBALANCERGB,
+        PLUGINID_NATRON_COLOREQUALIZER,
         PLUGINID_NATRON_CONSTANT,
         PLUGINID_NATRON_SOLID,
         PLUGINID_NATRON_CHECKERBOARD,

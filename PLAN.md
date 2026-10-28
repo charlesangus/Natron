@@ -215,7 +215,7 @@ future core work has solid ground to build on.
 | M115 | Build Speed And Artifact Size | done | - | bosley-native-nodes | E2 | [M115-build-speed-and-artifact-size.md](PLAN/MILESTONES/M115-build-speed-and-artifact-size.md) |
 | M113 | Native Warp Nodes | done | M120, M56 | bosley-native-nodes | E3 | [M113-native-node-rewrites-continued.md](PLAN/MILESTONES/M113-native-node-rewrites-continued.md) |
 | M120 | Native Node Port Kit | done | M85, M137 | bosley-native-nodes | E3 | [M120-native-node-port-kit.md](PLAN/MILESTONES/M120-native-node-port-kit.md) |
-| M121 | Native Routing And Mix | todo | M120, M101, M137 |  | E3 | [M121-native-routing-and-mix.md](PLAN/MILESTONES/M121-native-routing-and-mix.md) |
+| M121 | Native Routing And Mix | doing | M120, M101, M137 | bosley-native-nodes | E3 | [M121-native-routing-and-mix.md](PLAN/MILESTONES/M121-native-routing-and-mix.md) |
 | M122 | Native Colour Utilities | done | M120, M137 |  | E3 | [M122-native-colour-utilities.md](PLAN/MILESTONES/M122-native-colour-utilities.md) |
 | M123 | Native Sharpen And Glow | done | M120 |  | E3 | [M123-native-sharpen-and-glow.md](PLAN/MILESTONES/M123-native-sharpen-and-glow.md) |
 | M124 | Native Time Remaps | doing | M120 | bosley-native-nodes | E3 | [M124-native-time-remaps.md](PLAN/MILESTONES/M124-native-time-remaps.md) |

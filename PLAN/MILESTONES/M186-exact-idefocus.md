@@ -46,6 +46,7 @@ Exact per-pixel defocus (user, 2026-10-24: IBlur and IDefocus moved out of M131 
 
 ## Decisions
 
+- 2026-10-28: implemented (build pending; goldens to record). Map quantised to N+1 levels (N = clamp(ceil(4 × radius difference), 1, 1024)), per-level kernels cached; output Σw·v/Σw (outside-image sources add weight, not value; an untouched single-tap pixel keeps the source bit for bit). GPU: analytic kernels with halo ≤ 64; Image kernels and larger halos on the CPU. Size At Black 1-D (max 500, matching Defocus Size). XY components added for the Map input only.
 - 2026-10-25 — **Moved from M131 - Native Defocus Family (user):** IBlur went to M184 - Variable-Size Filter Kit and IDefocus here, so all I-nodes share one Map convention.
 
 **Verification gate:** the full build and ctest pass, including both IDefocus suites (GPU on lavapipe and RADV). Under Xvfb IDefocus with disc, 6-blade and image kernels and a roto Map is rendered on a highlight-rich fixture; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.

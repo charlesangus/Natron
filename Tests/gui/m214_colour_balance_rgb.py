@@ -38,6 +38,14 @@ try:
     import guitest as gt
     from guitest import check, report, require
 
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
     def node_graph_view():
         views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
         return views[0] if views else None
@@ -50,7 +58,7 @@ try:
             for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
                 try:
                     if w.text() == label:
-                        return panel
+                        return hold(panel)
                 except RuntimeError:
                     continue
         return None
@@ -95,15 +103,29 @@ try:
     def child_named(panel, name):
         for w in panel.findChildren(QWidget):
             if w.objectName() == name:
-                return w
+                return hold(w)
         return None
 
     def scroll_area_of(panel, widget):
+        """The QScrollArea inside panel that holds widget, found by walking widget's parents."""
+        w = widget.parentWidget()
+        while w is not None and w is not panel:
+            if isinstance(w, QScrollArea):
+                return hold(w)
+            w = w.parentWidget()
         for area in panel.findChildren(QScrollArea):
             content = area.widget()
             if content is not None and content.isAncestorOf(widget):
-                return area
+                return hold(area)
         return None
+
+    def parent_chain(widget):
+        names = []
+        w = widget
+        while w is not None:
+            names.append("%s(%s)" % (gt.class_name(w), w.objectName()))
+            w = w.parentWidget()
+        return " < ".join(names)
 
     def send_mouse(widget, kind, local, button, buttons):
         local = QPointF(local)
@@ -144,13 +166,16 @@ try:
         require(ok, "open ColorBalanceRGB's settings panel")
         yield ("sleep", 800)
         panel = panel_of(node)
+        require(panel is not None, "find ColorBalanceRGB's settings panel")
 
         # Before enlarge(): the tab must fit the panel as the default layout sizes it.
         check(show_tab(panel, "4 Ways"), "the panel has a 4 Ways tab")
         yield ("sleep", 300)
-        grid = child_named(panel_of(node), "ColorWheelGrid_wheels")
+        grid = child_named(panel, "ColorWheelGrid_wheels")
         if check(grid is not None and grid.isVisible(), "the 4 Ways tab shows the wheel grid"):
-            area = scroll_area_of(panel_of(node), grid)
+            area = scroll_area_of(panel, grid)
+            if area is None:
+                report("NOTE wheel grid parents: " + parent_chain(grid))
             if check(area is not None, "the wheel grid sits in the panel's scroll area"):
                 bar = area.verticalScrollBar()
                 report("NOTE 4 Ways viewport %dx%d, content %dx%d, scroll max %d" % (
@@ -158,13 +183,13 @@ try:
                     area.widget().width(), area.widget().height(), bar.maximum()))
                 check(not bar.isVisible() and bar.maximum() == 0,
                       "the 4 Ways tab fits the panel without a vertical scrollbar")
-            cells = [child_named(panel_of(node), "ColorWheelCell_%sChroma" % w) for w in WHEELS]
+            cells = [child_named(panel, "ColorWheelCell_%sChroma" % w) for w in WHEELS]
             if check(all(c is not None for c in cells), "the grid has a cell per wheel"):
                 pos = [grid.mapFromGlobal(c.mapToGlobal(QPoint(0, 0))) for c in cells]
                 check(pos[0].y() == pos[1].y() and pos[2].y() == pos[3].y() and pos[0].y() < pos[2].y()
                       and pos[0].x() < pos[1].x() and pos[2].x() < pos[3].x(),
                       "the wheels are laid out two to a row (offset, lift / gain, power)")
-        screen_crop("colorbalancergb_4ways_default", panel_of(node))
+        screen_crop("colorbalancergb_4ways_default", panel)
         enlarge(panel)
         yield ("sleep", 300)
 

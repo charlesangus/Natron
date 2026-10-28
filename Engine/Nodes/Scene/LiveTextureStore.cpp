@@ -372,7 +372,27 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
     // A render on the main thread would block the UI and could deadlock against it.
     QCoreApplication* app = QCoreApplication::instance();
     if (app && (QThread::currentThread() == app->thread())) {
-        return (int)sources.size();
+        // Warn rather than leave the consumer silently showing the fallback.
+        std::map<NodePtr, std::string> missingByConsumer;
+        int numMissing = 0;
+        for (const LiveTextureSource& source : sources) {
+            const std::string uri = source.getUri(frame);
+            if (contains(uri)) {
+                continue;
+            }
+            ++numMissing;
+            const NodePtr consumer = source.consumer.lock();
+            if (consumer) {
+                std::string& uris = missingByConsumer[consumer];
+                uris += (uris.empty() ? "" : ", ") + uri;
+            }
+        }
+        for (const std::pair<const NodePtr, std::string>& missing : missingByConsumer) {
+            missing.first->setPersistentMessage(eMessageTypeWarning,
+                                                "The live textures " + missing.second + " are not rendered on the main thread and show the renderer's fallback.");
+        }
+
+        return numMissing;
     }
 
     int numFailed = 0;

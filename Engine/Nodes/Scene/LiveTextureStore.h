@@ -164,9 +164,9 @@ public:
     /**
      * @brief Renders the texture of every source in sources at frame that the store lacks, and
      * waits for them: each on a thread of its own, so a caller in the middle of a render (USDRender)
-     * keeps its render state. Does nothing on the main thread, which must never wait on a render. A
-     * texture that cannot be rendered stays missing, which Storm shows as its fallback, and its
-     * consumer gets a warning. Returns how many it could not render.
+     * keeps its render state. Renders nothing on the main thread, which must never wait on a render.
+     * A texture that cannot be rendered, there or elsewhere, stays missing, which Storm shows as its
+     * fallback, and its consumer gets a warning. Returns how many it could not render.
      **/
     int prepare(const LiveTextureSourceList& sources,
                 double frame,

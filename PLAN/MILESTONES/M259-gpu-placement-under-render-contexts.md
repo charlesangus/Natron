@@ -63,5 +63,6 @@ Split out of M180 - Loop Block Core (2026-10-27). M178 - Render Context Core kep
 
 ## Decisions
 
+- 2026-10-28: phases 1–2 green (run 40641533964): NativeGpuContext and NativeLoopFoldGpu pass on lavapipe. Fold helper lives in LoopFold (shared by LoopBegin's exact forward copy); canRenderOnGpu checks only the scheduler mode (frame-store check in renderGpu); a missing step k−1 on the device falls back to CPU; mean not bit-exact (Vulkan division 2.5 ULP), kernels use `precise`. Remaining gate: 64-iteration 4K timing on the GPU host (UAT doc build/appimages/M259-uat.md).
 - 2026-10-28: P1 implemented (build pending). ContextFrameArgsScope alone mirrors the CPU path (it opens ActionContextScope). Context inputs reach nodes as GpuContextInput (layer + view), queried with inputNb == kContextRequestInputNb; a node that reads a −3 edge but can't name its layer stays on the CPU.
 - 2026-10-28: elaborated (consultant). Branch stacks on M182 - Loop Feedback (feedback chain). Strip partitioning inside a fold region relies on the existing strip halving, with P2.T3's capped-budget test as proof.

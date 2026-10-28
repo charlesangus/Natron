@@ -42,6 +42,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpAlign.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Project.h"
 #include "Engine/RotoItem.h"
 
@@ -152,8 +153,14 @@ TEST_F(SplineWarpAlignTest, ARotatedRestartedReversedCopyIsFound)
     const SplineWarpAlignment alignment = computeSplineWarpAlignment(*source, *destination, kTime);
 
     EXPECT_TRUE(alignment.reversed);
-    // A rotation reads partly as a slide along the curve: about 0.09 here.
-    EXPECT_LT(wrappedDistance(2., alignment.startOffset, 5), 0.15) << alignment.startOffset;
+    // A rotation by angle reads partly as a slide along the curve of about angle * 2 * area /
+    // perimeter in arc length: 5 of the 441 units here. It is checked in arc length because the
+    // corner points have no tangents, so parameter speed eases to zero at each end of a segment
+    // and that slide is about 0.18 of a parameter step into the 61-unit segment 2.
+    const SplineWarpCurveShape destinationShape = SplineWarpCurveShape::fromBezier(*destination, kTime);
+    const double perimeter = destinationShape.getLength();
+    const double slide = std::fabs(destinationShape.arcLengthAtParam(alignment.startOffset) - destinationShape.arcLengthAtParam(2.));
+    EXPECT_LT(std::min(slide, perimeter - slide), 8.) << alignment.startOffset;
 
     // Linking applies it unless the pair is a duplicate.
     SplineWarpLinkPtr link = _ctx->link(source, destination);

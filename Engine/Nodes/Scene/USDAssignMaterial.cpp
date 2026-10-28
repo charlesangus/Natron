@@ -281,8 +281,11 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             warnings += tr("There is no material to bind: connect the Material input or set Material Path. The scene is "
                            "passed through unchanged.");
             roots.clear();
-        } else if (!materialConnected && !stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath)).IsA<PXR_NS::UsdShadeMaterial>()) {
-            warnings += tr("%1 is not a material in the input scene; the binding is authored anyway.").arg(QString::fromStdString(materialPath));
+        } else if (!materialConnected) {
+            const PXR_NS::UsdPrim materialPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath));
+            if (!materialPrim || !materialPrim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                warnings += tr("%1 is not a material in the input scene; the binding is authored anyway.").arg(QString::fromStdString(materialPath));
+            }
         }
     }
 

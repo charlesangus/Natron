@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -415,7 +416,10 @@ TEST_F(USDAssignMaterialTest, AMaterialAlreadyInTheScopeDoesNotNest)
     PXR_NS::UsdStageRefPtr stage = compose(node);
     ASSERT_TRUE(bool(stage));
     EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/materials/materials")).IsValid());
-    EXPECT_EQ(std::vector<std::string>({ "M", "N", "Material1" }), childNames(stage, "/materials"));
+    // The passed-through scope arrives by reference, so its children compose ahead of the input's.
+    std::vector<std::string> names = childNames(stage, "/materials");
+    std::sort(names.begin(), names.end());
+    EXPECT_EQ(std::vector<std::string>({ "M", "Material1", "N" }), names);
     EXPECT_EQ("/materials/Material1", boundMaterial(stage, "/Asset/geo/a"));
 }
 

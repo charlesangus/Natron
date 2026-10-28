@@ -52,12 +52,11 @@ CI publishes the image to GitHub Container Registry as
 `ghcr.io/charlesangus/natron-dev:<content hash>`. The package is public, so
 pulling needs no login. The tag is the first 16 hex characters of a SHA-256
 over `tools/ci/local/Dockerfile`, `cmake/FetchSlang.cmake`,
-`cmake/FetchGlslang.cmake`, `tools/ci/local/install-git-lfs.sh` and
-`tools/ci/local/build-moonray.sh`, the files that decide the image's contents,
-so
-an unchanged image is published once and every checkout with the same files
-resolves to the same tag. `tools/ci/local/dev-image-tag.sh` is the single
-definition of that tag; `devshell.sh` and the workflows all call it:
+`cmake/FetchGlslang.cmake`, `tools/ci/local/install-git-lfs.sh`,
+`tools/ci/local/build-cycles.sh` and `tools/ci/local/build-moonray.sh`, the files
+that decide the image's contents, so an unchanged image is published once and
+every checkout with the same files resolves to the same tag.
+`tools/ci/local/dev-image-tag.sh` is the single definition of that tag; `devshell.sh` and the workflows all call it:
 
 ```
 tools/ci/local/dev-image-tag.sh
@@ -143,6 +142,33 @@ It runs as the "Slang and glslang pins match local image" step of
 `.github/workflows/checks.yml`, so a PR
 that bumps one side without the other fails. Bump both together; the
 content-hash tag then changes and the next CI run publishes a new image.
+
+### Cycles layer
+
+The image carries the Cycles Hydra render delegate, CPU devices only.
+`tools/ci/local/build-cycles.sh` fetches the upstream standalone Cycles release
+(`blender/cycles`, Apache-2.0) at the tag and SHA-256 the `Dockerfile`'s
+`ARG NATRON_CYCLES_VERSION` / `NATRON_CYCLES_SHA256` pin, builds only the
+`hdCycles` target against the image's own USD, OpenImageIO, OpenEXR, TBB,
+Embree and OpenImageDenoise, and installs it into USD's plug-in directory:
+
+- `/usr/local/plugin/usd/hdCycles.so`
+- `/usr/local/plugin/usd/hdCycles/resources/plugInfo.json`
+- `/usr/local/plugin/usd/hdCycles/LICENSE`
+
+USD discovers it there like `hdStorm`, so neither Natron nor its tests set
+`PXR_PLUGINPATH_NAME`, and `tools/release/stage-bundle.sh` ships it with the
+rest of `plugin/usd`. The script fails the image build when the delegate links
+a library from outside the image's prefixes, links epoxy, or pulls in two
+versions of one library. It is the image's slowest layer (the CPU kernels), so
+it sits first after `FROM`; a change to any later layer reuses it from a local
+layer cache, but a CI runner without that cache rebuilds it with every image.
+
+`NATRON_CYCLES_OIDN=OFF` builds without the OpenImageDenoise denoiser, which
+removes OpenImageDenoise (about 45 MB compressed) from the AppImage.
+
+To bump Cycles, set the new tag, then the SHA-256 of
+`https://github.com/blender/cycles/archive/refs/tags/<tag>.tar.gz`.
 
 ### If the pull fails partway through
 

@@ -350,6 +350,29 @@ while IFS= read -r staged_usd_plugin; do
     stage_elf "$staged_usd_plugin"
 done < <(find "$STAGE_DIR/plugin/usd" -type f -name "*.so" 2>/dev/null)
 
+# OpenImageDenoise, linked by the Cycles delegate and by MoonRay's denoiser, dlopen()s its device
+# modules from the directory its core library was loaded from, so the ldd walk below never reaches
+# them. The source install is asked, because a staged copy may already resolve the core library
+# inside the stage. The CPU module goes into lib/, where the walk puts the core library, once; the
+# GPU modules stay out, as both delegates are CPU-only.
+stage_oidn_cpu_modules() {
+    local linker="$1" oidn_core oidn_module oidn_modules=0
+    oidn_core="$(ldd "$linker" 2>/dev/null |
+        sed -n 's/.*libOpenImageDenoise_core[^ ]* => \(\/[^ ]*\) .*/\1/p' | head -n 1 || true)"
+    [[ -n "$oidn_core" ]] || return 0
+    for oidn_module in "$(dirname "$oidn_core")"/libOpenImageDenoise_device_cpu.so*; do
+        [[ -f "$oidn_module" && ! -L "$oidn_module" ]] || continue
+        [[ -f "$STAGE_DIR/lib/$(basename "$oidn_module")" ]] ||
+            stage_library "$oidn_module" "$(basename "$oidn_module")"
+        oidn_modules=$((oidn_modules + 1))
+    done
+    if [[ "$oidn_modules" == 0 ]]; then
+        echo "error: no OpenImageDenoise CPU device module next to $oidn_core" >&2
+        exit 1
+    fi
+}
+stage_oidn_cpu_modules "$USD_PREFIX/plugin/usd/hdCycles.so"
+
 # "import pxr" from Natron's Python. usdview is left out: it is an application,
 # and its GUI needs PySide6 modules the bundle does not ship.
 copy_tree "$PY_SITELIB/pxr" "$PY_DEST/site-packages/pxr" --exclude='./Usdviewq'
@@ -469,23 +492,7 @@ if [[ -n "$MOONRAY_PREFIX" && -f "$MOONRAY_PREFIX/plugin/pxr/plugInfo.json" ]]; 
         patchelf --set-rpath "\$ORIGIN/${moonray_up}lib:\$ORIGIN/${moonray_up}moonray/lib64" "$staged_moonray_file"
     done < <(find "$MOONRAY_DEST" -type f 2>/dev/null)
 
-    # MoonRay's denoiser links OpenImageDenoise, which dlopen()s its device modules from the
-    # directory of its core library; the ldd walk never reaches them. CPU only, like the delegate.
-    oidn_core="$(ldd "$MOONRAY_PREFIX"/lib64/libdenoiser.so 2>/dev/null |
-        sed -n 's/.*libOpenImageDenoise_core[^ ]* => \(\/[^ ]*\) .*/\1/p' | head -n 1 || true)"
-    if [[ -n "$oidn_core" ]]; then
-        oidn_modules=0
-        for oidn_module in "$(dirname "$oidn_core")"/libOpenImageDenoise_device_cpu.so*; do
-            [[ -f "$oidn_module" && ! -L "$oidn_module" ]] || continue
-            [[ -f "$STAGE_DIR/lib/$(basename "$oidn_module")" ]] ||
-                stage_library "$oidn_module" "$(basename "$oidn_module")"
-            oidn_modules=$((oidn_modules + 1))
-        done
-        if [[ "$oidn_modules" == 0 ]]; then
-            echo "error: no OpenImageDenoise CPU device module next to $oidn_core" >&2
-            exit 1
-        fi
-    fi
+    stage_oidn_cpu_modules "$MOONRAY_PREFIX/lib64/libdenoiser.so"
 else
     echo "warning: no MoonRay install in $BUILD_DIR's configuration; the bundle ships no MoonRay" >&2
 fi

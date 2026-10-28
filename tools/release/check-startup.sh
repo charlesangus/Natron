@@ -306,6 +306,15 @@ for extension in ("usda", "usdc", "abc"):
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
 
+# USD only dlopen()s the Cycles render delegate when a render asks for it, so load it here: that
+# resolves its whole library closure from the bundle, with LD_LIBRARY_PATH unset.
+cycles_plugin = Plug.Registry().GetPluginWithName("hdCycles")
+if not cycles_plugin:
+    fail("OpenUSD has no hdCycles plug-in registered; plugin/usd/hdCycles is missing "
+         "(built in a natron-dev container older than its Cycles layer?)")
+if not cycles_plugin.Load():
+    fail("the hdCycles plug-in at %s did not load" % cycles_plugin.path)
+
 # Natron registers a bundled MoonRay at start-up and points its search paths into the bundle.
 # Loading the delegate resolves its whole library closure from the bundle, LD_LIBRARY_PATH unset.
 moonray_dir = os.path.join(BUNDLE, "moonray")
@@ -325,6 +334,11 @@ if os.path.isdir(moonray_dir):
             fail("%s starts with %r, not the bundle's moonray/%s" % (variable, first, entry))
     if not os.access(os.path.join(moonray_dir, "bin", "execComp"), os.X_OK):
         fail("the bundle ships moonray/ without its execComp render process")
+
+# Cycles and MoonRay's denoiser share one OpenImageDenoise, which dlopen()s its CPU device module.
+oidn_core = glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_core.so*"))
+if oidn_core and not glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_device_cpu.so*")):
+    fail("the bundle ships OpenImageDenoise without its CPU device module")
 
 fontconfig_path = os.environ.get("FONTCONFIG_PATH", "")
 if not fontconfig_path.startswith(BUNDLE + os.sep):

@@ -58,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
@@ -1190,7 +1191,9 @@ GuiApplicationManager::releaseSceneViewEngines()
         }
         const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
         for (ViewerTab* viewer : viewers) {
-            if (SceneViewport* view = viewer->getSceneViewport()) {
+            SceneViewport* view = viewer->getSceneViewport();
+            // Other delegates hold host memory, not the GPU's.
+            if (view && RenderDelegates::isStorm(view->getRenderer().getRendererId())) {
                 view->releaseEngine();
             }
         }

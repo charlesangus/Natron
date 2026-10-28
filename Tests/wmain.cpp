@@ -10,6 +10,7 @@
 #include "Engine/CLArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/LibraryBinary.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
@@ -227,6 +228,9 @@ GTEST_API_ int main(int argc, char **argv)
         return RUN_ALL_TESTS();
     }
     PerProcessUserDirs userDirs;
+    // A renderer whose library is missing, for the tests of unavailable delegates. Hydra
+    // discovers its renderers once, so it is registered before anything can ask for them.
+    RenderDelegates::registerPluginDirectory(NATRON_TESTS_FIXTURES_DIR "/renderDelegates");
     appendTestOfxPluginDir();
     applyTestRetiredOfxIds();
     applyTestPlaneChoiceTakeOvers();

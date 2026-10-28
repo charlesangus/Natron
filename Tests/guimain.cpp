@@ -35,6 +35,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/CLArgs.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 
 #include "PerProcessUserDirs.h"
 #include "TestOfxPluginPath.h"
@@ -91,6 +92,9 @@ main(int argc, char** argv)
     }
     int retval;
     PerProcessUserDirs userDirs;
+    // A renderer whose library is missing, for the viewer's renderer tests; registered before
+    // Hydra's one discovery of its renderers.
+    RenderDelegates::registerPluginDirectory(NATRON_TESTS_FIXTURES_DIR "/renderDelegates");
     appendTestOfxPluginDir();
     applyTestPlaneChoiceTakeOvers();
     {

@@ -532,8 +532,7 @@ NativeRead::frameListing(bool proxy) const
     std::string pattern;
 
     if (filename) {
-        pattern = filename->getValue();
-        getApp()->getProject()->canonicalizePath(pattern);
+        pattern = filename->getResolvedPath();
     }
     std::uint64_t invalidations = 0;
     {

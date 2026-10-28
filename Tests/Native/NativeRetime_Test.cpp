@@ -453,6 +453,57 @@ TEST_F(NativeRetimeTest, FrameRangeFollowsTheNewRange)
     expectFrameRange(retime, 101., 120.);
 }
 
+// A new Retime takes its ends from the input's frame range, so it is the identity on a plate that
+// does not start at 1; an edited end then maps as set.
+TEST_F(NativeRetimeTest, NewRetimeStartsAtTheInputsFrameRange)
+{
+    NodePtr retime = createOver(PLUGINID_NATRON_RETIME, PLUGIN_MAJOR_NATRON_RETIME, createSource(1001, 1100));
+    ASSERT_TRUE(bool(retime));
+    EXPECT_DOUBLE_EQ(1001., doubleKnob(retime, kRetimeParamOriginalIn)->getValue());
+    EXPECT_DOUBLE_EQ(1001., doubleKnob(retime, kRetimeParamNewIn)->getValue());
+    EXPECT_DOUBLE_EQ(1100., doubleKnob(retime, kRetimeParamOriginalOut)->getValue());
+    EXPECT_DOUBLE_EQ(1100., doubleKnob(retime, kRetimeParamNewOut)->getValue());
+    expectFrameRange(retime, 1001., 1100.);
+    EXPECT_DOUBLE_EQ(1050., sourceAt(retime, 1050.));
+    expectInputAt(retime, 1050., 1050.);
+
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 1.);
+    EXPECT_DOUBLE_EQ(1001., sourceAt(retime, 1.));
+    expectInputAt(retime, 1., 1001.);
+    expectFrameRange(retime, 1., 100.);
+}
+
+// Until an end is edited a new input moves the ends to its frame range; after, they stay.
+TEST_F(NativeRetimeTest, EndsFollowANewInputUntilEdited)
+{
+    NodePtr first = createSource(1001, 1100);
+    NodePtr retime = createOver(PLUGINID_NATRON_RETIME, PLUGIN_MAJOR_NATRON_RETIME, first);
+    ASSERT_TRUE(bool(retime));
+    KnobBoolPtr edited = std::dynamic_pointer_cast<KnobBool>(retime->getKnobByName(kRetimeParamRangeEdited));
+    ASSERT_TRUE(bool(edited));
+    EXPECT_TRUE(edited->getIsSecret());
+    EXPECT_FALSE(edited->getValue());
+
+    // A different speed is not an edit of the ends.
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
+    NodePtr second = createSource(11, 30);
+    disconnectNodes(first, retime, true);
+    connectNodes(second, retime, 0, true);
+    EXPECT_FALSE(edited->getValue());
+    EXPECT_DOUBLE_EQ(11., doubleKnob(retime, kRetimeParamOriginalIn)->getValue());
+    EXPECT_DOUBLE_EQ(11., doubleKnob(retime, kRetimeParamNewIn)->getValue());
+    expectFrameRange(retime, 11., 21.);
+
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 5.);
+    EXPECT_TRUE(edited->getValue());
+    disconnectNodes(second, retime, true);
+    connectNodes(first, retime, 0, true);
+    EXPECT_DOUBLE_EQ(5., doubleKnob(retime, kRetimeParamNewIn)->getValue());
+    // Original In is the user's too once any end is edited.
+    EXPECT_DOUBLE_EQ(11., doubleKnob(retime, kRetimeParamOriginalIn)->getValue());
+    EXPECT_DOUBLE_EQ(11., sourceAt(retime, 5.));
+}
+
 // A derived end shows the range the mappings resolve and edits to it are reset, so the hash sweep
 // exempts New Out; with its mapping on it is a render parameter and must move the hash.
 TEST_F(NativeRetimeTest, MappedEndsMoveTheHash)

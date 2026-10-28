@@ -3,7 +3,11 @@
 Changes the speed of the input. Two mappings place the input on the output's timeline: the in
 mapping puts input frame `originalIn` at output frame `newIn`, the out mapping puts `originalOut`
 at `newOut`. An original end whose mapping is off is the input's frame range end (or the knob
-value, 1 or 100 by default, for an input without a frame range). The new range follows from the
+value, 1 or 100 by default, for an input without a frame range). Until one of the four ends is
+edited, connecting an input sets `originalIn` and `newIn` to its first frame and `originalOut` and
+`newOut` to its last, so a new Retime at speed 1 is the identity on any input; a hidden
+`rangeEdited`, saved with the node, records the first edit (an edit that only writes the input's
+own range does not count), and loading a project never resets the ends. The new range follows from the
 mappings and the speed, with `length = originalOut - originalIn`:
 
 - In mapping only (the default): `newOut = newIn + length / |speed(newIn)|`.
@@ -48,8 +52,9 @@ is shared with TimeWarp, which remaps time through a curve instead.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `originalIn`, `newIn`, `useInMapping` | 1, 1, on | Input frame `originalIn` lands on `newIn` |
-| `originalOut`, `newOut`, `useOutMapping` | 100, 100, off | Input frame `originalOut` lands on `newOut` |
+| `originalIn`, `newIn`, `useInMapping` | input's first frame (1 without one), on | Input frame `originalIn` lands on `newIn` |
+| `originalOut`, `newOut`, `useOutMapping` | input's last frame (100 without one), off | Input frame `originalOut` lands on `newOut` |
+| `rangeEdited` (hidden) | off | Set by the first edit of an end; until then a new input resets them |
 | `speed` | 1 | Input frames per output frame; animates; fixed with both mappings |
 | `reverse` | off | Play the input range backwards; animates |
 | `before`, `after` | Hold | What frames outside the output range read |
@@ -60,10 +65,10 @@ Port audit (every OFX and Nuke control):
 
 | OFX (net.sf.openfx.Retime) | Nuke (Retime) | Natron knob | Default | Status |
 |---|---|---|---|---|
-| (none) | `input.first`, `input.first_lock` | `originalIn`, `useInMapping` | 1, on | mapped; the lock is the mapping toggle |
-| (none) | `input.last`, `input.last_lock` | `originalOut`, `useOutMapping` | 100, off | mapped; the lock is the mapping toggle |
-| (none) | `output.first`, `output.first_lock` | `newIn` (toggled by `useInMapping`) | 1 | mapped |
-| (none) | `output.last`, `output.last_lock` | `newOut` (toggled by `useOutMapping`) | 100 | mapped |
+| (none) | `input.first`, `input.first_lock` | `originalIn`, `useInMapping` | input's first, on | mapped; the lock is the mapping toggle |
+| (none) | `input.last`, `input.last_lock` | `originalOut`, `useOutMapping` | input's last, off | mapped; the lock is the mapping toggle |
+| (none) | `output.first`, `output.first_lock` | `newIn` (toggled by `useInMapping`) | input's first | mapped |
+| (none) | `output.last`, `output.last_lock` | `newOut` (toggled by `useOutMapping`) | input's last | mapped |
 | `speed` | `speed` | `speed` | 1 | mapped |
 | `reverseInput` | `reverse` | `reverse` | off | mapped; animates, as in OFX |
 | (none) | `before`, `after` | `before`, `after` | Hold | mapped |

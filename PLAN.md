@@ -184,7 +184,7 @@ future core work has solid ground to build on.
 | M252 | MoonRay Rendering | doing | M248, M250 | bosley-native-nodes | E9 | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
 | M253 | Delegate Render Settings | doing | M251, M252 | bosley-native-nodes | E9 | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
 | M254 | Progressive Viewer Render | doing | M248, M251 | bosley-native-nodes | E9 | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
-| M255 | Delegate Output Spikes | doing | M251, M252 | bosley-native-nodes | E9 | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
+| M255 | Delegate Output Spikes | blocked | M251, M252 | bosley-native-nodes | E9 | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |

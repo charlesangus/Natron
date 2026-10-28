@@ -71,7 +71,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 124.1: Blend nodes
 
-- [ ] M125.P1.T1 — Native FrameBlend on the CPU
+- [x] M125.P1.T1 — Native FrameBlend on the CPU
   - files: `Engine/Nodes/Time/FrameBlend.{h,cpp}` (new), `Engine/Nodes/Time/FrameBlend.reg.inc`, `Tests/Native/NativeFrameBlend_Test.cpp` (new)
   - approach:
     - Relative or absolute range, interval, operation, decay, and output count to alpha.
@@ -80,7 +80,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover each operation, the interval, decay, absolute mode and the single-frame identity, under both scheduler modes. Runs at the phase build.
   - size: L
 
-- [ ] M125.P1.T2 — Native TimeBlur and NoTimeBlur on the CPU
+- [x] M125.P1.T2 — Native TimeBlur and NoTimeBlur on the CPU
   - files: `Engine/Nodes/Time/TimeBlur.{h,cpp}` (new), `Engine/Nodes/Time/NoTimeBlur.{h,cpp}` (new), `Engine/Nodes/Time/{NoTimeBlur,TimeBlur}.reg.inc`, `Tests/Native/NativeTimeBlur_Test.cpp` (new)
   - approach:
     - TimeBlur takes divisions, shutter and shutter offset (centred, start, end, custom), and averages fractional sample times.
@@ -88,7 +88,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover the sample times for each offset mode, the identity at shutter 0, and NoTimeBlur upstream of TimeBlur collapsing the samples to integral frames. Runs at the phase build.
   - size: M
 
-- [ ] M125.P1.T3 — FrameBlend and TimeBlur on the GPU
+- [x] M125.P1.T3 — FrameBlend and TimeBlur on the GPU
   - files: `Engine/Gpu/Kernels/timeblend.slang`, `Engine/Gpu/Kernels/timeblend.cmake`, `Engine/Nodes/Time/FrameBlend.cpp`, `Engine/Nodes/Time/TimeBlur.cpp`, `Tests/Native/NativeFrameBlendGpu_Test.cpp` (new)
   - approach:
     - Extend M124 - Native Time Remaps's N-view blend with the operation modes (min, max, sum, over) and per-view weights for decay.
@@ -99,7 +99,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 124.2: AppendClip and SlitScan
 
-- [ ] M125.P2.T1 — Native AppendClip
+- [x] M125.P2.T1 — Native AppendClip
   - files: `Engine/Nodes/Time/AppendClip.{h,cpp}` (new), `Engine/Nodes/Time/AppendClip.reg.inc`, `Tests/Native/NativeAppendClip_Test.cpp` (new)
   - approach:
     - 64 optional inputs (the Dissolve pattern), `first_frame`, fade in, fade out and cross-dissolve.
@@ -108,7 +108,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover three clips with a cross-dissolve, fades, a disconnected middle input, and the reported range. Runs at the phase build.
   - size: M
 
-- [ ] M125.P2.T2 — Native SlitScan
+- [x] M125.P2.T2 — Native SlitScan
   - files: `Engine/Nodes/Time/SlitScan.{h,cpp}` (new), `Engine/Nodes/Time/SlitScan.reg.inc`, `Tests/Native/NativeSlitScan_Test.cpp` (new)
   - approach:
     - Horizontal slit, vertical slit, or retime map from a second input's channel (via the standard channel knob), with offset, gain, absolute mode and the Nearest or Linear filter.
@@ -116,7 +116,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: tests cover each mode on a synthetic frame-numbered sequence, the Linear filter between frames, and clamping to the window. Runs at the phase build.
   - size: L
 
-- [ ] M125.P2.T3 — AppendClip and SlitScan on the GPU
+- [x] M125.P2.T3 — AppendClip and SlitScan on the GPU
   - files: `Engine/Gpu/Kernels/slitscan.slang` (new), `Engine/Gpu/Kernels/slitscan.cmake`, `Engine/Nodes/Time/SlitScan.cpp`, `Engine/Nodes/Time/AppendClip.cpp`, `Tests/Native/NativeSlitScanGpu_Test.cpp` (new)
   - approach:
     - SlitScan uses a frame-array gather over the window's views, reading the per-pixel time from the map view.
@@ -126,7 +126,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Phase 124.3: Retirement and measurement
 
-- [ ] M125.P3.T1 — Retire the OFX multi-frame nodes, TimeDissolve and TimeBuffer, and fix references
+- [x] M125.P3.T1 — Retire the OFX multi-frame nodes, TimeDissolve and TimeBuffer, and fix references
   - files: `Engine/OfxRetired/<ofx-plugin-id>` (one per retired ID), `Engine/EffectInstance.h`, `Engine/OfxEffectInstance.cpp`, `Engine/OfxParamInstance.cpp`
   - approach:
     - Add an `Engine/OfxRetired/<ofx-plugin-id>` marker for each of FrameBlend, TimeBlur, NoTimeBlur, AppendClip, SlitScan, TimeDissolve, TimeBufferRead and TimeBufferWrite.
@@ -134,7 +134,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the retired IDs don't load and `git grep` finds no live use of them outside the `Engine/OfxRetired/` markers.
   - size: M
 
-- [ ] M125.P3.T2 — Repoint tests and bench comps at the native nodes
+- [x] M125.P3.T2 — Repoint tests and bench comps at the native nodes
   - files: `Tests/FrameGraphBuild_Test.cpp`, `Tests/SchedulerEquivalence_Test.cpp`, `Tests/GpuResidency_Test.cpp`, `Tests/TimeVaryingLayers_Test.cpp`, `tools/bench/comps/build_comps.py`
   - approach:
     - Replace the OFX FrameBlend, TimeBlur and TimeDissolve uses with the native nodes, or with Dissolve where TimeDissolve was used.

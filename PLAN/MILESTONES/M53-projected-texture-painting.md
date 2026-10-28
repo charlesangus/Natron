@@ -13,13 +13,13 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
 
 ## Phase 53.1: CPU raster substrate
 
-- [ ] M53.P1.T1 — `SceneRaster`: camera-space z-buffer and UV-space bake over a composed stage
+- [x] M53.P1.T1 — `SceneRaster`: camera-space z-buffer and UV-space bake over a composed stage
   - files: `Engine/Nodes/Scene/SceneRaster.h`/`.cpp`, `Tests/SceneRaster_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: pure-CPU triangle rasterizer, no GL. Input: composed `UsdStage` (via `StageCache`), `UsdTimeCode`, prim set. Triangulate `UsdGeomMesh` faces with Hydra's `HdMeshUtil` (ships in the USD lib; handles n-gons and primvar index remapping). Mode A, camera: given a `UsdGeomCamera` path and a resolution, write depth, prim id and world position per pixel with a z-test. Mode B, UV bake: given one prim, its `st` primvar name and a resolution, rasterize triangles in UV space and write world position and world normal per texel, plus a coverage mask. Parallel over scanline chunks (reuse `NativeEffectBase::makeDeepScanlineChunks`' partition shape). Subdivision surfaces rasterize their control cage (documented limitation).
   - verify: unit tests on hand-authored `.usda` — a unit quad facing the camera fills the expected pixel rect with monotonic depth; a UV-mapped quad bakes a full 0–1 coverage mask whose corner texels carry the quad's corner world positions.
   - size: L
 
-- [ ] M53.P1.T2 — Primvar interpolation and UDIM tile selection in the UV bake
+- [x] M53.P1.T2 — Primvar interpolation and UDIM tile selection in the UV bake
   - files: `Engine/Nodes/Scene/SceneRaster.cpp`, `Tests/SceneRaster_Test.cpp`
   - approach: handle `faceVarying`, `vertex` and `varying` `st` (indexed or not) through `HdMeshUtil`'s primvar remap; add a UDIM tile parameter so the bake covers tile `1001 + u + 10*v` — UV values are offset by the tile origin before rasterization. Missing `st` sets a node error naming the prim.
   - verify: unit test — the same quad with `faceVarying` indexed `st` bakes identically to the `vertex` case; a quad whose UVs lie in tile 1002 bakes empty at 1001 and full at 1002.
@@ -27,7 +27,7 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
 
 ## Phase 53.2: Nodes
 
-- [ ] M53.P2.T1 — `ProjectTexture` node: scene + image → UV-space image
+- [x] M53.P2.T1 — `ProjectTexture` node: scene + image → UV-space image
   - files: `Engine/Nodes/Scene/ProjectTexture.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/ProjectTexture_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: inputs: Scene, Image (the thing to project; typically a `USDRender` + paint, or any image). Knobs: camera path, `PrimSelector` (first match is the bake target), `st` primvar name, UDIM tile, output resolution, occlusion on/off with a depth bias, edge dilation in texels. Render (output kind **image**, RoD = resolution): UV-bake the prim with `SceneRaster`; for each covered texel project its world position through the camera into the input image's pixel space and sample bilinearly; texels occluded per the camera z-buffer, off-screen, or back-facing get alpha 0; dilate the result by N texels so bilinear texture filtering doesn't bleed black. The input image is fetched for the camera's full frame at the project format. Result is a normal `Image` and caches normally.
   - verify: unit test — a constant red image projected onto a camera-facing UV quad yields an all-red, alpha-1 texture inside the coverage mask; a second quad in front of half of it leaves that half at alpha 0 with occlusion on and red with it off.
@@ -75,5 +75,6 @@ texture in Storm. Requires M52 (`PrimSelector`) and M20 (`USDRender`,
 
 ## Decisions
 
+- 2026-10-28: Phases 1–2 implemented (build pending). SceneRaster stores the nearest mesh's index into a returned list of mesh paths (exact, no hashed primId); depth is view-axis distance (+inf empty); bake normal = flat face normal; empty prim list = all meshes; invisible/guide meshes skipped; point instancers not drawn; "prim set" = meshes at or under the given paths. ProjectTexture maps onto the Image input's own format/PAR; adds Fit Mode (matches USDRender framing); bake target = first selected mesh; Depth Bias is a fraction of texel distance (0.01); Edge Dilation (4 texels) grows only outside the UV layout. M234's USDWrite bake to be wired to SceneRaster::bakeUV when the branches meet. Open (user): Camera input instead of a camera menu, like USDProject3D? Add Project On (front/back/both) and occlusion modes (self/world)?
 - 2026-10-25 — **Long-lived USD scene (bosley-native-nodes, from the review in `PLAN/DESIGN/2026-10-25-usd-long-lived-scene-review.md`):** Drop "the viewport re-composes on stack hash": the viewer keeps one long-lived stage, and a `?v=` texture path change is a plain property/asset-path invalidation. Check that the `natron://` resolver never renders synchronously from inside Hydra on the GUI thread (deadlock risk).
 - 2026-10-26 — **Live textures split out (user, M19/M20 UAT grill):** M53.P2.T2–T5 move to M233 - Live Node Textures, which ships first in the 3D MVP; `ProjectTexture` and the paint preset bind their output through M233's `USDMaterial` image inputs. Live camera projection is M234 - Camera Projection Nodes; this milestone's bake remains the occlusion-aware and export path.

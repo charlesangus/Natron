@@ -382,3 +382,32 @@ TEST_F(ViewerSceneTest, AFailingSceneIsReportedWithoutFailingTheViewer)
     EXPECT_FALSE(_viewer->getLastEvaluatedScene(0, NULL, &error));
     EXPECT_FALSE(error.empty());
 }
+
+TEST_F(ViewerSceneTest, APausedViewerRendersNoLiveStroke)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr rotoPaint = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(constant && rotoPaint);
+    connectNodes(constant, rotoPaint, 0, true);
+    connectNodes(rotoPaint, _viewerNode, 0, true);
+    _viewer->setViewerPaused(true, true);
+
+    // The live stroke render, as the viewer's render thread runs it while the pen is down.
+    const SequenceTime time = (SequenceTime)getApp()->getTimeLine()->currentFrame();
+    const U64 viewerHash = _viewer->getHash();
+    ViewerArgsPtr argsA, argsB;
+    ViewerInstance::ViewerRenderRetCode ret = ViewerInstance::eViewerRenderRetCodeFail;
+    ViewerInstance* viewer = _viewer;
+    std::thread renderThread([&]() {
+        try {
+            ret = viewer->getViewerArgsAndRenderViewer(time, true, ViewIdx(0), viewerHash, rotoPaint, RotoStrokeItemPtr(), RenderStatsPtr(), &argsA, &argsB);
+        } catch (...) {
+            ret = ViewerInstance::eViewerRenderRetCodeFail;
+        }
+    });
+    renderThread.join();
+
+    EXPECT_NE(ViewerInstance::eViewerRenderRetCodeFail, ret);
+    EXPECT_FALSE(argsA && argsA->params);
+    EXPECT_FALSE(argsB && argsB->params);
+}

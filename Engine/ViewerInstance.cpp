@@ -765,6 +765,14 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
             break;
         }
 
+        // A paused viewer keeps its last frame and resolves no input to render from. The stroke's points stay
+        // unconsumed, so the first render after un-pausing picks them all up.
+        if (isViewerPaused(i)) {
+            status[i] = eViewerRenderRetCodeRedraw;
+            args[i].reset();
+            continue;
+        }
+
         AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(i, canAbort, false);
 
         /*FrameRequestMap request;
@@ -891,7 +899,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 args[i].reset();
             }
 
-            if (args[i]) {
+            // Redraw arguments resolve no input: there is nothing to render.
+            if (args[i] && (status[i] == eViewerRenderRetCodeRender)) {
                 status[i] = renderViewer_internal(view,
                                                   QThread::currentThread() == qApp->thread(), // singleThreaded
                                                   false, // isSequentialRender

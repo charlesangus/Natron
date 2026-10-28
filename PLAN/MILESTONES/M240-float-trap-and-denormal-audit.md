@@ -27,7 +27,19 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 - [x] M240.P1.T1 — List overflowing knob-to-float conversions
   - files: `Engine/Nodes/**` (read only), this milestone file
-  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `## Decisions`.
+  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `- [ ] M240.P3.T4 — EdgeAware EIGF parity on RADV
+  - files: `Tests/Native/EdgeAwareGpu_Test.cpp`, the EIGF kernels under `Engine/Nodes/` (M209 - Edge-Aware Filter Library)
+  - approach: On RADV, `EdgeAwareGpu.EigfSurfaceBlur` fails exact parity in the case "97x61 smooth sigma 1e+09 x2 geomean quantization 1": 31 of 5917 floats differ, worst 2.7e-4 (want 0.0998474, got 0.1001173). lavapipe passes. Find the GPU step that differs from the CPU (fast reciprocal, exp/log approximation, reduction order) and make them agree, or bound the comparison with a recorded reason if it is inherent.
+  - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
+  - size: M
+
+- [ ] M240.P3.T5 — Merge parity on RADV
+  - files: `Tests/Native/NativeMergeGpu_Test.cpp`, `Engine/Nodes/Merge/*` kernels (M101 - Clean-Sheet Merge Node)
+  - approach: On RADV, `NativeMergeGpuTest.MatchesTheCpuRender` fails with 8 mismatches at `NativeMergeGpu_Test.cpp:273` in several operations. lavapipe passes. Same method as P3.T3: find the diverging step (often a divide by alpha or a fast reciprocal) and make CPU and GPU agree, or bound it with a recorded reason.
+  - verify: `ctest -R NativeMergeGpu` passes on RADV and lavapipe.
+  - size: M
+
+## Decisions`.
   - verify: the list is recorded, with each entry's knob range checked against its knob definition.
   - size: M
 
@@ -90,7 +102,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R NativeNoiseGpu` passes on RADV and lavapipe.
   - size: M
 
-- [ ] M240.P3.T2 — OCIO nodes in the GPU capability allowlist
+- [x] M240.P3.T2 — OCIO nodes in the GPU capability allowlist
   - files: `Tests/Native/NativeGpuCapability_Test.cpp`, `Engine/Nodes/OCIO/*`
   - approach: on RADV, OCIODisplay and OCIOLookTransform report `canRenderOnGpu` true but are not allowlisted, so `NativeGpuCapabilityTest.OnlyAllowlistedNativeNodesRenderOnGpu` fails. On lavapipe they report false. Find why the capability differs by device (runtime-shader support?). If GPU rendering is intended (M127 - Native OCIO Nodes), add them to the allowlist with the device condition the test needs; otherwise fix the capability check.
   - verify: `ctest -R NativeGpuCapability` passes on RADV and lavapipe.
@@ -139,3 +151,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-27 — **P2.T2 and P2.T4–T7 landed as one commit (gpu):** the tasks share the non-trapping helpers, now in one header, `Engine/Nodes/NonTrappingMath.h` (`productOrInfinity`, `quotientOrInfinity`, `sumOrInfinity`, `differenceOrInfinity`, `powOrInfinity`, `reciprocalOrInfinity`). Each returns ±inf exactly where the double operation would overflow, passes NaN through, gives a quiet NaN for inf−inf, 0·inf and inf/inf, and leaves finite results bit-identical (fuzzed with traps on). The first Grade version clamped knobs to ±FLT_MAX and capped ratios, which turned NaN into inf and changed some finite results. The RADV run caught it, and the clamps are gone. Main's `KnobDouble` default range is ±DBL_MAX (`Engine/KnobImpl.h:75`), so every unranged knob counts. Left alone as not knob narrows: Raw spot and temperature `bottomLeft`/`size` (double→int), and general double maths in the matrix and model code.
 
 - 2026-10-27 — **P3.T1 root cause (gpu):** the white cases run through Noise's default 4-octave fBm, which ends with `sum / bound`. RADV lowers that to `v_rcp_f32` and a multiply, which isn't correctly rounded, while the CPU divide is. It isn't fma contraction (every op carries `NoContraction`). `noisecore.slang` now corrects the quotient with an exact remainder (`divideRounded`, using fma-free exact products), so the cases stay exact.
+
+- 2026-10-28 — **RADV run after rebasing onto main at 50ee71b60 (gpu):** P3.T1 (Noise) and P3.T2 (NativeGpuCapability) pass. Seven suites fail. Three are P3.T3's. Two are new from main's M209 - Edge-Aware Filter Library and M101 - Clean-Sheet Merge Node and are added as P3.T4 and P3.T5. `PersistentMessageTest` and `ShuffleRenderTest` belong to M271 - Persistent Message Test Failures, so this gate doesn't count them.

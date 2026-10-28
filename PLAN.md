@@ -247,7 +247,7 @@ future core work has solid ground to build on.
 | M147 | SplineWarp Node Core | doing | M146, M113, M120, M137 | bosley-native-nodes | E3 | [M147-splinewarp-node-core.md](PLAN/MILESTONES/M147-splinewarp-node-core.md) |
 | M148 | SplineWarp Viewer Tools | doing | M147 | bosley-native-nodes | E3 | [M148-splinewarp-viewer-tools.md](PLAN/MILESTONES/M148-splinewarp-viewer-tools.md) |
 | M149 | SplineWarp Mesh Solver | doing | M147 | bosley-native-nodes | E3 | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
-| M150 | SplineWarp GPU Kernel | todo | M147 |  | E3 | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
+| M150 | SplineWarp GPU Kernel | doing | M147 | bosley-native-nodes | E3 | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
 | M151 | SplineWarp Motion Blur | todo | M147, M150 |  | E3 | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
 | M152 | Curve Track Links And Roto Copy | todo | M148 |  | E3 | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
 | M153 | Distortion Concatenation | todo | M147, M113 |  | E14 | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |

@@ -2289,7 +2289,6 @@ Knob<T>::onKeyFrameSet(double time,
     bool useGuiCurve = ( !holder || !holder->isSetValueCurrentlyPossible() ) && getKnobGuiPointer();
 
     if (!useGuiCurve) {
-        assert(holder);
         curve = getCurve(view, dimension);
     } else {
         curve = getGuiCurve(view, dimension);
@@ -2313,7 +2312,6 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     bool useGuiCurve = ( !holder || !holder->isSetValueCurrentlyPossible() ) && getKnobGuiPointer();
 
     if (!useGuiCurve) {
-        assert(holder);
         curve = getCurve(view, dimension);
     } else {
         curve = getGuiCurve(view, dimension);

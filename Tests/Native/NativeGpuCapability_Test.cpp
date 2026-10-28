@@ -63,6 +63,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/Glow.h"
 #include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IDefocus.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
@@ -138,6 +139,7 @@ gpuCapableIds()
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_IBLUR,
         PLUGINID_NATRON_DEFOCUS,
+        PLUGINID_NATRON_IDEFOCUS,
         PLUGINID_NATRON_ZDEFOCUS,
         PLUGINID_NATRON_IERODE,
         PLUGINID_NATRON_IDILATE,

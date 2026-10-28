@@ -50,8 +50,10 @@ NATRON_NAMESPACE_ENTER
  * its knobChanged() here: an edit of a value knob by the user, the GUI or a script turns its
  * companion on; restoring the value knob to its default, when no dimension then differs from
  * its default, turns it off. The node's own setValueFromPlugin() edits, time changes and link
- * refreshes leave it alone, and so does setting an expression, which does not go through
- * knobChanged(): the user turns the toggle on for that.
+ * refreshes leave it alone. Setting an expression on a value knob, which does not go through
+ * knobChanged(), turns its companion on too; clearing the expression leaves the companion as is.
+ * While a project or a saved node restores the knobs (Node::isRestoringKnobs()) the companions
+ * keep their saved state.
  *
  * Authoring is the node's: forEachAuthored() visits the value knobs whose companion is on, and an
  * animated one authors time samples (SceneNodeAuthoring::authorValue() with isAnimated()).
@@ -85,6 +87,12 @@ public:
     KnobBoolPtr getCompanion(const KnobI* knob) const;
 
     std::size_t size() const;
+
+    /**
+     * @brief Deletes every value knob and companion of the set from holder, without their GUI
+     * (KnobHolder::deleteKnob()), and empties the set. Main thread only.
+     **/
+    void deleteAll(KnobHolder* holder);
 
 private:
     struct Pair {

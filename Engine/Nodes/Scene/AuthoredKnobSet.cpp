@@ -29,11 +29,34 @@
 
 #include <QString>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// Whether holder's knobs are being restored from a project or a saved node, whose toggles already
+// hold the saved state.
+bool
+isRestoring(KnobHolder* holder)
+{
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (node && node->isRestoringKnobs()) {
+        return true;
+    }
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    return project && project->isLoadingProject();
+}
+} // anonymous namespace
 
 KnobBoolPtr
 AuthoredKnobSet::add(KnobHolder* holder,
@@ -54,11 +77,30 @@ AuthoredKnobSet::add(KnobHolder* holder,
     page->addKnob(authored);
     page->addKnob(knob);
 
-    std::lock_guard<std::mutex> l(_lock);
-    Pair pair;
-    pair.value = knob;
-    pair.authored = authored;
-    _pairs.push_back(pair);
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        Pair pair;
+        pair.value = knob;
+        pair.authored = authored;
+        _pairs.push_back(pair);
+    }
+
+    // Setting an expression bypasses knobChanged().
+    KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+    if (handler) {
+        const KnobIWPtr weakValue = knob;
+        const KnobBoolWPtr weakAuthored = authored;
+        QObject::connect(handler.get(), &KnobSignalSlotHandler::expressionChanged, handler.get(), [weakValue, weakAuthored](int dimension) {
+            KnobIPtr value = weakValue.lock();
+            KnobBoolPtr companion = weakAuthored.lock();
+            if ( !value || !companion || value->getExpression(dimension).empty() || companion->getValue() ) {
+                return;
+            }
+            if ( isRestoring( value->getHolder() ) ) {
+                return;
+            }
+            companion->setValue(true); }, Qt::DirectConnection);
+    }
 
     return authored;
 }
@@ -71,6 +113,9 @@ AuthoredKnobSet::onKnobChanged(KnobI* k,
 
     if (!authored) {
         return false;
+    }
+    if (isRestoring(k->getHolder())) {
+        return true;
     }
     switch (reason) {
     case eValueChangedReasonUserEdited:
@@ -126,6 +171,26 @@ AuthoredKnobSet::getCompanion(const KnobI* knob) const
     }
 
     return KnobBoolPtr();
+}
+
+void
+AuthoredKnobSet::deleteAll(KnobHolder* holder)
+{
+    std::vector<Pair> pairs;
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        pairs.swap(_pairs);
+    }
+    for (const Pair& pair : pairs) {
+        KnobIPtr value = pair.value.lock();
+        KnobBoolPtr authored = pair.authored.lock();
+        if (value) {
+            holder->deleteKnob(value.get(), false);
+        }
+        if (authored) {
+            holder->deleteKnob(authored.get(), false);
+        }
+    }
 }
 
 std::size_t

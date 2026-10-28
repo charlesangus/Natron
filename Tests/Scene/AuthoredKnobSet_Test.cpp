@@ -189,3 +189,55 @@ TEST_F(AuthoredKnobSetTest, ResetToDefaultClearsAuthored)
     EXPECT_FALSE(companionOn(node, "size"));
     EXPECT_TRUE(companionOn(node, "count"));
 }
+
+TEST_F(AuthoredKnobSetTest, SettingAnExpressionAuthorsTheKnob)
+{
+    NodePtr node = createAuthoredNode();
+    ASSERT_TRUE(bool(node));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("size"));
+    ASSERT_TRUE(bool(size));
+
+    ASSERT_NO_THROW(size->setExpression(0, "frame * 2", false, true));
+    EXPECT_EQ(std::vector<std::string>(1, "size"), authoredNames(node));
+    EXPECT_FALSE(companionOn(node, "count"));
+
+    // Clearing the expression keeps the opinion; the user turns it off.
+    size->clearExpression(0, true);
+    EXPECT_TRUE(companionOn(node, "size"));
+}
+
+TEST_F(AuthoredKnobSetTest, LoadingAnExpressionKeepsTheSavedToggle)
+{
+    NodePtr node = createAuthoredNode();
+    ASSERT_TRUE(bool(node));
+    const std::string name = node->getScriptName();
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("size"));
+    KnobBoolPtr sizeAuthored = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName("sizeAuthored"));
+    ASSERT_TRUE(bool(size));
+    ASSERT_TRUE(bool(sizeAuthored));
+    ASSERT_NO_THROW(size->setExpression(0, "frame * 2", false, true));
+    ASSERT_TRUE(sizeAuthored->getValue());
+    sizeAuthored->setValue(false);
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("authored-expression.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    node.reset();
+    size.reset();
+    sizeAuthored.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    KnobIPtr loadedSize = loaded->getKnobByName("size");
+    ASSERT_TRUE(bool(loadedSize));
+    EXPECT_EQ(std::string("frame * 2"), loadedSize->getExpression(0));
+    EXPECT_FALSE(companionOn(loaded, "size"));
+    EXPECT_TRUE(authoredNames(loaded).empty());
+}

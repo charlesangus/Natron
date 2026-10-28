@@ -162,6 +162,7 @@ public:
         , app(app_)
         , isPartOfProject(true)
         , knobsInitialized(false)
+        , restoringKnobs(false)
         , inputsInitialized(false)
         , outputsMutex()
         , outputs()
@@ -349,6 +350,8 @@ public:
     AppInstanceWPtr app; // pointer to the app: needed to access the application's default-project's format
     bool isPartOfProject;
     bool knobsInitialized;
+    // Main thread only: set while fromSerialization() restores the knobs.
+    bool restoringKnobs;
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;

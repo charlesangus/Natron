@@ -2639,11 +2639,30 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->knobsInitialized);
 
-    const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
+    const bool wasRestoringKnobs = _imp->restoringKnobs;
+    _imp->restoringKnobs = true;
 
-    ///for all knobs of the node
-    for (U32 j = 0; j < nodeKnobs.size(); ++j) {
-        loadKnob(nodeKnobs[j], serialization, updateKnobGui);
+    // Loading a knob may add or delete knobs (a node whose knobs follow a choice), so this walks
+    // copies of the list, skips knobs deleted meanwhile, and goes again over the knobs added.
+    std::set<KnobIPtr> loaded;
+    for (;;) {
+        const std::vector<KnobIPtr> nodeKnobs = getKnobs();
+        bool loadedAny = false;
+        for (const KnobIPtr& knob : nodeKnobs) {
+            if (loaded.count(knob)) {
+                continue;
+            }
+            const std::vector<KnobIPtr>& current = getKnobs();
+            if (std::find(current.begin(), current.end(), knob) == current.end()) {
+                continue;
+            }
+            loaded.insert(knob);
+            loadedAny = true;
+            loadKnob(knob, serialization, updateKnobGui);
+        }
+        if (!loadedAny) {
+            break;
+        }
     }
 
     ///now restore the roto context if the node has a roto context
@@ -2665,7 +2684,14 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     // no information and the hash must be recomputed from the freshly restored knobs and inputs.
     computeHash();
 
+    _imp->restoringKnobs = wasRestoringKnobs;
     _imp->effect->onKnobsLoaded();
+}
+
+bool
+Node::isRestoringKnobs() const
+{
+    return _imp->restoringKnobs;
 }
 
 void

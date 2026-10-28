@@ -106,6 +106,15 @@ GpuPlacementAvailableFunc setGpuPlacementAvailableFunc(GpuPlacementAvailableFunc
 bool isGpuPlacementAvailable();
 
 /**
+ * @brief The frame args the request pass planned for task's node under its context key, which every call asking the
+ * effect about the task or recording it installs with a ContextFrameArgsScope, as renderTaskOnCpu() does around
+ * renderRoI(), so that knobs driven by the context read it. Null for a task under no context, and for one whose args
+ * were not planned, which cannot go to the GPU.
+ **/
+ParallelRenderArgsPtr gpuTaskContextArgs(const FrameGraph::Task& task,
+                                         const FrameRenderContext& context);
+
+/**
  * @brief The query the effect of task is asked through canRenderOnGpu() for its single plane. False when the task
  * cannot go to the GPU whatever the effect answers: it is not a native image effect, renders more than one plane, or
  * is asked for a downscaled image it can only render at full scale, which a region refuses.
@@ -146,9 +155,10 @@ struct GpuTaskPlane {
  * @brief The planes of task a GPU region produces, in task.components order. A plane the node neither produces nor
  * passes through has no entry, as renderRoI() leaves it out of its output. False when the task cannot go to the GPU:
  * it is not a native image effect, the effect refuses the query of a plane it produces, or cannot say which layers it
- * reads, a layer it reads beyond getGpuInputLayer()'s is not one its input is asked for and carries, or a plane it
- * passes through is not asked of the pass-through input at the time and view it is read at. Placement and the region
- * engine both ask it, so they agree.
+ * reads, a layer it reads beyond getGpuInputLayer()'s is not one its input is asked for and carries, an output it
+ * requests under a context and reads is not one that output carries in the layer getGpuInputLayer() names for
+ * FrameViewRequest::TaskEdge::kContextRequestInputNb, or a plane it passes through is not asked of the pass-through
+ * input at the time and view it is read at. Placement and the region engine both ask it, so they agree.
  **/
 bool makeGpuTaskPlanes(const FrameGraph::Task& task,
                        const FrameRenderContext& context,

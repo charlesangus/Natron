@@ -315,7 +315,10 @@ public:
     /**
      * @brief The layer renderGpu() reads input inputNb in when this node renders plane at time and
      * view; the region engine hands that input over in it. False when the GPU path cannot read
-     * the input at all, which keeps the node on the CPU, as the default does.
+     * the input at all, which keeps the node on the CPU, as the default does. Asked with
+     * FrameViewRequest::TaskEdge::kContextRequestInputNb, as are readsGpuInput() and
+     * getGpuInputRoI(), for the outputs a node requests under a context, which it reads from
+     * GpuRenderArgs::contextInputs.
      **/
     virtual bool getGpuInputLayer(int /*inputNb*/,
                                   const ImageLayerDesc& /*plane*/,

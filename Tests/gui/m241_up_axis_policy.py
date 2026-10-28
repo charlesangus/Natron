@@ -107,10 +107,30 @@ try:
         v = view()
         if v is None:
             return None
+        v.update()
+        v.repaint()
         QApplication.processEvents()
         top_left = v.mapToGlobal(v.rect().topLeft())
         image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
         return image.copy(top_left.x(), top_left.y(), v.width(), v.height())
+
+    def differing(a, b):
+        """Number of differing pixels between two crops, or None when they cannot be compared."""
+        if a is None or b is None or a.size() != b.size():
+            return None
+        count = 0
+        for y in range(0, a.height(), 2):
+            for x in range(0, a.width(), 2):
+                if a.pixel(x, y) != b.pixel(x, y):
+                    count += 1
+        return count
+
+    def save_failure_crops(name, before_image, after_image):
+        for suffix, image in (("before", before_image), ("after", after_image)):
+            if image is not None:
+                path = os.path.join(OUT, "%s_%s_viewer.png" % (name, suffix))
+                image.save(path)
+                report("SHOT " + path)
 
     def save_shots(name):
         shot(name + ".png")
@@ -203,8 +223,15 @@ try:
         check(project_up_axis.getValue() == 1, "Use File's Metrics For Project sets the project to Z (%r)" % project_up_axis.getValue())
         check(abs(project_meters_per_unit.getValue() - 0.01) < 1e-12,
               "Use File's Metrics For Project sets the project to 0.01 (%r)" % project_meters_per_unit.getValue())
-        ok = yield ("until", lambda: message() == "" and crop() is not None and before is not None and crop() != before, POLL_TIMEOUT_S)
-        check(ok, "the warning clears and the viewport grid flips to Z (%r)" % message())
+        ok = yield ("until", lambda: message() == "" and crop() is not None and corrected is not None and crop() != corrected, POLL_TIMEOUT_S)
+        after = crop()
+        metric = differing(corrected, after)
+        report("NOTE viewport comparison against the corrected crop: %r of the sampled pixels differ (corrected size %r, after size %r)"
+               % (metric, corrected.size() if corrected is not None else None, after.size() if after is not None else None))
+        if not ok:
+            save_failure_crops("m241_file_metrics_failed", corrected, after)
+        check(message() == "", "Use File's Metrics For Project clears the warning (%r)" % message())
+        check(ok, "Use File's Metrics For Project flips the grid to Z: the viewport differs from the corrected Y-up crop (differing pixels %r)" % metric)
         yield ("sleep", SETTLE_MS)
         save_shots("m241_file_metrics")
         check(edit_undo(), "Edit > Undo is enabled after the button")

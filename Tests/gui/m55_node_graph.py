@@ -163,7 +163,7 @@ try:
         return tuple(int(max(0.0, min(1.0, p.getValue(d))) * 255 + 0.5) for d in range(3))
 
     def set_selection(r, g, b):
-        NatronEngine.natron.getSettings().getParam("selection").set(r, g, b)
+        NatronEngine.natron.getSettings().getParam("selection").set(r, g, b, 1.0)
         graph = root_graph()
         if graph is not None:
             graph.viewport().update()

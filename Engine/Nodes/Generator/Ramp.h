@@ -35,9 +35,9 @@
 #include "Engine/Nodes/Generator/ShapeGenerator.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 
-#define PLUGINID_NATRON_RAMP "net.sf.openfx.Ramp"
-// One above the openfx-misc Ramp's, so the native node wins a request for the ID.
-#define PLUGIN_MAJOR_NATRON_RAMP 3
+#define PLUGINID_NATRON_RAMP "Ramp"
+
+#define PLUGIN_MAJOR_NATRON_RAMP 1
 
 #define kRampParamPoint0 "point0"
 #define kRampParamPoint1 "point1"
@@ -109,7 +109,7 @@ struct RampOp {
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_RAMP,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Ramp.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Ramp.png",
     };
 
     static constexpr ImagePipelineSpec kPipeline = {

@@ -127,6 +127,16 @@ TEST_F(NativeRampTest, UnversionedRequestsGetTheNativeRamp)
     EXPECT_EQ(PLUGIN_MAJOR_NATRON_RAMP, unversioned->getMajorVersion());
 }
 
+TEST_F(NativeRampTest, PluginIdentityIsItsOwnAndDoesNotReuseTheOpenFxId)
+{
+    NodePtr node = makeRamp(100., 100., 100., 200.);
+    ASSERT_TRUE(bool(node));
+    EXPECT_EQ(std::string("Ramp"), std::string(PLUGINID_NATRON_RAMP));
+    EXPECT_EQ(1, PLUGIN_MAJOR_NATRON_RAMP);
+    EXPECT_EQ(std::string(PLUGINID_NATRON_RAMP), node->getPluginID());
+    EXPECT_NE(std::string("net.sf.openfx.Ramp"), node->getPluginID());
+}
+
 // Pixel x has its centre at x + 0.5, so from 0.5 to 40.5 the ramp is x / 40 at pixel x.
 TEST_F(NativeRampTest, HorizontalRampMatchesHandValues)
 {

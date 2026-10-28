@@ -20,7 +20,7 @@ STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 180
 SETTLE_MS = 400
 RENDER_MS = 1500
-PLUGIN_RAMP = "net.sf.openfx.Ramp"
+PLUGIN_RAMP = "Ramp"
 RED = (0.8, 0.1, 0.1, 1.0)
 # Pen travel per drag, in viewer-widget pixels (y down).
 DRAGS = {"point0": (40, -30), "point1": (-35, 25)}

@@ -37,7 +37,9 @@ SCREEN_HEIGHT = 1080
 LIT_LEVEL = 128
 PIXEL_DIFF_MIN = 24
 GROWTH_MIN = 2.0
-CHANGED_PIXELS_MIN = 100
+CHANGED_PIXELS_MIN = 10
+FOCAL_PLANE_CHANGED_MIN = 100
+CHANGED_FRACTION_MIN = 0.05
 POINT_LEFT, POINT_BOTTOM, POINT_SIZE = 952, 532, 16
 
 try:
@@ -229,6 +231,29 @@ try:
                     count += 1
         return count
 
+    def set_zoom(text):
+        """Picks text ("100%", "Fit"...) in the viewer's zoom menu."""
+        for combo in gt.widgets_of("ComboBox"):
+            try:
+                if not combo.isVisible() or "Zoom:" not in (combo.toolTip() or ""):
+                    continue
+                items = [str(i).strip() for i in (combo.property("natronItems") or [])]
+            except RuntimeError:
+                continue
+            if text in items:
+                QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, items.index(text)))
+                return True
+            return check(False, "the zoom menu offers %s (%r)" % (text, items))
+        return check(False, "found the viewer's zoom menu")
+
+    def check_changed(reference, other, what):
+        """Passes when at least CHANGED_FRACTION_MIN of the reference's lit pixels (and CHANGED_PIXELS_MIN) differ."""
+        n = changed_pixels(reference, other)
+        lit = lit_pixels(reference)
+        need = max(CHANGED_PIXELS_MIN, int(CHANGED_FRACTION_MIN * max(lit, 0)))
+        check(n >= need, "%s (%d sampled pixels differ, %d required: %d%% of %d lit, at least %d)"
+              % (what, n, need, int(CHANGED_FRACTION_MIN * 100), lit, CHANGED_PIXELS_MIN))
+
     def panel_shot(node, name):
         ok = yield from open_panel(node)
         check(ok, "%s's panel opens" % node.getLabel())
@@ -323,6 +348,7 @@ try:
         check(large > small * GROWTH_MIN, "Size 100 lights more than twice the pixels of Size 40 (%d vs %d)" % (large, small))
 
         set_checked(node, "size", 40.0)
+        set_zoom("100%")
         yield ("sleep", RENDER_MS)
         disc = viewer_crop()
         kind = param(node, "kernelType")
@@ -333,12 +359,11 @@ try:
         yield ("sleep", RENDER_MS)
         blades = viewer_crop()
         gt.shot("m131-defocus-blades.png")
-        n = changed_pixels(disc, blades)
-        check(n >= CHANGED_PIXELS_MIN, "a 3-blade kernel changes the output against the disc (%d sampled pixels differ)" % n)
+        check_changed(disc, blades, "a 3-blade kernel changes the output against the disc")
         set_checked(node, "rotation", 60.0)
         yield ("sleep", RENDER_MS)
-        n = changed_pixels(blades, viewer_crop())
-        check(n >= CHANGED_PIXELS_MIN, "rotating the blades by 60 degrees changes the output (%d sampled pixels differ)" % n)
+        check_changed(blades, viewer_crop(), "rotating the blades by 60 degrees changes the output")
+        set_zoom("Fit")
 
     def set_depth_channel(node):
         depth = param(node, "depth")
@@ -365,14 +390,15 @@ try:
         report("NOTE lit pixels: Focal Plane 1 -> %d, Focal Plane 0.1 -> %d" % (sharp, blurred))
         check(blurred > sharp * GROWTH_MIN,
               "moving the Focal Plane off the box's depth defocuses it (%d lit vs %d in focus)" % (blurred, sharp))
+        set_zoom("100%")
+        yield ("sleep", RENDER_MS)
         before = viewer_crop()
         mode = param(node, "mode")
         lens, manual = find_option(mode, "lens"), find_option(mode, "manual")
         require(lens >= 0 and manual >= 0, "the Mode menu has Manual and Lens (%r)" % ([str(o) for o in mode.getOptions()],))
         mode.setValue(lens)
         yield ("sleep", RENDER_MS)
-        n = changed_pixels(before, viewer_crop())
-        check(n >= CHANGED_PIXELS_MIN, "Lens mode changes the output against Manual (%d sampled pixels differ)" % n)
+        check_changed(before, viewer_crop(), "Lens mode changes the output against Manual")
         mode.setValue(manual)
         out = param(node, "output")
         plane = find_option(out, "focalPlane")
@@ -381,7 +407,7 @@ try:
         out.setValue(plane)
         yield ("sleep", RENDER_MS)
         n = changed_pixels(before, viewer_crop())
-        check(n >= CHANGED_PIXELS_MIN, "the focal-plane output differs from the result (%d sampled pixels differ)" % n)
+        check(n >= FOCAL_PLANE_CHANGED_MIN, "the focal-plane output differs from the result (%d sampled pixels differ)" % n)
 
     def steps():
         ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)

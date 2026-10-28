@@ -275,8 +275,14 @@ try:
         gt.shot("retouch_screen.png")
 
         gt.section("source-drag")
-        img = grab_viewer()
-        red = sorted(red_pixels(img) - baseline)
+        overlay = {"red": []}
+
+        def overlay_drawn():
+            overlay["red"] = sorted(red_pixels(grab_viewer()) - baseline)
+            return len(overlay["red"]) > MIN_OUTLINE_PIXELS
+
+        yield ("until", overlay_drawn, POLL_TIMEOUT_S)
+        red = overlay["red"]
         report("NOTE overlay pixels %d" % len(red))
         require(len(red) > MIN_OUTLINE_PIXELS, "the shape and its dashed source outline are drawn")
         xs = [p[0] for p in red]

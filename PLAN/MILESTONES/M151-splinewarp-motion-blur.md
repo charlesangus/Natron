@@ -50,4 +50,5 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Decisions
 
+- 2026-10-28: Implemented (build pending). Knobs motionBlur (0, 0–100), shutter (0.5), shutterOffset (Start), shutterCustomOffset (0), following CornerPin (Nuke's SplineWarp has no motion-blur controls). Sub-frames = min(64, max(13, int(40·motionBlur)/3)) at stratum centres, equal weights (Transform samples per pixel randomly). Static shutter renders once; RoD/RoI are unions over sub-frames; identity only if all are. Separate 64-entry sub-frame field cache. Motion blur stays on in draft. PM call: the upstream concatenated matrix is evaluated once at frame time (the concatenation API supplies one matrix per render), as Transform and CornerPin do — deviation from the milestone's Out note. GPU averages all sub-frames in one dispatch.
 - 2026-10-20 — **Motion blur is in scope (user).**

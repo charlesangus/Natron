@@ -26,25 +26,42 @@ try:
     import guitest as gt
     from guitest import check, require
 
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
     def node_graph_view():
         views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
-        return views[0] if views else None
+        return hold(views[0]) if views else None
 
     def block_item():
         view = node_graph_view()
-        if view is None or view.scene() is None:
+        if view is None:
             return None
-        for item in view.scene().items():
-            obj = item.toGraphicsObject()
-            if obj is not None and obj.objectName() == "LoopBlockItem":
-                return obj
+        try:
+            scene = hold(view.scene())
+            if scene is None:
+                return None
+            for item in scene.items():
+                obj = item.toGraphicsObject()
+                if obj is not None and obj.objectName() == "LoopBlockItem":
+                    return hold(obj)
+        except RuntimeError:
+            return None
         return None
 
     def block_area():
         item = block_item()
         if item is None:
             return 0.
-        rect = item.sceneBoundingRect()
+        try:
+            rect = item.sceneBoundingRect()
+        except RuntimeError:
+            return 0.
         return rect.width() * rect.height()
 
     def steps():
@@ -52,7 +69,8 @@ try:
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is on screen")
         gt.close_all_panels()
-        require(block_item() is not None, "the graph has a loop block item")
+        ok = yield ("until", lambda: block_item() is not None, POLL_TIMEOUT_S)
+        require(ok, "the graph has a loop block item")
 
         constant = app.createNode(CONSTANT_ID)
         outer_begin = app.createNode(BEGIN_ID)

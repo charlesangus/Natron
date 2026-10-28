@@ -787,6 +787,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // touches GL.
             parameters.gpuEnabled = false;
         }
+        CyclesAovs::registerSceneIndices();
         std::string startError;
         const std::function<void()> make = [&]() {
             TfErrorMark mark;

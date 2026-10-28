@@ -26,9 +26,14 @@
 #include "CyclesAovs.h"
 
 #include <limits>
+#include <mutex>
 
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/retainedDataSource.h>
+#include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
+#include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 
 #include <tbb/task_arena.h>
@@ -42,6 +47,29 @@ bool
 isCycles(const std::string& renderer)
 {
     return renderer == kRenderDelegateCyclesId;
+}
+
+void
+registerSceneIndices()
+{
+    static std::once_flag once;
+    std::call_once(once, []() {
+        const TfToken types[] = { HdPrimTypeTokens->cube, HdPrimTypeTokens->sphere, HdPrimTypeTokens->cone, HdPrimTypeTokens->cylinder, HdPrimTypeTokens->capsule, HdPrimTypeTokens->plane };
+        constexpr std::size_t count = sizeof(types) / sizeof(types[0]);
+        const HdDataSourceBaseHandle toMesh = HdRetainedTypedSampledDataSource<TfToken>::New(HdsiImplicitSurfaceSceneIndexTokens->toMesh);
+        HdDataSourceBaseHandle modes[count];
+        for (std::size_t i = 0; i < count; ++i) {
+            modes[i] = toMesh;
+        }
+        HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
+            kRenderDelegateCyclesDisplayName,
+            [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
+                return HdsiImplicitSurfaceSceneIndex::New(input, args);
+            },
+            HdRetainedContainerDataSource::New(count, types, modes),
+            0,
+            HdSceneIndexPluginRegistry::InsertionOrderAtStart);
+    });
 }
 
 void

@@ -47,7 +47,7 @@ POINT_LEFT, POINT_BOTTOM, POINT_SIZE = 952, 532, 16
 VECTOR_PX = 60.0
 NEAR_LEFT, NEAR_BOTTOM, NEAR_SIZE = 940, 520, 40
 OCCLUSION_SHARP_TOL = 10
-MOTION_LAYER = "motion"
+MOTION_LAYER = "uk.co.thefoundry.OfxImagePlaneForwardMotionVector"  # the built-in Forward layer (U, V); VectorBlur Auto picks it
 EXTENT_MIN = 20  # sampled viewer pixels (stride 2 => 40 px)
 
 try:
@@ -337,8 +337,18 @@ try:
     def set_vector(vec, vx, vy):
         param(vec, "color").set(vx, vy, 0.0, 1.0)
         got = param(vec, "color").get()
-        require(abs(got.x - vx) < 1e-4 and abs(got.y - vy) < 1e-4,
-                "the vector constant is (%r, %r) (read back %r, %r)" % (vx, vy, got.x, got.y))
+        require(abs(got.r - vx) < 1e-4 and abs(got.g - vy) < 1e-4,
+                "the vector constant is (%r, %r) (read back %r, %r)" % (vx, vy, got.r, got.g))
+
+    def route_motion(shuffle):
+        """Writes input 1's R and G into the built-in Forward motion layer's U and V."""
+        out1 = param(shuffle, "out1")
+        out1.setLayer(MOTION_LAYER)
+        require(out1.getLayer() == MOTION_LAYER, "%s's Out 1 is the Forward motion layer (read back %r)" % (
+            shuffle.getLabel(), out1.getLayer()))
+        mapping = param(shuffle, "mapping")
+        mapping.connect("in1.#0", "out1.#0")
+        mapping.connect("in1.#1", "out1.#1")
 
     def lit_extent(image, stride=2):
         """(min x, max x, min y, max y, count, sum x) of the lit pixels, or None."""
@@ -369,18 +379,13 @@ try:
 
     def section_vectorblur():
         gt.section("vectorblur")
-        try:
-            if app.getProjectLayer(MOTION_LAYER) is None:
-                app.addProjectLayer(MOTION_LAYER, ["U", "V"])
-        except Exception:
-            report("NOTE could not register the motion layer: " + traceback.format_exc().splitlines()[-1])
         box = point_source()
         vec = create(PLUGIN_CONSTANT, 300, 0)
         set_vector(vec, VECTOR_PX, 0.0)
         shuffle = create(PLUGIN_SHUFFLECOPY, 150, 250)
         connect(shuffle, 0, box)
         connect(shuffle, 1, vec)
-        shuffle.getParam("out1").setLayer(MOTION_LAYER)
+        route_motion(shuffle)
         node = create(PLUGIN_VECTORBLUR, 150, 400)
         connect(node, 0, shuffle)
         set_checked(node, "scale", 0.0)
@@ -461,7 +466,7 @@ try:
         shuffle = create(PLUGIN_SHUFFLECOPY, 900, 400)
         connect(shuffle, 0, scene)
         connect(shuffle, 1, vectors)
-        shuffle.getParam("out1").setLayer(MOTION_LAYER)
+        route_motion(shuffle)
         node = create(PLUGIN_VECTORBLUR, 900, 550)
         connect(node, 0, shuffle)
         depth = param(node, "depth")

@@ -64,6 +64,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
+#include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
@@ -158,6 +159,7 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_VECTORBLUR,
     };
 
     return ids;

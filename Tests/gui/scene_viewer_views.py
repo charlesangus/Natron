@@ -426,6 +426,8 @@ try:
         yield settle()
         check(v.property("natronSceneLockView") is False, "the free camera has no lock")
 
+        viewer.disconnectInput(0)
+        yield settle()
         requests0 = sync_requests(v)
         require(viewer.connectInput(0, usd), "view the USDRead alone")
         ok = yield ("until", lambda: sync_requests(v) > requests0 and scene_drawn(), STARTUP_TIMEOUT_S)
@@ -440,6 +442,8 @@ try:
               "with one camera Ctrl+L locks to it (%r)" % (look_through(v),))
         key(v, Qt.Key_L, CTRL)
         ok = yield from with_menu(v, "Free Camera")
+        viewer.disconnectInput(0)
+        yield settle()
         requests0 = sync_requests(v)
         require(viewer.connectInput(0, merge), "view the merge again")
         ok = yield ("until", lambda: sync_requests(v) > requests0 and scene_drawn(), STARTUP_TIMEOUT_S)

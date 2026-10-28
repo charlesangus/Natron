@@ -90,6 +90,8 @@ try:
         tab = ancestor_of_class(gl, "ViewerTab")
         if tab is None:
             return None
+        # findChildren wrappers die with the parent's wrapper; hold the tab while the button is used.
+        _keep["tab"] = tab
         # Natron's Button has no Q_OBJECT, so it reports QPushButton's class name.
         for b in tab.findChildren(QAbstractButton):
             try:

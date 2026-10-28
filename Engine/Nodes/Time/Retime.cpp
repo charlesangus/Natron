@@ -30,13 +30,16 @@
 #include <initializer_list>
 #include <limits>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -186,6 +189,19 @@ Retime::initializeKnobs()
                                    tr("Land Original Out on New Out. With Use In Mapping also on, the speed is the one that fits "
                                       "the original range into the new range."),
                                    false);
+
+    KnobBoolPtr rangeEditedKnob = createKnob<KnobBool>(tr("Range Edited").toStdString());
+    rangeEditedKnob->setName(kRetimeParamRangeEdited);
+    rangeEditedKnob->setHintToolTip(tr("Whether Original In, New In, Original Out or New Out has been edited. Until one is, "
+                                       "connecting an input sets them to its frame range.")
+                                        .toStdString());
+    rangeEditedKnob->setDefaultValue(false);
+    rangeEditedKnob->setSecretByDefault(true);
+    rangeEditedKnob->setAnimationEnabled(false);
+    rangeEditedKnob->setEvaluateOnChange(false);
+    rangeEditedKnob->setHashExempt(true);
+    page->addKnob(rangeEditedKnob);
+    _rangeEdited = rangeEditedKnob;
 
     KnobDoublePtr speedKnob = createKnob<KnobDouble>(tr("Speed").toStdString());
     speedKnob->setName(kRetimeParamSpeed);
@@ -413,6 +429,7 @@ Retime::knobChanged(KnobI* k,
     if (_refreshingKnobs) {
         return false;
     }
+    noteRangeEdit(k);
     const KnobIPtr rangeKnobs[] = {
         _originalIn.lock(),
         _newIn.lock(),
@@ -442,7 +459,66 @@ Retime::onKnobsLoaded()
 void
 Retime::onInputChanged(int /*inputNb*/)
 {
+    followInputRange();
     refreshDerivedKnobs();
+}
+
+void
+Retime::followInputRange()
+{
+    KnobBoolPtr editedKnob = _rangeEdited.lock();
+    double first = 0.;
+    double last = 0.;
+    if (_refreshingKnobs || !editedKnob || editedKnob->getValue() || getApp()->getProject()->isLoadingProject() || !boundedRange(getInput(0), &first, &last)) {
+        return;
+    }
+    _refreshingKnobs = true;
+    const std::pair<KnobDoubleWPtr, double> ends[] = {
+        { _originalIn, first },
+        { _newIn, first },
+        { _originalOut, last },
+        { _newOut, last },
+    };
+    for (const std::pair<KnobDoubleWPtr, double>& end : ends) {
+        KnobDoublePtr knob = end.first.lock();
+        if (knob && (knob->getValue() != end.second)) {
+            knob->setValue(end.second);
+        }
+    }
+    _refreshingKnobs = false;
+}
+
+void
+Retime::noteRangeEdit(KnobI* k)
+{
+    KnobBoolPtr editedKnob = _rangeEdited.lock();
+    KnobBoolPtr useInKnob = _useInMapping.lock();
+    KnobBoolPtr useOutKnob = _useOutMapping.lock();
+    if (!editedKnob || editedKnob->getValue() || !useInKnob || !useOutKnob) {
+        return;
+    }
+    double first = 0.;
+    double last = 0.;
+    const bool bounded = boundedRange(getInput(0), &first, &last);
+    // The ends a mapping does not use only ever show derived values, and writes that match the
+    // input's range are this node following it.
+    const std::tuple<KnobDoubleWPtr, bool, double> ends[] = {
+        { _originalIn, useInKnob->getValue(), first },
+        { _newIn, useInKnob->getValue(), first },
+        { _originalOut, useOutKnob->getValue(), last },
+        { _newOut, useOutKnob->getValue(), last },
+    };
+    for (const std::tuple<KnobDoubleWPtr, bool, double>& end : ends) {
+        KnobDoublePtr knob = std::get<0>(end).lock();
+        if (!knob || (k != knob.get())) {
+            continue;
+        }
+        if (std::get<1>(end) && (!bounded || (knob->getValue() != std::get<2>(end)))) {
+            editedKnob->setValue(true);
+        }
+
+        return;
+    }
 }
 
 void

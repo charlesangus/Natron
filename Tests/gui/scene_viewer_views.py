@@ -188,6 +188,18 @@ try:
         QTimer.singleShot(0, go)
         return state
 
+    def post_key(v, k, modifiers=NONE):
+        """key() from a timer, for a key that may open a modal menu: the menu's exec() then runs
+        outside the steps, which keep polling and can drive and close it."""
+        state = {}
+
+        def go():
+            key(v, k, modifiers)
+            state["closed"] = True
+
+        QTimer.singleShot(0, go)
+        return state
+
     def find_action(menu, text):
         for a in menu.actions():
             if a.text().replace("&", "") == text:
@@ -386,7 +398,7 @@ try:
         ok = yield from with_menu(v, "Free Camera")
         yield settle()
         check(look_through(v) == "" and v.property("natronSceneLockView") is False, "back on the free camera, unlocked")
-        key(v, Qt.Key_L, CTRL)
+        state = post_key(v, Qt.Key_L, CTRL)
         ok = yield ("until", lambda: lock_menu() is not None, POLL_TIMEOUT_S)
         menu = lock_menu()
         if check(ok and menu is not None, "with two cameras and none looked through, Ctrl+L offers a menu of them"):
@@ -397,7 +409,8 @@ try:
             if check(action is not None, "the menu has LockCam"):
                 action.trigger()
                 QApplication.processEvents()
-            close_menus()
+        close_menus()
+        yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         yield settle()
         check(look_through(v) == lock_cam_path and bool(v.property("natronSceneLockView")),
               "picking LockCam looks through it and locks (%r)" % (look_through(v),))
@@ -417,10 +430,12 @@ try:
         require(viewer.connectInput(0, usd), "view the USDRead alone")
         ok = yield ("until", lambda: sync_requests(v) > requests0 and scene_drawn(), STARTUP_TIMEOUT_S)
         require(ok, "the view shows the USDRead alone")
-        key(v, Qt.Key_L, CTRL)
+        state = post_key(v, Qt.Key_L, CTRL)
+        yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
         check(QApplication.activePopupWidget() is None, "with one camera Ctrl+L asks nothing")
         close_menus()
+        yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         check(look_through(v) == "/World/Cam" and bool(v.property("natronSceneLockView")),
               "with one camera Ctrl+L locks to it (%r)" % (look_through(v),))
         key(v, Qt.Key_L, CTRL)

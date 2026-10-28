@@ -181,7 +181,9 @@ geometryPoints(ShapeKindEnum kind)
 // darktable draws a path's feather as integer-snapped lines from each border point
 // (_path_falloff_roi in src/develop/masks/path.c), which leaves a band about a pixel wide at
 // full strength, biased up and left, inside and along the outline. The comparison leaves out the
-// pixels this close to a path's outline, on either side.
+// pixels this close inside a path's outline. Each line is int(feather) + 1 steps long from a
+// truncated start and also writes its neighbouring pixel, so outside the outline darktable's
+// falloff reaches about a pixel past the feather: the band there runs to feather + 1.
 const double kPathEdgeBand = 2.;
 
 // The closed outline through points, y up, as a polygon of points on its cubic segments.
@@ -759,13 +761,13 @@ TEST_F(NativeRetouchTest, MatchesDarktableReferences)
         ASSERT_EQ((std::size_t)width * height * 4, out.pixels.size()) << job.name;
 
         // Roto's feather falloff is not darktable's, so each shape's feather band, outside its
-        // outline, is left out, and around a path kPathEdgeBand on both sides.
+        // outline, is left out; around a path, kPathEdgeBand inside and feather + 1 outside.
         std::vector<char> excluded((std::size_t)width * height, 0);
         int excludedCount = 0;
         for (const ReferenceShape& r : job.shapes) {
             const std::vector<Point> outline = sampleOutline(geometryPoints(r.kind));
             const double inner = (r.kind == eShapePath) ? -kPathEdgeBand : 0.;
-            const double outer = (r.kind == eShapePath) ? std::max(kPathEdgeBand, geometrySpec(r.kind).feather) : geometrySpec(r.kind).feather;
+            const double outer = geometrySpec(r.kind).feather + ((r.kind == eShapePath) ? 1. : 0.);
             for (int row = 0; row < height; ++row) {
                 for (int x = 0; x < width; ++x) {
                     const double d = signedOutlineDistance(outline, x + 0.5, height - row - 0.5);

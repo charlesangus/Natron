@@ -2,16 +2,18 @@
 
 Sections (each node is created from its plugin ID; sources are Constants; the Viewer is set to the
 Un-tone-mapped view so screen colours follow the image):
-  - keymix: B blue, A red. A white Mask Constant shows A (red), a black one shows B (blue), no Mask
+  - keymix: B blue, A red. A white Mask Constant shows A (red), a black one (alpha 0, as the mask
+    reads rgba.A) shows B (blue), no Mask
     shows A everywhere (red);
   - difference: B bright grey, A dark grey, then Premult so the alpha shows as brightness. Different
     inputs give a bright viewer, equal inputs a black one (alpha 0);
-  - adjustbbox: a Constant whose box is a small square in the bottom-left corner of the format does
+  - adjustbbox: a Constant cropped to a small square in the bottom-left corner of the format does
     not reach the viewer centre; AdjustBBox with Nearest boundary and a large Num Pixels grows the
     region so the centre shows the Constant's colour. The Python API has no region-of-definition
     getter, so the viewer centre is the probe;
   - lightwrap: the LightWrap PyPlug (its inner Switches follow Use Constant Highlight and Disable
-    luminance-Based Wrap) is fed a foreground box and a background. Turning Use Constant Highlight on
+    luminance-Based Wrap) is fed a cropped foreground box and a background, with Intensity 1 and
+    Generate Wrap Only on. Turning Use Constant Highlight on
     with a blue constant, and turning Disable luminance-Based Wrap on, each change the viewer image.
 Screenshots: m121-keymix-panel.png, m121-difference-panel.png, m121-adjustbbox-panel.png,
 m121-keymix.png, m121-difference.png, m121-adjustbbox.png, m121-lightwrap-before.png and
@@ -34,6 +36,7 @@ SETTLE_MS = 500
 POLL_TIMEOUT_S = 20.0
 PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
 PLUGIN_PREMULT = "Premult"
+PLUGIN_CROP = "net.sf.openfx.CropPlugin"
 PLUGIN_KEYMIX = "KeyMix"
 PLUGIN_DIFFERENCE = "Difference"
 PLUGIN_ADJUSTBBOX = "AdjustBBox"
@@ -138,23 +141,18 @@ try:
         param(node, "color").set(rgb[0], rgb[1], rgb[2], 1.0)
         return node
 
-    def set_constant_box(node, left, bottom, width, height):
-        """Gives the Constant a box instead of the project format; returns whether it took."""
-        extent = node.getParam("extent")
-        size = node.getParam("size")
-        corner = node.getParam("btmLeft")
-        if extent is None or size is None or corner is None:
-            report("NOTE the Constant has no extent/size/btmLeft parameters")
-            return False
+    def crop_box(source, left, bottom, width, height, x=0, y=0):
+        """Crops the source to a box (the native Constant always fills the format); returns the Crop."""
+        crop = create(PLUGIN_CROP, x, y)
+        connect(crop, 0, source)
+        extent = param(crop, "extent")
         options = [str(o) for o in extent.getOptions()]
-        index = next((i for i, o in enumerate(options) if o.lower().startswith("size")), -1)
-        if index < 0:
-            report("NOTE the Constant's extent menu has no Size entry: %r" % (options,))
-            return False
-        extent.setValue(index)
-        corner.setValue(left, bottom)
-        size.setValue(width, height)
-        return True
+        require("size" in options, "the Crop's extent menu has a Size entry (%r)" % (options,))
+        extent.setValue(options.index("size"))
+        param(crop, "reformat").setValue(False)
+        param(crop, "bottomLeft").setValue(left, bottom)
+        param(crop, "size").setValue(width, height)
+        return crop
 
     def viewer_node():
         if not _viewer:
@@ -251,9 +249,11 @@ try:
         check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
         yield from expect_colour("red", "without a Mask A covers everywhere, red")
         connect(keymix, 2, white)
+        check(param(keymix, "enableMask_Mask").getValue(), "connecting the Mask enables it")
         yield from expect_colour("red", "a white Mask shows A, red")
         gt.shot("m121-keymix.png")
-        param(white, "color").set(0.0, 0.0, 0.0, 1.0)
+        # The mask reads rgba.A (as in Nuke), so black means alpha 0 too.
+        param(white, "color").set(0.0, 0.0, 0.0, 0.0)
         yield from expect_colour("blue", "a black Mask shows B, blue")
         param(white, "color").set(1.0, 1.0, 1.0, 1.0)
         yield from expect_colour("red", "the Mask white again shows A, red")
@@ -276,9 +276,8 @@ try:
 
     def section_adjustbbox():
         gt.section("adjustbbox")
-        source = constant((0.9, 0.0, 0.0), 0, 800)
-        boxed = set_constant_box(source, 0, 0, 200, 200)
-        check(boxed, "the Constant is a 200x200 box in the bottom-left corner")
+        plate = constant((0.9, 0.0, 0.0), 0, 800)
+        source = crop_box(plate, 0, 0, 200, 200, 0, 850)
         show(source)
         yield ("sleep", SETTLE_MS * 2)
         before = colour()
@@ -298,8 +297,7 @@ try:
 
     def section_lightwrap():
         gt.section("lightwrap")
-        foreground = constant((0.5, 0.5, 0.5), 600, 0)
-        set_constant_box(foreground, 700, 380, 520, 320)
+        foreground = crop_box(constant((0.5, 0.5, 0.5), 600, 0), 480, 270, 960, 540, 600, 100)
         background = constant((0.9, 0.5, 0.1), 800, 0)
         wrap = create(PLUGIN_LIGHTWRAP, 700, 200)
         connect(wrap, 0, foreground)
@@ -307,6 +305,11 @@ try:
         show(wrap)
         use_constant = param(wrap, "useConstant")
         disable_luma = param(wrap, "disableLuma")
+        # Intensity defaults to 0 (as in Nuke), which multiplies the wrap away; Generate Wrap Only
+        # keeps the plus-merged foreground from clamping the differences out.
+        param(wrap, "intensity").setValue(1.0)
+        param(wrap, "diffuse").setValue(60.0, 60.0)
+        param(wrap, "onlyWrap").setValue(True)
         yield ("sleep", SETTLE_MS * 4)
         base = viewer_crop()
         report("NOTE LightWrap defaults: useConstant=%r disableLuma=%r" % (use_constant.getValue(), disable_luma.getValue()))

@@ -54,6 +54,8 @@ struct CurvePoint {
     Point position;
     Point left;
     Point right;
+    // The handles turn here (a corner): a Bezier must keep them broken, or it realigns them.
+    bool cusp = false;
 };
 
 struct Contour {

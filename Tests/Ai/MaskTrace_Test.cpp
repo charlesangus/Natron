@@ -240,6 +240,130 @@ TEST(MaskTrace, StraightModeKeepsCorners)
     }
 }
 
+namespace {
+
+struct Rect {
+    double x0, y0, x1, y1;
+
+    bool contains(double x, double y) const
+    {
+        return (x >= x0) && (x < x1) && (y >= y0) && (y < y1);
+    }
+
+    // Unsigned distance from (x, y) to the rectangle's boundary.
+    double boundaryDistance(double x, double y) const
+    {
+        const double dx = std::max(std::max(x0 - x, x - x1), 0.);
+        const double dy = std::max(std::max(y0 - y, y - y1), 0.);
+        if ((dx > 0.) || (dy > 0.)) {
+            return std::hypot(dx, dy);
+        }
+
+        return std::min(std::min(x - x0, x1 - x), std::min(y - y0, y1 - y));
+    }
+};
+
+/*
+ * A rectangle with a rectangular hole. Crisp, pixels are in or out by their centre; soft, the value
+ * ramps linearly over a pixel across each side, as a mask upsampled from a coarser one does.
+ */
+std::vector<float>
+frameMask(int width,
+          int height,
+          const Rect& outer,
+          const Rect& hole,
+          bool soft)
+{
+    std::vector<float> mask((size_t)width * height);
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const double px = x + 0.5, py = y + 0.5;
+            float value;
+            if (soft) {
+                const double inOuter = outer.contains(px, py) ? outer.boundaryDistance(px, py) : -outer.boundaryDistance(px, py);
+                const double inHole = hole.contains(px, py) ? hole.boundaryDistance(px, py) : -hole.boundaryDistance(px, py);
+                value = (float)std::min(1., std::max(0., std::min(inOuter, -inHole) + 0.5));
+            } else {
+                value = (outer.contains(px, py) && !hole.contains(px, py)) ? 1.f : 0.f;
+            }
+            mask[(size_t)y * width + x] = value;
+        }
+    }
+
+    return mask;
+}
+
+} // namespace
+
+TEST(MaskTrace, SmoothModeKeepsRectanglesStraight)
+{
+    const int w = 128, h = 96;
+    const Rect outer = { 16., 8., 112., 88. };
+    const Rect hole = { 52., 36., 76., 60. };
+
+    for (int soft = 0; soft < 2; ++soft) {
+        SCOPED_TRACE(soft ? "soft edges" : "crisp edges");
+        const std::vector<MaskTrace::Contour> contours = MaskTrace::trace(frameMask(w, h, outer, hole, soft), w, h, MaskTrace::Options());
+        ASSERT_EQ(2u, contours.size());
+        ASSERT_FALSE(contours[0].isHole);
+        ASSERT_TRUE(contours[1].isHole);
+
+        // Every point of the curves lies on its rectangle's sides.
+        const Rect* rects[2] = { &outer, &hole };
+        for (int c = 0; c < 2; ++c) {
+            double worst = 0.;
+            for (const MaskTrace::Point& p : sampleContour(contours[c], 64)) {
+                worst = std::max(worst, rects[c]->boundaryDistance(p.x, p.y));
+            }
+            EXPECT_LT(worst, 1.) << "contour " << c;
+            // The four corners are cusps, which a Bezier must keep broken.
+            int cusps = 0;
+            for (const MaskTrace::CurvePoint& p : contours[c].points) {
+                cusps += p.cusp ? 1 : 0;
+            }
+            EXPECT_EQ(4, cusps) << "contour " << c;
+        }
+
+        // The matte the curves enclose matches the object, sampled four times per pixel side.
+        MaskTrace::Polygon outline, cut;
+        outline.points = sampleContour(contours[0]);
+        cut.points = sampleContour(contours[1]);
+        int both = 0, either = 0;
+        for (int y = 0; y < h * 4; ++y) {
+            for (int x = 0; x < w * 4; ++x) {
+                MaskTrace::Point q;
+                q.x = (x + 0.5) / 4.;
+                q.y = (y + 0.5) / 4.;
+                const bool traced = MaskTrace::contains(outline, q) && !MaskTrace::contains(cut, q);
+                const bool truth = outer.contains(q.x, q.y) && !hole.contains(q.x, q.y);
+                both += (traced && truth) ? 1 : 0;
+                either += (traced || truth) ? 1 : 0;
+            }
+        }
+        EXPECT_GT((double)both / either, 0.97);
+    }
+}
+
+TEST(MaskTrace, CurvePointsCuspOnlyAtCorners)
+{
+    const int w = 96, h = 96;
+    const std::vector<float> disc = ringMask(w, h, 48., 48., 30., 0.);
+    const std::vector<MaskTrace::Contour> smooth = MaskTrace::trace(disc, w, h, MaskTrace::Options());
+
+    ASSERT_EQ(1u, smooth.size());
+    for (const MaskTrace::CurvePoint& p : smooth[0].points) {
+        EXPECT_FALSE(p.cusp);
+    }
+    MaskTrace::Options straight;
+    straight.smooth = false;
+    const std::vector<MaskTrace::Contour> polygonal = MaskTrace::trace(disc, w, h, straight);
+    ASSERT_EQ(1u, polygonal.size());
+    for (const MaskTrace::CurvePoint& p : polygonal[0].points) {
+        EXPECT_TRUE(p.cusp);
+    }
+}
+
 TEST(MaskTrace, EmptyMaskHasNoContours)
 {
     const std::vector<float> mask((size_t)32 * 32, 0.f);

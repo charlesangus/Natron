@@ -131,6 +131,71 @@ namespace {
         }
     }
 
+    struct Line {
+        Point origin;
+        Point direction;
+        bool valid = false;
+    };
+
+    /*
+     * The least-squares line through the points from index `from` on, `steps` points along the closed
+     * polygon, leaving out those within `skip` of either end: the bevel marching squares cuts at a
+     * corner. Invalid when too few points remain or one strays further than `tolerance` from it.
+     */
+    Line
+    fitEdgeLine(const std::vector<Point>& pts,
+                int from,
+                int steps,
+                double skip,
+                double tolerance)
+    {
+        const int n = (int)pts.size();
+        const Point& endA = pts[from % n];
+        const Point& endB = pts[(from + steps) % n];
+        std::vector<Point> used;
+
+        for (int o = 0; o <= steps; ++o) {
+            const Point& p = pts[(from + o) % n];
+            if ((length(p - endA) > skip) && (length(p - endB) > skip)) {
+                used.push_back(p);
+            }
+        }
+        Line line;
+        if (used.size() < 3) {
+            return line;
+        }
+        Point centre;
+        for (const Point& p : used) {
+            centre = centre + p;
+        }
+        centre = centre * (1. / used.size());
+        double sxx = 0., syy = 0., sxy = 0.;
+        for (const Point& p : used) {
+            const Point d = p - centre;
+            sxx += d.x * d.x;
+            syy += d.y * d.y;
+            sxy += d.x * d.y;
+        }
+        const double angle = 0.5 * std::atan2(2. * sxy, sxx - syy);
+        Point direction;
+        direction.x = std::cos(angle);
+        direction.y = std::sin(angle);
+        if (dot(direction, endB - endA) < 0.) {
+            direction = direction * -1.;
+        }
+        for (const Point& p : used) {
+            const Point d = p - centre;
+            if (std::fabs(d.x * direction.y - d.y * direction.x) > tolerance) {
+                return line;
+            }
+        }
+        line.origin = centre;
+        line.direction = direction;
+        line.valid = true;
+
+        return line;
+    }
+
     // Kept vertex indices of a closed polygon after Douglas-Peucker, ascending.
     std::vector<int>
     simplifyIndices(const std::vector<Point>& pts,
@@ -568,6 +633,7 @@ straightCurves(const Polygon& polygon)
         cp.position = p;
         cp.left = p;
         cp.right = p;
+        cp.cusp = true;
         result.push_back(cp);
     }
 
@@ -591,13 +657,18 @@ fitCurves(const Polygon& polygon,
     const std::vector<int> kept = simplifyIndices(pts, maxError);
     const double cosLimit = std::cos(cornerAngle * kPi / 180.);
     std::vector<std::pair<int, bool>> splits;
+    // A corner's neighbours on the simplified outline, by index.
+    std::unordered_map<int, std::pair<int, int>> cornerNeighbours;
     for (std::size_t k = 0; k < kept.size(); ++k) {
-        const Point& prev = pts[kept[(k + kept.size() - 1) % kept.size()]];
+        const int prevIndex = kept[(k + kept.size() - 1) % kept.size()];
+        const int nextIndex = kept[(k + 1) % kept.size()];
+        const Point& prev = pts[prevIndex];
         const Point& cur = pts[kept[k]];
-        const Point& next = pts[kept[(k + 1) % kept.size()]];
+        const Point& next = pts[nextIndex];
         const double cosTurn = dot(normalized(cur - prev), normalized(next - cur));
         if (cosTurn < cosLimit) {
             splits.push_back(std::make_pair(kept[k], true));
+            cornerNeighbours[kept[k]] = std::make_pair(prevIndex, nextIndex);
         }
     }
     // A closed run needs at least three points to stay a curve with area; add smooth joins.
@@ -628,7 +699,47 @@ fitCurves(const Polygon& polygon,
         return normalized(at(i + reach) - at(i - reach));
     };
 
+    /*
+     * Marching squares bevels a corner, so the corner vertex sits up to a pixel or so along one edge
+     * and the points next to it point off the edges. Where both edges are straight, the corner moves
+     * to where their lines meet and its tangents follow them; otherwise the tangents follow the
+     * chords to the neighbouring simplified vertices.
+     */
+    struct Corner {
+        Point position;
+        Point tangentIn;
+        Point tangentOut;
+    };
+    std::unordered_map<int, Corner> corners;
+    const double bevel = 2.;
+    for (const std::pair<const int, std::pair<int, int>>& entry : cornerNeighbours) {
+        const int c = entry.first;
+        const int prevIndex = entry.second.first;
+        const int nextIndex = entry.second.second;
+        const int stepsIn = ((c - prevIndex) % n + n) % n;
+        const int stepsOut = ((nextIndex - c) % n + n) % n;
+        const Line in = fitEdgeLine(pts, prevIndex, stepsIn, bevel, maxError);
+        const Line out = fitEdgeLine(pts, c, stepsOut, bevel, maxError);
+        Corner corner;
+        corner.position = pts[c];
+        corner.tangentIn = in.valid ? in.direction : normalized(pts[c] - pts[prevIndex]);
+        corner.tangentOut = out.valid ? out.direction : normalized(pts[nextIndex] - pts[c]);
+        if (in.valid && out.valid) {
+            const double cross = in.direction.x * out.direction.y - in.direction.y * out.direction.x;
+            if (std::fabs(cross) > 0.2) {
+                const Point d = out.origin - in.origin;
+                const double t = (d.x * out.direction.y - d.y * out.direction.x) / cross;
+                const Point meet = in.origin + in.direction * t;
+                if (length(meet - pts[c]) <= std::max(bevel, 2. * maxError)) {
+                    corner.position = meet;
+                }
+            }
+        }
+        corners[c] = corner;
+    }
+
     std::vector<Cubic> cubics;
+    std::vector<char> cubicCusps;
     for (std::size_t k = 0; k < splits.size(); ++k) {
         const std::pair<int, bool>& a = splits[k];
         const std::pair<int, bool>& b = splits[(k + 1) % splits.size()];
@@ -641,10 +752,20 @@ fitCurves(const Polygon& polygon,
             run.push_back(at(i));
         }
         const int last = (int)run.size() - 1;
-        const int r = std::max(1, std::min(reach, last));
-        const Point tHat1 = a.second ? normalized(run[r] - run[0]) : smoothTangent(a.first);
-        const Point tHat2 = b.second ? normalized(run[last - r] - run[last]) : smoothTangent(b.first) * -1.;
+        if (a.second) {
+            run[0] = corners[a.first].position;
+        }
+        if (b.second) {
+            run[last] = corners[b.first].position;
+        }
+        const Point tHat1 = a.second ? corners[a.first].tangentOut : smoothTangent(a.first);
+        const Point tHat2 = b.second ? corners[b.first].tangentIn * -1. : smoothTangent(b.first) * -1.;
+        const std::size_t first = cubics.size();
         fitCubic(run, 0, last, tHat1, tHat2, maxError, &cubics);
+        cubicCusps.resize(cubics.size(), 0);
+        if (cubics.size() > first) {
+            cubicCusps[first] = a.second;
+        }
     }
 
     std::vector<CurvePoint> result;
@@ -654,6 +775,7 @@ fitCurves(const Polygon& polygon,
         cp.position = cubics[k].p[0];
         cp.right = cubics[k].p[1];
         cp.left = cubics[(k + m - 1) % m].p[2];
+        cp.cusp = cubicCusps[k];
         result.push_back(cp);
     }
 

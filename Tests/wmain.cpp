@@ -207,7 +207,7 @@ void
 registerOverlayTestPlugins()
 {
     // The app already registered it when NATRON_GUI_TEST_NODES=1 is set.
-    if (!appPTR->getPluginBinary(QString::fromUtf8(kTestPluginIDOverlay), -1, -1, false)) {
+    if (appPTR->getPluginsList().count(kTestPluginIDOverlay) == 0) {
         registerTestBuiltInPlugin<OverlayTestNode>();
     }
 }

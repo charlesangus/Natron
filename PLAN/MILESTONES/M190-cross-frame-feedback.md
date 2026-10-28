@@ -41,7 +41,7 @@ Acceptance sketch:
   - size: M
 - [ ] M190.P1.T2 — Add cross-frame knobs, hashing and LoopBegin's back-reference
   - files: `Engine/Nodes/Loop/LoopEnd.{h,cpp}`, `Engine/Nodes/Loop/LoopBegin.{h,cpp}`
-  - approach: add the knobs, shown only when Cross Frame is on (`refreshKnobVisibility`). Under crossFrame, `LoopBegin::appendNodeContentHash` folds the body digest (as under feedback, LoopBegin.cpp:457) plus `startFrame`, and the output is frame-varying. LoopBegin at iteration 0, f > start, outputs `LoopEnd::crossFrameImage(f−1)` (T3). The request pass adds no edge to f−1, so a frame's graph stays bounded. The stored window is LoopEnd's RoD clipped to LoopBegin's input format.
+  - approach: add the knobs, shown only when Cross Frame is on (`refreshKnobVisibility`). Under crossFrame, `LoopBegin::appendNodeContentHash` folds the body digest (as under feedback, LoopBegin.cpp:457) plus `startFrame`, and the output is frame-varying. LoopBegin at iteration 0, f > start, outputs `LoopEnd::crossFrameImage(f−1)` (T3). The request pass adds no edge to f−1, so a frame's graph stays bounded. The stored window is LoopEnd's RoD, unclipped (user, 2026-10-28).
   - verify: at the phase build, `ctest -R NativeLoopCrossFrame` (T4) passes.
   - size: L
 - [ ] M190.P1.T3 — Drive missing frames from the nearest cached frame
@@ -69,7 +69,7 @@ Acceptance sketch:
   - size: M
 - [ ] M190.P2.T3 — GUI check and docs
   - files: `Tests/gui/m190_cross_frame.py`, `Engine/Nodes/Loop/docs/LoopEnd.md`
-  - approach: under Xvfb: the knobs carry the labels above. Bake shows progress, then the trail plays back from the bake. Screenshots. Docs cover semantics, the budget/checkpoints, the bake and the window clipping.
+  - approach: under Xvfb: the knobs carry the labels above. Bake shows progress, then the trail plays back from the bake. Screenshots. Docs cover semantics, the budget/checkpoints, the bake and the stored window (LoopEnd's RoD).
   - verify: the script passes under the remote GUI runner; docs reviewed at the gate.
   - size: M
 
@@ -77,6 +77,7 @@ Acceptance sketch:
 
 ## Decisions
 
-- 2026-10-28: elaborated (consultant). Defaults from its recommendations, open to the user's override: the stored window is LoopEnd's RoD clipped to LoopBegin's input format (trails that leave the frame are lost); the RAM budget is a share of the image-cache setting, not a knob; Load From Cache keeps loading after upstream edits with a warning, as Houdini does.
+- 2026-10-28 — **Respect the RoD; don't clip to the input format (user).** Trails that leave the frame are kept.
+- 2026-10-28: elaborated (consultant). Defaults from its recommendations, open to the user's override: the RAM budget is a share of the image-cache setting, not a knob; Load From Cache keeps loading after upstream edits with a warning, as Houdini does.
 - 2026-10-26: RFVs bind to Set knobs and evaluate at the requested frame (M71 Phase 71.5); cross-frame results are keyed by binding identity and frame, so rendering N-1 from N carries RFV(N-1).
 - 2026-10-25 — **Design for trails and simulations equally (user).**

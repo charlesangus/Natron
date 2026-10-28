@@ -420,7 +420,8 @@ using PassGpuRecorder = std::function<StatusEnum(const PassGpuIO&)>;
 /**
  * @brief What a Passes op computes for one render: passes in order over scratchSlots scratch
  * buffers, the result read from resultSlot. boundary is how slot 0 reads the source outside its
- * image. gpu records the whole list on the GPU; without it the op stays on the CPU.
+ * image. gpu records the whole list on the GPU; without it, or for a query gpuAccepts refuses,
+ * the op stays on the CPU.
  *
  * opMask is for an op that applies its mask itself, inside the passes, rather than the MaskMix
  * stage blending its output with the source: the executors hand the mask over in PassScratch::mask
@@ -434,6 +435,9 @@ struct PassList {
     int resultSlot = 0;
     bool opMask = false;
     PassGpuRecorder gpu;
+    // When set, gpu records the list only for the queries it accepts, as a frame within the
+    // device's scratch.
+    std::function<bool(const GpuQuery&)> gpuAccepts;
 
     bool empty() const WARN_UNUSED_RETURN
     {

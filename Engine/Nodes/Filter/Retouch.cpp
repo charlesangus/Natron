@@ -337,6 +337,7 @@ Retouch::Retouch(NodePtr node)
     // Built here, as RotoPaint does: Node::load() creates the curve context before initializeKnobs()
     // and its endChanges() already calls knobChanged().
     , _ui(RotoCurveInteract::create(this))
+    , _result(kRetouchFrameResult)
 {
 }
 
@@ -1275,29 +1276,18 @@ Retouch::readParams(double time,
 }
 
 bool
-Retouch::sourceRoD(double time,
-                   ViewIdx view,
-                   RectD* rod) const
+Retouch::framePixels(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     RectI* pixels) const
 {
-    const int sourceInput = getSourceInput();
-    EffectInstancePtr input = getInput(sourceInput);
+    return wholeFramePixels(*this, getSourceInput(), time, view, scale, pixels) && !pixels->isNull();
+}
 
-    if (!input) {
-        return false;
-    }
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    if (rod->isInfinite()) {
-        const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-        if (!metadata) {
-            return false;
-        }
-        *rod = rod->intersect(PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, metadata->getPixelAspectRatio(sourceInput)));
-    }
-
-    return !rod->isNull();
+void
+Retouch::purgeCaches()
+{
+    _result.clear();
 }
 
 std::vector<RC::Shape>
@@ -1365,11 +1355,17 @@ Retouch::getRegionsOfInterest(double time,
 {
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
-    EffectInstancePtr input = getInput(getSourceInput());
-    RectD rod;
-    if (input && sourceRoD(time, view, &rod)) {
-        (*ret)[input] = rod;
+    const int sourceInput = getSourceInput();
+    EffectInstancePtr input = getInput(sourceInput);
+    RectI frame;
+    if (!input || !framePixels(time, view, scale, &frame)) {
+        return;
     }
+    // The whole frame, and the window, outside the frame passed through.
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    RectD need = PassExec::toCanonical(frame, scale, metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.);
+    need.merge(renderWindow);
+    (*ret)[input] = need;
 }
 
 bool
@@ -1401,36 +1397,13 @@ Retouch::renderOp(const RenderActionArgs& args,
                   const StagePlan& plan)
 {
     const int sourceInput = getSourceInput();
-    RectD rod;
-    if (!sourceRoD(args.time, args.view, &rod)) {
+    RectI full;
+    if (!framePixels(args.time, args.view, args.mappedScale, &full)) {
         return eStatusFailed;
     }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
-    const double par = metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.;
-    const RectI full = PassExec::toPixelEnclosing(rod, args.mappedScale, par);
-    if (full.isNull()) {
-        return eStatusFailed;
-    }
-    const RC::Params params = readParams(args.time, args.view, (float)args.mappedScale.toOfxPointD().x);
-    const std::vector<RC::Shape> shapes = collectShapes(args.time, args.mappedScale, full);
-
-    ImagePtr src;
-    ImageLayerDesc sourceLayer;
-    if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
-        RectI sourceRoI;
-        src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
-    }
-    if (src && !PassExec::isFloatImage(src)) {
-        return eStatusFailed;
-    }
-    std::shared_ptr<Image::ReadAccess> srcAccess;
-    RectI srcBounds;
-    int srcNComps = 0;
-    if (src) {
-        srcAccess = std::make_shared<Image::ReadAccess>(src.get());
-        srcBounds = src->getBounds();
-        srcNComps = (int)src->getComponentsCount();
-    }
+    RectI overlap;
+    // A window outside the frame is the source alone.
+    const bool touchesFrame = PassExec::intersectRects(args.roi, full, &overlap) && !PassExec::isEmptyRect(overlap);
 
     RenderCancellation cancel(this);
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
@@ -1446,35 +1419,68 @@ Retouch::renderOp(const RenderActionArgs& args,
         }
         const int nComps = (int)it->second->getComponentsCount();
 
-        // The whole source, top-down, as darktable's 4 channels: one channel goes to all three colours.
-        std::vector<float> image((std::size_t)width * height * 4, 0.f);
-        parallel(height, [&](int r) {
-            const int y = full.y2 - 1 - r;
-            std::vector<float> row((std::size_t)width * nComps);
-            PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, row.data());
-            float* dst = &image[(std::size_t)r * width * 4];
-            for (int x = 0; x < width; ++x) {
-                const float* p = &row[(std::size_t)x * nComps];
-                if (nComps == 1) {
-                    dst[4 * x] = dst[4 * x + 1] = dst[4 * x + 2] = p[0];
-                } else {
-                    for (int c = 0; c < std::min(nComps, 4); ++c) {
-                        dst[4 * x + c] = p[c];
-                    }
+        WholeFrameCache::Result result;
+        if (touchesFrame) {
+            const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, full, it->first.getLayerID(), nComps);
+            result = _result.get(key, [&]() -> WholeFrameCache::Result {
+                ImagePtr src;
+                ImageLayerDesc sourceLayer;
+                if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
+                    RectI sourceRoI;
+                    src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
                 }
+                if (src && !PassExec::isFloatImage(src)) {
+                    return WholeFrameCache::Result();
+                }
+                std::shared_ptr<Image::ReadAccess> srcAccess;
+                RectI srcBounds;
+                int srcNComps = 0;
+                if (src) {
+                    srcAccess = std::make_shared<Image::ReadAccess>(src.get());
+                    srcBounds = src->getBounds();
+                    srcNComps = (int)src->getComponentsCount();
+                }
+                const RC::Params params = readParams(args.time, args.view, (float)args.mappedScale.toOfxPointD().x);
+                const std::vector<RC::Shape> shapes = collectShapes(args.time, args.mappedScale, full);
+
+                // The whole source, top-down, as darktable's 4 channels: one channel goes to all three colours.
+                auto processed = std::make_shared<std::vector<float>>((std::size_t)width * height * 4, 0.f);
+                std::vector<float>& image = *processed;
+                parallel(height, [&](int r) {
+                    const int y = full.y2 - 1 - r;
+                    std::vector<float> row((std::size_t)width * nComps);
+                    PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, row.data());
+                    float* dst = &image[(std::size_t)r * width * 4];
+                    for (int x = 0; x < width; ++x) {
+                        const float* p = &row[(std::size_t)x * nComps];
+                        if (nComps == 1) {
+                            dst[4 * x] = dst[4 * x + 1] = dst[4 * x + 2] = p[0];
+                        } else {
+                            for (int c = 0; c < std::min(nComps, 4); ++c) {
+                                dst[4 * x + c] = p[c];
+                            }
+                        }
+                    }
+                });
+                if (cancel.check()) {
+                    return WholeFrameCache::Result();
+                }
+                RC::process(image.data(), width, height, params, shapes, parallel);
+                if (cancel.check()) {
+                    return WholeFrameCache::Result();
+                }
+
+                return processed;
+            });
+            if (!result) {
+                return eStatusFailed;
             }
-        });
-        if (cancel.check()) {
-            return eStatusFailed;
         }
-        RC::process(image.data(), width, height, params, shapes, parallel);
-        if (cancel.check()) {
-            return eStatusFailed;
-        }
+        const float* image = result ? result->data() : nullptr;
 
         const auto row = [&](const RowIO& io) {
             const float zero[4] = { 0.f, 0.f, 0.f, 0.f };
-            const bool insideRow = (io.y >= full.y1) && (io.y < full.y2);
+            const bool insideRow = image && (io.y >= full.y1) && (io.y < full.y2);
             const std::size_t rowStart = insideRow ? (std::size_t)(full.y2 - 1 - io.y) * width : 0;
             for (int i = 0; i < io.width; ++i) {
                 const int x = io.x0 + i;
@@ -1564,14 +1570,7 @@ Retouch::gpuPlan(double time,
                  RC::Params* params,
                  int* scales) const
 {
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(getSourceInput()) : 1.;
-    *full = PassExec::toPixelEnclosing(rod, scale, par);
-    if (full->isNull()) {
+    if (!framePixels(time, view, scale, full)) {
         return false;
     }
     *params = readParams(time, view, (float)scale.toOfxPointD().x);
@@ -1603,6 +1602,10 @@ Retouch::canRenderOpOnGpu(const GpuQuery& query) const
     RC::Params params;
     int scales = 0;
     if (!gpuPlan(query.time, query.view, query.mappedScale, &full, &params, &scales)) {
+        return false;
+    }
+    // The frame is held as four floats a pixel in one buffer.
+    if (!wholeFrameFitsGpu(full, 4, query.maxScratchBytes)) {
         return false;
     }
     RotoCurveContextPtr context = getNode()->getCurveContext();
@@ -1661,15 +1664,9 @@ Retouch::getOpGpuInputRoI(int inputNb,
     if (inputNb != getSourceInput()) {
         return outputRect;
     }
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
-        return outputRect;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(inputNb) : 1.;
-    const RectI full = PassExec::toPixelEnclosing(rod, scale, par);
+    RectI full;
 
-    return full.isNull() ? outputRect : full;
+    return framePixels(time, view, scale, &full) ? full : outputRect;
 }
 
 StatusEnum

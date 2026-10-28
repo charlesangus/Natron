@@ -192,6 +192,43 @@ ellipsePoints(double cx,
 
     return points;
 }
+
+/**
+ * Two shapes of algorithm for the region tests' frame, (-37, 21) to (166, 178): one on the image
+ * across the seams of the 3x3 tiling at x 21 and y 73, and one on wavelet scale 2, each with its
+ * source inside the frame.
+ **/
+inline std::vector<ShapeSpec>
+regionShapeSpecs(RetouchCore::AlgorithmEnum algorithm)
+{
+    ShapeSpec acrossSeams;
+    acrossSeams.cx = 21.;
+    acrossSeams.cy = 73.;
+    acrossSeams.diameter = 30.;
+    acrossSeams.algorithm = algorithm;
+    acrossSeams.scale = 0;
+    acrossSeams.sourceX = 40.;
+    acrossSeams.sourceY = 30.;
+    acrossSeams.feather = 2.;
+    acrossSeams.blurRadius = 6.;
+    acrossSeams.fillMode = RetouchCore::eFillModeColor;
+    acrossSeams.fillColor[0] = 0.8;
+    acrossSeams.fillColor[1] = 0.2;
+    acrossSeams.fillColor[2] = 0.1;
+    acrossSeams.fillBrightness = 0.1;
+
+    ShapeSpec coarse = acrossSeams;
+    coarse.cx = 110.;
+    coarse.cy = 140.;
+    coarse.diameter = 24.;
+    coarse.scale = 2;
+    coarse.sourceX = -30.;
+    coarse.sourceY = -20.;
+    coarse.opacity = 0.7;
+    coarse.fillMode = RetouchCore::eFillModeErase;
+
+    return { acrossSeams, coarse };
+}
 } // namespace RetouchTest
 
 NATRON_NAMESPACE_EXIT

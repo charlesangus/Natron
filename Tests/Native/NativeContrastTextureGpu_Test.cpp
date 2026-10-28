@@ -35,6 +35,7 @@
 #include "BaseTest.h"
 #include "Native/NativeGpuParity.h"
 #include "NativeParity.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -219,3 +220,65 @@ TEST_F(NativeContrastTextureGpuTest, MaskDisplayMatchesTheCpu)
         expectParity(node, std::string("mask display ") + display);
     }
 }
+
+namespace {
+
+class ContrastTextureGpuRegionTest
+    : public RegionIndependenceTest {
+protected:
+    NodePtr makeContrastTexture(const NodePtr& source,
+                                const std::vector<std::pair<const char*, double>>& knobs)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_CONTRASTTEXTURE, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kContrastTextureParamCoarse, { 0.4 }));
+        EXPECT_TRUE(setKnobValues(node, kContrastTextureParamMedium, { 0.6 }));
+        EXPECT_TRUE(setKnobValues(node, kContrastTextureParamFine, { 0.8 }));
+        for (const auto& knob : knobs) {
+            EXPECT_TRUE(setKnobValues(node, knob.first, { knob.second })) << knob.first;
+        }
+
+        return node;
+    }
+};
+
+// A frame too large for one device buffer is refused before anything is recorded.
+TEST_F(ContrastTextureGpuRegionTest, OversizedFrameStaysOnTheCpu)
+{
+    NodePtr source = createRegionSource(RectI(0, 0, 70000, 70000), false);
+    NodePtr node = makeContrastTexture(source, {});
+    ContrastTexture* effect = node ? dynamic_cast<ContrastTexture*>(node->getEffectInstance().get()) : NULL;
+    ASSERT_TRUE(effect != NULL);
+    GpuQuery q = eligibleQuery();
+    q.mappedScale = RenderScale::identity;
+    EXPECT_FALSE(effect->canRenderOnGpu(q));
+}
+
+#ifdef NATRON_HAVE_GPU
+TEST_F(ContrastTextureGpuRegionTest, RegionIndependentGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    RegionIndependenceOptions options;
+    options.gpu = runtime.get();
+    options.gpuTolerance = kContrastTextureTolerance;
+    const std::vector<std::vector<std::pair<const char*, double>>> settings = {
+        {},
+        { { kContrastTextureParamDetailLevel, 2. }, { kContrastTextureParamHaloControl, 1. }, { kContrastTextureParamNoiseBias, 0.01 }, { kContrastTextureParamShadows, 0.5 }, { kContrastTextureParamHighlights, -0.5 } },
+        { { kContrastTextureParamDetailLevel, 1. }, { kContrastTextureParamHaloControl, -3. } },
+    };
+    for (const auto& knobs : settings) {
+        expectRegionIndependent([this, knobs](const NodePtr& source) {
+            return makeContrastTexture(source, knobs);
+        },
+                                options);
+    }
+}
+#endif
+
+} // namespace

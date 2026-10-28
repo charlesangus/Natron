@@ -32,6 +32,7 @@
 #include <gtest/gtest.h>
 
 #include "RawGpuTestSupport.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Color/ToneEqualizer.h"
@@ -258,5 +259,78 @@ TEST_F(NativeToneEqualizerGpuTest, AlphaPassesThrough)
         }
     }
 }
+
+namespace {
+
+// A ToneEqualizer of source with a curve that lifts the shadows and pulls the highlights down,
+// and details preserved by details.
+NodePtr
+setUpRegionToneEqualizer(const NodePtr& node,
+                         DetailsEnum details)
+{
+    if (!node) {
+        return node;
+    }
+    const char* const names[kBands] = {
+        kToneEqualizerParamBlacks,
+        kToneEqualizerParamDeepShadows,
+        kToneEqualizerParamShadows,
+        kToneEqualizerParamLightShadows,
+        kToneEqualizerParamMidtones,
+        kToneEqualizerParamDarkHighlights,
+        kToneEqualizerParamHighlights,
+        kToneEqualizerParamWhites,
+        kToneEqualizerParamSpeculars,
+    };
+    const double gains[kBands] = { 1.2, 0.9, 0.6, 0.3, 0., -0.2, -0.5, -0.8, -1. };
+    EffectInstancePtr effect = node->getEffectInstance();
+    for (int b = 0; b < kBands; ++b) {
+        KnobDoublePtr knob = effect->getKnobByNameAndType<KnobDouble>(names[b]);
+        EXPECT_TRUE(bool(knob)) << names[b];
+        if (knob) {
+            knob->setValue(gains[b]);
+        }
+    }
+    KnobChoicePtr preserve = effect->getKnobByNameAndType<KnobChoice>(kToneEqualizerParamPreserveDetails);
+    EXPECT_TRUE(bool(preserve));
+    if (preserve) {
+        preserve->setValue((int)details);
+    }
+    KnobDoublePtr diameter = effect->getKnobByNameAndType<KnobDouble>(kToneEqualizerParamSmoothingDiameter);
+    EXPECT_TRUE(bool(diameter));
+    if (diameter) {
+        diameter->setValue(10.);
+    }
+
+    return node;
+}
+
+// No filter, and the fast guided filter and the EIGF, each averaged (geometric mean blending) or
+// not (linear blending).
+const DetailsEnum kRegionDetails[] = { eDetailsNone, eDetailsAveragedGuided, eDetailsGuided, eDetailsAveragedEigf, eDetailsEigf };
+
+class ToneEqualizerRegionTest
+    : public RegionIndependenceTest {
+};
+
+TEST_F(ToneEqualizerRegionTest, RegionIndependentGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    RegionIndependenceOptions options;
+    options.gpu = runtime.get();
+    options.gpuTolerance = kGpuTolerance;
+    for (DetailsEnum details : kRegionDetails) {
+        SCOPED_TRACE((int)details);
+        expectRegionIndependent([this, details](const NodePtr& source) {
+            return setUpRegionToneEqualizer(createAfter(PLUGINID_NATRON_TONEEQUALIZER, source), details);
+        },
+                                options);
+    }
+}
+
+} // namespace
 
 #endif // NATRON_HAVE_GPU

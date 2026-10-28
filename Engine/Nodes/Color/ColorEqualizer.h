@@ -265,23 +265,37 @@ private:
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
-    // The source's region of definition: the passes' halo reaches it from any window.
+    // The whole frame (wholeFramePixels()) and the window: the passes' halo reaches the frame from
+    // any window, and the window outside it passes the source through.
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,
                                       const RectD& renderWindow,
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
-    // One pass without work carrying a halo that reaches the whole source from any window inside
-    // it: the region actions grow by it, the buffer is the whole region of definition, and
-    // renderOp() processes it itself.
+    // One pass without work carrying a halo that reaches the whole frame from any window inside
+    // it: the region actions grow by it, the buffer is the whole frame, and renderOp() processes
+    // it itself. The GPU takes only a frame its scratch holds.
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The whole frame of the source at time, view and scale, false when there is none.
+    bool framePixels(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     RectI* frame) const WARN_UNUSED_RETURN;
+
+    // Records the passes over frame, the source passed through outside it.
     StatusEnum recordGpu(const PassGpuIO& io,
                          const ColorEqualizerParams& params,
-                         float scale) const WARN_UNUSED_RETURN;
+                         float scale,
+                         const RectI& frame) const WARN_UNUSED_RETURN;
+    // Records them over io.domain, or with passThrough only copies the source over io.output.
+    StatusEnum recordGpuFrame(const PassGpuIO& io,
+                              const ColorEqualizerParams& params,
+                              float scale,
+                              bool passThrough) const WARN_UNUSED_RETURN;
 
     void installCurvePainter();
 
@@ -301,8 +315,8 @@ private:
     KnobDoubleWPtr _paramSize;
     KnobChoiceWPtr _output;
 
-    // The last whole-frame result renderOp() computed, the processed planes over the region of
-    // definition, under the key of what it depends on.
+    // The last whole-frame result renderOp() computed, the processed planes over the whole frame,
+    // under the key of what it depends on.
     mutable std::mutex _frameMutex;
     std::string _frameKey;
     std::shared_ptr<const std::vector<float>> _frame;

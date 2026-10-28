@@ -25,7 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <array>
+#include <atomic>
 #include <cmath>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -41,6 +44,7 @@
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RawReferenceSupport.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -49,6 +53,7 @@
 #include "Engine/Nodes/Filter/DenoiseProfiledKernels.h"
 #include "Engine/Nodes/Filter/NoiseProfiles.h"
 #include "Engine/Nodes/Raw/RawKernels.h"
+#include "Engine/Nodes/Raw/RawNodeSupport.h"
 
 NATRON_NAMESPACE_USING
 
@@ -544,3 +549,132 @@ TEST_F(NativeDenoiseProfiledReferenceTest, XTransMatchesDarktable)
 {
     compare(RawReference::rafSite());
 }
+
+namespace {
+
+class DenoiseProfiledRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A denoise of source in mode and colorMode, with darktable's manual non-local means job
+    // settings: patch 2, search 4, scattering 0.5, central pixel weight 0.3.
+    NodePtr makeDenoise(const NodePtr& source,
+                        ModeEnum mode,
+                        ColorModeEnum colorMode)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_DENOISEPROFILED, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kDenoiseProfiledParamMode, { (double)mode }));
+        EXPECT_TRUE(setKnobValues(node, kDenoiseProfiledParamColorMode, { (double)colorMode }));
+        EXPECT_TRUE(setKnobValues(node, kDenoiseProfiledParamPatchSize, { 2. }));
+        EXPECT_TRUE(setKnobValues(node, kDenoiseProfiledParamSearchRadius, { 4. }));
+        EXPECT_TRUE(setKnobValues(node, kDenoiseProfiledParamScattering, { 0.5 }));
+        EXPECT_TRUE(setKnobValues(node, kDenoiseProfiledParamCentralPixelWeight, { 0.3 }));
+
+        return node;
+    }
+
+    struct RegionCase {
+        const char* name;
+        ModeEnum mode;
+        ColorModeEnum colorMode;
+    };
+
+    static std::vector<RegionCase> regionCases()
+    {
+        return {
+            { "non-local means, RGB", eModeNlm, eColorModeRgb },
+            { "non-local means, Y0U0V0", eModeNlm, eColorModeY0U0V0 },
+            { "wavelets, RGB", eModeWavelets, eColorModeRgb },
+            { "wavelets, Y0U0V0", eModeWavelets, eColorModeY0U0V0 },
+        };
+    }
+
+    static DenoiseProfiled* denoiseOf(const NodePtr& node)
+    {
+        return node ? dynamic_cast<DenoiseProfiled*>(node->getEffectInstance().get()) : NULL;
+    }
+};
+
+TEST_F(DenoiseProfiledRegionTest, RegionIndependentCpu)
+{
+    for (const RegionCase& c : regionCases()) {
+        SCOPED_TRACE(c.name);
+        expectRegionIndependent([this, c](const NodePtr& source) {
+            return makeDenoise(source, c.mode, c.colorMode);
+        });
+    }
+}
+
+TEST_F(DenoiseProfiledRegionTest, RegionIndependentOverAnInfiniteSource)
+{
+    for (const RegionCase& c : regionCases()) {
+        SCOPED_TRACE(c.name);
+        expectInfiniteRoDClamped([this, c](const NodePtr& source) {
+            return makeDenoise(source, c.mode, c.colorMode);
+        });
+    }
+}
+
+// Compute Variance measures the whole frame, so whichever window a viewer asks for, the measure is
+// the same, the frame is measured once for all of them, and the output is the source.
+TEST_F(DenoiseProfiledRegionTest, ComputeVarianceMeasuresTheWholeFrame)
+{
+    std::atomic<int> computes(0);
+    RawNodeSupport::setFrameComputedHookForTests([&computes](const char* what, U64 /*key*/) {
+        if (std::string(what) == kDenoiseProfiledFrameVariance) {
+            ++computes;
+        }
+    });
+    const RectI frame(-37, 21, -37 + 203, 21 + 157);
+    const std::vector<RectI> windows = regionTestWindows(frame);
+
+    // Each of two windows from a fresh chain.
+    std::optional<std::array<double, 3>> measured[2];
+    const RectI apart[2] = { windows[0], windows[8] };
+    for (int i = 0; i < 2; ++i) {
+        appPTR->clearAllCaches();
+        NodePtr source = createRegionSource(frame, false);
+        NodePtr node = source ? makeDenoise(source, eModeVariance, eColorModeRgb) : NodePtr();
+        DenoiseProfiled* effect = denoiseOf(node);
+        ASSERT_TRUE(effect != NULL);
+        RenderedPlane out;
+        std::string error;
+        ASSERT_TRUE(renderPlane(node, 0, apart[i], ImageLayerDesc::getRGBAComponents(), true, &out, &error)) << error;
+        RenderedPlane in;
+        ASSERT_TRUE(renderPlane(source, 0, apart[i], ImageLayerDesc::getRGBAComponents(), true, &in, &error)) << error;
+        EXPECT_EQ(in.pixels, out.pixels) << "window " << describe(apart[i]);
+        measured[i] = effect->lastVariance();
+        destroyChain(node, source);
+    }
+    ASSERT_TRUE(measured[0].has_value() && measured[1].has_value());
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_EQ((*measured[0])[c], (*measured[1])[c]) << c;
+        EXPECT_GT((*measured[0])[c], 0.) << c;
+    }
+
+    // Every window in turn on one chain.
+    appPTR->clearAllCaches();
+    computes = 0;
+    NodePtr source = createRegionSource(frame, false);
+    NodePtr node = source ? makeDenoise(source, eModeVariance, eColorModeRgb) : NodePtr();
+    DenoiseProfiled* effect = denoiseOf(node);
+    ASSERT_TRUE(effect != NULL);
+    for (int i = 0; i < 9; ++i) {
+        RenderedPlane out;
+        std::string error;
+        ASSERT_TRUE(renderPlane(node, 0, windows[i], ImageLayerDesc::getRGBAComponents(), false, &out, &error)) << error;
+        const std::optional<std::array<double, 3>> variance = effect->lastVariance();
+        ASSERT_TRUE(variance.has_value()) << "window " << describe(windows[i]);
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_EQ((*measured[0])[c], (*variance)[c]) << "window " << describe(windows[i]) << ", channel " << c;
+        }
+    }
+    EXPECT_EQ(1, computes.load());
+    destroyChain(node, source);
+    appPTR->clearAllCaches();
+}
+
+} // namespace

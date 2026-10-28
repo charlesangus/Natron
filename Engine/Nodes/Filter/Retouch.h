@@ -39,6 +39,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/RetouchRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -85,6 +86,8 @@
 #define kRetouchOutputResult "result"
 #define kRetouchOutputCurrentScale "currentScale"
 #define kRetouchOutputResidual "residual"
+
+#define kRetouchFrameResult "Retouch.result"
 
 // The curve panel's actions.
 #define kRetouchActionCopyToScale "copyToCurrentScale"
@@ -262,7 +265,11 @@ private:
 
     RetouchCore::Params readParams(double time, ViewIdx view, float renderScale) const WARN_UNUSED_RETURN;
 
-    bool sourceRoD(double time, ViewIdx view, RectD* rod) const WARN_UNUSED_RETURN;
+    // The whole frame in pixels at scale: the source's region of definition, cut to the format when it is infinite.
+    bool framePixels(double time, ViewIdx view, const RenderScale& scale, RectI* pixels) const WARN_UNUSED_RETURN;
+
+    // Drops the kept results.
+    virtual void purgeCaches() OVERRIDE FINAL;
 
     // The region, parameters and capped scale count of a GPU render; false when the GPU cannot render it.
     bool gpuPlan(double time, ViewIdx view, const RenderScale& scale, RectI* full, RetouchCore::Params* params, int* scales) const WARN_UNUSED_RETURN;
@@ -335,6 +342,9 @@ private:
     double _dragTime = 0.;
     double _dragStart[2] = { 0., 0. };
     double _dragEnd[2] = { 0., 0. };
+
+    // The retouched frame, so tiles and windows of one frame process it once.
+    WholeFrameCache _result;
 };
 
 NATRON_NAMESPACE_EXIT

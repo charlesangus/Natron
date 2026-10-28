@@ -39,6 +39,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -323,6 +324,11 @@ struct RegionIndependenceOptions {
     // The node's GPU parity tolerance, for its GPU frame against its CPU frame.
     ParityTolerance gpuTolerance = ParityTolerance::exact();
 
+    // When set, compares the GPU frame with the CPU frame in place of gpuTolerance, for a node
+    // whose parity bound is statistical: given both frames interleaved with nComps channels, the
+    // description of the failure, or an empty string.
+    std::function<std::string(const std::vector<float>& cpu, const std::vector<float>& gpu, int nComps)> gpuCompare;
+
     // The query the GPU renders use; by default the plane in full with the node's processed channels.
     std::function<GpuQuery(NativeEffectBase& effect, const RenderScale& scale)> gpuQuery;
 #endif
@@ -385,6 +391,7 @@ protected:
         return node;
     }
 
+public:
     /**
      * @brief The windows checked over frame: a 3x3 uneven tiling, two overlapping windows offset
      * by (5, 3), one at each corner, a 1 px row and a 1 px column, and one past the frame on its
@@ -663,6 +670,104 @@ protected:
         }
     }
 
+    // A fresh chain under test, and the RawTestSource that feeds it.
+    using MakeRawChain = std::function<std::pair<NodePtr, NodePtr>()>;
+
+    /**
+     * @brief The windows of regionTestWindows() clipped to frame, which is all a raw source has.
+     **/
+    static std::vector<RectI> rawRegionTestWindows(const RectI& frame)
+    {
+        std::vector<RectI> windows;
+
+        for (const RectI& window : regionTestWindows(frame)) {
+            RectI inside;
+            if (PassExec::intersectRects(window, frame, &inside) && !PassExec::isEmptyRect(inside)) {
+                windows.push_back(inside);
+            }
+        }
+
+        return windows;
+    }
+
+    /**
+     * @brief As checkRegionIndependent() for a node of raw data, at full scale: the windows of
+     * rawRegionTestWindows() against the whole frame, bit for bit, each from a fresh chain and
+     * then in sequence on one chain through the caches. makeChain builds a chain whose source
+     * spans frame.
+     **/
+    static std::vector<std::string> checkRawRegionIndependent(const MakeRawChain& makeChain,
+                                                              const RectI& frame)
+    {
+        std::vector<std::string> mismatches;
+        auto failed = [&](const std::string& what, const std::string& error) {
+            ADD_FAILURE() << what << ": " << error;
+            mismatches.push_back(what + ": " + error);
+        };
+        const std::vector<RectI> windows = rawRegionTestWindows(frame);
+
+        RenderedPlane reference;
+        {
+            const std::pair<NodePtr, NodePtr> chain = makeChain();
+            std::string error;
+            const bool ok = chain.first && renderRawTestPlane(chain.first, frame, &reference, &error, true);
+            destroyChain(chain.first, chain.second);
+            if (!ok) {
+                failed("the whole frame " + describe(frame), chain.first ? error : std::string("no node"));
+
+                return mismatches;
+            }
+        }
+        for (const RectI& window : windows) {
+            const std::pair<NodePtr, NodePtr> chain = makeChain();
+            RenderedPlane got;
+            std::string error;
+            const bool ok = chain.first && renderRawTestPlane(chain.first, window, &got, &error, true);
+            destroyChain(chain.first, chain.second);
+            if (!ok) {
+                failed("window " + describe(window) + " alone", chain.first ? error : std::string("no node"));
+                continue;
+            }
+            const std::string mismatch = firstMismatch(reference, got, window);
+            if (!mismatch.empty()) {
+                mismatches.push_back("window " + describe(window) + " alone: " + mismatch);
+            }
+        }
+        {
+            const std::pair<NodePtr, NodePtr> chain = makeChain();
+            appPTR->clearAllCaches();
+            for (const RectI& window : windows) {
+                RenderedPlane got;
+                std::string error;
+                if (!chain.first || !renderRawTestPlane(chain.first, window, &got, &error, false)) {
+                    failed("window " + describe(window) + " in sequence", chain.first ? error : std::string("no node"));
+                    break;
+                }
+                const std::string mismatch = firstMismatch(reference, got, window);
+                if (!mismatch.empty()) {
+                    mismatches.push_back("window " + describe(window) + " in sequence: " + mismatch);
+                }
+            }
+            destroyChain(chain.first, chain.second);
+            appPTR->clearAllCaches();
+        }
+
+        return mismatches;
+    }
+
+    static void expectRawRegionIndependent(const MakeRawChain& makeChain,
+                                           const RectI& frame,
+                                           const std::string& what)
+    {
+        const std::vector<std::string> mismatches = checkRawRegionIndependent(makeChain, frame);
+        std::ostringstream all;
+
+        for (const std::string& line : mismatches) {
+            all << "\n  " << line;
+        }
+        EXPECT_TRUE(mismatches.empty()) << what << ": " << mismatches.size() << " windows differ from the whole frame:" << all.str();
+    }
+
 #ifdef NATRON_HAVE_GPU
 private:
     static GpuQuery defaultGpuQuery(NativeEffectBase& effect,
@@ -786,6 +891,14 @@ private:
                     gpu.push_back(pixelOf(gpuWhole, x, y, c));
                 }
             }
+        }
+        if (options.gpuCompare) {
+            const std::string failure = options.gpuCompare(cpu, gpu, nComps);
+            if (!failure.empty()) {
+                mismatches->push_back(at.str() + "frame against the CPU frame: " + failure);
+            }
+
+            return;
         }
         const ImageDiff diff = compareImages(cpu, gpu, options.gpuTolerance);
         if (diff.mismatches != 0) {

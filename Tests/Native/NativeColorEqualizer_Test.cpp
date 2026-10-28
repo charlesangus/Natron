@@ -40,6 +40,7 @@
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RawReferenceSupport.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -50,8 +51,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/DtColorSpaces.h"
-#include "Engine/Nodes/Generator/Noise.h"
-#include "Engine/Nodes/Generator/NoiseCore.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
@@ -613,70 +612,91 @@ TEST_F(NativeColorEqualizerTest, RenderMatchesTheKernel)
     EXPECT_EQ(0u, mismatches);
 }
 
-// Two overlapping windows of a frame larger than the guided filters' reach, at sizes where they
-// subsample, agree on their overlap: the filters run over the whole frame, not the window's reach.
-TEST_F(NativeColorEqualizerTest, OutputDoesNotDependOnTheRequestedRegion)
+namespace {
+
+class ColorEqualizerRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A 641x479 frame at (-37, 21): larger than the guided filters' reach, at a size where the
+    // Kodachrome 64-like preset subsamples.
+    static RegionIndependenceOptions regionOptions()
+    {
+        RegionIndependenceOptions options;
+        options.width = 641;
+        options.height = 479;
+
+        return options;
+    }
+
+    void setWorkingSpace(const std::string& name)
+    {
+        KnobChoicePtr workingSpace = getApp()->getProject()->getKnobByNameAndType<KnobChoice>("workingSpace");
+
+        ASSERT_TRUE(bool(workingSpace));
+        workingSpace->setValueFromID(name, 0);
+        ASSERT_EQ(name, getApp()->getProject()->getWorkingColorSpace());
+    }
+
+    // The equalizer of source with the Kodachrome 64-like preset, which subsamples its parameter
+    // filter by 4, showing output.
+    NodePtr makeEqualizer(const NodePtr& source,
+                          int output)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_COLOREQUALIZER, source, kColorEqualizerInputSource);
+        ColorEqualizer* effect = node ? dynamic_cast<ColorEqualizer*>(node->getEffectInstance().get()) : NULL;
+
+        EXPECT_TRUE(effect != NULL);
+        if (!effect) {
+            return node;
+        }
+        effect->applyPresetAt(1);
+        const ColorEqualizerScaled sigmas = ColorEqualizer::scaled(ColorEqualizer::commit(effect->getParams(kTime, ViewIdx(0))), 1.f);
+        EXPECT_EQ(4, guidedFilterFactor(sigmas.paramSigma));
+        EXPECT_TRUE(setKnobValues(node, kColorEqualizerParamOutput, { (double)output }));
+
+        return node;
+    }
+
+    // The result, and the saturation threshold's weight view.
+    static std::vector<int> outputs()
+    {
+        return { ColorEqualizerParams::eOutputResult, ColorEqualizerParams::eOutputSaturationThreshold };
+    }
+};
+
+// Windows and tiles of a frame larger than the guided filters' reach, at a size where they
+// subsample, equal the whole frame: the filters run over the whole frame, not the window's reach.
+TEST_F(ColorEqualizerRegionTest, RegionIndependentCpu)
 {
     setWorkingSpace(kLinearRec2020);
     if (HasFatalFailure()) {
         return;
     }
-    // A noise generator spans the project format, so the frame is genuinely busy at 640x480.
-    ProjectPtr project = getApp()->getProject();
-    project->reset(false, true);
-    project->setAutoSetProjectFormatEnabled(true);
-    project->setOrAddProjectFormat(Format(0, 0, 640, 480, "colorEqualizerRegion", 1.));
-    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_NOISE), PLUGIN_MAJOR_NATRON_NOISE);
-    ASSERT_TRUE(bool(source));
-    ASSERT_TRUE(setKnobValues(source, kNoiseParamType, { (double)NoiseCore::kNoiseTypeWhite }));
-    ASSERT_TRUE(setKnobValues(source, kNoiseParamSeed, { 1234. }));
-
-    // One node a window, so that neither reuses the frame the other computed.
-    NodePtr nodes[2];
-    for (NodePtr& node : nodes) {
-        node = makeNode();
-        ASSERT_TRUE(bool(node));
-        connectNodes(source, node, kColorEqualizerInputSource, true);
-        ColorEqualizer* effect = effectOf(node);
-        ASSERT_TRUE(effect != NULL);
-        // Kodachrome 64-like subsamples its parameter filter by 4.
-        effect->applyPresetAt(1);
-        const ColorEqualizerScaled sigmas = ColorEqualizer::scaled(ColorEqualizer::commit(effect->getParams(kTime, ViewIdx(0))), 1.f);
-        ASSERT_EQ(4, guidedFilterFactor(sigmas.paramSigma));
+    for (int output : outputs()) {
+        SCOPED_TRACE("output " + std::to_string(output));
+        expectRegionIndependent([this, output](const NodePtr& source) {
+            return makeEqualizer(source, output);
+        },
+                                regionOptions());
     }
-
-    RectD rod;
-    EffectInstancePtr effect = nodes[0]->getEffectInstance();
-    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod));
-    ASSERT_EQ(640., rod.width());
-    ASSERT_EQ(480., rod.height());
-
-    const RectI windows[2] = { RectI(100, 100, 300, 260), RectI(105, 103, 305, 263) };
-    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
-    std::vector<RenderedPlane> out[2];
-    std::string error;
-    for (int i = 0; i < 2; ++i) {
-        ASSERT_TRUE(renderNodePlanesDirect(nodes[i], kTime, ViewIdx(0), 0, windows[i], layers, &out[i], &error)) << error;
-        ASSERT_EQ(1u, out[i].size());
-        ASSERT_EQ((size_t)windows[i].width() * windows[i].height() * 4, out[i][0].pixels.size());
-    }
-
-    const RectI overlap = windows[0].intersect(windows[1]);
-    size_t mismatches = 0;
-    for (int y = overlap.y1; y < overlap.y2; ++y) {
-        for (int x = overlap.x1; x < overlap.x2; ++x) {
-            for (int c = 0; c < 4; ++c) {
-                const float a = out[0][0].pixels[((size_t)(y - windows[0].y1) * windows[0].width() + x - windows[0].x1) * 4 + c];
-                const float b = out[1][0].pixels[((size_t)(y - windows[1].y1) * windows[1].width() + x - windows[1].x1) * 4 + c];
-                const bool same = (std::isnan(a) && std::isnan(b)) || (std::fabs(a - b) <= 1e-6f);
-                if (!same && (mismatches++ == 0)) {
-                    ADD_FAILURE() << "first mismatch at (" << x << ", " << y << ") channel " << c << ": " << a << " and " << b;
-                }
-            }
-        }
-    }
-    EXPECT_EQ(0u, mismatches);
 }
+
+TEST_F(ColorEqualizerRegionTest, RegionIndependentOverAnInfiniteSource)
+{
+    setWorkingSpace(kLinearRec2020);
+    if (HasFatalFailure()) {
+        return;
+    }
+    for (int output : outputs()) {
+        SCOPED_TRACE("output " + std::to_string(output));
+        expectInfiniteRoDClamped([this, output](const NodePtr& source) {
+            return makeEqualizer(source, output);
+        },
+                                 regionOptions());
+    }
+}
+
+} // namespace
 
 /**
  * Each make-reference.py colorequal job against process() in linear Rec. 2020, fed colour balance

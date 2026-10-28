@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -44,6 +45,7 @@
 #include "Native/RetouchTestSupport.h"
 #include "NativeParity.h"
 #include "RawReferenceSupport.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
 #include "Serialization/ProjectBundleTestHelpers.h"
 
@@ -57,6 +59,7 @@
 #include "Engine/Nodes/Filter/EdgeAware/PoissonHeal.h"
 #include "Engine/Nodes/Filter/Retouch.h"
 #include "Engine/Nodes/Filter/RetouchRender.h"
+#include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoCurveContext.h"
@@ -948,3 +951,93 @@ TEST_F(NativeRetouchTest, MatchesDarktableReferences)
         EXPECT_LE(relMax, kDarktableClass.max) << job.name;
     }
 }
+
+namespace {
+
+class RetouchRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A Retouch of source with 3 scales and the two region shapes of algorithm.
+    NodePtr makeRetouch(const NodePtr& source,
+                        RC::AlgorithmEnum algorithm)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
+        for (const RetouchTest::ShapeSpec& spec : RetouchTest::regionShapeSpecs(algorithm)) {
+            EXPECT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+        }
+
+        return node;
+    }
+
+    static std::vector<RC::AlgorithmEnum> algorithms()
+    {
+        return { RC::eAlgorithmClone, RC::eAlgorithmHeal, RC::eAlgorithmBlur, RC::eAlgorithmFill };
+    }
+};
+
+TEST_F(RetouchRegionTest, RegionIndependentCpu)
+{
+    for (RC::AlgorithmEnum algorithm : algorithms()) {
+        SCOPED_TRACE((int)algorithm);
+        expectRegionIndependent([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        });
+    }
+}
+
+TEST_F(RetouchRegionTest, RegionIndependentOverAnInfiniteSource)
+{
+    for (RC::AlgorithmEnum algorithm : algorithms()) {
+        SCOPED_TRACE((int)algorithm);
+        expectInfiniteRoDClamped([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        });
+    }
+}
+
+// The frame is retouched once for every window, and again once a shape's source moves.
+TEST_F(RetouchRegionTest, ResultIsComputedOncePerFrame)
+{
+    std::atomic<int> computes(0);
+    RawNodeSupport::setFrameComputedHookForTests([&computes](const char* what, U64 /*key*/) {
+        if (std::string(what) == kRetouchFrameResult) {
+            ++computes;
+        }
+    });
+    const RectI frame(-37, 21, -37 + 203, 21 + 157);
+    NodePtr source = createRegionSource(frame, false);
+    NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+    ASSERT_TRUE(bool(source) && bool(node));
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
+    const std::vector<RetouchTest::ShapeSpec> specs = RetouchTest::regionShapeSpecs(RC::eAlgorithmClone);
+    BezierPtr shape = RetouchTest::makeShape(node, specs[0], kTime);
+    ASSERT_TRUE(bool(shape));
+    appPTR->clearAllCaches();
+
+    const std::vector<RectI> windows = regionTestWindows(frame);
+    for (int i = 0; i < 9; ++i) {
+        RenderedPlane out;
+        std::string error;
+        ASSERT_TRUE(renderPlane(node, 0, windows[i], ImageLayerDesc::getRGBAComponents(), false, &out, &error)) << error;
+    }
+    EXPECT_EQ(1, computes.load());
+
+    KnobDoublePtr offset = RetouchTest::shapeKnob<KnobDouble>(shape, kRetouchShapeParamSourceOffset);
+    ASSERT_TRUE(bool(offset));
+    offset->setValue(specs[0].sourceX + 7., ViewSpec::all(), 0);
+    {
+        RenderedPlane out;
+        std::string error;
+        ASSERT_TRUE(renderPlane(node, 0, windows[4], ImageLayerDesc::getRGBAComponents(), false, &out, &error)) << error;
+    }
+    EXPECT_EQ(2, computes.load());
+    destroyChain(node, source);
+    appPTR->clearAllCaches();
+}
+
+} // namespace

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -41,6 +42,7 @@
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RawReferenceSupport.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -52,6 +54,7 @@
 #include "Engine/Nodes/Filter/ContrastTexture.h"
 #include "Engine/Nodes/Filter/ContrastTextureKernels.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -495,3 +498,93 @@ TEST_F(NativeContrastTextureTest, MatchesDarktableReferences)
         EXPECT_LE(relMax, kDarktableClass.max) << name;
     }
 }
+
+namespace {
+
+class ContrastTextureRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A ContrastTexture of source with the three bands on, plus the given knobs.
+    NodePtr makeContrastTexture(const NodePtr& source,
+                                const std::vector<std::pair<const char*, double>>& knobs)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_CONTRASTTEXTURE, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kContrastTextureParamCoarse, { 0.4 }));
+        EXPECT_TRUE(setKnobValues(node, kContrastTextureParamMedium, { 0.6 }));
+        EXPECT_TRUE(setKnobValues(node, kContrastTextureParamFine, { 0.8 }));
+        for (const auto& knob : knobs) {
+            EXPECT_TRUE(setKnobValues(node, knob.first, { knob.second })) << knob.first;
+        }
+
+        return node;
+    }
+
+    // The settings the region cases cover: the default detail level and halo control, then two
+    // that reach every level of the pyramid.
+    static std::vector<std::vector<std::pair<const char*, double>>> settings()
+    {
+        return {
+            {},
+            { { kContrastTextureParamDetailLevel, 2. }, { kContrastTextureParamHaloControl, 1. }, { kContrastTextureParamNoiseBias, 0.01 }, { kContrastTextureParamShadows, 0.5 }, { kContrastTextureParamHighlights, -0.5 } },
+            { { kContrastTextureParamDetailLevel, 1. }, { kContrastTextureParamHaloControl, -3. } },
+        };
+    }
+};
+
+TEST_F(ContrastTextureRegionTest, RegionIndependentCpu)
+{
+    for (const auto& knobs : settings()) {
+        expectRegionIndependent([this, knobs](const NodePtr& source) {
+            return makeContrastTexture(source, knobs);
+        });
+    }
+}
+
+TEST_F(ContrastTextureRegionTest, RegionIndependentOverAnInfiniteSource)
+{
+    for (const auto& knobs : settings()) {
+        expectInfiniteRoDClamped([this, knobs](const NodePtr& source) {
+            return makeContrastTexture(source, knobs);
+        });
+    }
+}
+
+// The map is filtered once for every window of a frame, and again once a knob changes.
+TEST_F(ContrastTextureRegionTest, MapIsComputedOncePerFrame)
+{
+    std::atomic<int> computes(0);
+    RawNodeSupport::setFrameComputedHookForTests([&computes](const char* what, U64 /*key*/) {
+        if (std::string(what) == kContrastTextureFrameMap) {
+            ++computes;
+        }
+    });
+    const RectI frame(-37, 21, -37 + 203, 21 + 157);
+    NodePtr source = createRegionSource(frame, false);
+    NodePtr node = makeContrastTexture(source, {});
+    ASSERT_TRUE(bool(source) && bool(node));
+    appPTR->clearAllCaches();
+
+    const std::vector<RectI> windows = regionTestWindows(frame);
+    for (int i = 0; i < 9; ++i) {
+        RenderedPlane out;
+        std::string error;
+        ASSERT_TRUE(renderPlane(node, 0, windows[i], ImageLayerDesc::getRGBAComponents(), false, &out, &error)) << error;
+    }
+    EXPECT_EQ(1, computes.load());
+
+    ASSERT_TRUE(setKnobValues(node, kContrastTextureParamFine, { 1.5 }));
+    {
+        RenderedPlane out;
+        std::string error;
+        ASSERT_TRUE(renderPlane(node, 0, windows[4], ImageLayerDesc::getRGBAComponents(), false, &out, &error)) << error;
+    }
+    EXPECT_EQ(2, computes.load());
+    destroyChain(node, source);
+    appPTR->clearAllCaches();
+}
+
+} // namespace

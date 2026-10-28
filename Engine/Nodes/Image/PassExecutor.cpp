@@ -1169,7 +1169,7 @@ canRecordPassesGpu(const StagePlan& plan,
         return false;
     }
 
-    return list.empty() || (bool)list.gpu;
+    return list.empty() || (list.gpu && (!list.gpuAccepts || list.gpuAccepts(query)));
 #else
     Q_UNUSED(plan);
     Q_UNUSED(query);

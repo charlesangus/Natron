@@ -36,6 +36,7 @@
 #include "Native/NativeGpuParity.h"
 #include "Native/RetouchTestSupport.h"
 #include "NativeParity.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -255,3 +256,65 @@ TEST_F(NativeRetouchGpuTest, FillMatchesTheCpu)
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectParity(node, "mix 0.5");
 }
+
+namespace {
+
+class RetouchGpuRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A Retouch of source with 3 scales and the two region shapes of algorithm. Heal stays within
+    // the iterations a device without push descriptors records.
+    NodePtr makeRetouch(const NodePtr& source,
+                        RetouchCore::AlgorithmEnum algorithm)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
+        EXPECT_TRUE(setKnobValues(node, kRetouchParamMaxHealIterations, { 400. }));
+        for (const RetouchTest::ShapeSpec& spec : RetouchTest::regionShapeSpecs(algorithm)) {
+            EXPECT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+        }
+
+        return node;
+    }
+};
+
+// A frame too large for one device buffer is refused before anything is recorded.
+TEST_F(RetouchGpuRegionTest, OversizedFrameStaysOnTheCpu)
+{
+    NodePtr source = createRegionSource(RectI(0, 0, 70000, 70000), false);
+    NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+    Retouch* effect = node ? dynamic_cast<Retouch*>(node->getEffectInstance().get()) : NULL;
+    ASSERT_TRUE(effect != NULL);
+    GpuQuery q = eligibleQuery();
+    q.mappedScale = RenderScale::identity;
+    EXPECT_FALSE(effect->canRenderOnGpu(q));
+}
+
+#ifdef NATRON_HAVE_GPU
+// The heal's error is summed in a fixed order in each group and over the groups, so the GPU frame
+// is the same from tile to tile without pinning its iterations.
+TEST_F(RetouchGpuRegionTest, RegionIndependentGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    for (RetouchCore::AlgorithmEnum algorithm : { RetouchCore::eAlgorithmClone, RetouchCore::eAlgorithmHeal, RetouchCore::eAlgorithmBlur,
+                                                  RetouchCore::eAlgorithmFill }) {
+        SCOPED_TRACE((int)algorithm);
+        RegionIndependenceOptions options;
+        options.gpu = runtime.get();
+        options.gpuTolerance = (algorithm == RetouchCore::eAlgorithmHeal) ? kRetouchHealTolerance : kRetouchTolerance;
+        expectRegionIndependent([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        },
+                                options);
+    }
+}
+#endif
+
+} // namespace

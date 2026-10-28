@@ -58,6 +58,7 @@
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
@@ -1507,18 +1508,12 @@ ColorEqualizer::opPasses(double time,
     const ColorEqualizerParams params = getParams(time, view);
     const float s = (float)scale.toOfxPointD().x;
     int h = halo(params, s);
-    // The node's region of definition is the source's, which is not asked of this effect here: its
-    // own region action builds these passes.
-    const int sourceInput = getSourceInput();
-    EffectInstancePtr input = (sourceInput >= 0) ? getInput(sourceInput) : EffectInstancePtr();
-    if (input) {
-        RectD sourceRoD;
-        bool isProjectFormat = false;
-        const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-        if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) != eStatusFailed) {
-            const RectI rod = toPixelEnclosing(sourceRoD, scale, getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
-            h = std::max(h, std::max(rod.width(), rod.height()));
-        }
+    // The frame is the source's, which is not asked of this effect here: its own region action
+    // builds these passes.
+    RectI frame;
+    const bool hasFrame = framePixels(time, view, scale, &frame);
+    if (hasFrame) {
+        h = std::max(h, std::max(frame.width(), frame.height()));
     }
     PassList list;
     Pass carrier = Pass::gather(h, h, true, std::function<PassRowFn(const PassScratch&)>());
@@ -1531,8 +1526,13 @@ ColorEqualizer::opPasses(double time,
 #ifdef NATRON_HAVE_GPU
     if (resolveWorkingSpace(this).matrix) {
         const ColorEqualizer* self = this;
-        list.gpu = [self, params, s](const PassGpuIO& io) -> StatusEnum {
-            return self->recordGpu(io, params, s);
+        list.gpu = [self, params, s, frame, hasFrame](const PassGpuIO& io) -> StatusEnum {
+            return self->recordGpu(io, params, s, hasFrame ? frame : RectI());
+        };
+        // The largest buffer the recorder allocates holds four floats a frame pixel: the source
+        // and the guided filter's coefficients.
+        list.gpuAccepts = [frame, hasFrame](const GpuQuery& query) {
+            return !hasFrame || wholeFrameFitsGpu(frame, std::max(4, query.nComps), query.maxScratchBytes);
         };
     }
 #endif
@@ -1552,16 +1552,25 @@ ColorEqualizer::getRegionsOfInterest(double time,
 
     const int sourceInput = getSourceInput();
     EffectInstancePtr input = (sourceInput >= 0) ? getInput(sourceInput) : EffectInstancePtr();
-    if (!input) {
+    RectI frame;
+    if (!input || (ret->find(input) == ret->end()) || !framePixels(time, view, scale, &frame)) {
         return;
     }
-    RoIMap::iterator found = ret->find(input);
-    RectD sourceRoD;
-    bool isProjectFormat = false;
-    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-    if ((found != ret->end()) && (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) != eStatusFailed)) {
-        found->second.clipIfOverlaps(sourceRoD);
+    const RectD frameCanonical = toCanonical(frame, scale, getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+    RectD need = renderWindow;
+    if (need.intersects(frameCanonical)) {
+        need.merge(frameCanonical);
     }
+    (*ret)[input] = need;
+}
+
+bool
+ColorEqualizer::framePixels(double time,
+                            ViewIdx view,
+                            const RenderScale& scale,
+                            RectI* frame) const
+{
+    return wholeFramePixels(*this, getSourceInput(), time, view, scale, frame);
 }
 
 StatusEnum
@@ -1622,12 +1631,10 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
     if ((roi.width() <= 0) || (roi.height() <= 0)) {
         return eStatusOK;
     }
-    RectD rodCanonical;
-    bool isProjectFormat = false;
-    if (getRegionOfDefinition_public(getRenderHash(), args.time, args.mappedScale, args.view, &rodCanonical, &isProjectFormat) == eStatusFailed) {
+    RectI rod;
+    if (!framePixels(args.time, args.view, args.mappedScale, &rod)) {
         return eStatusFailed;
     }
-    const RectI rod = toPixelEnclosing(rodCanonical, args.mappedScale, getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
 
     MaskInput maskSource;
     maskSource.applied = plan.applyMask;
@@ -1639,13 +1646,13 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
         job.lock();
     }
 
-    RectI processWindow = roi;
-    if (plan.mix == 0.) {
-        processWindow.x2 = processWindow.x1;
-        processWindow.y2 = processWindow.y1;
+    // Outside the frame the source passes through.
+    RectI processWindow(0, 0, 0, 0);
+    if ((plan.mix == 0.) || !intersectRects(roi, rod, &processWindow)) {
+        processWindow = RectI(0, 0, 0, 0);
     }
     const bool processing = !isEmptyRect(processWindow);
-    // The passes' halo reaches the whole region of definition from any window.
+    // The passes' halo reaches the whole frame from any window.
     const RectI bufferRect = processing ? rod : RectI(0, 0, 0, 0);
     const int width = std::max(0, bufferRect.width());
     const int height = std::max(0, bufferRect.height());
@@ -1926,7 +1933,40 @@ gpuResample(gpu::GpuRecordContext& ctx,
 StatusEnum
 ColorEqualizer::recordGpu(const PassGpuIO& io,
                           const ColorEqualizerParams& params,
-                          float scale) const
+                          float scale,
+                          const RectI& frame) const
+{
+    // Over a finite source the region of definition is the frame; over an infinite one the
+    // domain is clamped to it and the output outside it is the source.
+    if (frame.isNull() || (io.rod == frame)) {
+        return recordGpuFrame(io, params, scale, false);
+    }
+    RectI inside(0, 0, 0, 0);
+    const bool overlaps = PassExec::intersectRects(io.output, frame, &inside) && !PassExec::isEmptyRect(inside);
+    if (!overlaps || (inside != io.output)) {
+        if (recordGpuFrame(io, params, scale, true) != eStatusOK) {
+            return eStatusFailed;
+        }
+        if (!overlaps) {
+            return eStatusOK;
+        }
+        io.context.computeBarrier();
+    }
+    PassGpuIO clamped(io);
+    clamped.rod = frame;
+    clamped.output = inside;
+    if (!PassExec::intersectRects(io.domain, frame, &clamped.domain)) {
+        return eStatusFailed;
+    }
+
+    return recordGpuFrame(clamped, params, scale, false);
+}
+
+StatusEnum
+ColorEqualizer::recordGpuFrame(const PassGpuIO& io,
+                               const ColorEqualizerParams& params,
+                               float scale,
+                               bool passThrough) const
 {
     gpu::GpuRecordContext& ctx = io.context;
     const int nComps = io.nComps;
@@ -2013,7 +2053,7 @@ ColorEqualizer::recordGpu(const PassGpuIO& io,
         return eStatusFailed;
     }
 
-    if (nComps < 3) {
+    if ((nComps < 3) || passThrough) {
         p.flags = kGpuPassThrough;
 
         return dispatchCe(g, gpu::GpuKernelId::ce_final, {}, p.outWidth, p.outHeight) ? eStatusOK : eStatusFailed;
@@ -2175,7 +2215,17 @@ ColorEqualizer::recordGpu(const PassGpuIO& io,
 StatusEnum
 ColorEqualizer::recordGpu(const PassGpuIO& /*io*/,
                           const ColorEqualizerParams& /*params*/,
-                          float /*scale*/) const
+                          float /*scale*/,
+                          const RectI& /*frame*/) const
+{
+    return eStatusFailed;
+}
+
+StatusEnum
+ColorEqualizer::recordGpuFrame(const PassGpuIO& /*io*/,
+                               const ColorEqualizerParams& /*params*/,
+                               float /*scale*/,
+                               bool /*passThrough*/) const
 {
     return eStatusFailed;
 }

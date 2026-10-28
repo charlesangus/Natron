@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,7 @@
 
 #include "Tests/BaseTest.h"
 #include "Tests/Native/NativeGpuParity.h"
+#include "Tests/Native/RegionIndependenceSupport.h"
 #include "Tests/NativeParity.h"
 
 #include "Engine/AppInstance.h"
@@ -249,3 +251,86 @@ TEST_F(NativeColorEqualizerGpuTest, RefusesANonMatrixWorkingSpace)
     EXPECT_FALSE(effect->canRenderOnGpu(query));
 }
 #endif // NATRON_HAVE_GPU
+
+namespace {
+
+class ColorEqualizerGpuRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // The equalizer of source with the Kodachrome 64-like preset, which subsamples its parameter
+    // filter by 4, showing output.
+    NodePtr makeEqualizer(const NodePtr& source,
+                          int output)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_COLOREQUALIZER, source, kColorEqualizerInputSource);
+        ColorEqualizer* effect = effectOf(node);
+
+        EXPECT_TRUE(effect != NULL);
+        if (!effect) {
+            return node;
+        }
+        effect->applyPresetAt(1);
+        EXPECT_TRUE(setKnobValues(node, kColorEqualizerParamOutput, { (double)output }));
+
+        return node;
+    }
+
+    // The query a full-scale render of node's RGBA plane makes.
+    static GpuQuery rgbaQuery()
+    {
+        GpuQuery query;
+
+        query.time = kTime;
+        query.view = ViewIdx(0);
+        query.mappedScale = RenderScale::identity;
+        query.plane = ImageLayerDesc::getRGBAComponents();
+        query.nComps = 4;
+        query.bitDepth = eImageBitDepthFloat;
+        for (int i = 0; i < 4; ++i) {
+            query.processChannels[i] = true;
+        }
+
+        return query;
+    }
+};
+
+#ifdef NATRON_HAVE_GPU
+// A frame too large for one device buffer is refused before anything is recorded; the same node
+// over a frame that fits is accepted.
+TEST_F(ColorEqualizerGpuRegionTest, OversizedFrameStaysOnTheCpu)
+{
+    NodePtr small = createRegionSource(RectI(0, 0, 203, 157), false);
+    NodePtr fits = makeEqualizer(small, ColorEqualizerParams::eOutputResult);
+    ASSERT_TRUE(effectOf(fits) != NULL);
+    EXPECT_TRUE(effectOf(fits)->canRenderOnGpu(rgbaQuery()));
+
+    NodePtr huge = createRegionSource(RectI(0, 0, 70000, 70000), false);
+    NodePtr oversized = makeEqualizer(huge, ColorEqualizerParams::eOutputResult);
+    ASSERT_TRUE(effectOf(oversized) != NULL);
+    EXPECT_FALSE(effectOf(oversized)->canRenderOnGpu(rgbaQuery()));
+}
+
+// GPU windows of a 641x479 frame equal the GPU frame bit for bit, and the GPU frame matches the
+// CPU frame within the node's parity tolerance.
+TEST_F(ColorEqualizerGpuRegionTest, RegionIndependentGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    RegionIndependenceOptions options;
+    options.width = 641;
+    options.height = 479;
+    options.gpu = runtime.get();
+    options.gpuTolerance = gpuTolerance();
+    for (int output : { (int)ColorEqualizerParams::eOutputResult, (int)ColorEqualizerParams::eOutputSaturationThreshold }) {
+        SCOPED_TRACE("output " + std::to_string(output));
+        expectRegionIndependent([this, output](const NodePtr& source) {
+            return makeEqualizer(source, output);
+        },
+                                options);
+    }
+}
+#endif // NATRON_HAVE_GPU
+
+} // namespace

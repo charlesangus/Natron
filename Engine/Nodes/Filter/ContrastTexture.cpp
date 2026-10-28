@@ -30,6 +30,7 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -94,7 +95,14 @@ static_assert(sizeof(ContrastTextureGpuParams) == 128);
 
 ContrastTexture::ContrastTexture(NodePtr node)
     : StagedImageEffect(node)
+    , _map(kContrastTextureFrameMap)
 {
+}
+
+void
+ContrastTexture::purgeCaches()
+{
+    _map.clear();
 }
 
 ContrastTexture::~ContrastTexture()
@@ -261,48 +269,15 @@ ContrastTexture::readParams(double time,
 }
 
 bool
-ContrastTexture::sourceRoD(double time,
-                           ViewIdx view,
-                           RectD* rod) const
-{
-    const int sourceInput = getSourceInput();
-    EffectInstancePtr input = getInput(sourceInput);
-
-    if (!input) {
-        return false;
-    }
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    if (rod->isInfinite()) {
-        const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-        if (!metadata) {
-            return false;
-        }
-        *rod = rod->intersect(PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, metadata->getPixelAspectRatio(sourceInput)));
-    }
-
-    return !rod->isNull();
-}
-
-bool
 ContrastTexture::makePlan(double time,
                           ViewIdx view,
                           const RenderScale& scale,
                           RectI* sourcePixels,
                           CT::Plan* plan) const
 {
-    RectD rod;
+    RectI full;
 
-    if (!sourceRoD(time, view, &rod)) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(getSourceInput()) : 1.;
-    const RectI full = PassExec::toPixelEnclosing(rod, RenderScale::identity, par);
-    *sourcePixels = PassExec::toPixelEnclosing(rod, scale, par);
-    if (full.isNull() || sourcePixels->isNull()) {
+    if (!wholeFramePixels(*this, getSourceInput(), time, view, scale, sourcePixels, &full) || full.isNull() || sourcePixels->isNull()) {
         return false;
     }
     const float fullSize = (float)std::max(full.width(), full.height());
@@ -321,11 +296,17 @@ ContrastTexture::getRegionsOfInterest(double time,
 {
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
-    EffectInstancePtr input = getInput(getSourceInput());
-    RectD rod;
-    if (input && sourceRoD(time, view, &rod)) {
-        (*ret)[input] = rod;
+    const int sourceInput = getSourceInput();
+    EffectInstancePtr input = getInput(sourceInput);
+    RectI frame;
+    if (!input || !wholeFramePixels(*this, sourceInput, time, view, scale, &frame)) {
+        return;
     }
+    // The whole frame, and the window, outside the frame passed through.
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    RectD need = PassExec::toCanonical(frame, scale, metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.);
+    need.merge(renderWindow);
+    (*ret)[input] = need;
 }
 
 bool
@@ -349,25 +330,6 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
         return eStatusFailed;
     }
 
-    ImagePtr src;
-    ImageLayerDesc sourceLayer;
-    if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
-        RectI sourceRoI;
-        // Mapped to the clip's components, the layout the output plane is rendered in.
-        src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
-    }
-    if (src && !PassExec::isFloatImage(src)) {
-        return eStatusFailed;
-    }
-    std::shared_ptr<Image::ReadAccess> srcAccess;
-    RectI srcBounds;
-    int srcNComps = 0;
-    if (src) {
-        srcAccess = std::make_shared<Image::ReadAccess>(src.get());
-        srcBounds = src->getBounds();
-        srcNComps = (int)src->getComponentsCount();
-    }
-
     RenderCancellation cancel(this);
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     const EdgeAware::ParallelFor parallel = [&cancel, nThreads](int count, const std::function<void(int)>& body) {
@@ -382,23 +344,53 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
         }
         const int nComps = (int)it->second->getComponentsCount();
 
-        // The whole source, top-down, in the output plane's layout.
-        std::vector<float> image((std::size_t)width * height * nComps, 0.f);
-        parallel(height, [&](int r) {
-            const int y = full.y2 - 1 - r;
-            PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, &image[(std::size_t)r * width * nComps]);
-        });
-        std::vector<float> map((std::size_t)width * height);
-        CT::computeMap(image.data(), width, height, nComps, ctPlan, map.data(), parallel);
-        image.clear();
-        image.shrink_to_fit();
-        if (cancel.check()) {
-            return eStatusFailed;
+        // A window outside the frame is the source alone.
+        WholeFrameCache::Result mapResult;
+        RectI overlap;
+        if (PassExec::intersectRects(args.roi, full, &overlap) && !PassExec::isEmptyRect(overlap)) {
+            const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, full, it->first.getLayerID(), nComps);
+            mapResult = _map.get(key, [&]() -> WholeFrameCache::Result {
+                ImagePtr src;
+                ImageLayerDesc sourceLayer;
+                if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
+                    RectI sourceRoI;
+                    // Mapped to the clip's components, the layout the output plane is rendered in.
+                    src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
+                }
+                if (src && !PassExec::isFloatImage(src)) {
+                    return WholeFrameCache::Result();
+                }
+                std::shared_ptr<Image::ReadAccess> srcAccess;
+                RectI srcBounds;
+                int srcNComps = 0;
+                if (src) {
+                    srcAccess = std::make_shared<Image::ReadAccess>(src.get());
+                    srcBounds = src->getBounds();
+                    srcNComps = (int)src->getComponentsCount();
+                }
+                // The whole source, top-down, in the output plane's layout.
+                std::vector<float> image((std::size_t)width * height * nComps, 0.f);
+                parallel(height, [&](int r) {
+                    const int y = full.y2 - 1 - r;
+                    PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, &image[(std::size_t)r * width * nComps]);
+                });
+                auto map = std::make_shared<std::vector<float>>((std::size_t)width * height);
+                CT::computeMap(image.data(), width, height, nComps, ctPlan, map->data(), parallel);
+                if (cancel.check()) {
+                    return WholeFrameCache::Result();
+                }
+
+                return map;
+            });
+            if (!mapResult) {
+                return eStatusFailed;
+            }
         }
+        const float* map = mapResult ? mapResult->data() : nullptr;
 
         const auto row = [&](const RowIO& io) {
             float pixel[4] = { 0.f, 0.f, 0.f, 0.f };
-            const bool insideRow = (io.y >= full.y1) && (io.y < full.y2);
+            const bool insideRow = map && (io.y >= full.y1) && (io.y < full.y2);
             const std::size_t rowStart = insideRow ? (std::size_t)(full.y2 - 1 - io.y) * width : 0;
             for (int i = 0; i < io.width; ++i) {
                 const int x = io.x0 + i;
@@ -434,6 +426,12 @@ ContrastTexture::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
     if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps < 1) || (query.nComps > 4)) {
+        return false;
+    }
+    // The lowpass, highpass and correction buffers each hold a float a frame pixel.
+    RectI frame;
+    if (!wholeFramePixels(*this, getSourceInput(), query.time, query.view, query.mappedScale, &frame)
+        || !wholeFrameFitsGpu(frame, 1, query.maxScratchBytes)) {
         return false;
     }
 

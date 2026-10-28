@@ -36,6 +36,7 @@ RADIUS = 150.0
 OFFSET_X = 700.0
 DRAG = (80, -50)  # widget pixels, y down
 MIN_OUTLINE_PIXELS = 100
+OUTLINE_GAP = 8  # widget pixels between the shape's handles and the source outline's columns
 
 try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
@@ -256,7 +257,10 @@ try:
         offset = shape.getParam("sourceOffset")
         require(offset is not None, "the shape has a Source Offset")
         check(offset.getValue(0) == 0.0 and offset.getValue(1) == 0.0, "a shape made by script has no source offset")
-        offset.set(OFFSET_X, 0.0)
+        # The context selects the new shape, slaving its knobs to the node's knobs of the same name:
+        # the shape's knob reads the node's value, so the offset is set on the node's knob.
+        node.getParam("sourceOffset").set(OFFSET_X, 0.0)
+        check(offset.getValue(0) == OFFSET_X and offset.getValue(1) == 0.0, "the shape's Source Offset reads (%r, 0)" % OFFSET_X)
         yield ("sleep", 2 * SETTLE_MS)
 
         gt.section("panel")
@@ -288,9 +292,27 @@ try:
         xs = [p[0] for p in red]
         ys = [p[1] for p in red]
         left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
-        scale = (right - left) / (OFFSET_X + 2 * RADIUS)
-        source_centre = (right - scale * RADIUS, (top + bottom) / 2.0)
-        report("NOTE overlay box (%d, %d)-(%d, %d), %.4f widget px per canonical px" % (left, top, right, bottom, scale))
+        report("NOTE overlay box (%d, %d)-(%d, %d)" % (left, top, right, bottom))
+        # The source outline is the rightmost run of red columns, leaving out the rows of the dashed
+        # line joining the two centres. The shape's tangent handles stick out past its outline, so
+        # only the source outline gives the zoom.
+        mid = (top + bottom) / 2.0
+        columns = sorted(set(p[0] for p in red if abs(p[1] - mid) > 3))
+        runs = [[columns[0], columns[0]]] if columns else []
+        for x in columns[1:]:
+            if x - runs[-1][1] > OUTLINE_GAP:
+                runs.append([x, x])
+            else:
+                runs[-1][1] = x
+        report("NOTE red column runs %r" % (runs,))
+        require(len(runs) >= 2, "the dashed source outline is drawn apart from the shape")
+        s_left, s_right = runs[-1]
+        s_ys = [p[1] for p in red if s_left <= p[0] <= s_right]
+        s_top, s_bottom = min(s_ys), max(s_ys)
+        scale = ((s_right - s_left) + (s_bottom - s_top)) / (4.0 * RADIUS)
+        source_centre = ((s_left + s_right) / 2.0, (s_top + s_bottom) / 2.0)
+        report("NOTE source outline (%d, %d)-(%d, %d), %.4f widget px per canonical px"
+               % (s_left, s_top, s_right, s_bottom, scale))
         require(scale > 0.05, "the viewer shows the shape at a usable zoom")
         screen_crop("retouch_viewer.png", visible_viewer())
 

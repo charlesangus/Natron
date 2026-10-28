@@ -94,6 +94,7 @@ set(Tests_SOURCES
     BezierGuiCopyEquivalence_Test.cpp
     BezierIncrementalCopy_Test.cpp
     RotoUndoGesture_Test.cpp
+    StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp

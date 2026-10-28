@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
@@ -1501,9 +1502,16 @@ public:
     RotoItemPtr lastInsertedItem;
     RotoItemPtr lastLockedItem;
     mutable QMutex doingNeatRenderMutex;
-    QWaitCondition doingNeatRenderCond;
     bool doingNeatRender;
     bool mustDoNeatRender;
+    // The neat render's frame is on its way to a viewer; the render has landed once that frame is uploaded.
+    bool awaitingNeatDisplay;
+    unsigned int neatDisplayGeneration;
+
+    // Main thread only.
+    std::list<std::function<void()>> neatRenderLandedCallbacks;
+    RotoStrokeItemWPtr displayedStroke;
+    std::vector<int> displayedStrokeAges;
 
     /*
      * A merge node (or more if there are more than 64 items) used when all items share the same compositing operator to make the rotopaint tree shallow
@@ -1523,6 +1531,11 @@ public:
         , age(0)
         , doingNeatRender(false)
         , mustDoNeatRender(false)
+        , awaitingNeatDisplay(false)
+        , neatDisplayGeneration(0)
+        , neatRenderLandedCallbacks()
+        , displayedStroke()
+        , displayedStrokeAges()
         , globalMergeNodes()
     {
         assert( n && n->getEffectInstance() );

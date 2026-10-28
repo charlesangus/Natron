@@ -26,6 +26,8 @@
 
 #include "RotoPaintInteract.h"
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include <QLineF>
@@ -66,6 +68,10 @@ RotoPaintInteract::RotoPaintInteract(RotoPaintPrivate* p)
     , lastPaintToolAction()
     , lastTabletDownTriggeredEraser(false)
     , mouseCenterOnSizeChange()
+    , strokePreviews()
+    , engineStrokePreview(0)
+    , deferredPenEvents()
+    , neatRenderPending(false)
 {
     cloneOffset.first = cloneOffset.second = 0.;
 }
@@ -492,10 +498,326 @@ RotoPaintInteract::removeCurve(const RotoDrawableItemPtr& curve)
     RotoCurveInteract::removeCurve(curve);
 }
 
+// Strength of the footprint drawn for tools whose result the preview cannot show.
+static const double kStrokePreviewFootprintOpacity = 0.35;
+
+void
+RotoPaintInteract::beginStrokePreview(const QPointF& pos,
+                                      double pressure)
+{
+    StrokePreview preview;
+
+    preview.footprintOnly = (selectedTool != eRotoToolSolidBrush);
+    preview.opacity = opacitySpinbox.lock()->getValue();
+    preview.size = sizeSpinbox.lock()->getValue();
+    preview.hardness = hardnessSpinbox.lock()->getValue();
+    preview.pressureOpacity = pressureOpacityButton.lock()->getValue();
+    preview.pressureSize = pressureSizeButton.lock()->getValue();
+    preview.pressureHardness = pressureHardnessButton.lock()->getValue();
+    preview.buildUp = buildUpButton.lock()->getValue();
+    // The toolbar has no spacing; the stroke keeps its own, which the prepared stroke carries.
+    preview.spacing = strokeBeingPaint ? strokeBeingPaint->getBrushSpacingKnob()->getValue() : 0.1;
+
+    float rgba[4] = { 1.f, 1.f, 1.f, 1.f };
+    if (!preview.footprintOnly) {
+        KnobColorPtr colorWheel = colorWheelButton.lock();
+        for (int i = 0; i < 3; ++i) {
+            rgba[i] = (float)colorWheel->getValue(i);
+        }
+        OverlaySupport* overlay = getHost()->getCurrentViewportForOverlays();
+        ViewerInstance* viewer = overlay ? overlay->getInternalViewerNode() : 0;
+        ProjectColorManagement::DisplayProcessorPtr processor = viewer ? viewer->getDisplayProcessor() : ProjectColorManagement::DisplayProcessorPtr();
+        if (viewer && processor) {
+            applyViewerDisplayTransform(*processor, rgba, 1, viewer->getGain(), 0., viewer->getGamma());
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        preview.colour[i] = (unsigned char)std::floor(std::max(0.f, std::min(1.f, rgba[i])) * 255.f + 0.5f);
+    }
+
+    preview.pointCount = 0;
+    preview.lastX = preview.lastY = preview.lastPressure = preview.distToNext = 0.;
+    preview.bbox[0] = preview.bbox[1] = std::numeric_limits<double>::infinity();
+    preview.bbox[2] = preview.bbox[3] = -std::numeric_limits<double>::infinity();
+    preview.engineStarted = false;
+    preview.multiStrokeIndex = -1;
+    preview.neatRenderRequested = false;
+    preview.tessellationScale = 0.;
+
+    strokePreviews.push_back(preview);
+    addStrokePreviewPoint(strokePreviews.back(), pos.x(), pos.y(), pressure);
+}
+
+void
+RotoPaintInteract::addStrokePreviewPoint(StrokePreview& preview,
+                                         double x,
+                                         double y,
+                                         double pressure)
+{
+    const int pointIndex = preview.pointCount++;
+
+    // Same rules as RotoContextPrivate::renderStroke, so the dabs land where the render puts them.
+    if (preview.spacing == 0.) {
+        return;
+    }
+    const double brushSpacing = std::max(preview.spacing, 0.05);
+
+    // Appends the dab at (dabX, dabY) and returns the distance to the next one.
+    auto addDab = [&preview, brushSpacing, pointIndex](double dabX, double dabY, double dabPressure) -> double {
+        StrokePreview::Dab dab;
+        double spacing;
+        std::vector<std::pair<double, double>> stops;
+        if (preview.footprintOnly) {
+            getRenderDotParams(1., preview.size, 1., brushSpacing, dabPressure, false, preview.pressureSize, false,
+                               &dab.innerRadius, &dab.outerRadius, &spacing, &stops);
+            stops.clear();
+        } else {
+            getRenderDotParams(preview.opacity, preview.size, preview.hardness, brushSpacing, dabPressure,
+                               preview.pressureOpacity, preview.pressureSize, preview.pressureHardness,
+                               &dab.innerRadius, &dab.outerRadius, &spacing, &stops);
+        }
+        dab.x = dabX;
+        dab.y = dabY;
+        dab.pointIndex = pointIndex;
+        dab.solid = stops.empty();
+        if (dab.solid) {
+            // A flat dab takes the stroke opacity whatever the pressure, as in RotoContextPrivate::renderDot.
+            const float flat = (float)(preview.footprintOnly ? kStrokePreviewFootprintOpacity : preview.opacity);
+            std::fill(dab.opacities, dab.opacities + 9, flat);
+        } else {
+            for (int i = 0; i < 9; ++i) {
+                dab.opacities[i] = (float)stops[std::min((std::size_t)i, stops.size() - 1)].second;
+            }
+        }
+        preview.dabs.push_back(dab);
+        preview.bbox[0] = std::min(preview.bbox[0], dabX - dab.outerRadius);
+        preview.bbox[1] = std::min(preview.bbox[1], dabY - dab.outerRadius);
+        preview.bbox[2] = std::max(preview.bbox[2], dabX + dab.outerRadius);
+        preview.bbox[3] = std::max(preview.bbox[3], dabY + dab.outerRadius);
+
+        return spacing;
+    };
+
+    if (pointIndex == 0) {
+        preview.distToNext = addDab(x, y, pressure);
+    } else {
+        const double dist = std::sqrt((x - preview.lastX) * (x - preview.lastX) + (y - preview.lastY) * (y - preview.lastY));
+        while (preview.distToNext <= dist) {
+            const double a = dist == 0. ? 0. : preview.distToNext / dist;
+            preview.distToNext += addDab(preview.lastX * (1 - a) + x * a,
+                                         preview.lastY * (1 - a) + y * a,
+                                         preview.lastPressure * (1 - a) + pressure * a);
+        }
+        preview.distToNext -= dist;
+    }
+    preview.lastX = x;
+    preview.lastY = y;
+    preview.lastPressure = pressure;
+} // RotoPaintInteract::addStrokePreviewPoint
+
+void
+RotoPaintInteract::tessellateStrokePreview(StrokePreview& preview,
+                                           std::size_t firstDab,
+                                           double pixelScale)
+{
+    std::vector<StrokePreview::Vertex>& vertices = preview.vertices;
+    auto pushVertex = [&vertices, &preview](double x, double y, double opacity) {
+        StrokePreview::Vertex v;
+        v.x = (float)x;
+        v.y = (float)y;
+        v.rgba[0] = preview.colour[0];
+        v.rgba[1] = preview.colour[1];
+        v.rgba[2] = preview.colour[2];
+        v.rgba[3] = (unsigned char)std::floor(std::max(0., std::min(1., opacity)) * 255. + 0.5);
+        vertices.push_back(v);
+    };
+
+    std::vector<double> cosines, sines;
+    for (std::size_t i = firstDab; i < preview.dabs.size(); ++i) {
+        const StrokePreview::Dab& dab = preview.dabs[i];
+        preview.dabFirstVertex.push_back(vertices.size());
+
+        // Enough segments to keep the rim within a quarter pixel of the circle.
+        const double radiusPixels = dab.outerRadius / pixelScale;
+        const int segments = std::max(8, std::min(64, (int)std::ceil(M_PI * std::sqrt(2. * std::max(0., radiusPixels)))));
+        if ((int)cosines.size() != segments + 1) {
+            cosines.resize(segments + 1);
+            sines.resize(segments + 1);
+            for (int j = 0; j <= segments; ++j) {
+                const double angle = 2. * M_PI * j / segments;
+                cosines[j] = std::cos(angle);
+                sines[j] = std::sin(angle);
+            }
+        }
+
+        auto fan = [&](double radius, double opacity) {
+            for (int j = 0; j < segments; ++j) {
+                pushVertex(dab.x, dab.y, opacity);
+                pushVertex(dab.x + radius * cosines[j], dab.y + radius * sines[j], opacity);
+                pushVertex(dab.x + radius * cosines[j + 1], dab.y + radius * sines[j + 1], opacity);
+            }
+        };
+        auto ring = [&](double r0, double r1, double o0, double o1) {
+            for (int j = 0; j < segments; ++j) {
+                pushVertex(dab.x + r0 * cosines[j], dab.y + r0 * sines[j], o0);
+                pushVertex(dab.x + r1 * cosines[j], dab.y + r1 * sines[j], o1);
+                pushVertex(dab.x + r1 * cosines[j + 1], dab.y + r1 * sines[j + 1], o1);
+                pushVertex(dab.x + r0 * cosines[j], dab.y + r0 * sines[j], o0);
+                pushVertex(dab.x + r1 * cosines[j + 1], dab.y + r1 * sines[j + 1], o1);
+                pushVertex(dab.x + r0 * cosines[j + 1], dab.y + r0 * sines[j + 1], o0);
+            }
+        };
+
+        if (dab.solid) {
+            fan(dab.outerRadius, dab.opacities[0]);
+            continue;
+        }
+        // Inside the inner radius the ramp holds its first stop.
+        fan(dab.innerRadius, dab.opacities[0]);
+        // Gouraud rings follow the eight linear pieces of the ramp; narrow ramps merge them, at least a pixel wide each.
+        const double width = dab.outerRadius - dab.innerRadius;
+        int rings = 8;
+        while ((rings > 1) && (width / pixelScale < rings)) {
+            rings /= 2;
+        }
+        const int step = 8 / rings;
+        for (int k = 0; k < rings; ++k) {
+            const int s0 = k * step;
+            const int s1 = s0 + step;
+            ring(dab.innerRadius + width * s0 / 8., dab.innerRadius + width * s1 / 8., dab.opacities[s0], dab.opacities[s1]);
+        }
+    }
+} // RotoPaintInteract::tessellateStrokePreview
+
+void
+RotoPaintInteract::drawStrokePreviews()
+{
+    if (strokePreviews.empty()) {
+        return;
+    }
+    OverlaySupport* overlay = getHost()->getCurrentViewportForOverlays();
+    if (!overlay) {
+        return;
+    }
+    double pixelScaleX, pixelScaleY;
+    overlay->getPixelScale(pixelScaleX, pixelScaleY);
+    const double pixelScale = std::max(1e-6, (pixelScaleX + pixelScaleY) / 2.);
+    RotoContextPtr context = getContext();
+
+    // The mask of each stroke is built in destination alpha, so that its dabs combine as the renderer combines them
+    // (max, or over with build-up) before the colour goes on once. Without destination alpha, dabs blend one by one.
+    GLint alphaBits = 0;
+    glGetIntegerv(GL_ALPHA_BITS, &alphaBits);
+
+    GLProtectAttrib a(GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT | GL_CURRENT_BIT);
+    glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+    GLint vertexArray = 0, arrayBuffer = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vertexArray);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuffer);
+    if (vertexArray) {
+        glBindVertexArray(0);
+    }
+    if (arrayBuffer) {
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_DEPTH_TEST);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+
+    for (std::list<StrokePreview>::iterator it = strokePreviews.begin(); it != strokePreviews.end(); ++it) {
+        StrokePreview& preview = *it;
+        if (preview.dabs.empty()) {
+            continue;
+        }
+        if ((preview.tessellationScale <= 0.) || (pixelScale > preview.tessellationScale * 2.) || (pixelScale < preview.tessellationScale / 2.)) {
+            preview.vertices.clear();
+            preview.dabFirstVertex.clear();
+            preview.tessellationScale = pixelScale;
+        }
+        if (preview.dabFirstVertex.size() < preview.dabs.size()) {
+            tessellateStrokePreview(preview, preview.dabFirstVertex.size(), preview.tessellationScale);
+        }
+
+        // What the viewer already shows of the stroke is not drawn again.
+        std::size_t firstDab = 0;
+        RotoStrokeItemPtr item = preview.item.lock();
+        if (item) {
+            const int shownAge = context->getDisplayedStrokeAge(item, preview.multiStrokeIndex);
+            firstDab = std::partition_point(preview.dabs.begin(), preview.dabs.end(),
+                                            [shownAge](const StrokePreview::Dab& dab) { return dab.pointIndex <= shownAge; })
+                - preview.dabs.begin();
+        }
+        if (firstDab >= preview.dabs.size()) {
+            continue;
+        }
+        const GLint firstVertex = (GLint)preview.dabFirstVertex[firstDab];
+        const GLsizei vertexCount = (GLsizei)(preview.vertices.size() - preview.dabFirstVertex[firstDab]);
+        glVertexPointer(2, GL_FLOAT, sizeof(StrokePreview::Vertex), &preview.vertices[0].x);
+        glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(StrokePreview::Vertex), &preview.vertices[0].rgba[0]);
+
+        if (alphaBits <= 0) {
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDrawArrays(GL_TRIANGLES, firstVertex, vertexCount);
+            continue;
+        }
+
+        const double* box = preview.bbox;
+        auto fillBox = [box]() {
+            glBegin(GL_QUADS);
+            glVertex2d(box[0], box[1]);
+            glVertex2d(box[2], box[1]);
+            glVertex2d(box[2], box[3]);
+            glVertex2d(box[0], box[3]);
+            glEnd();
+        };
+
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+        glDisable(GL_BLEND);
+        glColor4f(0.f, 0.f, 0.f, 0.f);
+        fillBox();
+
+        glEnable(GL_BLEND);
+        if (preview.buildUp && !preview.footprintOnly) {
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        } else {
+            glBlendEquation(GL_MAX);
+        }
+        glDrawArrays(GL_TRIANGLES, firstVertex, vertexCount);
+
+        glBlendEquation(GL_FUNC_ADD);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+        glBlendFunc(GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA);
+        glColor4ub(preview.colour[0], preview.colour[1], preview.colour[2], 255);
+        fillBox();
+
+        // The viewer's framebuffer is opaque again for whatever draws next.
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+        glDisable(GL_BLEND);
+        glColor4f(0.f, 0.f, 0.f, 1.f);
+        fillBox();
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
+
+    if (arrayBuffer) {
+        glBindBuffer(GL_ARRAY_BUFFER, arrayBuffer);
+    }
+    if (vertexArray) {
+        glBindVertexArray(vertexArray);
+    }
+    glPopClientAttrib();
+    glCheckError();
+} // RotoPaintInteract::drawStrokePreviews
+
 void
 RotoPaintInteract::drawPaintToolOverlay(double screenPixelRatio,
                                         const std::pair<double, double>& viewportSize)
 {
+    drawStrokePreviews();
+
     if (p->isPaintByDefault && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush) || (selectedRole == eRotoRoleCloneBrush)) && (selectedTool != eRotoToolOpenBezier)) {
         Point cursorPos;
         getHost()->getCurrentViewportForOverlays()->getCursorPosition(cursorPos.x, cursorPos.y);
@@ -571,7 +893,6 @@ RotoPaintInteract::onPaintToolPenDown(double /*time*/,
                                       double pressure,
                                       double timestamp)
 {
-    RotoContextPtr context = getContext();
     bool didSomething = false;
 
     switch (selectedTool) {
@@ -593,38 +914,13 @@ RotoPaintInteract::onPaintToolPenDown(double /*time*/,
             state = eEventStateDraggingBrushOpacity;
             mouseCenterOnSizeChange = pos;
         } else {
-            /*
-               Check that all viewers downstream are connected directly to the RotoPaint to avoid glitches and bugs
-             */
-            checkViewersAreDirectlyConnected();
-            bool multiStrokeEnabled = isMultiStrokeEnabled();
-            if (strokeBeingPaint && strokeBeingPaint->getParentLayer() && multiStrokeEnabled) {
-                RotoLayerPtr layer = strokeBeingPaint->getParentLayer();
-                if (!layer) {
-                    layer = context->findDeepestSelectedLayer();
-                    if (!layer) {
-                        layer = context->getOrCreateBaseLayer();
-                    }
-                    assert(layer);
-                    context->addItem(layer, 0, strokeBeingPaint, RotoItem::eSelectionReasonOther);
-                }
-
-                context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, true);
-
-                KnobIntPtr lifeTimeFrameKnob = strokeBeingPaint->getLifeTimeFrameKnob();
-                lifeTimeFrameKnob->setValue(context->getTimelineCurrentTime());
-
-                strokeBeingPaint->appendPoint(true, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
-                if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
-                    probe->notePointAppended();
-                }
+            beginStrokePreview(pos, pressure);
+            if (mustDeferPenEvents()) {
+                DeferredPenEvent event = { DeferredPenEvent::eTypeDown, pos, pressure, timestamp, selectedTool };
+                deferredPenEvents.push_back(event);
             } else {
-                if (strokeBeingPaint && !strokeBeingPaint->getParentLayer() && multiStrokeEnabled) {
-                    strokeBeingPaint.reset();
-                }
-                makeStroke(false, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
+                beginStroke(pos, pressure, timestamp);
             }
-            context->evaluateChange();
             state = eEventStateBuildingStroke;
             getHost()->setCurrentCursor(eCursorBlank);
         }
@@ -680,26 +976,20 @@ RotoPaintInteract::onPaintStatePenMotion(const QPointF& pos,
                                          double dx,
                                          double dy)
 {
-    RotoContextPtr context = getContext();
     bool didSomething = false;
 
     switch (state) {
     case eEventStateBuildingStroke: {
-        if (strokeBeingPaint) {
-            // disable draft during painting
-            if (getHost()->getApp()->isDraftRenderEnabled()) {
-                getHost()->getApp()->setDraftRenderEnabled(false);
-            }
-
-            RotoPoint p(pos.x(), pos.y(), pressure, timestamp);
-            if (strokeBeingPaint->appendPoint(false, p)) {
-                if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
-                    probe->notePointAppended();
-                }
-                lastMousePos = pos;
-                context->evaluateChange_noIncrement();
-                didSomething = true;
-            }
+        if (!strokePreviews.empty()) {
+            addStrokePreviewPoint(strokePreviews.back(), pos.x(), pos.y(), pressure);
+        }
+        lastMousePos = pos;
+        if (mustDeferPenEvents()) {
+            DeferredPenEvent event = { DeferredPenEvent::eTypeMotion, pos, pressure, timestamp, selectedTool };
+            deferredPenEvents.push_back(event);
+            didSomething = true;
+        } else {
+            didSomething = continueStroke(pos, pressure, timestamp);
         }
         break;
     }
@@ -761,35 +1051,182 @@ RotoPaintInteract::onPaintStatePenUp()
     bool ret = false;
 
     if (state == eEventStateBuildingStroke) {
-        assert(strokeBeingPaint);
-        context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, false);
-        assert(strokeBeingPaint->getParentLayer());
-
-        bool multiStrokeEnabled = isMultiStrokeEnabled();
-        if (!multiStrokeEnabled) {
-            pushUndoCommand(new AddStrokeUndoCommand(shared_from_this_paint(), strokeBeingPaint));
-            makeStroke(true, RotoPoint());
+        if (mustDeferPenEvents()) {
+            DeferredPenEvent event = { DeferredPenEvent::eTypeUp, lastMousePos, 0., 0., selectedTool };
+            deferredPenEvents.push_back(event);
         } else {
-            pushUndoCommand(new AddMultiStrokeUndoCommand(shared_from_this_paint(), strokeBeingPaint));
+            finishStroke();
         }
-
-        /**
-         * Do a neat render for the stroke (better interpolation). This call is blocking otherwise the user might
-         * attempt to make a new stroke while the previous stroke is not finished... this would yield artifacts.
-         **/
-        getHost()->setCurrentCursor(eCursorBusy);
-        context->evaluateNeatStrokeRender();
         if (context->isRotoPaint() && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRoleCloneBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush))) {
             getHost()->setCurrentCursor(eCursorCross);
         } else {
             getHost()->setCurrentCursor(eCursorDefault);
         }
-        strokeBeingPaint->setStrokeFinished();
         ret = true;
     }
 
     return ret;
 } // RotoPaintInteract::onPaintStatePenUp
+
+void
+RotoPaintInteract::beginStroke(const QPointF& pos,
+                               double pressure,
+                               double timestamp)
+{
+    RotoContextPtr context = getContext();
+
+    /*
+       Check that all viewers downstream are connected directly to the RotoPaint to avoid glitches and bugs
+     */
+    checkViewersAreDirectlyConnected();
+    bool multiStrokeEnabled = isMultiStrokeEnabled();
+    if (strokeBeingPaint && strokeBeingPaint->getParentLayer() && multiStrokeEnabled) {
+        RotoLayerPtr layer = strokeBeingPaint->getParentLayer();
+        if (!layer) {
+            layer = context->findDeepestSelectedLayer();
+            if (!layer) {
+                layer = context->getOrCreateBaseLayer();
+            }
+            assert(layer);
+            context->addItem(layer, 0, strokeBeingPaint, RotoItem::eSelectionReasonOther);
+        }
+
+        context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, true);
+
+        KnobIntPtr lifeTimeFrameKnob = strokeBeingPaint->getLifeTimeFrameKnob();
+        lifeTimeFrameKnob->setValue(context->getTimelineCurrentTime());
+
+        strokeBeingPaint->appendPoint(true, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
+        if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+            probe->notePointAppended();
+        }
+    } else {
+        if (strokeBeingPaint && !strokeBeingPaint->getParentLayer() && multiStrokeEnabled) {
+            strokeBeingPaint.reset();
+        }
+        makeStroke(false, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
+    }
+
+    // Pen-downs and their previews come in the same order.
+    engineStrokePreview = 0;
+    for (std::list<StrokePreview>::iterator it = strokePreviews.begin(); it != strokePreviews.end(); ++it) {
+        if (!it->engineStarted) {
+            it->engineStarted = true;
+            if (strokeBeingPaint) {
+                it->item = strokeBeingPaint;
+                it->multiStrokeIndex = (int)strokeBeingPaint->getXControlPoints().size() - 1;
+            }
+            engineStrokePreview = &*it;
+            break;
+        }
+    }
+
+    context->evaluateChange();
+} // RotoPaintInteract::beginStroke
+
+bool
+RotoPaintInteract::continueStroke(const QPointF& pos,
+                                  double pressure,
+                                  double timestamp)
+{
+    if (!strokeBeingPaint) {
+        return false;
+    }
+    // disable draft during painting
+    if (getHost()->getApp()->isDraftRenderEnabled()) {
+        getHost()->getApp()->setDraftRenderEnabled(false);
+    }
+
+    RotoPoint p(pos.x(), pos.y(), pressure, timestamp);
+    if (!strokeBeingPaint->appendPoint(false, p)) {
+        return false;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->notePointAppended();
+    }
+    getContext()->evaluateChange_noIncrement();
+
+    return true;
+}
+
+void
+RotoPaintInteract::finishStroke()
+{
+    RotoContextPtr context = getContext();
+
+    assert(strokeBeingPaint);
+    if (!strokeBeingPaint) {
+        return;
+    }
+    context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, false);
+    assert(strokeBeingPaint->getParentLayer());
+
+    bool multiStrokeEnabled = isMultiStrokeEnabled();
+    if (!multiStrokeEnabled) {
+        pushUndoCommand(new AddStrokeUndoCommand(shared_from_this_paint(), strokeBeingPaint));
+        makeStroke(true, RotoPoint());
+    } else {
+        pushUndoCommand(new AddMultiStrokeUndoCommand(shared_from_this_paint(), strokeBeingPaint));
+    }
+
+    if (engineStrokePreview) {
+        engineStrokePreview->neatRenderRequested = true;
+        engineStrokePreview = 0;
+    }
+
+    /*
+       Re-render the whole stroke from its curves (better interpolation). Strokes begun before it lands wait in
+       deferredPenEvents, so the engine never paints two strokes at once.
+     */
+    neatRenderPending = true;
+    std::weak_ptr<RotoPaintInteract> weakThis = shared_from_this_paint();
+    context->evaluateNeatStrokeRender([weakThis]() {
+        if (RotoPaintInteractPtr self = weakThis.lock()) {
+            self->onNeatRenderLanded();
+        }
+    });
+    strokeBeingPaint->setStrokeFinished();
+} // RotoPaintInteract::finishStroke
+
+void
+RotoPaintInteract::onNeatRenderLanded()
+{
+    neatRenderPending = false;
+    for (std::list<StrokePreview>::iterator it = strokePreviews.begin(); it != strokePreviews.end();) {
+        if (it->neatRenderRequested) {
+            it = strokePreviews.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    replayDeferredPenEvents();
+    redrawOverlays();
+}
+
+void
+RotoPaintInteract::replayDeferredPenEvents()
+{
+    // The stroke type comes from the tool, which may have changed since these events.
+    const RotoToolEnum currentTool = selectedTool;
+
+    while (!deferredPenEvents.empty() && !neatRenderPending) {
+        const DeferredPenEvent event = deferredPenEvents.front();
+        deferredPenEvents.pop_front();
+        selectedTool = event.tool;
+        switch (event.type) {
+        case DeferredPenEvent::eTypeDown:
+            beginStroke(event.pos, event.pressure, event.timestamp);
+            break;
+        case DeferredPenEvent::eTypeMotion:
+            continueStroke(event.pos, event.pressure, event.timestamp);
+            break;
+        case DeferredPenEvent::eTypeUp:
+            finishStroke();
+            break;
+        }
+    }
+    selectedTool = currentTool;
+}
 
 bool
 RotoPaintInteract::onPenUpFinished()

@@ -28,9 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 // clang-format off
 CLANG_DIAG_OFF(deprecated-declarations)
@@ -50,6 +53,24 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The shape of one brush dab as the stroke renderer draws it: a disc of radius externalDotRadius, either flat at
+ * alpha (opacityStops empty) or a radial ramp from internalDotRadius to externalDotRadius through opacityStops, each a
+ * (position in [0, 1], opacity) pair. spacing is the distance to the next dab.
+ **/
+void getRenderDotParams(double alpha,
+                        double brushSizePixel,
+                        double brushHardness,
+                        double brushSpacing,
+                        double pressure,
+                        bool pressureAffectsOpacity,
+                        bool pressureAffectsSize,
+                        bool pressureAffectsHardness,
+                        double* internalDotRadius,
+                        double* externalDotRadius,
+                        double* spacing,
+                        std::vector<std::pair<double, double>>* opacityStops);
 
 //Small RAII class that properly destroys the cairo image upon destruction
 class CairoImageWrapper
@@ -156,20 +177,49 @@ public:
     /**
      * @brief When finishing a stroke with the paint brush, we need to re-render it because the interpolation of the curve
      * will be much smoother with more points than what it was during painting.
-     * We explicitly freeze the UI while waiting for the image to be drawn, otherwise the user might attempt to do a
-     * multiple stroke on top of it which could make some artifacts.
+     * Returns at once; onLanded runs on the main thread once a viewer has uploaded that render's frame, once the render
+     * ends without a frame, or at once (queued) when no viewer renders it. Must be called on the main thread.
      **/
-    void evaluateNeatStrokeRender();
-
+    void evaluateNeatStrokeRender(const std::function<void()>& onLanded);
 
     bool mustDoNeatRender() const;
 
-    void setIsDoingNeatRender(bool doing);
+    /**
+     * @brief Called with true by the render that takes the pending neat render, and with false when that render ends.
+     * Returns true when the call with true took the neat render.
+     **/
+    bool setIsDoingNeatRender(bool doing);
+
+    /**
+     * @brief Called by the neat render once its frame is handed to the viewer: the render ends, and lands when
+     * noteNeatRenderDisplayed() is called, or after a timeout should the frame never reach the screen. Any thread.
+     **/
+    void notifyNeatRenderFrameProduced();
+
+    /**
+     * @brief Called by the viewer once it has uploaded the neat render's frame, so the next paint shows it. Main thread only.
+     **/
+    void noteNeatRenderDisplayed();
 
     bool isDoingNeatRender() const;
 
     void s_breakMultiStroke() { Q_EMIT breakMultiStroke(); }
 
+    /**
+     * @brief Records that the viewer now shows the stroke rendered up to point index age of its sub-stroke multiStrokeIndex.
+     * Main thread only.
+     **/
+    void noteStrokeDisplayed(const RotoStrokeItemPtr& stroke, int multiStrokeIndex, int age);
+
+    /**
+     * @brief The last point index of the given sub-stroke that a viewer shows, or -1.
+     **/
+    int getDisplayedStrokeAge(const RotoStrokeItemPtr& stroke, int multiStrokeIndex) const;
+
+private:
+    void onNeatRenderLanded();
+
+public:
     bool knobChanged(KnobI* k,
                      ValueChangedReasonEnum reason,
                      ViewSpec view,

@@ -60,48 +60,84 @@ typedef std::list<SelectedCp> SelectedCpList;
 typedef BezierPtr BezierPtr;
 typedef std::list<BezierPtr> BezierList;
 
+RotoDragUndoCommand::RotoDragUndoCommand(const RotoCurveInteractPtr& roto,
+                                         double time)
+    : UndoCommand()
+    , UndoGestureMember()
+    , _roto(roto)
+    , _time(time)
+    , _points()
+    , _before()
+    , _after()
+    , _undone(false)
+{
+    setGestureKey(roto->undoGesture.key());
+}
+
+RotoDragUndoCommand::~RotoDragUndoCommand()
+{
+}
+
+void
+RotoDragUndoCommand::addPoint(const BezierCPPtr& point)
+{
+    if (!point || (std::find(_points.begin(), _points.end(), point) != _points.end())) {
+        return;
+    }
+    // The GUI copy is never behind the internal one, so it is the state the user sees even while
+    // a render holds the internal one.
+    BezierCPPtr copy = std::make_shared<BezierCP>(point->getBezier());
+    copy->cloneGuiState(*point, true);
+    _points.push_back(point);
+    _before.push_back(copy);
+}
+
+void
+RotoDragUndoCommand::restoreBefore()
+{
+    _after.resize(_points.size());
+    for (std::size_t i = 0; i < _points.size(); ++i) {
+        if (!_after[i]) {
+            _after[i] = std::make_shared<BezierCP>(_points[i]->getBezier());
+        }
+        _after[i]->cloneGuiState(*_points[i], true);
+    }
+    for (std::size_t i = 0; i < _points.size(); ++i) {
+        _points[i]->getBezier()->restorePointState(_points[i], *_before[i]);
+    }
+    _undone = true;
+}
+
+void
+RotoDragUndoCommand::restoreAfter()
+{
+    for (std::size_t i = 0; i < _points.size() && i < _after.size(); ++i) {
+        _points[i]->getBezier()->restorePointState(_points[i], *_after[i]);
+    }
+}
+
+////////////////////////
+
 MoveControlPointsUndoCommand::MoveControlPointsUndoCommand(const RotoCurveInteractPtr& roto,
                                                            const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& toDrag,
                                                            double dx,
                                                            double dy,
                                                            double time)
-    : UndoCommand()
-    , _firstRedoCalled(false)
-    , _roto(roto)
+    : RotoDragUndoCommand(roto, time)
     , _dx(dx)
     , _dy(dy)
-    , _featherLinkEnabled(roto->getCurveContext()->isFeatherLinkEnabled())
-    , _rippleEditEnabled(roto->getCurveContext()->isRippleEditEnabled())
     , _selectedTool(roto->selectedToolAction)
-    , _time(time)
     , _pointsToDrag(toDrag)
 {
-    setGestureKey(roto->undoGesture.key());
     setText( tr("Move control points").toStdString() );
 
     assert(roto);
 
     roto->getSelection(&_selectedCurves, &_selectedPoints);
 
-    ///we make a copy of the points
     for (SelectedCpList::iterator it = _pointsToDrag.begin(); it != _pointsToDrag.end(); ++it) {
-        CpPtr first, second;
-        if ( it->first->isFeatherPoint() ) {
-            first.reset( new FeatherPoint( it->first->getBezier() ) );
-            first->clone( *(it->first) );
-        } else {
-            first.reset( new BezierCP( *(it->first) ) );
-        }
-
-        if (it->second) {
-            if ( it->second->isFeatherPoint() ) {
-                second.reset( new FeatherPoint( it->second->getBezier() ) );
-                second->clone( *(it->second) );
-            } else {
-                second.reset( new BezierCP( *(it->second) ) );
-            }
-        }
-        _originalPoints.push_back( std::make_pair(first, second) );
+        addPoint(it->first);
+        addPoint(it->second);
     }
 
     for (SelectedCpList::iterator it = _pointsToDrag.begin(); it != _pointsToDrag.end(); ++it) {
@@ -120,32 +156,45 @@ MoveControlPointsUndoCommand::~MoveControlPointsUndoCommand()
 void
 MoveControlPointsUndoCommand::undo()
 {
-    SelectedCpList::iterator cpIt = _originalPoints.begin();
-    std::set<Bezier*> beziers;
-
-    for (SelectedCpList::iterator it = _pointsToDrag.begin(); it != _pointsToDrag.end(); ++it) {
-        beziers.insert( it->first->getBezier().get() );
-    }
-
-    for (SelectedCpList::iterator it = _pointsToDrag.begin(); it != _pointsToDrag.end(); ++it, ++cpIt) {
-        it->first->clone(*cpIt->first);
-        if (it->second) {
-            it->second->clone(*cpIt->second);
-        }
-    }
-
-    for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
-        (*it)->invalidateContentHash();
-    }
+    restoreBefore();
 
     RotoCurveInteractPtr roto = _roto.lock();
+    if (!roto) {
+        return;
+    }
     roto->evaluate(true);
-    roto->setCurrentTool( _selectedTool.lock() );
+    roto->setCurrentTool(_selectedTool.lock());
     roto->setSelection(_selectedCurves, _selectedPoints);
 }
 
 void
 MoveControlPointsUndoCommand::redo()
+{
+    if (hasBeenUndone()) {
+        restoreAfter();
+        RotoCurveInteractPtr roto = _roto.lock();
+        if (roto) {
+            roto->setSelection(_selectedCurves, _selectedPoints);
+            roto->evaluate(true);
+        }
+
+        return;
+    }
+    movePoints(_dx, _dy);
+}
+
+void
+MoveControlPointsUndoCommand::addDelta(double dx,
+                                       double dy)
+{
+    _dx += dx;
+    _dy += dy;
+    movePoints(dx, dy);
+}
+
+void
+MoveControlPointsUndoCommand::movePoints(double dx,
+                                         double dy)
 {
     SelectedCpList::iterator itPoints = _pointsToDrag.begin();
 
@@ -164,57 +213,19 @@ MoveControlPointsUndoCommand::redo()
                 if ( ok && ( ( selectedTool == eRotoToolSelectFeatherPoints ) ||
                              ( selectedTool == eRotoToolSelectAll ) ||
                              ( selectedTool == eRotoToolDrawBezier ) ) ) {
-                    itPoints->first->getBezier()->moveFeatherByIndex(*it, _time, _dx, _dy);
+                    itPoints->first->getBezier()->moveFeatherByIndex(*it, _time, dx, dy);
                 }
             } else {
                 if ( ok && ( ( selectedTool == eRotoToolSelectPoints ) ||
                              ( selectedTool == eRotoToolSelectAll ) ||
                              ( selectedTool == eRotoToolDrawBezier ) ) ) {
-                    itPoints->first->getBezier()->movePointByIndex(*it, _time, _dx, _dy);
+                    itPoints->first->getBezier()->movePointByIndex(*it, _time, dx, dy);
                 }
             }
         }
     } catch (const std::exception & e) {
         qDebug() << "Exception while operating MoveControlPointsUndoCommand::redo(): " << e.what();
     }
-
-    if (_firstRedoCalled) {
-        roto->setSelection(_selectedCurves, _selectedPoints);
-        roto->evaluate(true);
-    }
-
-    _firstRedoCalled = true;
-}
-
-bool
-MoveControlPointsUndoCommand::mergeWith(const UndoCommandPtr& other)
-{
-    const MoveControlPointsUndoCommand* mvCmd = dynamic_cast<const MoveControlPointsUndoCommand*>( other.get() );
-
-    if (!mvCmd) {
-        return false;
-    }
-    if (!inSameGestureAs(*mvCmd)) {
-        return false;
-    }
-
-    if ( ( mvCmd->_pointsToDrag.size() != _pointsToDrag.size() ) || (mvCmd->_time != _time) || ( mvCmd->_selectedTool.lock() != _selectedTool.lock() )
-         || ( mvCmd->_rippleEditEnabled != _rippleEditEnabled) || ( mvCmd->_featherLinkEnabled != _featherLinkEnabled) ) {
-        return false;
-    }
-
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> >::const_iterator it = _pointsToDrag.begin();
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> >::const_iterator oIt = mvCmd->_pointsToDrag.begin();
-    for (; it != _pointsToDrag.end(); ++it, ++oIt) {
-        if ( (it->first != oIt->first) || (it->second != oIt->second) ) {
-            return false;
-        }
-    }
-
-    _dx += mvCmd->_dx;
-    _dy += mvCmd->_dy;
-
-    return true;
 }
 
 ////////////////////////
@@ -230,36 +241,20 @@ TransformUndoCommand::TransformUndoCommand(const RotoCurveInteractPtr& roto,
                                            double sx,
                                            double sy,
                                            double time)
-    : UndoCommand()
-    , _firstRedoCalled(false)
-    , _roto(roto)
-    , _rippleEditEnabled(roto->getCurveContext()->isRippleEditEnabled())
+    : RotoDragUndoCommand(roto, time)
     , _selectedTool(roto->selectedToolAction)
     , _matrix()
-    , _time(time)
     , _selectedCurves()
-    , _originalPoints()
     , _selectedPoints()
 {
-    setGestureKey(roto->undoGesture.key());
     _matrix = std::make_shared<Transform::Matrix3x3>();
 
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> > selected;
-
-    roto->getSelection(&_selectedCurves, &selected);
-
-    _selectedPoints = selected;
-
+    roto->getSelection(&_selectedCurves, &_selectedPoints);
 
     *_matrix = Transform::matTransformCanonical(tx, ty, sx, sy, skewX, skewY, true, (rot), centerX, centerY);
-    ///we make a copy of the points
     for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it) {
-        CpPtr first( new BezierCP( *(it->first) ) );
-        CpPtr second;
-        if (it->second) {
-            second.reset( new BezierCP( *(it->second) ) );
-        }
-        _originalPoints.push_back( std::make_pair(first, second) );
+        addPoint(it->first);
+        addPoint(it->second);
     }
 
     setText( tr("Transform control points").toStdString() );
@@ -272,23 +267,7 @@ TransformUndoCommand::~TransformUndoCommand()
 void
 TransformUndoCommand::undo()
 {
-    SelectedCpList::iterator cpIt = _originalPoints.begin();
-    std::set<Bezier*> beziers;
-
-    for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it) {
-        beziers.insert( it->first->getBezier().get() );
-    }
-
-    for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it, ++cpIt) {
-        it->first->clone(*cpIt->first);
-        if (it->second) {
-            it->second->clone(*cpIt->second);
-        }
-    }
-
-    for (std::set<Bezier*>::iterator it = beziers.begin(); it != beziers.end(); ++it) {
-        (*it)->invalidateContentHash();
-    }
+    restoreBefore();
 
     RotoCurveInteractPtr roto = _roto.lock();
     if (!roto) {
@@ -301,18 +280,12 @@ TransformUndoCommand::undo()
 }
 
 void
-TransformUndoCommand::transformPoint(const BezierCPPtr & point)
-{
-    point->getBezier()->transformPoint( point, _time, _matrix.get() );
-}
-
-void
-TransformUndoCommand::redo()
+TransformUndoCommand::transformPoints(Transform::Matrix3x3 matrix)
 {
     for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it) {
-        transformPoint(it->first);
+        it->first->getBezier()->transformPoint(it->first, _time, &matrix);
         if (it->second) {
-            transformPoint(it->second);
+            it->second->getBezier()->transformPoint(it->second, _time, &matrix);
         }
     }
 
@@ -320,45 +293,38 @@ TransformUndoCommand::redo()
     if (!roto) {
         return;
     }
-    if (_firstRedoCalled) {
-        roto->setSelection(_selectedCurves, _selectedPoints);
-        roto->evaluate(true);
-    } else {
-        roto->computeSelectedCpsBBOX();
-        roto->redrawOverlays();
-    }
-
-    _firstRedoCalled = true;
+    roto->computeSelectedCpsBBOX();
+    roto->redrawOverlays();
 }
 
-bool
-TransformUndoCommand::mergeWith(const UndoCommandPtr& other)
+void
+TransformUndoCommand::redo()
 {
-    const TransformUndoCommand* cmd = dynamic_cast<const TransformUndoCommand*>( other.get() );
-
-    if (!cmd) {
-        return false;
-    }
-    if (!inSameGestureAs(*cmd)) {
-        return false;
-    }
-
-    if ( ( cmd->_selectedPoints.size() != _selectedPoints.size() ) || (cmd->_time != _time) || ( cmd->_selectedTool.lock() != _selectedTool.lock() )
-         || ( cmd->_rippleEditEnabled != _rippleEditEnabled) ) {
-        return false;
-    }
-
-    SelectedCpList::const_iterator it = _selectedPoints.begin();
-    SelectedCpList::const_iterator oIt = cmd->_selectedPoints.begin();
-    for (; it != _selectedPoints.end(); ++it, ++oIt) {
-        if ( (it->first != oIt->first) || (it->second != oIt->second) ) {
-            return false;
+    if (hasBeenUndone()) {
+        restoreAfter();
+        RotoCurveInteractPtr roto = _roto.lock();
+        if (roto) {
+            roto->setSelection(_selectedCurves, _selectedPoints);
+            roto->evaluate(true);
         }
+
+        return;
     }
+    transformPoints(*_matrix);
+}
 
-    *_matrix = matMul(*_matrix, *cmd->_matrix);
-
-    return true;
+void
+TransformUndoCommand::addTransform(double centerX,
+                                   double centerY,
+                                   double rot,
+                                   double skewX,
+                                   double skewY,
+                                   double tx,
+                                   double ty,
+                                   double sx,
+                                   double sy)
+{
+    transformPoints(Transform::matTransformCanonical(tx, ty, sx, sy, skewX, skewY, true, rot, centerX, centerY));
 }
 
 ////////////////////////
@@ -752,34 +718,20 @@ MoveTangentUndoCommand::MoveTangentUndoCommand(const RotoCurveInteractPtr& roto,
                                                const BezierCPPtr& cp,
                                                bool left,
                                                bool breakTangents)
-    : UndoCommand()
-    , _firstRedoCalled(false)
-    , _roto(roto)
+    : RotoDragUndoCommand(roto, time)
     , _dx(dx)
     , _dy(dy)
-    , _featherLinkEnabled(roto->getCurveContext()->isFeatherLinkEnabled())
-    , _rippleEditEnabled(roto->getCurveContext()->isRippleEditEnabled())
-    , _time(time)
     , _tangentBeingDragged(cp)
-    , _oldCp()
-    , _oldFp()
     , _left(left)
     , _breakTangents(breakTangents)
 {
-    setGestureKey(roto->undoGesture.key());
     roto->getSelection(&_selectedCurves, &_selectedPoints);
-    BezierCPPtr counterPart;
     if ( cp->isFeatherPoint() ) {
-        counterPart = _tangentBeingDragged->getBezier()->getControlPointForFeatherPoint(_tangentBeingDragged);
-        _oldCp.reset( new BezierCP(*counterPart) );
-        _oldFp.reset( new BezierCP(*_tangentBeingDragged) );
+        addPoint(_tangentBeingDragged->getBezier()->getControlPointForFeatherPoint(_tangentBeingDragged));
     } else {
-        counterPart = _tangentBeingDragged->getBezier()->getFeatherPointForControlPoint(_tangentBeingDragged);
-        _oldCp.reset( new BezierCP(*_tangentBeingDragged) );
-        if (counterPart) {
-            _oldFp.reset( new BezierCP(*counterPart) );
-        }
+        addPoint(_tangentBeingDragged->getBezier()->getFeatherPointForControlPoint(_tangentBeingDragged));
     }
+    addPoint(_tangentBeingDragged);
 
     setText( tr("Move control point tangent").toStdString() );
 }
@@ -878,37 +830,46 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 void
 MoveTangentUndoCommand::undo()
 {
-    RotoCurveInteractPtr roto = _roto.lock();
+    restoreBefore();
 
+    RotoCurveInteractPtr roto = _roto.lock();
     if (!roto) {
         return;
     }
-
-    BezierCPPtr counterPart;
-
-    if ( _tangentBeingDragged->isFeatherPoint() ) {
-        counterPart = _tangentBeingDragged->getBezier()->getControlPointForFeatherPoint(_tangentBeingDragged);
-        if (counterPart) {
-            counterPart->clone(*_oldCp);
-        }
-        _tangentBeingDragged->clone(*_oldFp);
-    } else {
-        counterPart = _tangentBeingDragged->getBezier()->getFeatherPointForControlPoint(_tangentBeingDragged);
-        if (counterPart) {
-            counterPart->clone(*_oldFp);
-        }
-        _tangentBeingDragged->clone(*_oldCp);
-    }
-    _tangentBeingDragged->getBezier()->invalidateContentHash();
-    if (_firstRedoCalled) {
-        roto->setSelection(_selectedCurves, _selectedPoints);
-    }
-
+    roto->setSelection(_selectedCurves, _selectedPoints);
     roto->evaluate(true);
 }
 
 void
 MoveTangentUndoCommand::redo()
+{
+    if (hasBeenUndone()) {
+        restoreAfter();
+        RotoCurveInteractPtr roto = _roto.lock();
+        if (roto) {
+            roto->setSelection(_selectedCurves, _selectedPoints);
+            roto->evaluate(true);
+        }
+
+        return;
+    }
+    moveTangent(_dx, _dy);
+}
+
+void
+MoveTangentUndoCommand::addDelta(double dx,
+                                 double dy,
+                                 bool breakTangents)
+{
+    _dx += dx;
+    _dy += dy;
+    _breakTangents = breakTangents;
+    moveTangent(dx, dy);
+}
+
+void
+MoveTangentUndoCommand::moveTangent(double dx,
+                                    double dy)
 {
     RotoCurveInteractPtr roto = _roto.lock();
 
@@ -921,15 +882,9 @@ MoveTangentUndoCommand::redo()
     if ( _tangentBeingDragged->isFeatherPoint() ) {
         cp = _tangentBeingDragged->getBezier()->getControlPointForFeatherPoint(_tangentBeingDragged);
         fp = _tangentBeingDragged;
-        _oldCp->clone(*cp);
-        _oldFp->clone(*fp);
     } else {
         cp = _tangentBeingDragged;
         fp = _tangentBeingDragged->getBezier()->getFeatherPointForControlPoint(_tangentBeingDragged);
-        if (fp) {
-            _oldFp->clone(*fp);
-        }
-        _oldCp->clone(*cp);
     }
 
     _tangentBeingDragged->getBezier()->invalidateContentHash();
@@ -939,39 +894,9 @@ MoveTangentUndoCommand::redo()
 
     bool autoKeying = roto->getCurveContext()->isAutoKeyingEnabled();
 
-    dragTangent( _time, *cp, *fp, transform, _dx, _dy, false, _left, autoKeying, _breakTangents, _tangentBeingDragged->isFeatherPoint() );
+    dragTangent(_time, *cp, *fp, transform, dx, dy, false, _left, autoKeying, _breakTangents, _tangentBeingDragged->isFeatherPoint());
 
-
-    if (_firstRedoCalled) {
-        roto->setSelection(_selectedCurves, _selectedPoints);
-        roto->evaluate(true);
-    } else {
-        roto->computeSelectedCpsBBOX();
-    }
-
-
-    _firstRedoCalled = true;
-}
-
-bool
-MoveTangentUndoCommand::mergeWith(const UndoCommandPtr &other)
-{
-    const MoveTangentUndoCommand* mvCmd = dynamic_cast<const MoveTangentUndoCommand*>( other.get() );
-
-    if (!mvCmd) {
-        return false;
-    }
-    if (!inSameGestureAs(*mvCmd)) {
-        return false;
-    }
-    if ( (mvCmd->_tangentBeingDragged != _tangentBeingDragged) || (mvCmd->_left != _left) || (mvCmd->_featherLinkEnabled != _featherLinkEnabled)
-         || ( mvCmd->_rippleEditEnabled != _rippleEditEnabled) ) {
-        return false;
-    }
-    _dx += mvCmd->_dx;
-    _dy += mvCmd->_dy;
-
-    return true;
+    roto->computeSelectedCpsBBOX();
 }
 
 //////////////////////////
@@ -982,19 +907,13 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
                                                      const std::pair<BezierCPPtr, BezierCPPtr>& point,
                                                      const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& selectedPoints,
                                                      double time)
-    : UndoCommand()
-    , _roto(roto)
-    , _firstRedoCalled(false)
+    : RotoDragUndoCommand(roto, time)
     , _dx(dx)
     , _dy(dy)
-    , _rippleEditEnabled(roto->getCurveContext()->isRippleEditEnabled())
-    , _time(time)
     , _selectedCurves()
     , _selectedPoints()
-    , _grabbedPoint(point)
     , _bars()
 {
-    setGestureKey(roto->undoGesture.key());
     assert(point.first && point.second);
     roto->getSelection(&_selectedCurves, &_selectedPoints);
 
@@ -1046,30 +965,19 @@ MoveFeatherBarUndoCommand::addFeatherBar(const std::pair<BezierCPPtr, BezierCPPt
             return;
         }
     }
-    bar.oldCp.reset(new BezierCP(*bar.cp));
-    bar.oldFp.reset(new BezierCP(*bar.fp));
+    addPoint(bar.cp);
+    addPoint(bar.fp);
     _bars.push_back(bar);
 }
 
 void
 MoveFeatherBarUndoCommand::undo()
 {
-    RotoCurveInteractPtr roto = _roto.lock();
+    restoreBefore();
 
+    RotoCurveInteractPtr roto = _roto.lock();
     if (!roto) {
         return;
-    }
-    std::list<BezierPtr> curves;
-    for (std::list<FeatherBar>::const_iterator it = _bars.begin(); it != _bars.end(); ++it) {
-        it->cp->clone(*it->oldCp);
-        it->fp->clone(*it->oldFp);
-        BezierPtr curve = it->cp->getBezier();
-        if (std::find(curves.begin(), curves.end(), curve) == curves.end()) {
-            curves.push_back(curve);
-        }
-    }
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        (*it)->invalidateContentHash();
     }
     roto->evaluate(true);
     roto->setSelection(_selectedCurves, _selectedPoints);
@@ -1145,6 +1053,32 @@ computeFeatherBarDrag(const BezierCPPtr& cp,
 void
 MoveFeatherBarUndoCommand::redo()
 {
+    if (hasBeenUndone()) {
+        restoreAfter();
+        RotoCurveInteractPtr roto = _roto.lock();
+        if (roto) {
+            roto->evaluate(true);
+            roto->setSelection(_selectedCurves, _selectedPoints);
+        }
+
+        return;
+    }
+    moveFeathers(_dx, _dy);
+}
+
+void
+MoveFeatherBarUndoCommand::addDelta(double dx,
+                                    double dy)
+{
+    _dx += dx;
+    _dy += dy;
+    moveFeathers(dx, dy);
+}
+
+void
+MoveFeatherBarUndoCommand::moveFeathers(double dx,
+                                        double dy)
+{
     RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto || _bars.empty()) {
@@ -1163,7 +1097,7 @@ MoveFeatherBarUndoCommand::redo()
         }
     }
 
-    const double s = featherDragDistance(drags.front().dir, _dx, _dy);
+    const double s = featherDragDistance(drags.front().dir, dx, dy);
     const bool autoKeying = roto->getCurveContext()->isAutoKeyingEnabled();
     for (std::list<FeatherBarDrag>::const_iterator it = drags.begin(); it != drags.end(); ++it) {
         if (!autoKeying && !it->isOnKeyframe) {
@@ -1178,106 +1112,7 @@ MoveFeatherBarUndoCommand::redo()
         curve->moveFeatherByIndex(index, _time, to.x - it->from.x, to.y - it->from.y);
     }
 
-    if (_firstRedoCalled) {
-        roto->evaluate(true);
-    }
-
     roto->setSelection(_selectedCurves, _selectedPoints);
-
-    _firstRedoCalled = true;
-} // redo
-
-bool
-MoveFeatherBarUndoCommand::mergeWith(const UndoCommandPtr& other)
-{
-    const MoveFeatherBarUndoCommand* mvCmd = dynamic_cast<const MoveFeatherBarUndoCommand*>( other.get() );
-
-    if (!mvCmd) {
-        return false;
-    }
-    if (!inSameGestureAs(*mvCmd)) {
-        return false;
-    }
-    if ((mvCmd->_grabbedPoint != _grabbedPoint) || (mvCmd->_bars.size() != _bars.size()) || (mvCmd->_rippleEditEnabled != _rippleEditEnabled) || (mvCmd->_time != _time)) {
-        return false;
-    }
-    std::list<FeatherBar>::const_iterator otherIt = mvCmd->_bars.begin();
-    for (std::list<FeatherBar>::const_iterator it = _bars.begin(); it != _bars.end(); ++it, ++otherIt) {
-        if ((it->cp != otherIt->cp) || (it->fp != otherIt->fp)) {
-            return false;
-        }
-    }
-
-    _dx += mvCmd->_dx;
-    _dy += mvCmd->_dy;
-
-    return true;
-}
-
-/////////////////////////
-
-RemoveFeatherUndoCommand::RemoveFeatherUndoCommand(const RotoCurveInteractPtr& roto,
-                                                   const std::list<RemoveFeatherData>& datas)
-    : UndoCommand()
-    , _roto(roto)
-    , _firstRedocalled(false)
-    , _datas(datas)
-{
-    for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
-        for (std::list<BezierCPPtr>::const_iterator it2 = it->newPoints.begin(); it2 != it->newPoints.end(); ++it2) {
-            it->oldPoints.push_back( BezierCPPtr( new BezierCP(**it2) ) );
-        }
-    }
-    setText( tr("Remove feather").toStdString() );
-}
-
-RemoveFeatherUndoCommand::~RemoveFeatherUndoCommand()
-{
-}
-
-void
-RemoveFeatherUndoCommand::undo()
-{
-    for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
-        std::list<BezierCPPtr>::const_iterator itOld = it->oldPoints.begin();
-        for (std::list<BezierCPPtr>::const_iterator itNew = it->newPoints.begin();
-             itNew != it->newPoints.end(); ++itNew, ++itOld) {
-            (*itNew)->clone(**itOld);
-        }
-        it->curve->invalidateContentHash();
-    }
-    RotoCurveInteractPtr roto = _roto.lock();
-    if (!roto) {
-        return;
-    }
-    roto->evaluate(true);
-}
-
-void
-RemoveFeatherUndoCommand::redo()
-{
-    for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
-        std::list<BezierCPPtr>::const_iterator itOld = it->oldPoints.begin();
-        for (std::list<BezierCPPtr>::const_iterator itNew = it->newPoints.begin();
-             itNew != it->newPoints.end(); ++itNew, ++itOld) {
-            (*itOld)->clone(**itNew);
-            try {
-                it->curve->removeFeatherAtIndex( it->curve->getFeatherPointIndex(*itNew) );
-            } catch (...) {
-                ///the point doesn't exist anymore, just do nothing
-                return;
-            }
-        }
-    }
-    RotoCurveInteractPtr roto = _roto.lock();
-    if (!roto) {
-        return;
-    }
-
-    roto->evaluate(_firstRedocalled);
-
-
-    _firstRedocalled = true;
 }
 
 ////////////////////////////

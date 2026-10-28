@@ -165,6 +165,12 @@ public:
     U64 getContentHash() const;
 
     /**
+     * @brief A counter invalidateContentHash() advances: while it holds, the state
+     * appendGeometryContentHash() covers has not changed. Lock-free.
+     **/
+    U64 getGeometryGeneration() const;
+
+    /**
      * @brief Must follow every change to the state appendGeometryContentHash() covers.
      * Lock-free, so it may be called with itemMutex held.
      **/

@@ -171,6 +171,13 @@ public:
     void cloneGuiCurvesToInternalCurves();
 
     /**
+     * @brief Copies the GUI curves, static positions and broken flag of other, which are never
+     * behind its internal ones, onto this point's GUI copy, and onto its internal state too when
+     * alsoInternal is true.
+     **/
+    void cloneGuiState(const BezierCP& other, bool alsoInternal);
+
+    /**
      * @brief Mirrors the internal keyframe at time, or its absence, and its neighbours onto the
      * GUI curves (see Curve::copyKeyFrameFrom()), along with the static positions. The GUI
      * curves must otherwise equal the internal ones.

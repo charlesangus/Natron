@@ -26,6 +26,7 @@
 #include "RotoCurveInteract.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -37,13 +38,17 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/Settings.h"
 #include "Engine/Transform.h"
+#include "Engine/ViewerInstance.h"
 #include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -73,6 +78,9 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , ctrlDown(0)
     , altDown(0)
     , _host(host)
+    , _dragRender()
+    , _dragRenderWatch()
+    , _dragRenderGesture(0)
 {
 }
 
@@ -129,6 +137,26 @@ RotoCurveInteract::pushUndoCommand(UndoCommand* command)
     _host->pushUndoCommand(command);
 }
 
+template <class Cmd>
+std::shared_ptr<Cmd>
+RotoCurveInteract::getOpenDragCommand(double time) const
+{
+    std::shared_ptr<Cmd> command = std::dynamic_pointer_cast<Cmd>(_openDragCommand);
+
+    if (!command || !command->isOpenIn(undoGesture.key()) || (command->getTime() != time)) {
+        return std::shared_ptr<Cmd>();
+    }
+
+    return command;
+}
+
+void
+RotoCurveInteract::pushDragCommand(const std::shared_ptr<RotoDragUndoCommand>& command)
+{
+    _openDragCommand = command;
+    _host->pushUndoCommand(command);
+}
+
 void
 RotoCurveInteract::evaluate(bool redraw)
 {
@@ -150,6 +178,171 @@ void
 RotoCurveInteract::redrawOverlays()
 {
     _host->redrawOverlayInteract();
+}
+
+namespace {
+// A render slower than this stops live renders for the rest of an adaptive drag: the real render must converge within
+// 100 ms of the pen.
+const double kDragRenderAdaptiveThresholdMs = 100.;
+
+double
+dragRenderNowMs()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool
+isLiveRenderedDragState(EventStateEnum state)
+{
+    switch (state) {
+    case eEventStateDraggingSelectedControlPoints:
+    case eEventStateDraggingControlPoint:
+    case eEventStateDraggingLeftTangent:
+    case eEventStateDraggingRightTangent:
+    case eEventStateDraggingFeatherBar:
+    case eEventStateDraggingBBoxTopLeft:
+    case eEventStateDraggingBBoxTopRight:
+    case eEventStateDraggingBBoxBtmRight:
+    case eEventStateDraggingBBoxBtmLeft:
+    case eEventStateDraggingBBoxMidTop:
+    case eEventStateDraggingBBoxMidBtm:
+    case eEventStateDraggingBBoxMidLeft:
+    case eEventStateDraggingBBoxMidRight:
+        return true;
+    default:
+        return false;
+    }
+}
+} // anonymous namespace
+
+void
+RotoCurveInteract::beginDragRender()
+{
+    endDragRender();
+
+    RotoDragRenderThrottle::ModeEnum mode = RotoDragRenderThrottle::eModeOnRelease;
+    switch (appPTR->getCurrentSettings()->getRotoShapeDragRender()) {
+    case Settings::eRotoShapeDragRenderAdaptive:
+        mode = RotoDragRenderThrottle::eModeAdaptive;
+        break;
+    case Settings::eRotoShapeDragRenderAlwaysLive:
+        mode = RotoDragRenderThrottle::eModeAlwaysLive;
+        break;
+    case Settings::eRotoShapeDragRenderOnRelease:
+        mode = RotoDragRenderThrottle::eModeOnRelease;
+        break;
+    }
+
+    // Playback renders the edit as it goes.
+    NodePtr node = getNode();
+    if (node) {
+        std::list<ViewerInstance*> viewers;
+        node->hasViewersConnected(&viewers);
+        for (std::list<ViewerInstance*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+            if ((*it)->getRenderEngine()->isDoingSequentialRender()) {
+                mode = RotoDragRenderThrottle::eModeOnRelease;
+                break;
+            }
+        }
+    }
+
+    ++_dragRenderGesture;
+    _dragRender.beginGesture(mode, kDragRenderAdaptiveThresholdMs);
+}
+
+void
+RotoCurveInteract::requestDragRender()
+{
+    if (!_dragRender.isLive()) {
+        return;
+    }
+    if (!_dragRenderWatch) {
+        // From the first edit of a shape drag to pen up, every viewer render requested on this thread is tracked, the
+        // ones the GUI copy of the shapes issues as a render ends included: a render started after an edit shows it,
+        // so the edit needs no render of its own. Paint strokes never arm it.
+        std::weak_ptr<RotoCurveInteract> weakThis = shared_from_this();
+        const U64 gesture = _dragRenderGesture;
+        _dragRenderWatch = std::make_shared<RenderEndWatch>(
+            [weakThis]() {
+                RotoCurveInteractPtr self = weakThis.lock();
+                if (self) {
+                    self->_dragRender.renderStarted(dragRenderNowMs());
+                }
+            },
+            [weakThis, gesture](double elapsedMs) {
+                if (!qApp) {
+                    return;
+                }
+                QMetaObject::invokeMethod(qApp, [weakThis, gesture, elapsedMs]() {
+                    RotoCurveInteractPtr self = weakThis.lock();
+                    if (self) {
+                        self->onDragRenderEnded(gesture, elapsedMs);
+                    } }, Qt::QueuedConnection);
+            });
+        RenderEndWatch::setActiveOnThisThread(_dragRenderWatch);
+    }
+    applyDragRenderAction(_dragRender.edited(dragRenderNowMs()));
+}
+
+void
+RotoCurveInteract::onDragRenderEnded(U64 gesture,
+                                     double elapsedMs)
+{
+    if ((gesture != _dragRenderGesture) || !_dragRender.isGestureOpen()) {
+        return;
+    }
+    applyDragRenderAction(_dragRender.renderEnded(elapsedMs, dragRenderNowMs()));
+}
+
+void
+RotoCurveInteract::applyDragRenderAction(RotoDragRenderThrottle::ActionEnum action)
+{
+    switch (action) {
+    case RotoDragRenderThrottle::eActionNone:
+        break;
+    case RotoDragRenderThrottle::eActionRender: {
+        RotoCurveContextPtr context = getCurveContext();
+        if (context) {
+            context->evaluateChange();
+        }
+        break;
+    }
+    case RotoDragRenderThrottle::eActionAbort:
+        abortDragRenders();
+        break;
+    }
+}
+
+void
+RotoCurveInteract::abortDragRenders()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    // A RotoPaint's neat stroke render lands asynchronously after its pen up and must not be lost to a shape drag.
+    RotoContextPtr paintContext = node->getRotoContext();
+    if (paintContext && (paintContext->isDoingNeatRender() || paintContext->mustDoNeatRender())) {
+        return;
+    }
+    std::list<ViewerInstance*> viewers;
+    node->hasViewersConnected(&viewers);
+    for (std::list<ViewerInstance*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+        (*it)->markAllOnGoingRendersAsAborted(false);
+    }
+}
+
+void
+RotoCurveInteract::endDragRender()
+{
+    if (_dragRenderWatch) {
+        RenderEndWatch::setActiveOnThisThread(RenderEndWatchPtr());
+        _dragRenderWatch.reset();
+    }
+    // The renders still running show an older state than the final render that follows.
+    if ((_dragRender.endGesture() == RotoDragRenderThrottle::eActionAbort) && evaluateOnPenUp) {
+        abortDragRenders();
+    }
 }
 
 bool
@@ -2233,9 +2426,6 @@ RotoCurveInteract::moveSelectedCpsWithKeyArrows(int x,
 
         MoveControlPointsUndoCommand* cmd = new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
                                                                              (double)y * pixelScale.second, time);
-        // Each nudge is its own undo step: the knob action that runs this cannot tell a held
-        // arrow's auto-repeat from a separate press, so it never folds into the previous nudge.
-        cmd->setGestureKey(0);
         _host->pushUndoCommand(cmd);
         computeSelectedCpsBBOX();
         getCurveContext()->evaluateChange();
@@ -2291,6 +2481,101 @@ RotoCurveInteract::removeCurve(const RotoDrawableItemPtr& curve)
     getCurveContext()->removeItem(curve);
 }
 
+namespace {
+
+// Whether rect, in the overlay's coordinates, falls wholly outside the view: all its corners lie
+// beyond the same clip plane once through the current model view and projection, so it holds
+// whatever transform the viewer draws this overlay under.
+bool
+isOutsideView(const RectD& rect,
+              const GLdouble* modelView,
+              const GLdouble* projection)
+{
+    if (!(rect.x1 <= rect.x2) || !(rect.y1 <= rect.y2)) {
+        return true;
+    }
+    const double corners[4][2] = { { rect.x1, rect.y1 }, { rect.x2, rect.y1 }, { rect.x2, rect.y2 }, { rect.x1, rect.y2 } };
+    int outside = 0xF;
+    for (int c = 0; c < 4; ++c) {
+        double eye[4], clip[4];
+        for (int j = 0; j < 4; ++j) {
+            eye[j] = modelView[j] * corners[c][0] + modelView[4 + j] * corners[c][1] + modelView[12 + j];
+        }
+        for (int j = 0; j < 4; ++j) {
+            clip[j] = projection[j] * eye[0] + projection[4 + j] * eye[1] + projection[8 + j] * eye[2] + projection[12 + j] * eye[3];
+        }
+        if (clip[3] <= 0.) {
+            return false;
+        }
+        int code = 0;
+        if (clip[0] < -clip[3]) {
+            code |= 0x1;
+        }
+        if (clip[0] > clip[3]) {
+            code |= 0x2;
+        }
+        if (clip[1] < -clip[3]) {
+            code |= 0x4;
+        }
+        if (clip[1] > clip[3]) {
+            code |= 0x8;
+        }
+        outside &= code;
+    }
+
+    return outside != 0;
+}
+
+// Leaves the client vertex array state, and any bound vertex array or array buffer, as the viewer
+// had them, so that the overlay can draw from client-side arrays.
+class OverlayVertexArrayScope {
+public:
+    OverlayVertexArrayScope()
+        : _vertexArray(0)
+        , _arrayBuffer(0)
+    {
+        glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &_vertexArray);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_arrayBuffer);
+        if (_vertexArray) {
+            glBindVertexArray(0);
+        }
+        if (_arrayBuffer) {
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+    }
+
+    ~OverlayVertexArrayScope()
+    {
+        if (_arrayBuffer) {
+            glBindBuffer(GL_ARRAY_BUFFER, _arrayBuffer);
+        }
+        if (_vertexArray) {
+            glBindVertexArray(_vertexArray);
+        }
+        glPopClientAttrib();
+    }
+
+private:
+    GLint _vertexArray;
+    GLint _arrayBuffer;
+};
+
+void
+drawLineVertices(const std::vector<float>& vertices,
+                 GLenum mode)
+{
+    if (vertices.empty()) {
+        return;
+    }
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, &vertices[0]);
+    glDrawArrays(mode, 0, (GLsizei)(vertices.size() / 2));
+    glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+} // anonymous namespace
+
 void
 RotoCurveInteract::drawOverlay(double time)
 {
@@ -2311,6 +2596,13 @@ RotoCurveInteract::drawOverlay(double time)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+
+        OverlayVertexArrayScope vertexArrays;
+        GLdouble modelView[16], projection[16];
+        glGetDoublev(GL_MODELVIEW_MATRIX, modelView);
+        glGetDoublev(GL_PROJECTION_MATRIX, projection);
+        // Lines are drawn wider than the polygon they come from.
+        const double cullMargin = 4. * screenPixelRatio * std::max(pixelScale.first, pixelScale.second);
 
         double cpWidth = kControlPointMidSize * 2;
         for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
@@ -2359,29 +2651,37 @@ RotoCurveInteract::drawOverlay(double time)
                     glEnd();
                 }
             } else if (isBezier) {
-                /// draw the bezier
-                // check if the bbox is visible
-                // if the bbox is visible, compute the polygon and draw it.
-
-                RectD bbox = isBezier->getBoundingBox(time);
-
                 // Is the Bezier a closed curve? Only if not an open Bezier, and it's finished.
                 const bool isLoop = !isBezier->isOpenBezier() && isBezier->isCurveFinished();
 
-                // To decomment you must transform the viewport by the OpenGL transform first
-                // if ( !_host->getCurrentViewportForOverlays()->isVisibleInViewport(bbox) ) {
-                //                  continue;
-                //            }
+                /// draw the control points if the bezier is selected
+                bool selected = false;
+                for (SelectedItems::const_iterator it2 = selectedItems.begin(); it2 != selectedItems.end(); ++it2) {
+                    if (it2->get() == isBezier) {
+                        selected = true;
+                        break;
+                    }
+                }
 
-                std::list<ParametricPoint> points;
+                BezierOverlayPolygonsConstPtr polygons = isBezier->getOverlayPolygons(time, featherVisible);
 
-                isBezier->evaluateAtTime_DeCasteljau(true, time, 0,
-#ifdef ROTO_BEZIER_EVAL_ITERATIVE
-                                                     100,
-#else
-                                                     1,
-#endif
-                                                     &points, NULL);
+                // A selected shape is always drawn: its tangent handles can reach past its polygons.
+                if (!selected) {
+                    RectD bbox = polygons->curveBBox;
+                    if (featherVisible && !polygons->feather.empty()) {
+                        bbox.x1 = std::min(bbox.x1, polygons->featherBBox.x1);
+                        bbox.y1 = std::min(bbox.y1, polygons->featherBBox.y1);
+                        bbox.x2 = std::max(bbox.x2, polygons->featherBBox.x2);
+                        bbox.y2 = std::max(bbox.y2, polygons->featherBBox.y2);
+                    }
+                    bbox.x1 -= cullMargin;
+                    bbox.y1 -= cullMargin;
+                    bbox.x2 += cullMargin;
+                    bbox.y2 += cullMargin;
+                    if (isOutsideView(bbox, modelView, projection)) {
+                        continue;
+                    }
+                }
 
                 bool locked = (*it)->isLockedRecursive();
                 double curveColor[4];
@@ -2395,50 +2695,18 @@ RotoCurveInteract::drawOverlay(double time)
                 }
                 glColor4dv(curveColor);
                 glLineWidth(1.5 * screenPixelRatio);
-                glBegin(isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
-                for (std::list<ParametricPoint>::const_iterator it2 = points.begin(); it2 != points.end(); ++it2) {
-                    glVertex2f(it2->x, it2->y);
-                }
-                glEnd();
+                drawLineVertices(polygons->curve, isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
 
                 /// draw the feather points
-                std::list<ParametricPoint> featherPoints;
-                RectD featherBBox(std::numeric_limits<double>::infinity(),
-                                  std::numeric_limits<double>::infinity(),
-                                  -std::numeric_limits<double>::infinity(),
-                                  -std::numeric_limits<double>::infinity());
                 bool clockWise = isBezier->isFeatherPolygonClockwiseOriented(true, time);
 
-                if (featherVisible) {
+                if (featherVisible && !polygons->feather.empty()) {
                     /// Draw feather only if visible (button is toggled in the user interface)
-                    isBezier->evaluateFeatherPointsAtTime_DeCasteljau(true, time, 0,
-#ifdef ROTO_BEZIER_EVAL_ITERATIVE
-                                                                      100,
-#else
-                                                                      1,
-#endif
-                                                                      true, &featherPoints, &featherBBox);
-
-                    if (!featherPoints.empty()) {
-                        glLineStipple(2, 0xAAAA);
-                        glEnable(GL_LINE_STIPPLE);
-                        glLineWidth(1.5 * screenPixelRatio);
-                        glBegin(isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
-                        for (std::list<ParametricPoint>::const_iterator it2 = featherPoints.begin(); it2 != featherPoints.end(); ++it2) {
-                            glVertex2f(it2->x, it2->y);
-                        }
-                        glEnd();
-                        glDisable(GL_LINE_STIPPLE);
-                    }
-                }
-
-                /// draw the control points if the bezier is selected
-                bool selected = false;
-                for (SelectedItems::const_iterator it2 = selectedItems.begin(); it2 != selectedItems.end(); ++it2) {
-                    if (it2->get() == isBezier) {
-                        selected = true;
-                        break;
-                    }
+                    glLineStipple(2, 0xAAAA);
+                    glEnable(GL_LINE_STIPPLE);
+                    glLineWidth(1.5 * screenPixelRatio);
+                    drawLineVertices(polygons->feather, isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
+                    glDisable(GL_LINE_STIPPLE);
                 }
 
                 if (selected && !locked) {
@@ -2790,6 +3058,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
 {
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
+    beginDragRender();
 
     std::pair<double, double> pixelScale;
     _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
@@ -3295,7 +3564,9 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     double dy = pos.y() - lastMousePos.y();
     switch (state) {
     case eEventStateDraggingSelectedControlPoints: {
-        if (bezierBeingDragged) {
+        if (std::shared_ptr<MoveControlPointsUndoCommand> open = getOpenDragCommand<MoveControlPointsUndoCommand>(time)) {
+            open->addDelta(dx, dy);
+        } else if (bezierBeingDragged) {
             SelectedCPs cps;
             const std::list<BezierCPPtr>& c = bezierBeingDragged->getControlPoints();
             const std::list<BezierCPPtr>& f = bezierBeingDragged->getFeatherPoints();
@@ -3310,9 +3581,9 @@ RotoCurveInteract::onOverlayPenMotion(double time,
                     cps.push_back(std::make_pair(*itCp, BezierCPPtr()));
                 }
             }
-            pushUndoCommand(new MoveControlPointsUndoCommand(shared_from_this(), cps, dx, dy, time));
+            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), cps, dx, dy, time));
         } else {
-            pushUndoCommand(new MoveControlPointsUndoCommand(shared_from_this(), selectedCps, dx, dy, time));
+            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), selectedCps, dx, dy, time));
         }
         evaluateOnPenUp = true;
         computeSelectedCpsBBOX();
@@ -3321,9 +3592,13 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     }
     case eEventStateDraggingControlPoint: {
         assert(cpBeingDragged.first);
-        std::list<SelectedCP> toDrag;
-        toDrag.push_back(cpBeingDragged);
-        pushUndoCommand(new MoveControlPointsUndoCommand(shared_from_this(), toDrag, dx, dy, time));
+        if (std::shared_ptr<MoveControlPointsUndoCommand> open = getOpenDragCommand<MoveControlPointsUndoCommand>(time)) {
+            open->addDelta(dx, dy);
+        } else {
+            std::list<SelectedCP> toDrag;
+            toDrag.push_back(cpBeingDragged);
+            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), toDrag, dx, dy, time));
+        }
         evaluateOnPenUp = true;
         computeSelectedCpsBBOX();
         didSomething = true;
@@ -3354,22 +3629,34 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     }
     case eEventStateDraggingLeftTangent: {
         assert(tangentBeingDragged);
-        pushUndoCommand(new MoveTangentUndoCommand(shared_from_this(), dx, dy, time, tangentBeingDragged, true,
-                                                   ctrlDown && !shiftDown && !altDown));
+        if (std::shared_ptr<MoveTangentUndoCommand> open = getOpenDragCommand<MoveTangentUndoCommand>(time)) {
+            open->addDelta(dx, dy, ctrlDown && !shiftDown && !altDown);
+        } else {
+            pushDragCommand(std::make_shared<MoveTangentUndoCommand>(shared_from_this(), dx, dy, time, tangentBeingDragged, true,
+                                                                     ctrlDown && !shiftDown && !altDown));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
     }
     case eEventStateDraggingRightTangent: {
         assert(tangentBeingDragged);
-        pushUndoCommand(new MoveTangentUndoCommand(shared_from_this(), dx, dy, time, tangentBeingDragged, false,
-                                                   ctrlDown && !shiftDown && !altDown));
+        if (std::shared_ptr<MoveTangentUndoCommand> open = getOpenDragCommand<MoveTangentUndoCommand>(time)) {
+            open->addDelta(dx, dy, ctrlDown && !shiftDown && !altDown);
+        } else {
+            pushDragCommand(std::make_shared<MoveTangentUndoCommand>(shared_from_this(), dx, dy, time, tangentBeingDragged, false,
+                                                                     ctrlDown && !shiftDown && !altDown));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
     }
     case eEventStateDraggingFeatherBar: {
-        pushUndoCommand(new MoveFeatherBarUndoCommand(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time));
+        if (std::shared_ptr<MoveFeatherBarUndoCommand> open = getOpenDragCommand<MoveFeatherBarUndoCommand>(time)) {
+            open->addDelta(dx, dy);
+        } else {
+            pushDragCommand(std::make_shared<MoveFeatherBarUndoCommand>(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
@@ -3399,7 +3686,11 @@ RotoCurveInteract::onOverlayPenMotion(double time,
 
         double tx = 0., ty = 0.;
         double skewX = 0., skewY = 0.;
-        pushUndoCommand(new TransformUndoCommand(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        if (std::shared_ptr<TransformUndoCommand> open = getOpenDragCommand<TransformUndoCommand>(time)) {
+            open->addTransform(center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy);
+        } else {
+            pushDragCommand(std::make_shared<TransformUndoCommand>(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
@@ -3475,7 +3766,11 @@ RotoCurveInteract::onOverlayPenMotion(double time,
             }
         }
 
-        pushUndoCommand(new TransformUndoCommand(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        if (std::shared_ptr<TransformUndoCommand> open = getOpenDragCommand<TransformUndoCommand>(time)) {
+            open->addTransform(center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy);
+        } else {
+            pushDragCommand(std::make_shared<TransformUndoCommand>(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
@@ -3490,6 +3785,10 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     } // switch
     lastMousePos = pos;
 
+    if (didSomething && isLiveRenderedDragState(state)) {
+        requestDragRender();
+    }
+
     if (redraw) {
         redrawOverlays();
     }
@@ -3501,6 +3800,8 @@ bool
 RotoCurveInteract::onOverlayPenUp()
 {
     undoGesture.end();
+    _openDragCommand.reset();
+    endDragRender();
 
     RotoCurveContextPtr context = getCurveContext();
 

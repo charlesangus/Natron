@@ -42,6 +42,8 @@
 #include "Engine/BezierCP.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/RectD.h"
+#include "Engine/RenderEndWatch.h"
+#include "Engine/RotoDragRenderThrottle.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoGesture.h"
 #include "Global/Enums.h"
@@ -50,6 +52,7 @@
 NATRON_NAMESPACE_ENTER
 
 struct PluginActionShortcut;
+class RotoDragUndoCommand;
 
 #define kControlPointMidSize 3
 #define kBezierSelectionTolerance 8
@@ -401,6 +404,30 @@ public:
 
 private:
     EffectInstance* _host;
+
+    // Renders requested from pen down to pen up, while a shape is dragged.
+    RotoDragRenderThrottle _dragRender;
+    RenderEndWatchPtr _dragRenderWatch;
+    U64 _dragRenderGesture;
+
+    void beginDragRender();
+    void requestDragRender();
+    void onDragRenderEnded(U64 gesture, double elapsedMs);
+    void applyDragRenderAction(RotoDragRenderThrottle::ActionEnum action);
+    void abortDragRenders();
+    void endDragRender();
+
+    // The undo step the current drag extends, kept from its first motion to pen up.
+    std::shared_ptr<RotoDragUndoCommand> _openDragCommand;
+
+    /**
+     * @brief The open drag command if it is a Cmd at time that the current gesture may still
+     * extend, otherwise null.
+     **/
+    template <class Cmd>
+    std::shared_ptr<Cmd> getOpenDragCommand(double time) const;
+
+    void pushDragCommand(const std::shared_ptr<RotoDragUndoCommand>& command);
 
     struct MakeSharedEnabler;
 

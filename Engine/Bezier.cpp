@@ -1009,6 +1009,28 @@ Bezier::dequeueGuiActions()
 }
 
 void
+Bezier::restorePointState(const BezierCPPtr& point,
+                          const BezierCP& state)
+{
+    const bool useGuiCurve = !canSetInternalPoints();
+    {
+        QMutexLocker k(&itemMutex);
+        point->cloneGuiState(state, !useGuiCurve);
+        if (_imp->autoRecomputeOrientation) {
+            eraseOrientation(true);
+            if (!useGuiCurve) {
+                eraseOrientation(false);
+            }
+        }
+    }
+    if (useGuiCurve) {
+        _imp->markGuiDirtyPoint(point);
+    } else {
+        invalidateContentHash();
+    }
+}
+
+void
 Bezier::copyInternalPointsToGuiPoints()
 {
     assert( !itemMutex.tryLock() );
@@ -3076,6 +3098,85 @@ Bezier::getBoundingBox(double time) const
 
     return bbox;
 } // Bezier::getBoundingBox
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+sameMatrix(const Transform::Matrix3x3& m,
+           const Transform::Matrix3x3& n)
+{
+    return (m.a == n.a) && (m.b == n.b) && (m.c == n.c) && (m.d == n.d) && (m.e == n.e) && (m.f == n.f) && (m.g == n.g) && (m.h == n.h) && (m.i == n.i);
+}
+
+void
+appendVertices(const std::list<ParametricPoint>& points,
+               std::vector<float>* vertices)
+{
+    vertices->reserve(points.size() * 2);
+    for (std::list<ParametricPoint>::const_iterator it = points.begin(); it != points.end(); ++it) {
+        vertices->push_back((float)it->x);
+        vertices->push_back((float)it->y);
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+BezierOverlayPolygonsConstPtr
+Bezier::getOverlayPolygons(double time,
+                           bool withFeather) const
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    // The transform comes from knobs, which edit neither generation.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
+    const U64 geometryGeneration = getGeometryGeneration();
+    const U64 guiEditGeneration = _imp->guiEditGeneration.load(std::memory_order_acquire);
+
+    const BezierOverlayPolygonsConstPtr& cached = _imp->overlayPolygons;
+    if (cached && (_imp->overlayTime == time) && (_imp->overlayGeometryGeneration == geometryGeneration) && (_imp->overlayGuiEditGeneration == guiEditGeneration) && sameMatrix(_imp->overlayTransform, transform) && (cached->hasFeather || !withFeather)) {
+        return cached;
+    }
+
+    std::shared_ptr<BezierOverlayPolygons> polygons = std::make_shared<BezierOverlayPolygons>();
+    const RectD empty(std::numeric_limits<double>::infinity(),
+                      std::numeric_limits<double>::infinity(),
+                      -std::numeric_limits<double>::infinity(),
+                      -std::numeric_limits<double>::infinity());
+    polygons->curveBBox = empty;
+    polygons->featherBBox = empty;
+    polygons->hasFeather = withFeather;
+    {
+        std::list<ParametricPoint> points;
+        evaluateAtTime_DeCasteljau(true, time, 0,
+#ifdef ROTO_BEZIER_EVAL_ITERATIVE
+                                   100,
+#else
+                                   1,
+#endif
+                                   &points, &polygons->curveBBox);
+        appendVertices(points, &polygons->curve);
+    }
+    if (withFeather) {
+        std::list<ParametricPoint> points;
+        evaluateFeatherPointsAtTime_DeCasteljau(true, time, 0,
+#ifdef ROTO_BEZIER_EVAL_ITERATIVE
+                                                100,
+#else
+                                                1,
+#endif
+                                                true, &points, &polygons->featherBBox);
+        appendVertices(points, &polygons->feather);
+    }
+
+    _imp->overlayPolygons = polygons;
+    _imp->overlayTime = time;
+    _imp->overlayGeometryGeneration = geometryGeneration;
+    _imp->overlayGuiEditGeneration = guiEditGeneration;
+    _imp->overlayTransform = transform;
+
+    return polygons;
+} // Bezier::getOverlayPolygons
 
 const std::list<BezierCPPtr> &
 Bezier::getControlPoints() const

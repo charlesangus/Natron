@@ -70,9 +70,9 @@ positionOf(const BezierCPPtr& point,
 
 } // namespace
 
-// The interact's undo gesture stands in for the viewer's pen down and pen up, and the commands are
-// redone and merged in the order QUndoStack::push() uses: redo the new command, then offer it to
-// the previous one.
+// The interact's undo gesture stands in for the viewer's pen down and pen up. The first motion of a
+// drag creates the command and redoes it, as QUndoStack::push() does; later motions of the same
+// gesture extend that command, as RotoCurveInteract::onOverlayPenMotion() does.
 class RotoUndoGestureTest
     : public BaseTest {
 protected:
@@ -151,13 +151,14 @@ TEST_F(RotoUndoGestureTest, TwoSeparateDragsAreTwoUndoSteps)
 
     _ui->undoGesture.begin();
     std::shared_ptr<MoveControlPointsUndoCommand> second = move(1., 1.);
+    // Same points, same time, same tool: only the gesture keeps the first drag closed.
+    EXPECT_FALSE(first->isOpenIn(_ui->undoGesture.key()));
+    EXPECT_TRUE(second->isOpenIn(_ui->undoGesture.key()));
     _ui->undoGesture.end();
 
     EXPECT_NE(0u, first->getGestureKey());
     EXPECT_NE(0u, second->getGestureKey());
     EXPECT_NE(first->getGestureKey(), second->getGestureKey());
-    // Same points, same time, same tool: only the gesture keeps them apart.
-    EXPECT_FALSE(first->mergeWith(second));
     expectAt(start, 3., 4.);
 
     second->undo();
@@ -174,11 +175,14 @@ TEST_F(RotoUndoGestureTest, OneDragIsOneUndoStepBackToTheStart)
 
     _ui->undoGesture.begin();
     std::shared_ptr<MoveControlPointsUndoCommand> first = move(2., 3.);
-    EXPECT_TRUE(first->mergeWith(move(1., 1.)));
-    EXPECT_TRUE(first->mergeWith(move(-0.5, 4.)));
+    ASSERT_TRUE(first->isOpenIn(_ui->undoGesture.key()));
+    first->addDelta(1., 1.);
+    first->addDelta(-0.5, 4.);
     _ui->undoGesture.end();
 
     expectAt(start, 2.5, 8.);
+    const Position dragged = positionOf(_cp, _time);
+    const Position featherDragged = positionOf(_fp, _time);
 
     first->undo();
     const Position undone = positionOf(_cp, _time);
@@ -188,19 +192,33 @@ TEST_F(RotoUndoGestureTest, OneDragIsOneUndoStepBackToTheStart)
     EXPECT_EQ(featherStart.x, featherUndone.x);
     EXPECT_EQ(featherStart.y, featherUndone.y);
 
-    // The merged step redoes the whole drag at once.
+    // The redo puts back the state the drag left rather than replaying its motions.
     first->redo();
-    expectAt(start, 2.5, 8.);
+    const Position redone = positionOf(_cp, _time);
+    EXPECT_EQ(dragged.x, redone.x);
+    EXPECT_EQ(dragged.y, redone.y);
+    const Position featherRedone = positionOf(_fp, _time);
+    EXPECT_EQ(featherDragged.x, featherRedone.x);
+    EXPECT_EQ(featherDragged.y, featherRedone.y);
 }
 
-TEST_F(RotoUndoGestureTest, MovesOutsideAGestureNeverMerge)
+TEST_F(RotoUndoGestureTest, AnUndoneDragIsNeverExtended)
+{
+    _ui->undoGesture.begin();
+    std::shared_ptr<MoveControlPointsUndoCommand> first = move(2., 3.);
+    first->undo();
+
+    EXPECT_FALSE(first->isOpenIn(_ui->undoGesture.key()));
+    _ui->undoGesture.end();
+}
+
+TEST_F(RotoUndoGestureTest, MovesOutsideAGestureAreNeverExtended)
 {
     ASSERT_FALSE(_ui->undoGesture.isOpen());
 
     std::shared_ptr<MoveControlPointsUndoCommand> first = move(2., 3.);
-    std::shared_ptr<MoveControlPointsUndoCommand> second = move(1., 1.);
 
     EXPECT_EQ(0u, first->getGestureKey());
-    EXPECT_EQ(0u, second->getGestureKey());
-    EXPECT_FALSE(first->mergeWith(second));
+    EXPECT_FALSE(first->isOpenIn(0u));
+    EXPECT_FALSE(first->isOpenIn(UndoGesture::newKey()));
 }

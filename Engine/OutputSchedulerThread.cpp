@@ -64,6 +64,7 @@
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RenderEndWatch.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
@@ -3732,6 +3733,7 @@ public:
     bool tookNeatRender;
     std::uint64_t latencyMark;
     StrokeRenderGateWPtr strokeGate;
+    RenderEndWatch::TicketPtr renderEndTicket;
 
     CurrentFrameFunctorArgs()
         : GenericThreadStartArgs()
@@ -3750,6 +3752,7 @@ public:
         , tookNeatRender(false)
         , latencyMark(0)
         , strokeGate()
+        , renderEndTicket()
     {
     }
 
@@ -3779,6 +3782,7 @@ public:
         , tookNeatRender(false)
         , latencyMark(0)
         , strokeGate()
+        , renderEndTicket()
     {
         if (isRotoPaintRequest && isRotoNeatRender) {
             tookNeatRender = isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(true);
@@ -4416,6 +4420,7 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
     if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
         functorArgs->latencyMark = probe->noteRenderRequested();
     }
+    functorArgs->renderEndTicket = RenderEndWatch::takeTicket();
 
     if (appPTR->getCurrentSettings()->getNumberOfThreads() == -1) {
         RenderCurrentFrameFunctorRunnable task(functorArgs);

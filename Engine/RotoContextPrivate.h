@@ -395,6 +395,8 @@ struct RotoTriangles
     std::list<Point> vertices;
 };
 
+struct BezierOverlayPolygons;
+
 struct BezierPrivate
 {
     BezierCPs points; //< the control points of the curve
@@ -417,6 +419,15 @@ struct BezierPrivate
     bool guiDirtyAll;
     std::set<double> guiDirtyTimes;
     std::set<BezierCPPtr> guiDirtyPoints;
+    // Advanced by each edit of the GUI copy alone, which leaves the content hash as it was.
+    std::atomic<U64> guiEditGeneration;
+
+    // The last Bezier::getOverlayPolygons() result and what it was evaluated from.
+    mutable std::shared_ptr<const BezierOverlayPolygons> overlayPolygons;
+    mutable double overlayTime;
+    mutable U64 overlayGeometryGeneration;
+    mutable U64 overlayGuiEditGeneration;
+    mutable Transform::Matrix3x3 overlayTransform;
 
     BezierPrivate(bool isOpenBezier)
         : points()
@@ -434,6 +445,12 @@ struct BezierPrivate
         , guiDirtyAll(false)
         , guiDirtyTimes()
         , guiDirtyPoints()
+        , guiEditGeneration(0)
+        , overlayPolygons()
+        , overlayTime(0.)
+        , overlayGeometryGeneration(0)
+        , overlayGuiEditGeneration(0)
+        , overlayTransform()
     {
     }
 
@@ -441,6 +458,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         guiDirtyAll = true;
     }
 
@@ -448,6 +466,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll) {
             guiDirtyTimes.insert(time);
         }
@@ -457,6 +476,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll && point) {
             guiDirtyPoints.insert(point);
         }

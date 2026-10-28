@@ -568,6 +568,12 @@ RotoItem::getPreviousItemInLayer() const
     return getPreviousInLayer( layer, shared_from_this() );
 }
 
+U64
+RotoItem::getGeometryGeneration() const
+{
+    return _imp->contentGeneration.load(std::memory_order_acquire);
+}
+
 void
 RotoItem::invalidateContentHash()
 {

@@ -68,6 +68,12 @@ public:
         eColorTrackballWheelWidthFifth
     };
 
+    enum RotoShapeDragRenderEnum {
+        eRotoShapeDragRenderAdaptive = 0,
+        eRotoShapeDragRenderAlwaysLive,
+        eRotoShapeDragRenderOnRelease
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -325,6 +331,8 @@ public:
     int getMaxOpenedNodesViewerContext() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
+
+    RotoShapeDragRenderEnum getRotoShapeDragRender() const;
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -621,6 +629,7 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobChoicePtr _rotoShapeDragRender;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

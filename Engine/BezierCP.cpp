@@ -1033,6 +1033,56 @@ BezierCP::cloneGuiCurvesToInternalCurves()
 }
 
 void
+BezierCP::cloneGuiState(const BezierCP& other,
+                        bool alsoInternal)
+{
+    if (alsoInternal) {
+        _imp->curveX->clone(*other._imp->guiCurveX);
+        _imp->curveY->clone(*other._imp->guiCurveY);
+        _imp->curveLeftBezierX->clone(*other._imp->guiCurveLeftBezierX);
+        _imp->curveLeftBezierY->clone(*other._imp->guiCurveLeftBezierY);
+        _imp->curveRightBezierX->clone(*other._imp->guiCurveRightBezierX);
+        _imp->curveRightBezierY->clone(*other._imp->guiCurveRightBezierY);
+    }
+    _imp->guiCurveX->clone(*other._imp->guiCurveX);
+    _imp->guiCurveY->clone(*other._imp->guiCurveY);
+    _imp->guiCurveLeftBezierX->clone(*other._imp->guiCurveLeftBezierX);
+    _imp->guiCurveLeftBezierY->clone(*other._imp->guiCurveLeftBezierY);
+    _imp->guiCurveRightBezierX->clone(*other._imp->guiCurveRightBezierX);
+    _imp->guiCurveRightBezierY->clone(*other._imp->guiCurveRightBezierY);
+
+    double guiX, guiY, guiLeftX, guiLeftY, guiRightX, guiRightY;
+    bool broken;
+    {
+        QMutexLocker l(&other._imp->staticPositionMutex);
+        guiX = other._imp->guiX;
+        guiY = other._imp->guiY;
+        guiLeftX = other._imp->guiLeftX;
+        guiLeftY = other._imp->guiLeftY;
+        guiRightX = other._imp->guiRightX;
+        guiRightY = other._imp->guiRightY;
+        broken = other._imp->broken;
+    }
+
+    QMutexLocker k(&_imp->staticPositionMutex);
+    if (alsoInternal) {
+        _imp->x = guiX;
+        _imp->y = guiY;
+        _imp->leftX = guiLeftX;
+        _imp->leftY = guiLeftY;
+        _imp->rightX = guiRightX;
+        _imp->rightY = guiRightY;
+    }
+    _imp->guiX = guiX;
+    _imp->guiY = guiY;
+    _imp->guiLeftX = guiLeftX;
+    _imp->guiLeftY = guiLeftY;
+    _imp->guiRightX = guiRightX;
+    _imp->guiRightY = guiRightY;
+    _imp->broken = broken;
+}
+
+void
 BezierCP::cloneInternalCurvesToGuiCurvesAtTime(double time)
 {
     _imp->guiCurveX->copyKeyFrameFrom(*_imp->curveX, time);

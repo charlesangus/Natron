@@ -332,8 +332,11 @@ try:
         disable_luma.setValue(not disable_luma.getValue())
 
     def steps():
-        ok = yield ("until", lambda: graph_view() is not None and gt.viewer_up(), STARTUP_TIMEOUT_S)
-        require(ok, "node graph and viewer are up")
+        ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the node graph is up")
+        viewer_node()
+        ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
+        require(ok, "the viewer is up")
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         yield from section_keymix()

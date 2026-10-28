@@ -1,0 +1,21 @@
+{
+    "Plugins": [
+        {
+            "Info": {
+                "Types": {
+                    "NatronTestStubRendererPlugin": {
+                        "bases": [
+                            "HdRendererPlugin"
+                        ],
+                        "displayName": "Natron Test Stub",
+                        "priority": -100
+                    }
+                }
+            },
+            "LibraryPath": "libNatronTestStubRendererMissing.so",
+            "Name": "natronTestStubRenderer",
+            "Root": ".",
+            "Type": "library"
+        }
+    ]
+}

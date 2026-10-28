@@ -40,6 +40,7 @@
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/GpuContext.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -457,6 +458,12 @@ HydraHandoff::record(const HydraRender::Request& request,
     const gpu::GlHandoffPath path = state ? state->path.load() : gpu::GlHandoffPath::Readback;
     if (path == gpu::GlHandoffPath::Readback) {
         *error = "USDRender hands its pixels over by readback.";
+
+        return false;
+    }
+    // Other delegates render to host buffers: theirs are read back, and the rung stays.
+    if (!RenderDelegates::isStorm(request.renderer)) {
+        *error = "Only Storm's pixels are handed over on the GPU.";
 
         return false;
     }

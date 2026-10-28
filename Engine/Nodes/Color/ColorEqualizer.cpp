@@ -1489,7 +1489,7 @@ ColorEqualizer::opPasses(double time,
                          const RenderScale& scale) const
 {
     const ColorEqualizerParams params = getParams(time, view);
-    const float s = (float)scale.x;
+    const float s = (float)scale.toOfxPointD().x;
     const int h = halo(params, s);
     PassList list;
     Pass carrier = Pass::gather(h, h, true, std::function<PassRowFn(const PassScratch&)>());
@@ -1662,7 +1662,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
                 if (cancel.check()) {
                     return eStatusOK;
                 }
-                process(data, (float)args.mappedScale.x, rgba.data(), out.data(), width, height, frame, parallel);
+                process(data, (float)args.mappedScale.toOfxPointD().x, rgba.data(), out.data(), width, height, frame, parallel);
                 if (cancel.check()) {
                     return eStatusOK;
                 }

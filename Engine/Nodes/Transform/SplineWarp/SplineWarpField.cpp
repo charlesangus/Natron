@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
@@ -421,13 +422,10 @@ SplineWarpField::getRow(int y,
     }
     const double cy = (y + 0.5) / _scaleY;
 
-    // Even-odd crossings of the row with each feather, sorted: a pixel is inside a feather when an
-    // odd number of its crossings lie beyond it, as splineWarpPointInPolygon() decides.
-    std::vector<std::vector<double>> crossings(_identity ? 0 : _boundaries.size());
-    std::vector<std::size_t> passed(crossings.size(), 0);
-    for (std::size_t b = 0; b < crossings.size(); ++b) {
-        splineWarpPolygonRowCrossings(_boundaries[b].feather, cy, &crossings[b]);
-        std::sort(crossings[b].begin(), crossings[b].end());
+    std::vector<unsigned char> inside;
+    const bool feathers = !_identity && !_boundaries.empty();
+    if (feathers) {
+        rowInsideFeathers(y, x1, x2, &inside);
     }
 
     const double ratioXY = _scaleX / _scaleY;
@@ -435,20 +433,7 @@ SplineWarpField::getRow(int y,
     for (int k = 0; k < n; ++k) {
         const int x = x1 + k;
         const double cx = (x + 0.5) / _scaleX;
-        bool warped = !_identity;
-        if (warped && !crossings.empty()) {
-            bool inside = false;
-            for (std::size_t b = 0; b < crossings.size(); ++b) {
-                const std::vector<double>& c = crossings[b];
-                while (passed[b] < c.size() && !(cx < c[passed[b]])) {
-                    ++passed[b];
-                }
-                if ((c.size() - passed[b]) % 2 == 1) {
-                    inside = true;
-                }
-            }
-            warped = inside;
-        }
+        const bool warped = !_identity && (!feathers || inside[k]);
         if (!warped) {
             sx[k] = (float)(x + 0.5);
             sy[k] = (float)(y + 0.5);
@@ -489,6 +474,110 @@ SplineWarpField::getRow(int y,
         }
     }
 } // SplineWarpField::getRow
+
+void
+SplineWarpField::rowInsideFeathers(int y,
+                                   int x1,
+                                   int x2,
+                                   std::vector<unsigned char>* inside) const
+{
+    const int n = std::max(0, x2 - x1);
+    const double cy = (y + 0.5) / _scaleY;
+
+    inside->assign(n, 0);
+    std::vector<double> crossings;
+    for (std::size_t b = 0; b < _boundaries.size(); ++b) {
+        // A pixel is inside when an odd number of the sorted crossings lie beyond it.
+        crossings.clear();
+        splineWarpPolygonRowCrossings(_boundaries[b].feather, cy, &crossings);
+        std::sort(crossings.begin(), crossings.end());
+        std::size_t passed = 0;
+        for (int k = 0; k < n; ++k) {
+            const double cx = (x1 + k + 0.5) / _scaleX;
+            while (passed < crossings.size() && !(cx < crossings[passed])) {
+                ++passed;
+            }
+            if ((crossings.size() - passed) % 2 == 1) {
+                (*inside)[k] = 1;
+            }
+        }
+    }
+}
+
+void
+SplineWarpField::getGpuTables(std::vector<uint32_t>* words,
+                              SplineWarpFieldGpuLayout* layout) const
+{
+    words->clear();
+    *layout = SplineWarpFieldGpuLayout();
+    if (_identity || _window.isNull()) {
+        return;
+    }
+    const int width = _window.width();
+    const int height = _window.height();
+    const std::size_t count = (std::size_t)_nx * (std::size_t)_ny;
+    const std::size_t featherStride = _boundaries.empty() ? 0 : ((std::size_t)width + 31) / 32;
+    words->reserve(count * 8 + (std::size_t)(width + height) * 3 + featherStride * height);
+
+    const auto pushFloat = [words](float v) {
+        uint32_t u;
+        std::memcpy(&u, &v, sizeof(u));
+        words->push_back(u);
+    };
+    const auto pushDouble = [&pushFloat](double v) {
+        const float hi = (float)v;
+        pushFloat(hi);
+        pushFloat((float)(v - (double)hi));
+    };
+
+    layout->nx = (uint32_t)_nx;
+    layout->nodes = (uint32_t)words->size();
+    const double ratioXY = _scaleX / _scaleY;
+    const double ratioYX = _scaleY / _scaleX;
+    for (std::size_t k = 0; k < count; ++k) {
+        pushDouble(_sourceX[k] * _scaleX);
+        pushDouble(_sourceY[k] * _scaleY);
+        const double* J = &_jacobian[k * 4];
+        pushFloat((float)J[0]);
+        pushFloat((float)(J[1] * ratioXY));
+        pushFloat((float)(J[2] * ratioYX));
+        pushFloat((float)J[3]);
+    }
+
+    // cellOf() is separable: its x half depends on x alone, its y half on y alone.
+    layout->columns = (uint32_t)words->size();
+    for (int x = _window.x1; x < _window.x2; ++x) {
+        int i, j;
+        double fx, fy;
+        cellOf((x + 0.5) / _scaleX, 0., &i, &j, &fx, &fy);
+        words->push_back((uint32_t)i);
+        pushDouble(fx);
+    }
+    layout->rows = (uint32_t)words->size();
+    for (int y = _window.y1; y < _window.y2; ++y) {
+        int i, j;
+        double fx, fy;
+        cellOf(0., (y + 0.5) / _scaleY, &i, &j, &fx, &fy);
+        words->push_back((uint32_t)j);
+        pushDouble(fy);
+    }
+
+    if (featherStride > 0) {
+        layout->feathers = (uint32_t)words->size();
+        layout->featherStride = (uint32_t)featherStride;
+        words->resize(words->size() + featherStride * height, 0u);
+        std::vector<unsigned char> inside;
+        for (int y = _window.y1; y < _window.y2; ++y) {
+            rowInsideFeathers(y, _window.x1, _window.x2, &inside);
+            uint32_t* row = &(*words)[layout->feathers + (std::size_t)(y - _window.y1) * featherStride];
+            for (int k = 0; k < width; ++k) {
+                if (inside[k]) {
+                    row[k / 32] |= 1u << (k % 32);
+                }
+            }
+        }
+    }
+} // SplineWarpField::getGpuTables
 
 SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,

@@ -27,9 +27,12 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -41,13 +44,19 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -427,22 +436,22 @@ SplineWarp::getSourceBounds(double time,
     return rod;
 }
 
-bool
-SplineWarp::computeWarp(double time,
-                        ViewIdx view,
-                        const Settings& settings,
-                        Warp* warp)
+static SplineWarpContextPtr
+splineWarpContext(const SplineWarp& effect)
 {
-    *warp = Warp();
-    NodePtr node = getNode();
-    SplineWarpContextPtr context = node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
-    if (!context) {
-        return false;
-    }
-    if (settings.amount == 0.) {
-        return true;
-    }
+    NodePtr node = effect.getNode();
 
+    return node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
+}
+
+std::shared_ptr<const SplineWarpSampleSet>
+SplineWarp::sampleWarp(double time,
+                       const Settings& settings)
+{
+    SplineWarpContextPtr context = splineWarpContext(*this);
+    if (!context) {
+        return std::shared_ptr<const SplineWarpSampleSet>();
+    }
     SampleKey key;
     key.contextHash = context->getContentHash();
     key.time = time;
@@ -454,9 +463,26 @@ SplineWarp::computeWarp(double time,
     sampling.globalAmount = settings.amount;
     sampling.invert = settings.invert;
     sampling.spacing = settings.curveResolution;
-    warp->samples = _samples.get(key, [&]() {
+
+    return _samples.get(key, [&]() {
         return sampleSplineWarp(*context, sampling);
     });
+}
+
+bool
+SplineWarp::computeWarp(double time,
+                        ViewIdx view,
+                        const Settings& settings,
+                        Warp* warp)
+{
+    *warp = Warp();
+    if (settings.amount == 0.) {
+        return (bool)splineWarpContext(*this);
+    }
+    warp->samples = sampleWarp(time, settings);
+    if (!warp->samples) {
+        return false;
+    }
     const SplineWarpSampleSet& samples = *warp->samples;
 
     // Boundary pairs never move, so only a link pair can, and a boundary holding none of them
@@ -951,5 +977,151 @@ SplineWarp::renderOp(const RenderActionArgs& args,
 
     return eStatusOK;
 } // SplineWarp::renderOp
+
+GpuWeight
+SplineWarp::gpuWeight(double time,
+                      ViewIdx view,
+                      unsigned int mipmapLevel) const
+{
+    // Sampling only reads knobs and the curves, and the render reuses the cached samples.
+    SplineWarp* self = const_cast<SplineWarp*>(this);
+    Settings settings;
+    readSettings(time, view, &settings);
+    double reach = 0.;
+    const std::shared_ptr<const SplineWarpSampleSet> sampled = (settings.amount != 0.) ? self->sampleWarp(time, settings) : std::shared_ptr<const SplineWarpSampleSet>();
+    if (sampled) {
+        const SplineWarpSampleSet& samples = *sampled;
+        for (int i = 0; i < samples.linkPairCount; ++i) {
+            const SplineWarpSamplePair& pair = samples.pairs[i];
+            reach = std::max(reach, std::hypot(pair.destination.x - pair.source.x, pair.destination.y - pair.source.y));
+        }
+    }
+
+    return gpuSizeScaledWeight(std::ldexp(reach, -(int)mipmapLevel));
+}
+
+bool
+SplineWarp::canRenderOpOnGpu(const GpuQuery& query) const
+{
+#ifdef NATRON_HAVE_GPU
+    return (query.bitDepth == eImageBitDepthFloat) && !query.hasConcatenatedInput && canRunStagesGpu(resolveGpuPlan(query), query);
+#else
+    Q_UNUSED(query);
+
+    return false;
+#endif
+}
+
+bool
+SplineWarp::getOpGpuInputLayer(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view,
+                               ImageLayerDesc* layer) const
+{
+    stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
+
+    return true;
+}
+
+RectI
+SplineWarp::getOpGpuInputRoI(int inputNb,
+                             double time,
+                             ViewIdx view,
+                             const RectI& outputRect,
+                             const RenderScale& scale) const
+{
+    if (inputNb == kSplineWarpInputSource) {
+        return resampleGpuSourceRoI(*this, inputNb, time, view, outputRect, scale);
+    }
+
+    return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
+}
+
+StatusEnum
+SplineWarp::renderOpGpu(const GpuRenderArgs& args)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuQuery& query = args.query;
+    const RectI& rect = args.outputRect;
+    if (!canRenderOpOnGpu(query) || rect.isNull()) {
+        return eStatusFailed;
+    }
+    Settings settings;
+    readSettings(query.time, query.view, &settings);
+    if (query.draftMode) {
+        settings.filter = Resampler::eFilterImpulse;
+    }
+    const OfxPointD s = query.mappedScale.toOfxPointD();
+    const double par = getOutputPixelAspectRatio(query.time, query.view);
+
+    SplineWarpGpuParams params;
+    params.filter = (uint32_t)settings.filter;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kSplineWarpGpuClamp : 0u) | (settings.blackOutside ? kSplineWarpGpuBlackOutside : 0u)
+        | ((settings.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
+
+    // The Source cropped to its region of definition, as the CPU fetches it, is both sampled and
+    // blended under the mask and mix.
+    const StagePlan plan = resolveGpuPlan(query);
+    GpuRenderArgs cropped = args;
+    const int sourceInput = plan.sourceInput;
+    if ((sourceInput >= 0) && (sourceInput < (int)cropped.inputs.size())) {
+        if (!stageGpuInputView(*this, args, sourceInput, &cropped.inputs[sourceInput])) {
+            return eStatusFailed;
+        }
+        if (cropped.inputs[sourceInput].buffer) {
+            params.flags |= kSplineWarpGpuSample;
+        }
+    }
+
+    GpuImageView fieldView;
+    if (params.flags & kSplineWarpGpuSample) {
+        Warp warp;
+        computeWarp(query.time, query.view, settings, &warp);
+        SplineWarpFieldConstPtr field = computeField(warp, query.time, settings, rect, s.x / par, s.y);
+        std::vector<uint32_t> words;
+        SplineWarpFieldGpuLayout layout;
+        if (field) {
+            field->getGpuTables(&words, &layout);
+        }
+        if (!words.empty()) {
+            gpu::GpuRecordContext& ctx = args.context;
+            const std::size_t bytes = words.size() * sizeof(uint32_t);
+            // A field no dispatch can bind, from a fine field resolution over a large window,
+            // renders on the CPU.
+            if ((bytes > ctx.maxScratchBytes()) || (words.size() > (std::size_t)INT32_MAX)) {
+                return eStatusFailed;
+            }
+            gpu::GpuBuffer* buffer = nullptr;
+            if (!ctx.scratch(bytes, buffer) || !buffer) {
+                return eStatusFailed;
+            }
+            // GpuRecordContext::updateBuffer() writes at most 64 KiB at a time.
+            const std::size_t chunk = 65536;
+            const std::byte* data = reinterpret_cast<const std::byte*>(words.data());
+            for (std::size_t offset = 0; offset < bytes; offset += chunk) {
+                if (!ctx.updateBuffer(*buffer, offset, std::span<const std::byte>(data + offset, std::min(chunk, bytes - offset)))) {
+                    return eStatusFailed;
+                }
+            }
+            fieldView.buffer = buffer;
+            fieldView.bounds = RectI(0, 0, (int)words.size(), 1);
+            fieldView.rowStrideFloats = (int)words.size();
+            fieldView.nComps = 1;
+            setSplineWarpGpuField(layout, field->getWindow(), &params);
+        }
+    }
+
+    PixelKernelGpu op;
+    op.kernel = (int)gpu::GpuKernelId::splinewarp;
+    op.setParams(params);
+
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&fieldView, 1));
+#else
+    Q_UNUSED(args);
+
+    return eStatusFailed;
+#endif
+} // SplineWarp::renderOpGpu
 
 NATRON_NAMESPACE_EXIT

@@ -198,9 +198,49 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief A Filter whose weight grows with the farthest a link moves its curve, at the
+     * rendered scale.
+     **/
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Accepts what the stages accept in float, unless the Source comes through a
+     * concatenated upstream transform, whose matrix the GPU path is not handed.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Builds the field over args.outputRect on the CPU, uploads it and samples the Source
+     * through it with splinewarp.slang. Fails, so the region renders on the CPU, for a field larger
+     * than a dispatch can bind.
+     **/
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For the Source, the region getRegionsOfInterest() names, in the Source's pixels.
+     **/
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
     // Samples and solves the warp; false when the node has no SplineWarp curve context.
+    // The pairs sampled from the curves at time, cached by the curves' hash and the settings
+    // sampling reads. Null without a curve context.
+    std::shared_ptr<const SplineWarpSampleSet> sampleWarp(double time, const Settings& settings);
+
     bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
 
     // The Source's region of definition at full scale, null without a Source or when it fails.

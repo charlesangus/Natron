@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -43,6 +44,20 @@ NATRON_NAMESPACE_ENTER
 
 class SplineWarpMesh;
 class SplineWarpTps;
+
+/**
+ * @brief Where SplineWarpField::getGpuTables() puts each table, in 32-bit words from the start.
+ **/
+struct SplineWarpFieldGpuLayout {
+    uint32_t nodes = 0;
+    uint32_t columns = 0;
+    uint32_t rows = 0;
+    // Both 0 without boundaries.
+    uint32_t feathers = 0;
+    uint32_t featherStride = 0;
+    // Grid points per grid row.
+    uint32_t nx = 0;
+};
 
 /**
  * @brief A warp's source coordinates over a render window: the solved map evaluated on a grid,
@@ -130,6 +145,16 @@ public:
     void getRow(int y, int x1, int x2, float* sx, float* sy, float* jacobian) const;
 
     /**
+     * @brief The field over its window as splinewarp.slang reads it to give what getRow() gives:
+     * per grid point, 8 words, its source in pixels at the render scale as two-float pairs (hi,
+     * lo) for x then y, then its Jacobian in getRow()'s layout; per window column, 3 words, the
+     * grid cell and the fraction across it as a pair; the same per window row; and with
+     * boundaries, rows of featherStride words holding a bit per pixel, set inside a feather.
+     * Empty for an identity field.
+     **/
+    void getGpuTables(std::vector<uint32_t>* words, SplineWarpFieldGpuLayout* layout) const;
+
+    /**
      * @brief The Roto feather fall-off profile: the weight at fraction t of the way from a curve
      * (1) to its feather (0). A fallOff of 1 is linear; above 1 the weight drops sooner.
      **/
@@ -142,6 +167,9 @@ private:
     // cell (ix, iy)-(ix + 1, iy + 1) is in the grid.
     void cellOf(double x, double y, int* ix, int* iy, double* fx, double* fy) const;
     bool insideAnyFeather(double x, double y) const;
+    // Whether each pixel x1 to x2 - 1 of row y lies inside a boundary's feather, by the even-odd
+    // crossings of the row with each feather, as splineWarpPointInPolygon() decides.
+    void rowInsideFeathers(int y, int x1, int x2, std::vector<unsigned char>* inside) const;
     double nodeWeight(double x, double y) const;
 
     RectI _window;

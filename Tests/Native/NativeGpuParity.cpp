@@ -645,7 +645,15 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
 
             return result;
         }
-        result.gpu = readRgba(rootPlanes.begin()->second, window);
+        // The root may render more planes than the colour plane, which the CPU frame renders alone.
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.begin();
+        for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
+            if (it->first.isColorLayer()) {
+                colour = it;
+                break;
+            }
+        }
+        result.gpu = readRgba(colour->second, window);
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();

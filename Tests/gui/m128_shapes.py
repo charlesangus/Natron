@@ -573,7 +573,7 @@ try:
         show(create(PLUGIN_CONSTANT, -300, -200))
         yield ("sleep", RENDER_MS)
         check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
-        yield from section_plugin_ids()
+        section_plugin_ids()
         yield from section_ramp()
         yield from section_radial()
         yield from section_rectangle()

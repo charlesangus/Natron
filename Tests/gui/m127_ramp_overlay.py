@@ -21,6 +21,8 @@ WATCHDOG_S = 180
 SETTLE_MS = 400
 RENDER_MS = 1500
 PLUGIN_RAMP = "Ramp"
+# The Viewer defaults to the ACES 2.0 SDR view, which desaturates the red; pick the plain view.
+VIEW_NAME = "Un-tone-mapped"
 RED = (0.8, 0.1, 0.1, 1.0)
 # Pen travel per drag, in viewer-widget pixels (y down).
 DRAGS = {"point0": (40, -30), "point1": (-35, 25)}
@@ -29,7 +31,7 @@ TOL_PX = 2.5
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Q_ARG, QMetaObject, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
@@ -87,6 +89,23 @@ try:
             return None
         return min(xs), min(ys), max(xs) + 1, max(ys) + 1
 
+    _held = []
+
+    def choose_view():
+        for w in gt.widgets_of("ComboBox"):
+            try:
+                if not w.isVisible():
+                    continue
+                items = [str(i) for i in (w.property("natronItems") or [])]
+                if VIEW_NAME in items:
+                    _held.append(w)
+                    QMetaObject.invokeMethod(w, "setCurrentIndex", Q_ARG(int, items.index(VIEW_NAME)))
+                    QApplication.processEvents()
+                    return str(w.property("natronCurrentText")) == VIEW_NAME
+            except RuntimeError:
+                continue
+        return False
+
     def point_of(ramp, name):
         p = ramp.getParam(name)
         return p.getValue(0), p.getValue(1)
@@ -121,6 +140,10 @@ try:
         require(viewer.connectInput(0, ramp), "the Viewer shows the Ramp")
         yield ("sleep", RENDER_MS)
 
+        ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
+        require(ok, "the viewer is up")
+        check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
+        yield ("sleep", RENDER_MS)
         gl = visible_of("ViewerGL")[0] if visible_of("ViewerGL") else None
         require(gl is not None, "the viewer is visible")
         span = red_span(gl)

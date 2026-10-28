@@ -83,3 +83,7 @@ adds headless render tests, and gets the bench running on the original comps.
   - size: M
 
 **Verification gate:** the release gate is green (`tools/ci/remote/build.sh release --tests`, including `NativeWritePathVariables_Test`), and `tools/bench/comps/run_comps.sh` renders `keying_grade`, `cg_multipass` and `defocus_retime` from the original `.ntpz` files.
+
+## Decisions
+
+- 2026-10-28: implemented (build pending). Variables expand before the frame pattern, so a `#` inside a variable's value becomes a frame pattern (as Read's frame listing and hashing already do); the edge case saying otherwise is superseded. An unknown variable in a relative path is reported as <project dir>/[Nope]/…. No DeepWrite/USDWrite cases in the gtest (they share the KnobFile path). Bench comps re-run pending a build.

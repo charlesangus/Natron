@@ -52,8 +52,9 @@ CI publishes the image to GitHub Container Registry as
 `ghcr.io/charlesangus/natron-dev:<content hash>`. The package is public, so
 pulling needs no login. The tag is the first 16 hex characters of a SHA-256
 over `tools/ci/local/Dockerfile`, `cmake/FetchSlang.cmake`,
-`cmake/FetchGlslang.cmake` and `tools/ci/local/install-git-lfs.sh`, the files
-that decide the image's contents, so
+`cmake/FetchGlslang.cmake`, `tools/ci/local/install-git-lfs.sh` and
+`tools/ci/local/build-moonray.sh`, the files that decide the image's contents,
+so
 an unchanged image is published once and every checkout with the same files
 resolves to the same tag. `tools/ci/local/dev-image-tag.sh` is the single
 definition of that tag; `devshell.sh` and the workflows all call it:
@@ -88,6 +89,27 @@ After a Dockerfile change (or a pull of a newer tag), run
 `tools/ci/local/devshell.sh --recreate` to pick the new image up, and only
 when no build is running in that container (see "Checking syntax before a
 build" for why). The `.ccache` dir and `HOME` volume survive that.
+
+### MoonRay layer
+
+`tools/ci/local/build-moonray.sh` builds DreamWorks' MoonRay and its Hydra
+render delegate, hdMoonray, CPU only, against the image's own USD, TBB, Boost,
+Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise, and installs them
+into `/opt/moonray`. The openmoonray tag is pinned to its commit
+(`NATRON_MOONRAY_VERSION` / `NATRON_MOONRAY_COMMIT` in the `Dockerfile`), and
+that commit pins every submodule; the ISPC compiler is a checksummed release
+binary used for the build only. It is the slowest layer of the image.
+
+The prefix is relocatable and is never put on the loader path: MoonRay's
+libraries carry `$ORIGIN` RUNPATHs and link the image's `/usr/local/lib`
+copies, which the script checks (no unresolved library, no library in two
+versions, nothing in `/opt/moonray/lib64` shadowing an image library). Natron
+finds the prefix at start-up (`Engine/AppManager.cpp`, the CMake cache variable
+`NATRON_MOONRAY_PREFIX`) and points `PXR_PLUGINPATH_NAME`, `RDL2_DSO_PATH`,
+`ARRAS_SESSION_PATH` and `PATH` (for `execComp`) at it;
+`tools/release/stage-bundle.sh` copies it into the bundle as `moonray/`.
+MoonRay's plug-ins are re-prioritised below Storm, so USD's default renderer
+stays Storm.
 
 ### Slang and glslang layers
 

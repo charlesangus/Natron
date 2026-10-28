@@ -447,6 +447,49 @@ mkdir -p "$STAGE_DIR/lib/onnxruntime"
 cp -a "$ORT_ASSETS"/lib/libonnxruntime.so* "$STAGE_DIR/lib/onnxruntime/"
 cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onnxruntime/"
 
+# MoonRay (tools/ci/local/build-moonray.sh) keeps its own prefix: its libraries are private to it,
+# and it finds its scene DSOs, session definitions and render process by path, which
+# AppManager points at <bin>/../moonray. Its ELFs see the bundle's lib/ first, then its lib64/.
+# The debug delegate, headers, CMake files and the other command-line tools stay out.
+MOONRAY_PREFIX="$(cache_value 'NATRON_MOONRAY_PREFIX:PATH')"
+if [[ -n "$MOONRAY_PREFIX" && -f "$MOONRAY_PREFIX/plugin/pxr/plugInfo.json" ]]; then
+    echo "==> Staging MoonRay from $MOONRAY_PREFIX"
+    MOONRAY_DEST="$STAGE_DIR/moonray"
+    copy_tree "$MOONRAY_PREFIX" "$MOONRAY_DEST" \
+        --exclude='./bin' --exclude='./include' --exclude='./lib64/cmake' --exclude='./lib64/pkgconfig' \
+        --exclude='*.a' --exclude='./plugin/hd_moonray_debug.so' --exclude='./plugin/pxr/hd_moonray_debug' \
+        --exclude='./SConscripts'
+    mkdir -p "$MOONRAY_DEST/bin"
+    cp -L "$MOONRAY_PREFIX/bin/execComp" "$MOONRAY_DEST/bin/execComp"
+    while IFS= read -r staged_moonray_file; do
+        is_elf "$staged_moonray_file" || continue
+        strip_elf "$staged_moonray_file"
+        moonray_up="$(relative_up "$(cd "$(dirname "$staged_moonray_file")" && pwd)" "$STAGE_DIR")"
+        chmod u+w "$staged_moonray_file"
+        patchelf --set-rpath "\$ORIGIN/${moonray_up}lib:\$ORIGIN/${moonray_up}moonray/lib64" "$staged_moonray_file"
+    done < <(find "$MOONRAY_DEST" -type f 2>/dev/null)
+
+    # MoonRay's denoiser links OpenImageDenoise, which dlopen()s its device modules from the
+    # directory of its core library; the ldd walk never reaches them. CPU only, like the delegate.
+    oidn_core="$(ldd "$MOONRAY_PREFIX"/lib64/libdenoiser.so 2>/dev/null |
+        sed -n 's/.*libOpenImageDenoise_core[^ ]* => \(\/[^ ]*\) .*/\1/p' | head -n 1 || true)"
+    if [[ -n "$oidn_core" ]]; then
+        oidn_modules=0
+        for oidn_module in "$(dirname "$oidn_core")"/libOpenImageDenoise_device_cpu.so*; do
+            [[ -f "$oidn_module" && ! -L "$oidn_module" ]] || continue
+            [[ -f "$STAGE_DIR/lib/$(basename "$oidn_module")" ]] ||
+                stage_library "$oidn_module" "$(basename "$oidn_module")"
+            oidn_modules=$((oidn_modules + 1))
+        done
+        if [[ "$oidn_modules" == 0 ]]; then
+            echo "error: no OpenImageDenoise CPU device module next to $oidn_core" >&2
+            exit 1
+        fi
+    fi
+else
+    echo "warning: no MoonRay install in $BUILD_DIR's configuration; the bundle ships no MoonRay" >&2
+fi
+
 resolve_deps() {
     local binary="$1"
     ldd "$binary" 2>/dev/null | while read -r line; do
@@ -465,15 +508,15 @@ echo "==> Walking ldd closure"
 declare -A SEEN
 
 # Seed from everything the bundle ships that the loader can be asked for:
-# the executables, the libraries CMake installed, and the whole Qt and OpenUSD
-# plugin trees -- plugins are dlopen'd, so nothing in bin/ lists them as a
+# the executables, the libraries CMake installed, and the whole Qt, OpenUSD and
+# MoonRay plugin trees -- plugins are dlopen'd, so nothing in bin/ lists them as a
 # dependency and a walk seeded from bin/ alone never reaches what they need.
 collect_binaries() {
     while IFS= read -r f; do
         if is_elf "$f"; then
             echo "$f"
         fi
-    done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" "$STAGE_DIR/plugin" -type f 2>/dev/null
+    done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" "$STAGE_DIR/plugin" "$STAGE_DIR/moonray" -type f 2>/dev/null
              find "$STAGE_DIR/Plugins" -type f \( -name "*.ofx" -o -name "*.so*" \) 2>/dev/null)
 }
 

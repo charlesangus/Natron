@@ -147,6 +147,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 
 #include "Engine/NodeGroup.h"
@@ -418,6 +419,9 @@ AppManager::loadFromArgs(const CLArgs& cl)
 #endif
         }
     }
+
+    // Before Python or a scene lists Hydra renderers: registers the bundled MoonRay delegate.
+    MoonRayRuntime::setUp(QCoreApplication::applicationDirPath().toStdString());
 
     try {
         initPython(); // calls Py_InitializeEx(), which calls setlocale()

@@ -269,6 +269,10 @@ target_include_directories(NatronEngine
 if(NATRON_GPU)
     target_compile_definitions(NatronEngine PUBLIC NATRON_HAVE_GPU=1)
 endif()
+if(NATRON_MOONRAY_PREFIX)
+    set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/MoonRayRuntime.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        NATRON_MOONRAY_PREFIX="${NATRON_MOONRAY_PREFIX}")
+endif()
 target_compile_definitions(NatronEngine
     PRIVATE
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"

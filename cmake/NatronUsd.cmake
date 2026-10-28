@@ -83,3 +83,13 @@ endforeach()
 unset(_natron_usd_target)
 
 message(STATUS "OpenUSD ${PXR_MAJOR_VERSION}.${PXR_MINOR_VERSION}.${PXR_PATCH_VERSION} (Python ${NATRON_USD_PYTHON_VERSION}) at ${pxr_DIR}")
+
+# MoonRay and its Hydra delegate are built into the dev image under their own prefix
+# (tools/ci/local/build-moonray.sh), outside USD's plug-in tree. Natron's start-up points USD and
+# MoonRay at that prefix when the bundle carries no moonray/ of its own, and stage-bundle.sh copies
+# it from here. Not found leaves the build without MoonRay.
+find_path(NATRON_MOONRAY_PREFIX NAMES plugin/pxr/plugInfo.json PATHS /opt/moonray NO_DEFAULT_PATH
+    DOC "MoonRay install prefix (tools/ci/local/build-moonray.sh)")
+if(NATRON_MOONRAY_PREFIX)
+    message(STATUS "MoonRay at ${NATRON_MOONRAY_PREFIX}")
+endif()

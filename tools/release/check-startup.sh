@@ -107,6 +107,8 @@ BUNDLE_ENV=(
     -u QT_QPA_PLATFORM_PLUGIN_PATH
     -u NATRON_PLUGIN_PATH
     -u PXR_PLUGINPATH_NAME
+    -u RDL2_DSO_PATH
+    -u ARRAS_SESSION_PATH
     # Without this the probes leave __pycache__ directories behind in the very
     # tree they are inspecting, so the gate would change the artefact it exists
     # to check.
@@ -304,6 +306,26 @@ for extension in ("usda", "usdc", "abc"):
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
 
+# Natron registers a bundled MoonRay at start-up and points its search paths into the bundle.
+# Loading the delegate resolves its whole library closure from the bundle, LD_LIBRARY_PATH unset.
+moonray_dir = os.path.join(BUNDLE, "moonray")
+if os.path.isdir(moonray_dir):
+    moonray_plugin = Plug.Registry().GetPluginWithName("hd_moonray")
+    if not moonray_plugin:
+        fail("the bundle ships moonray/ but no hd_moonray plug-in is registered "
+             "(a CPU without AVX2 also leaves it out)")
+    if not os.path.realpath(moonray_plugin.path).startswith(moonray_dir + os.sep):
+        fail("hd_moonray was registered from %s, outside the bundle" % moonray_plugin.path)
+    if not moonray_plugin.Load():
+        fail("the hd_moonray plug-in at %s did not load" % moonray_plugin.path)
+    for variable, entry in (("RDL2_DSO_PATH", "rdl2dso"), ("ARRAS_SESSION_PATH", "sessions"),
+                            ("PATH", "bin")):
+        first = os.environ.get(variable, "").split(":")[0]
+        if os.path.realpath(first) != os.path.join(moonray_dir, entry):
+            fail("%s starts with %r, not the bundle's moonray/%s" % (variable, first, entry))
+    if not os.access(os.path.join(moonray_dir, "bin", "execComp"), os.X_OK):
+        fail("the bundle ships moonray/ without its execComp render process")
+
 fontconfig_path = os.environ.get("FONTCONFIG_PATH", "")
 if not fontconfig_path.startswith(BUNDLE + os.sep):
     fail("FONTCONFIG_PATH is %r, not the bundle's own configuration" % fontconfig_path)
@@ -332,6 +354,7 @@ print("natron-startup-probe: interpreter prefix %s" % sys.prefix)
 print("natron-startup-probe: fontconfig %s" % fontconfig_path)
 print("natron-startup-probe: OCIO %s" % ocio.decode("utf-8", "replace"))
 print("natron-startup-probe: %d OFX/PyPlug plugins loaded" % len(plugin_ids))
+print("natron-startup-probe: MoonRay %s" % ("loaded" if os.path.isdir(moonray_dir) else "not bundled"))
 print("natron-startup-probe: %d OpenUSD plug-ins registered" % len(usd_plugins))
 print("$SENTINEL")
 sys.stdout.flush()

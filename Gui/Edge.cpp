@@ -870,10 +870,12 @@ Edge::paint(QPainter *painter,
     }
 
     QColor color, arrowColor;
-    if (_imp->useSelected) {
-        color = arrowColor = Qt::white;
-    } else if (_imp->useHighlight) {
+    // A highlight marks a pipe an edit in progress will change, which matters more than the
+    // selection of its node.
+    if (_imp->useHighlight) {
         color = arrowColor = highlightColor();
+    } else if (_imp->useSelected) {
+        color = arrowColor = Qt::white;
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {

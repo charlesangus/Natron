@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <string>
 
@@ -38,6 +39,7 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
@@ -46,6 +48,10 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/ViewerInstance.h"
+
+#include "Serialization/Bundle/ProjectBundle.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -262,7 +268,8 @@ TEST_F(ViewerKnobsTest, ConnectingAnInputSetsTheInputKnobs)
 }
 
 // Every knob comes back from project.yaml, and a layer, alpha channel or display the project
-// lacks keeps its saved ID.
+// lacks keeps its saved ID. A background app's loader skips viewers, so the viewer is recreated
+// from the node the saved bundle holds, as the GUI loader does.
 TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
 {
     ProjectPtr project = getApp()->getProject();
@@ -320,6 +327,29 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     alpha.reset();
 
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    EXPECT_FALSE(bool(project->getNodeByName(name)));
+
+    Serialization::ProjectSerialization saved;
+    try {
+        saved = Serialization::ProjectBundleReader(savedFilePath.toStdString()).readProject();
+    } catch (const std::exception& e) {
+        FAIL() << "Cannot read back " << savedFilePath.toStdString() << ": " << e.what();
+    }
+    Serialization::NodeSerializationPtr savedViewer;
+    for (const Serialization::NodeSerializationPtr& savedNode : saved.nodes.nodes) {
+        if (savedNode && (savedNode->scriptName == name)) {
+            savedViewer = savedNode;
+        }
+    }
+    ASSERT_TRUE(bool(savedViewer));
+    EXPECT_EQ(std::string(PLUGINID_NATRON_VIEWER), savedViewer->pluginID);
+
+    CreateNodeArgs args(savedViewer->pluginID, project);
+    args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, savedViewer);
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    ASSERT_TRUE(bool(getApp()->createNode(args)));
     NodePtr loaded = project->getNodeByName(name);
     ASSERT_TRUE(bool(loaded));
     ViewerInstance* viewer = viewerOf(loaded);

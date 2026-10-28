@@ -325,10 +325,11 @@ expectSame(const RenderedPlane& cpu,
            const GpuRunResult& run,
            const RectI& roi,
            const std::string& what,
-           int* nCompared)
+           int* nCompared,
+           const ParityTolerance& tolerance = ParityTolerance::exact())
 {
     ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-    const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::exact());
+    const ImageDiff diff = compareImages(cpu.pixels, run.pixels, tolerance);
     *nCompared += (int)diff.compared;
     const std::size_t at = diff.firstMismatchIndex / 4;
     EXPECT_EQ(0u, diff.mismatches) << what << ", first at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.firstMismatchIndex % 4)
@@ -404,7 +405,8 @@ struct WrappedCase {
 } // namespace
 
 // The settings renderGpu() wraps around the filter: the mask (plain and inverted), mix and alpha
-// processed too, against the CPU render.
+// processed too, against the CPU render. The selection is exact, but the mask and mix lerp rounds
+// differently on the device, by an ulp, so this one compares within the arithmetic tolerance.
 TEST_F(NativeMedianGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -485,7 +487,7 @@ TEST_F(NativeMedianGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
                 const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), query.hasMask ? &mask : nullptr, roi, outputLayout());
                 ASSERT_TRUE(run.ok) << what;
                 EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
-                ASSERT_NO_FATAL_FAILURE(expectSame(cpu, run, roi, what, &nCompared));
+                ASSERT_NO_FATAL_FAILURE(expectSame(cpu, run, roi, what, &nCompared, ParityTolerance::arithmetic()));
             }
         }
     }

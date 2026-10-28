@@ -42,3 +42,7 @@ Topology, with no scene input. Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`
   - size: M
 
 **Verification gate:** release gate green; a tracked `.abc` camera loads through USDCamera, looks through correctly in the 3D view, and drives USDRender to match the same camera through USDRead; screenshots shared before sign-off.
+
+## Decisions
+
+- 2026-10-28: implemented (T1, T2; build pending). File camera's ancestors flattened into one xformOp:transform (default value only when static); file values copied raw (units/up-axis only warn, as USDRead); Camera Prim id = prim path, a vanished camera errors rather than switching; file-driven knobs are hash-exempt while showing file values; knobs follow the timeline only while the panel is open; transform knobs show the decomposed world matrix and become a local offset under Edit Transform; whole-frame sampling (sub-frame samples lost); shutter/exposure/stereo not copied. USDRead's file handling moved into a shared SceneFileSource. Open: user to confirm flattened world transform is what artists expect.

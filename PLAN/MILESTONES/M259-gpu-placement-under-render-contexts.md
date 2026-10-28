@@ -63,4 +63,5 @@ Split out of M180 - Loop Block Core (2026-10-27). M178 - Render Context Core kep
 
 ## Decisions
 
+- 2026-10-28: P1 implemented (build pending). ContextFrameArgsScope alone mirrors the CPU path (it opens ActionContextScope). Context inputs reach nodes as GpuContextInput (layer + view), queried with inputNb == kContextRequestInputNb; a node that reads a −3 edge but can't name its layer stays on the CPU.
 - 2026-10-28: elaborated (consultant). Branch stacks on M182 - Loop Feedback (feedback chain). Strip partitioning inside a fold region relies on the existing strip halving, with P2.T3's capped-budget test as proof.

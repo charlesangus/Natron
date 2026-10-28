@@ -47,4 +47,5 @@ Acceptance sketch:
 
 ## Decisions
 
+- 2026-10-28: implemented (build pending). Write format = NativeWrite::inputFormat(): input format, else its RoD, else empty (no input). Read-back tests restamp a written file in a foreign format (the Write can no longer write one). Only Read, the OCIO file nodes and USDRead own both a file knob and a Reload button.
 - 2026-10-28: elaborated (consultant). Defaults taken from its recommendations, open to the user's override: keep the labelled Reload and hide the file knob's icon (the button reloads File and Proxy together); apply the same flag to the OCIO file nodes and USDRead in T3; keep `clipToRoD`, which is not a format control.

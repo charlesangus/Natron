@@ -649,6 +649,18 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     CountingTestRegistry::reset();
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
     std::cerr << "ABodyChangingComponents first RGBA render: body rendered " << CountingTestRegistry::renders(counting) << " times" << std::endl;
+    { // M182-DIAG
+        QString diagMessage; // M182-DIAG
+        int diagType = -1; // M182-DIAG
+        begin->getPersistentMessage(&diagMessage, &diagType, false); // M182-DIAG
+        std::cerr << "M182-DIAG after RGBA render 1: type " << diagType << " message \"" << diagMessage.toStdString() << "\" value " << value << std::endl; // M182-DIAG
+        begin->clearPersistentMessage(false); // M182-DIAG
+        CountingTestRegistry::reset(); // M182-DIAG
+        float diagValue = -1.f; // M182-DIAG
+        ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &diagValue)); // M182-DIAG
+        begin->getPersistentMessage(&diagMessage, &diagType, false); // M182-DIAG
+        std::cerr << "M182-DIAG after RGBA render 2: type " << diagType << " message \"" << diagMessage.toStdString() << "\" value " << diagValue << " (body rendered " << CountingTestRegistry::renders(counting) << " times)" << std::endl; // M182-DIAG
+    } // M182-DIAG
 
     // Tell a body that iterates wrongly from a loop input that is not RGBA.
     float sourceValue = -1.f;

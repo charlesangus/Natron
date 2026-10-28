@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 
@@ -125,12 +126,15 @@ namespace {
 #endif
 
 StatusEnum
-recordGpu(const GpuRenderArgs& args,
-          std::span<const GpuImageView* const> views,
-          std::span<const double> weights)
+recordFoldGpu(const GpuRenderArgs& args,
+              std::span<const GpuImageView* const> views,
+              Operation op,
+              float factor,
+              std::span<const float> blends,
+              GpuImageView* result)
 {
 #ifdef NATRON_HAVE_GPU
-    if (views.empty() || (views.size() != weights.size()) || args.outputRect.isNull()) {
+    if (!result || views.empty() || (blends.size() + 1 != views.size()) || args.outputRect.isNull()) {
         return eStatusFailed;
     }
     std::vector<gpu::GpuWrapView> wrapViews(views.size());
@@ -139,40 +143,38 @@ recordGpu(const GpuRenderArgs& args,
             return eStatusFailed;
         }
     }
-    gpu::GpuWrap wrap;
-    if (!toWrapView(args.output, &wrap.dst)) {
-        return eStatusFailed;
-    }
-    wrap.src = wrapViews[0];
-    wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
-    wrap.nComps = (uint32_t)args.output.nComps;
-    gpu::GpuRecordContext& ctx = args.context;
     if (views.size() == 1) {
-        return gpu::recordWrapFold(ctx, gpu::GpuKernelId::timeblend, wrap, wrapViews[0], std::span<const gpu::GpuWrapView>()) ? eStatusOK : eStatusFailed;
+        *result = *views[0];
+
+        return eStatusOK;
     }
 
-    // Each fold step has its own blend, so the steps are recorded one by one rather than through
-    // recordWrapFold(), which gives every step the same parameters.
-    const std::vector<float> blends = stepBlends(weights);
+    const gpu::GpuWrapRect output { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
+    const uint32_t nComps = (uint32_t)args.output.nComps;
     const uint32_t width = (uint32_t)(args.outputRect.x2 - args.outputRect.x1);
     const uint32_t height = (uint32_t)(args.outputRect.y2 - args.outputRect.y1);
-    const VkDeviceSize bytes = VkDeviceSize(width) * height * wrap.nComps * sizeof(float);
+    const VkDeviceSize bytes = VkDeviceSize(width) * height * nComps * sizeof(float);
+    gpu::GpuRecordContext& ctx = args.context;
+    gpu::GpuBuffer* scratchBuffers[2] = { nullptr, nullptr };
     gpu::GpuWrapView scratch[2];
     for (int i = 0; i < 2; ++i) {
-        gpu::GpuBuffer* buffer = nullptr;
-        if (!ctx.scratch(bytes, buffer) || !buffer) {
+        if (!ctx.scratch(bytes, scratchBuffers[i]) || !scratchBuffers[i]) {
             return eStatusFailed;
         }
-        scratch[i] = gpu::GpuWrapView { buffer, 0, wrap.output, width * wrap.nComps, wrap.nComps };
+        scratch[i] = gpu::GpuWrapView { scratchBuffers[i], 0, output, width * nComps, nComps };
     }
+    // Each fold step has its own blend, so the steps are recorded one by one rather than through
+    // recordWrapFold(), which gives every step the same parameters.
     gpu::GpuWrapStep step;
-    step.output = wrap.output;
-    step.nComps = wrap.nComps;
-    step.channelMask = wrap.channelMask;
+    step.output = output;
+    step.nComps = nComps;
     for (std::size_t k = 1; k < wrapViews.size(); ++k) {
+        // The timeblend parameter block: blend, operation, factor.
+        uint32_t words[3] = { 0, (uint32_t)op, 0 };
+        std::memcpy(&words[0], &blends[k - 1], sizeof(float));
+        std::memcpy(&words[2], &factor, sizeof(float));
         gpu::GpuBuffer* params = nullptr;
-        const float blend = blends[k - 1];
-        if (!ctx.scratch(sizeof(blend), params) || !params || !ctx.updateBuffer(*params, 0, std::as_bytes(std::span<const float>(&blend, 1)))) {
+        if (!ctx.scratch(sizeof(words), params) || !params || !ctx.updateBuffer(*params, 0, std::as_bytes(std::span<const uint32_t>(words, 3)))) {
             return eStatusFailed;
         }
         step.result = (k == 1) ? wrapViews[0] : scratch[k & 1];
@@ -183,8 +185,49 @@ recordGpu(const GpuRenderArgs& args,
         }
         ctx.computeBarrier();
     }
+    const int last = (int)((wrapViews.size() - 2) & 1);
+    result->buffer = scratchBuffers[last];
+    result->byteOffset = 0;
+    result->bounds = args.outputRect;
+    result->rowStrideFloats = (int)(width * nComps);
+    result->nComps = (int)nComps;
 
-    return gpu::recordWrapFinish(ctx, wrap, scratch[(wrapViews.size() - 2) & 1]) ? eStatusOK : eStatusFailed;
+    return eStatusOK;
+#else
+    Q_UNUSED(args);
+    Q_UNUSED(views);
+    Q_UNUSED(op);
+    Q_UNUSED(factor);
+    Q_UNUSED(blends);
+    Q_UNUSED(result);
+
+    return eStatusFailed;
+#endif
+} // recordFoldGpu
+
+StatusEnum
+recordGpu(const GpuRenderArgs& args,
+          std::span<const GpuImageView* const> views,
+          std::span<const double> weights)
+{
+#ifdef NATRON_HAVE_GPU
+    if (views.empty() || (views.size() != weights.size()) || args.outputRect.isNull() || !views[0]) {
+        return eStatusFailed;
+    }
+    const std::vector<float> blends = stepBlends(weights);
+    GpuImageView folded;
+    if (recordFoldGpu(args, views, eOperationAverage, 1.f, blends, &folded) != eStatusOK) {
+        return eStatusFailed;
+    }
+    gpu::GpuWrap wrap;
+    gpu::GpuWrapView foldedView;
+    if (!toWrapView(args.output, &wrap.dst) || !toWrapView(*views[0], &wrap.src) || !toWrapView(folded, &foldedView)) {
+        return eStatusFailed;
+    }
+    wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
+    wrap.nComps = (uint32_t)args.output.nComps;
+
+    return gpu::recordWrapFinish(args.context, wrap, foldedView) ? eStatusOK : eStatusFailed;
 #else
     Q_UNUSED(args);
     Q_UNUSED(views);

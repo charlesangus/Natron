@@ -371,6 +371,35 @@ TEST(GpuPlacement, IdentityJoinsItsInputsRegionOnly)
     EXPECT_EQ(graph.regions[0].workingSetBytes, kBytes * (1 + 3 + 4));
 }
 
+// root 0 (CPU) <- 1 (GPU) <- identity 2 <- identity 3 <- 4 (GPU) <- reader 5 (CPU): a routing node followed by a node at
+// an identity setting, between two GPU tasks.
+TEST(GpuPlacement, IdentityChainBetweenGpuTasksStaysInOneRegion)
+{
+    FrameGraph graph = makeGraph(6, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 5 } });
+    graph.tasks[2].isIdentity = true;
+    graph.tasks[3].isIdentity = true;
+
+    placeGraph(graph, gpuTasks(graph, { 1, 4 }));
+
+    ASSERT_EQ(graph.regions.size(), 1u);
+    const FrameGraph::Region& region = graph.regions[0];
+    EXPECT_EQ(region.members, std::vector<int>({ 4, 3, 2, 1 }));
+    EXPECT_EQ(region.externalInputs, std::vector<int>({ 5 }));
+    for (int t : { 2, 3, 4 }) {
+        const FrameGraph::Region::Output* output = findOutput(region, t);
+        ASSERT_TRUE(output != nullptr) << t;
+        EXPECT_EQ(output->internalConsumers, 1) << t;
+        EXPECT_EQ(output->externalConsumers, 0) << t;
+    }
+    const FrameGraph::Region::Output* last = findOutput(region, 1);
+    ASSERT_TRUE(last != nullptr);
+    EXPECT_EQ(last->externalConsumers, 1);
+    EXPECT_EQ(graph.tasks[0].device, FrameGraph::Device::Cpu);
+
+    // The identities alias 4's image.
+    EXPECT_EQ(region.workingSetBytes, kBytes * (2 + 5 + 6));
+}
+
 TEST(GpuPlacement, RejectedRegionStaysOnCpu)
 {
     FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });

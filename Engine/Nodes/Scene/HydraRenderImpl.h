@@ -122,7 +122,8 @@ struct Request {
     // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
-    // calling task; any count when 0. Cycles takes it when the owner's engine is made.
+    // calling task; any count when 0. Cycles and MoonRay take it when the owner's engine is
+    // made.
     int threads = 0;
 };
 
@@ -135,6 +136,11 @@ struct Result {
     // 3 per pixel: the shading normal in camera space, 0 where nothing was hit. Empty when the
     // delegate renders no normal AOV, as Storm.
     std::vector<float> normal;
+    // What the delegate could not render of the scene, one line per kind of prim, for the node's
+    // warning; empty if it rendered everything or does not say.
+    std::string warning;
+    // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
+    std::string errors;
 };
 
 /**

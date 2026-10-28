@@ -586,7 +586,15 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    clearPersistentMessage(false);
+    // The render stands; what the delegate could not render, or logged as an error naming no prim
+    // of the scene, stays on the node until a render without it.
+    if (!result.errors.empty()) {
+        setPersistentMessage(eMessageTypeError, result.warning.empty() ? result.errors : result.errors + "\n" + result.warning);
+    } else if (!result.warning.empty()) {
+        setPersistentMessage(eMessageTypeWarning, result.warning);
+    } else {
+        clearPersistentMessage(false);
+    }
 
     return eStatusOK;
 } // USDRender::render

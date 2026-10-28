@@ -97,7 +97,9 @@ Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise, and installs them
 into `/opt/moonray`. The openmoonray tag is pinned to its commit
 (`NATRON_MOONRAY_VERSION` / `NATRON_MOONRAY_COMMIT` in the `Dockerfile`), and
 that commit pins every submodule; the ISPC compiler is a checksummed release
-binary used for the build only. It is the slowest layer of the image.
+binary used for the build only. It is one of the image's two slowest layers and
+sits right after the Cycles layer, which changes less often, so a MoonRay change
+leaves the Cycles layer cached.
 
 The prefix is relocatable and is never put on the loader path: MoonRay's
 libraries carry `$ORIGIN` RUNPATHs and link the image's `/usr/local/lib`
@@ -107,8 +109,9 @@ finds the prefix at start-up (`Engine/AppManager.cpp`, the CMake cache variable
 `NATRON_MOONRAY_PREFIX`) and points `PXR_PLUGINPATH_NAME`, `RDL2_DSO_PATH`,
 `ARRAS_SESSION_PATH` and `PATH` (for `execComp`) at it;
 `tools/release/stage-bundle.sh` copies it into the bundle as `moonray/`.
-MoonRay's plug-ins are re-prioritised below Storm, so USD's default renderer
-stays Storm.
+MoonRay's plug-ins keep upstream's priority 99. USD defaults to the delegate
+with the lowest priority, so Storm (0) stays the default and MoonRay is only
+used when asked for by id.
 
 ### Slang and glslang layers
 
@@ -160,8 +163,8 @@ USD discovers it there like `hdStorm`, so neither Natron nor its tests set
 `PXR_PLUGINPATH_NAME`, and `tools/release/stage-bundle.sh` ships it with the
 rest of `plugin/usd`. The script fails the image build when the delegate links
 a library from outside the image's prefixes, links epoxy, or pulls in two
-versions of one library. It is the image's slowest layer (the CPU kernels), so
-it sits first after `FROM`; a change to any later layer reuses it from a local
+versions of one library. It is one of the image's two slowest layers (the CPU
+kernels), so it sits first after `FROM`; a change to any later layer reuses it from a local
 layer cache, but a CI runner without that cache rebuilds it with every image.
 
 `NATRON_CYCLES_OIDN=OFF` builds without the OpenImageDenoise denoiser, which

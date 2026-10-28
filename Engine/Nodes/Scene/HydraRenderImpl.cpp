@@ -77,6 +77,7 @@
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -127,8 +128,11 @@ struct EngineEntry {
     bool headlight = false;
     // The render settings the engine was made with (setRendererSettings()).
     std::map<std::string, VtValue> settings;
-    // Whether the delegate renders the normal AOV, which only some do.
+    // The AOV depth is read from, and whether the delegate renders the normal AOV, which only some
+    // do, and whether it writes that in camera space rather than Hydra's world space.
+    TfToken depthAov;
     bool normal = false;
+    bool normalInCameraSpace = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -138,6 +142,10 @@ struct EngineEntry {
     bool rendered = false;
     std::uint64_t serial = 0;
     U64 writeCount = 0;
+    // What the delegate could not render of that render's stage, and the errors it logged naming
+    // no prim of it; empty for a delegate that reports neither.
+    std::string warning;
+    std::string errors;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
@@ -763,7 +771,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
     const bool edited = entry.stage->sync(request.scene);
     const UsdStageRefPtr& stage = entry.stage->getStage();
-    // The headlight is Storm's: a path tracer lights a stage without lights as it does itself.
+    // The headlight is Storm's: a path tracer lights a stage without lights as it does itself, and
+    // MoonRay, which renders no Hydra simple light, leaves it black.
     bool headlight = entry.headlight;
     if (_gl && (edited || !entry.engine)) {
         headlight = !hasSceneLight(stage);
@@ -816,14 +825,23 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         entry.engine->SetEnablePresentation(false);
         if (CyclesAovs::isCycles(renderer)) {
             CyclesAovs::configureEngine(entry.engine.get());
+        } else if (MoonRayAovs::isMoonRay(renderer)) {
+            MoonRayAovs::configureEngine(entry.engine.get(), request.threads);
         }
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             entry.engine->SetRendererSetting(TfToken(it->first), it->second);
         }
         entry.settings = settings;
         TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
+        entry.depthAov = HdAovTokens->depth;
         entry.normal = false;
-        if (!_gl) {
+        entry.normalInCameraSpace = false;
+        if (MoonRayAovs::isMoonRay(renderer)) {
+            aovs = MoonRayAovs::aovs();
+            entry.depthAov = MoonRayAovs::depthAov();
+            entry.normal = true;
+            entry.normalInCameraSpace = true;
+        } else if (!_gl) {
             const TfTokenVector offered = entry.engine->GetRendererAovs();
             entry.normal = std::find(offered.begin(), offered.end(), HdAovTokens->normal) != offered.end();
             if (entry.normal) {
@@ -831,8 +849,15 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             }
         }
         if (!entry.engine->SetRendererAovs(aovs)) {
-            *error = _gl ? "Storm on " + contextDescription() + " offers no color, depth and primId AOVs."
-                         : entry.rendererName + " offers no color, depth, primId and instanceId AOVs.";
+            std::string names;
+            for (std::size_t i = 0; i < aovs.size(); ++i) {
+                if (i > 0) {
+                    names += (i + 1 == aovs.size()) ? " and " : ", ";
+                }
+                names += aovs[i].GetString();
+            }
+            *error = _gl ? "Storm on " + contextDescription() + " offers no " + names + " AOVs."
+                         : entry.rendererName + " offers no " + names + " AOVs.";
             _engines.erase(request.owner);
             _engineCount = _engines.size();
 
@@ -883,16 +908,31 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     } else {
         // A path tracer renders on threads of its own and converges when it is done; each Render()
-        // syncs the stage's changes into it.
+        // syncs the stage's changes into it. MoonRay's log is taken off the console for the
+        // render, after the engine, whose making loads the libraries that print it.
+        std::unique_ptr<MoonRayAovs::LogCapture> log;
+        if (MoonRayAovs::isMoonRay(renderer)) {
+            log.reset(new MoonRayAovs::LogCapture);
+        }
         for (;;) {
             engine->Render(stage->GetPseudoRoot(), params);
             if (engine->IsConverged()) {
                 break;
             }
+            // A MoonRay session that could not start or broke never converges.
+            const std::string failure = log ? MoonRayAovs::sessionFailure(engine->GetRenderStats(), log->notices()) : std::string();
+            if (!failure.empty()) {
+                *error = failure;
+                entry.engine.reset();
+                entry.rendered = false;
+
+                return nullptr;
+            }
             if (cancel && cancel->load()) {
                 *error = "The " + entry.rendererName + " render was cancelled.";
                 // Its threads would go on rendering the cancelled frame. Cycles has no stop: its
                 // render pass cancels the session and its session joins its thread as the engine
+                // goes. Nor has MoonRay: its Arras session ends its render process as the engine
                 // goes. The next render makes the engine again.
                 if (engine->IsStopRendererSupported()) {
                     (void)engine->StopRenderer();
@@ -904,6 +944,13 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             }
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
+        }
+        entry.warning.clear();
+        entry.errors.clear();
+        if (log) {
+            const std::vector<MoonRayAovs::Notice> notices = log->notices();
+            entry.warning = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
+            entry.errors = MoonRayAovs::errorText(stage, notices);
         }
     }
 
@@ -968,7 +1015,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
     }
 
     {
-        MappedAov depth(entry, HdAovTokens->depth, error);
+        MappedAov depth(entry, entry.depthAov, error);
         if (!depth.valid()) {
             return false;
         }
@@ -976,13 +1023,18 @@ RenderThread::cpuFrame(EngineEntry& entry,
         const GfMatrix4d inverse = projection.GetInverse();
         result->depth.assign(pixels, std::numeric_limits<float>::infinity());
         const bool cycles = CyclesAovs::isCycles(entry.renderer);
+        const bool moonRay = MoonRayAovs::isMoonRay(entry.renderer);
+        // Cycles' depth and MoonRay's cameraDepth are already the distance along the view axis.
         for (std::size_t i = 0; cycles && (i < pixels); ++i) {
             result->depth[i] = CyclesAovs::depthToDistance(componentToFloat(componentFormat, depth.pixel(i)));
+        }
+        for (std::size_t i = 0; moonRay && (i < pixels); ++i) {
+            result->depth[i] = MoonRayAovs::cameraDepth(componentToFloat(componentFormat, depth.pixel(i)));
         }
         // Storm's depth, and that of the delegates keeping to Hydra's convention, is the window
         // depth in [0, 1]: back to the camera space, the inverse projection gives the point's
         // distance along the view axis.
-        for (int y = 0; !cycles && (y < height); ++y) {
+        for (int y = 0; !cycles && !moonRay && (y < height); ++y) {
             const double ndcY = (y + 0.5) / height * 2. - 1.;
             for (int x = 0; x < width; ++x) {
                 const std::size_t i = (std::size_t)y * (std::size_t)width + (std::size_t)x;
@@ -1002,7 +1054,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
     result->normal.clear();
     if (entry.normal) {
         // Hydra's normal AOV is in world space; the normal matrix of the view takes it to the
-        // camera's.
+        // camera's. MoonRay's is in camera space already.
         MappedAov normal(entry, HdAovTokens->normal, error);
         if (!normal.valid()) {
             return false;
@@ -1018,13 +1070,18 @@ RenderThread::cpuFrame(EngineEntry& entry,
             if (n.GetLengthSq() == 0.) {
                 continue;
             }
-            n = toCamera.TransformDir(n);
+            if (!entry.normalInCameraSpace) {
+                n = toCamera.TransformDir(n);
+            }
             n.Normalize();
             for (int c = 0; c < 3; ++c) {
                 result->normal[i * 3 + (std::size_t)c] = (float)n[c];
             }
         }
     }
+
+    result->warning = entry.warning;
+    result->errors = entry.errors;
 
     if (!decodeIds(entry, error)) {
         return false;

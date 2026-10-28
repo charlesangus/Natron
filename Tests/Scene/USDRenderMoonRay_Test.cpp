@@ -31,11 +31,15 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <memory>
+#include <functional>
+#include <list>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -46,26 +50,32 @@
 
 #include <gtest/gtest.h>
 
-#include <pxr/base/gf/half.h>
-#include <pxr/base/gf/rect2i.h>
-#include <pxr/base/gf/vec2i.h>
-#include <pxr/base/gf/vec4f.h>
-#include <pxr/imaging/cameraUtil/framing.h>
-#include <pxr/imaging/hd/renderBuffer.h>
-#include <pxr/imaging/hd/tokens.h>
-#include <pxr/imaging/hd/types.h>
-#include <pxr/imaging/hdx/tokens.h>
-#include <pxr/usd/usdLux/portalLight.h>
-#include <pxr/usdImaging/usdImagingGL/engine.h>
-#include <pxr/usdImaging/usdImagingGL/renderParams.h>
+#include <QString>
 
+#include <pxr/base/plug/registry.h>
+
+#include "BaseTest.h"
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/ViewIdx.h"
+#include "RenderBothWays.h"
+#include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
 
 /*
- * Renders of Tests/fixtures/scene-moonray.usda through hdMoonray, headless, 32x32 at 4 samples a
- * pixel, frame 1 (MoonRay seeds its samplers from the frame number).
+ * Renders of Tests/fixtures/scene-moonray.usda through a USDRender set to MoonRay, headless,
+ * 32x32 at 2 samples a pixel, frame 1 (MoonRay seeds its samplers from the frame number).
  *
  * The scene is checked against what it is built to give rather than a reference image: from the
  * camera at (6, 0, 0) looking down -X, both cubes' faces facing it lie at x = 0.75, 5.25 away
@@ -78,14 +88,15 @@ NATRON_NAMESPACE_USING
 
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-moonray.usda";
+// The fixture with a PortalLight, which hdMoonray has no Hydra prim type for.
+const char* const kPortalFixture = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-portal.usda";
+const char* const kCamera = "/World/Cam";
 const int kSize = 32;
 const int kRow = 16;
 const int kLeftColumn = 10;
 const int kRightColumn = 25;
 const int kMissColumn = 16;
 const float kFaceDistance = 5.25f;
-// A frame takes a few seconds; anything beyond this is a session that will never finish.
-const std::chrono::seconds kRenderTimeout(120);
 
 // The bundled gtest has no GTEST_SKIP, so the test returns early on false;
 // NATRON_TEST_REQUIRE_MOONRAY=1 turns that skip into a failure.
@@ -107,90 +118,13 @@ moonRayOrSkip()
     return false;
 }
 
-struct Frame {
-    std::vector<float> rgba;
-    std::vector<float> depth;
-    std::vector<float> normal;
-    std::vector<int> primId;
-    std::vector<int> instanceId;
-    std::vector<MoonRayAovs::Notice> notices;
-};
-
-double
-componentValue(PXR_NS::HdFormat format,
-               const unsigned char* at)
+std::uint32_t
+bitsOf(float value)
 {
-    switch (format) {
-    case PXR_NS::HdFormatFloat32: {
-        float value;
-        std::memcpy(&value, at, sizeof(value));
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
 
-        return value;
-    }
-    case PXR_NS::HdFormatFloat16: {
-        PXR_NS::GfHalf value;
-        std::memcpy(&value, at, sizeof(value));
-
-        return float(value);
-    }
-    case PXR_NS::HdFormatInt32: {
-        std::int32_t value;
-        std::memcpy(&value, at, sizeof(value));
-
-        return value;
-    }
-    case PXR_NS::HdFormatUNorm8:
-        return *at / 255.;
-    default:
-        return 0.;
-    }
-}
-
-// The first components of every pixel of the AOV name, resolved, as doubles.
-bool
-readAov(PXR_NS::UsdImagingGLEngine* engine,
-        const PXR_NS::TfToken& name,
-        std::size_t components,
-        std::vector<double>* out,
-        std::string* error)
-{
-    PXR_NS::HdRenderBuffer* buffer = engine->GetAovRenderBuffer(name);
-    if (!buffer) {
-        *error = "no " + name.GetString() + " AOV";
-
-        return false;
-    }
-    buffer->Resolve();
-    if (((int)buffer->GetWidth() != kSize) || ((int)buffer->GetHeight() != kSize)) {
-        *error = name.GetString() + " is not " + std::to_string(kSize) + " square";
-
-        return false;
-    }
-    const PXR_NS::HdFormat format = buffer->GetFormat();
-    const PXR_NS::HdFormat componentFormat = PXR_NS::HdGetComponentFormat(format);
-    const std::size_t count = PXR_NS::HdGetComponentCount(format);
-    const std::size_t componentSize = PXR_NS::HdDataSizeOfFormat(componentFormat);
-    const std::size_t stride = PXR_NS::HdDataSizeOfFormat(format);
-    if (count < components) {
-        *error = name.GetString() + " has " + std::to_string(count) + " components";
-
-        return false;
-    }
-    const unsigned char* data = static_cast<const unsigned char*>(buffer->Map());
-    if (!data) {
-        *error = name.GetString() + " could not be mapped";
-
-        return false;
-    }
-    out->assign((std::size_t)kSize * kSize * components, 0.);
-    for (std::size_t i = 0; i < (std::size_t)kSize * kSize; ++i) {
-        for (std::size_t c = 0; c < components; ++c) {
-            (*out)[i * components + c] = componentValue(componentFormat, data + i * stride + c * componentSize);
-        }
-    }
-    buffer->Unmap();
-
-    return true;
+    return bits;
 }
 
 std::size_t
@@ -200,119 +134,26 @@ pixel(int row,
     return (std::size_t)row * kSize + (std::size_t)column;
 }
 
-std::unique_ptr<PXR_NS::UsdImagingGLEngine>
-makeEngine(int threadBudget,
-           std::string* error)
+std::list<ImageLayerDesc>
+allPlanes()
 {
-    PXR_NS::UsdImagingGLEngine::Parameters parameters;
-    parameters.rendererPluginId = PXR_NS::TfToken(kMoonRayRendererId);
-    parameters.gpuEnabled = false;
-    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine(new PXR_NS::UsdImagingGLEngine(parameters));
-    if (engine->GetCurrentRendererId() != PXR_NS::TfToken(kMoonRayRendererId)) {
-        *error = "the engine did not start hdMoonray";
+    static const char* const normalChannels[] = { "X", "Y", "Z" };
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
+    layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+    layers.push_back(ImageLayerDesc("normal", "normal", "", std::vector<std::string>(normalChannels, normalChannels + 3)));
 
-        return nullptr;
-    }
-    engine->SetEnablePresentation(false);
-    MoonRayAovs::configureEngine(engine.get(), threadBudget);
-    engine->SetRendererSetting(PXR_NS::TfToken("moonray:sceneVariable:pixel_samples"), PXR_NS::VtValue(2));
-    if (!engine->SetRendererAovs(MoonRayAovs::aovs())) {
-        *error = "hdMoonray refused the AOVs";
-
-        return nullptr;
-    }
-    engine->SetCameraPath(PXR_NS::SdfPath("/World/Cam"));
-    engine->SetRenderBufferSize(PXR_NS::GfVec2i(kSize, kSize));
-    engine->SetFraming(PXR_NS::CameraUtilFraming(PXR_NS::GfRect2i(PXR_NS::GfVec2i(0, 0), kSize, kSize)));
-
-    return engine;
+    return layers;
 }
 
-PXR_NS::UsdImagingGLRenderParams
-renderParams()
+std::map<std::string, PXR_NS::VtValue>
+pixelSamples(int samples)
 {
-    PXR_NS::UsdImagingGLRenderParams params;
-    params.frame = PXR_NS::UsdTimeCode(1.);
-    params.enableLighting = true;
-    params.enableSceneLights = true;
-    params.enableSceneMaterials = true;
-    params.clearColor = PXR_NS::GfVec4f(0.f, 0.f, 0.f, 0.f);
-    params.colorCorrectionMode = PXR_NS::HdxColorCorrectionTokens->disabled;
-    params.highlight = false;
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["moonray:sceneVariable:pixel_samples"] = PXR_NS::VtValue(samples);
 
-    return params;
-}
-
-// Renders until converged, as USDRender's CPU path does. False with *error set on a session that
-// failed or a frame that never finished; cancel, when set, ends the loop with true.
-bool
-converge(PXR_NS::UsdImagingGLEngine* engine,
-         const PXR_NS::UsdStageRefPtr& stage,
-         const MoonRayAovs::LogCapture& capture,
-         const std::atomic<bool>* cancel,
-         std::string* error)
-{
-    const PXR_NS::UsdImagingGLRenderParams params = renderParams();
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + kRenderTimeout;
-    for (;;) {
-        engine->Render(stage->GetPseudoRoot(), params);
-        if (engine->IsConverged()) {
-            return true;
-        }
-        if (cancel && cancel->load()) {
-            return true;
-        }
-        const std::string failure = MoonRayAovs::sessionFailure(engine->GetRenderStats(), capture.notices());
-        if (!failure.empty()) {
-            *error = failure;
-
-            return false;
-        }
-        if (std::chrono::steady_clock::now() > deadline) {
-            *error = "the frame did not finish in " + std::to_string(kRenderTimeout.count()) + " s";
-
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-}
-
-bool
-render(const PXR_NS::UsdStageRefPtr& stage,
-       int threadBudget,
-       Frame* frame,
-       std::string* error)
-{
-    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine = makeEngine(threadBudget, error);
-    if (!engine) {
-        return false;
-    }
-    // After the engine, so that MoonRay's libraries and their console log are loaded.
-    MoonRayAovs::LogCapture capture;
-    if (!converge(engine.get(), stage, capture, nullptr, error)) {
-        return false;
-    }
-    std::vector<double> color, depth, normal, primId, instanceId;
-    if (!readAov(engine.get(), PXR_NS::HdAovTokens->color, 4, &color, error) || !readAov(engine.get(), MoonRayAovs::depthAov(), 1, &depth, error) || !readAov(engine.get(), MoonRayAovs::normalAov(), 3, &normal, error) || !readAov(engine.get(), PXR_NS::HdAovTokens->primId, 1, &primId, error) || !readAov(engine.get(), PXR_NS::HdAovTokens->instanceId, 1, &instanceId, error)) {
-        return false;
-    }
-    frame->rgba.assign(color.begin(), color.end());
-    frame->depth.clear();
-    for (double value : depth) {
-        frame->depth.push_back(MoonRayAovs::cameraDepth((float)value));
-    }
-    frame->normal.assign(normal.begin(), normal.end());
-    frame->primId.assign(primId.begin(), primId.end());
-    frame->instanceId.assign(instanceId.begin(), instanceId.end());
-    frame->notices = capture.notices();
-
-    return true;
-}
-
-PXR_NS::UsdStageRefPtr
-fixture()
-{
-    return PXR_NS::UsdStage::Open(kFixture);
+    return settings;
 }
 
 // The ids of this process's children named execComp: the processes Arras renders in.
@@ -369,17 +210,10 @@ threadCount(int pid)
     return 0;
 }
 
-// The most threads any execComp child had while a render with threadBudget ran.
+// Runs job while sampling the execComp children: the most threads any of them had.
 int
-peakRenderThreads(int threadBudget,
-                  std::string* error)
+peakRenderThreads(const std::function<bool()>& job)
 {
-    const PXR_NS::UsdStageRefPtr stage = fixture();
-    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine = makeEngine(threadBudget, error);
-    if (!engine) {
-        return -1;
-    }
-    MoonRayAovs::LogCapture capture;
     std::atomic<bool> done(false);
     std::atomic<int> peak(0);
     std::thread sampler([&]() {
@@ -390,140 +224,293 @@ peakRenderThreads(int threadBudget,
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
-    const bool rendered = converge(engine.get(), stage, capture, nullptr, error);
-    for (int pid : execCompChildren()) {
-        peak = std::max(peak.load(), threadCount(pid));
-    }
+    const bool ok = job();
     done = true;
     sampler.join();
 
-    return rendered ? peak.load() : -1;
+    return ok ? peak.load() : -1;
 }
 } // anon namespace
 
-TEST(USDRenderMoonRay, BeautyAndDepth)
+class USDRenderMoonRayTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(2));
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+        HydraRender::releaseAllCpuEngines();
+        SceneQueryPool::instance().releaseIdle();
+        BaseTest::TearDown();
+    }
+
+    template <typename KNOB>
+    static KNOB* knob(const NodePtr& node,
+                      const char* name)
+    {
+        KNOB* k = dynamic_cast<KNOB*>(node->getKnobByName(name).get());
+        EXPECT_TRUE(k != nullptr) << node->getPluginID() << " has no knob " << name;
+
+        return k;
+    }
+
+    static bool selectRenderer(KnobChoice* knob,
+                               const std::string& id)
+    {
+        const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == id) {
+                knob->setValue((int)i);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * fixture read by a USDRead into a USDRender rendering it through MoonRay from its camera,
+     * kSize x kSize. Returns the USDRender, null after a gtest failure; *reader gets the USDRead.
+     **/
+    NodePtr createGraph(const char* fixture = kFixture,
+                        NodePtr* reader = nullptr)
+    {
+        NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!read || !render) {
+            ADD_FAILURE() << "a 3D node is not registered";
+
+            return NodePtr();
+        }
+        KnobFile* file = knob<KnobFile>(read, kUSDReadParamFile);
+        KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
+        KnobChoice* camera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
+        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+        if (!file || !renderer || !camera || !size || !par) {
+            return NodePtr();
+        }
+        file->setValue(std::string(fixture));
+        if (!selectRenderer(renderer, kMoonRayRendererId)) {
+            ADD_FAILURE() << "the Renderer menu has no " << kMoonRayRendererId;
+
+            return NodePtr();
+        }
+        connectNodes(read, render, 0, true);
+        camera->setActiveEntry(ChoiceOption(kCamera, kCamera, ""));
+        size->setValue(kSize, ViewSpec::all(), 0);
+        size->setValue(kSize, ViewSpec::all(), 1);
+        par->setValue(1.);
+        if (reader) {
+            *reader = read;
+        }
+
+        return render;
+    }
+
+    // Renders node's rgba, depth, primId and normal planes, in that order.
+    static bool renderAll(const NodePtr& node,
+                          std::vector<RenderedPlane>* planes)
+    {
+        std::string error;
+        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error);
+        EXPECT_TRUE(ok) << error;
+        if (!ok) {
+            return false;
+        }
+        const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+        EXPECT_EQ(4u, planes->size());
+        if ((planes->size() != 4) || ((*planes)[0].pixels.size() != pixels * 4) || ((*planes)[1].pixels.size() != pixels) || ((*planes)[2].pixels.size() != pixels) || ((*planes)[3].pixels.size() != pixels * 3)) {
+            ADD_FAILURE() << "the planes are not the size of the format";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * A Request for the fixture's scene as reader gives it, through its camera, kSize x kSize,
+     * with MoonRay. False after a gtest failure.
+     **/
+    static bool moonRayRequest(const NodePtr& reader,
+                               const void* owner,
+                               HydraRender::Request* request)
+    {
+        std::string error;
+        if (reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &request->scene, &error) != EffectInstance::eRenderRoIRetCodeOk) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, &error);
+        if (!lease.getStage()) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        request->time = PXR_NS::UsdTimeCode(1.);
+        if (!HydraRender::cameraFrustum(lease.getStage(), PXR_NS::SdfPath(kCamera), request->time, 1., HydraRender::eFitModeFill, &request->frustum, &error)) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        request->owner = owner;
+        request->width = kSize;
+        request->height = kSize;
+        request->renderer = kMoonRayRendererId;
+
+        return true;
+    }
+};
+
+TEST_F(USDRenderMoonRayTest, BeautyAndDepth)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const PXR_NS::UsdStageRefPtr stage = fixture();
-    ASSERT_TRUE(bool(stage));
-    Frame frame;
-    std::string error;
-    ASSERT_TRUE(render(stage, 0, &frame, &error)) << error;
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    EXPECT_FALSE(node->hasPersistentMessage());
+    const std::vector<float>& rgba = planes[0].pixels;
+    const std::vector<float>& depth = planes[1].pixels;
 
     const std::size_t left = pixel(kRow, kLeftColumn);
-    const float* rgba = &frame.rgba[left * 4];
-    EXPECT_GT(rgba[0] + rgba[1] + rgba[2], 0.f);
-    EXPECT_NEAR(1.f, rgba[3], 1e-3f);
-    EXPECT_NEAR(kFaceDistance, frame.depth[left], 0.01f);
-    EXPECT_NEAR(kFaceDistance, frame.depth[pixel(kRow, kRightColumn)], 0.01f);
+    EXPECT_GT(rgba[left * 4] + rgba[left * 4 + 1] + rgba[left * 4 + 2], 0.f);
+    EXPECT_NEAR(1.f, rgba[left * 4 + 3], 1e-3f);
+    // Read from cameraDepth: the distance along the view axis, not hdMoonray's window depth.
+    EXPECT_NEAR(kFaceDistance, depth[left], 0.01f);
+    EXPECT_NEAR(kFaceDistance, depth[pixel(kRow, kRightColumn)], 0.01f);
 
     const std::size_t miss = pixel(kRow, kMissColumn);
-    EXPECT_TRUE(std::isinf(frame.depth[miss])) << frame.depth[miss];
-    EXPECT_EQ(0.f, frame.rgba[miss * 4 + 3]);
+    EXPECT_TRUE(std::isinf(depth[miss]) && (depth[miss] > 0.f)) << depth[miss];
+    EXPECT_EQ(0.f, rgba[miss * 4 + 3]);
 }
 
-TEST(USDRenderMoonRay, PrimIdAndNormal)
+TEST_F(USDRenderMoonRayTest, PrimIdAndNormal)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const PXR_NS::UsdStageRefPtr stage = fixture();
-    ASSERT_TRUE(bool(stage));
-    std::string error;
-    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine = makeEngine(0, &error);
-    ASSERT_TRUE(engine != nullptr) << error;
-    MoonRayAovs::LogCapture capture;
-    ASSERT_TRUE(converge(engine.get(), stage, capture, nullptr, &error)) << error;
-    std::vector<double> primId, instanceId, normal;
-    ASSERT_TRUE(readAov(engine.get(), PXR_NS::HdAovTokens->primId, 1, &primId, &error)) << error;
-    ASSERT_TRUE(readAov(engine.get(), PXR_NS::HdAovTokens->instanceId, 1, &instanceId, &error)) << error;
-    ASSERT_TRUE(readAov(engine.get(), MoonRayAovs::normalAov(), 3, &normal, &error)) << error;
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const std::vector<float>& primId = planes[2].pixels;
+    const std::vector<float>& normal = planes[3].pixels;
 
-    // hdMoonray writes Hydra's own prim ids, so the engine decodes them as it does Storm's.
+    // hdMoonray writes Hydra's own prim and instance ids, which decode as Storm's do.
     const std::size_t left = pixel(kRow, kLeftColumn);
     const std::size_t right = pixel(kRow, kRightColumn);
-    ASSERT_NE(primId[left], primId[right]);
-    PXR_NS::SdfPath leftPath, rightPath;
-    ASSERT_TRUE(engine->DecodeIntersection((int)primId[left], (int)instanceId[left], &leftPath));
-    ASSERT_TRUE(engine->DecodeIntersection((int)primId[right], (int)instanceId[right], &rightPath));
-    EXPECT_EQ(PXR_NS::SdfPath("/World/Left"), leftPath);
-    EXPECT_EQ(PXR_NS::SdfPath("/World/Right"), rightPath);
-    EXPECT_EQ(-1., primId[pixel(kRow, kMissColumn)]);
+    EXPECT_EQ(bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/World/Left"))), bitsOf(primId[left]));
+    EXPECT_EQ(bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/World/Right"))), bitsOf(primId[right]));
+    EXPECT_EQ(0u, bitsOf(primId[pixel(kRow, kMissColumn)]));
+    std::set<std::uint32_t> ids;
+    for (float value : primId) {
+        if (bitsOf(value) != 0) {
+            ids.insert(bitsOf(value));
+        }
+    }
+    EXPECT_EQ(2u, ids.size());
 
-    // The faces point down world +X, back at the camera: in its space, +Z.
+    // The faces point down world +X, back at the camera: in its space, +Z. MoonRay writes the
+    // normal in camera space already, so a second transform would turn it away.
     for (std::size_t at : { left, right }) {
-        EXPECT_NEAR(0., normal[at * 3 + 0], 0.01);
-        EXPECT_NEAR(0., normal[at * 3 + 1], 0.01);
-        EXPECT_NEAR(1., normal[at * 3 + 2], 0.01);
+        EXPECT_NEAR(0.f, normal[at * 3 + 0], 0.01f) << at;
+        EXPECT_NEAR(0.f, normal[at * 3 + 1], 0.01f) << at;
+        EXPECT_NEAR(1.f, normal[at * 3 + 2], 0.01f) << at;
     }
+    const std::size_t miss = pixel(kRow, kMissColumn);
+    EXPECT_EQ(0.f, normal[miss * 3]);
+    EXPECT_EQ(0.f, normal[miss * 3 + 1]);
+    EXPECT_EQ(0.f, normal[miss * 3 + 2]);
 }
 
-TEST(USDRenderMoonRay, WarnsOfAnUnsupportedLightAndStillRenders)
+// A PortalLight has no hdMoonray prim type: Hydra would drop it silently, so the node warns of it
+// by path and type, and renders the rest as before.
+TEST_F(USDRenderMoonRayTest, WarnsOfAnUnsupportedLightAndStillRenders)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const PXR_NS::UsdStageRefPtr stage = fixture();
-    ASSERT_TRUE(bool(stage));
-    (void)PXR_NS::UsdLuxPortalLight::Define(stage, PXR_NS::SdfPath("/World/Portal"));
+    ASSERT_FALSE(MoonRayAovs::supportedPrimTypes().empty());
+    NodePtr node = createGraph(kPortalFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
 
-    const PXR_NS::TfTokenVector& supported = MoonRayAovs::supportedPrimTypes();
-    ASSERT_FALSE(supported.empty());
-    const std::vector<MoonRayAovs::Light> lights = MoonRayAovs::unsupportedLights(stage, supported);
-    ASSERT_EQ(1u, lights.size());
-    EXPECT_EQ(PXR_NS::SdfPath("/World/Portal"), lights[0].path);
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Portal (PortalLight)"))) << message.toStdString();
 
-    Frame frame;
-    std::string error;
-    ASSERT_TRUE(render(stage, 0, &frame, &error)) << error;
-    const std::string warning = MoonRayAovs::warningText(stage, lights, frame.notices);
-    EXPECT_NE(std::string::npos, warning.find("/World/Portal (PortalLight)")) << warning;
-    // The cubes and their other lights render as before.
-    const float* rgba = &frame.rgba[pixel(kRow, kLeftColumn) * 4];
-    EXPECT_GT(rgba[0] + rgba[1] + rgba[2], 0.f);
-    EXPECT_TRUE(MoonRayAovs::errorText(stage, frame.notices).empty()) << MoonRayAovs::errorText(stage, frame.notices);
+    const std::size_t left = pixel(kRow, kLeftColumn);
+    EXPECT_GT(planes[0].pixels[left * 4] + planes[0].pixels[left * 4 + 1] + planes[0].pixels[left * 4 + 2], 0.f);
+
+    // The warning goes with the light.
+    NodePtr plain = createGraph();
+    ASSERT_TRUE(bool(plain));
+    ASSERT_TRUE(renderAll(plain, &planes));
+    EXPECT_FALSE(plain->hasPersistentMessage());
 }
 
-// Destroying the engine is how a render is abandoned: hdMoonray has no stop, and the engine's
-// Arras session ends its execComp as it goes.
-TEST(USDRenderMoonRay, AbortEndsTheRenderProcessPromptly)
+// hdMoonray has no stop: an aborted render destroys the engine, whose Arras session ends its
+// execComp as it goes. render() returns within a second of the abort, and no execComp is left.
+TEST_F(USDRenderMoonRayTest, AbortEndsTheRenderProcessPromptly)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const PXR_NS::UsdStageRefPtr stage = fixture();
-    ASSERT_TRUE(bool(stage));
-    std::string error;
-    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine = makeEngine(0, &error);
-    ASSERT_TRUE(engine != nullptr) << error;
-    // Enough samples that the frame is still rendering when it is abandoned.
-    engine->SetRendererSetting(PXR_NS::TfToken("moonray:sceneVariable:pixel_samples"), PXR_NS::VtValue(64));
-    MoonRayAovs::LogCapture capture;
-    std::atomic<bool> cancel(false);
-    std::thread canceller([&cancel]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        cancel = true;
-    });
-    const bool ended = converge(engine.get(), stage, capture, &cancel, &error);
-    canceller.join();
-    ASSERT_TRUE(ended) << error;
+    // Enough samples that the frame is still rendering when it is aborted.
+    HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(4096));
+    NodePtr reader;
+    NodePtr node = createGraph(kFixture, &reader);
+    ASSERT_TRUE(bool(node));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
 
-    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    engine.reset();
-    while (!execCompChildren().empty() && (std::chrono::steady_clock::now() - start < std::chrono::seconds(1))) {
+    typedef std::chrono::steady_clock Clock;
+    const Clock::time_point start = Clock::now();
+    Clock::time_point abortedAt;
+    bool abortSeen = false;
+    request.aborted = [&]() {
+        if (!abortSeen && (Clock::now() - start > std::chrono::milliseconds(500))) {
+            abortSeen = true;
+            abortedAt = Clock::now();
+        }
+
+        return abortSeen;
+    };
+    HydraRender::Result result;
+    std::string error;
+    EXPECT_FALSE(HydraRender::render(request, &result, &error));
+    ASSERT_TRUE(abortSeen) << "the render ended before it was aborted: " << error;
+    EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
+    while (!execCompChildren().empty() && (Clock::now() - abortedAt < std::chrono::seconds(1))) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const double seconds = std::chrono::duration<double>(Clock::now() - abortedAt).count();
     EXPECT_LT(seconds, 1.);
     EXPECT_TRUE(execCompChildren().empty());
+    HydraRender::release(&owner);
 }
 
-// Arras starts the render on hardware_concurrency() minus the reserved cores, so a budget of two
-// threads gives a render process with fewer threads than an unbudgeted one, by about the cores
-// the budget leaves out; the process's own service threads are the same in both.
-TEST(USDRenderMoonRay, RendersWithinTheThreadBudget)
+// With the per-effect thread count at 2, USDRender's MoonRay session renders on 2 threads. Arras
+// starts the render on hardware_concurrency() minus the reserved cores, so its render process has
+// fewer threads than an unbudgeted render's, by about the cores the budget leaves out; the
+// process's own service threads are the same in both.
+TEST_F(USDRenderMoonRayTest, RendersWithinTheThreadBudget)
 {
     if (!moonRayOrSkip()) {
         return;
@@ -534,32 +521,57 @@ TEST(USDRenderMoonRay, RendersWithinTheThreadBudget)
 
         return;
     }
+    NodePtr reader;
+    NodePtr node = createGraph(kFixture, &reader);
+    ASSERT_TRUE(bool(node));
+
+    int nThreadsToRender = 0;
+    int nThreadsPerEffect = 0;
+    appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+    appPTR->setNThreadsPerEffect(2);
+    std::vector<RenderedPlane> planes;
+    const int budgeted = peakRenderThreads([&]() { return renderAll(node, &planes); });
+    appPTR->setNThreadsPerEffect(nThreadsPerEffect);
+    ASSERT_GT(budgeted, 0);
+
+    // The thread count is taken when the engine is made.
+    HydraRender::releaseAllCpuEngines();
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
+    request.threads = 0;
     std::string error;
-    const int budgeted = peakRenderThreads(2, &error);
-    ASSERT_GT(budgeted, 0) << error;
-    const int unbudgeted = peakRenderThreads(0, &error);
+    const int unbudgeted = peakRenderThreads([&]() {
+        HydraRender::Result result;
+
+        return HydraRender::render(request, &result, &error);
+    });
+    HydraRender::release(&owner);
     ASSERT_GT(unbudgeted, 0) << error;
     // The unbudgeted render reserves one core, the budgeted one hardware - 2.
     EXPECT_GE(unbudgeted - budgeted, (hardware - 3) / 2) << "budgeted " << budgeted << ", unbudgeted " << unbudgeted;
 }
 
-// The fixture rendered twice gives the same image: the same frame seeds the same samples.
-TEST(USDRenderMoonRay, RerunIsIdentical)
+// The fixture rendered twice, by engines made apart, gives the same image: the same frame seeds
+// the same samples.
+TEST_F(USDRenderMoonRayTest, RerunIsIdentical)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const PXR_NS::UsdStageRefPtr stage = fixture();
-    ASSERT_TRUE(bool(stage));
-    Frame first, second;
-    std::string error;
-    ASSERT_TRUE(render(stage, 0, &first, &error)) << error;
-    ASSERT_TRUE(render(stage, 0, &second, &error)) << error;
-    ASSERT_EQ(first.rgba.size(), second.rgba.size());
-    std::size_t differing = 0;
-    for (std::size_t i = 0; i < first.rgba.size(); ++i) {
-        differing += (first.rgba[i] != second.rgba[i]) ? 1 : 0;
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> first;
+    ASSERT_TRUE(renderAll(node, &first));
+    HydraRender::releaseAllCpuEngines();
+    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
+    std::vector<RenderedPlane> second;
+    ASSERT_TRUE(renderAll(node, &second));
+    for (std::size_t plane = 0; plane < first.size(); ++plane) {
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i < first[plane].pixels.size(); ++i) {
+            differing += (bitsOf(first[plane].pixels[i]) != bitsOf(second[plane].pixels[i])) ? 1 : 0;
+        }
+        EXPECT_EQ(0u, differing) << "plane " << plane << " differs between two renders on this host";
     }
-    EXPECT_EQ(0u, differing);
-    EXPECT_EQ(first.primId, second.primId);
 }

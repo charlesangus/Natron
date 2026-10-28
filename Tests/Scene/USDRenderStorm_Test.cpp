@@ -37,6 +37,7 @@
 #include <list>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -494,14 +495,22 @@ protected:
         return render;
     } // createLiveTextureGraph
 
-    // The card's mean colour in render at frame, through the live texture graph.
+    // The card's mean colour in render at frame, through the live texture graph. Rendered off the
+    // main thread, where renders run outside the tests: LiveTextureStore::prepare does nothing on
+    // the main thread, and the textures cannot be prepared beforehand because the render empties
+    // the caches, the store included.
     static Coverage renderCard(const NodePtr& render,
                                double frame)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
+        bool rendered = false;
 
-        EXPECT_TRUE(renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+        std::thread worker([&]() {
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error);
+        });
+        worker.join();
+        EXPECT_TRUE(rendered) << error;
         if (planes.size() != 3u) {
             ADD_FAILURE() << "frame " << frame << " rendered " << planes.size() << " planes";
 

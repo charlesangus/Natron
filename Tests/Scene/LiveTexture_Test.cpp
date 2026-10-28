@@ -300,6 +300,38 @@ TEST_F(LiveTextureTest, PrepareRendersAMissingTextureOnce)
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
 }
 
+TEST_F(LiveTextureTest, PrepareOnTheMainThreadWarnsTheConsumer)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr consumer = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(consumer));
+
+    LiveTextureSource source;
+    source.node = constant;
+    source.consumer = consumer;
+    source.nodeName = constant->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = constant->getEffectInstance()->getHash();
+    const std::string uri = source.getUri(1.);
+
+    // Already stored: nothing is missing, so no warning.
+    LiveTextureStore::instance().insert(uri, makeGradient(4, 4));
+    EXPECT_EQ(0, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
+    EXPECT_FALSE(consumer->hasPersistentMessage());
+
+    LiveTextureStore::instance().clear();
+    EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
+    EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
+    ASSERT_TRUE(consumer->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    consumer->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromStdString(uri))) << message.toStdString();
+    EXPECT_FALSE(constant->hasPersistentMessage());
+}
+
 TEST_F(LiveTextureTest, ADeletedSourceLeavesTheTextureMissing)
 {
     LiveTextureSource source;

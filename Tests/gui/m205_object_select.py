@@ -247,10 +247,11 @@ try:
                 either += a or b
         return both / float(max(1, either))
 
-    def pick_model(roto, label):
+    def pick_model(roto, model_id):
+        """Selects the model by its option ID; getOptions() lists IDs, not the menu labels."""
         param = roto.getParam("model")
         options = [str(o) for o in param.getOptions()]
-        index = next((i for i, o in enumerate(options) if o.startswith(label)), -1)
+        index = options.index(model_id) if model_id in options else -1
         if index >= 0:
             param.setValue(index)
             QApplication.processEvents()
@@ -282,7 +283,7 @@ try:
         for name in ("objectThreshold", "objectSimplify", "objectMinArea", "objectHoles", "objectSmooth",
                      "objectFeather", "objectClearPrompts", "downloadModel"):
             check(roto.getParam(name) is not None, "the Roto node has a %s parameter" % name)
-        require(pick_model(roto, "Test SegNext"), "picked the Test SegNext model")
+        require(pick_model(roto, SEGNEXT_ID), "picked the Test SegNext model")
 
         yield ("sleep", SETTLE_MS)
         require(roto.connectInput(0, read), "the Read feeds the Roto node's Source")
@@ -325,7 +326,7 @@ try:
         # A box needs a SAM model; the click above belongs to the SegNext selection, cleared first.
         key(gl, Qt.Key_Escape)
         yield ("until", lambda: outline_pixels(gl) < 10, POLL_TIMEOUT_S)
-        if check(pick_model(roto, "Test SAM"), "picked the Test SAM model"):
+        if check(pick_model(roto, SAM_ID), "picked the Test SAM model"):
             yield ("sleep", SETTLE_MS)
             drag(gl, at(10, 4), at(118, 92))
             ok = yield ("until", lambda: outline_pixels(gl) > 40, POLL_TIMEOUT_S)
@@ -333,7 +334,7 @@ try:
             gt.shot("m205-object-box.png")
             key(gl, Qt.Key_Escape)
             yield ("until", lambda: outline_pixels(gl) < 10, POLL_TIMEOUT_S)
-            pick_model(roto, "Test SegNext")
+            pick_model(roto, SEGNEXT_ID)
             yield ("sleep", SETTLE_MS)
 
         check(not shapes(roto), "no shape exists before the commit")

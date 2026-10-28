@@ -13,6 +13,10 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 SETTLE_MS = 400
 TOLERANCE = 40
+# NodeGraph20.cpp kSpliceRectTolerance is 10 scene units: the dragged node's left edge stops this far
+# right of the pipe, inside the tolerance, so the highlighted pipe stays in view beside the node.
+BESIDE_PIPE = 5.0
+PIPE_BAND = 12.0
 
 try:
     import NatronEngine
@@ -64,21 +68,22 @@ try:
         pix = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), vp.width(), vp.height())
         return pix
 
-    def count_near(img, rgb):
+    def count_near(img, rgb, rect):
+        x0, y0, x1, y1 = rect
         n = 0
-        for y in range(img.height()):
-            for x in range(img.width()):
+        for y in range(max(0, y0), min(img.height(), y1)):
+            for x in range(max(0, x0), min(img.width(), x1)):
                 c = img.pixelColor(x, y)
                 if (abs(c.red() - rgb[0]) <= TOLERANCE and abs(c.green() - rgb[1]) <= TOLERANCE
                         and abs(c.blue() - rgb[2]) <= TOLERANCE):
                     n += 1
         return n
 
-    def snap(graph, name, rgb):
+    def snap(graph, name, rgb, rect):
         pix = viewport_image(graph)
         path = os.path.join(gt.OUT, name + ".png")
         report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
-        hits = count_near(pix.toImage(), rgb)
+        hits = count_near(pix.toImage(), rgb, rect)
         check(hits > 0, "%s: the highlighted pipe is drawn in the Selection colour %s (%d px)" % (name, rgb, hits))
 
     def steps():
@@ -109,8 +114,15 @@ try:
         graph.centerOn((min(xs) + max(xs) + 100) / 2.0, (min(ys) + max(ys) + 50) / 2.0)
         yield ("sleep", SETTLE_MS)
 
-        sc, mc = centre(src), centre(mover)
-        target = (sc[0] + mover.getSize()[0] / 2.0 + 9.0, (sc[1] + centre(dst)[1]) / 2.0)
+        sc, dc, mc = centre(src), centre(dst), centre(mover)
+        # The pipe runs from the Constant's centre to the Blur's, whose widths differ.
+        pipe_x = (sc[0] + dc[0]) / 2.0
+        target = (pipe_x + mover.getSize()[0] / 2.0 + BESIDE_PIPE, (sc[1] + dc[1]) / 2.0)
+        # Only the pipe's own strip is counted, clear of node bodies and badges.
+        band_tl = graph.mapFromScene(QPointF(pipe_x - PIPE_BAND, src.getPosition()[1] + src.getSize()[1]))
+        band_br = graph.mapFromScene(QPointF(pipe_x + BESIDE_PIPE - 1.0, dst.getPosition()[1]))
+        band = (band_tl.x(), band_tl.y(), band_br.x(), band_br.y())
+        report("NOTE pipe at scene x %g, dragged node centre to %r, counting viewport rect %r" % (pipe_x, target, band))
         vp = graph.viewport()
         p0 = graph.mapFromScene(QPointF(mc[0], mc[1]))
         send_mouse(vp, QEvent.MouseButtonPress, p0, Qt.LeftButton, Qt.LeftButton)
@@ -120,13 +132,13 @@ try:
             send_mouse(vp, QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
 
-        snap(graph, "hint-default", selection_rgb())
+        snap(graph, "hint-default", selection_rgb(), band)
         set_selection(0.1, 0.4, 1.0)
         vp.update()
         pend = graph.mapFromScene(QPointF(target[0], target[1]))
         send_mouse(vp, QEvent.MouseMove, pend, Qt.NoButton, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
-        snap(graph, "hint-changed", selection_rgb())
+        snap(graph, "hint-changed", selection_rgb(), band)
         send_mouse(vp, QEvent.MouseButtonRelease, pend, Qt.LeftButton, Qt.NoButton)
         set_selection(0.95, 0.54, 0.0)
 

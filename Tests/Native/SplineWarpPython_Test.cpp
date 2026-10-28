@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/Node.h"
@@ -138,7 +139,12 @@ protected:
 
     NodePtr makeSplineWarp(const NodePtr& input)
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+        CreateNodeArgs args(PLUGINID_NATRON_SPLINEWARP, getApp()->getProject());
+
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, PLUGIN_MAJOR_NATRON_SPLINEWARP, 0);
+        args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+        NodePtr node = getApp()->createNode(args);
 
         EXPECT_TRUE(bool(node));
         if (node && input) {

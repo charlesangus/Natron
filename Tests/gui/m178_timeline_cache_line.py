@@ -123,6 +123,7 @@ try:
         require(read is not None, "create a Read", gt.plugin_problem("fr.inria.built-in.Read"))
         read.getParam("filename").setValue(os.path.join(gt.OUT, "m178-missing-file.exr"))
         gt.close_all_panels()
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, read), "the Viewer shows the Read of a missing file")
         yield from expect_line("after failed render", [])
         faulthandler.cancel_dump_traceback_later()

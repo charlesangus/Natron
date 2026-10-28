@@ -196,8 +196,34 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - An AppImage from `package.sh` is handed to the user for UAT.
 - The four retired OFX IDs don't load.
 
+## Phase 124.4: UAT round 1
+
+- [ ] M124.P4.T1 — The dope sheet shows keys through a TimeOffset
+  - files: `Gui/DopeSheet*.cpp`, `Engine/Nodes/Time/TimeOffset.cpp`, `Tests/gui/m124_time_dope_sheet.py`
+  - approach: when the viewed node is downstream of a TimeOffset (or any native time node with a pure frame offset), the keyframes of the nodes upstream of it are drawn at their shifted times, as the clip bars already are. Find how the dope sheet maps upstream clip ranges through time nodes and extend it to keyframes; editing a shifted key writes the unshifted time.
+  - verify: Xvfb script: a Transform keyed at 10 upstream of a TimeOffset of +5, viewed downstream, shows the key at 15; dragging it to 17 writes 12.
+  - size: L
+- [ ] M124.P4.T2 — Drag the ends of FrameRange's dope sheet bar
+  - files: `Gui/DopeSheet*.cpp`, `Engine/Nodes/Time/FrameRange.cpp`, `Tests/gui/m124_time_dope_sheet.py`
+  - approach: the bar's left and right ends are drag handles (resize cursor) that edit First and Last; dragging the middle still moves both.
+  - verify: Xvfb script: dragging each end changes only First or Last; undo restores.
+  - size: M
+- [ ] M124.P4.T3 — TimeWarp node, split out of Retime
+  - files: `Engine/Nodes/Time/TimeWarp.{h,cpp,reg.inc}` (new), `Engine/Nodes/Time/Retime.{h,cpp}`, `Engine/Nodes/Time/docs/`, toolbar registration, `Tests/Native/`
+  - approach: a TimeWarp node owns the warp curve (output frame → source frame lookup, Nuke TimeWarp-style, check .local/docs) with the same Filter/Shutter as Retime; Retime loses its warp curve. GPU path as Retime's. Golden ≤256 px half-float crop.
+  - verify: gtest: an identity curve is a pass-through; a curve mapping 1..10 to 10..1 reverses; fractional lookups blend. Retime has no warp knob.
+  - size: L
+- [ ] M124.P4.T4 — Retime in/out mapping
+  - files: `Engine/Nodes/Time/Retime.{h,cpp}`, `Tests/Native/`, `Tests/gui/`
+  - approach: knobs `originalIn` → `newIn` with `useInMapping` (default on), `originalOut` → `newOut` with `useOutMapping` (default off), then `speed`; the remaining knobs unchanged; the old input/output range locks are removed. In mapping only: original in lands on new in and speed applies, the out follows. Out mapping only: the mirror. Both on: speed = (originalOut − originalIn) / (newOut − newIn), shown greyed (read-only) and the range is compressed or expanded to fit. Reverse still applies.
+  - verify: gtest: in-only maps 10→20 at speed 2 (source 10,12,14… from 20); both on maps 1..100 onto 1..50 (speed 2, greyed); out-only anchors the out frame. Dope sheet bar follows the new range.
+  - size: L
+
+**Verification gate (round 2):** release gate green; GUI checks pass on Actions; screenshots shared; AppImage and UAT round 2.
+
 ## Decisions
 
+- 2026-10-28 — **UAT round 1 (user).** FrameHold good; FrameRange dope sheet interaction good. TimeOffset: viewing downstream of it doesn't shift the upstream keyframes in the dope sheet (expected: it does). FrameRange: also drag the bar's ends. Retime: split the warp curve into a TimeWarp node; new in/out mapping UI — original in → new in [use in mapping, default on], original out → new out [use out mapping, default off], speed; both mappings on drive the speed (greyed) and compress/expand the range. Phase 124.4.
 - 2026-10-27 — UAT: AppImage build/appimages/Natron-m124-time-remaps.AppImage, checklist M124-uat.md, draft PR #139. defocus_retime comp rebuilt; Retime cost seed 0.0028 ms/Mpx (serial, loaded host; pass-through dominates, blend tasks ~1 ms/Mpx).
 - 2026-10-27 — Retime's Output First/Last are derived from Speed while their locks are off and reset on edit, as in Nuke; the hash sweep exempts them (allowlist) and `NativeRetimeTest.LockedOutputEndsMoveTheHash` covers the locked case. FrameRange's Black outside the range is an empty render (no plane), not a black plane.
 - 2026-10-13 — **Four Nuke-style nodes** (user): TimeOffset, FrameHold, FrameRange and Retime stay separate. They are not merged into one Time node or into each other.

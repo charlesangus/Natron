@@ -275,8 +275,10 @@ TEST(DtColorSpaces, HelperFunctions)
     EXPECT_NEAR(deltaH(0.5f, 0.25f), 0.25f, 1e-7f);
 
     EXPECT_EQ(softClip(0.5f, 0.8f, 1.f), 0.5f);
+    EXPECT_NEAR(softClip(1.f, 0.8f, 1.f), 0.8f + 0.2f * (1.f - std::exp(-1.f)), 1e-6f);
+    // Far above the soft threshold the exponential underflows the float mantissa, so it lands on the hard threshold.
     EXPECT_GT(softClip(5.f, 0.8f, 1.f), 0.8f);
-    EXPECT_LT(softClip(5.f, 0.8f, 1.f), 1.f);
+    EXPECT_LE(softClip(5.f, 0.8f, 1.f), 1.f);
 
     float lut[kGamutLutSize];
     for (int i = 0; i < kGamutLutSize; ++i) {

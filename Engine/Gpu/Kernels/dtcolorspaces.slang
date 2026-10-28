@@ -115,6 +115,39 @@ static const float kDtJzD0 = 1.6295499532821566e-11;
 static const float3 kDtJzAI1 = float3(0.1386050432715393, -0.1386050432715393, -0.0960192420263190);
 static const float3 kDtJzAI2 = float3(0.0580473161561189, -0.0580473161561189, -0.8118918960560390);
 
+// pow() for the JzAzBz PQ curve. Vulkan lets pow() be exp2(y·log2(x)) with a log2 that is only
+// absolutely accurate (lavapipe: 1.6e-7); the PQ exponent of 134 turns that into a 1.5e-5 relative
+// error, which nearly doubles the float error of a JzAzBz round trip next to the CPU's std::pow.
+// ln(x) for finite x > 0: x = m·2^e with m in [sqrt(1/2), sqrt(2)), ln(m) = 2·atanh((m - 1)/(m + 1)).
+float dtLogPrecise(float x)
+{
+    int e;
+    float m = frexp(x, e);
+    if (m < 0.70710678118654752)
+    {
+        m *= 2.0;
+        e -= 1;
+    }
+    const float s = (m - 1.0) / (m + 1.0);
+    const float s2 = s * s;
+    const float series = s2 * (1.0 / 3.0 + s2 * (1.0 / 5.0 + s2 * (1.0 / 7.0 + s2 * (1.0 / 9.0 + s2 * (1.0 / 11.0 + s2 * (1.0 / 13.0))))));
+    return float(e) * 0.693147180559945309 + (2.0 * s + 2.0 * s * series);
+}
+
+// e^y: y = k·ln2 + r with |r| <= ln2/2, e^r by its Taylor series to r^9.
+float dtExpPrecise(float y)
+{
+    const float k = round(y * 1.44269504088896341);
+    const float r = (y - k * 0.693145751953125) - k * 1.42860682030941723e-06;
+    const float p = 1.0 + r * (1.0 + r * (1.0 / 2.0 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0 + r * (1.0 / 720.0 + r * (1.0 / 5040.0 + r * (1.0 / 40320.0 + r * (1.0 / 362880.0)))))))));
+    return ldexp(p, int(k));
+}
+
+float dtPowPrecise(float x, float y)
+{
+    return (x > 0.0) ? dtExpPrecise(y * dtLogPrecise(x)) : 0.0;
+}
+
 float3 dtXyzToJzAzBz(float3 xyzD65)
 {
     const float3 xyz = float3(kDtJzB * xyzD65.x - (kDtJzB - 1.0) * xyzD65.z,
@@ -125,8 +158,8 @@ float3 dtXyzToJzAzBz(float3 xyzD65)
                        float3(-0.0166008, 0.2648000, 0.6684799), xyz);
     for (int i = 0; i < 3; ++i)
     {
-        float l = pow(max(lms[i] / 10000.0, 0.0), kDtJzN);
-        lms[i] = pow((kDtJzC1 + kDtJzC2 * l) / (1.0 + kDtJzC3 * l), kDtJzP);
+        float l = dtPowPrecise(max(lms[i] / 10000.0, 0.0), kDtJzN);
+        lms[i] = dtPowPrecise((kDtJzC1 + kDtJzC2 * l) / (1.0 + kDtJzC3 * l), kDtJzP);
     }
     float3 jab = dtMul(float3(0.5, 0.5, 0.0),
                        float3(3.524000, -4.066708, 0.542708),
@@ -147,9 +180,9 @@ float3 dtJzAzBzToXyz(float3 jab)
     float3 lms = iz + jab.y * kDtJzAI1 + jab.z * kDtJzAI2;
     for (int i = 0; i < 3; ++i)
     {
-        float l = pow(max(lms[i], 0.0), 1.0 / kDtJzP);
+        float l = dtPowPrecise(max(lms[i], 0.0), 1.0 / kDtJzP);
         l = (kDtJzC1 - l) / (kDtJzC3 * l - kDtJzC2);
-        lms[i] = 10000.0 * pow(max(l, 0.0), 1.0 / kDtJzN);
+        lms[i] = 10000.0 * dtPowPrecise(max(l, 0.0), 1.0 / kDtJzN);
     }
     const float3 xyz = dtMul(float3(1.9242264357876067, -1.0047923125953657, 0.0376514040306180),
                              float3(0.3503167620949991, 0.7264811939316552, -0.0653844229480850),

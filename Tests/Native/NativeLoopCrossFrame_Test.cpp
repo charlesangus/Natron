@@ -280,11 +280,18 @@ protected:
         return true;
     }
 
-    // The red value of the baked image at x,y, -1 outside it.
+    // The red value of the baked image at x,y. A baked file stores the frame's region of
+    // definition, unclipped, and the format is its display window: a pixel inside the display
+    // window but outside the stored data window is black (0) by design. A pixel outside both is
+    // a test error, as is a pixel outside the data window when no display window is given.
     static float bakedRedAt(const ImagePtr& image,
                             int x,
-                            int y)
+                            int y,
+                            const RectI* displayWindow = 0)
     {
+        if (image && !image->getBounds().contains(x, y) && displayWindow && displayWindow->contains(x, y)) {
+            return 0.f;
+        }
         if (!image || !image->getBounds().contains(x, y)) {
             ADD_FAILURE() << "pixel " << x << "," << y << " is outside the baked frame";
 
@@ -633,7 +640,10 @@ TEST_F(NativeLoopCrossFrameTest, ABakedFrameKeepsWhatLeavesTheFormat)
     ASSERT_TRUE(bool(baked)) << error;
     EXPECT_LE(drift.right + 116, info.bounds.x2);
     EXPECT_EQ(1.f, bakedRedAt(baked, drift.right + 114, 11)) << "frame 4, past the format";
-    EXPECT_EQ(0.f, bakedRedAt(baked, drift.right - 6, 11)) << "frame 4, inside the format";
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    const RectI display(format.x1, format.y1, format.x2, format.y2);
+    EXPECT_EQ(0.f, bakedRedAt(baked, drift.right - 6, 11, &display)) << "frame 4, inside the format, outside the stored window";
 }
 
 // With Load From Cache, a baked simulation renders none of its body up to the last frame baked,

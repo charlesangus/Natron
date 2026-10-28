@@ -83,5 +83,6 @@ Deps: M131 - Native Defocus Family.
 
 ## Decisions
 
+- 2026-10-28: Phases 1–2 implemented (build pending). Clip as a BokehClip struct (infinite default; a clip containing the shape is skipped → bit-identical). Texture defaults neutral (inner brightness 1, filter shape 1, spherical 0). Textured kernels quantised to 32 levels (±1/64 of peak before renormalising) to bound run counts (~66 runs/row at r=100); GPU tolerance can't bound this — the GPU gathers the same quantised kernels. Cell grid anchored at the format centre; cat-eye = second aperture of the kernel's radius offset by amount × position (radial) or a quarter turn (tangential/swirl); bands of ≥32 cell rows + 64 MB run cache. Coverage per channel group, alpha and non-colour channels on green (open: milestone text contradicts itself). Lens path is CPU-only until phase 3.
 - 2026-10-28: elaborated (consultant); can start before Q1–Q3. Risk: the cell grid multiplies kernel builds (slices × cells × channels) — check on modest hardware.
 - 2026-10-13 — **Created as a follow-up (user, /cat-plan grill):** an improved ZDefocus with aberrations, kept out of M131 - Native Defocus Family's v1.

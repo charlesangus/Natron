@@ -302,7 +302,7 @@ def createInstance(app,group):
     # End of node "Merge1"
 
     # Start of node "Solid1"
-    lastNode = app.createNode("net.sf.openfx.Solid", 1, group)
+    lastNode = app.createNode("Constant", 1, group)
     lastNode.setScriptName("Solid1")
     lastNode.setLabel("Solid1")
     lastNode.setPosition(776, 134)
@@ -320,6 +320,7 @@ def createInstance(app,group):
         param.setValue(1, 0)
         param.setValue(1, 1)
         param.setValue(1, 2)
+        param.setValue(1, 3)
         del param
 
     del lastNode
@@ -432,8 +433,10 @@ def createInstance(app,group):
     param = groupShuffle1.getParam("in1")
     group.getParam("Source_channels").setAsAlias(param)
     del param
+    # The Constant's colour is RGBA and the group's RGB, so the two are linked by expressions.
     param = groupSolid1.getParam("color")
-    group.getParam("centerValue").setAsAlias(param)
+    for dimension in range(3):
+        param.setExpression("thisGroup.centerValue.getValue(%d)" % dimension, False, dimension)
     del param
     param = groupInvert1.getParam("channels")
     group.getParam("channels").setAsAlias(param)

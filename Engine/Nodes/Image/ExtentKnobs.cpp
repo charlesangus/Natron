@@ -243,19 +243,21 @@ ExtentKnobs::createKnobs(const KnobPagePtr& page)
     page->addKnob(hiDPI);
     _hiDPI = hiDPI;
 
-    KnobIntPtr frameRange = AppManager::createKnob<KnobInt>(_effect, EffectInstance::tr("Frame Range"), 2);
-    frameRange->setName(kNativeGeneratorParamFrameRange);
-    frameRange->setHintToolTip(EffectInstance::tr("Time domain."));
-    frameRange->setDimensionName(0, "min");
-    frameRange->setDimensionName(1, "max");
-    double projectFirst = 1.;
-    double projectLast = 1.;
-    _effect->getApp()->getProject()->getFrameRange(&projectFirst, &projectLast);
-    frameRange->setDefaultValue((int)projectFirst, 0);
-    frameRange->setDefaultValue((int)projectLast, 1);
-    frameRange->setAnimationEnabled(false);
-    page->addKnob(frameRange);
-    _frameRange = frameRange;
+    if (_policy.frameRange) {
+        KnobIntPtr frameRange = AppManager::createKnob<KnobInt>(_effect, EffectInstance::tr("Frame Range"), 2);
+        frameRange->setName(kNativeGeneratorParamFrameRange);
+        frameRange->setHintToolTip(EffectInstance::tr("Time domain."));
+        frameRange->setDimensionName(0, "min");
+        frameRange->setDimensionName(1, "max");
+        double projectFirst = 1.;
+        double projectLast = 1.;
+        _effect->getApp()->getProject()->getFrameRange(&projectFirst, &projectLast);
+        frameRange->setDefaultValue((int)projectFirst, 0);
+        frameRange->setDefaultValue((int)projectLast, 1);
+        frameRange->setAnimationEnabled(false);
+        page->addKnob(frameRange);
+        _frameRange = frameRange;
+    }
 
     if (_policy.overlayFollowsExtent) {
         createRectangleEnable(page);

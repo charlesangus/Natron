@@ -60,7 +60,6 @@ const char* const kProcessesAllLayers[] = {
     "fr.natron.test.MatrixWarp",
     "fr.natron.test.FrameWindow",
     "Transform",
-    "net.sf.openfx.TransformMaskedPlugin",
     "Crop",
     "Position",
     "Reformat",

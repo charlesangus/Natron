@@ -34,8 +34,6 @@
 #                 "Max concurrent tasks" from the -stats.txt file are recorded as tasks_run and
 #                 max_concurrent_tasks. Needs the stats-capable CLI path, so it is a separate cold render.
 #   BENCH_RENDERER  NatronRenderer binary for that render (default build/release/Renderer/NatronRenderer)
-#   BENCH_IMPL    native (default) | ofx: which implementation of the IDs in NATIVE_MAJORS to create; the
-#                 OFX plugin and its native replacement share an ID and differ by major version
 #   BENCH_SESSION a | bc | playback: a session that counts one-time costs (no warm-up render, setup is part of the
 #                 measurement) instead of the timed-frames loop. a renders BENCH_SESSION_FRAME once, labelled
 #                 BENCH_LABEL (default a); bc renders it, then re-renders it BENCH_RERENDERS times (default 4)
@@ -159,16 +157,6 @@ WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", 
 PLATES = os.environ.get("BENCH_PLATES_DIR") or os.path.join(os.getcwd(), "build", "bench", "fixtures")
 # Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
-IMPL = os.environ.get("BENCH_IMPL", "native")
-if IMPL not in ("ofx", "native"):
-    raise SystemExit("BENCH_IMPL must be ofx or native, got %r" % IMPL)
-
-# plugin ID -> (OFX major, native major). A native node takes over its OFX ID at the next major, so
-# an unversioned request already resolves to it; only the benchmark needs to pick one explicitly.
-NATIVE_MAJORS = {
-    "Grade": (2, 1),
-}
-
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
 if SESSION:
     LAST_FRAME = max(LAST_FRAME, JUMP_FRAME, SESSION_FRAME + PLAYBACK_FRAMES) + 1
@@ -186,7 +174,6 @@ MOTION_BLUR = float(os.environ.get("BENCH_MOTION_BLUR", "1"))
 ERODE_SIZE = int(os.environ.get("BENCH_ERODE_SIZE", "6"))
 
 counts = {}
-majors = {}
 # Per frame, the plate file bytes the graph decodes: one entry per Read/DeepRead node.
 plate_reads = []
 
@@ -197,9 +184,7 @@ def log(msg):
 
 
 def make(plugin_id):
-    pair = NATIVE_MAJORS.get(plugin_id)
-    major = -1 if pair is None else pair[0 if IMPL == "ofx" else 1]
-    majors[plugin_id] = major
+    major = -1
     if NAMED:
         name = "n%d" % sum(counts.values())
         props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty(name)}
@@ -899,7 +884,6 @@ def main():
     build_s = time.time() - t0
     if DRY_RUN:
         log("dry run: %s N=%d nodes=%d %s" % (TOPO, N, sum(counts.values()), json.dumps(counts, sort_keys=True)))
-        log("dry run: impl=%s majors %s" % (IMPL, json.dumps(majors, sort_keys=True)))
         log("dry run: plate bytes per frame %d over %d reads" % (sum(plate_reads), len(plate_reads)))
         return
 
@@ -981,8 +965,6 @@ def main():
         "rss_before_mb": rss_before,
         "rss_peak_mb": vm("VmHWM"),
         "counts": counts,
-        "impl": IMPL,
-        "majors": majors,
         "pixels": SIZES[fmt][0] * SIZES[fmt][1] if fmt in SIZES else None,
         "cpus": os.cpu_count(),
         "mem_total_mb": mem_total_mb(),

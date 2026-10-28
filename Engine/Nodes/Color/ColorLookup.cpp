@@ -549,6 +549,7 @@ struct ColorLookup::BackgroundState {
 
 ColorLookup::ColorLookup(NodePtr node)
     : ImageNode<ColorLookupOp>(node)
+    , _hasBackgroundPainter(false)
     , _background(std::make_shared<BackgroundState>())
 {
 }
@@ -577,16 +578,6 @@ ColorLookup::initializeKnobs()
     KnobPagePtr page = createControlsPage();
 
     {
-        KnobBoolPtr knob = createKnob<KnobBool>(std::string("Has Background Interact"));
-        knob->setName(kColorLookupParamHasBackgroundInteract);
-        knob->setDefaultValue(false);
-        knob->setSecretByDefault(true);
-        knob->setAnimationEnabled(false);
-        knob->setEvaluateOnChange(false);
-        page->addKnob(knob);
-        _hasBackgroundInteract = knob;
-    }
-    {
         KnobParametricPtr table = createKnob<KnobParametric>(tr("Lookup Table"), eCurveCount);
         table->setName(kColorLookupParamLookupTable);
         table->setHintToolTip(tr("Colour lookup table. The master curve is combined with the red, green and blue curves, but not with the alpha curve."));
@@ -612,15 +603,6 @@ ColorLookup::initializeKnobs()
         table->setDefaultCurvesFromCurves();
         page->addKnob(table);
         op().lookupTable = table;
-    }
-    {
-        KnobBoolPtr knob = createKnob<KnobBool>(std::string("Show Ramp"));
-        knob->setName(kColorLookupParamShowRamp);
-        knob->setDefaultValue(false);
-        knob->setSecretByDefault(true);
-        knob->setAnimationEnabled(false);
-        knob->setEvaluateOnChange(false);
-        page->addKnob(knob);
     }
     {
         KnobChoicePtr display = createKnob<KnobChoice>(tr("Display"));
@@ -722,14 +704,13 @@ ColorLookup::initializeKnobs()
 void
 ColorLookup::refreshBackgroundControls()
 {
-    KnobBoolPtr hasBackground = _hasBackgroundInteract.lock();
     KnobChoicePtr display = _display.lock();
     KnobButtonPtr update = _updateHistogram.lock();
 
-    if (!hasBackground || !display || !update) {
+    if (!display || !update) {
         return;
     }
-    const bool visible = hasBackground->getValue();
+    const bool visible = _hasBackgroundPainter;
     display->setSecret(!visible);
     display->setAllDimensionsEnabled(visible);
     update->setSecret(!visible);
@@ -746,9 +727,8 @@ void
 ColorLookup::installBackgroundPainter()
 {
     KnobParametricPtr table = op().lookupTable.lock();
-    KnobBoolPtr hasBackground = _hasBackgroundInteract.lock();
 
-    if (!table || !hasBackground) {
+    if (!table) {
         return;
     }
     const KnobParametricWPtr weakTable = table;
@@ -844,7 +824,7 @@ ColorLookup::installBackgroundPainter()
 
         return background;
     });
-    hasBackground->setDefaultValue(true);
+    _hasBackgroundPainter = true;
 }
 
 void
@@ -964,10 +944,10 @@ ColorLookup::knobChanged(KnobI* k,
 
         return true;
     }
-    if (isKnob(k, _hasBackgroundInteract) || isKnob(k, _display)) {
+    if (isKnob(k, _display)) {
         refreshBackgroundControls();
         KnobChoicePtr display = _display.lock();
-        if (display && isKnob(k, _display)) {
+        if (display) {
             if (display->getValue() != (int)eDisplayHistogram) {
                 dropHistogram();
             } else if (reason == eValueChangedReasonUserEdited) {

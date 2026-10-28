@@ -98,10 +98,7 @@ private:
 
     void updateClampEnabled(double time, ViewSpec view);
 
-    void updateUniformVisibility(bool allowHiding);
-
     TransformOp _op;
-    KnobBoolWPtr _srcClipChanged;
 };
 
 NATRON_NAMESPACE_EXIT

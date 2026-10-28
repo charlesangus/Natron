@@ -310,7 +310,6 @@ TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
     };
     static const Case cases[] = {
         { "Constant", false, "" },
-        { "net.sf.openfx.Solid", false, "" },
         { "fr.natron.test.Generator", true, "" },
         { "fr.natron.test.RGBGenerator", true, "RGB" },
         { "CheckerBoard", false, "" },

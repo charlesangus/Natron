@@ -209,8 +209,6 @@ TEST_F(NativePluginListTest, NativeIdsArePlainAtMajorOne)
     const std::set<std::string> pending = {
         PLUGINID_NATRON_ERODE,
         PLUGINID_NATRON_DILATE,
-        PLUGINID_NATRON_SOLID,
-        PLUGINID_NATRON_TRANSFORMMASKED,
     };
     const PluginsMap& plugins = appPTR->getPluginsList();
 

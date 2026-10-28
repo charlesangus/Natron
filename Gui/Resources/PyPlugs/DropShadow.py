@@ -284,7 +284,7 @@ def createInstance(app,group):
     # End of node "Multiply1"
 
     # Start of node "Solid1"
-    lastNode = app.createNode("net.sf.openfx.Solid", 1, group)
+    lastNode = app.createNode("Constant", 1, group)
     lastNode.setScriptName("Solid1")
     lastNode.setLabel("Solid1")
     lastNode.setPosition(584, 87)
@@ -301,6 +301,11 @@ def createInstance(app,group):
     if param is not None:
         param.setValue(960, 0)
         param.setValue(540, 1)
+        del param
+
+    param = lastNode.getParam("color")
+    if param is not None:
+        param.setValue(1, 3)
         del param
 
     del lastNode
@@ -389,8 +394,10 @@ def createInstance(app,group):
     param = groupMultiply1.getParam("value")
     group.getParam("shadowOpacity").setAsAlias(param)
     del param
+    # The Constant's colour is RGBA and the group's RGB, so the two are linked by expressions.
     param = groupSolid1.getParam("color")
-    group.getParam("shadowColor").setAsAlias(param)
+    for dimension in range(3):
+        param.setExpression("thisGroup.shadowColor.getValue(%d)" % dimension, False, dimension)
     del param
     param = groupBlur1.getParam("size")
     group.getParam("shadowBlur").setAsAlias(param)

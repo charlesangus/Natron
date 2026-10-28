@@ -99,22 +99,12 @@ ITransform::initializeKnobs()
     createMapKnobs(page);
     addStageKnobs(page);
 
-    KnobBoolPtr srcClipChanged = createKnob<KnobBool>(std::string(kTransformNodeParamSrcClipChanged));
-    srcClipChanged->setName(kTransformNodeParamSrcClipChanged);
-    srcClipChanged->setDefaultValue(false);
-    srcClipChanged->setSecretByDefault(true);
-    srcClipChanged->setDefaultAllDimensionsEnabled(false);
-    srcClipChanged->setAnimationEnabled(false);
-    srcClipChanged->setEvaluateOnChange(false);
-    page->addKnob(srcClipChanged);
-    _srcClipChanged = srcClipChanged;
-
     updateShutterEnabled();
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
-        node->addTransformInteract(_op.translate.lock(), _op.scale.lock(), _op.uniform.lock(), _op.rotate.lock(), _op.skewX.lock(), _op.skewY.lock(), _op.skewOrder.lock(), _op.center.lock(), _op.invert.lock(), _op.interactive.lock());
+        node->addTransformInteract(_op.translate.lock(), _op.scale.lock(), KnobBoolPtr(), _op.rotate.lock(), _op.skewX.lock(), _op.skewY.lock(), _op.skewOrder.lock(), _op.center.lock(), _op.invert.lock(), _op.interactive.lock());
     }
     declareMapLayerKnob();
 } // ITransform::initializeKnobs
@@ -156,27 +146,10 @@ ITransform::updateClampEnabled(double time,
 }
 
 void
-ITransform::updateUniformVisibility(bool allowHiding)
-{
-    KnobBoolPtr uniform = _op.uniform.lock();
-
-    if (!uniform) {
-        return;
-    }
-    const bool used = uniform->getValue() || (uniform->getKeyFramesCount(ViewSpec(0), 0) > 0);
-    if (!used && !allowHiding) {
-        return;
-    }
-    uniform->setSecret(!used);
-    uniform->setAllDimensionsEnabled(used);
-}
-
-void
 ITransform::onKnobsLoaded()
 {
     updateShutterEnabled();
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
-    updateUniformVisibility(true);
 }
 
 void
@@ -226,14 +199,6 @@ ITransform::knobChanged(KnobI* k,
     KnobBoolPtr directionalBlur = _op.directionalBlur.lock();
     if (directionalBlur && (k == directionalBlur.get())) {
         updateShutterEnabled();
-
-        return true;
-    }
-    KnobBoolPtr uniform = _op.uniform.lock();
-    if (uniform && (k == uniform.get())) {
-        if (reason != eValueChangedReasonTimeChanged) {
-            updateUniformVisibility(false);
-        }
 
         return true;
     }

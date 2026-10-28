@@ -1301,20 +1301,8 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, false);
-    } catch (const std::exception & e1) {
-        ///Ok try with the old Ids we had in Natron prior to 1.0
-        try {
-            plugin = appPTR->getPluginBinaryFromOldID(argsPluginID, versionMajor, versionMinor);
-        } catch (const std::exception& e2) {
-            if (!isSilentCreation) {
-                Dialogs::errorDialog(tr("Plugin error").toStdString(),
-                                 tr("Cannot load plug-in executable.").toStdString() + ": " + e2.what(), false );
-            } else {
-                std::cerr << tr("Cannot load plug-in executable.").toStdString() + ": " + e2.what() << std::endl;
-            }
-            *status = eCreateNodeStatusPluginNotFound;
-            return node;
-        }
+    } catch (const std::exception&) {
+        plugin = 0;
     }
 
     if (!plugin) {

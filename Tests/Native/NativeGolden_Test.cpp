@@ -610,17 +610,6 @@ TEST_F(NativeGoldenTest, Constant)
     run(generatorSpec("Constant", PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT), v);
 }
 
-TEST_F(NativeGoldenTest, Solid)
-{
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(variant("color", [](const GoldenGraph& g) { return num(g, kConstantParamColor, { 0.3, 0.6, 0.9 }); }));
-    v.push_back(variant("extent", [](const GoldenGraph& g) {
-        return choice(g, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) && num(g, kNativeGeneratorParamBottomLeft, { 5., 9. }) && num(g, kNativeGeneratorParamSize, { 30., 20. }) && num(g, kConstantParamColor, { 0.7, -0.2, 1.4 });
-    }));
-    run(generatorSpec("Solid", PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT), v);
-}
-
 TEST_F(NativeGoldenTest, CheckerBoard)
 {
     std::vector<GoldenVariant> v;
@@ -791,18 +780,10 @@ TEST_F(NativeGoldenTest, Transform)
     v.push_back(variant("invert", [](const GoldenGraph& g) {
         return centerTransform(g) && num(g, kTransformNodeParamRotate, { 12. }) && num(g, kTransformNodeParamTranslate, { -4.5, 2. }) && num(g, kTransformNodeParamInvert, { 1. }) && choice(g, kResamplerParamFilterType, "bilinear");
     }));
-    run(plainSpec("Transform", PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM), v);
-}
-
-TEST_F(NativeGoldenTest, TransformMasked)
-{
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default", centerTransform));
-    v.push_back(variant("rotatescale", rotateAndScale));
     v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) {
         return centerTransform(g) && num(g, kTransformNodeParamTranslate, { 4.5, -2.25 }) && num(g, kTransformNodeParamRotate, { 20. }) && num(g, kOfxMixParamName, { 0.5 });
     }));
-    run(filterSpec("TransformMasked", PLUGINID_NATRON_TRANSFORMMASKED, PLUGIN_MAJOR_NATRON_TRANSFORMMASKED), v);
+    run(filterSpec("Transform", PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM), v);
 }
 
 TEST_F(NativeGoldenTest, Crop)

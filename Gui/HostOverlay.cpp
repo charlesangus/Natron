@@ -715,8 +715,7 @@ public:
     {
         KnobBoolPtr knob = _scaleUniform.lock();
 
-        assert(knob);
-        *uniform = knob->getValueAtTime(time, 0);
+        *uniform = knob ? knob->getValueAtTime(time, 0) : false;
     }
 
     bool getInvert(double time) const

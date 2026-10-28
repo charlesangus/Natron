@@ -418,7 +418,9 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     HostOverlayKnobsTransformPtr knobs = std::make_shared<HostOverlayKnobsTransform>();
     knobs->addKnob(translate, HostOverlayKnobsTransform::eKnobsEnumerationTranslate);
     knobs->addKnob(scale, HostOverlayKnobsTransform::eKnobsEnumerationScale);
-    knobs->addKnob(scaleUniform, HostOverlayKnobsTransform::eKnobsEnumerationUniform);
+    if (scaleUniform) {
+        knobs->addKnob(scaleUniform, HostOverlayKnobsTransform::eKnobsEnumerationUniform);
+    }
     knobs->addKnob(rotate, HostOverlayKnobsTransform::eKnobsEnumerationRotate);
     knobs->addKnob(center, HostOverlayKnobsTransform::eKnobsEnumerationCenter);
     knobs->addKnob(skewX, HostOverlayKnobsTransform::eKnobsEnumerationSkewx);

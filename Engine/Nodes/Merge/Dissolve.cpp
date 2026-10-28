@@ -31,12 +31,9 @@
 #include <list>
 #include <string>
 
-#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -214,9 +211,6 @@ Dissolve::getRegionOfDefinition(U64 /*hash*/,
                                 RectD* rod)
 {
     const DissolveOp::Params params = bakeParams(op(), time, view);
-    const double which = params.which;
-    const int prev = (int)which;
-    const int next = std::min((int)which + 1, kDissolveSourceCount - 1);
 
     const std::function<StatusEnum(int, RectD*)> sourceRoD = [&](int k, RectD* r) {
         EffectInstancePtr input = getInput(sourceInput(k));
@@ -226,30 +220,24 @@ Dissolve::getRegionOfDefinition(U64 /*hash*/,
         return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, r, &isProjectFormat);
     };
 
-    if ((which <= 0.) && isSourceConnected(0)) {
-        return (sourceRoD(0, rod) == eStatusFailed) ? eStatusFailed : eStatusOK;
-    }
-    if (((double)prev == which) && isSourceConnected(prev) && !isMaskApplied()) {
-        return (sourceRoD(prev, rod) == eStatusFailed) ? eStatusFailed : eStatusOK;
-    }
-    if (isSourceConnected(prev) && isSourceConnected(next)) {
-        RectD fromRoD;
-        RectD toRoD;
-        if ((sourceRoD(prev, &fromRoD) == eStatusFailed) || (sourceRoD(next, &toRoD) == eStatusFailed)) {
+    // An unconnected input reads black, so only the connected ones reach the result.
+    *rod = RectD();
+    bool any = false;
+    for (const int k : { params.prev, params.next }) {
+        if (!isSourceConnected(k)) {
+            continue;
+        }
+        RectD inputRoD;
+        if (sourceRoD(k, &inputRoD) == eStatusFailed) {
             return eStatusFailed;
         }
-        *rod = fromRoD;
-        rod->merge(toRoD);
-
-        return eStatusOK;
+        if (any) {
+            rod->merge(inputRoD);
+        } else {
+            *rod = inputRoD;
+            any = true;
+        }
     }
-
-    // OpenFX's default region in the general context when every clip is optional: the project
-    // extent from the origin, not the union of the connected inputs.
-    Format format;
-    getApp()->getProject()->getProjectDefaultFormat(&format);
-    const RectD canonical = format.toCanonical_noClipping(0, format.getPixelAspectRatio());
-    *rod = RectD(0., 0., canonical.right(), canonical.top());
 
     return eStatusOK;
 }

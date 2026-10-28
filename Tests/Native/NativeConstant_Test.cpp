@@ -294,14 +294,6 @@ TEST_F(NativeConstantTest, ChannelsOutsideTheTargetSelectionAreZero)
     }
 }
 
-TEST_F(NativeConstantTest, SolidIsOpaque)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_SOLID);
-    ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.3, 0.6, 0.9 }));
-    expectParity(pair, "default", true);
-}
-
 TEST_F(NativeConstantTest, NewGeneratorSpansTheProjectRange)
 {
     resetProject();
@@ -377,16 +369,12 @@ TEST_F(NativeConstantTest, RectangleOverlayIsEnabledInSizeExtentOnly)
     EXPECT_TRUE(node->getKnobByName(kNativeGeneratorParamSize)->getIsSecret());
 }
 
-TEST_F(NativeConstantTest, UnversionedRequestsGetTheNativeGenerators)
+TEST_F(NativeConstantTest, UnversionedRequestsGetTheNativeGenerator)
 {
-    const char* const ids[2] = { PLUGINID_NATRON_CONSTANT, PLUGINID_NATRON_SOLID };
-
-    for (int i = 0; i < 2; ++i) {
-        NodePtr unversioned = createNode(QString::fromUtf8(ids[i]));
-        ASSERT_TRUE(bool(unversioned)) << ids[i];
-        EXPECT_TRUE(isNative(unversioned)) << ids[i];
-        EXPECT_EQ(kNativeConstantMajor, unversioned->getMajorVersion()) << ids[i];
-    }
+    NodePtr unversioned = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(unversioned));
+    EXPECT_TRUE(isNative(unversioned));
+    EXPECT_EQ(kNativeConstantMajor, unversioned->getMajorVersion());
 }
 
 TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
@@ -428,7 +416,6 @@ TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
 TEST_F(NativeConstantTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT, "Constant");
-    expectNativeIdentity(PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT, "Solid");
 }
 
 // A Size extent that reformats, with its rectangle keyed to two sizes, is each frame's format,

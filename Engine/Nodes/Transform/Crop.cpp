@@ -129,6 +129,7 @@ cropExtentPolicy()
     policy.reformatToggle = false;
     policy.overlayFollowsExtent = false;
     policy.recenterOnSource = true;
+    policy.frameRange = false;
 
     return policy;
 }
@@ -256,7 +257,6 @@ Crop::initializeKnobs()
 {
     const KnobPagePtr page = createControlsPage();
 
-    // The frame range knob is kept for parity only: the node has no time domain of its own.
     _extentKnobs.createKnobs(page);
 
     KnobDoublePtr softness = createKnob<KnobDouble>(tr("Softness"));

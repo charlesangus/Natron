@@ -1,1 +1,1 @@
-NATRON_NATIVE_NODE(TransformImageNode<false>, "Transform.h")
+NATRON_NATIVE_NODE(TransformNode, "Transform.h")

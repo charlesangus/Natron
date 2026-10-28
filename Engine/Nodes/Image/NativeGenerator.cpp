@@ -48,6 +48,7 @@ generatorExtentPolicy()
     policy.reformatToggle = true;
     policy.overlayFollowsExtent = true;
     policy.recenterOnSource = false;
+    policy.frameRange = true;
 
     return policy;
 }

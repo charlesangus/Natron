@@ -106,7 +106,6 @@ NODES = {
     "threshold": ("Threshold", {"level": (0.5, 0.5, 0.5, 0.5), "softness": (0.1, 0.1, 0.1, 0.1)}, False),
     "posterize": ("Posterize", {"levels": 6}, False),
     "constant": ("Constant", {}, True),
-    "solid": ("net.sf.openfx.Solid", {}, True),
     "checkerboard": ("CheckerBoard", {}, True),
     "noise": ("Noise", {"type": "simplex", "fractal": "fbm", "octaves": 6, "lacunarity": 2.0, "gain": 0.5,
                         "noiseSize": (64.0, 64.0), "warpType": "perlin", "warpAmount": 0.5}, True),

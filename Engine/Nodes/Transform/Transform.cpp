@@ -94,21 +94,8 @@ TransformOp::createKnobs(KnobHolder* holder,
         scaleKnob->setIncrement(0.01, d);
         scaleKnob->setDefaultValue(1., d);
     }
-    scaleKnob->setAddNewLine(false);
-    scaleKnob->setSpacingBetweenItems(1);
     page->addKnob(scaleKnob);
     scale = scaleKnob;
-
-    // Uniform scaling is easy through the host's knob and overlay, so the OpenFX plug-in hides
-    // this until a project gives it a value or an animation; updateUniformVisibility() does too.
-    KnobBoolPtr uniformKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Uniform"));
-    uniformKnob->setName(kTransformNodeParamUniform);
-    uniformKnob->setHintToolTip(EffectInstance::tr("Use the X scale for both directions"));
-    uniformKnob->setDefaultValue(false);
-    uniformKnob->setSecretByDefault(true);
-    uniformKnob->setDefaultAllDimensionsEnabled(false);
-    page->addKnob(uniformKnob);
-    uniform = uniformKnob;
 
     KnobDoublePtr skewXKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew X"));
     skewXKnob->setName(kTransformNodeParamSkewX);
@@ -193,16 +180,6 @@ TransformOp::createKnobs(KnobHolder* holder,
     centerChangedKnob->setEvaluateOnChange(false);
     page->addKnob(centerChangedKnob);
     centerChanged = centerChangedKnob;
-
-    KnobBoolPtr interactOpenKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Show Interact"));
-    interactOpenKnob->setName(kTransformNodeParamInteractOpen);
-    interactOpenKnob->setHintToolTip(EffectInstance::tr("If checked, the transform interact is displayed over the image."));
-    interactOpenKnob->setDefaultValue(true);
-    interactOpenKnob->setSecretByDefault(true);
-    interactOpenKnob->setDefaultAllDimensionsEnabled(false);
-    interactOpenKnob->setAnimationEnabled(false);
-    page->addKnob(interactOpenKnob);
-    interactOpen = interactOpenKnob;
 
     KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Interactive Update"));
     interactiveKnob->setName(kTransformNodeParamInteractive);
@@ -332,7 +309,6 @@ TransformOp::bake(const KnobReader& reader) const
     p.rotate = reader.value(rotate);
     p.scaleX = reader.value(scale, 0);
     p.scaleY = reader.value(scale, 1);
-    p.scaleUniform = reader.value(uniform);
     p.skewX = reader.value(skewX);
     p.skewY = reader.value(skewY);
     p.skewOrderYX = reader.value(skewOrder) != 0;
@@ -458,21 +434,18 @@ resetTransformCenter(KnobHolder* holder,
     holder->endChanges();
 } // resetTransformCenter
 
-template <bool MASKED>
-TransformImageNode<MASKED>::TransformImageNode(NodePtr node)
+TransformNode::TransformNode(NodePtr node)
     : Base(node)
 {
 }
 
-template <bool MASKED>
-TransformImageNode<MASKED>::~TransformImageNode()
+TransformNode::~TransformNode()
 {
 }
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::addAcceptedComponents(int inputNb,
-                                                  std::list<ImageLayerDesc>* comps)
+TransformNode::addAcceptedComponents(int inputNb,
+                                     std::list<ImageLayerDesc>* comps)
 {
     Base::addAcceptedComponents(inputNb, comps);
     if (!this->isInputMask(inputNb)) {
@@ -480,24 +453,34 @@ TransformImageNode<MASKED>::addAcceptedComponents(int inputNb,
     }
 }
 
-template <bool MASKED>
+bool
+TransformNode::getCanTransform() const
+{
+    return !isMaskApplied();
+}
+
+StatusEnum
+TransformNode::getTransform(double time,
+                            const RenderScale& renderScale,
+                            bool draftRender,
+                            ViewIdx view,
+                            EffectInstancePtr* inputToTransform,
+                            Transform::Matrix3x3* transform)
+{
+    if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
+        return eStatusReplyDefault;
+    }
+
+    return Base::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+}
+
 void
-TransformImageNode<MASKED>::initializeKnobs()
+TransformNode::initializeKnobs()
 {
     const KnobPagePtr page = this->createControlsPage();
 
     this->op().createKnobs(static_cast<KnobHolder*>(this), page);
     this->addStageKnobs(page);
-
-    KnobBoolPtr srcClipChanged = this->template createKnob<KnobBool>(std::string(kTransformNodeParamSrcClipChanged));
-    srcClipChanged->setName(kTransformNodeParamSrcClipChanged);
-    srcClipChanged->setDefaultValue(false);
-    srcClipChanged->setSecretByDefault(true);
-    srcClipChanged->setDefaultAllDimensionsEnabled(false);
-    srcClipChanged->setAnimationEnabled(false);
-    srcClipChanged->setEvaluateOnChange(false);
-    page->addKnob(srcClipChanged);
-    _srcClipChanged = srcClipChanged;
 
     updateShutterEnabled();
     updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
@@ -505,13 +488,12 @@ TransformImageNode<MASKED>::initializeKnobs()
     NodePtr node = this->getNode();
     if (node) {
         const TransformOp& op = this->op();
-        node->addTransformInteract(op.translate.lock(), op.scale.lock(), op.uniform.lock(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock(), op.interactive.lock());
+        node->addTransformInteract(op.translate.lock(), op.scale.lock(), KnobBoolPtr(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock(), op.interactive.lock());
     }
-} // TransformImageNode::initializeKnobs
+} // TransformNode::initializeKnobs
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::updateShutterEnabled()
+TransformNode::updateShutterEnabled()
 {
     const TransformOp& op = this->op();
     KnobBoolPtr directionalBlur = op.directionalBlur.lock();
@@ -534,10 +516,9 @@ TransformImageNode<MASKED>::updateShutterEnabled()
     }
 }
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::updateClampEnabled(double time,
-                                               ViewSpec view)
+TransformNode::updateClampEnabled(double time,
+                                  ViewSpec view)
 {
     KnobChoicePtr filter = this->op().filter.lock();
     KnobBoolPtr clamp = this->op().clamp.lock();
@@ -548,35 +529,15 @@ TransformImageNode<MASKED>::updateClampEnabled(double time,
     clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
 }
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::updateUniformVisibility(bool allowHiding)
-{
-    KnobBoolPtr uniform = this->op().uniform.lock();
-
-    if (!uniform) {
-        return;
-    }
-    const bool used = uniform->getValue() || (uniform->getKeyFramesCount(ViewSpec(0), 0) > 0);
-    if (!used && !allowHiding) {
-        return;
-    }
-    uniform->setSecret(!used);
-    uniform->setAllDimensionsEnabled(used);
-}
-
-template <bool MASKED>
-void
-TransformImageNode<MASKED>::onKnobsLoaded()
+TransformNode::onKnobsLoaded()
 {
     updateShutterEnabled();
     updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
-    updateUniformVisibility(true);
 }
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::onInputChanged(int inputNo)
+TransformNode::onInputChanged(int inputNo)
 {
     KnobBoolPtr centerChanged = this->op().centerChanged.lock();
     const int source = this->getSourceInput();
@@ -587,13 +548,12 @@ TransformImageNode<MASKED>::onInputChanged(int inputNo)
     resetCenter(this->getApp()->getTimeLine()->currentFrame());
 }
 
-template <bool MASKED>
 bool
-TransformImageNode<MASKED>::knobChanged(KnobI* k,
-                                        ValueChangedReasonEnum reason,
-                                        ViewSpec view,
-                                        double time,
-                                        bool /*originatedFromMainThread*/)
+TransformNode::knobChanged(KnobI* k,
+                           ValueChangedReasonEnum reason,
+                           ViewSpec view,
+                           double time,
+                           bool /*originatedFromMainThread*/)
 {
     const TransformOp& op = this->op();
     KnobButtonPtr resetCenterButton = op.resetCenter.lock();
@@ -627,41 +587,30 @@ TransformImageNode<MASKED>::knobChanged(KnobI* k,
 
         return true;
     }
-    KnobBoolPtr uniform = op.uniform.lock();
-    if (uniform && (k == uniform.get())) {
-        if (reason != eValueChangedReasonTimeChanged) {
-            updateUniformVisibility(false);
-        }
-
-        return true;
-    }
 
     return false;
-} // TransformImageNode::knobChanged
+} // TransformNode::knobChanged
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::getTransformParams(double time,
-                                               ViewIdx view,
-                                               TransformMath::TransformParams* params) const
+TransformNode::getTransformParams(double time,
+                                  ViewIdx view,
+                                  TransformMath::TransformParams* params) const
 {
     *params = bakeParams(this->op(), time, view).transform;
 }
 
-template <bool MASKED>
 bool
-TransformImageNode<MASKED>::rendersWithMotionBlur(double time,
-                                                  ViewIdx view) const
+TransformNode::rendersWithMotionBlur(double time,
+                                     ViewIdx view) const
 {
     return TransformOp::rendersWithMotionBlur(bakeParams(this->op(), time, view));
 }
 
-template <bool MASKED>
 bool
-TransformImageNode<MASKED>::getSourceRoD(double time,
-                                         const RenderScale& scale,
-                                         ViewIdx view,
-                                         RectD* rod) const
+TransformNode::getSourceRoD(double time,
+                            const RenderScale& scale,
+                            ViewIdx view,
+                            RectD* rod) const
 {
     EffectInstancePtr input = this->getInput(this->getSourceInput());
 
@@ -674,9 +623,8 @@ TransformImageNode<MASKED>::getSourceRoD(double time,
     return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, rod, &isProjectFormat) != eStatusFailed;
 }
 
-template <bool MASKED>
 RectD
-TransformImageNode<MASKED>::getProjectRect() const
+TransformNode::getProjectRect() const
 {
     Format format;
 
@@ -690,9 +638,8 @@ TransformImageNode<MASKED>::getProjectRect() const
     return pixel.toCanonical_noClipping(0, format.getPixelAspectRatio());
 }
 
-template <bool MASKED>
 void
-TransformImageNode<MASKED>::resetCenter(double time)
+TransformNode::resetCenter(double time)
 {
     if (!this->op().center.lock() || !this->getInput(this->getSourceInput())) {
         return;
@@ -709,9 +656,6 @@ TransformImageNode<MASKED>::resetCenter(double time)
     }
 
     resetTransformCenter(this, this->op(), rod, time);
-} // TransformImageNode::resetCenter
-
-template class TransformImageNode<false>;
-template class TransformImageNode<true>;
+} // TransformNode::resetCenter
 
 NATRON_NAMESPACE_EXIT

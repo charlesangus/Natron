@@ -35,7 +35,6 @@
 #include "Engine/Nodes/Image/NativeGenerator.h"
 
 #define PLUGINID_NATRON_CONSTANT "Constant"
-#define PLUGINID_NATRON_SOLID "net.sf.openfx.Solid"
 #define PLUGIN_MAJOR_NATRON_CONSTANT 1
 
 #define kConstantParamColor "color"
@@ -43,10 +42,8 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Constant and Solid: fill the selected channels of the target layer with `color`,
- * unclamped. Constant's colour is RGBA; Solid's is RGB with an alpha of 1. Knob names, defaults
- * and output are the openfx-misc ConstantPlugin's and Solid's; each registers under that
- * plugin's ID one major above.
+ * @brief Constant: fills the selected channels of the target layer with the RGBA `color`,
+ * unclamped.
  **/
 struct ConstantOp {
     struct Params {
@@ -62,16 +59,6 @@ struct ConstantOp {
         .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/Constant.png",
-    };
-
-    static constexpr NodeSpec kSolidNodeSpec = {
-        .id = PLUGINID_NATRON_SOLID,
-        .label = "Solid",
-        .description = "Generate an image with a constant opaque color.",
-        .grouping = PLUGIN_GROUP_IMAGE,
-        .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
-        .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Solid.png",
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
@@ -92,42 +79,35 @@ struct ConstantOp {
 
     GpuOpRef gpu(const Params& params) const;
 
-    // Solid: an RGB colour knob, and an alpha of 1.
-    bool opaque = false;
     KnobColorWPtr color;
 };
 
 static_assert(PointOp<ConstantOp>);
 
-template <const NodeSpec& SPEC, bool OPAQUE>
-class ConstantNode
-    : public GeneratorNode<ConstantOp, SPEC> {
+class Constant
+    : public GeneratorNode<ConstantOp, ConstantOp::kNodeSpec> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new ConstantNode(node);
+        return new Constant(node);
     }
 
-    explicit ConstantNode(NodePtr node)
-        : GeneratorNode<ConstantOp, SPEC>(node)
+    explicit Constant(NodePtr node)
+        : GeneratorNode<ConstantOp, ConstantOp::kNodeSpec>(node)
     {
-        this->op().opaque = OPAQUE;
     }
 
-    virtual ~ConstantNode()
+    virtual ~Constant()
     {
     }
 
     virtual void addAcceptedComponents(int inputNb,
                                        std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
     {
-        GeneratorNode<ConstantOp, SPEC>::addAcceptedComponents(inputNb, comps);
+        GeneratorNode<ConstantOp, ConstantOp::kNodeSpec>::addAcceptedComponents(inputNb, comps);
         comps->push_back(ImageLayerDesc::getXYComponents());
     }
 };
-
-using Constant = ConstantNode<ConstantOp::kNodeSpec, false>;
-using Solid = ConstantNode<ConstantOp::kSolidNodeSpec, true>;
 
 NATRON_NAMESPACE_EXIT
 

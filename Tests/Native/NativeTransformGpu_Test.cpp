@@ -140,10 +140,9 @@ protected:
     }
 
     // The centre is set explicitly so it does not depend on when the node reset it on connection.
-    NodePtr makeNode(bool masked)
+    NodePtr makeNode()
     {
-        NodePtr node = masked ? createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORMMASKED), PLUGIN_MAJOR_NATRON_TRANSFORMMASKED)
-                              : createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
         EXPECT_TRUE(bool(node));
 
         return node;
@@ -203,12 +202,12 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(source));
     for (bool masked : { false, true }) {
-        NodePtr node = makeNode(masked);
+        NodePtr node = makeNode();
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(setGeometry(node, kGeometries[5]));
-        const std::string name = masked ? "TransformMasked" : "Transform";
+        const std::string name = masked ? "Transform under a mask" : "Transform";
 
         for (int nComps : { 1, 2, 3, 4 }) {
             GpuQuery q = eligibleQuery();
@@ -254,19 +253,22 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
     }
 }
 
-// Transform and TransformMasked are Heavy only while the knobs ask for motion blur; otherwise they
-// keep the Resample default.
+// Transform is Heavy only while the knobs ask for motion blur, with or without a mix; otherwise
+// it keeps the Resample default.
 TEST_F(NativeTransformGpuTest, WeightIsHeavyWithMotionBlur)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(source));
-    for (bool masked : { false, true }) {
-        const std::string name = masked ? "TransformMasked" : "Transform";
-        NodePtr node = makeNode(masked);
+    for (bool mixed : { false, true }) {
+        const std::string name = mixed ? "Transform at mix 0.5" : "Transform";
+        NodePtr node = makeNode();
         ASSERT_TRUE(bool(node));
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(animate(node));
+        if (mixed) {
+            ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
+        }
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
 
@@ -287,7 +289,7 @@ TEST_F(NativeTransformGpuTest, InputRegionIsTheCpuRegionOfInterest)
     ASSERT_TRUE(bool(source));
     setParitySourceOrigin(source, 3, 5);
     for (bool masked : { false, true }) {
-        NodePtr node = makeNode(masked);
+        NodePtr node = makeNode();
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
@@ -591,7 +593,7 @@ TEST_P(NativeTransformGpuFilterTest, ResamplingMatchesTheCpuRender)
             for (bool blackOutside : { false, true }) {
                 // A fresh node per setting, so no region of definition cached under an earlier
                 // setting is reused.
-                NodePtr node = makeNode(false);
+                NodePtr node = makeNode();
                 ASSERT_TRUE(bool(node));
                 connectNodes(source, node, 0, true);
                 ASSERT_TRUE(setGeometry(node, g));
@@ -628,7 +630,7 @@ struct MaskedCase {
 
 } // namespace
 
-// TransformMasked's mask-mix05 setting (rotate 30, scale 0.5, the mask enabled, mix 0.5) and its
+// Transform's mask-mix05 setting (rotate 30, scale 0.5, the mask enabled, mix 0.5) and its
 // neighbours: an inverted mask, the mask at mix 1, and mix 0.5 without a mask.
 TEST_F(NativeTransformGpuTest, MaskedMatchesTheCpuRender)
 {
@@ -652,7 +654,7 @@ TEST_F(NativeTransformGpuTest, MaskedMatchesTheCpuRender)
         NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
         ASSERT_TRUE(bool(maskSource));
         setParitySourceOrigin(maskSource, 8, 4);
-        NodePtr node = makeNode(true);
+        NodePtr node = makeNode();
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
@@ -723,7 +725,7 @@ TEST_F(NativeTransformGpuTest, MotionBlurMatchesTheCpuRender)
     };
     int nCompared = 0;
     for (const MotionBlurCase& c : cases) {
-        NodePtr node = makeNode(false);
+        NodePtr node = makeNode();
         StagedImageEffect* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         connectNodes(source, node, 0, true);
@@ -796,7 +798,7 @@ TEST_F(NativeTransformGpuTest, MotionBlur8kKernelTime)
     project->setOrAddProjectFormat(Format(0, 0, width, height, "nativeTransformGpu8k", 1.));
 
     NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-    NodePtr node = makeNode(false);
+    NodePtr node = makeNode();
     StagedImageEffect* effect = effectOf(node);
     ASSERT_TRUE(bool(source) && (effect != NULL));
     connectNodes(source, node, 0, true);
@@ -932,7 +934,7 @@ TEST_F(NativeTransformGpuTest, GradeTransformGradeChainRunsAsOneRegion)
     Chain chain;
     chain.source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
     chain.first = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    chain.transform = makeNode(false);
+    chain.transform = makeNode();
     chain.second = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(chain.source) && bool(chain.first) && bool(chain.transform) && bool(chain.second));
     connectNodes(chain.source, chain.first, 0, true);
@@ -1012,7 +1014,7 @@ TEST_F(NativeTransformGpuTest, RotatedStripsMatchTheWholeRegionExactly)
     Chain chain;
     chain.source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
     chain.first = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
-    chain.transform = makeNode(false);
+    chain.transform = makeNode();
     chain.second = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(chain.source) && bool(chain.first) && bool(chain.transform) && bool(chain.second));
     connectNodes(chain.source, chain.first, 0, true);
@@ -1063,8 +1065,8 @@ TEST_F(NativeTransformGpuTest, RotatedStripsMatchTheWholeRegionExactly)
 TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
-    NodePtr first = makeNode(false);
-    NodePtr second = makeNode(false);
+    NodePtr first = makeNode();
+    NodePtr second = makeNode();
     ASSERT_TRUE(bool(source) && bool(first) && bool(second));
     connectNodes(source, first, 0, true);
     connectNodes(first, second, 0, true);

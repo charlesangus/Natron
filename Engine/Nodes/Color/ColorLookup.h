@@ -39,9 +39,7 @@
 #define PLUGINID_NATRON_COLORLOOKUP "ColorLookup"
 #define PLUGIN_MAJOR_NATRON_COLORLOOKUP 1
 
-#define kColorLookupParamHasBackgroundInteract "hasBackgroundInteract"
 #define kColorLookupParamLookupTable "lookupTable"
-#define kColorLookupParamShowRamp "showRamp"
 #define kColorLookupParamDisplay "backgroundDisplay"
 #define kColorLookupParamUpdateHistogram "updateHistogram"
 #define kColorLookupParamSource "source"
@@ -221,8 +219,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     /**
-     * @brief Shows or hides backgroundDisplay and updateHistogram from hasBackgroundInteract, and
-     * enables updateHistogram only while the display is the histogram.
+     * @brief Shows backgroundDisplay and updateHistogram once the background painter is installed,
+     * and enables updateHistogram only while the display is the histogram.
      **/
     void refreshBackgroundControls();
 
@@ -232,7 +230,7 @@ private:
 
     void addControlPointFromButton(KnobI* button, double time, ViewIdx view);
 
-    KnobBoolWPtr _hasBackgroundInteract;
+    bool _hasBackgroundPainter;
     KnobChoiceWPtr _display;
     KnobButtonWPtr _updateHistogram;
     KnobColorWPtr _source;

@@ -60,9 +60,8 @@ dissolveSourceInput(int k)
 
 /**
  * @brief Dissolve: a weighted average of the two source inputs `floor(which)` and `ceil(which)`
- * out of 64, the blend being the fractional part of `which`, optionally masked. Knob names,
- * defaults, region of definition, identity rules and per-pixel arithmetic are the openfx-misc
- * DissolvePlugin's; it registers under that plug-in's ID one major above.
+ * out of 64, the blend being the fractional part of `which`, optionally masked and mixed with
+ * the lower of the two. Its region of definition is the union of those two that are connected.
  **/
 struct DissolveOp {
     struct Params {

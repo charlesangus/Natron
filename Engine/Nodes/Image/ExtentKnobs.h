@@ -69,12 +69,15 @@ struct ExtentPolicy {
     /// Whether Center aims at the source's region of definition (the project window without a
     /// source) rather than always at the project window.
     bool recenterOnSource;
+
+    /// Whether the node has a time domain of its own, set by the frameRange knob.
+    bool frameRange;
 };
 
 /**
  * @brief The extent knobs shared by the generators and Crop, in the openfx-misc order: extent,
  * Center, the host-managed format choice with its secret size and pixel aspect ratio, bottomLeft
- * and size with normalised defaults, interactive, hidpi and frameRange, plus the knob that drives
+ * and size with normalised defaults, interactive, hidpi and, with a time domain, frameRange, plus the knob that drives
  * the rectangle overlay in Size extent.
  *
  * An owning effect creates the knobs from initializeKnobs(), forwards knobChanged() and

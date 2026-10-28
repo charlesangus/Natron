@@ -373,7 +373,7 @@ under "Flat image nodes", and `Grade` is the example to read.
    (`Color/Add.reg.inc` holds
    `NATRON_NATIVE_NODE(ColorMathNode<eColorMathOperationAdd>, "ColorMathNode.h")`). The
    class is a macro argument, so an instantiation whose arguments contain a
-   comma is named through an alias (`Solid` in `Generator/Constant.h`).
+   comma is named through an alias.
    CMake globs the fragments into the generated `NativeRegistryAll.inc`, which
    `AppManager::loadBuiltinNodePlugins()` includes, so neither `AppManager.cpp`
    nor any other shared file changes. Set the node's icon (a resource path,
@@ -962,8 +962,9 @@ an integer `which`).
   it, asks it at every time a motion blur samples, and concatenates through it:
   the node offers its matrix to the host (unless it has `MaskMix`, or
   `canConcatenate()` says no) and always applies the transforms the host
-  concatenates into its source. Transform, TransformMasked and Reformat are this
-  form. It runs on the GPU only if the op says
+  concatenates into its source. Transform and Reformat are this form; Transform
+  has `MaskMix` and overrides `getCanTransform()` and `getTransform()` to offer
+  its matrix while no mask is applied and the mix is 1. It runs on the GPU only if the op says
   `static constexpr bool kResamplesOnGpu = true`; then the GPU renders it
   whenever its sampling matrices, affine or projective, are finite and nothing is
   concatenated into the source. The Resample kind runs its own loop (`runResampleCpu()`), not a row

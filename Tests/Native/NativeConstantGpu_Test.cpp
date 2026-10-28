@@ -140,8 +140,6 @@ TEST_F(NativeConstantGpuTest, MatchesTheCpuRender)
         { "constant", PLUGINID_NATRON_CONSTANT, {}, { 0.25, -0.5, 1.75, 0.6 } },
         { "constant, RG", PLUGINID_NATRON_CONSTANT, { "R", "G" }, { 0.75, 0.5, 0.25, 0.125 } },
         { "constant, A", PLUGINID_NATRON_CONSTANT, { "A" }, { 0.75, 0.5, 0.25, 0.125 } },
-        { "solid", PLUGINID_NATRON_SOLID, {}, { 0.3, 0.6, 0.9 } },
-        { "solid, B", PLUGINID_NATRON_SOLID, { "B" }, { 0.3, 0.6, 0.9 } },
     };
     int nCase = 0;
     for (const Case& c : cases) {

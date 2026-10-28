@@ -393,10 +393,8 @@ TEST_F(NativeColorLookupTest, NonPersistentColoursAndBackgroundControls)
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_FALSE(knob->getIsPersistent()) << name;
     }
-    for (const char* name : { kColorLookupParamHasBackgroundInteract, kColorLookupParamShowRamp }) {
-        KnobIPtr knob = node->getKnobByName(name);
-        ASSERT_TRUE(bool(knob)) << name;
-        EXPECT_TRUE(knob->getIsSecret()) << name;
+    for (const char* name : { "hasBackgroundInteract", "showRamp" }) {
+        EXPECT_FALSE(bool(node->getKnobByName(name))) << name;
     }
     // The painter is installed with the knobs, so the display controls are shown; the histogram
     // button only works while the histogram is displayed.

@@ -59,3 +59,7 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M207 - Neural Deno
 - The full build and ctest pass, with the model-gated tests run where the models are installed.
 - Under Xvfb, NeuralUpscale renders 2× and 4× on a plate crop. Screenshots comparing it with Reformat cubic are shared with the user before sign-off.
 - An AppImage built with `package.sh` is handed over for UAT.
+
+## Decisions
+
+- 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.

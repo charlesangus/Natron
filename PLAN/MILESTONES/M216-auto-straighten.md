@@ -100,5 +100,6 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
 
 ## Decisions
 
+- 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.
 - 2026-10-27 — Drawn Lines implemented: a Draw Line tool (V) makes two-point open curves auto-tagged by direction; Line Orientation knob / right-click retag; fit needs ≥2 lines per relevant direction. Curve-hosting hunks copied from M211 (expect overlap when M211 merges).
 - 2026-10-27 — **User-drawn lines replace line detection (user):** no LSD (AGPL-3) and no own detector; the user draws vertical/horizontal guide lines with the shared roto groundwork (M146 curve hosting) on the node, tagged as vertical or horizontal; the fit uses those lines (darktable's ashift fit on the user's segments). Rectangle mode stays.

@@ -66,6 +66,7 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
 
 ## Decisions
 
+- 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.
 - 2026-10-27 — PM: when a consumer names several contexts for an input (legacy LoopEnd), the input's actions (metadata, layers, identity) run under the last one, which is the iteration the task graph uses; a stop condition evaluated outside a render uses previewContextOf like knob expressions.
 - 2026-10-27 — **Driver Start and End are animatable (user)**, like any knob: a driven value depends on the iteration and the time; an animated driver makes the loop output frame-varying.
 - 2026-10-27 — PM: the block hull takes in side-branch nodes, matching what the driven-knob table and drivers count as the body. The pair colour comes from the loop's name and isn't saved; node bodies aren't tinted. On a partly driven multi-dimension knob, the undriven fields stay visible. Houdini's docs only say a hull is drawn; wedges and rings are ours.

@@ -117,4 +117,5 @@ Deps: M203 - ONNX Inference Backend, M204 - AI Model Manager, M146 - Roto Hostin
 
 ## Decisions
 
+- 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.
 - 2026-10-27 — PM: Segmentation.cpp is a GPL-3.0-or-later darktable port, consistent with the other E16/E17 ports (the binary is effectively GPLv3). SAM 2.1 stays in the manifest with M204's research-only training-data warning before download; SegNext is the default. Knobs carry an `object` prefix (Roto already has `feather`). Box prompts are SAM-only.

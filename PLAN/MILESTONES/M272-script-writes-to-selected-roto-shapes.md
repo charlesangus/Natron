@@ -4,6 +4,8 @@
 
 Found while fixing M211 - Wavelet Retouch's GUI check (2026-10-28). While a roto shape is selected, its knobs are slaved to the node's knobs of the same name: reading the shape's knob returns the node's value, but writing it only changes the shape's own stored copy (`Engine/KnobImpl.h` ~783, ~898). So `shape.getParam(...).set(...)` from Python on a selected shape is silently lost — e.g. right after `ctx.createEllipse(...)`, which leaves the new shape selected. This is Natron 2's design and affects every shape param in Roto, RotoPaint and Retouch. `Tests/Native/RetouchTestSupport.h` already works around it.
 
+Related (found in M205's GUI check, 2026-10-28): `Layer.getChildren()` wraps every child as a plain `ItemBase` (`Engine/PyRoto.cpp:197`), so scripts can't call BezierCurve/Layer methods on them without re-resolving through `getItemByName`; it should return typed Layer/BezierCurve wrappers as `getItemByName` does.
+
 Acceptance sketch:
 - Setting a shape param from Python (or any non-GUI path) on a selected shape changes what the shape renders with, and reads back the written value.
 - No double-writes or feedback loops between the node's knob and the shape's knob; undo stays one step.

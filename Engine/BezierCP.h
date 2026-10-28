@@ -36,8 +36,9 @@
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/RippleEditKeys.h"
+#include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -106,11 +107,10 @@ public:
     void removeAnimation(bool useGuiCurves, double currentTime);
 
     ///returns true if a keyframe was set
-    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
+    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
 
     ///returns true if a keyframe was set
-    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
-
+    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
 
     virtual bool isFeatherPoint() const
     {

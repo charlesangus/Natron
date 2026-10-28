@@ -322,6 +322,43 @@ RotoCurveContext::isRippleEditEnabled() const
     return _imp->rippleEdit;
 }
 
+void
+RotoCurveContext::setRippleEditMode(RippleEditModeEnum mode)
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    _imp->rippleEditMode = mode;
+}
+
+RippleEditModeEnum
+RotoCurveContext::getRippleEditMode() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+
+    return _imp->rippleEditMode;
+}
+
+void
+RotoCurveContext::setRippleEditRange(double first,
+                                     double last)
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    _imp->rippleEditRangeFirst = first;
+    _imp->rippleEditRangeLast = last;
+}
+
+RippleEditKeys
+RotoCurveContext::getRippleEditKeys() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    RippleEditKeys keys;
+    keys.enabled = _imp->rippleEdit;
+    keys.mode = _imp->rippleEditMode;
+    keys.rangeFirst = _imp->rippleEditRangeFirst;
+    keys.rangeLast = _imp->rippleEditRangeLast;
+
+    return keys;
+}
+
 NodePtr
 RotoCurveContext::getNode() const
 {

@@ -43,6 +43,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RippleEditKeys.h"
 #include "Engine/RotoItem.h"
 #include "Engine/ViewIdx.h"
 
@@ -117,6 +118,19 @@ public:
      **/
     void setRippleEditEnabled(bool enabled);
     bool isRippleEditEnabled() const;
+
+    /**
+     * @brief Which keyframes ripple edit carries an edit to: all, the ones up to or from the edited
+     * time, or a fixed frame range.
+     **/
+    void setRippleEditMode(RippleEditModeEnum mode);
+    RippleEditModeEnum getRippleEditMode() const;
+    void setRippleEditRange(double first, double last);
+
+    /**
+     * @brief The ripple edit state in one read, for the edits that walk every keyframe.
+     **/
+    RippleEditKeys getRippleEditKeys() const;
 
     int getTimelineCurrentTime() const;
 

@@ -58,15 +58,16 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/RippleEditKeys.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 #define ROTO_DEFAULT_OPACITY 1.
 #define ROTO_DEFAULT_FEATHER 1.5
@@ -1448,6 +1449,8 @@ public:
     std::list<RotoLayerPtr> layers;
     bool autoKeying;
     bool rippleEdit;
+    RippleEditModeEnum rippleEditMode;
+    double rippleEditRangeFirst, rippleEditRangeLast;
     bool featherLink;
     bool isCurrentlyLoading;
     NodeWPtr node;
@@ -1545,6 +1548,9 @@ public:
         , layers()
         , autoKeying(true)
         , rippleEdit(false)
+        , rippleEditMode(eRippleEditModeAll)
+        , rippleEditRangeFirst(1.)
+        , rippleEditRangeLast(100.)
         , featherLink(true)
         , isCurrentlyLoading(false)
         , node(n)

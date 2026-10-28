@@ -1720,7 +1720,8 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool fLinkEnabled = ( onlyFeather ? true : getContext()->isFeatherLinkEnabled() );
     bool keySet = false;
@@ -1821,7 +1822,7 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
             std::set<double> keyframes;
             _imp->getKeyframeTimes(useGuiCurve, &keyframes);
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
-                if (*it2 == time) {
+                if ((*it2 == time) || !ripple.includes(*it2, time)) {
                     continue;
                 }
                 if (!onlyFeather) {
@@ -1991,7 +1992,8 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
 
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool featherLink = getContext()->isFeatherLinkEnabled();
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     Transform::Matrix3x3 trans, invTrans;
     getTransformAtTime(time, &trans);
     invTrans = Transform::matInverse(trans);
@@ -2138,7 +2140,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
             std::set<double> keyframes;
             _imp->getKeyframeTimes(useGuiCurve, &keyframes);
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
-                if (*it2 == time) {
+                if ((*it2 == time) || !ripple.includes(*it2, time)) {
                     continue;
                 }
 
@@ -2249,7 +2251,8 @@ Bezier::setPointAtIndexInternal(bool setLeft,
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
     bool autoKeying = getContext()->isAutoKeyingEnabled();
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     bool keySet = false;
     bool keyedAllPoints = false;
     BezierCPPtr editedCp, editedFp;
@@ -2301,6 +2304,9 @@ Bezier::setPointAtIndexInternal(bool setLeft,
             std::set<double> keyframes;
             _imp->getKeyframeTimes(useGuiCurve, &keyframes);
             for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
+                if (!ripple.includes(*it2, time)) {
+                    continue;
+                }
                 if (setPoint) {
                     (*fp)->setPositionAtTime(useGuiCurve, *it2, x, y);
                     if (featherAndCp) {
@@ -2461,7 +2467,8 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
     assert( QThread::currentThread() == qApp->thread() );
     bool keySet = false;
     bool autoKeying = getContext()->isAutoKeyingEnabled();
-    bool rippleEdit = getContext()->isRippleEditEnabled();
+    const RippleEditKeys ripple = getContext()->getRippleEditKeys();
+    bool rippleEdit = ripple.enabled;
     bool useGuiCurve = !canSetInternalPoints();
     bool keyedAllPoints = false;
     BezierCPPtr editedCp, editedFp;
@@ -2483,14 +2490,14 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
         }
         assert( cp != _imp->points.end() && fp != _imp->featherPoints.end() );
         if (isSmooth) {
-            keySet = (*cp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+            keySet = (*cp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
             if (useFeather) {
-                (*fp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+                (*fp)->smoothPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
             }
         } else {
-            keySet = (*cp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+            keySet = (*cp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
             if (useFeather) {
-                (*fp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, rippleEdit, pixelScale);
+                (*fp)->cuspPoint(useGuiCurve, time, ViewIdx(0), autoKeying, ripple, pixelScale);
             }
         }
         editedCp = *cp;

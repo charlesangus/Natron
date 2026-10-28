@@ -634,7 +634,7 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamCloneBrushToolButton, kRotoUIParamCloneBrushToolButtonLabel, Key_C) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamEffectBrushToolButton, kRotoUIParamEffectBrushToolButtonLabel, Key_X) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamMergeBrushToolButton, kRotoUIParamMergeBrushToolButtonLabel, Key_E) );
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamMergeBrushToolButton, kRotoUIParamMergeBrushToolButtonLabel, Key_D));
 
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
 }
@@ -642,7 +642,9 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
 bool
 RotoPaint::shouldPreferPluginOverlayOverHostOverlay() const
 {
-    return !_imp->ui->ctrlDown;
+    // Ctrl-drags on the points' transform box (pivot, corners) go to the roto overlay before the
+    // shape's transform jack.
+    return !_imp->ui->ctrlDown || _imp->ui->showCpsBbox;
 }
 
 bool

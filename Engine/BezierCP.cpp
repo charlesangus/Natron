@@ -777,13 +777,12 @@ smoothTangent(bool useGuiCurves,
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
-
 bool
 BezierCP::cuspPoint(bool useGuiCurves,
                     double time,
                     ViewIdx view,
                     bool autoKeying,
-                    bool rippleEdit,
+                    const RippleEditKeys& ripple,
                     const std::pair<double, double>& pixelScale)
 {
     ///only called on the main-thread
@@ -808,10 +807,13 @@ BezierCP::cuspPoint(bool useGuiCurves,
         }
     }
 
-    if (rippleEdit) {
+    if (ripple.enabled) {
         std::set<double> times;
         getKeyframeTimes(useGuiCurves, &times);
         for (std::set<double>::iterator it = times.begin(); it != times.end(); ++it) {
+            if (!ripple.includes(*it, time)) {
+                continue;
+            }
             setLeftBezierPointAtTime(useGuiCurves, *it, newLeftX, newLeftY);
             setRightBezierPointAtTime(useGuiCurves, *it, newRightX, newRightY);
         }
@@ -825,7 +827,7 @@ BezierCP::smoothPoint(bool useGuiCurves,
                       double time,
                       ViewIdx view,
                       bool autoKeying,
-                      bool rippleEdit,
+                      const RippleEditKeys& ripple,
                       const std::pair<double, double>& pixelScale)
 {
     ///only called on the main-thread
@@ -862,10 +864,13 @@ BezierCP::smoothPoint(bool useGuiCurves,
         }
     }
 
-    if (rippleEdit) {
+    if (ripple.enabled) {
         std::set<double> times;
         getKeyframeTimes(useGuiCurves, &times);
         for (std::set<double>::iterator it = times.begin(); it != times.end(); ++it) {
+            if (!ripple.includes(*it, time)) {
+                continue;
+            }
             setLeftBezierPointAtTime(useGuiCurves, *it, left.x, left.y);
             setRightBezierPointAtTime(useGuiCurves, *it, right.x, right.y);
         }

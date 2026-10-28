@@ -363,6 +363,9 @@ RotoCurveContext::toSerialization(Serialization::RotoContextSerialization* seria
     serialization->autoKeying = _imp->autoKeying;
     serialization->featherLink = _imp->featherLink;
     serialization->rippleEdit = _imp->rippleEdit;
+    serialization->rippleEditMode = (int)_imp->rippleEditMode;
+    serialization->rippleEditRangeFirst = _imp->rippleEditRangeFirst;
+    serialization->rippleEditRangeLast = _imp->rippleEditRangeLast;
 
     assert(!_imp->layers.empty());
     if (!_imp->layers.empty()) {
@@ -384,6 +387,11 @@ RotoCurveContext::fromSerialization(const Serialization::RotoContextSerializatio
     _imp->autoKeying = serialization.autoKeying;
     _imp->featherLink = serialization.featherLink;
     _imp->rippleEdit = serialization.rippleEdit;
+    _imp->rippleEditMode = (serialization.rippleEditMode >= eRippleEditModeAll && serialization.rippleEditMode <= eRippleEditModeRange)
+        ? (RippleEditModeEnum)serialization.rippleEditMode
+        : eRippleEditModeAll;
+    _imp->rippleEditRangeFirst = serialization.rippleEditRangeFirst;
+    _imp->rippleEditRangeLast = serialization.rippleEditRangeLast;
 
     // Which of these knobs are on follows from the selection restored below, not from what the
     // node's knobs loaded.

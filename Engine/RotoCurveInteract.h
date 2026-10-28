@@ -147,6 +147,14 @@ class RotoDragUndoCommand;
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeather "removeItemsFeatherAction"
 #define kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel "Remove Selected item(s) Feather"
 
+#define kRotoUIParamRightClickMenuActionIncreaseFeather "increaseFeather"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherLabel "Increase Feather"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherHint "Moves the feather of the selected points (or of every point of the selected shapes) outwards by 10 screen pixels"
+
+#define kRotoUIParamCycleToolModes "cycleToolModes"
+#define kRotoUIParamCycleToolModesLabel "Cycle Tool Modes"
+#define kRotoUIParamCycleToolModesHint "Selects the next tool of the current toolbar group"
+
 #define kRotoUIParamRightClickMenuActionNudgeLeft "nudgeLeftAction"
 #define kRotoUIParamRightClickMenuActionNudgeLeftLabel "Nudge Left"
 
@@ -202,6 +210,20 @@ class RotoDragUndoCommand;
                                         " will move it by the same amount for all the keyframes " \
                                         "it has"
 
+#define kRotoUIParamRippleEditMode "rippleEditMode"
+#define kRotoUIParamRippleEditModeLabel "Ripple Edit Mode"
+#define kRotoUIParamRippleEditModeHint "Which keyframes a ripple edit applies to: all of them, those from the first " \
+                                       "key to the current frame, those from the current frame to the last key, "     \
+                                       "or those in the frame range set next to this menu"
+
+#define kRotoUIParamRippleRangeStart "rippleRangeStart"
+#define kRotoUIParamRippleRangeStartLabel "Ripple Range Start"
+#define kRotoUIParamRippleRangeStartHint "First frame of the ripple edit range (included)"
+
+#define kRotoUIParamRippleRangeEnd "rippleRangeEnd"
+#define kRotoUIParamRippleRangeEndLabel "Ripple Range End"
+#define kRotoUIParamRippleRangeEndHint "Last frame of the ripple edit range (included)"
+
 #define kRotoUIParamAddKeyFrame "addKeyframeButton"
 #define kRotoUIParamAddKeyFrameLabel "Add Keyframe"
 #define kRotoUIParamAddKeyFrameHint "Set a keyframe at the current time for the selected shape(s), if any"
@@ -242,6 +264,8 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    eEventStateSketchingBezier,
+    eEventStateDraggingCpsPivot,
 };
 
 enum HoverStateEnum {
@@ -328,6 +352,15 @@ public:
     SelectedCPs selectedCps;
     QRectF selectedCpsBbox;
     bool showCpsBbox;
+    // A pivot the user placed for the selected points' transform box; it applies while the
+    // selection is still cpsPivotSelection.
+    QPointF cpsPivot;
+    bool cpsPivotSet;
+    SelectedCPs cpsPivotSelection;
+    // The canonical positions sampled so far by a Ctrl-drag sketch.
+    std::list<std::pair<double, double>> sketchSamples;
+    // The right-tangent drag started by clicking the first point to close the shape.
+    bool closingTangentDrag;
 
     ////This is by default eSelectedCpsTransformModeTranslateAndScale. When clicking the cross-hair in the center this will toggle the transform mode
     ////like it does in inkscape.
@@ -375,6 +408,7 @@ public:
     KnobButtonWPtr drawBezierAction;
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
+    KnobButtonWPtr lastSelectToolAction;
 
     //////Right click menu
     KnobChoiceWPtr rightClickMenuKnob;
@@ -384,6 +418,8 @@ public:
     KnobButtonWPtr cuspItemMenuAction;
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
+    KnobButtonWPtr increaseFeatherMenuAction;
+    KnobButtonWPtr cycleToolModesAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
 
     // Right click on curve
@@ -398,6 +434,9 @@ public:
     KnobButtonWPtr stickySelectionEnabledButton;
     KnobButtonWPtr bboxClickAnywhereButton;
     KnobButtonWPtr rippleEditEnabledButton;
+    KnobChoiceWPtr rippleEditModeChoice;
+    KnobIntWPtr rippleRangeStartSpinBox;
+    KnobIntWPtr rippleRangeEndSpinBox;
     KnobButtonWPtr addKeyframeButton;
     KnobButtonWPtr removeKeyframeButton;
     KnobButtonWPtr showTransformHandle;
@@ -485,6 +524,16 @@ public:
      * host calls this before adding its own viewer knobs.
      **/
     void createViewerButtonKnobs(const KnobPagePtr& page);
+
+    /**
+     * @brief Shows the ripple mode menu in the shape roles, and the range fields only in range mode.
+     **/
+    void refreshRippleEditKnobsVisibility(bool isPaintRole);
+
+    /**
+     * @brief Outlines the viewer in red while ripple edit is on, so an edit's reach is never a surprise.
+     **/
+    void drawRippleEditBorder(double screenPixelRatio, const std::pair<double, double>& pixelScale);
 
     /**
      * @brief Creates the right-click menu choice and its actions on page.
@@ -606,7 +655,24 @@ public:
     bool smoothSelectedCurve();
     bool cuspSelectedCurve();
     bool removeFeatherForSelectedCurve();
+    bool increaseFeatherForSelection();
     bool lockSelectedCurves();
+
+    /**
+     * @brief Selects the next tool of the current toolbar group, wrapping around.
+     **/
+    bool cycleCurrentToolMode();
+
+    /**
+     * @brief The select tool used last, the Select All tool if none has been.
+     **/
+    KnobButtonPtr getLastSelectTool() const;
+
+    /**
+     * @brief The centre the selected points' transform box rotates and scales about: the pivot
+     * the user placed for this selection, or the centre of the box.
+     **/
+    QPointF getSelectedCpsPivot() const;
 
     /**
      *@brief Moves of the given pixel the selected control points.

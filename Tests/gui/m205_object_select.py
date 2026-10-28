@@ -64,7 +64,7 @@ try:
     os.environ["NATRON_AI_MANIFEST"] = manifest_path
     os.environ["XDG_DATA_HOME"] = data_home
 
-    from PySide6.QtCore import QEvent, QPoint, QPointF, QStandardPaths, Qt
+    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, QPointF, QStandardPaths, Qt
     from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
@@ -112,6 +112,24 @@ try:
     def visible_gl():
         found = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
         return found[0] if found else None
+
+    def untone_viewer():
+        """Switches the viewer to a view without tone mapping, so the still's bright pixels stay
+        bright on screen: the default ACES 2.0 SDR view shows 235 (linear 0.83) as about 171.
+        Returns the view picked, or None."""
+        for combo in gt.widgets_of("ComboBox"):
+            try:
+                if not combo.isVisible() or "<b>View:</b>" not in (combo.toolTip() or ""):
+                    continue
+            except RuntimeError:
+                continue
+            items = [str(i) for i in (combo.property("natronItems") or [])]
+            for wanted in ("Un-tone-mapped", "Raw"):
+                if wanted in items:
+                    QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, items.index(wanted)))
+                    QApplication.processEvents()
+                    return wanted
+        return None
 
     def bright_box(gl):
         """The bounding box of the still's bright pixels on screen, in gl's coordinates."""
@@ -292,6 +310,8 @@ try:
         require(viewer.connectInput(0, roto), "the Viewer shows the Roto node")
         app.getProjectParam("frameRange").setValue(1, 0)
         app.getProjectParam("frameRange").setValue(1, 1)
+        view = untone_viewer()
+        require(view is not None, "the viewer shows the image without tone mapping (Un-tone-mapped or Raw view)")
         yield ("sleep", RENDER_MS)
 
         ok = yield ("until", lambda: tool_action("ObjectSelectTool") is not None, POLL_TIMEOUT_S)
@@ -308,7 +328,9 @@ try:
               "the main window fits 1920x1080")
         ok = yield ("until", lambda: bright_box(gl) is not None, POLL_TIMEOUT_S)
         box = bright_box(gl)
-        require(ok and box is not None, "the still is on screen")
+        if not ok or box is None:
+            gt.shot("m205-object-no-still.png")
+        require(ok and box is not None, "the still is on screen (%s view)" % view)
         gt.shot("m205-object-tool.png")
 
         # Viewer pixels per still pixel, from the bright box (the object's outer edges).

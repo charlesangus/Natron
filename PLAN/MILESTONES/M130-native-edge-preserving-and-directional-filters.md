@@ -165,6 +165,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Decisions
 
+- 2026-10-28: Phases 1–2 implemented (builds pending). Median: radius floor(size×scale.x), square in pixels; threshold keeps |in−m| ≤ t·max(|m|,1e-6); edge repeat; CPU/GPU select on float-ordered integer keys (bit-exact); GPU cap radius 16. Bilateral: log2-luminance range term (Rec.709 weights when RGB), guided = He's filter on box means with ε = rangeSigma², Guide input optional; scratch = window + halo clipped to RoD; GPU radius cap 64; Size ≤ 50, Iterations ≤ 10 (re-filtering, CImg-style). Did not reuse M209's running-sum kernels: they round by buffer position and break bit-exact tile independence (relevant to M268).
 - 2026-10-13 — **Family in scope (user, /cat-plan grill):** Median, Bilateral with Guided, and DirBlur, with GodRays folded in as a radial mode.
 - 2026-10-13 — **Scene-linear range metrics:** thresholds and range sigmas are relative or in stops, never on [0,1]. This follows from the redesign rule (`DECISIONS/2026-10-12-native-nodes-drop-ofx-legacy.md`).
 - 2026-10-13 — **GPU ships with each port (user).**

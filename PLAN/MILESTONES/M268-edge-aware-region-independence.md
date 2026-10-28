@@ -12,3 +12,5 @@ Filed 2026-10-28 from the audit after M215 - Colour Equalizer's guided filter pr
 
 Deps: M209, M210, M211, M212, M213, M215.
 - M215 ColorEqualizer now processes the whole RoD per window (CPU cached; GPU recomputes per window): add a frame-size guard for the GPU path like ToneEqualizer's UINT32 check in canRenderOpOnGpu, and consider a device-side cache.
+
+Finding (M130, 2026-10-28): the M209 Edge-Aware Filter Library's running-sum box and guided kernels round differently by buffer position, so tiles differ from the full frame bit-for-bit (the variance subtraction amplifies it). Include in the region-independence audit.

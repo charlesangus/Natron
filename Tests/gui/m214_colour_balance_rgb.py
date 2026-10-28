@@ -4,8 +4,9 @@ must fit a 1920x1080 screen. Shots go to $NATRON_GUI_TEST_OUT as colorbalancergb
 
 The 4 Ways tab is a 2x2 grid of wheels (angle = hue, radius = chroma), each with its title above,
 its luminance slider beneath and a value readout, and the knobs' rows in a collapsed Values group.
-In the default layout the tab must fit the panel without a vertical scrollbar. A drag on the lift
-wheel must change liftHue and liftChroma, and one undo must restore both.
+In the default layout the panel with its 4 Ways tab must fit the Properties viewport without
+scrolling. A drag on the lift wheel must change liftHue and liftChroma, and one undo must restore
+both.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m214_colour_balance_rgb.py <Natron binary or AppImage>
 """
@@ -106,17 +107,14 @@ try:
                 return hold(w)
         return None
 
-    def scroll_area_of(panel, widget):
-        """The QScrollArea inside panel that holds widget, found by walking widget's parents."""
+    def scroll_area_of(widget):
+        """The nearest QScrollArea holding widget. Node panel pages have none of their own: the
+        Properties bin's scroll area scrolls every open panel."""
         w = widget.parentWidget()
-        while w is not None and w is not panel:
+        while w is not None:
             if isinstance(w, QScrollArea):
                 return hold(w)
             w = w.parentWidget()
-        for area in panel.findChildren(QScrollArea):
-            content = area.widget()
-            if content is not None and content.isAncestorOf(widget):
-                return hold(area)
         return None
 
     def parent_chain(widget):
@@ -173,16 +171,21 @@ try:
         yield ("sleep", 300)
         grid = child_named(panel, "ColorWheelGrid_wheels")
         if check(grid is not None and grid.isVisible(), "the 4 Ways tab shows the wheel grid"):
-            area = scroll_area_of(panel, grid)
+            area = scroll_area_of(grid)
             if area is None:
                 report("NOTE wheel grid parents: " + parent_chain(grid))
-            if check(area is not None, "the wheel grid sits in the panel's scroll area"):
+            if check(area is not None, "the wheel grid sits in the Properties scroll area"):
+                port = area.viewport()
                 bar = area.verticalScrollBar()
-                report("NOTE 4 Ways viewport %dx%d, content %dx%d, scroll max %d" % (
-                    area.viewport().width(), area.viewport().height(),
-                    area.widget().width(), area.widget().height(), bar.maximum()))
-                check(not bar.isVisible() and bar.maximum() == 0,
-                      "the 4 Ways tab fits the panel without a vertical scrollbar")
+                report("NOTE 4 Ways viewport %dx%d, panel %dx%d, scroll %d of %d" % (
+                    port.width(), port.height(), panel.width(), panel.height(), bar.value(), bar.maximum()))
+                check(panel.height() <= port.height(),
+                      "the panel with its 4 Ways tab fits the Properties viewport (panel %d, viewport %d)"
+                      % (panel.height(), port.height()))
+                grid_rect = QRect(port.mapFromGlobal(grid.mapToGlobal(QPoint(0, 0))), grid.size())
+                check(port.rect().contains(grid_rect),
+                      "the whole wheel grid is visible without scrolling (grid %r, viewport %r)"
+                      % (grid_rect, port.rect()))
             cells = [child_named(panel, "ColorWheelCell_%sChroma" % w) for w in WHEELS]
             if check(all(c is not None for c in cells), "the grid has a cell per wheel"):
                 pos = [grid.mapFromGlobal(c.mapToGlobal(QPoint(0, 0))) for c in cells]

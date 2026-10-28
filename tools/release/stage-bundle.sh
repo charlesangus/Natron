@@ -350,6 +350,26 @@ while IFS= read -r staged_usd_plugin; do
     stage_elf "$staged_usd_plugin"
 done < <(find "$STAGE_DIR/plugin/usd" -type f -name "*.so" 2>/dev/null)
 
+# The Cycles render delegate (plugin/usd/hdCycles.so, built into the dev image) links
+# OpenImageDenoise, which dlopen()s its device modules from the directory its core library was
+# loaded from, so the ldd walk below never reaches them. The source install is asked, because the
+# staged copy may already resolve the core library inside the stage. The CPU module goes into lib/,
+# where the walk puts the core library; the GPU modules stay out, as the delegate is CPU-only.
+oidn_core="$(ldd "$USD_PREFIX/plugin/usd/hdCycles.so" 2>/dev/null |
+    sed -n 's/.*libOpenImageDenoise_core[^ ]* => \(\/[^ ]*\) .*/\1/p' | head -n 1 || true)"
+if [[ -n "$oidn_core" ]]; then
+    oidn_modules=0
+    for oidn_module in "$(dirname "$oidn_core")"/libOpenImageDenoise_device_cpu.so*; do
+        [[ -f "$oidn_module" && ! -L "$oidn_module" ]] || continue
+        stage_library "$oidn_module" "$(basename "$oidn_module")"
+        oidn_modules=$((oidn_modules + 1))
+    done
+    if [[ "$oidn_modules" == 0 ]]; then
+        echo "error: no OpenImageDenoise CPU device module next to $oidn_core" >&2
+        exit 1
+    fi
+fi
+
 # "import pxr" from Natron's Python. usdview is left out: it is an application,
 # and its GUI needs PySide6 modules the bundle does not ship.
 copy_tree "$PY_SITELIB/pxr" "$PY_DEST/site-packages/pxr" --exclude='./Usdviewq'

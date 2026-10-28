@@ -304,6 +304,18 @@ for extension in ("usda", "usdc", "abc"):
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
 
+# USD only dlopen()s the Cycles render delegate when a render asks for it, so load it here: that
+# resolves its whole library closure from the bundle, with LD_LIBRARY_PATH unset.
+cycles_plugin = Plug.Registry().GetPluginWithName("hdCycles")
+if not cycles_plugin:
+    fail("OpenUSD has no hdCycles plug-in registered; plugin/usd/hdCycles is missing "
+         "(built in a natron-dev container older than its Cycles layer?)")
+if not cycles_plugin.Load():
+    fail("the hdCycles plug-in at %s did not load" % cycles_plugin.path)
+oidn_core = glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_core.so*"))
+if oidn_core and not glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_device_cpu.so*")):
+    fail("the bundle ships OpenImageDenoise without its CPU device module")
+
 fontconfig_path = os.environ.get("FONTCONFIG_PATH", "")
 if not fontconfig_path.startswith(BUNDLE + os.sep):
     fail("FONTCONFIG_PATH is %r, not the bundle's own configuration" % fontconfig_path)

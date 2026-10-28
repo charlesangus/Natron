@@ -6,8 +6,9 @@
 # Do not bump the base image tag without checking the package notes below.
 #
 # Everything the build needs (bar one documented exception below) is already
-# present in aswf/ci-vfxall:2027-clang21.1. This file adds the Mesa relink and
-# the Slang and glslang toolchains at the bottom, so no build downloads them.
+# present in aswf/ci-vfxall:2027-clang21.1. This file adds the Cycles Hydra
+# render delegate, the Mesa relink and the Slang and glslang toolchains, so no
+# build downloads them.
 #
 # Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
 # ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
@@ -27,6 +28,24 @@
 # cmake/NatronUsd.cmake redirects them and checks the Python version. Re-check
 # all of that when bumping the base tag.
 FROM aswf/ci-vfxall:2027-clang21.1
+
+# --- Cycles: the Hydra render delegate, CPU devices only ------------------
+# Built from the upstream standalone repository against this image's USD,
+# OpenImageIO, OpenEXR, TBB, Embree and OpenImageDenoise, and installed into
+# USD's plug-in directory as /usr/local/plugin/usd/hdCycles.so, where USD
+# finds it with no PXR_PLUGINPATH_NAME and tools/release/stage-bundle.sh
+# bundles it with the rest of plugin/usd. First after FROM because it is by
+# far the slowest layer (the CPU kernels) and the least often changed.
+# NATRON_CYCLES_OIDN=OFF drops the OpenImageDenoise denoiser and the ~45 MB
+# compressed it adds to the AppImage.
+ARG NATRON_CYCLES_VERSION=v5.2.0
+ARG NATRON_CYCLES_SHA256=a63756e042e819c0492440306869ea5a29d669b789c0a89f7d170a1741378551
+ARG NATRON_CYCLES_OIDN=ON
+COPY build-cycles.sh /tmp/build-cycles.sh
+RUN NATRON_CYCLES_VERSION="$NATRON_CYCLES_VERSION" \
+    NATRON_CYCLES_SHA256="$NATRON_CYCLES_SHA256" \
+    NATRON_CYCLES_OIDN="$NATRON_CYCLES_OIDN" \
+    bash /tmp/build-cycles.sh && rm -f /tmp/build-cycles.sh
 
 # --- CI package list, for drift-checking against ci.yml -------------------
 #

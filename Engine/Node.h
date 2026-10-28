@@ -443,6 +443,8 @@ private:
     static bool claimCacheID(const std::string& cacheID);
     static void releaseCacheID(const std::string& cacheID);
 
+    void releaseOwnCacheID();
+
 public:
     /**
      * @brief Forwarded to the live effect instance

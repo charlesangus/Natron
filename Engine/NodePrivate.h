@@ -177,6 +177,7 @@ public:
         , scriptName()
         , label()
         , cacheID()
+        , cacheIDClaimed(false)
         , deactivatedState()
         , activatedMutex()
         , activated(true)
@@ -379,6 +380,7 @@ public:
     /// In order for the cache to be persistent, the cacheID is serialized with the node
     /// and 2 nodes cannot have the same cacheID.
     std::string cacheID;
+    bool cacheIDClaimed; // protected by nameMutex
     DeactivatedState deactivatedState;
     mutable QMutex activatedMutex;
     bool activated;

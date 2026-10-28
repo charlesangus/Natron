@@ -255,6 +255,7 @@ Node::Node(const AppInstancePtr& app,
     do {
         _imp->cacheID = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     } while (!claimCacheID(_imp->cacheID));
+    _imp->cacheIDClaimed = true;
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
@@ -877,10 +878,28 @@ Node::adoptSerializedCacheID(const std::string& cacheID)
     std::string previous;
     {
         QMutexLocker k(&_imp->nameMutex);
-        previous = _imp->cacheID;
+        if (_imp->cacheIDClaimed) {
+            previous = _imp->cacheID;
+        }
         _imp->cacheID = cacheID;
+        _imp->cacheIDClaimed = true;
     }
     releaseCacheID(previous);
+}
+
+void
+Node::releaseOwnCacheID()
+{
+    std::string id;
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        if (!_imp->cacheIDClaimed) {
+            return;
+        }
+        id = _imp->cacheID;
+        _imp->cacheIDClaimed = false;
+    }
+    releaseCacheID(id);
 }
 
 std::string
@@ -3027,7 +3046,7 @@ std::map<const Node*, NodeWPtr> channelSelectorOwners;
 Node::~Node()
 {
     destroyNode(true, false);
-    releaseCacheID(getCacheID());
+    releaseOwnCacheID();
 
     QMutexLocker k(&channelSelectorOwnersMutex);
     channelSelectorOwners.erase(this);

@@ -873,6 +873,12 @@ TEST_F(CacheStressTest, NonHashedKnobSweep)
         std::vector<std::pair<KnobIPtr, int>> targets;
         const KnobsVec knobs = node->getKnobs();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            // Buttons are actions (render, track, reload), not state; pages, groups and
+            // separators only lay out the panel. Toggling their bool value would press them.
+            const KnobI* k = it->get();
+            if (dynamic_cast<const KnobButton*>(k) || dynamic_cast<const KnobPage*>(k) || dynamic_cast<const KnobGroup*>(k) || dynamic_cast<const KnobSeparator*>(k)) {
+                continue;
+            }
             if (*it && !(*it)->isRenderHashed()) {
                 for (int d = 0; d < (*it)->getDimension(); ++d) {
                     targets.push_back(std::make_pair(*it, d));

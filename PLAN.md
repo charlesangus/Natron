@@ -237,7 +237,7 @@ future core work has solid ground to build on.
 | M137 | Native Base Class Flexibility | done | - | bosley-native-nodes | E3 | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | done | - | bosley-native-nodes | E10 | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 | M139 | Blur In-Graph Overhead | todo | M90, M137 |  | E6 | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
-| M140 | Native Metadata Utilities | todo | M77, M120 |  | E3 | [M140-native-metadata-utilities.md](PLAN/MILESTONES/M140-native-metadata-utilities.md) |
+| M140 | Native Metadata Utilities | doing | M77, M120 | bosley-native-nodes | E3 | [M140-native-metadata-utilities.md](PLAN/MILESTONES/M140-native-metadata-utilities.md) |
 | M141 | Complete Local Build Environment | done | - | bosley-native-nodes | E2 | [M141-complete-local-build-environment.md](PLAN/MILESTONES/M141-complete-local-build-environment.md) |
 | M142 | Atomic Project Save | done | - | bosley-native-nodes | E7 | [M142-atomic-project-save.md](PLAN/MILESTONES/M142-atomic-project-save.md) |
 | M143 | Bundled Plugin Bug Fixes | done | M100 | bosley-native-nodes | E3 | [M143-bundled-plugin-bug-fixes.md](PLAN/MILESTONES/M143-bundled-plugin-bug-fixes.md) |

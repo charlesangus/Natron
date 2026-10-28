@@ -46,7 +46,6 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
@@ -487,25 +486,6 @@ TEST_F(NativeWarpGpuTest, EligibilityFollowsTheSupportedSettings)
     EXPECT_EQ(supported, effectOf(stmap)->canRenderOnGpu(eligibleQuery()));
     ASSERT_TRUE(setChannelSelect(idistort, kIDistortParamChannelU, ""));
     EXPECT_EQ(supported, effectOf(idistort)->canRenderOnGpu(eligibleQuery())) << "V alone";
-}
-
-TEST_F(NativeWarpGpuTest, CostTraitsHaveGpuRows)
-{
-    resetProject();
-    NodePtr source = makeSource();
-    NodePtr uv = makeUV();
-    ASSERT_TRUE(source && uv);
-    for (const NodePtr& node : { makeSTMap(source, uv, "cubic"), makeIDistort(source, uv, "cubic") }) {
-        ASSERT_TRUE(bool(node));
-        GpuCostModel model;
-        FrameGraph::Task task;
-        task.key.node = node;
-        task.key.time = kTime;
-        task.key.view = ViewIdx(0);
-        task.key.mipmapLevel = 0;
-        EXPECT_EQ(node->getPluginID(), model.traitsOf(task).pluginId);
-        EXPECT_TRUE(model.hasGpuCost(model.traitsOf(task))) << node->getPluginID();
-    }
 }
 
 TEST_F(NativeWarpGpuTest, STMapFiltersMatchTheCpuFrame)

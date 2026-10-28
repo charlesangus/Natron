@@ -361,9 +361,6 @@ struct Pass {
     // For Gather and Point, whether the lines are columns rather than rows, for a pass that runs
     // down the columns, such as the column sums of a summed-area table.
     bool columns = false;
-    // What gpuCostHint() reports for a list holding this pass: sigma as GpuCostHint defines it.
-    double sigma = 0.;
-    bool recursive = false;
     std::function<PassLineFn()> lineWorker;
     std::function<PassRowFn(const PassScratch&)> rowWorker;
 
@@ -476,12 +473,6 @@ RectI passListSourceRoI(const RectI& rect, const PassList& list) WARN_UNUSED_RET
  * the grow sums, unchanged when it is empty.
  **/
 RectI passListRoD(const RectI& srcRoD, const PassList& list) WARN_UNUSED_RETURN;
-
-/**
- * @brief The largest sigma of the list's passes and whether any is recursive; empty for a list
- * with no pass reporting a sigma.
- **/
-std::optional<GpuCostHint> passListCostHint(const PassList& list) WARN_UNUSED_RETURN;
 
 bool isRunnablePassList(const PassList& list) WARN_UNUSED_RETURN;
 

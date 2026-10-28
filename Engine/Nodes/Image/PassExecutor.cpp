@@ -908,25 +908,6 @@ passListRoD(const RectI& srcRoD,
     return RectI(srcRoD.x1 - extent.growX, srcRoD.y1 - extent.growY, srcRoD.x2 + extent.growX, srcRoD.y2 + extent.growY);
 }
 
-std::optional<GpuCostHint>
-passListCostHint(const PassList& list)
-{
-    std::optional<GpuCostHint> hint;
-
-    for (const Pass& pass : list.passes) {
-        if ((pass.sigma <= 0.) && !pass.recursive) {
-            continue;
-        }
-        if (!hint) {
-            hint = GpuCostHint();
-        }
-        hint->sigma = std::max(hint->sigma, pass.sigma);
-        hint->iir = hint->iir || pass.recursive;
-    }
-
-    return hint;
-}
-
 bool
 isRunnablePassList(const PassList& list)
 {

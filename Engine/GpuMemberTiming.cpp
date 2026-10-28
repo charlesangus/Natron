@@ -26,7 +26,6 @@
 #include "GpuMemberTiming.h"
 
 #include <algorithm>
-#include <map>
 
 NATRON_NAMESPACE_ENTER
 
@@ -80,44 +79,6 @@ overlapOf(const Intervals& a,
     }
 
     return total;
-}
-
-std::vector<MemberSample>
-cleanMemberSamples(const std::vector<GpuMemberInterval>& intervals,
-                   const Intervals& transferBusy,
-                   const std::vector<int>& planes,
-                   double contendedFraction)
-{
-    const Intervals busy = unionOf(transferBusy);
-    std::map<int, MemberSample> byMember;
-    for (const GpuMemberInterval& interval : intervals) {
-        if (interval.endNs <= interval.beginNs) {
-            continue;
-        }
-        MemberSample& sample = byMember[interval.member];
-        sample.member = interval.member;
-
-        const Intervals single(1, std::make_pair((std::uint64_t)interval.beginNs, (std::uint64_t)interval.endNs));
-        const std::uint64_t length = lengthOf(single);
-        const std::uint64_t overlap = overlapOf(single, busy);
-        if ((double)overlap > contendedFraction * (double)length) {
-            ++sample.contendedCount;
-        } else {
-            sample.cleanNs += length;
-            const bool counted = (interval.member >= 0) && ((std::size_t)interval.member < planes.size()) && (planes[(std::size_t)interval.member] > 0);
-            const int nPlanes = counted ? planes[(std::size_t)interval.member] : 1;
-            sample.cleanMegapixels += (double)interval.pixels / 1e6 / nPlanes;
-            ++sample.cleanCount;
-        }
-    }
-
-    std::vector<MemberSample> samples;
-    samples.reserve(byMember.size());
-    for (const std::pair<const int, MemberSample>& entry : byMember) {
-        samples.push_back(entry.second);
-    }
-
-    return samples;
 }
 
 } // namespace GpuMemberTiming

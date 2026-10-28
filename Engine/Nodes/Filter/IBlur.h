@@ -145,6 +145,13 @@ public:
                                double time,
                                ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief A Filter's weight at any size: each box is an O(1) lookup in a summed-area table.
+     **/
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,

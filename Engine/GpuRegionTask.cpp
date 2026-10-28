@@ -49,10 +49,10 @@
 #include "Engine/AppManager.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuMemberTiming.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/Node.h"
@@ -303,12 +303,6 @@ struct Member {
     std::vector<int> inputSlots;
     std::vector<int> inputSlotInput;
     std::vector<ImageLayerDesc> inputSlotLayer;
-
-    // Its share of the device time of the submission it is recorded in.
-    double weight = 1.;
-
-    // The cost model's kernel time for the task, 0 when it has none.
-    double predictedKernelMs = 0.;
 };
 
 /**
@@ -439,7 +433,7 @@ private:
             _report->stagedUnaligned = staged.unaligned - stagedBefore.unaligned;
             _report->stagedImportFailed = staged.importFailed - stagedBefore.importFailed;
             _report->stagedForgotten = staged.forgotten - stagedBefore.forgotten;
-            _report->predictedTransferMs = GpuCostModel::session().transferMs((double)_report->uploadBytes, (double)ownDownloadBytes());
+            _report->predictedTransferMs = GpuTransferModel::session().transferMs((double)_report->uploadBytes, (double)ownDownloadBytes());
         }
         if (isAborted()) {
             return EffectInstance::eRenderRoIRetCodeAborted;
@@ -770,7 +764,6 @@ private:
             return fail(NodePtr(), "the region has no member or no request");
         }
 
-        GpuCostModel& model = GpuCostModel::session();
         for (std::size_t i = 0; i < _region.members.size(); ++i) {
             const int taskIndex = _region.members[i];
             const FrameGraph::Task& task = _graph.tasks[taskIndex];
@@ -831,14 +824,6 @@ private:
                 return fail(taskIndex, "the task renders an empty window");
             }
 
-            // Every plane renders the task's whole window, so the planes it renders share its cost evenly.
-            int nRendered = 0;
-            for (const GpuTaskPlane& plane : planes) {
-                nRendered += plane.passThrough ? 0 : 1;
-            }
-            const double kernelMs = model.gpuMs(model.traitsOf(task), GpuCostModel::megapixelsOf(task));
-            const double planeMs = (std::isfinite(kernelMs) && (kernelMs > 0.) && (nRendered > 0)) ? kernelMs / nRendered : 0.;
-
             for (const GpuTaskPlane& plane : planes) {
                 Member member;
                 member.task = taskIndex;
@@ -869,8 +854,6 @@ private:
                 out.producer = (int)_members.size();
                 _slots.push_back(out);
                 member.outSlot = (int)_slots.size() - 1;
-                member.predictedKernelMs = planeMs;
-                member.weight = (planeMs > 0.) ? planeMs : 1.;
                 addMember((int)i, member);
             }
         }
@@ -1266,26 +1249,24 @@ private:
         return true;
     }
 
-    // Splits ns among the members of segment by their estimated costs, for device time no timestamp divides.
-    void chargeByWeight(const std::vector<int>& segment,
-                        long long ns)
+    // Splits ns evenly among the members of segment, for device time no timestamp divides.
+    void chargeEvenly(const std::vector<int>& segment,
+                      long long ns)
     {
-        double weights = 0.;
-        for (int position : segment) {
-            weights += _members[position].weight;
+        if (segment.empty()) {
+            return;
         }
         for (int position : segment) {
-            _report->memberNs[position] += (weights > 0.) ? (long long)((double)ns * _members[position].weight / weights) : 0;
+            _report->memberNs[position] += ns / (long long)segment.size();
         }
     }
 
-    // Keeps, for reportIntervals() and the cost model, the device interval of each member of segment: stamps[j] to
-    // stamps[j + 1] for the j-th. strip is null for a region run whole, whose members render their whole RoI.
+    // Keeps, for reportIntervals(), the device interval of each member of segment: stamps[j] to stamps[j + 1] for the
+    // j-th. strip is null for a region run whole, whose members render their whole RoI.
     void noteMemberStamps(const std::vector<int>& segment,
                           const std::vector<std::uint64_t>& stamps,
                           const GpuStrip* strip,
-                          int stripIndex,
-                          bool contended = false)
+                          int stripIndex)
     {
         for (std::size_t j = 0; (j < segment.size()) && (j + 1 < stamps.size()); ++j) {
             const Member& member = _members[segment[j]];
@@ -1296,7 +1277,6 @@ private:
             entry.begin = stamps[j];
             entry.end = stamps[j + 1];
             entry.pixels = (unsigned long long)rect.width() * (unsigned long long)rect.height();
-            entry.contended = contended;
             _memberStamps.push_back(entry);
         }
     }
@@ -1383,7 +1363,7 @@ private:
                 const long long ns = nsBetween(segmentBegin, Clock::now());
                 _report->kernelMs += (double)ns * 1e-6;
                 _report->submitWaitMs += (double)waitNs * 1e-6;
-                chargeByWeight(segment, ns);
+                chargeEvenly(segment, ns);
             }
         }
         // Submitted and finished, so no other thread acquiring them from the pool can race the work that used them.
@@ -1473,7 +1453,7 @@ private:
         return &records.back();
     }
 
-    // The store downloads a pinned slot outside downloadMs, so the cost model learns from the other downloads only.
+    // The store downloads a pinned slot outside downloadMs, so the transfer model learns from the other downloads only.
     unsigned long long ownDownloadBytes() const
     {
         unsigned long long bytes = _report->downloadBytes;
@@ -1734,8 +1714,6 @@ private:
         int handoffs = 0;
         bool timed = false;
 
-        // Submitted after an earlier segment's download, which can share the device with its members.
-        bool afterDownload = false;
         std::uint32_t firstQuery = 0;
         bool submitted = false;
         gpu::TimelineValue done;
@@ -1762,7 +1740,6 @@ private:
                 }
             }
         }
-        segment.afterDownload = _downloadReleased;
         segment.firstQuery = (std::uint32_t)(_segments.size() - 1) * ((std::uint32_t)_members.size() + 2);
         beginTimedSegment(*segment.recorder, segment.firstQuery);
         segment.timed = _segmentTimed;
@@ -1784,7 +1761,6 @@ private:
                 continue;
             }
             slot.downloadSegment = (int)_segments.size() - 1;
-            _downloadReleased = true;
             if (slot.handle && (slot.downloadBytes <= (std::size_t)slot.handle.size())) {
                 segment.recorder->releaseToTransfer(_runtime.transfer(), slot.handle.buffer(), 0, slot.downloadBytes);
             }
@@ -1935,11 +1911,11 @@ private:
             for (std::size_t k = 0; k < segment.members.size(); ++k) {
                 _report->memberNs[segment.members[k]] += memberNs[k];
             }
-            noteMemberStamps(segment.members, stamps, nullptr, -1, segment.afterDownload);
+            noteMemberStamps(segment.members, stamps, nullptr, -1);
         } else {
             _report->kernelMs += (double)waitNs * 1e-6;
             _report->submitWaitMs += (double)waitNs * 1e-6;
-            chargeByWeight(segment.members, waitNs);
+            chargeEvenly(segment.members, waitNs);
         }
     }
 
@@ -2047,7 +2023,6 @@ private:
             stripMember.inputRoI = [effect, time, view, scale, inputOfSlot](int k, const RectI& rect) {
                 return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);
             };
-            stripMember.kernelMs = member.predictedKernelMs;
             graph.members.push_back(stripMember);
         }
 
@@ -2055,9 +2030,9 @@ private:
     }
 
     /**
-     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, unless
-     * the session's cost model predicts that pipelined strips, hiding its transfer behind its kernels, finish sooner,
-     * and otherwise fills it with the strips it runs as. A stripped output never exists whole on the device, so every
+     * @brief Leaves strips empty when the region fits the device whole and no strip height is forced, unless it
+     * moves enough bytes for pipelined strips to hide its transfer behind its kernels, and otherwise fills it with
+     * the strips it runs as. A stripped output never exists whole on the device, so every
      * output read after the region is downloaded and stored in RAM, including those another region would have read on
      * the device.
      **/
@@ -2079,7 +2054,7 @@ private:
         limits.maxInFlight = pipelineAllowed() ? kGpuStripMaxInFlight : 1;
         limits.overlapMinBytes = kGpuStripOverlapMinBytes;
         limits.transferMs = [](std::uint64_t uploadBytes, std::uint64_t downloadBytes) {
-            return GpuCostModel::session().transferMs((double)uploadBytes, (double)downloadBytes);
+            return GpuTransferModel::session().transferMs((double)uploadBytes, (double)downloadBytes);
         };
         limits.allocationBytes = [](std::uint64_t bytes) {
             return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
@@ -2776,7 +2751,6 @@ private:
             GpuMemberTiming::Intervals transfers;
             std::uint64_t uploadTicks = 0;
             std::uint64_t downloadTicks = 0;
-            std::vector<bool> copyUnread(nStrips, false);
             for (std::size_t k = 0; k < nStrips; ++k) {
                 std::pair<std::uint64_t, std::uint64_t> interval;
                 if (pairOf(k, 0, &interval)) {
@@ -2789,25 +2763,19 @@ private:
                         if (pairOf(k, _uploadQuery[s], &interval)) {
                             transfers.push_back(interval);
                             uploadTicks += interval.second - interval.first;
-                        } else {
-                            copyUnread[k] = true;
                         }
                     }
                     if ((_downloadQuery[s] >= 0) && (interiorRange(strips[k], s).second != 0)) {
                         if (pairOf(k, _downloadQuery[s], &interval)) {
                             transfers.push_back(interval);
                             downloadTicks += interval.second - interval.first;
-                        } else {
-                            copyUnread[k] = true;
                         }
                     }
                 }
             }
-            markContendedNear(copyUnread);
             const GpuMemberTiming::Intervals computeBusy = GpuMemberTiming::unionOf(compute);
             const GpuMemberTiming::Intervals transferBusy = GpuMemberTiming::unionOf(transfers);
             const std::uint64_t hidden = GpuMemberTiming::overlapOf(transferBusy, computeBusy);
-            _transferBusy = transferBusy;
             _report->uploadMs = msOf(uploadTicks);
             _report->downloadMs = msOf(downloadTicks);
             _report->kernelMs = msOf(GpuMemberTiming::lengthOf(computeBusy));
@@ -2823,29 +2791,10 @@ private:
         }
         for (std::size_t k = 0; k < nStrips; ++k) {
             if (!stripMeasured[k]) {
-                chargeByWeight(_stripSegments[k], stripNs[k]);
+                chargeEvenly(_stripSegments[k], stripNs[k]);
             }
         }
     } // notePipelineTimes
-
-    /**
-     * @brief Marks contended the member intervals of every strip that can have been in flight alongside a strip whose
-     * copy could not be timed: that copy ran at some unknown time beside them.
-     **/
-    void markContendedNear(const std::vector<bool>& copyUnread)
-    {
-        const int reach = std::max(0, _inFlight - 1);
-        for (MemberStamps& entry : _memberStamps) {
-            if (entry.strip < 0) {
-                continue;
-            }
-            const int first = std::max(0, entry.strip - reach);
-            const int last = std::min((int)copyUnread.size() - 1, entry.strip + reach);
-            for (int k = first; k <= last; ++k) {
-                entry.contended = entry.contended || copyUnread[(std::size_t)k];
-            }
-        }
-    }
 
     /**
      * @brief Charges each member of strip k the device time from the timestamp before it, the one written once the
@@ -3028,118 +2977,29 @@ private:
         _report->memberNs.swap(byTask);
     }
 
-    /**
-     * @brief The clean samples of the member intervals the region kept, indexed by task position, with timed marking
-     * the positions that have an interval at all. Pipelined strips drop the intervals that overlap their copies; a
-     * region run whole drops those of the segments submitted after a download; serial strips keep them all.
-     **/
-    std::vector<GpuMemberTiming::MemberSample> calibrationSamples(std::vector<bool>* timed) const
-    {
-        timed->assign(_region.members.size(), false);
-        std::vector<GpuMemberTiming::MemberSample> byPosition(_region.members.size());
-        if (_memberStamps.empty()) {
-            return byPosition;
-        }
-        std::vector<int> planes(_region.members.size(), 0);
-        for (const Member& member : _members) {
-            planes[_position[member.task]] += member.identity ? 0 : 1;
-        }
-        std::uint64_t origin = std::numeric_limits<std::uint64_t>::max();
-        for (const MemberStamps& entry : _memberStamps) {
-            origin = std::min(origin, entry.begin);
-        }
-        if (!_transferBusy.empty()) {
-            origin = std::min(origin, _transferBusy.front().first);
-        }
-        const double nsPerTick = _runtime.transfer().timestampPeriodNs();
-        const auto nsOf = [origin, nsPerTick](std::uint64_t stamp) {
-            return (long long)((double)(stamp - origin) * nsPerTick);
-        };
-        std::vector<GpuMemberInterval> intervals;
-        for (const MemberStamps& entry : _memberStamps) {
-            (*timed)[entry.member] = true;
-            if (entry.contended) {
-                continue;
-            }
-            GpuMemberInterval interval;
-            interval.strip = entry.strip;
-            interval.member = entry.member;
-            interval.beginNs = nsOf(entry.begin);
-            interval.endNs = nsOf(entry.end);
-            interval.pixels = entry.pixels;
-            intervals.push_back(interval);
-        }
-        GpuMemberTiming::Intervals busy;
-        for (const std::pair<std::uint64_t, std::uint64_t>& transfer : _transferBusy) {
-            busy.push_back(std::make_pair((std::uint64_t)nsOf(transfer.first), (std::uint64_t)nsOf(transfer.second)));
-        }
-
-        for (const GpuMemberTiming::MemberSample& sample : GpuMemberTiming::cleanMemberSamples(intervals, busy, planes)) {
-            byPosition[(std::size_t)sample.member] = sample;
-        }
-
-        return byPosition;
-    }
-
-    // A task the device timed calibrates the model from its clean intervals alone, and a priced one not at all without
-    // one: time shared with a copy runs several times slower and would drag the estimate far from the uncontended rate.
     void noteSuccess()
     {
-        GpuCostModel& model = GpuCostModel::session();
-        std::vector<bool> timed;
-        const std::vector<GpuMemberTiming::MemberSample> samples = calibrationSamples(&timed);
-        int skipped = 0;
-
-        std::vector<long long> taskNs(_region.members.size(), 0);
+        if (_report) {
+            GpuTransferModel::session().observeTransfer((double)_report->uploadBytes, (double)ownDownloadBytes(), _report->uploadMs + _report->downloadMs);
+        }
+        if (!_stats) {
+            return;
+        }
         std::vector<bool> rendered(_region.members.size(), false);
-        for (std::size_t i = 0; i < _members.size(); ++i) {
-            const Member& member = _members[i];
-            if (member.identity) {
-                continue;
-            }
-            const int pos = _position[member.task];
-            rendered[pos] = true;
-            if (_report && (i < _report->memberNs.size())) {
-                taskNs[pos] += _report->memberNs[i];
+        for (const Member& member : _members) {
+            if (!member.identity) {
+                rendered[_position[member.task]] = true;
             }
         }
         for (std::size_t pos = 0; pos < _region.members.size(); ++pos) {
-            if (!rendered[pos]) {
-                continue;
-            }
-            const FrameGraph::Task& task = _graph.tasks[_region.members[pos]];
-            if (timed[pos]) {
-                const GpuTaskTraits traits = model.traitsOf(task);
-                if (samples[pos].hasSample()) {
-                    model.observeGpu(traits, (std::int64_t)samples[pos].cleanNs, samples[pos].cleanMegapixels);
-                } else {
-                    ++skipped;
-                    // Unpriced, a node whose intervals are always contended would stay unpriced; its contended time
-                    // overestimates it, which errs on the safe side.
-                    if (!model.hasGpuCost(traits) && (taskNs[pos] > 0)) {
-                        model.observeGpu(task, taskNs[pos]);
-                    }
-                }
-            } else if (taskNs[pos] > 0) {
-                model.observeGpu(task, taskNs[pos]);
-            }
-            if (_stats) {
-                _stats->noteGpuTaskRun(task.key.node->getScriptName_mt_safe());
+            if (rendered[pos]) {
+                _stats->noteGpuTaskRun(_graph.tasks[_region.members[pos]].key.node->getScriptName_mt_safe());
             }
         }
-        if (_report) {
-            _report->calibrationSkipped = skipped;
-            model.observeTransfer((double)_report->uploadBytes, (double)ownDownloadBytes(), _report->uploadMs + _report->downloadMs);
-        }
-        if (_stats) {
-            _stats->noteGpuRegionRun();
-            if (skipped > 0) {
-                _stats->noteGpuCalibrationSkipped(skipped);
-            }
-            _stats->notePeakDeviceBytes(_peakDeviceBytes);
-            if (_inFlight > 1) {
-                _stats->noteGpuPipelinedRegion(_report ? _report->transferHiddenMs : 0., _report ? _report->transferExposedMs : 0.);
-            }
+        _stats->noteGpuRegionRun();
+        _stats->notePeakDeviceBytes(_peakDeviceBytes);
+        if (_inFlight > 1) {
+            _stats->noteGpuPipelinedRegion(_report ? _report->transferHiddenMs : 0., _report ? _report->transferExposedMs : 0.);
         }
     }
 
@@ -3273,9 +3133,6 @@ private:
         std::uint64_t begin = 0;
         std::uint64_t end = 0;
         unsigned long long pixels = 0;
-
-        // Known to have shared the device with a transfer without timestamps to tell by how much.
-        bool contended = false;
     };
     struct TransferStamps {
         bool upload = true;
@@ -3286,11 +3143,6 @@ private:
     std::vector<MemberStamps> _memberStamps;
     std::vector<TransferStamps> _transferStamps;
 
-    // Raw timestamps of the time pipelined strips spent copying, merged, which the cost model leaves out of its samples.
-    GpuMemberTiming::Intervals _transferBusy;
-
-    // A region run whole has closed a segment that releases a download, which runs alongside every later segment.
-    bool _downloadReleased = false;
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
     std::string _failure;

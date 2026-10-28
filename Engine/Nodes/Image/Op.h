@@ -453,9 +453,6 @@ concept OffsetResampleOp = ResampleOp<OP> && OffsetResampleMembers<OP>;
  * GPU renders the matrix form (GpuMatrixResampleOp) whenever its sampling matrices, affine or
  * projective, are finite and no transform is concatenated into its source, motion and directional
  * blur included, and the offset form (GpuOffsetResampleOp) always.
- *
- * Any Resample op may also have costHint(params, context), returning
- * std::optional<GpuCostHint>, to describe its cost to the GPU cost model.
  **/
 template <typename OP>
 concept GpuResampleOp = ResampleOp<OP> && requires { requires OP::kResamplesOnGpu; };

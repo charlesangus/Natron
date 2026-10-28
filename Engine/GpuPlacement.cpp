@@ -29,8 +29,6 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
-#include <cmath>
-#include <cstdint>
 #include <list>
 #include <queue>
 #include <tuple>
@@ -40,8 +38,8 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuRegionStrips.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
@@ -267,7 +265,79 @@ dropIncompleteRawRuns(const FrameGraph& graph,
     }
 } // dropIncompleteRawRuns
 
+double
+judgeByWeight(const FrameGraph& graph,
+              const FrameGraph::Region& region,
+              const std::function<bool(int)>& isIdentity,
+              const std::function<GpuWeight(const FrameGraph::Task&)>& taskWeight,
+              bool rootOnDevice)
+{
+    double pixels = 0.;
+    double weight = 0.;
+    bool heavy = false;
+    for (int m : region.members) {
+        if (isIdentity(m)) {
+            continue;
+        }
+        const FrameGraph::Task& task = graph.tasks[m];
+        pixels = std::max(pixels, taskPixelCount(task));
+        const GpuWeight w = taskWeight(task);
+        heavy = heavy || w.isHeavy();
+        if (!w.isHeavy()) {
+            weight += w.weight;
+        }
+    }
+    if (pixels < kGpuRegionMinPixels) {
+        return -1.;
+    }
+    const bool accepted = heavy || (weight >= kGpuRegionMinWeight) || regionTransfersAreFree(graph, region, rootOnDevice);
+
+    return accepted ? 1. : -1.;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+double
+taskPixelCount(const FrameGraph::Task& task)
+{
+    const RectI& rect = task.renderedRoI.isNull() ? task.roi : task.renderedRoI;
+
+    return rect.isNull() ? 0. : (double)rect.area();
+}
+
+bool
+regionTransfersAreFree(const FrameGraph& graph,
+                       const FrameGraph::Region& region,
+                       bool rootOnDevice)
+{
+    for (int e : region.externalInputs) {
+        if (graph.tasks[e].device != FrameGraph::Device::Gpu) {
+            return false;
+        }
+    }
+    for (const FrameGraph::Region::Output& output : region.outputs) {
+        if (output.isRoot && !rootOnDevice) {
+            return false;
+        }
+        for (int c : graph.tasks[output.task].consumerTasks) {
+            const bool member = std::find(region.members.begin(), region.members.end(), c) != region.members.end();
+            if (!member && (graph.tasks[c].device == FrameGraph::Device::Cpu)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+double
+regionWeightGain(const FrameGraph& graph,
+                 const FrameGraph::Region& region,
+                 const std::function<GpuWeight(const FrameGraph::Task&)>& taskWeight,
+                 bool rootOnDevice)
+{
+    return judgeByWeight(graph, region, [&graph](int m) { return graph.tasks[m].isIdentity; }, taskWeight, rootOnDevice);
+}
 
 void
 placeGraph(FrameGraph& graph,
@@ -303,15 +373,15 @@ placeGraph(FrameGraph& graph,
     if (inputs.readsRaw) {
         dropIncompleteRawRuns(graph, inputs.readsRaw, identity, cached, &candidate);
     }
-    std::vector<bool> priced(n, false);
-    for (int t : order) {
-        priced[t] = candidate[t] && (!inputs.isPriced || inputs.isPriced(graph.tasks[t]));
+    std::function<double(const FrameGraph&, const FrameGraph::Region&)> regionGain = inputs.regionGain;
+    if (!regionGain && inputs.taskWeight) {
+        const std::function<bool(int)> isIdentity = [&identity](int m) {
+            return identity[m];
+        };
+        regionGain = [isIdentity, &inputs](const FrameGraph& g, const FrameGraph::Region& region) {
+            return judgeByWeight(g, region, isIdentity, inputs.taskWeight, inputs.rootOnDevice);
+        };
     }
-    const auto anyPriced = [&](const std::vector<int>& members) {
-        return std::any_of(members.begin(), members.end(), [&](int m) {
-            return priced[m];
-        });
-    };
 
     // Labels are working region ids; a merge empties the regions it absorbs.
     std::vector<int> label(n, -1);
@@ -468,30 +538,8 @@ placeGraph(FrameGraph& graph,
     // Dropping a whole region keeps the contraction acyclic: a cycle through its members, now separate nodes, would
     // have been one through the region. So does splitting a region into parts with no edge between them. Dropping a
     // single member does not, hence the check.
-    // A region with no priced member has no cost to judge it by: two or more candidates still keep their images on
-    // the device between them, but a lone one would pay transfers for nothing it is known to save.
-    const auto settleUnpriced = [&](int l) {
-        const std::vector<int>& members = regionMembers[l];
-        const std::ptrdiff_t nCandidates = std::count_if(members.begin(), members.end(), [&](int m) {
-            return candidate[m];
-        });
-        if (nCandidates >= 2) {
-            accept(l);
-
-            return;
-        }
-        for (int m : members) {
-            label[m] = -1;
-        }
-        regionMembers[l].clear();
-    };
-
     for (int r : formed) {
-        if (!anyPriced(regionMembers[r])) {
-            settleUnpriced(r);
-            continue;
-        }
-        if (!inputs.regionGain) {
+        if (!regionGain) {
             accept(r);
             continue;
         }
@@ -501,11 +549,7 @@ placeGraph(FrameGraph& graph,
             const int q = queue.front();
             queue.erase(queue.begin());
             const std::vector<int> members = regionMembers[q];
-            if (!anyPriced(members)) {
-                settleUnpriced(q);
-                continue;
-            }
-            if (inputs.regionGain(graph, describeRegion(graph, members, label, q, identity)) > 0.) {
+            if (regionGain(graph, describeRegion(graph, members, label, q, identity)) > 0.) {
                 accept(q);
                 continue;
             }
@@ -525,7 +569,7 @@ placeGraph(FrameGraph& graph,
                                 rest.push_back(other);
                             }
                         }
-                        const double gain = inputs.regionGain(graph, describeRegion(graph, rest, label, q, identity));
+                        const double gain = regionGain(graph, describeRegion(graph, rest, label, q, identity));
                         if ((drop < 0) || (gain > dropGain)) {
                             drop = m;
                             dropGain = gain;
@@ -801,23 +845,21 @@ taskReadsRaw(const FrameGraph::Task& task)
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-void
-judgeWithCostModel(PlacementInputs* inputs,
-                   GpuCostModel* model)
+GpuWeight
+taskGpuWeight(const FrameGraph::Task& task)
 {
-    inputs->isPriced = [model](const FrameGraph::Task& task) -> bool {
-        return model->isPriced(model->traitsOf(task));
-    };
+    const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
+    if (!native) {
+        return GpuWeight::filter();
+    }
+
+    return native->gpuWeight(task.key.time, task.key.view, task.key.mipmapLevel);
 }
 
 // Long enough for any driver to come up; past it, a context still initializing is presumed stuck.
 const std::chrono::seconds kGpuInitWaitLimit(10);
 
-/**
- * Before the context is up the transfer rates are unknown, so the graph is placed with free transfers: what its regions
- * gain then bounds what the GPU can save on this frame. The frame waits for the context up to that bound, since
- * waiting longer could only lose to the CPU.
- **/
 void
 waitForGpuInitIfWorthIt(const GpuContext& gpu,
                         const FrameGraph& graph,
@@ -831,23 +873,12 @@ waitForGpuInitIfWorthIt(const GpuContext& gpu,
         return;
     }
 
-    GpuCostModel* model = &GpuCostModel::session();
-    PlacementInputs inputs = makeRenderPlacementInputs(context);
-    judgeWithCostModel(&inputs, model);
-    inputs.regionGain = [model](const FrameGraph& trial, const FrameGraph::Region& region) {
-        return model->regionGainBoundMs(trial, region);
-    };
     FrameGraph trial = graph;
-    placeGraph(trial, inputs);
-    double gainMs = 0.;
-    for (const FrameGraph::Region& region : trial.regions) {
-        gainMs += std::max(0., model->regionGainBoundMs(trial, region));
-    }
-    if (!(gainMs > 0.)) {
+    placeGraph(trial, makeRenderPlacementInputs(context));
+    if (trial.regions.empty()) {
         return;
     }
-    const double leftMs = std::chrono::duration<double, std::milli>(left).count();
-    gpu.waitForInit(std::chrono::milliseconds((std::int64_t)std::ceil(std::min(gainMs, leftMs))));
+    gpu.waitForInit(std::chrono::ceil<std::chrono::milliseconds>(left));
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -863,10 +894,14 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         return context && makeGpuTaskPlanes(task, *context, &planes);
     };
     inputs.readsRaw = taskReadsRaw;
+    inputs.taskWeight = taskGpuWeight;
+#ifdef NATRON_HAVE_GPU
+    inputs.rootOnDevice = context && context->wantsRootOnDevice();
+#endif
 
+    // GpuRegionTask sizes its strips from the session model's transfer rates.
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu && gpu->isAvailable()) {
-        GpuCostModel* model = &GpuCostModel::session();
         GpuTransferRates rates = GpuTransferRates::fromCalibration(gpu->calibration());
 #ifdef NATRON_HAVE_GPU
         if (gpu::GpuRuntime* runtime = gpu->runtime()) {
@@ -874,17 +909,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
             rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
         }
 #endif
-        model->setTransferRates(rates);
-        judgeWithCostModel(&inputs, model);
-        inputs.regionGain = [model, context](const FrameGraph& graph, const FrameGraph::Region& region) {
-#ifdef NATRON_HAVE_GPU
-            const bool rootOnDevice = context && context->wantsRootOnDevice();
-#else
-            const bool rootOnDevice = false;
-#endif
-
-            return model->regionGainMs(graph, region, rootOnDevice);
-        };
+        GpuTransferModel::session().setTransferRates(rates);
     }
 
     // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI

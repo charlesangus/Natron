@@ -194,6 +194,13 @@ BloomOp::passes(const Params& params,
     return bloomPasses(params, context);
 }
 
+std::optional<GpuWeight>
+BloomOp::gpuWeight(const Params& params,
+                   const PassContext& context) const
+{
+    return BloomKernels::gpuWeight(settingsFor(params, context));
+}
+
 Bloom::Bloom(NodePtr node)
     : ImageNode<BloomOp>(node)
 {

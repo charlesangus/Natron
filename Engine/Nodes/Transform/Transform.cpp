@@ -402,15 +402,15 @@ TransformOp::rendersWithMotionBlur(const Params& params)
     return (blur.motionBlur != 0.) && ((blur.shutter != 0.) || blur.directionalBlur);
 }
 
-std::optional<GpuCostHint>
-TransformOp::costHint(const Params& params,
-                      const PassContext& /*context*/) const
+std::optional<GpuWeight>
+TransformOp::gpuWeight(const Params& params,
+                       const PassContext& /*context*/) const
 {
-    GpuCostHint hint;
+    if (rendersWithMotionBlur(params)) {
+        return GpuWeight::heavy();
+    }
 
-    hint.motionBlur = rendersWithMotionBlur(params);
-
-    return hint;
+    return std::nullopt;
 }
 
 void

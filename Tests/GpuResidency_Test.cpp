@@ -68,10 +68,10 @@
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
-#include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -617,7 +617,7 @@ protected:
         return true;
     }
 
-    // Places, as placeGraph() would without a cost model, every task of gpuNodes their effect can render on the GPU.
+    // Places, as placeGraph() would if every region were accepted, every task of gpuNodes their effect can render on the GPU.
     static void placeOnGpu(FrameRun* run,
                            const std::vector<NodePtr>& gpuNodes)
     {
@@ -2062,41 +2062,31 @@ worstDiff(const std::vector<float>& a,
 }
 
 /**
- * @brief Sets the session cost model's transfer rates and a plugin's GPU seed, which the region body plans its strips
- * with, and puts back the rates and the plugin's kernel cost when it goes. The rates are far enough from the device's
- * that what the region body measures and feeds back cannot turn the model's verdict within a test.
+ * @brief Sets the session transfer model's rates, which the region body plans its strips with, and puts them back when
+ * it goes. The rates are far enough from the device's that what the region body measures and feeds back cannot turn
+ * the planner's verdict within a test.
  **/
-class SessionCostScope {
+class SessionTransferScope {
 public:
-    SessionCostScope(const std::string& pluginId,
-                     double kernelMsPerMpx,
-                     double bytesPerSecond)
-        : _pluginId(pluginId)
-        , _rates(GpuCostModel::session().transferRates())
-        , _kernelMsPerMpx(GpuCostModel::session().gpuMs(GpuTaskTraits(pluginId), 1.))
+    explicit SessionTransferScope(double bytesPerSecond)
+        : _rates(GpuTransferModel::session().transferRates())
     {
         GpuTransferRates rates;
         rates.uploadBytesPerSecond = bytesPerSecond;
         rates.downloadBytesPerSecond = bytesPerSecond;
-        GpuCostModel::session().setTransferRates(rates);
-        GpuCostModel::session().setGpuSeed(pluginId, kernelMsPerMpx);
+        GpuTransferModel::session().setTransferRates(rates);
     }
 
-    ~SessionCostScope()
+    ~SessionTransferScope()
     {
-        GpuCostModel::session().setTransferRates(_rates);
-        if (std::isfinite(_kernelMsPerMpx)) {
-            GpuCostModel::session().setGpuSeed(_pluginId, _kernelMsPerMpx);
-        }
+        GpuTransferModel::session().setTransferRates(_rates);
     }
 
-    SessionCostScope(const SessionCostScope&) = delete;
-    SessionCostScope& operator=(const SessionCostScope&) = delete;
+    SessionTransferScope(const SessionTransferScope&) = delete;
+    SessionTransferScope& operator=(const SessionTransferScope&) = delete;
 
 private:
-    std::string _pluginId;
     GpuTransferRates _rates;
-    double _kernelMsPerMpx;
 };
 
 } // namespace
@@ -2452,139 +2442,8 @@ TEST_F(GpuResidencyTest, RegionMembersAreTimedOnTheDevice)
     EXPECT_EQ(3 * kTimedRuns, regionRecords);
 }
 
-// Copies sharing the device with pipelined strips slow their members several times over, so the cost model takes its
-// samples from the intervals no copy overlapped: Grade's calibrated rate after pipelined strips stays near the one
-// serial strips give, whatever the raw member time says. A pipelined run in which every Grade interval overlapped a
-// copy leaves the model alone and says so.
-TEST_F(GpuResidencyTest, PipelinedStripsCalibrateLikeSerial)
-{
-    if (!gpuOrSkip()) {
-        return;
-    }
-    if (!runtime()->transfer().timestampsSupported()) {
-        std::printf("[  SKIPPED ] the device has no timestamps, so the model calibrates from whole regions' wall time\n");
-
-        return;
-    }
-    if (!canPipeline()) {
-        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
-
-        return;
-    }
-    const int size = 512;
-    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
-    NodePtr blur = makeBlur(60.);
-    NodePtr grade = makeGrade(0.8, 0.02);
-    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
-    ASSERT_TRUE(source && blur && grade && sink);
-    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
-    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
-    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
-    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
-    ASSERT_TRUE(crop);
-    crop->setValue(false);
-    connectNodes(source, blur, 0, true);
-    connectNodes(blur, grade, 0, true);
-    connectNodes(grade, sink, 0, true);
-    const RectI window(0, 0, size, size);
-
-    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
-    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
-                                     const FrameGraph& graph,
-                                     int region,
-                                     const RenderScheduler::CpuFallbackLease& lease,
-                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
-                                     RenderScheduler::RegionReport* report) {
-        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, lease, rootPlanes, report);
-        *last = *report;
-
-        return code;
-    });
-
-    // One run calibrates from one sample, and other work sharing the device or, on a CPU device, the host's cores only
-    // ever slows a sample down. Each mode is judged on its fastest of several runs, and the modes alternate so that a
-    // stretch of load falls on both. A copy overlapping a sample is no such accident: pipelined strips overlap one in
-    // every run, so a contended sample taken into the model shows in the fastest run too.
-    const int kRunsPerMode = 5;
-    const double inf = std::numeric_limits<double>::infinity();
-    const char* const modes[] = { "serial strips", "pipelined strips" };
-    double calibratedMsPerMpx[2] = { inf, inf };
-    double rawMsPerMpx[2] = { inf, inf };
-    int sampledRuns[2] = { 0, 0 };
-    for (int timedRun = 0; timedRun < 2 * kRunsPerMode; ++timedRun) {
-        const int mode = timedRun % 2;
-        SCOPED_TRACE(modes[mode]);
-        GpuCostModel& model = GpuCostModel::session();
-        model.reset();
-        // As in RegionMembersAreTimedOnTheDevice: a strip of the source carries the Blur's halo, so a range under
-        // 2 MB would leave the region too large to strip.
-        setGpuStripOverridesForTests(2u << 20, 0);
-        setGpuStripPipeliningForTests((mode == 1) ? GpuStripPipelining::On : GpuStripPipelining::Off);
-        *last = RenderScheduler::RegionReport();
-        FrameRun run;
-        std::string error;
-        ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
-        const int blurTask = taskOf(run.graph, blur);
-        const int gradeTask = taskOf(run.graph, grade);
-        ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
-        assignRegions(&run.graph, { { blurTask, gradeTask } });
-        const std::vector<int> members = run.graph.regions[0].members;
-        ASSERT_EQ(2u, members.size());
-        const GpuTaskTraits gradeTraits = model.traitsOf(run.graph.tasks[gradeTask]);
-        const double gradeMpx = GpuCostModel::megapixelsOf(run.graph.tasks[gradeTask]);
-        ASSERT_GT(gradeMpx, 0.);
-        const double before = model.gpuMs(gradeTraits, 1.);
-        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
-        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
-        const RenderScheduler::RegionReport report = *last;
-        EXPECT_EQ(0, fallbacksOf(run));
-        EXPECT_GT(report.strips, 1);
-        EXPECT_EQ(mode == 1, report.stripsInFlight > 1);
-        ASSERT_EQ(2u, report.memberNs.size());
-        const double after = model.gpuMs(gradeTraits, 1.);
-        ASSERT_TRUE(std::isfinite(after));
-
-        // The region observes Grade once: a seeded rate moves kEmaWeight of the way to the sample, and an unseeded
-        // one takes the sample whole.
-        const bool sampled = (after != before);
-        const double calibrated = std::isfinite(before) ? before + (after - before) / GpuCostModel::kEmaWeight : after;
-        const long long gradeNs = report.memberNs[(members[0] == blurTask) ? 1 : 0];
-        const double raw = (double)gradeNs * 1e-6 / gradeMpx;
-        rawMsPerMpx[mode] = std::min(rawMsPerMpx[mode], raw);
-        if (sampled) {
-            ++sampledRuns[mode];
-            calibratedMsPerMpx[mode] = std::min(calibratedMsPerMpx[mode], calibrated);
-        }
-        if (mode == 0) {
-            // Serial strips run no copy alongside their members, so each of them calibrates.
-            EXPECT_EQ(0, report.calibrationSkipped);
-        } else if (!sampled) {
-            EXPECT_GT(report.calibrationSkipped, 0);
-        }
-        std::printf("[          ] %s: Grade raw %.4f ms/Mpx, calibrated %.4f ms/Mpx%s; %d members skipped, %zu member intervals\n",
-                    modes[mode], raw, calibrated, sampled ? "" : " (no sample)", report.calibrationSkipped,
-                    report.memberIntervals.size());
-        expectReleased(run);
-    }
-
-    ASSERT_EQ(kRunsPerMode, sampledRuns[0]);
-    ASSERT_GT(calibratedMsPerMpx[0], 0.);
-    std::printf("[          ] fastest pipelined / serial Grade: raw %.3f, calibrated %.3f\n", rawMsPerMpx[1] / std::max(rawMsPerMpx[0], 1e-12),
-                sampledRuns[1] ? calibratedMsPerMpx[1] / calibratedMsPerMpx[0] : 0.);
-    if (sampledRuns[1] > 0) {
-        // A single run lands at 0.87-1.10 on an NVIDIA GPU and at 0.56-0.92 on lavapipe, a CPU device sharing its cores
-        // with the rest of the host, and the fastest of several runs only narrows that. A Grade sample overlapped by a
-        // copy runs 2.9-6.8 times slower, well outside either band.
-        const bool cpuDevice = runtime()->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU;
-        const double ratio = calibratedMsPerMpx[1] / calibratedMsPerMpx[0];
-        EXPECT_GE(ratio, cpuDevice ? 0.4 : 0.67);
-        EXPECT_LE(ratio, cpuDevice ? 2.5 : 1.5);
-    }
-}
-
-// A lone Grade over a UHD frame fits the device whole, but moves enough bytes, and is seeded with a kernel heavy
-// enough, that pipelined strips hide most of its transfer: with pipelining on it runs as at least three strips, with
-// the pixels of the whole run. Left to decide, it pipelines exactly when uploads and downloads have a queue other than
+// A lone Grade over a UHD frame fits the device whole, but moves enough bytes that pipelined strips hide its
+// transfer behind its compute: with pipelining on it runs as at least three strips, with the pixels of the whole run. Left to decide, it pipelines exactly when uploads and downloads have a queue other than
 // the compute queue.
 TEST_F(GpuResidencyTest, WholeRegionWithLargeTransferRunsAsOverlappedStrips)
 {
@@ -2608,8 +2467,7 @@ TEST_F(GpuResidencyTest, WholeRegionWithLargeTransferRunsAsOverlappedStrips)
     connectNodes(source, grade, 0, true);
     connectNodes(grade, sink, 0, true);
     const RectI window(0, 0, width, height);
-    // 330 ms of kernel against 27 ms of transfer.
-    SessionCostScope cost(grade->getPluginID(), 40., 10e9);
+    SessionTransferScope transfer(10e9);
 
     std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
     _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
@@ -2663,7 +2521,7 @@ TEST_F(GpuResidencyTest, WholeRegionWithLargeTransferRunsAsOverlappedStrips)
     }
 }
 
-// Pipelined strips can run an upload and a download at once on their own queues. The cost model prices the two
+// Pipelined strips can run an upload and a download at once on their own queues. The transfer model prices the two
 // directions summed, so the region must correct it by their summed times, not by the shorter span they cover together.
 TEST_F(GpuResidencyTest, PipelinedTransfersCorrectTheModelByTheirSummedTimes)
 {
@@ -2687,7 +2545,7 @@ TEST_F(GpuResidencyTest, PipelinedTransfersCorrectTheModelByTheirSummedTimes)
     connectNodes(source, grade, 0, true);
     connectNodes(grade, sink, 0, true);
     const RectI window(0, 0, width, height);
-    SessionCostScope cost(grade->getPluginID(), 40., 10e9);
+    SessionTransferScope transfer(10e9);
 
     std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
     _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
@@ -2723,65 +2581,9 @@ TEST_F(GpuResidencyTest, PipelinedTransfersCorrectTheModelByTheirSummedTimes)
     std::printf("[          ] upload %.3f ms, download %.3f ms, spanning %.3f ms together; predicted %.3f ms\n",
                 report.uploadMs, report.downloadMs, spannedMs, report.predictedTransferMs);
     // Without timestamps the pipelined strips measure no transfer, and the model is left as it was.
-    const double expectedMs = (summedMs > 0.) ? report.predictedTransferMs + GpuCostModel::kEmaWeight * (summedMs - report.predictedTransferMs)
+    const double expectedMs = (summedMs > 0.) ? report.predictedTransferMs + GpuTransferModel::kEmaWeight * (summedMs - report.predictedTransferMs)
                                               : report.predictedTransferMs;
-    EXPECT_NEAR(GpuCostModel::session().transferMs((double)report.uploadBytes, (double)report.downloadBytes), expectedMs, expectedMs * 1e-9);
-    expectReleased(run);
-}
-
-// The same Grade at its own cost of well under a millisecond, on a bus that takes a second over its bytes: pipelined
-// strips would hide next to nothing and cost their own overhead, so even with pipelining on it runs whole.
-TEST_F(GpuResidencyTest, CheapWholeRegionWithLargeTransferStaysWhole)
-{
-    if (!gpuOrSkip()) {
-        return;
-    }
-    if (!canPipeline()) {
-        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
-
-        return;
-    }
-    const int width = 3840;
-    const int height = 2160;
-    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
-    NodePtr grade = makeGrade(1.5, 0.1);
-    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
-    ASSERT_TRUE(source && grade && sink);
-    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
-    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
-    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)width, (double)height }));
-    connectNodes(source, grade, 0, true);
-    connectNodes(grade, sink, 0, true);
-    const RectI window(0, 0, width, height);
-    // 0.5 ms of kernel against 1060 ms of transfer.
-    SessionCostScope cost(grade->getPluginID(), 0.06, 0.25e9);
-
-    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
-    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
-                                     const FrameGraph& graph,
-                                     int region,
-                                     const RenderScheduler::CpuFallbackLease& lease,
-                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
-                                     RenderScheduler::RegionReport* report) {
-        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, lease, rootPlanes, report);
-        *last = *report;
-
-        return code;
-    });
-
-    setGpuStripPipeliningForTests(GpuStripPipelining::On);
-    FrameRun run;
-    std::string error;
-    ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
-    const int gradeTask = taskOf(run.graph, grade);
-    ASSERT_TRUE(gradeTask >= 0);
-    assignRegions(&run.graph, { { gradeTask } });
-    run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
-    const RenderScheduler::RegionReport report = *last;
-    EXPECT_EQ(0, fallbacksOf(run));
-    EXPECT_EQ(0, report.strips);
-    EXPECT_FALSE(report.overlapStrips);
+    EXPECT_NEAR(GpuTransferModel::session().transferMs((double)report.uploadBytes, (double)report.downloadBytes), expectedMs, expectedMs * 1e-9);
     expectReleased(run);
 }
 
@@ -3135,9 +2937,8 @@ const int kPlanHeight = 1000;
 const int kPlanHalo = 10;
 const std::uint64_t kPlanRowBytes = kPlanWidth * 4 * sizeof(float);
 
-// Each member of planChain() is predicted to take this long over its whole output, and overlapLimits() moves a row of
-// it between host and device in kPlanRowMs: the whole chain takes 12 ms of kernel and 20 ms of transfer.
-const double kPlanMemberMs = 4.;
+// overlapLimits() moves a row of planChain() between host and device in this long: the whole chain takes 20 ms of
+// transfer.
 const double kPlanRowMs = 0.01;
 
 RectI
@@ -3149,8 +2950,7 @@ padRows(const RectI& rect,
 
 // A RAM source -> Grade -> Blur reading kPlanHalo rows beyond each side -> Grade read after the region.
 GpuStripGraph
-planChain(int blurHalo = kPlanHalo,
-          double memberMs = kPlanMemberMs)
+planChain(int blurHalo = kPlanHalo)
 {
     GpuStripGraph graph;
     const RectI bounds(0, 0, kPlanWidth, kPlanHeight);
@@ -3171,7 +2971,6 @@ planChain(int blurHalo = kPlanHalo,
         member.inputRoI = [halo](int, const RectI& rect) {
             return padRows(rect, halo);
         };
-        member.kernelMs = memberMs;
         graph.members.push_back(member);
     }
 
@@ -3227,29 +3026,6 @@ private:
     std::thread _opener;
 };
 
-/**
- * @brief Prices the session model's CPU costs on one thread while it lives, so that they do not depend on the machine.
- **/
-class SessionThreadCountScope {
-public:
-    explicit SessionThreadCountScope(int threads)
-        : _saved(GpuCostModel::session().threadCount())
-    {
-        GpuCostModel::session().setThreadCount(threads);
-    }
-
-    ~SessionThreadCountScope()
-    {
-        GpuCostModel::session().setThreadCount(_saved);
-    }
-
-    SessionThreadCountScope(const SessionThreadCountScope&) = delete;
-    SessionThreadCountScope& operator=(const SessionThreadCountScope&) = delete;
-
-private:
-    int _saved;
-};
-
 } // namespace
 
 // The first frame of a process is placed while the GPU still initializes. A large Blur, which the GPU wins once it is
@@ -3271,8 +3047,6 @@ TEST_F(GpuResidencyTest, FirstFrameWaitsForTheGpuWhenItWouldWin)
     crop->setValue(false);
     connectNodes(source, blur, 0, true);
     const RectI window(0, 0, size, size);
-    // On one thread the Blur's CPU time is seconds, which leaves the gated context time to come up within the wait.
-    SessionThreadCountScope threads(1);
 
     InitGate gate;
     GpuContext* gpu = useGatedContext(gate.future());
@@ -3310,7 +3084,6 @@ TEST_F(GpuResidencyTest, FirstFrameTheGpuCannotWinDoesNotWait)
     NodePtr grade = makeGrade(1.5, 0.1);
     ASSERT_TRUE(source && grade);
     connectNodes(source, grade, 0, true);
-    SessionThreadCountScope threads(1);
 
     InitGate gate;
     GpuContext* gpu = useGatedContext(gate.future());
@@ -3567,43 +3340,23 @@ TEST(GpuRegionStrips, WholeRegionKeepingAnOutputOnTheDeviceStaysWhole)
     EXPECT_FALSE(overlapped);
 }
 
-// Three strips of 336 rows each upload and compute again 4 halos of rows of the source and of the first Grade. Strips
-// take K' / 3 + T' = 24 + 0.045 h ms against 32 ms whole, so a 150-row halo is worth carrying, though the strips are
-// under four times as tall as it, and a 200-row one is not.
-TEST(GpuRegionStrips, WholeRegionStripsWhileItsHaloCostsLessThanTheOverlapHides)
-{
-    std::vector<GpuStrip> strips;
-    int rows = 0;
-    bool overlapped = false;
-
-    EXPECT_EQ(GpuStripResult::Strips, planGpuStrips(planChain(150), overlapLimits(), &strips, &rows, nullptr, &overlapped));
-    EXPECT_TRUE(overlapped);
-    EXPECT_EQ((std::size_t)kGpuStripMaxInFlight, strips.size());
-    EXPECT_LT(rows, 4 * 150);
-
-    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(planChain(200), overlapLimits(), &strips, &rows, nullptr, &overlapped));
-    EXPECT_TRUE(strips.empty());
-    EXPECT_FALSE(overlapped);
-}
-
-// Members predicted at 0.1 ms each run 0.3 ms against 20 ms of transfer, under kGpuStripOverlapMinKernelRatio of it:
-// strips would hide next to nothing, so the region stays whole. Heavier members, 2 ms each, reach the ratio and strip.
-TEST(GpuRegionStrips, WholeRegionStripsOnlyWhenItsKernelCanHideTheTransfer)
+// Without a rate to price its bytes, a region gains nothing known from hiding its transfer, so it stays whole.
+TEST(GpuRegionStrips, WholeRegionStripsOnlyWhenItsTransferIsCosted)
 {
     std::vector<GpuStrip> strips;
     int rows = 0;
     bool overlapped = true;
 
-    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(planChain(kPlanHalo, 0.1), overlapLimits(), &strips, &rows, nullptr, &overlapped));
-    EXPECT_TRUE(strips.empty());
-    EXPECT_FALSE(overlapped);
-
-    EXPECT_EQ(GpuStripResult::Strips, planGpuStrips(planChain(kPlanHalo, 2.), overlapLimits(), &strips, &rows, nullptr, &overlapped));
-    EXPECT_TRUE(overlapped);
-
     GpuStripLimits unpriced = overlapLimits();
     unpriced.transferMs = nullptr;
     EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(planChain(), unpriced, &strips, &rows, nullptr, &overlapped));
+    EXPECT_FALSE(overlapped);
+
+    GpuStripLimits unknownRate = overlapLimits();
+    unknownRate.transferMs = [](std::uint64_t, std::uint64_t) {
+        return std::numeric_limits<double>::infinity();
+    };
+    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(planChain(), unknownRate, &strips, &rows, nullptr, &overlapped));
     EXPECT_FALSE(overlapped);
 }
 

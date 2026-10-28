@@ -96,7 +96,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 
 ## Phase 148.2: Display and feedback
 
-- [ ] M148.P2.T1 — Role colours, link lines, and the show and output toggles
+- [x] M148.P2.T1 — Role colours, link lines, and the show and output toggles
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`
   - approach:
     - Override the base's per-curve overlay colour hook by role.
@@ -105,7 +105,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
   - verify: an `isIdentity` test for the output toggle, plus a project save that leaves it out (`Tests/Native/SplineWarpTools_Test.cpp`). The look is checked in the gate screenshots.
   - size: M
 
-- [ ] M148.P2.T2 — Live coarse-field feedback while dragging
+- [x] M148.P2.T2 — Live coarse-field feedback while dragging
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpField.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.cpp`
   - approach:
     - While a drag is active, render in draft. In draft, SplineWarp uses ×4 the field step and half the curve resolution.
@@ -142,6 +142,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 
 ## Decisions
 
+- 2026-10-28: Phase 2 implemented (build pending). Show and Output Warped sit in the viewer's top bar (the vertical toolbar only holds tool groups); neither is saved, Output Warped is in the render hash (off = identity of Source; also affects Write renders in the session). Unlinked curves and boundaries always shown; link/correspondence lines only with Show = Both; hidden curves deselected and unpickable. Changing a never-saved knob no longer marks the project for autosave (all nodes). Drag uses the app draft-render flag: field step ×4, half curve detail, impulse filter; RoD stays full quality. PM call: draft tolerance max 0.3 / mean 0.05 (RGB, 8 px margin) — a numpy model predicts ~0.14 max for the fixture; a draft is a preview. Open (user): should role colours override a curve's own overlay colour (currently they do)?
 - 2026-10-28: Phase 1 implemented (86b0c3735, build pending). No BSpline tool (shared base has none). Warp actions return their undo command (background apps discard pushed commands). Correspondence picking uses SplineWarpCurve::nearestParam (isPointOnCurve reads timeline time, main thread only). Toggle Boundary on mixed selection sets all, clears if all set. Duplicate and Link takes exactly one curve, names <name>_copy[N]. Auto-key on keys new correspondences at the current time. Swap is exact only for unreversed zero-offset links. Open (put to the user): where the one-shot warp actions live (toolbar groups only hold switchable tools) — PM recommendation: a Nuke-style Join tool (Nuke's SplineWarp links A→B with a Join tool) plus right-click menu entries for the others; and whether Swap must be exact for reversed/offset links.
 - 2026-10-20 — **Duplicate and Link lands on top, as the selected destination (user, grill):** the warp starts at zero, so nothing jumps.
 - 2026-10-20 — **Colours, a show toggle and a warped/unwarped toggle (user, grill).**

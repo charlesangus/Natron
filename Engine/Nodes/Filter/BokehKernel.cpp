@@ -108,6 +108,300 @@ kernelValue(float v)
 {
     return (std::isfinite(v) && (v > 0.f)) ? v : 0.f;
 }
+
+double
+finiteOr(double v,
+         double fallback)
+{
+    return std::isfinite(v) ? v : fallback;
+}
+
+double
+clamp01(double v,
+        double fallback)
+{
+    return std::min(1., std::max(0., finiteOr(v, fallback)));
+}
+
+// The clip disc in the coordinates of ShapeTest.
+struct ClipTest {
+    bool active = false;
+    double cx = 0.;
+    double cy = 0.;
+    double radius = 0.;
+
+    bool inside(double u,
+                double v) const
+    {
+        const double du = u - cx;
+        const double dv = v - cy;
+
+        return du * du + dv * dv <= radius * radius;
+    }
+
+    // How much of the box [u0, u1] x [v0, v1] the clip covers: 0 none, 2 all, 1 part of it.
+    int classify(double u0,
+                 double u1,
+                 double v0,
+                 double v1) const
+    {
+        if (!active) {
+            return 2;
+        }
+        double nearU, farU, nearV, farV;
+        intervalDistances(u0 - cx, u1 - cx, &nearU, &farU);
+        intervalDistances(v0 - cy, v1 - cy, &nearV, &farV);
+        if (nearU * nearU + nearV * nearV >= radius * radius) {
+            return 0;
+        }
+
+        return (farU * farU + farV * farV <= radius * radius) ? 2 : 1;
+    }
+};
+
+// A clip that holds the disc of radius reach about 0 changes nothing, and is left out.
+ClipTest
+makeClipTest(const BokehClip& clip,
+             double reach)
+{
+    ClipTest test;
+
+    if (std::isnan(clip.radius) || !std::isfinite(clip.offsetX) || !std::isfinite(clip.offsetY)) {
+        return test;
+    }
+    if (std::isfinite(clip.radius) && (std::hypot(clip.offsetX, clip.offsetY) + reach > clip.radius)) {
+        test.active = true;
+        test.cx = clip.offsetX;
+        test.cy = clip.offsetY;
+        test.radius = std::max(0., clip.radius);
+    }
+
+    return test;
+}
+
+// The texture over the shape: rho is the radius in ShapeTest's coordinates, s the radius as a
+// fraction of the shape's boundary in that direction.
+struct Texture {
+    bool active = false;
+    bool gaussian = false;
+    bool hole = false;
+    double holeRadius = 0.;
+    bool ring = false;
+    double ringInner = 0.;
+    double ringOuter = 0.;
+    double ringBrightness = 1.;
+    double spherical = 0.;
+    double discMix = 1.;
+    double gaussianScale = 0.;
+
+    double value(double rho,
+                 double s) const
+    {
+        if (hole && (rho <= holeRadius)) {
+            return 0.;
+        }
+        double t = 1.;
+        if (ring) {
+            if (s <= ringInner) {
+                t = ringBrightness;
+            } else if (s < ringOuter) {
+                t = ringBrightness + (1. - ringBrightness) * (s - ringInner) / (ringOuter - ringInner);
+            }
+        }
+        if (spherical != 0.) {
+            t *= std::max(0., 1. + spherical * (2. * rho * rho - 1.));
+        }
+
+        return t;
+    }
+
+    double gauss(double rho) const
+    {
+        return std::exp(-rho * rho * gaussianScale);
+    }
+
+    // Whether the texture has an edge or a kink between radii rho0 and rho1, or s0 and s1.
+    bool changesWithin(double rho0,
+                       double rho1,
+                       double s0,
+                       double s1) const
+    {
+        const auto straddles = [](double a, double b, double e) {
+            return (a < e) && (b > e);
+        };
+
+        return (hole && straddles(rho0, rho1, holeRadius))
+            || (ring && (straddles(s0, s1, ringInner) || straddles(s0, s1, ringOuter)));
+    }
+};
+
+// The Gaussian's standard deviation as a fraction of the radius: 3 sigma reaches the rim.
+const double kGaussianSigma = 1. / 3.;
+
+Texture
+makeTexture(const BokehShapeParams& params)
+{
+    Texture tex;
+
+    tex.discMix = clamp01(params.filterShape, 1.);
+    tex.gaussian = (tex.discMix < 1.);
+    tex.gaussianScale = 1. / (2. * kGaussianSigma * kGaussianSigma);
+    tex.hole = params.catadioptric && (finiteOr(params.catadioptricSize, 0.) > 0.);
+    tex.holeRadius = tex.hole ? clamp01(params.catadioptricSize, 0.) : 0.;
+    const double brightness = std::max(0., finiteOr(params.innerBrightness, 1.));
+    tex.ring = (brightness != 1.);
+    if (tex.ring) {
+        const double size = clamp01(params.innerSize, 0.8);
+        const double feather = clamp01(params.innerFeather, 0.5);
+        tex.ringBrightness = brightness;
+        tex.ringInner = (feather < 0.5) ? 2. * feather * size : size;
+        tex.ringOuter = (feather > 0.5) ? size + (2. * feather - 1.) * (1. - size) : size;
+    }
+    tex.spherical = std::min(1., std::max(-1., finiteOr(params.sphericalAberration, 0.)));
+    tex.active = tex.hole || tex.ring || (tex.spherical != 0.);
+
+    return tex;
+}
+
+// The radius of (u, v) as a fraction of the shape's boundary in its direction.
+double
+shapeRadius(const ShapeTest& test,
+            double u,
+            double v)
+{
+    const double rho = std::sqrt(u * u + v * v);
+
+    if (!test.polygon) {
+        return rho;
+    }
+    double phi = std::atan2(v, u) - test.angle0;
+    phi -= test.sector * std::floor(phi / test.sector);
+    const double edge = test.apothem / std::cos(phi - test.sector / 2.);
+
+    return rho / ((1. - test.roundness) * edge + test.roundness);
+}
+
+// The kernel weights of shaped(), unnormalised; false when they sum to 0.
+bool
+shapeWeights(const ShapeTest& test,
+             const ClipTest& clip,
+             const Texture& tex,
+             double rx,
+             double ry,
+             int hx,
+             int hy,
+             std::vector<float>* out)
+{
+    const int w = 2 * hx + 1;
+    const int h = 2 * hy + 1;
+    const bool plain = !clip.active && !tex.active && !tex.gaussian;
+    std::vector<float>& weights = *out;
+    weights.assign((std::size_t)w * h, 0.f);
+    std::vector<double> gaussWeights;
+    if (tex.gaussian) {
+        gaussWeights.assign((std::size_t)w * h, 0.);
+    }
+    double sum = 0.;
+    double gaussSum = 0.;
+
+    for (int dy = -hy; dy <= hy; ++dy) {
+        const double v0 = (dy - 0.5) / ry;
+        const double v1 = (dy + 0.5) / ry;
+        double nearV, farV;
+        intervalDistances(v0, v1, &nearV, &farV);
+        for (int dx = -hx; dx <= hx; ++dx) {
+            const double u0 = (dx - 0.5) / rx;
+            const double u1 = (dx + 0.5) / rx;
+            double nearU, farU;
+            intervalDistances(u0, u1, &nearU, &farU);
+            const std::size_t index = (std::size_t)(dy + hy) * w + (dx + hx);
+            if (nearU * nearU + nearV * nearV >= 1.) {
+                // The shape lies within the unit circle.
+                continue;
+            }
+            const int clipCover = clip.classify(u0, u1, v0, v1);
+            if (clipCover == 0) {
+                continue;
+            }
+            const double rhoNear = std::sqrt(nearU * nearU + nearV * nearV);
+            const double rhoFar = std::sqrt(farU * farU + farV * farV);
+            const bool whole = (rhoFar <= test.inner) && (clipCover == 2);
+            if (plain) {
+                float coverage;
+                if (whole) {
+                    coverage = 1.f;
+                } else {
+                    // Offsets from the pixel's centre, symmetric bit for bit, so that a symmetric
+                    // shape gives a symmetric kernel.
+                    int count = 0;
+                    for (int j = 0; j < kEdgeSamples; ++j) {
+                        const double v = (dy + ((j + 0.5) / kEdgeSamples - 0.5)) / ry;
+                        for (int i = 0; i < kEdgeSamples; ++i) {
+                            const double u = (dx + ((i + 0.5) / kEdgeSamples - 0.5)) / rx;
+                            if (test.inside(u, v)) {
+                                ++count;
+                            }
+                        }
+                    }
+                    coverage = (float)count / (float)(kEdgeSamples * kEdgeSamples);
+                }
+                weights[index] = coverage;
+                sum += coverage;
+                continue;
+            }
+            // The fraction of the boundary is at least rho and at most rho over the inner radius.
+            if (whole && !tex.changesWithin(rhoNear, rhoFar, rhoNear, rhoFar / test.inner)) {
+                // Smooth over the pixel: its centre stands for it.
+                const double u = dx / rx;
+                const double v = dy / ry;
+                const double rho = std::sqrt(u * u + v * v);
+                const double t = tex.active ? tex.value(rho, shapeRadius(test, u, v)) : 1.;
+                weights[index] = (float)t;
+                sum += (float)t;
+                if (tex.gaussian) {
+                    gaussWeights[index] = t * tex.gauss(rho);
+                    gaussSum += gaussWeights[index];
+                }
+                continue;
+            }
+            double acc = 0.;
+            double gaussAcc = 0.;
+            for (int j = 0; j < kEdgeSamples; ++j) {
+                const double v = (dy + ((j + 0.5) / kEdgeSamples - 0.5)) / ry;
+                for (int i = 0; i < kEdgeSamples; ++i) {
+                    const double u = (dx + ((i + 0.5) / kEdgeSamples - 0.5)) / rx;
+                    if (!test.inside(u, v) || ((clipCover == 1) && !clip.inside(u, v))) {
+                        continue;
+                    }
+                    const double rho = std::sqrt(u * u + v * v);
+                    const double t = tex.active ? tex.value(rho, shapeRadius(test, u, v)) : 1.;
+                    acc += t;
+                    if (tex.gaussian) {
+                        gaussAcc += t * tex.gauss(rho);
+                    }
+                }
+            }
+            const double samples = (double)(kEdgeSamples * kEdgeSamples);
+            weights[index] = (float)(acc / samples);
+            sum += weights[index];
+            if (tex.gaussian) {
+                gaussWeights[index] = gaussAcc / samples;
+                gaussSum += gaussWeights[index];
+            }
+        }
+    }
+    if (!(sum > 0.)) {
+        return false;
+    }
+    if (tex.gaussian && (gaussSum > 0.)) {
+        // Each normalised on its own, so that the dissolve keeps both at full strength.
+        for (std::size_t i = 0; i < weights.size(); ++i) {
+            weights[i] = (float)(tex.discMix * weights[i] / sum + (1. - tex.discMix) * gaussWeights[i] / gaussSum);
+        }
+    }
+
+    return true;
+} // shapeWeights
 } // anonymous namespace
 
 BokehKernel::BokehKernel()
@@ -197,44 +491,20 @@ BokehKernel::shaped(const BokehShapeParams& shape,
     const double ry = clampRadius(radiusY);
     const int hx = extent(rx);
     const int hy = extent(ry);
-    const int w = 2 * hx + 1;
-    const int h = 2 * hy + 1;
     const ShapeTest test = makeShapeTest(shape);
-    std::vector<float> weights((std::size_t)w * h, 0.f);
+    const ClipTest clip = makeClipTest(shape.clip, 1.);
+    const Texture tex = makeTexture(shape);
+    std::vector<float> weights;
 
-    for (int dy = -hy; dy <= hy; ++dy) {
-        const double v0 = (dy - 0.5) / ry;
-        const double v1 = (dy + 0.5) / ry;
-        double nearV, farV;
-        intervalDistances(v0, v1, &nearV, &farV);
-        for (int dx = -hx; dx <= hx; ++dx) {
-            const double u0 = (dx - 0.5) / rx;
-            const double u1 = (dx + 0.5) / rx;
-            double nearU, farU;
-            intervalDistances(u0, u1, &nearU, &farU);
-            float coverage;
-            if (nearU * nearU + nearV * nearV >= 1.) {
-                // The shape lies within the unit circle.
-                coverage = 0.f;
-            } else if (std::sqrt(farU * farU + farV * farV) <= test.inner) {
-                coverage = 1.f;
-            } else {
-                // Offsets from the pixel's centre, symmetric bit for bit, so that a symmetric shape
-                // gives a symmetric kernel.
-                int count = 0;
-                for (int j = 0; j < kEdgeSamples; ++j) {
-                    const double v = (dy + ((j + 0.5) / kEdgeSamples - 0.5)) / ry;
-                    for (int i = 0; i < kEdgeSamples; ++i) {
-                        const double u = (dx + ((i + 0.5) / kEdgeSamples - 0.5)) / rx;
-                        if (test.inside(u, v)) {
-                            ++count;
-                        }
-                    }
-                }
-                coverage = (float)count / (float)(kEdgeSamples * kEdgeSamples);
-            }
-            weights[(std::size_t)(dy + hy) * w + (dx + hx)] = coverage;
-        }
+    bool filled = shapeWeights(test, clip, tex, rx, ry, hx, hy, &weights);
+    if (!filled && clip.active) {
+        filled = shapeWeights(test, ClipTest(), tex, rx, ry, hx, hy, &weights);
+    }
+    if (!filled && (tex.active || tex.gaussian)) {
+        filled = shapeWeights(test, ClipTest(), Texture(), rx, ry, hx, hy, &weights);
+    }
+    if (!filled) {
+        return BokehKernel();
     }
     BokehKernel kernel(hx, hy, std::move(weights));
     if (!kernel.normalise()) {
@@ -250,7 +520,8 @@ BokehKernel::fromImage(const float* values,
                        int height,
                        double radiusX,
                        double radiusY,
-                       bool* empty)
+                       bool* empty,
+                       const BokehClip& clip)
 {
     if (empty) {
         *empty = false;
@@ -326,6 +597,42 @@ BokehKernel::fromImage(const float* values,
                 sum += span.overlap[n] * rows[(std::size_t)(span.first + (int)n) * kw + c];
             }
             weights[(std::size_t)k * kw + c] = (float)sum;
+        }
+    }
+    // The image reaches the corners of [-width, width] x [-height, height] / longer.
+    const ClipTest clipTest = makeClipTest(clip, std::hypot(width / longer, height / longer));
+    if (clipTest.active) {
+        std::vector<float> clipped(weights);
+        double clippedSum = 0.;
+        for (int dy = -hy; dy <= hy; ++dy) {
+            const double v0 = (dy - 0.5) / ry;
+            const double v1 = (dy + 0.5) / ry;
+            for (int dx = -hx; dx <= hx; ++dx) {
+                float& weight = clipped[(std::size_t)(dy + hy) * kw + (dx + hx)];
+                if (weight == 0.f) {
+                    continue;
+                }
+                const int cover = clipTest.classify((dx - 0.5) / rx, (dx + 0.5) / rx, v0, v1);
+                if (cover == 0) {
+                    weight = 0.f;
+                } else if (cover == 1) {
+                    int count = 0;
+                    for (int j = 0; j < kEdgeSamples; ++j) {
+                        const double v = (dy + ((j + 0.5) / kEdgeSamples - 0.5)) / ry;
+                        for (int i = 0; i < kEdgeSamples; ++i) {
+                            const double u = (dx + ((i + 0.5) / kEdgeSamples - 0.5)) / rx;
+                            if (clipTest.inside(u, v)) {
+                                ++count;
+                            }
+                        }
+                    }
+                    weight *= (float)count / (float)(kEdgeSamples * kEdgeSamples);
+                }
+                clippedSum += weight;
+            }
+        }
+        if (clippedSum > 0.) {
+            weights = std::move(clipped);
         }
     }
     BokehKernel kernel(hx, hy, std::move(weights));

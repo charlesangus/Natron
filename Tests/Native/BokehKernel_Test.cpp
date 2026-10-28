@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -412,5 +413,371 @@ TEST(BokehKernel, RunGatherMatchesDirect)
     bokehGatherRow(tables.data(), width, height, runs, 12, 5, 15, acc.data(), part.data());
     for (int i = 0; i < 10; ++i) {
         EXPECT_EQ(whole[(std::size_t)(5 + i)], part[(std::size_t)i]);
+    }
+}
+
+namespace {
+
+BokehClip
+clipAt(double offsetX,
+       double offsetY,
+       double radius)
+{
+    BokehClip clip;
+
+    clip.offsetX = offsetX;
+    clip.offsetY = offsetY;
+    clip.radius = radius;
+
+    return clip;
+}
+
+BokehShapeParams
+clipped(BokehShapeParams shape,
+        const BokehClip& clip)
+{
+    shape.clip = clip;
+
+    return shape;
+}
+
+std::size_t
+nonZeroTaps(const BokehKernel& kernel)
+{
+    std::size_t n = 0;
+
+    for (float w : kernel.weights()) {
+        n += (w != 0.f) ? 1 : 0;
+    }
+
+    return n;
+}
+
+float
+maxWeight(const BokehKernel& kernel)
+{
+    float m = 0.f;
+
+    for (float w : kernel.weights()) {
+        m = std::max(m, w);
+    }
+
+    return m;
+}
+
+} // namespace
+
+// A clip holding the whole shape, the default included, leaves every kernel as it was, bit for bit.
+TEST(BokehKernel, ClipHoldingTheShapeChangesNothing)
+{
+    const BokehClip holding[] = { BokehClip(), clipAt(0., 0., 1.), clipAt(0., 0., 1.5), clipAt(0.2, -0.3, 2.) };
+    for (const BokehShapeParams& shape : { BokehShapeParams(), blades(6, 10., 0.2), blades(5, 0., 1.) }) {
+        for (double r : { 0.7, 3.4, 17.9 }) {
+            const BokehKernel plain = BokehKernel::shaped(shape, r, r * 0.6);
+            for (const BokehClip& clip : holding) {
+                const BokehKernel kernel = BokehKernel::shaped(clipped(shape, clip), r, r * 0.6);
+                ASSERT_EQ(plain.haloX(), kernel.haloX());
+                ASSERT_EQ(plain.haloY(), kernel.haloY());
+                EXPECT_EQ(plain.weights(), kernel.weights()) << "radius " << r << ", clip radius " << clip.radius;
+            }
+        }
+    }
+
+    // The 4 x 2 image spans the unit circle's width and reaches its corners at sqrt(1.25).
+    const std::vector<float> image = { 1.f, 2.f, 3.f, 4.f, 4.f, 3.f, 2.f, 1.f };
+    const BokehKernel plain = BokehKernel::fromImage(image.data(), 4, 2, 9., 9.);
+    for (const BokehClip& clip : { BokehClip(), clipAt(0., 0., 1.2), clipAt(0.1, 0., 2.) }) {
+        EXPECT_EQ(plain.weights(), BokehKernel::fromImage(image.data(), 4, 2, 9., 9., nullptr, clip).weights()) << clip.radius;
+    }
+}
+
+// A clip offset along +x cuts a lens symmetric about the x axis out of the disc: the far left is
+// gone, the right is kept, and the weights still sum to 1.
+TEST(BokehKernel, ClipCutsALens)
+{
+    const double r = 15.3;
+    const BokehKernel disc = BokehKernel::shaped(BokehShapeParams(), r, r);
+    const BokehKernel lens = BokehKernel::shaped(clipped(BokehShapeParams(), clipAt(0.6, 0., 1.)), r, r);
+    ASSERT_EQ(disc.haloX(), lens.haloX());
+    ASSERT_EQ(disc.haloY(), lens.haloY());
+    EXPECT_NEAR(1., kernelSum(lens), 1e-5);
+    const int h = lens.haloX();
+    for (int dy = -h; dy <= h; ++dy) {
+        for (int dx = -h; dx <= h; ++dx) {
+            EXPECT_EQ(lens.at(dx, dy), lens.at(dx, -dy)) << dx << "," << dy;
+            if (disc.at(dx, dy) == 0.f) {
+                EXPECT_EQ(0.f, lens.at(dx, dy)) << dx << "," << dy;
+            }
+        }
+    }
+    // At x = -0.5 r the clip, centred at 0.6 r, is 1.1 r away.
+    EXPECT_GT(disc.at(-8, 0), 0.f);
+    EXPECT_EQ(0.f, lens.at(-8, 0));
+    EXPECT_GT(lens.at(14, 0), 0.f);
+    // Within both, the weights are flat and larger than the disc's.
+    EXPECT_EQ(lens.at(5, 0), lens.at(8, 3));
+    EXPECT_GT(lens.at(5, 0), disc.at(5, 0));
+
+    // The clip squeezes with the kernel: offset up, on an ellipse half as tall as it is wide.
+    const BokehKernel oval = BokehKernel::shaped(clipped(BokehShapeParams(), clipAt(0., 0.5, 1.)), 20., 10.);
+    EXPECT_EQ(0.f, oval.at(0, -9));
+    EXPECT_GT(oval.at(0, 9), 0.f);
+    EXPECT_GT(oval.at(0, -4), 0.f);
+    for (int dy = -oval.haloY(); dy <= oval.haloY(); ++dy) {
+        for (int dx = -oval.haloX(); dx <= oval.haloX(); ++dx) {
+            EXPECT_EQ(oval.at(dx, dy), oval.at(-dx, dy)) << dx << "," << dy;
+        }
+    }
+}
+
+// The further the clip moves off the shape's centre, the less of the shape it leaves.
+TEST(BokehKernel, ClipAreaShrinksWithOffset)
+{
+    for (const BokehShapeParams& shape : { BokehShapeParams(), blades(7, 20., 0.3) }) {
+        std::size_t taps = std::numeric_limits<std::size_t>::max();
+        float peak = 0.f;
+        for (double offset : { 0., 0.15, 0.3, 0.5, 0.8, 1.2, 1.6 }) {
+            // Along a diagonal, so neither axis is special.
+            const double o = offset / std::sqrt(2.);
+            const BokehKernel kernel = BokehKernel::shaped(clipped(shape, clipAt(o, -o, 1.)), 24., 24.);
+            EXPECT_NEAR(1., kernelSum(kernel), 1e-5) << offset;
+            EXPECT_LE(nonZeroTaps(kernel), taps) << offset;
+            if (offset > 0.) {
+                EXPECT_GT(maxWeight(kernel), peak) << offset;
+            }
+            taps = nonZeroTaps(kernel);
+            peak = maxWeight(kernel);
+        }
+    }
+}
+
+// A clip that leaves nothing gives the unclipped kernel.
+TEST(BokehKernel, EmptyClipFallsBackToTheShape)
+{
+    const BokehShapeParams shape = blades(6, 0., 0.25);
+    const BokehKernel plain = BokehKernel::shaped(shape, 11., 7.);
+    for (const BokehClip& clip : { clipAt(3., 0., 1.), clipAt(0., 0., 0.), clipAt(0.2, 0.2, -1.) }) {
+        EXPECT_EQ(plain.weights(), BokehKernel::shaped(clipped(shape, clip), 11., 7.).weights()) << clip.offsetX << " " << clip.radius;
+    }
+    // A NaN anywhere reads as no clip.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(plain.weights(), BokehKernel::shaped(clipped(shape, clipAt(nan, 0., 0.5)), 11., 7.).weights());
+    EXPECT_EQ(plain.weights(), BokehKernel::shaped(clipped(shape, clipAt(0.5, 0., nan)), 11., 7.).weights());
+
+    const std::vector<float> flat(16, 1.f);
+    const BokehKernel image = BokehKernel::fromImage(flat.data(), 4, 4, 10., 10.);
+    bool empty = true;
+    EXPECT_EQ(image.weights(), BokehKernel::fromImage(flat.data(), 4, 4, 10., 10., &empty, clipAt(4., 0., 1.)).weights());
+    EXPECT_FALSE(empty);
+}
+
+// An image kernel is clipped, then renormalised.
+TEST(BokehKernel, ClipCutsTheImageKernel)
+{
+    const double r = 10.;
+    const std::vector<float> flat(16, 1.f);
+    const BokehKernel square = BokehKernel::fromImage(flat.data(), 4, 4, r, r);
+    bool empty = true;
+    const BokehKernel cut = BokehKernel::fromImage(flat.data(), 4, 4, r, r, &empty, clipAt(0.7, 0., 1.));
+    EXPECT_FALSE(empty);
+    EXPECT_NEAR(1., kernelSum(cut), 1e-5);
+    for (int dy = -cut.haloY(); dy <= cut.haloY(); ++dy) {
+        for (int dx = -cut.haloX(); dx <= cut.haloX(); ++dx) {
+            EXPECT_FLOAT_EQ(cut.at(dx, dy), cut.at(dx, -dy)) << dx << "," << dy;
+            if (square.at(dx, dy) == 0.f) {
+                EXPECT_EQ(0.f, cut.at(dx, dy));
+            }
+        }
+    }
+    // x = -0.5 r is 1.2 r from the clip's centre; x = 0.9 r is 0.2 r from it.
+    EXPECT_GT(square.at(-5, 0), 0.f);
+    EXPECT_EQ(0.f, cut.at(-5, 0));
+    EXPECT_GT(cut.at(9, 0), square.at(9, 0));
+    EXPECT_FLOAT_EQ(cut.at(3, 0) / square.at(3, 0), cut.at(6, 2) / square.at(6, 2));
+}
+
+// Texture settings that leave the shape flat leave the kernel as it was, bit for bit.
+TEST(BokehKernel, FlatTexturesChangeNothing)
+{
+    for (const BokehShapeParams& base : { BokehShapeParams(), blades(5, 33., 0.1) }) {
+        BokehShapeParams flat = base;
+        flat.innerSize = 0.35;
+        flat.innerFeather = 0.;
+        flat.innerBrightness = 1.;
+        flat.catadioptric = false;
+        flat.catadioptricSize = 0.6;
+        flat.sphericalAberration = 0.;
+        flat.filterShape = 1.;
+        for (double r : { 0.8, 4.2, 21.5 }) {
+            EXPECT_EQ(BokehKernel::shaped(base, r, r).weights(), BokehKernel::shaped(flat, r, r).weights()) << r;
+        }
+    }
+    // A filter shape beyond the disc reads as the disc.
+    BokehShapeParams beyond;
+    beyond.filterShape = 3.;
+    EXPECT_EQ(BokehKernel::shaped(BokehShapeParams(), 9., 9.).weights(), BokehKernel::shaped(beyond, 9., 9.).weights());
+}
+
+// Negative spherical aberration brightens the centre, positive the rim; both stay symmetric.
+TEST(BokehKernel, SphericalAberrationProfile)
+{
+    const double r = 30.;
+    for (double k : { -1., -0.4, 0.4, 1. }) {
+        BokehShapeParams shape;
+        shape.sphericalAberration = k;
+        const BokehKernel kernel = BokehKernel::shaped(shape, r, r);
+        EXPECT_NEAR(1., kernelSum(kernel), 1e-5) << k;
+        for (int dx = 0; dx < 26; ++dx) {
+            EXPECT_EQ(kernel.at(dx, 0), kernel.at(-dx, 0));
+            EXPECT_EQ(kernel.at(dx, 0), kernel.at(0, dx));
+            if (k < 0.) {
+                EXPECT_GE(kernel.at(dx, 0), kernel.at(dx + 1, 0)) << k << " " << dx;
+            } else {
+                EXPECT_LE(kernel.at(dx, 0), kernel.at(dx + 1, 0)) << k << " " << dx;
+            }
+        }
+        // 1 + k (2 rho^2 - 1) at the pixel centres inside.
+        const double rho = 20. / r;
+        const double expected = (1. + k * (2. * rho * rho - 1.)) / (1. - k);
+        if (k < 1.) {
+            EXPECT_NEAR(expected, kernel.at(20, 0) / kernel.at(0, 0), 1e-5) << k;
+        } else {
+            EXPECT_EQ(0.f, kernel.at(0, 0));
+        }
+    }
+}
+
+// The catadioptric hole leaves a ring: nothing inside the hole, flat between it and the rim.
+TEST(BokehKernel, CatadioptricHole)
+{
+    const double r = 20.;
+    for (const BokehShapeParams& base : { BokehShapeParams(), blades(6, 0., 0.) }) {
+        BokehShapeParams shape = base;
+        shape.catadioptric = true;
+        shape.catadioptricSize = 0.4;
+        const BokehKernel ring = BokehKernel::shaped(shape, r, r);
+        EXPECT_NEAR(1., kernelSum(ring), 1e-5);
+        EXPECT_EQ(0.f, ring.at(0, 0));
+        EXPECT_EQ(0.f, ring.at(5, 3));
+        EXPECT_EQ(0.f, ring.at(-7, 0));
+        // The hole is round, in the hexagon too, and anti-aliased.
+        EXPECT_EQ(ring.at(0, 12), ring.at(12, 0));
+        EXPECT_EQ(ring.at(12, 0), ring.at(10, 9));
+        EXPECT_GT(ring.at(8, 0), 0.f);
+        EXPECT_LT(ring.at(8, 0), ring.at(12, 0));
+        if (base.shape == BokehShape::Disc) {
+            for (int dy = -ring.haloY(); dy <= ring.haloY(); ++dy) {
+                for (int dx = -ring.haloX(); dx <= ring.haloX(); ++dx) {
+                    EXPECT_EQ(ring.at(dx, dy), ring.at(-dx, dy)) << dx << "," << dy;
+                    EXPECT_EQ(ring.at(dx, dy), ring.at(dy, dx)) << dx << "," << dy;
+                }
+            }
+        }
+    }
+
+    // A hole as large as the shape leaves nothing, and the flat shape is used.
+    BokehShapeParams whole;
+    whole.catadioptric = true;
+    whole.catadioptricSize = 1.;
+    EXPECT_EQ(BokehKernel::shaped(BokehShapeParams(), 9., 6.).weights(), BokehKernel::shaped(whole, 9., 6.).weights());
+}
+
+// The inner polygon: innerBrightness inside innerSize, 1 at the rim, the feather blending the two
+// outward above 0.5 and inward below it.
+TEST(BokehKernel, InnerPolygonProfile)
+{
+    const double r = 40.;
+    BokehShapeParams hard;
+    hard.innerSize = 0.5;
+    hard.innerFeather = 0.5;
+    hard.innerBrightness = 0.25;
+    const BokehKernel step = BokehKernel::shaped(hard, r, r);
+    EXPECT_NEAR(1., kernelSum(step), 1e-5);
+    EXPECT_FLOAT_EQ(0.25f, step.at(0, 0) / step.at(30, 0));
+    EXPECT_EQ(step.at(0, 0), step.at(15, 0));
+    EXPECT_EQ(step.at(30, 0), step.at(25, 0));
+    // The step is anti-aliased.
+    EXPECT_GT(step.at(20, 0), step.at(0, 0));
+    EXPECT_LT(step.at(20, 0), step.at(30, 0));
+
+    BokehShapeParams outward = hard;
+    outward.innerFeather = 1.;
+    const BokehKernel out = BokehKernel::shaped(outward, r, r);
+    EXPECT_EQ(out.at(0, 0), out.at(18, 0));
+    for (int dx = 21; dx < 38; ++dx) {
+        EXPECT_LT(out.at(dx, 0), out.at(dx + 1, 0)) << dx;
+    }
+
+    BokehShapeParams inward = hard;
+    inward.innerFeather = 0.;
+    const BokehKernel in = BokehKernel::shaped(inward, r, r);
+    EXPECT_EQ(in.at(22, 0), in.at(35, 0));
+    for (int dx = 1; dx < 19; ++dx) {
+        EXPECT_LT(in.at(dx, 0), in.at(dx + 1, 0)) << dx;
+    }
+
+    // A brighter inner polygon is allowed too.
+    BokehShapeParams bright = hard;
+    bright.innerBrightness = 3.;
+    const BokehKernel lit = BokehKernel::shaped(bright, r, r);
+    EXPECT_FLOAT_EQ(3.f, lit.at(0, 0) / lit.at(30, 0));
+
+    // The inner polygon follows the blades: a hexagon with a corner up reaches 40 up but only its
+    // apothem, about 34.6, sideways, so 18 up is inside the inner hexagon and 18 sideways is not.
+    BokehShapeParams hexagon = blades(6, 0., 0.);
+    hexagon.innerSize = 0.5;
+    hexagon.innerFeather = 0.5;
+    hexagon.innerBrightness = 0.5;
+    const BokehKernel hex = BokehKernel::shaped(hexagon, r, r);
+    EXPECT_FLOAT_EQ(0.5f, hex.at(0, 18) / hex.at(18, 0));
+}
+
+// The filter shape dissolves from a Gaussian, 3 sigma at the rim, to the flat shape.
+TEST(BokehKernel, FilterShapeDissolvesToAGaussian)
+{
+    const double r = 20.;
+    BokehShapeParams gaussian;
+    gaussian.filterShape = 0.;
+    const BokehKernel g = BokehKernel::shaped(gaussian, r, r);
+    EXPECT_NEAR(1., kernelSum(g), 1e-5);
+    for (int dx : { 3, 6, 10, 15 }) {
+        const double rho = dx / r;
+        EXPECT_NEAR(std::exp(-rho * rho * 4.5), g.at(dx, 0) / g.at(0, 0), 1e-5) << dx;
+        EXPECT_EQ(g.at(dx, 0), g.at(0, -dx));
+    }
+
+    const BokehKernel disc = BokehKernel::shaped(BokehShapeParams(), r, r);
+    BokehShapeParams half;
+    half.filterShape = 0.5;
+    const BokehKernel mixed = BokehKernel::shaped(half, r, r);
+    EXPECT_NEAR(1., kernelSum(mixed), 1e-5);
+    for (int dx : { 0, 5, 12, 19, 20 }) {
+        EXPECT_NEAR(0.5 * (disc.at(dx, 0) + g.at(dx, 0)), mixed.at(dx, 0), 1e-7) << dx;
+    }
+}
+
+// Clips and textures together still give kernels that sum to 1, on every shape and aspect.
+TEST(BokehKernel, TexturedClippedKernelsSumToOne)
+{
+    BokehShapeParams all = blades(5, 12., 0.3);
+    all.innerSize = 0.6;
+    all.innerFeather = 0.7;
+    all.innerBrightness = 0.4;
+    all.catadioptric = true;
+    all.catadioptricSize = 0.25;
+    all.sphericalAberration = 0.3;
+    all.filterShape = 0.6;
+    all.clip = clipAt(-0.4, 0.3, 1.);
+    BokehShapeParams disc = all;
+    disc.shape = BokehShape::Disc;
+    for (const BokehShapeParams& shape : { all, disc }) {
+        for (double r : { 0.6, 1.3, 5., 18.2 }) {
+            const BokehKernel kernel = BokehKernel::shaped(shape, r, r * 0.7);
+            EXPECT_NEAR(1., kernelSum(kernel), 1e-5) << (int)shape.shape << " " << r;
+            for (float w : kernel.weights()) {
+                EXPECT_TRUE(std::isfinite(w));
+                EXPECT_GE(w, 0.f);
+            }
+        }
     }
 }

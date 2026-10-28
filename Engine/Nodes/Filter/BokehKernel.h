@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 NATRON_NAMESPACE_ENTER
@@ -48,6 +49,28 @@ enum class BokehShape {
     Image
 };
 
+/**
+ * @brief A second aperture that clips the kernel, as a lens barrel does off axis: a disc centred at
+ * (offsetX, offsetY) of radius radius, in units of the kernel's radii, so that it squeezes with the
+ * kernel's aspect. The default, an infinite radius, clips nothing; so does any disc holding the
+ * whole shape.
+ **/
+struct BokehClip {
+    double offsetX = 0.;
+    double offsetY = 0.;
+    double radius = std::numeric_limits<double>::infinity();
+
+    bool operator==(const BokehClip& o) const
+    {
+        return (offsetX == o.offsetX) && (offsetY == o.offsetY) && (radius == o.radius);
+    }
+
+    bool operator!=(const BokehClip& o) const
+    {
+        return !(*this == o);
+    }
+};
+
 struct BokehShapeParams {
     BokehShape shape = BokehShape::Disc;
     // Blades only: the aperture's blade count (3 or more), its rotation in degrees counter-clockwise
@@ -55,6 +78,36 @@ struct BokehShapeParams {
     int blades = 6;
     double rotation = 0.;
     double roundness = 0.;
+    // Clips Disc, Blades and Image kernels alike; a clip that leaves nothing is ignored.
+    BokehClip clip;
+    // The textures of Disc and Blades kernels, as fractions of the shape's radius. The inner
+    // polygon, the shape scaled by innerSize, has brightness innerBrightness against the rim's 1;
+    // innerFeather blends the two outward above 0.5 (to the rim at 1) and inward below it (from
+    // the centre at 0). A catadioptric lens has a round hole of catadioptricSize. Spherical
+    // aberration in [-1, 1] brightens the centre when negative and the rim when positive.
+    // filterShape dissolves from a Gaussian at 0 to the flat shape at 1. The defaults leave the
+    // kernel flat.
+    double innerSize = 0.8;
+    double innerFeather = 1.;
+    double innerBrightness = 1.;
+    bool catadioptric = false;
+    double catadioptricSize = 0.3;
+    double sphericalAberration = 0.;
+    double filterShape = 1.;
+
+    bool operator==(const BokehShapeParams& o) const
+    {
+        return (shape == o.shape) && (blades == o.blades) && (rotation == o.rotation) && (roundness == o.roundness)
+            && (clip == o.clip) && (innerSize == o.innerSize) && (innerFeather == o.innerFeather)
+            && (innerBrightness == o.innerBrightness) && (catadioptric == o.catadioptric)
+            && (catadioptricSize == o.catadioptricSize) && (sphericalAberration == o.sphericalAberration)
+            && (filterShape == o.filterShape);
+    }
+
+    bool operator!=(const BokehShapeParams& o) const
+    {
+        return !(*this == o);
+    }
 };
 
 /**
@@ -88,8 +141,10 @@ public:
 
     /**
      * @brief The disc or n-blade kernel of shape (Image reads as the disc) filling an ellipse of
-     * radii radiusX and radiusY, in pixels: each weight is the fraction of its pixel the shape
-     * covers, supersampled along the shape's edge, and the weights are normalised to sum to 1.
+     * radii radiusX and radiusY, in pixels: each weight is the fraction of its pixel the shape and
+     * its clip cover, supersampled along their edges and weighted by the shape's texture, and the
+     * weights are normalised to sum to 1. A clip that leaves nothing gives the unclipped kernel,
+     * and a texture that leaves nothing the flat one.
      **/
     static BokehKernel shaped(const BokehShapeParams& shape,
                               double radiusX,
@@ -100,14 +155,16 @@ public:
      * stretched over the diameter and centred, each weight the area average of the values its
      * pixel covers, then normalised to sum to 1. Negative and non-finite values count as 0. An
      * image that sums to 0, or an identity radius, gives the single tap; *empty is then set to
-     * whether the image was to blame.
+     * whether the image was to blame. clip then scales each weight by the fraction of its pixel
+     * the clip covers before the normalisation, unless that leaves nothing.
      **/
     static BokehKernel fromImage(const float* values,
                                  int width,
                                  int height,
                                  double radiusX,
                                  double radiusY,
-                                 bool* empty = nullptr) WARN_UNUSED_RETURN;
+                                 bool* empty = nullptr,
+                                 const BokehClip& clip = BokehClip()) WARN_UNUSED_RETURN;
 
     int haloX() const
     {

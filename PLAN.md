@@ -181,7 +181,7 @@ future core work has solid ground to build on.
 | M249 | Bundle Cycles Delegate | doing | M19, M248 | bosley-native-nodes | E9 | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
 | M250 | Bundle MoonRay Delegate | doing | M19 | bosley-native-nodes | E9 | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
 | M251 | Cycles Rendering | doing | M248, M249 | bosley-native-nodes | E9 | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
-| M252 | MoonRay Rendering | todo | M248, M250 |  | E9 | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
+| M252 | MoonRay Rendering | doing | M248, M250 | bosley-native-nodes | E9 | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
 | M253 | Delegate Render Settings | todo | M251, M252 |  | E9 | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
 | M254 | Progressive Viewer Render | todo | M248, M251 |  | E9 | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
 | M255 | Delegate Output Spikes | todo | M251, M252 |  | E9 | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |

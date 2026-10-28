@@ -1,8 +1,10 @@
 """The 3D viewer's display controls: lighting mode, purposes, draw-mode keys and the grid key.
 
 Graph: USDRead of a stage the script writes (a grey box, and a blue sphere of render purpose
-beside it) merged with a red USDLight rect light in front of the box, into Viewer1. Guides are
-hidden (Ctrl+Shift+G) so that only the lit geometry counts. The script checks:
+beside it) merged with a red USDLight rect light in front of the box, into Viewer1. Guides
+(Ctrl+Shift+G) and the grid (Ctrl+G, whose red and blue axis lines would count as tinted pixels)
+are hidden so that only the lit geometry counts; the grid comes back for the draw-mode checks.
+The script checks:
   - Auto lighting uses the stage's lights when it has any: natronSceneSceneLit is true and the
     box renders reddish;
   - Display > Lighting > Headlight lights with the headlight instead: SceneLit false, no reddish
@@ -93,7 +95,7 @@ try:
     light = make("USDLight", 150, 0)
     light.setScriptName("RedLight")
     light.getParam("lightType").setValue(2)
-    light.getParam("color").set(1.0, 0.0, 0.0)
+    light.getParam("color").set(1.0, 0.0, 0.0, 1.0)
     light.getParam("intensity").setValue(20.0)
     light.getParam("width").setValue(2.0)
     light.getParam("height").setValue(2.0)
@@ -242,6 +244,9 @@ try:
         key(v, Qt.Key_G, CTRL | SHIFT)
         yield settle()
         require(v.property("natronSceneShowGuides") is False, "Ctrl+Shift+G hides the guides")
+        key(v, Qt.Key_G, CTRL)
+        yield settle()
+        require(v.property("natronSceneShowGrid") is False, "Ctrl+G hides the grid")
         key(v, Qt.Key_A)
         yield settle()
 
@@ -283,6 +288,9 @@ try:
         check(red >= MIN_PIXELS, "the red light is back (%d reddish pixels)" % red)
 
         section("draw modes and grid")
+        key(v, Qt.Key_G, CTRL)
+        yield settle()
+        check(v.property("natronSceneShowGrid") is True, "Ctrl+G shows the grid again")
         for k, digit, name in ((Qt.Key_4, "4", "wireframe"), (Qt.Key_5, "5", "shaded"), (Qt.Key_6, "6", "unshaded")):
             key(v, k, CTRL)
             yield settle()

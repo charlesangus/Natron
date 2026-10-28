@@ -879,14 +879,14 @@ struct SceneViewportRenderer::Implementation {
 
         static const float axisColours[3][3] = { { 0.9f, 0.25f, 0.25f }, { 0.3f, 0.8f, 0.3f }, { 0.3f, 0.45f, 0.95f } };
         if (selection && (transformTool == SceneTransform::eToolScale)) {
-            // Thin stems to the scale boxes, which are not handles themselves.
-            glLineWidth(1.f);
+            // Stems to the scale boxes, which are not handles themselves, as thick as the arrows.
+            glLineWidth(3.f);
             for (const SceneGizmo::HandleShape& shape : SceneGizmo::buildHandles(frame, length)) {
                 if (SceneGizmo::getHandleKind(shape.handle) != SceneGizmo::eHandleKindTranslate) {
                     continue;
                 }
                 const float* colour = axisColours[SceneGizmo::getHandleAxis(shape.handle)];
-                glColor4f(colour[0], colour[1], colour[2], 0.6f);
+                glColor4f(colour[0], colour[1], colour[2], 0.85f);
                 glBegin(GL_LINES);
                 glVertex3d(frame.origin[0], frame.origin[1], frame.origin[2]);
                 glVertex3d(shape.points[1][0], shape.points[1][1], shape.points[1][2]);
@@ -2611,9 +2611,9 @@ setCameraKnobValue(const KnobDoublePtr& knob,
                    double value)
 {
     if (animated) {
-        knob->setValueAtTime(frame, value, ViewSpec::all(), dimension, eValueChangedReasonUserEdited, nullptr);
+        knob->setValueAtTime(frame, value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, nullptr);
     } else {
-        knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonUserEdited, nullptr);
+        knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, nullptr);
     }
 }
 

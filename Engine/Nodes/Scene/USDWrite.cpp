@@ -47,6 +47,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -686,24 +687,6 @@ writeLiveTextureFile(const LiveTextureBufferConstPtr& buffer,
     return ok;
 }
 
-// Whether shader is a USDProject3D projection: its glslfx source is the projection shader.
-bool
-isProjectionShader(const PXR_NS::UsdShadeShader& shader)
-{
-    PXR_NS::SdfAssetPath asset;
-
-    if (!shader || !shader.GetSourceAsset(&asset, PXR_NS::TfToken("glslfx"))) {
-        return false;
-    }
-    const std::string& path = asset.GetAssetPath();
-    const std::string file(kUSDProject3DShaderFile);
-    if (path.size() < file.size() || path.compare(path.size() - file.size(), file.size(), file) != 0) {
-        return false;
-    }
-
-    return (path.size() == file.size()) || (path[path.size() - file.size() - 1] == '/');
-}
-
 bool
 meshMightVary(const PXR_NS::UsdGeomMesh& mesh)
 {
@@ -728,6 +711,8 @@ struct ProjectionBake {
     std::vector<std::pair<std::string, std::string>> unbaked;
     std::set<std::string> warped;
     std::set<std::string> behind;
+    // Materials whose cropped projection shows the plate's data beyond its format once baked.
+    std::set<std::string> overscan;
     // The prim whose authoring failed, if one did.
     std::string failed;
 };
@@ -752,7 +737,7 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
     for (const PXR_NS::UsdPrim& prim : scene->Traverse()) {
         if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
             const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
-            if (isProjectionShader(surface)) {
+            if (SceneNodeAuthoring::isProjectionShader(surface)) {
                 projections[prim.GetPath()] = surface;
             }
         }
@@ -789,8 +774,24 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
             continue;
         }
 
-        const PXR_NS::UsdShadeInput matrixInput = shader.GetInput(PXR_NS::TfToken("worldToProjector"));
-        const bool cameraVaries = matrixInput && matrixInput.GetAttr().ValueMightBeTimeVarying();
+        const PXR_NS::UsdShadeInput matrixInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector));
+        const PXR_NS::UsdShadeInput geometryInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+        const PXR_NS::UsdShadeInput windowInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform));
+        const PXR_NS::UsdShadeInput spaceInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
+        int space = (int)USDProject3D::eProjectionSpaceWorld;
+        if (spaceInput) {
+            spaceInput.Get(&space);
+        }
+        const bool geometrySpace = (space == (int)USDProject3D::eProjectionSpaceGeometry);
+        int crop = 0;
+        const PXR_NS::UsdShadeInput cropInput = shader.GetInput(PXR_NS::TfToken("crop"));
+        if (cropInput) {
+            cropInput.Get(&crop);
+        }
+        const auto mightVary = [](const PXR_NS::UsdShadeInput& input) {
+            return input && input.GetAttr().ValueMightBeTimeVarying();
+        };
+        const bool cameraVaries = mightVary(matrixInput) || mightVary(windowInput) || (geometrySpace && mightVary(geometryInput));
         for (const PXR_NS::UsdPrim& prim : entry.second) {
             const PXR_NS::UsdGeomMesh mesh(prim);
             const bool varies = cameraVaries || meshMightVary(mesh);
@@ -818,16 +819,30 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 const PXR_NS::UsdTimeCode time(times[i]);
                 const PXR_NS::UsdTimeCode authored = varies ? time : PXR_NS::UsdTimeCode::Default();
                 PXR_NS::GfMatrix4d worldToProjector(1.);
+                PXR_NS::GfMatrix4d geometryFrame(1.);
+                PXR_NS::GfVec4f window(1.f, 1.f, 0.f, 0.f);
                 PXR_NS::VtVec3fArray points;
                 PXR_NS::VtIntArray counts;
                 PXR_NS::VtIntArray indices;
                 if (matrixInput) {
                     matrixInput.Get(&worldToProjector, time);
                 }
+                if (geometrySpace && geometryInput) {
+                    geometryInput.Get(&geometryFrame, time);
+                }
+                if (windowInput) {
+                    windowInput.Get(&window, time);
+                }
+                if (crop && ((window[0] < 1.f) || (window[1] < 1.f))) {
+                    result->overscan.insert(materialPath.GetString());
+                }
                 mesh.GetPointsAttr().Get(&points, time);
                 mesh.GetFaceVertexCountsAttr().Get(&counts, time);
                 mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
-                const PXR_NS::GfMatrix4d toProjector = PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim) * worldToProjector;
+                // In Geometry space the projection was set up on the geometry as its own node placed
+                // it, wherever it has been moved since.
+                const PXR_NS::GfMatrix4d toReference = geometrySpace ? geometryFrame : PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim);
+                const PXR_NS::GfMatrix4d toProjector = toReference * worldToProjector;
 
                 PXR_NS::VtVec2fArray uvs(points.size());
                 std::vector<double> depths(points.size());
@@ -837,7 +852,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                     // point would be in front, the face it is on wrong either way.
                     const double w = std::max(std::abs(c[3]), 1e-12);
                     depths[p] = c[3];
-                    uvs[p] = PXR_NS::GfVec2f((float)(c[0] / w), (float)(c[1] / w));
+                    // The camera's frame is the plate's format; the texture spans its data window.
+                    uvs[p] = PXR_NS::GfVec2f((float)(c[0] / w * window[0] + window[2]), (float)(c[1] / w * window[1] + window[3]));
                 }
                 std::size_t offset = 0;
                 for (const int count : counts) {
@@ -1467,6 +1483,11 @@ USDWrite::writeFrameRange(int firstFrame,
     if (!projectionBake.behind.empty()) {
         warnings.push_back(tr("Faces of %1 reach behind the projecting camera, where their baked UVs are wrong.")
                                .arg(joinPaths(projectionBake.behind)));
+    }
+    if (!projectionBake.overscan.empty()) {
+        warnings.push_back(tr("The projections %1 crop their image to its format, which baked UVs cannot: the export shows "
+                              "the image's data beyond its format there.")
+                               .arg(joinPaths(projectionBake.overscan)));
     }
     // A layered write replaces its own sidecars, as expected; a flattened one removes files the user
     // may not know the export mode made, so it says which.

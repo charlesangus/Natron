@@ -39,6 +39,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
 
 #include <pxr/usd/usd/primRange.h>
@@ -514,12 +515,23 @@ graftMaterialInput(const ScenePayload& material,
             return false;
         }
         for (const SceneRootGraft& root : grafts) {
-            const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(root.sourcePath));
+            const PXR_NS::SdfPath sourceRoot(root.sourcePath);
+            const PXR_NS::SdfPath graftedRoot(root.graftedPath);
+            const PXR_NS::UsdPrim rootPrim = stage->GetPrimAtPath(sourceRoot);
             for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(rootPrim)) {
-                if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
-                    graft->materialPath = prim.GetPath().ReplacePrefix(PXR_NS::SdfPath(root.sourcePath), PXR_NS::SdfPath(root.graftedPath)).GetString();
-                    break;
+                if (!prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+                    continue;
                 }
+                graft->materialPath = prim.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
+                const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
+                const PXR_NS::UsdShadeInput space = isProjectionShader(surface) ? surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace)) : PXR_NS::UsdShadeInput();
+                int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
+                if (space && space.Get(&spaceValue) && (spaceValue == (int)USDProject3D::eProjectionSpaceGeometry)) {
+                    graft->geometryProjectionShader = surface.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
+                    const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
+                    graft->projectionHeld = hold && hold.Get(&graft->projectionHoldFrame);
+                }
+                break;
             }
             if (!graft->materialPath.empty()) {
                 break;
@@ -530,10 +542,50 @@ graftMaterialInput(const ScenePayload& material,
     ContentHasher facts;
     appendUpstreamMetadata(graft->payload, &facts);
     facts.appendString(graft->materialPath);
+    facts.appendString(graft->geometryProjectionShader);
+    facts.appendBool(graft->projectionHeld);
+    facts.appendDouble(graft->projectionHoldFrame);
     graft->factsDigest = facts.finalize();
 
     return true;
 } // graftMaterialInput
+
+bool
+isProjectionShader(const PXR_NS::UsdShadeShader& shader)
+{
+    PXR_NS::SdfAssetPath asset;
+
+    if (!shader || !shader.GetSourceAsset(&asset, PXR_NS::TfToken("glslfx"))) {
+        return false;
+    }
+    const std::string& path = asset.GetAssetPath();
+    const std::string file(kUSDProject3DShaderFile);
+    if ((path.size() < file.size()) || (path.compare(path.size() - file.size(), file.size(), file) != 0)) {
+        return false;
+    }
+
+    return (path.size() == file.size()) || (path[path.size() - file.size() - 1] == '/');
+}
+
+bool
+authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
+                              const SceneLayerEdit& edit,
+                              const SceneMaterialGraft& graft,
+                              bool animated,
+                              const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+{
+    if (graft.geometryProjectionShader.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdPrim shader = stage->OverridePrim(PXR_NS::SdfPath(graft.geometryProjectionShader));
+    const PXR_NS::TfToken name(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
+    const PXR_NS::UsdAttribute attribute = shader ? shader.CreateAttribute(name, PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdAttribute();
+    if (graft.projectionHeld) {
+        return attribute && attribute.Set(frameAt(graft.projectionHoldFrame));
+    }
+
+    return authorValue(attribute, edit, animated, frameAt);
+}
 
 bool
 authorMaterialBinding(const PXR_NS::UsdPrim& prim,

@@ -53,6 +53,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -608,9 +609,9 @@ protected:
         project->setAutoSetProjectFormatEnabled(true);
         project->setOrAddProjectFormat(Format(0, 0, 2000, 1000, "wide2to1", 1.));
 
-        NodePtr plate = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        plate = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
         camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-        NodePtr projector = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+        projector = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
         card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         ASSERT_TRUE(plate && camera && projector && card);
         plate->setScriptName("Plate1");
@@ -645,6 +646,28 @@ protected:
         return message;
     }
 
+    // The bounds of the card's UVs at time.
+    static std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> boundsOf(const PXR_NS::UsdGeomPrimvar& st,
+                                                                PXR_NS::UsdTimeCode time = PXR_NS::UsdTimeCode::Default())
+    {
+        PXR_NS::GfVec2f low(HUGE_VALF, HUGE_VALF);
+        PXR_NS::GfVec2f high(-HUGE_VALF, -HUGE_VALF);
+        PXR_NS::VtVec2fArray uvs;
+
+        EXPECT_TRUE(st.ComputeFlattened(&uvs, time));
+        EXPECT_FALSE(uvs.empty());
+        for (const PXR_NS::GfVec2f& uv : uvs) {
+            for (int c = 0; c < 2; ++c) {
+                low[c] = std::min(low[c], uv[c]);
+                high[c] = std::max(high[c], uv[c]);
+            }
+        }
+
+        return std::make_pair(low, high);
+    }
+
+    NodePtr plate;
+    NodePtr projector;
     NodePtr camera;
     NodePtr card;
 };
@@ -754,4 +777,74 @@ TEST_F(USDWriteProjectionTest, ATiltedCoarseCardWarnsThatItsBakeWarps)
     const QString message = messageOf(writer);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/Card1"))) << message.toStdString();
     EXPECT_TRUE(message.contains(QString::fromUtf8("warp"))) << message.toStdString();
+}
+
+// In Geometry space with the camera held, the bake keeps the card's UVs where the projection put them
+// at the hold frame, however the card moves after it.
+TEST_F(USDWriteProjectionTest, AHeldGeometrySpaceProjectionBakesUVsThatStickToTheCard)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 3);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+    ASSERT_TRUE(bool(st));
+    // The card moved a quarter of the frame right by the last frame: in World space its UVs would
+    // span 0.25 to 1.25 there.
+    for (const double time : { 1., 3. }) {
+        const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st, PXR_NS::UsdTimeCode(time));
+        EXPECT_NEAR(0.f, bounds.first[0], 1e-4f) << time;
+        EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << time;
+        EXPECT_NEAR(1.f, bounds.second[0], 1e-4f) << time;
+        EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << time;
+    }
+}
+
+// The camera's frame is the plate's format: with overscan, the baked UVs reach only the format's part
+// of the exported texture, and as UVs cannot crop, the export warns that the overscan shows.
+TEST_F(USDWriteProjectionTest, AnOverscanPlateBakesUVsSpanningItsFormat)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(plate && card);
+    getKnob<KnobChoice>(plate, kNativeGeneratorParamExtent)->setValue((int)ExtentKnobs::eExtentSize);
+    KnobDouble* bottomLeft = getKnob<KnobDouble>(plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = getKnob<KnobDouble>(plate, kNativeGeneratorParamSize);
+    ASSERT_TRUE(bottomLeft && size);
+    bottomLeft->setValue(-200., ViewSpec::all(), 0);
+    bottomLeft->setValue(-100., ViewSpec::all(), 1);
+    size->setValue(2400., ViewSpec::all(), 0);
+    size->setValue(1200., ViewSpec::all(), 1);
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    const QString message = messageOf(writer);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Project1"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("format"))) << message.toStdString();
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+    ASSERT_TRUE(bool(st));
+    const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st);
+    EXPECT_NEAR(200.f / 2400.f, bounds.first[0], 1e-4f);
+    EXPECT_NEAR(100.f / 1200.f, bounds.first[1], 1e-4f);
+    EXPECT_NEAR(2200.f / 2400.f, bounds.second[0], 1e-4f);
+    EXPECT_NEAR(1100.f / 1200.f, bounds.second[1], 1e-4f);
 }

@@ -48,6 +48,7 @@ NATRON_NAMESPACE_ENTER
 
 struct PrimitiveMesh;
 struct SceneLayerEdit;
+struct SceneMaterialGraft;
 
 /**
  * @brief A scene source authoring one UsdGeomMesh at its Prim Path (/<script name> by default)
@@ -126,7 +127,7 @@ private:
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     bool authorLayer(const SceneLayerEdit& edit,
-                     const std::string& materialPath,
+                     const SceneMaterialGraft& graft,
                      std::string* errorMessage) const;
 
     KnobStringWPtr _primPath;

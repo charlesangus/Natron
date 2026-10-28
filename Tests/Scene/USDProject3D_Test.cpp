@@ -49,6 +49,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -372,4 +373,132 @@ TEST_F(USDProject3DTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
     EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error));
     ASSERT_TRUE(projector->hasPersistentMessage());
     EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("/Gone"))) << getMessage(projector).toStdString();
+}
+
+namespace {
+PXR_NS::GfVec4f
+getPlateTransform(const PXR_NS::UsdShadeShader& shader)
+{
+    PXR_NS::GfVec4f transform(0.f);
+
+    EXPECT_TRUE(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform)).Get(&transform));
+
+    return transform;
+}
+} // anonymous namespace
+
+// The camera's frame is the image's format: an image whose data matches its format is the whole texture.
+TEST_F(USDProject3DTest, AnImageWithoutOverscanFillsTheTexture)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    PXR_NS::UsdStageRefPtr stage = composeNode(projector);
+    const PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    const PXR_NS::GfVec4f transform = getPlateTransform(shader);
+    EXPECT_NEAR(1.f, transform[0], 1e-6f);
+    EXPECT_NEAR(1.f, transform[1], 1e-6f);
+    EXPECT_NEAR(0.f, transform[2], 1e-6f);
+    EXPECT_NEAR(0.f, transform[3], 1e-6f);
+    EXPECT_EQ((int)USDProject3D::eProjectionSpaceWorld, getInt(shader, kUSDProject3DInputProjectionSpace));
+}
+
+// The live texture covers the image's region of definition; the shader maps the frame to the format
+// inside it, so overscan neither shrinks nor shifts the projection.
+TEST_F(USDProject3DTest, TheFormatOfAnImageWithOverscanFillsTheFrame)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(plate, kNativeGeneratorParamExtent)->setValue((int)ExtentKnobs::eExtentSize);
+    KnobDouble* bottomLeft = getKnob<KnobDouble>(plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = getKnob<KnobDouble>(plate, kNativeGeneratorParamSize);
+    ASSERT_TRUE(bottomLeft && size);
+    bottomLeft->setValue(-200., ViewSpec::all(), 0);
+    bottomLeft->setValue(-100., ViewSpec::all(), 1);
+    size->setValue(2400., ViewSpec::all(), 0);
+    size->setValue(1200., ViewSpec::all(), 1);
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(projector);
+    const PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    const PXR_NS::GfVec4f transform = getPlateTransform(shader);
+    EXPECT_NEAR(2000.f / 2400.f, transform[0], 1e-6f);
+    EXPECT_NEAR(1000.f / 1200.f, transform[1], 1e-6f);
+    EXPECT_NEAR(200.f / 2400.f, transform[2], 1e-6f);
+    EXPECT_NEAR(100.f / 1200.f, transform[3], 1e-6f);
+    // The frame's corners land on the format's corners in the texture.
+    EXPECT_NEAR(200.f / 2400.f, 0.f * transform[0] + transform[2], 1e-6f);
+    EXPECT_NEAR(2200.f / 2400.f, 1.f * transform[0] + transform[2], 1e-6f);
+}
+
+// In Geometry space the geometry node the projection is the material of gives it its own placement;
+// with the camera held, the placement at the hold frame, so the image sticks to the moving geometry.
+TEST_F(USDProject3DTest, InGeometrySpaceAHeldProjectionTakesTheGeometryAtTheHoldFrame)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(bool(card));
+    ASSERT_TRUE(card->connectInput(projector, 0));
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., 1., ViewSpec::all(), 0);
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(card);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
+    ASSERT_TRUE(prim.IsValid());
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(bound));
+    const PXR_NS::UsdShadeShader shader = bound.ComputeSurfaceSource();
+    ASSERT_TRUE(bool(shader));
+    EXPECT_EQ((int)USDProject3D::eProjectionSpaceGeometry, getInt(shader, kUSDProject3DInputProjectionSpace));
+    const PXR_NS::UsdShadeInput frame = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    ASSERT_TRUE(bool(frame));
+    EXPECT_EQ((std::size_t)0, frame.GetAttr().GetNumTimeSamples());
+    PXR_NS::GfMatrix4d geometryFrame(0.);
+    ASSERT_TRUE(frame.Get(&geometryFrame));
+    const PXR_NS::GfMatrix4d atHold = PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
+    EXPECT_TRUE(PXR_NS::GfIsClose(atHold, geometryFrame, 1e-9));
+    const PXR_NS::GfMatrix4d atLast = PXR_NS::UsdGeomXformable(prim).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(11.));
+    EXPECT_FALSE(PXR_NS::GfIsClose(atLast, geometryFrame, 1e-9));
+
+    // Not held, the geometry is taken at every frame, as its transform is.
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(false);
+    stage = composeNode(card);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim moved = stage->GetPrimAtPath(getNodePath(card));
+    ASSERT_TRUE(moved.IsValid());
+    const PXR_NS::UsdShadeShader followed = PXR_NS::UsdShadeMaterialBindingAPI(moved).ComputeBoundMaterial().ComputeSurfaceSource();
+    ASSERT_TRUE(bool(followed));
+    const PXR_NS::UsdShadeInput sampled = followed.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    ASSERT_TRUE(bool(sampled));
+    const std::size_t frames = (std::size_t)(std::floor(last) - std::ceil(first) + 1.);
+    EXPECT_EQ(frames, sampled.GetAttr().GetNumTimeSamples());
+    ASSERT_TRUE(sampled.Get(&geometryFrame, PXR_NS::UsdTimeCode(11.)));
+    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::UsdGeomXformable(moved).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(11.)), geometryFrame, 1e-9));
+}
+
+// In World space the geometry authors nothing on the projection.
+TEST_F(USDProject3DTest, InWorldSpaceTheGeometryLeavesTheProjectionAlone)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(bool(card));
+    ASSERT_TRUE(card->connectInput(projector, 0));
+    PXR_NS::UsdStageRefPtr stage = composeNode(card);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(getNodePath(card));
+    ASSERT_TRUE(prim.IsValid());
+    const PXR_NS::UsdShadeShader shader = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial().ComputeSurfaceSource();
+    ASSERT_TRUE(bool(shader));
+    EXPECT_FALSE(bool(shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame))));
 }

@@ -38,6 +38,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
@@ -103,6 +104,13 @@ struct USDProject3D::CameraSamples {
     U64 digest = 0;
 };
 
+// Where the image's format lies in its live texture, once, or at every frame of the project range.
+struct USDProject3D::PlateWindows {
+    std::vector<double> frames;
+    std::vector<PXR_NS::GfVec4f> transforms;
+    U64 digest = 0;
+};
+
 struct USDProject3D::Implementation {
     std::mutex lock;
     // The last samples and what they were read from, so an evaluation that changes nothing they
@@ -110,6 +118,10 @@ struct USDProject3D::Implementation {
     bool samplesValid = false;
     U64 samplesKey = 0;
     std::shared_ptr<const CameraSamples> samples;
+    // Likewise for the image's regions of definition.
+    bool windowsValid = false;
+    U64 windowsKey = 0;
+    std::shared_ptr<const PlateWindows> windows;
 };
 
 USDProject3D::USDProject3D(NodePtr node)
@@ -161,6 +173,28 @@ USDProject3D::initializeKnobs()
     page->addKnob(camera);
     _camera = camera;
 
+    KnobChoicePtr projectionSpace = createKnob<KnobChoice>(tr("Projection Space"));
+    projectionSpace->setName(kUSDProject3DParamProjectionSpace);
+    projectionSpace->setHintToolTip(tr("What the projection is fixed to once the material is connected to a geometry node."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("world", tr("World").toStdString(),
+                                       tr("The projection stays where the camera is: geometry moving after it slides through "
+                                          "the image.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("geometry", tr("Geometry").toStdString(),
+                                       tr("The projection is fixed to the geometry as the geometry node places it, so "
+                                          "transforms after that node carry the image along. With Use Frame Hold on, the "
+                                          "geometry is also taken at Frame Hold, so the image sticks to it however it "
+                                          "moves.")
+                                           .toStdString()));
+        projectionSpace->populateChoices(options);
+    }
+    projectionSpace->setDefaultValue((int)eProjectionSpaceWorld);
+    projectionSpace->setAnimationEnabled(false);
+    page->addKnob(projectionSpace);
+    _projectionSpace = projectionSpace;
+
     KnobChoicePtr projectOn = createKnob<KnobChoice>(tr("Project On"));
     projectOn->setName(kUSDProject3DParamProjectOn);
     projectOn->setHintToolTip(tr("Which faces the image falls on, by whether they face the camera. The others show Outside."));
@@ -178,8 +212,8 @@ USDProject3D::initializeKnobs()
 
     KnobBoolPtr crop = createKnob<KnobBool>(tr("Crop"));
     crop->setName(kUSDProject3DParamCrop);
-    crop->setHintToolTip(tr("Outside the camera's frame the surface shows Outside. Off, the image's edge pixels extend "
-                            "beyond it."));
+    crop->setHintToolTip(tr("Outside the camera's frame, which the image's format fills, the surface shows Outside. Off, "
+                            "the image's data beyond its format shows there, and its edge pixels extend beyond that."));
     crop->setDefaultValue(true);
     crop->setAnimationEnabled(false);
     page->addKnob(crop);
@@ -360,6 +394,29 @@ USDProject3D::getPlateAspect(double time) const
     return (format.height() > 0) ? format.width() * format.getPixelAspectRatio() / format.height() : 1.;
 }
 
+void
+USDProject3D::getPlateTransform(double time,
+                                double transform[4]) const
+{
+    transform[0] = transform[1] = 1.;
+    transform[2] = transform[3] = 0.;
+    // The node the live texture renders, over its region of definition.
+    const EffectInstancePtr input = getInput(kUSDProject3DInputImage);
+    const NodeMetadataConstPtr metadata = input ? input->getMetadata(time, ViewIdx(0)) : NodeMetadataConstPtr();
+    RectI window;
+    if (!metadata || !getNodeDefinitionPixelRect(input->getNode(), time, ViewIdx(0), &window)) {
+        return;
+    }
+    const RectI& format = metadata->getOutputFormat();
+    if ((format.width() <= 0) || (format.height() <= 0)) {
+        return;
+    }
+    transform[0] = format.width() / (double)window.width();
+    transform[1] = format.height() / (double)window.height();
+    transform[2] = (format.x1 - window.x1) / (double)window.width();
+    transform[3] = (format.y1 - window.y1) / (double)window.height();
+}
+
 StatusEnum
 USDProject3D::renderScene(const SceneRenderActionArgs& args,
                           ScenePayload* outputScene,
@@ -373,10 +430,11 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     KnobBoolPtr clipKnob = _clipNearFar.lock();
     KnobChoicePtr outsideKnob = _outside.lock();
     KnobChoicePtr fitKnob = _fitMode.lock();
+    KnobChoicePtr spaceKnob = _projectionSpace.lock();
     KnobBoolPtr useFrameHoldKnob = _useFrameHold.lock();
     KnobDoublePtr frameHoldKnob = _frameHold.lock();
     KnobStringPtr primPathKnob = _primPath.lock();
-    if (!cameraKnob || !projectOnKnob || !cropKnob || !clipKnob || !outsideKnob || !fitKnob || !useFrameHoldKnob || !frameHoldKnob || !primPathKnob) {
+    if (!cameraKnob || !projectOnKnob || !cropKnob || !clipKnob || !outsideKnob || !fitKnob || !spaceKnob || !useFrameHoldKnob || !frameHoldKnob || !primPathKnob) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
         return eStatusFailed;
@@ -403,6 +461,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     const int fitValue = fitKnob->getValue();
     const HydraRender::FitModeEnum fit = (fitValue == (int)HydraRender::eFitModeHorizontal) ? HydraRender::eFitModeHorizontal : (fitValue == (int)HydraRender::eFitModeVertical) ? HydraRender::eFitModeVertical
                                                                                                                                                                                  : HydraRender::eFitModeFill;
+    const int space = std::clamp(spaceKnob->getValue(), (int)eProjectionSpaceWorld, (int)eProjectionSpaceGeometry);
     const bool useFrameHold = useFrameHoldKnob->getValue();
     const double frameHold = frameHoldKnob->getValue();
     const double aspect = getPlateAspect(args.time);
@@ -511,9 +570,71 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     // The image's identity and hash, without rendering it: the layer reads nothing else of it.
     LiveTextureSource plate;
     const bool hasPlate = SceneNodeAuthoring::getLiveTextureSource(*this, kUSDProject3DInputImage, kLiveTextureLayer, &plate);
+
+    std::shared_ptr<const PlateWindows> windows;
+    {
+        ContentHasher windowsKeyHasher;
+        windowsKeyHasher.appendBool(hasPlate);
+        if (hasPlate) {
+            SceneNodeAuthoring::appendLiveTextureSource(plate, &windowsKeyHasher);
+        }
+        windowsKeyHasher.appendDouble(layerKey.firstFrame);
+        windowsKeyHasher.appendDouble(layerKey.lastFrame);
+        // An infinite region of definition is taken as the project format.
+        Format projectFormat;
+        getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        for (int side : { projectFormat.x1, projectFormat.y1, projectFormat.x2, projectFormat.y2 }) {
+            windowsKeyHasher.appendI64(side);
+        }
+        const U64 windowsKey = windowsKeyHasher.finalize();
+        {
+            std::lock_guard<std::mutex> l(_imp->lock);
+            if (_imp->windowsValid && (_imp->windowsKey == windowsKey)) {
+                windows = _imp->windows;
+            }
+        }
+        if (!windows) {
+            std::shared_ptr<PlateWindows> computed = std::make_shared<PlateWindows>();
+            std::vector<double> sourceFrames;
+            if (hasPlate && plate.varying) {
+                SceneLayerEdit range;
+                range.firstFrame = layerKey.firstFrame;
+                range.lastFrame = layerKey.lastFrame;
+                computed->frames = SceneNodeAuthoring::getSampleFrames(range);
+                for (double frame : computed->frames) {
+                    sourceFrames.push_back(plate.getSourceFrame(frame));
+                }
+            } else {
+                sourceFrames.push_back(layerKey.firstFrame);
+            }
+            ContentHasher digest;
+            digest.appendU64(computed->frames.size());
+            for (double frame : sourceFrames) {
+                double transform[4] = { 1., 1., 0., 0. };
+                if (hasPlate) {
+                    getPlateTransform(frame, transform);
+                }
+                computed->transforms.push_back(PXR_NS::GfVec4f((float)transform[0], (float)transform[1], (float)transform[2], (float)transform[3]));
+                digest.appendBytes(computed->transforms.back().data(), 4 * sizeof(float));
+            }
+            computed->digest = digest.finalize();
+            windows = computed;
+            std::lock_guard<std::mutex> l(_imp->lock);
+            _imp->windowsValid = true;
+            _imp->windowsKey = windowsKey;
+            _imp->windows = windows;
+        }
+    }
+
     ContentHasher facts;
     facts.appendU64(samples->digest);
+    facts.appendU64(windows->digest);
     facts.appendString(shaderPath);
+    facts.appendU64((U64)space);
+    facts.appendBool(useFrameHold);
+    if (useFrameHold) {
+        facts.appendDouble(frameHold);
+    }
     facts.appendBool(hasPlate);
     if (hasPlate) {
         SceneNodeAuthoring::appendLiveTextureSource(plate, &facts);
@@ -521,14 +642,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
-    reads.frameRange = !samples->frames.empty() || (hasPlate && plate.varying);
+    reads.frameRange = !samples->frames.empty() || !windows->frames.empty() || (hasPlate && plate.varying);
 
     PXR_NS::SdfPath path;
     if (!SceneNodeAuthoring::getPrimPath(primPathKnob, &path, errorMessage)) {
         return fail();
     }
-    SceneLayerMemo::AuthorFunc author = [samples, path, shaderPath, projectOn, crop, clip, outside, hasPlate, plate](const SceneLayerEdit& edit,
-                                                                                                                     std::string* error) {
+    SceneLayerMemo::AuthorFunc author = [samples, windows, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate](const SceneLayerEdit& edit,
+                                                                                                                                                              std::string* error) {
         PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
         if (!stage) {
             return false;
@@ -541,7 +662,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
 
             return false;
         }
-        const PXR_NS::UsdShadeInput matrix = shader.CreateInput(PXR_NS::TfToken("worldToProjector"), PXR_NS::SdfValueTypeNames->Matrix4d);
+        const PXR_NS::UsdShadeInput matrix = shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector), PXR_NS::SdfValueTypeNames->Matrix4d);
         const PXR_NS::UsdShadeInput origin = shader.CreateInput(PXR_NS::TfToken("projectorOrigin"), PXR_NS::SdfValueTypeNames->Float4);
         bool ok = matrix && origin;
         if (ok && samples->frames.empty()) {
@@ -551,7 +672,21 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             const PXR_NS::UsdTimeCode time = SceneNodeAuthoring::frameToTimeCode(edit, samples->frames[i]);
             ok = matrix.Set(samples->worldToProjector[i], time) && origin.Set(samples->origin[i], time);
         }
+        const PXR_NS::UsdShadeInput window = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4) : PXR_NS::UsdShadeInput();
+        ok = bool(window);
+        if (ok && windows->frames.empty()) {
+            ok = window.Set(windows->transforms.front());
+        }
+        for (std::size_t i = 0; ok && (i < windows->frames.size()); ++i) {
+            ok = window.Set(windows->transforms[i], SceneNodeAuthoring::frameToTimeCode(edit, windows->frames[i]));
+        }
+        // Read by the geometry node the material is grafted under, which takes itself at the same frame.
+        if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
+            const PXR_NS::UsdAttribute hold = shader.GetPrim().CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold), PXR_NS::SdfValueTypeNames->Double, true);
+            ok = hold && hold.Set(frameHold);
+        }
         const std::pair<const char*, int> ints[] = {
+            { kUSDProject3DInputProjectionSpace, space },
             { "projectOn", projectOn },
             { "crop", crop ? 1 : 0 },
             { "clip", clip ? 1 : 0 },

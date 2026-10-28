@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -51,7 +52,15 @@ struct SceneMaterialGraft {
     // Where the input's first material landed, which the geometry binds itself to. Empty when the
     // input holds no material.
     std::string materialPath;
-    // A hash of what the geometry's layer reads of payload: its metadata and materialPath. A
+    // When that material is a USDProject3D projection in Geometry space: the grafted path of its
+    // shader, which the geometry gives its own placement (authorProjectionGeometryFrame()). Empty
+    // otherwise.
+    std::string geometryProjectionShader;
+    // Whether that projection holds its camera, and at which project frame.
+    bool projectionHeld = false;
+    double projectionHoldFrame = 0.;
+    // A hash of what the geometry's layer reads of payload: its metadata, materialPath and the
+    // projection's fields. A
     // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
     U64 factsDigest = 0;
     std::vector<SceneUnmappedLink> unmappedLinks;
@@ -187,6 +196,24 @@ bool graftMaterialInput(const ScenePayload& material,
                         SceneGraftMemo* memo,
                         SceneMaterialGraft* graft,
                         std::string* errorMessage);
+
+/**
+ * @brief Whether shader is a USDProject3D projection: its glslfx source is the projection shader.
+ **/
+bool isProjectionShader(const PXR_NS::UsdShadeShader& shader);
+
+/**
+ * @brief For a geometry node whose Material input is a projection in Geometry space
+ * (graft.geometryProjectionShader set): authors the shader's geometryFrame input on stage, the
+ * geometry's local to world transform as the node places it, frameAt(frame) at a project frame:
+ * once at the projection's hold frame when it holds its camera, else as a default or, when
+ * animated, at every frame of getSampleFrames(). Does nothing for any other material.
+ **/
+bool authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
+                                   const SceneLayerEdit& edit,
+                                   const SceneMaterialGraft& graft,
+                                   bool animated,
+                                   const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
 
 /**
  * @brief Binds prim to the material at materialPath (material:binding, with

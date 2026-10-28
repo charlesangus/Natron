@@ -46,6 +46,7 @@
 #define kUSDProject3DParamClipNearFar "clipNearFar"
 #define kUSDProject3DParamOutside "outside"
 #define kUSDProject3DParamFitMode "fitMode"
+#define kUSDProject3DParamProjectionSpace "projectionSpace"
 #define kUSDProject3DParamUseFrameHold "useFrameHold"
 #define kUSDProject3DParamFrameHold "frameHold"
 
@@ -58,6 +59,14 @@
 #define kUSDProject3DShaderName "Projection"
 #define kUSDProject3DTextureName "PlateTexture"
 #define kUSDProject3DReaderName "TexCoordReader"
+// Shader inputs and attributes read beyond the node: by the geometry nodes the material is grafted
+// under, and by USDWrite's bake.
+#define kUSDProject3DInputProjectionSpace "projectionSpace"
+#define kUSDProject3DInputGeometryFrame "geometryFrame"
+#define kUSDProject3DInputPlateTransform "plateTransform"
+#define kUSDProject3DInputWorldToProjector "worldToProjector"
+// On the shader prim, when Use Frame Hold is on: the project frame the camera is held at.
+#define kUSDProject3DAttrFrameHold "natron:frameHold"
 
 NATRON_NAMESPACE_ENTER
 
@@ -75,6 +84,11 @@ public:
         eOutsideTransparent
     };
 
+    enum ProjectionSpaceEnum {
+        eProjectionSpaceWorld = 0,
+        eProjectionSpaceGeometry
+    };
+
     static constexpr InputSpec kInputs[] = {
         InputSpec { .label = "Image", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
         InputSpec { .label = "Camera", .kind = eDataKindScene },
@@ -86,8 +100,10 @@ public:
         .description = "Author a material that projects the Image input through a camera, as Nuke's Project3D does: each "
                        "point of the surface shows the image where it lands in the camera's frame, per pixel and "
                        "perspective-correct, unlit. Connect it to the Material input of a geometry node. The camera "
-                       "comes from the Camera input and is stored in the material as values, so the projection stays "
-                       "where the camera is while the geometry moves through it. The material is a Storm shader: it "
+                       "comes from the Camera input and is stored in the material as values. In World space the "
+                       "projection stays where the camera is while the geometry moves through it; in Geometry space "
+                       "it is fixed to the geometry where it is connected, so transforms after that carry it along. "
+                       "The image's format fills the camera's frame. The material is a Storm shader: it "
                        "shows in the Viewer and USDRender; USDWrite bakes it to texture coordinates and a "
                        "UsdPreviewSurface for other renderers.",
         .grouping = PLUGIN_GROUP_3D_USD,
@@ -141,8 +157,15 @@ private:
     // The Image input's format as a width over height in square pixels, the project's without one.
     double getPlateAspect(double time) const;
 
+    // Where the Image input's format lies in its live texture at time, the texture covering the
+    // image's region of definition: texture coordinates are the frame's 0..1 coordinates times
+    // (transform[0], transform[1]) plus (transform[2], transform[3]). The identity without an image
+    // or when its region is unknown.
+    void getPlateTransform(double time, double transform[4]) const;
+
     // Defined where USD is included.
     struct CameraSamples;
+    struct PlateWindows;
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 
@@ -153,6 +176,7 @@ private:
     KnobBoolWPtr _clipNearFar;
     KnobChoiceWPtr _outside;
     KnobChoiceWPtr _fitMode;
+    KnobChoiceWPtr _projectionSpace;
     KnobBoolWPtr _useFrameHold;
     KnobDoubleWPtr _frameHold;
     std::atomic<bool> _cameraMenuRefreshPending;

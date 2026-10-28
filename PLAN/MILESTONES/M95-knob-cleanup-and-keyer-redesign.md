@@ -128,6 +128,7 @@ Acceptance sketch:
 
 ## Decisions
 
+- 2026-10-28: All phases implemented (build pending; goldens to re-record). Interactive Updates is a checkable global Render-menu action (Alt+U) synced via Settings::settingChanged; changing it saves the preference immediately. interactive/hidpi knobs removed from native generator/extent and transform nodes; OFX plug-ins' hidpi/interactive params are hidden and host-set. Footer-order test at Tests/Native/KnobFooterOrder_Test.cpp. Keyer and ChromaKeyer move to major 3. ChromaKeyer: fgy<0 zeroing removed (no clamps); background key bounded with boundForKeying (overflow guard, not a clamp) on CPU and GPU; sourceHasAlpha flag; "Add to Inside Mask" → "Inside Mask"; labels match script names. Keyer luminance math defaults to the working space. Keyer sublabel stays a hidden knob until M111's getSublabel() hook lands.
 - 2026-10-19 — **Native stage-knob placement moved to M137 - Native Base Class Flexibility; Keyer is redesigned on its framework** (user, M137 grill): the framework creates the premult, mask and mix knobs, so it places them. M137 migrates Keyer and ChromaKeyer unchanged first. This milestone gains a dep on M137.
 - 2026-10-11 — **Split from M69 - Minor Cleanup (user-approved).** Deps `M69, M76`.
 - 2026-10-11 — **User answers** (`PLAN/DESIGN/2026-10-11-m69-questions.md`):

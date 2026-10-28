@@ -139,19 +139,22 @@ public:
                                const RectI& window) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Whether the GPU records passes(): an analytic kernel whose halo is within the GPU
-     * kernels' cap, without lens aberrations.
+     * @brief Whether the GPU records passes(): an analytic kernel whose halo, that of the largest
+     * channel's radii under the lens aberrations, is within the GPU kernels' cap.
      **/
     static bool fitsGpu(const DefocusParams& params, const PassList& passes) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Records passes() for params at context's scale on the GPU over io.domain. Fails, so
-     * that the CPU renders, without a GPU, for an image kernel, or when a buffer exceeds the
-     * kernels' 32-bit indices.
+     * @brief Records passes() for params at context's scale on the GPU over io.domain; with lens
+     * aberrations over format, each group's kernel per cell of io.output, from cache when there is
+     * one. Fails, so that the CPU renders, without a GPU, for an image kernel, when a buffer
+     * exceeds the kernels' 32-bit indices, or when the lens kernels' runs exceed the upload cap.
      **/
     static StatusEnum recordPassesGpu(const PassGpuIO& io,
                                       const DefocusParams& params,
-                                      const PassContext& context) WARN_UNUSED_RETURN;
+                                      const PassContext& context,
+                                      const RectI& format,
+                                      const std::shared_ptr<BokehRunCache>& cache) WARN_UNUSED_RETURN;
 
     /**
      * @brief The texts of the warnings an Image kernel posts while the Kernel input is

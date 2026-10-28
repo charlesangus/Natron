@@ -539,7 +539,7 @@ TEST_F(NativeZDefocusTest, RegionIndependence)
 }
 
 // Regression fixtures: the parity source defocused by its extra layer's red as inverse distance,
-// in each mode and output, the Image kernel being another parity source.
+// in each mode, output and lens aberration, the Image kernel being another parity source.
 TEST_F(NativeZDefocusTest, Golden)
 {
     GoldenNodeSpec spec;
@@ -574,6 +574,21 @@ TEST_F(NativeZDefocusTest, Golden)
     v.push_back(goldenVariant("focalPlane", false, [depth](const GoldenGraph& g) {
         return depth(g) && setKnobValues(g.node, kZDefocusParamDepthOfField, { 0.2 })
             && setKnobValue(g.node, kZDefocusParamOutput, std::string(kZDefocusParamOutputFocalPlane));
+    }));
+    v.push_back(goldenVariant("catEye", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamCatEye, { 1. });
+    }));
+    v.push_back(goldenVariant("swirl", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamCatEye, { 0.6 })
+            && setKnobValue(g.node, kBokehParamCatEyeOrientation, std::string(kBokehParamCatEyeOrientationTangential));
+    }));
+    v.push_back(goldenVariant("chromaticAnamorphic", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamChromaticAberration, { 0.5 }) && setKnobValues(g.node, kZDefocusParamAspectRatio, { 0.5 });
+    }));
+    v.push_back(goldenVariant("lensTextured", false, [depth](const GoldenGraph& g) {
+        return depth(g) && setKnobValues(g.node, kBokehParamCatEye, { 0.8 }) && setKnobValues(g.node, kBokehParamChromaticAberration, { 0.3 })
+            && setKnobValues(g.node, kBokehParamSphericalAberration, { 0.5 }) && setKnobValues(g.node, kZDefocusParamHighlightThreshold, { 1. })
+            && setKnobValues(g.node, kZDefocusParamHighlightGain, { 4. });
     }));
     v.push_back(goldenVariant("maskmix", true, [depth](const GoldenGraph& g) {
         return depth(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

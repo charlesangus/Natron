@@ -6,11 +6,16 @@
 // - from localOffset, per channel and row, domWidth + 1 block prefixes of the current slice's
 //   layer, its weights being channel `channels`;
 // - from totalOffset, per channel and row, nBlocks block totals;
-// - from accOffset, per output pixel, the layers composited so far and their coverage.
+// - from accOffset, per output pixel, the layers composited so far and their coverage, one per
+//   channel group.
 //
-// metaBuf holds, as uints, the depth image's valid bounds, the depth-of-field model, the slices'
-// circles of confusion and, from runOffset, every slice's kernel runs, four uints each: dy, dx0,
-// length and the weight's bits. The model works in float where the CPU works in double, and the
+// metaBuf holds, as uints, the depth image's valid bounds, the depth-of-field model, the channel
+// groups, the slices' circles of confusion and, from runOffset, every slice's kernel runs, four
+// uints each: dy, dx0, length and the weight's bits. With kLens, runOffset is instead the slice's
+// cell table, two uints per kernel by group, cell row and cell column: the index of its first
+// run's first uint and its run count; the cell column of each output column and the cell row of
+// each output row are from kMetaColumnMap and kMetaRowMap, when there are more than one, and
+// from kMetaSharp, per slice, a bit per group whose kernel leaves its channels sharp. The model works in float where the CPU works in double, and the
 // slices are laid over each other in order, so that a pixel's result depends on the rounding of
 // every layer before it.
 //
@@ -67,6 +72,7 @@ static const uint kSharp = 2;
 static const uint kFirst = 4;
 static const uint kInverseDistance = 8;
 static const uint kHasDepth = 16;
+static const uint kLens = 32;
 static const uint kMetaDepthX1 = 0;
 static const uint kMetaDepthY1 = 1;
 static const uint kMetaDepthX2 = 2;
@@ -79,7 +85,16 @@ static const uint kMetaMaxSize = 8;
 static const uint kMetaSnapX = 9;
 static const uint kMetaSnapY = 10;
 static const uint kMetaSliceCount = 11;
-static const uint kMetaCentres = 12;
+// The largest channel's circle of confusion scale.
+static const uint kMetaCocScale = 12;
+// Two bits per channel, its group; from bit 8, the number of groups.
+static const uint kMetaGroups = 13;
+static const uint kMetaCellColumns = 14;
+static const uint kMetaCellRows = 15;
+static const uint kMetaColumnMap = 16;
+static const uint kMetaRowMap = 17;
+static const uint kMetaSharp = 18;
+static const uint kMetaCentres = 19;
 
 bool isFiniteValue(float v)
 {
@@ -89,6 +104,16 @@ bool isFiniteValue(float v)
 float metaFloat(uint i)
 {
     return asfloat(metaBuf[i]);
+}
+
+uint groupCount()
+{
+    return metaBuf[kMetaGroups] >> 8;
+}
+
+uint groupOf(uint c)
+{
+    return (metaBuf[kMetaGroups] >> (2 * c)) & 3u;
 }
 
 float inverseOf(float distance)
@@ -169,8 +194,10 @@ void zdefocus_load(uint3 tid : SV_DispatchThreadID)
         workBuf[pixel * n + c] = boost(sourceValue(x, y, c));
 
     float coc = circleOfConfusion(rawDepth(x, y));
-    // pixelCoc(): a kernel that leaves the pixel unchanged is no blur.
-    if (!(abs(coc) * metaFloat(kMetaSnapX) >= 0.5) && !(abs(coc) * metaFloat(kMetaSnapY) >= 0.5))
+    // pixelCoc(): a kernel of the largest channel's scale that leaves the pixel unchanged is no blur.
+    const float cocScale = metaFloat(kMetaCocScale);
+    const float size = (cocScale == 1.0) ? abs(coc) : min(abs(coc) * cocScale, max(0.0, metaFloat(kMetaMaxSize)));
+    if (!(size * metaFloat(kMetaSnapX) >= 0.5) && !(size * metaFloat(kMetaSnapY) >= 0.5))
         coc = 0.0;
     const uint count = metaBuf[kMetaSliceCount];
     uint k = 0;
@@ -255,8 +282,37 @@ float rangeSum(uint c, uint y, uint a, uint b)
     return sum + workBuf[localIndex(c, y, b)];
 }
 
-// compositeWorker(): the slice's defocused layer over what the slices behind it left, and its
-// coverage over theirs; with kSharp the layer is its weighted source.
+// Adds to layer, for the channels of mask, channel `channels` being the weights, the runs of
+// count from metaBuf[first] gathered at domain pixel (x, y).
+void gatherRuns(uint first, uint count, uint mask, int x, int y, inout float layer[5])
+{
+    const uint n = params.channels;
+    const int w = int(params.domWidth);
+    const int h = int(params.domHeight);
+    for (uint r = 0; r < count; ++r) {
+        const uint run = first + 4 * r;
+        const int dy = int(metaBuf[run]);
+        const int dx0 = int(metaBuf[run + 1]);
+        const int length = int(metaBuf[run + 2]);
+        const float weight = asfloat(metaBuf[run + 3]);
+        const int sy = y - dy;
+        if (sy < 0 || sy >= h)
+            continue;
+        // Pixel x sums the layer over [x - dx0 - length + 1, x - dx0 + 1).
+        const int a = clamp(x - dx0 - length + 1, 0, w);
+        const int b = clamp(x - dx0 + 1, 0, w);
+        if (a >= b)
+            continue;
+        for (uint c = 0; c <= n && c <= 4; ++c) {
+            if ((mask & (1u << c)) != 0u)
+                layer[c] += weight * rangeSum(c, uint(sy), uint(a), uint(b));
+        }
+    }
+}
+
+// compositeWorker() and lensCompositeWorker(): the slice's defocused layer over what the slices
+// behind it left, and its coverage over theirs, each channel group's on its own; with kSharp the
+// layer is its weighted source, as with kLens is that of each group the slice leaves sharp.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void zdefocus_composite(uint3 tid : SV_DispatchThreadID)
@@ -264,48 +320,69 @@ void zdefocus_composite(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= params.outWidth || tid.y >= params.outHeight)
         return;
     const uint n = params.channels;
-    const uint acc = params.accOffset + (tid.y * params.outWidth + tid.x) * (n + 1);
+    const uint groups = groupCount();
+    const uint acc = params.accOffset + (tid.y * params.outWidth + tid.x) * (n + groups);
     const int x = params.outX1 + int(tid.x) - params.domX1;
     const int y = params.outY1 + int(tid.y) - params.domY1;
     const int w = int(params.domWidth);
     const int h = int(params.domHeight);
-    // Channels 0 to n - 1 the layer, n its coverage.
     float layer[5] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+    float cover[3] = { 0.0, 0.0, 0.0 };
     if (x >= 0 && y >= 0 && x < w && y < h) {
+        const uint pixel = (uint(y) * params.domWidth + uint(x)) * n;
         if ((params.flags & kSharp) != 0u) {
             const float weight = sliceWeight(uint(x), uint(y));
             for (uint c = 0; c < n && c < 4; ++c)
-                layer[c] = weight * workBuf[(uint(y) * params.domWidth + uint(x)) * n + c];
-            layer[n] = weight;
-        } else {
-            for (uint r = 0; r < params.runCount; ++r) {
-                const uint run = params.runOffset + 4 * r;
-                const int dy = int(metaBuf[run]);
-                const int dx0 = int(metaBuf[run + 1]);
-                const int length = int(metaBuf[run + 2]);
-                const float weight = asfloat(metaBuf[run + 3]);
-                const int sy = y - dy;
-                if (sy < 0 || sy >= h)
+                layer[c] = weight * workBuf[pixel + c];
+            for (uint g = 0; g < groups && g < 3; ++g)
+                cover[g] = weight;
+        } else if ((params.flags & kLens) != 0u) {
+            const uint columns = metaBuf[kMetaCellColumns];
+            const uint rows = metaBuf[kMetaCellRows];
+            const uint col = (columns > 1u) ? metaBuf[metaBuf[kMetaColumnMap] + tid.x] : 0u;
+            const uint row = (rows > 1u) ? metaBuf[metaBuf[kMetaRowMap] + tid.y] : 0u;
+            const uint sharp = metaBuf[metaBuf[kMetaSharp] + params.slice];
+            for (uint g = 0; g < groups && g < 3; ++g) {
+                uint mask = 0u;
+                for (uint c = 0; c < n && c < 4; ++c) {
+                    if (groupOf(c) == g)
+                        mask |= 1u << c;
+                }
+                if ((sharp & (1u << g)) != 0u) {
+                    const float weight = sliceWeight(uint(x), uint(y));
+                    for (uint c = 0; c < n && c < 4; ++c) {
+                        if ((mask & (1u << c)) != 0u)
+                            layer[c] = weight * workBuf[pixel + c];
+                    }
+                    cover[g] = weight;
                     continue;
-                // Pixel x sums the layer over [x - dx0 - length + 1, x - dx0 + 1).
-                const int a = clamp(x - dx0 - length + 1, 0, w);
-                const int b = clamp(x - dx0 + 1, 0, w);
-                if (a >= b)
-                    continue;
-                for (uint c = 0; c <= n && c <= 4; ++c)
-                    layer[c] += weight * rangeSum(c, uint(sy), uint(a), uint(b));
+                }
+                float part[5] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+                const uint entry = params.runOffset + 2 * ((g * rows + row) * columns + col);
+                gatherRuns(metaBuf[entry], metaBuf[entry + 1], mask | (1u << n), x, y, part);
+                for (uint c = 0; c < n && c < 4; ++c) {
+                    if ((mask & (1u << c)) != 0u)
+                        layer[c] = part[c];
+                }
+                cover[g] = part[n];
             }
+        } else {
+            gatherRuns(params.runOffset, params.runCount, 31u, x, y, layer);
+            cover[0] = layer[n];
         }
     }
     const bool first = (params.flags & kFirst) != 0u;
-    const float left = max(0.0, 1.0 - layer[n]);
-    for (uint c = 0; c <= n && c <= 4; ++c) {
+    for (uint c = 0; c < n && c < 4; ++c) {
         const float behind = first ? 0.0 : workBuf[acc + c];
-        workBuf[acc + c] = layer[c] + left * behind;
+        workBuf[acc + c] = layer[c] + max(0.0, 1.0 - cover[groupOf(c)]) * behind;
+    }
+    for (uint g = 0; g < groups && g < 3; ++g) {
+        const float behind = first ? 0.0 : workBuf[acc + n + g];
+        workBuf[acc + n + g] = cover[g] + max(0.0, 1.0 - cover[g]) * behind;
     }
 }
 
-// finishWorker(): the composite divided by its coverage, and unboosted.
+// finishWorker(): the composite divided by its channel group's coverage, and unboosted.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void zdefocus_finish(uint3 tid : SV_DispatchThreadID)
@@ -313,10 +390,10 @@ void zdefocus_finish(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= params.outWidth || tid.y >= params.outHeight)
         return;
     const uint n = params.channels;
-    const uint acc = params.accOffset + (tid.y * params.outWidth + tid.x) * (n + 1);
+    const uint acc = params.accOffset + (tid.y * params.outWidth + tid.x) * (n + groupCount());
     const uint dst = params.dstOffset + tid.y * params.dstStride + tid.x * n;
-    const float coverage = workBuf[acc + n];
     for (uint c = 0; c < n && c < 4; ++c) {
+        const float coverage = workBuf[acc + n + groupOf(c)];
         const float v = (coverage > 0.0) ? workBuf[acc + c] / coverage : 0.0;
         outBuf[dst + c] = unboost(v);
     }

@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -49,7 +50,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/PoolParallelFor.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
@@ -331,9 +334,13 @@ shapeOf(int kernelType)
 // The largest halo, in pixels, the GPU records; a larger defocus stays on the CPU.
 const int kGpuMaxHalo = 256;
 
-// Mirror kBlock and kBoost in Kernels/defocus.slang.
+// Mirror kBlock, kBoost and kLens in Kernels/defocus.slang.
 const uint32_t kGpuBlock = 256;
 const uint32_t kGpuBoost = 1;
+const uint32_t kGpuLens = 2;
+// The most bytes of kernel runs and cell tables the GPU uploads for a render with lens aberrations;
+// more stays on the CPU, which holds a band of cells' kernels at a time.
+const uint64_t kGpuMaxLensBytes = (uint64_t)256 << 20;
 
 // Mirrors DefocusParams in Kernels/defocus.slang, which has no padding between members.
 struct DefocusGpuParams {
@@ -361,8 +368,14 @@ struct DefocusGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
+    uint32_t cellTable;
+    uint32_t columnMap;
+    uint32_t rowMap;
+    uint32_t cellColumns;
+    uint32_t cellRows;
+    uint32_t channelGroups;
 };
-static_assert(sizeof(DefocusGpuParams) == 96);
+static_assert(sizeof(DefocusGpuParams) == 120);
 static_assert(offsetof(DefocusGpuParams, srcX1) == 48);
 static_assert(offsetof(DefocusGpuParams, outX1) == 72);
 
@@ -409,23 +422,35 @@ dispatchDefocus(gpu::GpuRecordContext& ctx,
 }
 
 /**
+ * @brief What the gather of a render with lens aberrations reads besides the runs: the cell
+ * tables of appendLensRunTable() and appendLensCellMaps() in the run buffer, and each channel's
+ * group.
+ **/
+struct DefocusGpuLens {
+    uint32_t cellTable = 0;
+    uint32_t columnMap = 0;
+    uint32_t rowMap = 0;
+    uint32_t cellColumns = 1;
+    uint32_t cellRows = 1;
+    uint32_t channelGroups = 0;
+};
+
+/**
  * @brief The passes of Defocus::passes() as the GPU records them over io.domain, the CPU's
  * scratch rect: the boosted source into the work buffer, each row's block prefixes and block
- * totals, then the gather of every output pixel, unboosted, into io.filtered.
+ * totals, then the gather of every output pixel, unboosted, into io.filtered. packed holds the
+ * runs, four words each, and with lens the cell tables, which select each output pixel's runs.
  **/
 StatusEnum
 recordDefocusGpu(const PassGpuIO& io,
                  const DefocusParams& params,
-                 const BokehKernel& kernel)
+                 const std::vector<uint32_t>& packed,
+                 const DefocusGpuLens* lens)
 {
     gpu::GpuRecordContext& ctx = io.context;
     const RectI& domain = io.domain;
     const int nComps = io.nComps;
-    if (PassExec::isEmptyRect(domain) || (nComps < 1) || (nComps > 4) || !io.filtered.buffer) {
-        return eStatusFailed;
-    }
-    const std::vector<BokehRun> runs = kernel.runs();
-    if (runs.empty()) {
+    if (PassExec::isEmptyRect(domain) || (nComps < 1) || (nComps > 4) || !io.filtered.buffer || packed.empty() || (packed.size() > UINT32_MAX)) {
         return eStatusFailed;
     }
     const uint64_t width = (uint64_t)domain.width();
@@ -439,14 +464,6 @@ recordDefocusGpu(const PassGpuIO& io,
         return eStatusFailed;
     }
 
-    std::vector<uint32_t> packed;
-    packed.reserve(runs.size() * 4);
-    for (const BokehRun& run : runs) {
-        packed.push_back((uint32_t)run.dy);
-        packed.push_back((uint32_t)run.dx0);
-        packed.push_back((uint32_t)run.length);
-        packed.push_back(std::bit_cast<uint32_t>(run.weight));
-    }
     gpu::GpuBuffer* runBuffer = nullptr;
     gpu::GpuBuffer* work = nullptr;
     const std::size_t runBytes = packed.size() * sizeof(uint32_t);
@@ -476,8 +493,17 @@ recordDefocusGpu(const PassGpuIO& io,
     base.nBlocks = (uint32_t)nBlocks;
     base.localOffset = (uint32_t)slotFloats;
     base.totalOffset = (uint32_t)(slotFloats + localFloats);
-    base.runCount = (uint32_t)runs.size();
+    base.runCount = (uint32_t)(packed.size() / 4);
     base.flags = params.highlight.isActive() ? kGpuBoost : 0u;
+    if (lens) {
+        base.flags |= kGpuLens;
+        base.cellTable = lens->cellTable;
+        base.columnMap = lens->columnMap;
+        base.rowMap = lens->rowMap;
+        base.cellColumns = lens->cellColumns;
+        base.cellRows = lens->cellRows;
+        base.channelGroups = lens->channelGroups;
+    }
     base.threshold = params.highlight.threshold;
     base.gain = params.highlight.gain;
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
@@ -868,7 +894,7 @@ Defocus::fitsGpu(const DefocusParams& params,
                  const PassList& passes)
 {
 #ifdef NATRON_HAVE_GPU
-    if ((params.shape.shape == BokehShape::Image) || params.lens.isActive()) {
+    if (params.shape.shape == BokehShape::Image) {
         return false;
     }
     for (const Pass& pass : passes.passes) {
@@ -889,32 +915,106 @@ Defocus::fitsGpu(const DefocusParams& params,
 StatusEnum
 Defocus::recordPassesGpu(const PassGpuIO& io,
                          const DefocusParams& params,
-                         const PassContext& context)
+                         const PassContext& context,
+                         const RectI& format,
+                         const std::shared_ptr<BokehRunCache>& cache)
 {
 #ifdef NATRON_HAVE_GPU
-    if ((params.shape.shape == BokehShape::Image) || params.lens.isActive()) {
+    if (params.shape.shape == BokehShape::Image) {
         return eStatusFailed;
     }
-    double rx = 0.;
-    double ry = 0.;
-    radii(params, context, &rx, &ry);
-    if (BokehKernel::isIdentityRadius(rx, ry)) {
-        return eStatusFailed;
-    }
-    const BokehKernel kernel = BokehKernel::gatherKernel(params.shape, rx, ry);
-    if ((kernel.haloX() > kGpuMaxHalo) || (kernel.haloY() > kGpuMaxHalo)) {
-        return eStatusFailed;
+    if (!params.lens.isActive()) {
+        double rx = 0.;
+        double ry = 0.;
+        radii(params, context, &rx, &ry);
+        if (BokehKernel::isIdentityRadius(rx, ry)) {
+            return eStatusFailed;
+        }
+        const BokehKernel kernel = BokehKernel::gatherKernel(params.shape, rx, ry);
+        if ((kernel.haloX() > kGpuMaxHalo) || (kernel.haloY() > kGpuMaxHalo)) {
+            return eStatusFailed;
+        }
+        const std::vector<BokehRun> runs = kernel.runs();
+        std::vector<uint32_t> packed;
+        packed.reserve(runs.size() * 4);
+        for (const BokehRun& run : runs) {
+            packed.push_back((uint32_t)run.dy);
+            packed.push_back((uint32_t)run.dx0);
+            packed.push_back((uint32_t)run.length);
+            packed.push_back(std::bit_cast<uint32_t>(run.weight));
+        }
+
+        return recordDefocusGpu(io, params, packed, nullptr);
     }
 
-    return recordDefocusGpu(io, params, kernel);
+    // The lens aberrations: the runs of each group's kernel in each cell of the output.
+    const OfxPointD rs = context.scale.toOfxPointD();
+    const LensAberration lens(params.lens, format, context.pixelAspectRatio, rs.x, rs.y);
+    const int groups = lens.groupCount();
+    std::vector<std::pair<double, double>> groupRadii(groups);
+    for (int g = 0; g < groups; ++g) {
+        radii(params, context, lens.groupScale(g), &groupRadii[g].first, &groupRadii[g].second);
+        if ((BokehKernel::extent(groupRadii[g].first) > kGpuMaxHalo) || (BokehKernel::extent(groupRadii[g].second) > kGpuMaxHalo)) {
+            return eStatusFailed;
+        }
+    }
+    LensBandRuns kernels;
+    kernels.cells = lens.cells(io.output);
+    kernels.groups = groups;
+    LensBand all;
+    all.j1 = kernels.cells.j1;
+    all.j2 = kernels.cells.j1 + kernels.cells.rows;
+    all.y1 = io.output.y1;
+    all.y2 = io.output.y2;
+    const std::size_t count = kernels.size(all);
+    if (count > (std::size_t)INT_MAX) {
+        return eStatusFailed;
+    }
+    kernels.runs.assign(count, BokehRunCache::Runs());
+    const BokehShapeParams shape = params.shape;
+    parallelForOnGlobalPool((int)count, appPTR->getNCPUsAvailableForEffect(), [&](int k) {
+        int group = 0;
+        int i = 0;
+        int j = 0;
+        kernels.item(all, (std::size_t)k, &group, &i, &j);
+        BokehShapeParams clipped = shape;
+        clipped.clip = lens.clip(i, j);
+        const std::pair<double, double>& r = groupRadii[group];
+        kernels.runs[k] = cache ? cache->runs(clipped, r.first, r.second) : std::make_shared<const std::vector<BokehRun>>(BokehKernel::gatherKernel(clipped, r.first, r.second).runs());
+    });
+
+    std::vector<uint32_t> packed;
+    std::size_t table = 0;
+    std::size_t columnMap = 0;
+    std::size_t rowMap = 0;
+    appendLensRunTable(kernels, all, &packed, &table);
+    appendLensCellMaps(lens, kernels.cells, io.output, &packed, &columnMap, &rowMap);
+    const uint64_t bytes = (uint64_t)packed.size() * sizeof(uint32_t);
+    if ((bytes > kGpuMaxLensBytes) || (bytes > io.context.maxScratchBytes())) {
+        return eStatusFailed;
+    }
+    DefocusGpuLens tables;
+    tables.cellTable = (uint32_t)table;
+    tables.columnMap = (uint32_t)columnMap;
+    tables.rowMap = (uint32_t)rowMap;
+    tables.cellColumns = (uint32_t)kernels.cells.columns;
+    tables.cellRows = (uint32_t)kernels.cells.rows;
+    for (int c = 0; c < std::min(io.nComps, 4); ++c) {
+        tables.channelGroups |= (uint32_t)lens.groupOf(pixelKernelChannelBit(io.nComps, c)) << (2 * c);
+    }
+    tables.channelGroups |= (uint32_t)groups << 8;
+
+    return recordDefocusGpu(io, params, packed, &tables);
 #else
     Q_UNUSED(io);
     Q_UNUSED(params);
     Q_UNUSED(context);
+    Q_UNUSED(format);
+    Q_UNUSED(cache);
 
     return eStatusFailed;
 #endif
-}
+} // Defocus::recordPassesGpu
 
 std::string
 Defocus::kernelNotConnectedMessage()
@@ -967,8 +1067,14 @@ Defocus::opPasses(double time,
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && fitsGpu(params, list)) {
-        list.gpu = [params, context](const PassGpuIO& io) -> StatusEnum {
-            return recordPassesGpu(io, params, context);
+        RectI format;
+        if (params.lens.isActive()) {
+            NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+            format = metadata ? metadata->getOutputFormat() : RectI();
+        }
+        const std::shared_ptr<BokehRunCache> cache = _runCache;
+        list.gpu = [params, context, format, cache](const PassGpuIO& io) -> StatusEnum {
+            return recordPassesGpu(io, params, context, format, cache);
         };
     }
 #endif

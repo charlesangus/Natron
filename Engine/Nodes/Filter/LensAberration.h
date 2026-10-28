@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -355,6 +356,28 @@ struct LensBandRuns {
         return *runs[((std::size_t)group * (std::size_t)band.cellRows() + (std::size_t)(j - band.j1)) * (std::size_t)cells.columns + (std::size_t)(i - cells.i1)];
     }
 };
+
+/**
+ * @brief Appends band's kernels to words, the uint buffer a GPU gather reads: from *table, two
+ * words per kernel in LensBandRuns order, the word index of its first run and its run count, 0 for
+ * a null kernel; then the runs, four words each: dy, dx0, length and the weight's bits, a kernel
+ * several cells share stored once. The caller checks that words stays within 32-bit indices.
+ **/
+void appendLensRunTable(const LensBandRuns& runs,
+                        const LensBand& band,
+                        std::vector<uint32_t>* words,
+                        std::size_t* table);
+
+/**
+ * @brief Appends to words, from *columnMap, the column of cells of each pixel column of output,
+ * counted from cells.i1, and from *rowMap the row of cells of each pixel row, from cells.j1.
+ **/
+void appendLensCellMaps(const LensAberration& lens,
+                        const LensCells& cells,
+                        const RectI& output,
+                        std::vector<uint32_t>* words,
+                        std::size_t* columnMap,
+                        std::size_t* rowMap);
 
 NATRON_NAMESPACE_EXIT
 

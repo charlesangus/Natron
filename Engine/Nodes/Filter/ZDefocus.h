@@ -187,14 +187,18 @@ public:
 
     /**
      * @brief Records the passes for params at context's scale on the GPU over io.domain, reading
-     * the depth from io.layerInputs. Fails, so that the CPU renders, without a GPU, for an image
-     * kernel, or when a buffer exceeds the kernels' 32-bit indices.
+     * the depth from io.layerInputs; with lens aberrations over format, every slice's kernel per
+     * channel group and cell of io.output, from cache when there is one. Fails, so that the CPU
+     * renders, without a GPU, for an image kernel, when a buffer exceeds the kernels' 32-bit
+     * indices, or when the lens kernels' runs exceed the upload cap.
      **/
     static StatusEnum recordPassesGpu(const PassGpuIO& io,
                                       const ZDefocusParams& params,
                                       const PassContext& context,
                                       const ImageLayerDesc& depthLayer,
-                                      int depthChannel) WARN_UNUSED_RETURN;
+                                      int depthChannel,
+                                      const RectI& format,
+                                      const std::shared_ptr<BokehRunCache>& cache) WARN_UNUSED_RETURN;
 
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,

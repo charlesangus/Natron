@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <bit>
 #include <cfloat>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -52,8 +53,10 @@
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/Defocus.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/PoolParallelFor.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
@@ -667,7 +670,18 @@ const uint32_t kGpuSharp = 2;
 const uint32_t kGpuFirst = 4;
 const uint32_t kGpuInverseDistance = 8;
 const uint32_t kGpuHasDepth = 16;
-const std::size_t kGpuMetaCentres = 12;
+const uint32_t kGpuLens = 32;
+const std::size_t kGpuMetaCocScale = 12;
+const std::size_t kGpuMetaGroups = 13;
+const std::size_t kGpuMetaCellColumns = 14;
+const std::size_t kGpuMetaCellRows = 15;
+const std::size_t kGpuMetaColumnMap = 16;
+const std::size_t kGpuMetaRowMap = 17;
+const std::size_t kGpuMetaSharp = 18;
+const std::size_t kGpuMetaCentres = 19;
+// The most bytes of metadata, kernel runs and cell tables, the GPU uploads for a render with lens
+// aberrations; more stays on the CPU, which holds a band of cells' kernels at a time.
+const uint64_t kGpuMaxLensBytes = (uint64_t)256 << 20;
 
 // Mirrors ZDefocusParams in Kernels/zdefocus.slang, which has no padding between members.
 struct ZDefocusGpuParams {
@@ -1286,7 +1300,7 @@ ZDefocus::fitsGpu(const ZDefocusParams& params,
     if (params.focalPlaneOutput) {
         return true;
     }
-    if ((params.shape.shape == BokehShape::Image) || params.lens.isActive()) {
+    if (params.shape.shape == BokehShape::Image) {
         return false;
     }
     const std::vector<ZDefocusSlice> sliceList = slices(params, context);
@@ -1318,7 +1332,9 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
                           const ZDefocusParams& params,
                           const PassContext& context,
                           const ImageLayerDesc& depthLayer,
-                          int depthChannel)
+                          int depthChannel,
+                          const RectI& format,
+                          const std::shared_ptr<BokehRunCache>& cache)
 {
 #ifdef NATRON_HAVE_GPU
     gpu::GpuRecordContext& ctx = io.context;
@@ -1341,14 +1357,36 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     }
 
     const DepthOfField dof(params.dof);
+    const bool lensActive = !params.focalPlaneOutput && params.lens.isActive();
+    const OfxPointD rs = context.scale.toOfxPointD();
+    const LensAberration lens(lensActive ? params.lens : LensAberrationParams(), format, context.pixelAspectRatio, rs.x, rs.y);
+    const int groups = lens.groupCount();
     std::vector<ZDefocusSlice> sliceList;
+    // Per slice, whether it leaves every group sharp, and a bit per group that it leaves sharp.
+    std::vector<unsigned char> sliceSharp;
+    std::vector<uint32_t> groupSharp;
     std::vector<BokehKernel> kernels;
     if (!params.focalPlaneOutput) {
         sliceList = slices(params, context);
         bool anyBlur = false;
         for (const ZDefocusSlice& slice : sliceList) {
-            kernels.push_back(BokehKernel::gatherKernel(params.shape, slice.radiusX, slice.radiusY));
-            anyBlur = anyBlur || !kernels.back().isIdentity();
+            if (lensActive) {
+                uint32_t bits = 0;
+                for (int g = 0; g < groups; ++g) {
+                    double rx = 0.;
+                    double ry = 0.;
+                    radii(params, context, slice.coc, lens.groupScale(g), &rx, &ry);
+                    if (BokehKernel::isIdentityRadius(rx, ry)) {
+                        bits |= 1u << g;
+                    }
+                }
+                groupSharp.push_back(bits);
+                sliceSharp.push_back(bits == (1u << groups) - 1u);
+            } else {
+                kernels.push_back(BokehKernel::gatherKernel(params.shape, slice.radiusX, slice.radiusY));
+                sliceSharp.push_back(kernels.back().isIdentity());
+            }
+            anyBlur = anyBlur || !sliceSharp.back();
         }
         if (!anyBlur) {
             return eStatusFailed;
@@ -1373,11 +1411,74 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     meta[9] = floatBits(snapX);
     meta[10] = floatBits(snapY);
     meta[11] = (uint32_t)sliceList.size();
+    meta[kGpuMetaCocScale] = floatBits(lensActive ? params.lens.maxScale() : 1.);
+    meta[kGpuMetaGroups] = (uint32_t)groups << 8;
+    for (int c = 0; c < std::min(nComps, 4); ++c) {
+        meta[kGpuMetaGroups] |= (uint32_t)lens.groupOf(pixelKernelChannelBit(nComps, c)) << (2 * c);
+    }
+    meta[kGpuMetaCellColumns] = 1;
+    meta[kGpuMetaCellRows] = 1;
     for (const ZDefocusSlice& slice : sliceList) {
         meta.push_back(floatBits(slice.coc));
     }
+    // Per slice, its runs' first uint and count, or with the lens aberrations its cell table.
     std::vector<uint32_t> runOffsets;
     std::vector<uint32_t> runCounts;
+    if (lensActive) {
+        meta[kGpuMetaSharp] = (uint32_t)meta.size();
+        meta.insert(meta.end(), groupSharp.begin(), groupSharp.end());
+
+        // Each slice's kernels per group and cell of the output, but for the groups it leaves sharp.
+        LensBandRuns cellKernels;
+        cellKernels.cells = lens.cells(io.output);
+        cellKernels.groups = groups;
+        LensBand all;
+        all.j1 = cellKernels.cells.j1;
+        all.j2 = cellKernels.cells.j1 + cellKernels.cells.rows;
+        all.y1 = io.output.y1;
+        all.y2 = io.output.y2;
+        const std::size_t perSlice = cellKernels.size(all);
+        const std::size_t count = perSlice * sliceList.size();
+        if (count > (std::size_t)INT_MAX) {
+            return eStatusFailed;
+        }
+        std::vector<BokehRunCache::Runs> built(count);
+        const BokehShapeParams shape = params.shape;
+        parallelForOnGlobalPool((int)count, appPTR->getNCPUsAvailableForEffect(), [&](int item) {
+            const std::size_t k = (std::size_t)item / perSlice;
+            int group = 0;
+            int i = 0;
+            int j = 0;
+            cellKernels.item(all, (std::size_t)item % perSlice, &group, &i, &j);
+            if (groupSharp[k] & (1u << group)) {
+                return;
+            }
+            double rx = 0.;
+            double ry = 0.;
+            radii(params, context, sliceList[k].coc, lens.groupScale(group), &rx, &ry);
+            BokehShapeParams clipped = shape;
+            clipped.clip = lens.clip(i, j);
+            built[(std::size_t)item] = cache ? cache->runs(clipped, rx, ry) : std::make_shared<const std::vector<BokehRun>>(BokehKernel::gatherKernel(clipped, rx, ry).runs());
+        });
+        for (std::size_t k = 0; k < sliceList.size(); ++k) {
+            cellKernels.runs.assign(built.begin() + k * perSlice, built.begin() + (k + 1) * perSlice);
+            std::size_t table = 0;
+            appendLensRunTable(cellKernels, all, &meta, &table);
+            runOffsets.push_back((uint32_t)table);
+            runCounts.push_back(0);
+        }
+        std::size_t columnMap = 0;
+        std::size_t rowMap = 0;
+        appendLensCellMaps(lens, cellKernels.cells, io.output, &meta, &columnMap, &rowMap);
+        meta[kGpuMetaCellColumns] = (uint32_t)cellKernels.cells.columns;
+        meta[kGpuMetaCellRows] = (uint32_t)cellKernels.cells.rows;
+        meta[kGpuMetaColumnMap] = (uint32_t)columnMap;
+        meta[kGpuMetaRowMap] = (uint32_t)rowMap;
+        const uint64_t bytes = (uint64_t)meta.size() * sizeof(uint32_t);
+        if ((bytes > kGpuMaxLensBytes) || (bytes > ctx.maxScratchBytes())) {
+            return eStatusFailed;
+        }
+    }
     for (const BokehKernel& kernel : kernels) {
         const std::vector<BokehRun> runs = kernel.isIdentity() ? std::vector<BokehRun>() : kernel.runs();
         runOffsets.push_back((uint32_t)meta.size());
@@ -1399,7 +1500,7 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     const uint64_t cocFloats = params.focalPlaneOutput ? 0 : 2 * width * height;
     const uint64_t localFloats = params.focalPlaneOutput ? 0 : (width + 1) * height * (n + 1);
     const uint64_t totalFloats = params.focalPlaneOutput ? 0 : nBlocks * height * (n + 1);
-    const uint64_t accFloats = params.focalPlaneOutput ? 0 : outPixels * (n + 1);
+    const uint64_t accFloats = params.focalPlaneOutput ? 0 : outPixels * (n + (uint64_t)groups);
     const uint64_t workFloats = std::max<uint64_t>(1, params.focalPlaneOutput ? 1 : slotFloats + cocFloats + localFloats + totalFloats + accFloats);
     if ((workFloats > UINT32_MAX) || (meta.size() > UINT32_MAX)) {
         return eStatusFailed;
@@ -1439,6 +1540,9 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     base.flags = (params.highlight.isActive() && !params.focalPlaneOutput) ? kGpuBoost : 0u;
     if (dof.units() == DepthUnits::InverseDistance) {
         base.flags |= kGpuInverseDistance;
+    }
+    if (lensActive) {
+        base.flags |= kGpuLens;
     }
     base.threshold = params.highlight.threshold;
     base.gain = params.highlight.gain;
@@ -1488,15 +1592,15 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     }
     ctx.computeBarrier();
     // Back to front, each slice laid over the farther ones.
-    for (int k = (int)kernels.size() - 1; k >= 0; --k) {
+    for (int k = (int)sliceList.size() - 1; k >= 0; --k) {
         ZDefocusGpuParams p = base;
         p.slice = (uint32_t)k;
         p.runOffset = runOffsets[k];
         p.runCount = runCounts[k];
-        if (k == (int)kernels.size() - 1) {
+        if (k == (int)sliceList.size() - 1) {
             p.flags |= kGpuFirst;
         }
-        if (kernels[k].isIdentity()) {
+        if (sliceSharp[k]) {
             p.flags |= kGpuSharp;
         } else {
             if (!dispatchZDefocus(ctx, gpu::GpuKernelId::zdefocus_blocks, buffers, p, p.nBlocks, p.domHeight)) {
@@ -1520,6 +1624,8 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     Q_UNUSED(context);
     Q_UNUSED(depthLayer);
     Q_UNUSED(depthChannel);
+    Q_UNUSED(format);
+    Q_UNUSED(cache);
 
     return eStatusFailed;
 #endif
@@ -1580,7 +1686,7 @@ ZDefocus::opPasses(double time,
         const PassContext context = getPassContext(time, view, scale);
         if (fitsGpu(params, context) && resolveDepthChannel(time, view, &depthLayer, &depthChannel)) {
             list.gpu = [params, context, depthLayer, depthChannel](const PassGpuIO& io) -> StatusEnum {
-                return recordPassesGpu(io, params, context, depthLayer, depthChannel);
+                return recordPassesGpu(io, params, context, depthLayer, depthChannel, RectI(), std::shared_ptr<BokehRunCache>());
             };
         }
 #endif
@@ -1607,8 +1713,14 @@ ZDefocus::opPasses(double time,
     ImageLayerDesc depthLayer;
     int depthChannel = -1;
     if (fitsGpu(params, context) && resolveDepthChannel(time, view, &depthLayer, &depthChannel)) {
-        list.gpu = [params, context, depthLayer, depthChannel](const PassGpuIO& io) -> StatusEnum {
-            return recordPassesGpu(io, params, context, depthLayer, depthChannel);
+        RectI format;
+        if (params.lens.isActive()) {
+            NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+            format = metadata ? metadata->getOutputFormat() : RectI();
+        }
+        const std::shared_ptr<BokehRunCache> cache = _runCache;
+        list.gpu = [params, context, depthLayer, depthChannel, format, cache](const PassGpuIO& io) -> StatusEnum {
+            return recordPassesGpu(io, params, context, depthLayer, depthChannel, format, cache);
         };
     }
 #endif

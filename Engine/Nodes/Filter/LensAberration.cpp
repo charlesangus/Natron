@@ -25,7 +25,10 @@
 
 #include "LensAberration.h"
 
+#include <bit>
 #include <cmath>
+#include <map>
+#include <utility>
 
 NATRON_NAMESPACE_ENTER
 
@@ -262,6 +265,56 @@ BokehRunCache::runs(const BokehShapeParams& shape,
     }
 
     return built;
+}
+
+void
+appendLensRunTable(const LensBandRuns& runs,
+                   const LensBand& band,
+                   std::vector<uint32_t>* words,
+                   std::size_t* table)
+{
+    const std::size_t n = runs.size(band);
+    *table = words->size();
+    words->resize(*table + 2 * n, 0u);
+    std::map<const std::vector<BokehRun>*, std::pair<uint32_t, uint32_t>> stored;
+    for (std::size_t k = 0; k < n; ++k) {
+        const BokehRunCache::Runs& kernel = runs.runs[k];
+        if (!kernel || kernel->empty()) {
+            continue;
+        }
+        std::map<const std::vector<BokehRun>*, std::pair<uint32_t, uint32_t>>::const_iterator found = stored.find(kernel.get());
+        if (found == stored.end()) {
+            const std::pair<uint32_t, uint32_t> entry((uint32_t)words->size(), (uint32_t)kernel->size());
+            words->reserve(words->size() + 4 * kernel->size());
+            for (const BokehRun& run : *kernel) {
+                words->push_back((uint32_t)run.dy);
+                words->push_back((uint32_t)run.dx0);
+                words->push_back((uint32_t)run.length);
+                words->push_back(std::bit_cast<uint32_t>(run.weight));
+            }
+            found = stored.emplace(kernel.get(), entry).first;
+        }
+        (*words)[*table + 2 * k] = found->second.first;
+        (*words)[*table + 2 * k + 1] = found->second.second;
+    }
+}
+
+void
+appendLensCellMaps(const LensAberration& lens,
+                   const LensCells& cells,
+                   const RectI& output,
+                   std::vector<uint32_t>* words,
+                   std::size_t* columnMap,
+                   std::size_t* rowMap)
+{
+    *columnMap = words->size();
+    lens.forEachSegment(output.x1, output.x2, [&](int xa, int xb, int i) {
+        words->insert(words->end(), (std::size_t)(xb - xa), (uint32_t)(i - cells.i1));
+    });
+    *rowMap = words->size();
+    for (int y = output.y1; y < output.y2; ++y) {
+        words->push_back((uint32_t)(lens.rowOf(y) - cells.j1));
+    }
 }
 
 NATRON_NAMESPACE_EXIT

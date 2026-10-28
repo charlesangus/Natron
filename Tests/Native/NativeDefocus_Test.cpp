@@ -552,8 +552,8 @@ TEST_F(NativeDefocusTest, LensRegionIndependence)
     }
 }
 
-// Regression fixtures: the parity source defocused by each kernel type, the Image kernel being
-// another parity source.
+// Regression fixtures: the parity source defocused by each kernel type and lens aberration, the
+// Image kernel being another parity source.
 TEST_F(NativeDefocusTest, Golden)
 {
     GoldenNodeSpec spec;
@@ -578,6 +578,21 @@ TEST_F(NativeDefocusTest, Golden)
     }));
     v.push_back(goldenVariant("image", false, [sized](const GoldenGraph& g) {
         return sized(g) && setKnobValue(g.node, kDefocusParamKernelType, std::string(kDefocusParamKernelTypeImage));
+    }));
+    v.push_back(goldenVariant("catEye", false, [sized](const GoldenGraph& g) {
+        return sized(g) && setKnobValues(g.node, kBokehParamCatEye, { 1. });
+    }));
+    v.push_back(goldenVariant("swirl", false, [sized](const GoldenGraph& g) {
+        return sized(g) && setKnobValues(g.node, kBokehParamCatEye, { 0.6 })
+            && setKnobValue(g.node, kBokehParamCatEyeOrientation, std::string(kBokehParamCatEyeOrientationTangential));
+    }));
+    v.push_back(goldenVariant("chromaticAnamorphic", false, [sized](const GoldenGraph& g) {
+        return sized(g) && setKnobValues(g.node, kBokehParamChromaticAberration, { 0.5 }) && setKnobValues(g.node, kDefocusParamAspectRatio, { 0.5 });
+    }));
+    v.push_back(goldenVariant("lensTextured", false, [sized](const GoldenGraph& g) {
+        return sized(g) && setKnobValues(g.node, kBokehParamCatEye, { 0.8 }) && setKnobValues(g.node, kBokehParamChromaticAberration, { 0.3 })
+            && setKnobValues(g.node, kBokehParamSphericalAberration, { 0.5 }) && setKnobValues(g.node, kDefocusParamHighlightThreshold, { 1. })
+            && setKnobValues(g.node, kDefocusParamHighlightGain, { 4. });
     }));
     v.push_back(goldenVariant("maskmix", true, [sized](const GoldenGraph& g) {
         return sized(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

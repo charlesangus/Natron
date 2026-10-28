@@ -408,6 +408,8 @@ struct PassGpuIO {
     // others from the source, but a recorder that combines channels must leave them out.
     std::bitset<4> channels;
     std::vector<GpuImageView> inputs;
+    // The layers getGpuExtraInputLayers() adds, each cropped to its input's region of definition.
+    std::vector<GpuLayerInput> layerInputs;
     bool maskApplied = false;
     GpuImageView mask;
     int maskComponent = -1;

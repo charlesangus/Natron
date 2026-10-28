@@ -116,13 +116,13 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 
 ## Phase 148.3: Panel, visibility and docs
 
-- [ ] M148.P3.T1 — Panel Role and Linked-to columns and context actions
+- [x] M148.P3.T1 — Panel Role and Linked-to columns and context actions
   - files: `Gui/SplineWarpPanelHook.{h,cpp}` (new), `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Gui/CMakeLists.txt`
   - approach: implement M146 - Roto Hosting For Any Node's panel hook. Role shows Source, Destination, Boundary or a blank; Linked-to shows the partner's label. The context-menu actions call P1.T2's actions.
   - verify: the build passes. The gate's Xvfb panel screenshot shows both columns for a linked pair and a boundary.
   - size: M
 
-- [ ] M148.P3.T2 — Make SplineWarp visible, with its icon and docs
+- [x] M148.P3.T2 — Make SplineWarp visible, with its icon and docs
   - files: `Engine/Nodes/Transform/SplineWarp.reg.inc`, `docs/SplineWarp.md` (new), the icon under the native node icon directory used by the M120 - Native Node Port Kit fragments
   - approach: register it non-internal in the Transform group, add an icon, and write the user docs. They cover the curve roles, linking, correspondences, boundaries and feather, amounts, invert, the solver knobs, the viewing toggles, and that unlinked curves are ignored.
   - verify: a test that the plugin is listed and non-internal. The docs build passes if docs CI covers `docs/`.
@@ -142,6 +142,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 
 ## Decisions
 
+- 2026-10-28: Phase 3 implemented (build pending). The curve list's context menu offers all five warp actions, greying out refused ones (new `enabled` flag on M146's hook menu action, honoured by RotoPanel). Panel hook lives in Engine (the hook interface is there). Link takes the curve list's selection order (first = source). Renaming a curve refreshes all host columns. Docs at Engine/Nodes/Transform/docs/SplineWarp.md. SplineWarp no longer internal; in the Transform menu with a 128 px icon.
 - 2026-10-28: Phase 2 implemented (build pending). Show and Output Warped sit in the viewer's top bar (the vertical toolbar only holds tool groups); neither is saved, Output Warped is in the render hash (off = identity of Source; also affects Write renders in the session). Unlinked curves and boundaries always shown; link/correspondence lines only with Show = Both; hidden curves deselected and unpickable. Changing a never-saved knob no longer marks the project for autosave (all nodes). Drag uses the app draft-render flag: field step ×4, half curve detail, impulse filter; RoD stays full quality. PM call: draft tolerance max 0.3 / mean 0.05 (RGB, 8 px margin) — a numpy model predicts ~0.14 max for the fixture; a draft is a preview. Open (user): should role colours override a curve's own overlay colour (currently they do)?
 - 2026-10-28: Phase 1 implemented (86b0c3735, build pending). No BSpline tool (shared base has none). Warp actions return their undo command (background apps discard pushed commands). Correspondence picking uses SplineWarpCurve::nearestParam (isPointOnCurve reads timeline time, main thread only). Toggle Boundary on mixed selection sets all, clears if all set. Duplicate and Link takes exactly one curve, names <name>_copy[N]. Auto-key on keys new correspondences at the current time. Swap is exact only for unreversed zero-offset links. Open (put to the user): where the one-shot warp actions live (toolbar groups only hold switchable tools) — PM recommendation: a Nuke-style Join tool (Nuke's SplineWarp links A→B with a Join tool) plus right-click menu entries for the others; and whether Swap must be exact for reversed/offset links.
 - 2026-10-20 — **Duplicate and Link lands on top, as the selected destination (user, grill):** the warp starts at zero, so nothing jumps.

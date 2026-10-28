@@ -40,11 +40,11 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 ExtentPolicy
-generatorExtentPolicy()
+generatorExtentPolicy(ExtentKnobs::ExtentEnum defaultExtent)
 {
     ExtentPolicy policy;
 
-    policy.defaultExtent = ExtentKnobs::eExtentDefault;
+    policy.defaultExtent = defaultExtent;
     policy.reformatToggle = true;
     policy.overlayFollowsExtent = true;
     policy.recenterOnSource = false;
@@ -53,9 +53,10 @@ generatorExtentPolicy()
 }
 } // anonymous namespace
 
-NativeGenerator::NativeGenerator(EffectInstance* effect)
+NativeGenerator::NativeGenerator(EffectInstance* effect,
+                                 ExtentEnum defaultExtent)
     : _effect(effect)
-    , _extentKnobs(effect, generatorExtentPolicy())
+    , _extentKnobs(effect, generatorExtentPolicy(defaultExtent))
 {
 }
 

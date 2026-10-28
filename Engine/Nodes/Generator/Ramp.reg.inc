@@ -1,0 +1,1 @@
+NATRON_NATIVE_NODE(Ramp, "Ramp.h")

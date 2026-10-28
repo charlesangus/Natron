@@ -181,6 +181,11 @@ struct EndToEndResult {
     int uploads = 0;
     int downloads = 0;
 
+    // The forced context's pool peak (live plus pooled bytes) over this frame, the pool being new to it.
+    unsigned long long poolPeakBytes = 0;
+    // Why tasks of the GPU frame were moved back to the CPU, with how many.
+    std::map<std::string, int> cpuFallbackReasons;
+
     bool ranInRegion(const NodePtr& node) const;
 };
 

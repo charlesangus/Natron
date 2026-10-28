@@ -1,7 +1,7 @@
 # LoopEnd
 
-Tolerance: none recorded. The fold runs on the CPU, whatever the GPU placement, until
-M259 - GPU Placement Under Render Contexts.
+Tolerance: GPU folds against the CPU: min and max bit-exact; mean, sum, over and under
+within 1e-6 relative, from the device's division (mean) and rounding.
 
 - `LoopEnd`: renders its input, the loop body, once per iteration and folds the iterations
   together. The body starts at the LoopBegins found walking up from the input, each bringing
@@ -169,3 +169,18 @@ M259 - GPU Placement Under Render Contexts.
   node, a driver, or the wiring) stops that render before it folds another iteration, and
   the viewer shows the render of the edited loop instead. Only while a value is being
   dragged does the render already running finish, as any viewer render does.
+
+## GPU
+
+- Under the task-graph scheduler, each fold step renders on the GPU when its input does: the
+  step reads the step before and the iteration's image on the device. Under Feedback, each
+  LoopBegin with Feedback on forwards the previous iteration's tail on the device too, at every
+  iteration after the first.
+- Residency: a fold chain, or a feedback chain, with its body runs as one GPU region, so no step
+  goes back to the host. The device pool's budget bounds memory: buffers are reused along the
+  chain, and a region that does not fit runs in narrower strips.
+- CPU fallback: a step falls back, and the render still succeeds, when the pool cannot hold even
+  one strip of it (a budget below one image), when its previous step is missing on the device,
+  when a feedback tail's layer differs from the LoopBegin's (the CPU conforms it), and under the
+  legacy scheduler, where one render folds every iteration. A depth other than float also keeps
+  it on the CPU.

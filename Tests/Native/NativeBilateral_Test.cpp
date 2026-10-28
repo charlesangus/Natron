@@ -415,10 +415,9 @@ TEST_F(NativeBilateralTest, ScaleInvariance)
         ASSERT_NO_FATAL_FAILURE(renderPair(plate, node, &in, &out));
         ASSERT_NO_FATAL_FAILURE(renderPair(plate100, node100, &in100, &out100));
         ASSERT_EQ(out.window, out100.window);
-        // Guided mode fits a and b from mean(I*key) - mean(I)*mean(key) and mean(key^2) - mean(key)^2
-        // in float; those differences cancel most of the digits, so scaling the image by 100 moves
-        // the result by a few 1e-4 relative where the bilateral mode stays within 1e-4.
-        const double tolerance = (mode == eBilateralModeGuided) ? 5e-4 : 1e-4;
+        // Guided mode fits a and b from E[xy] - E[x]E[y] and E[key^2] - E[key]^2 in float; scaling by 100
+        // shifts the log2 key by 6.64 stops, so the variance cancels more digits (relative error up to ~1e-3).
+        const double tolerance = (mode == eBilateralModeGuided) ? 2e-3 : 1e-4;
         // Values near zero make a purely relative bound too strict; the data are scaled by 100 and
         // sit at 1-100, so an absolute floor of 1e-4 is far below any meaningful value.
         const double absTol = 1e-4;

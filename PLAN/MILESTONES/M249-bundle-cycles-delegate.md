@@ -27,25 +27,25 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 
 ## Phase 249.1: Build and ship
 
-- [ ] M249.P1.T1 — Inspect upstream and pin a tag
+- [x] M249.P1.T1 — Inspect upstream and pin a tag
   - files: `tools/ci/local/Dockerfile`, `tools/release/container/Dockerfile` (read only), a note in the report
   - approach: clone Cycles at candidate tags, read `CMakeLists.txt`, `src/hydra/` and `src/app/` to confirm the delegate exists, its CMake option, its USD version range and its dependency list. Compare against the image's libraries. Report the tag, option names, dependency conflicts, and licence. No source is committed.
   - verify: the report cites file paths and line numbers in the cloned tree for each claim and flags recollection.
   - size: M
 
-- [ ] M249.P1.T2 — Build recipe in the image
+- [x] M249.P1.T2 — Build recipe in the image
   - files: `tools/ci/local/Dockerfile`, `tools/release/container/Dockerfile`, a build script under `tools/ci/`
   - approach: build Cycles with the Hydra delegate, CPU-only, installed under the same prefix scheme USD uses, reusing the image's USD, OIIO, OpenEXR, TBB and Embree. Pin by tag and checksum. Keep layers cacheable so a Natron-only change does not rebuild Cycles.
   - verify: image builds; `ls` of the install shows the delegate library and its plugInfo.json; `ldd` shows no duplicate OpenEXR/OIIO.
   - size: L
 
-- [ ] M249.P1.T3 — Package and discover
+- [x] M249.P1.T3 — Package and discover
   - files: `tools/ci/local/package.sh`, `tools/release/` packaging scripts, `Engine/AppManager.cpp` (plug-in path setup)
   - approach: copy the delegate, its plugInfo and runtime libraries into the AppImage and tar.xz; at start-up, append the bundled plugin dir to `PXR_PLUGINPATH_NAME` before USD loads.
   - verify: the packaged AppImage lists the Cycles renderer via the M248 - Render Delegate Selection registry; extracted bins run with `LD_LIBRARY_PATH` unset.
   - size: M
 
-- [ ] M249.P1.T4 — Delegate load test
+- [x] M249.P1.T4 — Delegate load test
   - files: `Tests/Scene/CyclesDelegate_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: ctest that asks `HdRendererPluginRegistry` for the Cycles plug-in and instantiates a render delegate headless; skipped with a clear message (not failed) only when the build has no delegate (not on Linux CI).
   - verify: passes in CI debug and release.

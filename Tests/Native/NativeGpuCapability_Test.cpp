@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Filter/Bilateral.h"
 #include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/DirBlur.h"
 #include "Engine/Nodes/Filter/EdgeBlur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/EdgeExtend.h"
@@ -162,6 +163,7 @@ gpuCapableIds()
         PLUGINID_NATRON_POSTERIZE,
         PLUGINID_NATRON_MEDIAN,
         PLUGINID_NATRON_BILATERAL,
+        PLUGINID_NATRON_DIRBLUR,
     };
 
     return ids;

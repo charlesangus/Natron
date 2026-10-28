@@ -1030,6 +1030,10 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
                                      this, SLOT(onSelectedKnobCurveChanged()));
                     QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
                                      this, SLOT(onSelectedKnobCurveChanged()));
+                    // A value written to the item at a time it already has a key emits no keyFrameSet, and
+                    // the slaved item reads the context knob, so the write would be lost without this.
+                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)),
+                                     this, SLOT(onSelectedKnobValueChanged()));
 
                     break;
                 }
@@ -1124,6 +1128,26 @@ RotoCurveContext::onSelectedKnobCurveChanged()
 }
 
 void
+RotoCurveContext::onSelectedKnobValueChanged()
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+
+    if (!handler) {
+        return;
+    }
+    KnobIPtr knob = handler->getKnob();
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr k = it->lock();
+        if (k && (k->getName() == knob->getName())) {
+            // The context knob pushes itself back into its slaved items, which emit this again;
+            // by then they match and the check stops the echo.
+            ignore_result(k->cloneAndCheckIfChanged(knob.get()));
+            break;
+        }
+    }
+}
+
+void
 RotoCurveContext::deselectInternal(RotoItemPtr b)
 {
     /// only called on the main-thread
@@ -1186,6 +1210,8 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
                                         this, SLOT(onSelectedKnobCurveChanged()));
                     QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
                                         this, SLOT(onSelectedKnobCurveChanged()));
+                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)),
+                                        this, SLOT(onSelectedKnobValueChanged()));
                     break;
                 }
             }

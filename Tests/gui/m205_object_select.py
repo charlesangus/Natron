@@ -146,13 +146,15 @@ try:
             return None
         return (min(xs), min(ys), max(xs), max(ys))
 
-    def outline_pixels(gl):
-        """How many pixels of the preview's orange outline the viewer shows."""
+    def outline_pixels(gl, box, margin=12):
+        """How many pixels of the preview's orange outline the viewer shows around the still's
+        bright box. Only that area counts: the tool's messages are drawn in the same orange at the
+        viewport's top left."""
         origin = gl.mapToGlobal(QPoint(0, 0))
         img = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), gl.width(), gl.height()).toImage()
         n = 0
-        for y in range(0, img.height(), 2):
-            for x in range(0, img.width(), 2):
+        for y in range(max(0, box[1] - margin), min(img.height(), box[3] + margin + 1), 2):
+            for x in range(max(0, box[0] - margin), min(img.width(), box[2] + margin + 1), 2):
                 c = img.pixelColor(x, y)
                 if c.red() > 200 and 120 < c.green() < 210 and c.blue() < 90:
                     n += 1
@@ -277,6 +279,11 @@ try:
 
     def steps():
         gt.section("object-select")
+        # A fresh profile has AI off: the tool then only shows "AI is disabled" and adds no prompt.
+        ai_enabled = NatronEngine.natron.getSettings().getParam("aiEnabled")
+        require(ai_enabled is not None, "Settings has a parameter named aiEnabled")
+        ai_enabled.setValue(True)
+        require(ai_enabled.getValue(), "AI is enabled in Preferences")
         app = NatronEngine.natron.getActiveInstance()
         viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
         require(viewer is not None, "a Viewer node exists")
@@ -341,27 +348,29 @@ try:
             return QPoint(int(round(box[0] + (px - OBJECT[0]) * sx)), int(round(box[1] + (py - OBJECT[1]) * sy)))
 
         click(gl, at(30, 48))
-        ok = yield ("until", lambda: outline_pixels(gl) > 40, POLL_TIMEOUT_S)
-        check(ok, "a click previews the object's outline (%d outline pixels)" % outline_pixels(gl))
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
+        check(ok, "a click previews the object's outline (%d outline pixels)" % outline_pixels(gl, box))
         gt.shot("m205-object-preview.png")
 
         # A box needs a SAM model; the click above belongs to the SegNext selection, cleared first.
         key(gl, Qt.Key_Escape)
-        yield ("until", lambda: outline_pixels(gl) < 10, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
+        check(ok, "Escape clears the preview")
         if check(pick_model(roto, SAM_ID), "picked the Test SAM model"):
             yield ("sleep", SETTLE_MS)
             drag(gl, at(10, 4), at(118, 92))
-            ok = yield ("until", lambda: outline_pixels(gl) > 40, POLL_TIMEOUT_S)
+            ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
             check(ok, "a box prompt previews the object's outline with the SAM model")
             gt.shot("m205-object-box.png")
             key(gl, Qt.Key_Escape)
-            yield ("until", lambda: outline_pixels(gl) < 10, POLL_TIMEOUT_S)
+            ok = yield ("until", lambda: outline_pixels(gl, box) < 10, POLL_TIMEOUT_S)
+            check(ok, "Escape clears the box preview")
             pick_model(roto, SEGNEXT_ID)
             yield ("sleep", SETTLE_MS)
 
         check(not shapes(roto), "no shape exists before the commit")
         click(gl, at(30, 48))
-        ok = yield ("until", lambda: outline_pixels(gl) > 40, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: outline_pixels(gl, box) > 40, POLL_TIMEOUT_S)
         require(ok, "the click previews the outline again")
         key(gl, Qt.Key_Return)
         ok = yield ("until", lambda: len(shapes(roto)) >= 2, POLL_TIMEOUT_S)

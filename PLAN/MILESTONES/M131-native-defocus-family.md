@@ -184,6 +184,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Decisions
 
+- 2026-10-28: Phase 1 (bokeh kernel library, Defocus) and Phase 130.3 (ZDefocus) implemented; Phase 130.2 stays cancelled (moved to M184/M186). Defocus: Size = bokeh diameter (default 10, max 500), Aspect Ratio replaces Nuke's ratio; scale/quality/method dropped (gather is exact); CPU sums kernel rows from prefix tables; GPU up to 256 px kernels, Image kernels on the CPU. ZDefocus: Mask input kept; sceneUnit knob for lens mode; manual size = diameter at infinity; maxSize 50 (≤500), layers 2–64, coverage-normalised slices; GPU in float (tolerance 1e-4 abs / 1e-3 rel), Image kernel on the CPU; PassExecutor GPU pass inputs now carry extra layer inputs (depth). Open to user: Defocus default size (Nuke uses 1); GPU path for Image kernels.
 - 2026-10-13 — **Scope of v1 (user, /cat-plan grill):** a solid core with the bokeh kernels (disc, n-blade, image), highlight boost, Defocus, IBlur, IDefocus and ZDefocus with a layered gather and a focal-plane output, GPU for all, and no deep input.
 - 2026-10-13 — **ZDefocus real-world lens mode (user):** the disc size can be set from focal length, f-stop and film back.
 - 2026-10-13 — **Aberrations split out (user):** cat-eye, chromatic aberration and anamorphic go to a follow-up, M133 - ZDefocus Lens Aberrations.

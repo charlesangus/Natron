@@ -42,10 +42,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Image.h"
 #include "Engine/ProjectColorManagement.h"
 
+#include "Gui/GuiFwd.h"
+#include "Gui/NodeOverlayRenderer.h"
 #include "Gui/TextRenderer.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ZoomContext.h"
-#include "Gui/GuiFwd.h"
 
 #define WIPE_MIX_HANDLE_LENGTH 50.
 #define WIPE_ROTATE_HANDLE_LENGTH 100.
@@ -234,6 +235,7 @@ struct ViewerGL::Implementation
     int persistentMessageType;
     bool displayPersistentMessage;
     TextRenderer textRenderer;
+    std::unique_ptr<NodeOverlayRenderer> overlayRenderer;
     QPoint lastMousePosition; //< in widget coordinates
     QPointF lastDragStartPos; //< in zoom coordinates
     bool hasMovedSincePress;

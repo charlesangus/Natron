@@ -228,6 +228,8 @@ class OpenGLRendererInfo;
 class OpenGLViewerI;
 class OutputEffectInstance;
 class OutputSchedulerThreadStartArgs;
+class OverlayDrawList;
+struct OverlayDrawState;
 class OverlaySupport;
 class ParallelRenderArgs;
 class ParallelRenderArgsSetter;

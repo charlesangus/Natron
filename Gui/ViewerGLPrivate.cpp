@@ -111,11 +111,15 @@ releaseViewerGLResources(ViewerGLImpl& imp)
         imp.iboTriangleStripId = 0;
         glDeleteTextures(1, &imp.checkerboardTextureID);
         imp.checkerboardTextureID = 0;
+        if (imp.overlayRenderer) {
+            imp.overlayRenderer->releaseGLResources();
+        }
         glCheckError();
     }
 
     // The glyph atlases are textures of this context: delete them here, and let the next context
     // build its own instead of binding these names.
+    imp.overlayRenderer.reset();
     std::destroy_at(&imp.textRenderer);
     std::construct_at(&imp.textRenderer);
 }

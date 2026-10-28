@@ -4035,6 +4035,20 @@ ViewerGL::getScreenPixelRatio() const
 }
 #endif
 
+void
+ViewerGL::drawOverlayDrawList(const OverlayDrawList& list,
+                              const OverlayDrawState& state)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+
+    if (!_imp->overlayRenderer) {
+        _imp->overlayRenderer.reset(new NodeOverlayRenderer());
+    }
+    _imp->overlayRenderer->draw(list, state, this);
+}
+
 /**
  * @brief Returns the colour of the background (i.e: clear color) of the viewport.
  **/

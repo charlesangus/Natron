@@ -66,6 +66,8 @@
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlaySupport.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
@@ -3931,7 +3933,7 @@ EffectInstance::drawOverlay_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return;
     }
 
@@ -3947,10 +3949,176 @@ EffectInstance::drawOverlay_public(double time,
     _imp->setDuringInteractAction(true);
     bool drawHostOverlay = shouldDrawHostOverlay();
     drawOverlay(time, actualScale, view);
+    if (hasOverlayDrawList() && _imp->overlaysViewport) {
+        const OverlayDrawList& list = buildOverlay_public(time, actualScale, view);
+        if (!list.empty()) {
+            _imp->overlaysViewport->drawOverlayDrawList(list, getOverlayDrawState());
+        }
+    }
     if (drawHostOverlay) {
         getNode()->drawHostOverlay(time, actualScale, view);
     }
     _imp->setDuringInteractAction(false);
+}
+
+const OverlayDrawList&
+EffectInstance::buildOverlay_public(double time,
+                                    const RenderScale& renderScale,
+                                    ViewIdx view)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->overlayDrawList.clear();
+    if (hasOverlayDrawList()) {
+        buildOverlay(time, renderScale, view, &_imp->overlayDrawList);
+    }
+    double x, y;
+    if ((_imp->overlayHoveredHandle != OverlayDrawList::kNoHandle) && !_imp->overlayDrawList.getHandlePosition(_imp->overlayHoveredHandle, &x, &y)) {
+        _imp->overlayHoveredHandle = OverlayDrawList::kNoHandle;
+    }
+
+    return _imp->overlayDrawList;
+}
+
+const OverlayDrawList&
+EffectInstance::getOverlayDrawList() const
+{
+    return _imp->overlayDrawList;
+}
+
+OverlayDrawState
+EffectInstance::getOverlayDrawState() const
+{
+    OverlayDrawState state;
+
+    state.hoveredHandle = _imp->overlayHoveredHandle;
+    state.pressedHandle = _imp->overlayPressedHandle;
+    double r, g, b;
+    if (getNode()->getOverlayColor(&r, &g, &b)) {
+        state.nodeR = (float)r;
+        state.nodeG = (float)g;
+        state.nodeB = (float)b;
+    }
+
+    return state;
+}
+
+bool
+EffectInstance::isViewerRender() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->isRenderResponseToUserInteraction;
+}
+
+bool
+EffectInstance::hasAnyOverlay() const
+{
+    return hasOverlay() || hasOverlayDrawList() || getNode()->hasHostOverlay();
+}
+
+namespace {
+
+// Brackets a handle callback so its knob edits make one undoable command, as the host interacts do.
+class OverlayHandleEdit {
+public:
+    explicit OverlayHandleEdit(EffectInstance* effect)
+        : _effect(effect)
+    {
+        _effect->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
+    }
+
+    ~OverlayHandleEdit()
+    {
+        _effect->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+    }
+
+private:
+    EffectInstance* _effect;
+};
+
+} // anon namespace
+
+bool
+EffectInstance::onOverlayDrawListPenDown(double time,
+                                         ViewIdx view,
+                                         const QPointF& pos)
+{
+    if (!hasOverlayDrawList() || !_imp->overlaysViewport) {
+        return false;
+    }
+    double scaleX, scaleY;
+    _imp->overlaysViewport->getPixelScale(scaleX, scaleY);
+    const int id = _imp->overlayDrawList.hitTestHandle(pos.x(), pos.y(), scaleX, scaleY);
+    if (id == OverlayDrawList::kNoHandle) {
+        return false;
+    }
+    bool taken;
+    {
+        OverlayHandleEdit edit(this);
+        taken = onOverlayHandlePressed(id, time, view, pos);
+    }
+    if (!taken) {
+        return false;
+    }
+    _imp->overlayPressedHandle = id;
+    _imp->overlayHoveredHandle = id;
+    _imp->overlayLastPenPos = pos;
+    redrawOverlayInteract();
+
+    return true;
+}
+
+bool
+EffectInstance::onOverlayDrawListPenMotion(double time,
+                                           ViewIdx view,
+                                           const QPointF& pos)
+{
+    if (!hasOverlayDrawList()) {
+        return false;
+    }
+    if (_imp->overlayPressedHandle != OverlayDrawList::kNoHandle) {
+        const QPointF delta = pos - _imp->overlayLastPenPos;
+        _imp->overlayLastPenPos = pos;
+        {
+            OverlayHandleEdit edit(this);
+            onOverlayHandleDragged(_imp->overlayPressedHandle, time, view, pos, delta);
+        }
+        redrawOverlayInteract();
+
+        return true;
+    }
+    if (!_imp->overlaysViewport) {
+        return false;
+    }
+    double scaleX, scaleY;
+    _imp->overlaysViewport->getPixelScale(scaleX, scaleY);
+    const int hovered = _imp->overlayDrawList.hitTestHandle(pos.x(), pos.y(), scaleX, scaleY);
+    if (hovered == _imp->overlayHoveredHandle) {
+        return false;
+    }
+    _imp->overlayHoveredHandle = hovered;
+    redrawOverlayInteract();
+
+    return true;
+}
+
+bool
+EffectInstance::onOverlayDrawListPenUp(double time,
+                                       ViewIdx view,
+                                       const QPointF& pos)
+{
+    if (_imp->overlayPressedHandle == OverlayDrawList::kNoHandle) {
+        return false;
+    }
+    const int id = _imp->overlayPressedHandle;
+    _imp->overlayPressedHandle = OverlayDrawList::kNoHandle;
+    {
+        OverlayHandleEdit edit(this);
+        onOverlayHandleReleased(id, time, view, pos);
+    }
+    redrawOverlayInteract();
+
+    return true;
 }
 
 bool
@@ -3965,7 +4133,7 @@ EffectInstance::onOverlayPenDown_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -3992,6 +4160,9 @@ EffectInstance::onOverlayPenDown_public(double time,
                 ret |= getNode()->onOverlayPenDownDefault(time, actualScale, view, viewportPos, pos, pressure);
             }
         }
+        if (!ret) {
+            ret = onOverlayDrawListPenDown(time, view, pos);
+        }
 
         _imp->setDuringInteractAction(false);
     }
@@ -4009,7 +4180,7 @@ EffectInstance::onOverlayPenDoubleClicked_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4055,7 +4226,7 @@ EffectInstance::onOverlayPenMotion_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4071,7 +4242,9 @@ EffectInstance::onOverlayPenMotion_public(double time,
     _imp->setDuringInteractAction(true);
     bool ret;
     bool drawHostOverlay = shouldDrawHostOverlay();
-    if (!shouldPreferPluginOverlayOverHostOverlay()) {
+    if (_imp->overlayPressedHandle != OverlayDrawList::kNoHandle) {
+        ret = onOverlayDrawListPenMotion(time, view, pos);
+    } else if (!shouldPreferPluginOverlayOverHostOverlay()) {
         ret = drawHostOverlay ? getNode()->onOverlayPenMotionDefault(time, actualScale, view, viewportPos, pos, pressure) : false;
         if (!ret) {
             ret |= onOverlayPenMotion(time, actualScale, view, viewportPos, pos, pressure, timestamp);
@@ -4081,6 +4254,9 @@ EffectInstance::onOverlayPenMotion_public(double time,
         if (!ret && drawHostOverlay) {
             ret |= getNode()->onOverlayPenMotionDefault(time, actualScale, view, viewportPos, pos, pressure);
         }
+    }
+    if (!ret) {
+        ret = onOverlayDrawListPenMotion(time, view, pos);
     }
 
     _imp->setDuringInteractAction(false);
@@ -4101,7 +4277,7 @@ EffectInstance::onOverlayPenUp_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4117,7 +4293,9 @@ EffectInstance::onOverlayPenUp_public(double time,
         NON_RECURSIVE_ACTION();
         _imp->setDuringInteractAction(true);
         bool drawHostOverlay = shouldDrawHostOverlay();
-        if (!shouldPreferPluginOverlayOverHostOverlay()) {
+        if (onOverlayDrawListPenUp(time, view, pos)) {
+            ret = true;
+        } else if (!shouldPreferPluginOverlayOverHostOverlay()) {
             ret = drawHostOverlay ? getNode()->onOverlayPenUpDefault(time, actualScale, view, viewportPos, pos, pressure) : false;
             if (!ret) {
                 ret |= onOverlayPenUp(time, actualScale, view, viewportPos, pos, pressure, timestamp);
@@ -4145,7 +4323,7 @@ EffectInstance::onOverlayKeyDown_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4181,7 +4359,7 @@ EffectInstance::onOverlayKeyUp_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4217,7 +4395,7 @@ EffectInstance::onOverlayKeyRepeat_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4250,7 +4428,7 @@ EffectInstance::onOverlayFocusGained_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4284,7 +4462,7 @@ EffectInstance::onOverlayFocusLost_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -5997,7 +6175,7 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     if ( kh && ( QThread::currentThread() == qApp->thread() ) &&
          originatedFromMainThread && ( reason != eValueChangedReasonTimeChanged) ) {
         ///Run the following only in the main-thread
-        if ( hasOverlay() && node->shouldDrawOverlay() && !node->hasHostOverlayForParam(k) ) {
+        if ((hasOverlay() || hasOverlayDrawList()) && node->shouldDrawOverlay() && !node->hasHostOverlayForParam(k)) {
             // Some plugins (e.g. by digital film tools) forget to set kOfxInteractPropSlaveToParam.
             // Most hosts trigger a redraw if the plugin has an active overlay.
             incrementRedrawNeededCounter();

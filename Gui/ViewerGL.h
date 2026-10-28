@@ -359,6 +359,8 @@ public:
     virtual double getScreenPixelRatio() const OVERRIDE FINAL;
 #endif
 
+    virtual void drawOverlayDrawList(const OverlayDrawList& list, const OverlayDrawState& state) OVERRIDE FINAL;
+
     /**
      * @brief Returns the colour of the background (i.e: clear color) of the viewport.
      **/

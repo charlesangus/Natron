@@ -2491,6 +2491,27 @@ public:
 
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Rebuilds the overlay draw list with buildOverlay() and returns it. The list is kept
+     * for the pen's handle hit-tests until the next rebuild. Main thread only.
+     **/
+    const OverlayDrawList& buildOverlay_public(double time, const RenderScale& renderScale, ViewIdx view);
+
+    const OverlayDrawList& getOverlayDrawList() const;
+
+    /**
+     * @brief The hovered and pressed handles and the node's overlay colour, as the viewer draws
+     * the list with them.
+     **/
+    OverlayDrawState getOverlayDrawState() const;
+
+    /**
+     * @brief True when the render running on this thread was made in response to a user
+     * interaction, the viewer's current-frame renders among them. Viewer playback and writers
+     * render with it false. Outside a render it is false.
+     **/
+    bool isViewerRender() const;
+
     void setInteractColourPicker_public(const OfxRGBAColourD& color, bool setColor, bool hasColor);
 
     virtual bool isDoingInteractAction() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -2509,6 +2530,14 @@ public:
      * respectively the width and height of the frame.)
      */
     virtual bool hasOverlay() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Return true to have the viewer draw the list buildOverlay() fills.
+     **/
+    virtual bool hasOverlayDrawList() const
     {
         return false;
     }
@@ -3079,6 +3108,49 @@ protected:
     {
     }
 
+    /**
+     * @brief Fills list, which arrives empty, with what to draw over the viewer. Called on the
+     * main thread for each viewer redraw while the overlay shows; it must not render or change
+     * knobs. Only called when hasOverlayDrawList() returns true.
+     **/
+    virtual void buildOverlay(double /*time*/,
+                              const RenderScale& /*renderScale*/,
+                              ViewIdx /*view*/,
+                              OverlayDrawList* /*list*/)
+    {
+    }
+
+    /**
+     * @brief The pen went down on the handle id. Return false to let the press through to what is
+     * under it. Knob edits made from these three callbacks with eValueChangedReasonPluginEdited
+     * go on the undo stack, merged as the host interacts' edits are.
+     **/
+    virtual bool onOverlayHandlePressed(int /*id*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const QPointF& /*pos*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief The pen moved while holding the handle id, to pos, delta from where it was.
+     **/
+    virtual void onOverlayHandleDragged(int /*id*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const QPointF& /*pos*/,
+                                        const QPointF& /*delta*/)
+    {
+    }
+
+    virtual void onOverlayHandleReleased(int /*id*/,
+                                         double /*time*/,
+                                         ViewIdx /*view*/,
+                                         const QPointF& /*pos*/)
+    {
+    }
+
     virtual bool onOverlayPenDown(double /*time*/,
                                   const RenderScale & /*renderScale*/,
                                   ViewIdx /*view*/,
@@ -3166,6 +3238,11 @@ protected:
     NodeWPtr _node; //< the node holding this effect
 
 private:
+    bool hasAnyOverlay() const;
+
+    bool onOverlayDrawListPenDown(double time, ViewIdx view, const QPointF& pos);
+    bool onOverlayDrawListPenMotion(double time, ViewIdx view, const QPointF& pos);
+    bool onOverlayDrawListPenUp(double time, ViewIdx view, const QPointF& pos);
 
     class Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details

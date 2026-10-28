@@ -24,6 +24,7 @@
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 #include "Native/GlHostWrapTestEffect.h"
+#include "Native/OverlayTestNode.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
@@ -203,6 +204,12 @@ registerNativeParityTestPlugins()
 }
 
 void
+registerOverlayTestPlugins()
+{
+    registerTestBuiltInPlugin<OverlayTestNode>();
+}
+
+void
 registerCacheStressTestPlugins()
 {
     // A source whose render remembers a knob value outside every engine cache, so the cache
@@ -260,6 +267,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerIdentityHopTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
+    registerOverlayTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerCacheStressTestPlugins();

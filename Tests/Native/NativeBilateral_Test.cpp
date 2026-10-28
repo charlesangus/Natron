@@ -419,13 +419,16 @@ TEST_F(NativeBilateralTest, ScaleInvariance)
         // in float; those differences cancel most of the digits, so scaling the image by 100 moves
         // the result by a few 1e-4 relative where the bilateral mode stays within 1e-4.
         const double tolerance = (mode == eBilateralModeGuided) ? 5e-4 : 1e-4;
+        // Values near zero make a purely relative bound too strict; the data are scaled by 100 and
+        // sit at 1-100, so an absolute floor of 1e-4 is far below any meaningful value.
+        const double absTol = 1e-4;
         bool changed = false;
         const RectI& w = out.window;
         for (int y = w.y1; y < w.y2; ++y) {
             for (int x = w.x1; x < w.x2; ++x) {
                 for (int c = 0; c < 3; ++c) {
                     const float ref = at(out100, x, y, c);
-                    ASSERT_NEAR(100. * at(out, x, y, c), ref, tolerance * std::fabs(ref)) << modeName(mode) << " at (" << x << "," << y << ") channel " << c;
+                    ASSERT_NEAR(100. * at(out, x, y, c), ref, absTol + tolerance * std::fabs(ref)) << modeName(mode) << " at (" << x << "," << y << ") channel " << c;
                     changed = changed || (at(out, x, y, c) != at(in, x, y, c));
                 }
             }

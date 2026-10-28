@@ -40,6 +40,7 @@
 #define kRetimeParamOriginalOut "originalOut"
 #define kRetimeParamNewOut "newOut"
 #define kRetimeParamUseOutMapping "useOutMapping"
+#define kRetimeParamRangeEdited "rangeEdited"
 #define kRetimeParamSpeed "speed"
 #define kRetimeParamReverse "reverse"
 #define kRetimeParamBefore "before"
@@ -171,6 +172,13 @@ private:
     // Shows the resolved values in the knobs the mappings derive, which are read-only.
     void refreshDerivedKnobs();
 
+    // Until one of the four ends is edited they are the input's frame range, so a new Retime is
+    // the identity on any input.
+    void followInputRange();
+
+    // Marks the ends edited when k is one of them, in use, and differs from the input's range.
+    void noteRangeEdit(KnobI* k);
+
     /**
      * @brief Where before and after send the output time time, before the speed: into *mapped,
      * with *moving false where the mapped time stands still as time moves (held at an end).
@@ -188,6 +196,7 @@ private:
     KnobDoubleWPtr _originalOut;
     KnobDoubleWPtr _newOut;
     KnobBoolWPtr _useOutMapping;
+    KnobBoolWPtr _rangeEdited;
     KnobDoubleWPtr _speed;
     KnobBoolWPtr _reverse;
     KnobChoiceWPtr _before;

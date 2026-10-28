@@ -22,17 +22,17 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.1: Measure
 
-- [ ] M224.P1.T1 — Add an opt-in pen-to-pixel latency probe
+- [x] M224.P1.T1 — Add an opt-in pen-to-pixel latency probe
   - files: `Gui/ViewerGL.cpp`, `Engine/RotoPaintInteract.cpp`, `Engine/OutputSchedulerThread.cpp`, `Engine/ViewerInstance.cpp`
   - approach: when `NATRON_ROTO_LATENCY_LOG=<path>` is set, stamp `steady_clock` at the event (tablet/mouse), at `appendPoint`, at render request, start and end, at texture upload and at the `paintGL` swap. Write one JSON line per point age, on the same clock as M117's StallMonitor. When the variable is unset there is no cost beyond one branch.
   - verify: a GuiTests gtest drives five synthetic points and checks five records with monotonically increasing stamps. With the variable unset, no file is written.
   - size: M
-- [ ] M224.P1.T2 — Add a roto bench driver to the GUI bench
+- [x] M224.P1.T2 — Add a roto bench driver to the GUI bench
   - files: `tools/bench/gui/roto_bench.py` (new), `tools/bench/gui/run.sh`, `tools/bench/gui/README.md`
   - approach: built on M117's `gui_bench.py`/`guitest.run()`. Ops: `stroke` at brush sizes 5/50/300 px, at 2K and 4K, with and without a `gen_graph` comp of 300 nodes upstream; `drag_point`, `drag_tangent`, `drag_feather` and `transform_box` on 1, 30 and 100 shapes of 24 points × 200 keys; `hover` over 100 shapes; `pen_up` stall. Each op reports p50/p95 pen-to-pixel latency (from P1.T1), overlay frame time and stalls.
   - verify: runs under `Tests/gui/run-gui-test.sh` and emits a record per op with no `timeout`. `compare.py --self-test` still passes.
   - size: M
-- [ ] M224.P1.T3 — Record the Xvfb and host baselines and agree the budget
+- [x] M224.P1.T3 — Record the Xvfb and host baselines and agree the budget
   - files: `tools/bench/BASELINE.md`, `tools/bench/gui/baselines/roto-xvfb.jsonl` (new)
   - approach: record an Xvfb baseline for regressions. Record host numbers from a stripped `release` AppImage on the user's workstation and on a modest-GPU machine. Rank the costs per stage from the probe; this ranking confirms or reorders Phases 2-4.
   - verify: the tables are recorded. The user signs off the latency budget, recorded in `## Decisions`.
@@ -40,17 +40,17 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.2: Strokes under the pen
 
-- [ ] M224.P2.T1 — Draw the stroke being painted as a GPU overlay preview
+- [x] M224.P2.T1 — Draw the stroke being painted as a GPU overlay preview
   - files: `Engine/RotoPaintInteract.cpp`, `Engine/RotoPaintInteract.h`, `Engine/RotoCurveInteract.cpp`
   - approach: on each pen motion, append the raw sample (position, pressure) to an interact-owned buffer and request an overlay redraw only. `drawOverlay` draws pressure-scaled dabs or a quad strip in the brush colour × opacity with hardness falloff, adding only new segments each paint. The buffer clears when the neat render for that stroke age lands.
   - verify: a new Xvfb test, `Tests/gui/m224_stroke_preview.py`, drags on ViewerGL with renders held (viewer paused) and checks preview pixels at each sample position after one paint. Bench `stroke` p95 meets the budget from P1.T3.
   - size: L
-- [ ] M224.P2.T2 — Coalesce stroke renders and let each one use the pool
+- [x] M224.P2.T2 — Coalesce stroke renders and let each one use the pool
   - files: `Engine/OutputSchedulerThread.cpp`, `Engine/RotoCurveContext.cpp`, `Engine/RotoStrokeItem.cpp`
   - approach: allow one stroke render in flight; requests that arrive meanwhile collapse into one, which picks up every point since the last rendered age (`getMostRecentStrokeChangesSinceAge` already accumulates). Keep stroke requests serialized but let each render use the thread pool for tiles in place of `maxThreads=1`. Remove the per-point `qDebug`.
   - verify: the stroke golden (a ≤256 px half-float crop) is bit-identical before and after. Bench `stroke` on 4K with heavy upstream shows the backlog flat (render requests ≤ points). Run `RotoSmear` and the existing roto tests.
   - size: L
-- [ ] M224.P2.T3 — Make the pen-up neat render asynchronous
+- [x] M224.P2.T3 — Make the pen-up neat render asynchronous
   - files: `Engine/RotoContext.cpp`, `Engine/RotoContext.h`, `Engine/RotoPaintInteract.cpp`, `Engine/ViewerInstance.cpp`
   - approach: replace the main-thread condition wait with a completion callback. The preview stays up until the neat render lands. A pen-down during a neat render either waits on a worker or queues behind it, never on the GUI thread, with no busy cursor.
   - verify: the Xvfb test draws two strokes 50 ms apart; StallMonitor records no stall over 50 ms; the final crop is bit-identical to the golden.
@@ -58,17 +58,17 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.3: Shape editing
 
-- [ ] M224.P3.T1 — Render roto shapes live during drags
+- [x] M224.P3.T1 — Render roto shapes live during drags
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoUndoCommand.cpp`
   - approach: point, tangent, feather and transform-box drags request a throttled, abortable `evaluateChange` (latest wins) instead of waiting for pen-up. Pen-up still triggers the final evaluate and autosave.
   - verify: `Tests/gui/m224_shape_drag.py` drags a point and samples a mask pixel that changes before release. Bench `drag_point` frame time is within budget.
   - size: M
-- [ ] M224.P3.T2 — Capture undo state once per gesture
+- [x] M224.P3.T2 — Capture undo state once per gesture
   - files: `Engine/RotoUndoCommand.cpp`, `Engine/RotoUndoCommand.h`, `Engine/RotoCurveInteract.cpp`
   - approach: Move, Transform, Tangent and FeatherBar commands snapshot the originals at gesture start (keyed by `UndoGesture`). Each motion event then applies only a delta to the open command, with no point clones and no merge.
   - verify: an undo/redo gtest over every drag type matches serialized roto byte for byte. Bench `drag_point` at 200 keys has flat per-event cost.
   - size: M
-- [ ] M224.P3.T3 — Cache and cull the shape overlay
+- [x] M224.P3.T3 — Cache and cull the shape overlay
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/Bezier.cpp`, `Engine/Bezier.h`
   - approach: cache the evaluated polygon and feather polygon per (Bezier, time) and invalidate them with the content hash. Skip shapes whose bbox lies outside the viewport, and draw from vertex arrays.
   - verify: overlay screenshots match before and after (Xvfb). Bench `hover` on 100 shapes drops and scales sublinearly.
@@ -76,17 +76,17 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.4: Gestures and modes
 
-- [ ] M224.P4.T1 — Audit gesture parity against Nuke Roto/RotoPaint
+- [x] M224.P4.T1 — Audit gesture parity against Nuke Roto/RotoPaint
   - files: `.plan` milestone `## Decisions` only
   - approach: build a table of every Nuke viewer gesture and shortcut in `.local/docs/nuke/.../rotopaint/` next to Natron's (`RotoCurveInteract.cpp:1210-1250`, `RotoPaintInteract.cpp:580-600`). Mark each row present, missing or conflicting.
   - verify: the user approves the adopt list.
   - size: M
-- [ ] M224.P4.T2 — Add ripple-edit range modes
+- [x] M224.P4.T2 — Add ripple-edit range modes
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/Bezier.cpp`, `Engine/RotoCurveContext.cpp`, `Gui/ViewerGL.cpp`
   - approach: add modes all, from start, to end and range, as a choice next to the ripple toggle, and draw a red viewer border while ripple is on.
   - verify: a gtest ripples each mode on a 10-key shape. An Xvfb screenshot shows the border.
   - size: M
-- [ ] M224.P4.T3 — Add the Bezier drawing and tangent modifiers
+- [x] M224.P4.T3 — Add the Bezier drawing and tangent modifiers
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoUndoCommand.cpp`
   - approach: implement the missing rows from P4.T1: Ctrl+click to sketch, Shift+click for a sharp exit point, Shift-drag to move both tangents, Ctrl-drag to break the tangent, Ctrl-drag to move the transform pivot.
   - verify: `Tests/gui/m224_gestures.py` performs each gesture with real keys and checks the control points.

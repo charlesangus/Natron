@@ -49,6 +49,15 @@ if grep -q 'bool IsSupported(bool gpuEnabled) const override;' "$plugin_h" &&
     sed -i 's/bool IsSupported(bool gpuEnabled) const override;/bool IsSupported(bool gpuEnabled) const;/' "$plugin_h"
 fi
 
+# hdCycles declares priority 0, Storm's. USD sorts render delegates by ascending priority, ties by
+# type name, and takes the first that loads as its default
+# (HdRendererPluginRegistry::GetDefaultPluginId), so HdCyclesPlugin would win over
+# HdStormRendererPlugin for every engine made without an explicit id. 99, as hdEmbree declares,
+# puts it after Storm: used only when asked for by id.
+cycles_plug_info="${src}/src/hydra/resources/plugInfo.json"
+grep -q '"priority": 0' "$cycles_plug_info"
+sed -i 's/"priority": 0/"priority": 99/' "$cycles_plug_info"
+
 # The image's pxrConfig.cmake still names the Conan build tree for each dependency's <Pkg>_DIR;
 # point them at the image's installs, as cmake/NatronUsd.cmake does for Natron's own configure.
 dep_dirs=()
@@ -126,6 +135,7 @@ install -m 0644 "${build}/src/hydra/resources/plugInfo.json" "${plugin_dir}/hdCy
 install -m 0644 "${src}/LICENSE" "${plugin_dir}/hdCycles/LICENSE"
 grep -q '"LibraryPath": "../hdCycles.so"' "${plugin_dir}/hdCycles/resources/plugInfo.json"
 grep -q '"HdCyclesPlugin"' "${plugin_dir}/hdCycles/resources/plugInfo.json"
+grep -q '"priority": 99' "${plugin_dir}/hdCycles/resources/plugInfo.json"
 
 # Every dependency resolves, none from outside the image's prefixes, epoxy is not linked, and no
 # library appears in two versions (libOpenEXR-3_3 next to libOpenEXR-3_4, say).

@@ -91,6 +91,11 @@ isRetouchShape(const RotoItemPtr& item)
 /**
  * @brief Sets dimension of an item's knob. While the item is selected its knob is slaved to the
  * node's knob of the same name, which the knob then reads, so that one is set too.
+ *
+ * The item's own state is first made the node knob's: a key set on the item makes the curve context
+ * clone the item's own values and curves into the node knob, which would otherwise bring back the
+ * item's stale values. The node knob is set before the item so that its key also reaches the curve
+ * its panel reads on the main thread; the clone that follows the item's key then changes nothing.
  **/
 template <typename T>
 void
@@ -105,13 +110,15 @@ setItemKnobValue(const KnobIPtr& knob,
     if (!own) {
         return;
     }
-    targets.push_back(own);
     if (knob->isSlave(dimension)) {
-        Knob<T>* master = dynamic_cast<Knob<T>*>(knob->getMaster(dimension).second.get());
+        KnobIPtr masterKnob = knob->getMaster(dimension).second;
+        Knob<T>* master = dynamic_cast<Knob<T>*>(masterKnob.get());
         if (master) {
+            own->clone(master);
             targets.push_back(master);
         }
     }
+    targets.push_back(own);
     for (typename std::list<Knob<T>*>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
         if (keyframe) {
             // setValueAtTime writes the new key through this pointer unchecked.
@@ -1122,9 +1129,11 @@ Retouch::onOverlayPenDown(double time,
         RotoDrawableItemPtr item = pickSource(time, pos);
         if (item) {
             _draggedSource = item;
-            _lastDragPos = pos;
+            _dragPressPos = pos;
             _dragTime = time;
             readShapeSourceOffset(item, time, &_dragStart[0], &_dragStart[1]);
+            _dragEnd[0] = _dragStart[0];
+            _dragEnd[1] = _dragStart[1];
             redrawOverlayInteract();
 
             return true;
@@ -1145,10 +1154,9 @@ Retouch::onOverlayPenMotion(double time,
 {
     RotoDrawableItemPtr dragged = _draggedSource.lock();
     if (dragged) {
-        double dx, dy;
-        readShapeSourceOffset(dragged, time, &dx, &dy);
-        setShapeSourceOffset(dragged, time, dx + (pos.x() - _lastDragPos.x()), dy + (pos.y() - _lastDragPos.y()));
-        _lastDragPos = pos;
+        _dragEnd[0] = _dragStart[0] + (pos.x() - _dragPressPos.x());
+        _dragEnd[1] = _dragStart[1] + (pos.y() - _dragPressPos.y());
+        setShapeSourceOffset(dragged, _dragTime, _dragEnd[0], _dragEnd[1]);
         redrawOverlayInteract();
 
         return true;
@@ -1169,10 +1177,8 @@ Retouch::onOverlayPenUp(double /*time*/,
     RotoDrawableItemPtr dragged = _draggedSource.lock();
     if (dragged) {
         _draggedSource.reset();
-        double end[2];
-        readShapeSourceOffset(dragged, _dragTime, &end[0], &end[1]);
-        if ((end[0] != _dragStart[0]) || (end[1] != _dragStart[1])) {
-            UndoCommandPtr command = makeSourceDragCommand(dragged, _dragTime, _dragStart, end);
+        if ((_dragEnd[0] != _dragStart[0]) || (_dragEnd[1] != _dragStart[1])) {
+            UndoCommandPtr command = makeSourceDragCommand(dragged, _dragTime, _dragStart, _dragEnd);
             if (command) {
                 pushUndoCommand(command);
             }

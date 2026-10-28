@@ -150,8 +150,10 @@ try:
         require("size" in options, "the Crop's extent menu has a Size entry (%r)" % (options,))
         extent.setValue(options.index("size"))
         param(crop, "reformat").setValue(False)
-        param(crop, "bottomLeft").setValue(left, bottom)
-        param(crop, "size").setValue(width, height)
+        param(crop, "bottomLeft").set(left, bottom)
+        param(crop, "size").set(width, height)
+        got = param(crop, "size").get()
+        require((got.x, got.y) == (width, height), "%s's size is %rx%r (%rx%r)" % (crop.getLabel(), width, height, got.x, got.y))
         return crop
 
     def viewer_node():
@@ -285,13 +287,13 @@ try:
         adjust = create(PLUGIN_ADJUSTBBOX, 0, 900)
         connect(adjust, 0, source)
         param(adjust, "boundary").setValue(1)
-        param(adjust, "numpixels").setValue(1200, 800)
+        param(adjust, "numpixels").set(1200, 800)
         show(adjust)
         yield from panel_shot(adjust, "m121-adjustbbox-panel.png")
         yield from expect_colour("red", "AdjustBBox grew the region of definition to the viewer centre, "
                                         "and Nearest fills it with the edge colour")
         gt.shot("m121-adjustbbox.png")
-        param(adjust, "numpixels").setValue(0, 0)
+        param(adjust, "numpixels").set(0, 0)
         ok = yield ("until", lambda: not is_colour(colour(), "red"), POLL_TIMEOUT_S)
         check(ok, "Num Pixels 0 leaves the region as it was, so the centre is empty again (%r)" % (colour(),))
 
@@ -308,7 +310,7 @@ try:
         # Intensity defaults to 0 (as in Nuke), which multiplies the wrap away; Generate Wrap Only
         # keeps the plus-merged foreground from clamping the differences out.
         param(wrap, "intensity").setValue(1.0)
-        param(wrap, "diffuse").setValue(60.0, 60.0)
+        param(wrap, "diffuse").set(60.0, 60.0)
         param(wrap, "onlyWrap").setValue(True)
         yield ("sleep", SETTLE_MS * 4)
         base = viewer_crop()

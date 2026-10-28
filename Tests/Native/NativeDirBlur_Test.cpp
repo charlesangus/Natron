@@ -25,11 +25,13 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <functional>
 #include <list>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -46,6 +48,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/DirBlur.h"
@@ -131,6 +134,25 @@ sumWhere(const RenderedPlane& plane,
     }
 
     return sum;
+}
+
+// The largest absolute difference between two renders of the same window, or -1 when they differ
+// in size.
+float
+maxDifference(const RenderedPlane& a,
+              const RenderedPlane& b)
+{
+    if (a.pixels.size() != b.pixels.size()) {
+        ADD_FAILURE() << "the renders differ in size";
+
+        return -1.f;
+    }
+    float worst = 0.f;
+    for (std::size_t i = 0; i < a.pixels.size(); ++i) {
+        worst = std::max(worst, std::fabs(a.pixels[i] - b.pixels[i]));
+    }
+
+    return worst;
 }
 
 double
@@ -236,6 +258,9 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     EXPECT_EQ(std::string("Source"), node->getInputLabel(0));
     EXPECT_EQ(std::string("Mask"), node->getInputLabel(1));
     EXPECT_TRUE(node->getEffectInstance()->isInputMask(1));
+    EXPECT_EQ(std::string("Holdout"), node->getInputLabel(kDirBlurInputHoldout));
+    EXPECT_TRUE(node->getEffectInstance()->isInputOptional(kDirBlurInputHoldout));
+    EXPECT_FALSE(node->getEffectInstance()->isInputMask(kDirBlurInputHoldout));
     EXPECT_TRUE(bool(node->getKnobByName("enableMask_Mask")));
     EXPECT_TRUE(bool(node->getKnobByName(kOfxMixParamName)));
     // A filter: no (un)premult-by knob.
@@ -252,8 +277,25 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
         { kDirBlurParamSamples, "Samples" },
         { kDirBlurParamCentered, "Centered" },
         { kDirBlurParamFalloff, "Falloff" },
+        { kDirBlurParamResetCenter, "Reset Center" },
+        { kDirBlurParamUseTarget, "Use Target" },
+        { kDirBlurParamTarget, "Target" },
+        { kDirBlurParamPixelOffset, "Pixel Offset" },
+        { kDirBlurParamTranslate, "Translate" },
+        { kDirBlurParamRotate, "Rotate" },
+        { kDirBlurParamScale, "Scale" },
+        { kDirBlurParamUniform, "Uniform" },
+        { kDirBlurParamSkewX, "Skew X" },
+        { kDirBlurParamSkewY, "Skew Y" },
+        { kDirBlurParamSkewOrder, "Skew Order" },
+        { kDirBlurParamTransformAmount, "Transform Amount" },
+        { kDirBlurParamInvert, "Invert" },
+        { kDirBlurParamInteractive, "Interactive" },
         { kDirBlurParamFromColor, "From Color" },
         { kDirBlurParamToColor, "To Color" },
+        { kDirBlurParamRamp, "Ramp" },
+        { kDirBlurParamMax, "Max" },
+        { kDirBlurParamHoldoutChannel, "Holdout Channel" },
     };
     for (const auto& l : labels) {
         KnobIPtr knob = node->getKnobByName(l.name);
@@ -278,6 +320,24 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     KnobColorPtr from = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kDirBlurParamFromColor));
     ASSERT_TRUE(bool(from));
     EXPECT_EQ(4, from->getDimension());
+    // The target defaults to three quarters across the format, at mid height.
+    KnobDoublePtr target = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kDirBlurParamTarget));
+    ASSERT_TRUE(bool(target));
+    EXPECT_DOUBLE_EQ(0.75 * kWidth, target->getValue(0));
+    EXPECT_DOUBLE_EQ(0.5 * kHeight, target->getValue(1));
+    KnobDoublePtr scale = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kDirBlurParamScale));
+    ASSERT_TRUE(bool(scale));
+    EXPECT_EQ(1., scale->getValue(0));
+    EXPECT_EQ(1., scale->getValue(1));
+    KnobDoublePtr amount = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kDirBlurParamTransformAmount));
+    ASSERT_TRUE(bool(amount));
+    EXPECT_EQ(1., amount->getValue());
+    KnobChoicePtr ramp = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kDirBlurParamRamp));
+    ASSERT_TRUE(bool(ramp));
+    EXPECT_EQ((int)eDirBlurRampLinear, ramp->getValue());
+    KnobBoolPtr max = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kDirBlurParamMax));
+    ASSERT_TRUE(bool(max));
+    EXPECT_FALSE(max->getValue());
 }
 
 // Sample positions are midpoints of the blur, spread both ways when centred, and the factors of
@@ -309,6 +369,51 @@ TEST_F(NativeDirBlurTest, SamplesAndWeights)
         for (int c = 0; c < 4; ++c) {
             EXPECT_NEAR(1., sum[c], 1e-6) << "falloff " << falloff << " channel " << c;
         }
+        // The weights are the normalised falloff whatever Max says, and with Max the factors are
+        // the falloff unnormalised.
+        DirBlurParams maxParams = params;
+        maxParams.max = true;
+        const std::vector<DirBlurSample> maxSamples = DirBlur::canonicalSamples(maxParams, 40.);
+        ASSERT_EQ(samples.size(), maxSamples.size());
+        double weightSum = 0.;
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            weightSum += samples[i].weight;
+            EXPECT_FLOAT_EQ(samples[i].weight, maxSamples[i].weight);
+            const double expected = (falloff > 0.) ? std::pow(1. - std::fabs(t[i]), falloff) : 1.;
+            EXPECT_NEAR(expected, maxSamples[i].factor[0], 1e-6) << "falloff " << falloff << " sample " << i;
+        }
+        EXPECT_NEAR(1., weightSum, 1e-6) << "falloff " << falloff;
+    }
+}
+
+// The tint ramp: linear by default; Exponential goes by an even factor, from and to held to at
+// least kMinExponentialTint, and keeps white white.
+TEST_F(NativeDirBlurTest, TintRamp)
+{
+    DirBlurParams params;
+    params.fromColor[0] = 0.1;
+    params.toColor[0] = 1.;
+    params.fromColor[1] = 0.;
+    params.toColor[1] = 1.;
+    EXPECT_DOUBLE_EQ(0.55, DirBlur::tintAt(params, 0, 0.5));
+    EXPECT_DOUBLE_EQ(0.5, DirBlur::tintAt(params, 1, 0.5));
+    EXPECT_DOUBLE_EQ(1., DirBlur::tintAt(params, 2, 0.3));
+
+    params.ramp = eDirBlurRampExponential;
+    EXPECT_NEAR(0.1, DirBlur::tintAt(params, 0, 0.), 1e-12);
+    EXPECT_NEAR(std::sqrt(0.1), DirBlur::tintAt(params, 0, 0.5), 1e-12);
+    EXPECT_NEAR(1., DirBlur::tintAt(params, 0, 1.), 1e-12);
+    EXPECT_NEAR(DirBlur::kMinExponentialTint, DirBlur::tintAt(params, 1, 0.), 1e-12);
+    EXPECT_NEAR(std::sqrt(DirBlur::kMinExponentialTint), DirBlur::tintAt(params, 1, 0.5), 1e-12);
+    EXPECT_DOUBLE_EQ(1., DirBlur::tintAt(params, 2, 0.3));
+
+    // The factors carry the ramp at each sample's |t|.
+    params.samples = 4;
+    params.centered = true;
+    const std::vector<double> t = DirBlur::samplePositions(params);
+    const std::vector<DirBlurSample> samples = DirBlur::canonicalSamples(params, 40.);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        EXPECT_NEAR(0.25 * DirBlur::tintAt(params, 0, std::fabs(t[i])), samples[i].factor[0], 1e-6) << "sample " << i;
     }
 }
 
@@ -501,14 +606,244 @@ TEST_F(NativeDirBlurTest, FlatFieldIsKept)
     EXPECT_NEAR(1., at(out, 32, 24, 3), 1e-5);
 }
 
-// A tile of the render equals the same pixels of the full render, bit for bit, in every mode.
+// The transform alone, with Length 0, smears as God Rays does: a translation is the Directional
+// blur along it, and a rotation is the Radial blur by its angle, one way or the other.
+TEST_F(NativeDirBlurTest, TransformSmearsAlongTheBlur)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    const RectI inner(8, 6, 56, 42);
+
+    NodePtr translated = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(translated));
+    ASSERT_TRUE(setKnobValues(translated, kDirBlurParamLength, { 0. }));
+    ASSERT_TRUE(setKnobValues(translated, kDirBlurParamTranslate, { 8., 0. }));
+    ASSERT_TRUE(setKnobValues(translated, kDirBlurParamSamples, { 8. }));
+    NodePtr directional = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(directional));
+    ASSERT_TRUE(setKnobValues(directional, kDirBlurParamDirection, { 0. }));
+    ASSERT_TRUE(setKnobValues(directional, kDirBlurParamLength, { 8. }));
+    ASSERT_TRUE(setKnobValues(directional, kDirBlurParamSamples, { 8. }));
+    RenderedPlane a, b;
+    ASSERT_TRUE(renderRGBA(translated, inner, &a));
+    ASSERT_TRUE(renderRGBA(directional, inner, &b));
+    EXPECT_GT(sumAll(a, 0), 0.);
+    EXPECT_LE(maxDifference(a, b), 1e-5f);
+
+    // Transform Amount 0 turns the transform off: the source comes back unchanged.
+    ASSERT_TRUE(setKnobValues(translated, kDirBlurParamTransformAmount, { 0. }));
+    RenderedPlane in;
+    ASSERT_TRUE(renderRGBA(source, inner, &in));
+    ASSERT_TRUE(renderRGBA(translated, inner, &a));
+    EXPECT_EQ(0.f, maxDifference(in, a));
+
+    NodePtr rotated = makeDirBlur(source, kDirBlurParamModeZoom);
+    ASSERT_TRUE(bool(rotated));
+    ASSERT_TRUE(setKnobValues(rotated, kDirBlurParamLength, { 0. }));
+    ASSERT_TRUE(setKnobValues(rotated, kDirBlurParamRotate, { 30. }));
+    ASSERT_TRUE(setKnobValues(rotated, kDirBlurParamSamples, { 16. }));
+    ASSERT_TRUE(renderRGBA(rotated, inner, &a));
+    float best = -1.f;
+    for (double length : { 30., -30. }) {
+        NodePtr radial = makeDirBlur(source, kDirBlurParamModeRadial);
+        ASSERT_TRUE(bool(radial));
+        ASSERT_TRUE(setKnobValues(radial, kDirBlurParamLength, { length }));
+        ASSERT_TRUE(setKnobValues(radial, kDirBlurParamSamples, { 16. }));
+        ASSERT_TRUE(renderRGBA(radial, inner, &b));
+        const float d = maxDifference(a, b);
+        best = (best < 0.f) ? d : std::min(best, d);
+    }
+    EXPECT_LE(best, 1e-4f);
+
+    // Invert runs the translation the other way.
+    ASSERT_TRUE(setKnobValues(translated, kDirBlurParamTransformAmount, { 1. }));
+    ASSERT_TRUE(setKnobValues(translated, kDirBlurParamInvert, { 1. }));
+    ASSERT_TRUE(setKnobValues(directional, kDirBlurParamDirection, { 180. }));
+    ASSERT_TRUE(renderRGBA(translated, inner, &a));
+    ASSERT_TRUE(renderRGBA(directional, inner, &b));
+    EXPECT_LE(maxDifference(a, b), 1e-4f);
+}
+
+// With Use Target the Directional blur runs from Center towards Target, whatever Direction says.
+TEST_F(NativeDirBlurTest, TargetSetsTheDirection)
+{
+    resetProject();
+    const RectI point(20, 20, 21, 21);
+    NodePtr source = makeConstant(1., &point);
+    ASSERT_TRUE(bool(source));
+    NodePtr targeted = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(targeted));
+    ASSERT_TRUE(setKnobValues(targeted, kDirBlurParamDirection, { 0. }));
+    ASSERT_TRUE(setKnobValues(targeted, kDirBlurParamLength, { 8. }));
+    ASSERT_TRUE(setKnobValues(targeted, kDirBlurParamSamples, { 8. }));
+    ASSERT_TRUE(setKnobValues(targeted, kDirBlurParamUseTarget, { 1. }));
+    ASSERT_TRUE(setKnobValues(targeted, kDirBlurParamTarget, { kCenterX, kCenterY + 16. }));
+    NodePtr up = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(up));
+    ASSERT_TRUE(setKnobValues(up, kDirBlurParamDirection, { 90. }));
+    ASSERT_TRUE(setKnobValues(up, kDirBlurParamLength, { 8. }));
+    ASSERT_TRUE(setKnobValues(up, kDirBlurParamSamples, { 8. }));
+    const RectI window(10, 10, 40, 40);
+    RenderedPlane a, b;
+    ASSERT_TRUE(renderRGBA(targeted, window, &a));
+    ASSERT_TRUE(renderRGBA(up, window, &b));
+    EXPECT_GT(at(a, 20, 24, 0), 0.f);
+    EXPECT_LE(maxDifference(a, b), 1e-6f);
+
+    // Off, Direction rules again.
+    ASSERT_TRUE(setKnobValues(targeted, kDirBlurParamUseTarget, { 0. }));
+    ASSERT_TRUE(renderRGBA(targeted, window, &a));
+    EXPECT_GT(at(a, 24, 20, 0), 0.f);
+    EXPECT_EQ(0.f, at(a, 20, 24, 0));
+}
+
+// Pixel Offset moves a Zoom blur along its direction, even with Length 0; the other modes ignore it.
+TEST_F(NativeDirBlurTest, PixelOffsetShiftsTheZoom)
+{
+    resetProject();
+    const RectI point(52, 24, 53, 25);
+    NodePtr source = makeConstant(1., &point);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeDirBlur(source, kDirBlurParamModeZoom);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 0. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamPixelOffset, { 10. }));
+    RenderedPlane in, out;
+    ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+    EXPECT_GT(sumAll(out, 0), 0.);
+    // Every copy moves the same way, towards Center.
+    EXPECT_NEAR(0., sumWhere(out, 0, [](int x, int) {
+                    return x >= 52;
+                }),
+                1e-6);
+
+    NodePtr directional = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(directional));
+    ASSERT_TRUE(setKnobValues(directional, kDirBlurParamLength, { 6. }));
+    const RectI window(30, 10, 64, 40);
+    RenderedPlane a, b;
+    ASSERT_TRUE(renderRGBA(directional, window, &a));
+    ASSERT_TRUE(setKnobValues(directional, kDirBlurParamPixelOffset, { 10. }));
+    ASSERT_TRUE(renderRGBA(directional, window, &b));
+    EXPECT_EQ(0.f, maxDifference(a, b));
+}
+
+// Copies read where the Holdout Channel is 1 leave the average, which the others are renormalised
+// to; where every copy is held out the result is 0. With Max held-out copies are skipped.
+TEST_F(NativeDirBlurTest, HoldoutLeavesCopiesOut)
+{
+    resetProject();
+    // A white block on the left of the format, held out by itself.
+    const RectI block(0, 0, 20, kHeight);
+    NodePtr source = makeConstant(1., &block);
+    NodePtr holdout = makeConstant(1., &block);
+    ASSERT_TRUE(bool(source) && bool(holdout));
+    NodePtr node = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 0. }));
+    // Four copies 1, 3, 5 and 7 pixels back, each on a pixel centre.
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 8. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 4. }));
+    const RectI window(0, 10, 40, 30);
+
+    RenderedPlane plain;
+    ASSERT_TRUE(renderRGBA(node, window, &plain));
+    EXPECT_NEAR(0.75, at(plain, 22, 20, 0), 1e-6);
+    EXPECT_NEAR(1., at(plain, 10, 20, 0), 1e-6);
+
+    connectNodes(holdout, node, kDirBlurInputHoldout, true);
+    KnobChannelSelect* channel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kDirBlurParamHoldoutChannel).get());
+    ASSERT_TRUE(channel != NULL);
+    channel->set("rgba.A");
+    RenderedPlane held;
+    ASSERT_TRUE(renderRGBA(node, window, &held));
+    // Only the copy from x = 21 remains, and it is black.
+    EXPECT_NEAR(0., at(held, 22, 20, 0), 1e-6);
+    // Every copy held out.
+    EXPECT_NEAR(0., at(held, 10, 20, 0), 1e-6);
+
+    // Max: the held-out copies are skipped, the rest are black.
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 1. }));
+    ASSERT_TRUE(renderRGBA(node, window, &held));
+    EXPECT_NEAR(0., at(held, 22, 20, 0), 1e-6);
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 0. }));
+
+    // A uniform holdout of one half weighs every copy the same, which the renormalisation undoes
+    // wherever every copy comes from inside the format.
+    NodePtr half = makeConstant(0.5, NULL);
+    ASSERT_TRUE(bool(half));
+    connectNodes(half, node, kDirBlurInputHoldout, true);
+    channel->set("rgba.R");
+    ASSERT_TRUE(renderRGBA(node, window, &held));
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = 8; x < window.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                ASSERT_NEAR(at(plain, x, y, c), at(held, x, y, c), 1e-6) << "at (" << x << "," << y << ") channel " << c;
+            }
+        }
+    }
+
+    // None turns it off.
+    channel->setNone();
+    ASSERT_TRUE(renderRGBA(node, window, &held));
+    EXPECT_EQ(0.f, maxDifference(plain, held));
+}
+
+// Max takes the largest tinted copy per channel instead of the average: a flat field comes out
+// as itself times the largest tint along the blur.
+TEST_F(NativeDirBlurTest, MaxTakesTheBrightestCopy)
+{
+    resetProject();
+    NodePtr source = makeConstant(0.5, NULL);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 6. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 4. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamFromColor, { 1., 0.2, 0.5, 1. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamToColor, { 0.5, 1., 0.5, 1. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 1. }));
+    const RectI inner(24, 18, 40, 30);
+    RenderedPlane out;
+    ASSERT_TRUE(renderRGBA(node, inner, &out));
+    // Samples at t = 1/8 and 7/8 carry the largest red and green tints.
+    EXPECT_NEAR(0.5 * (1. - 0.5 / 8.), at(out, 32, 24, 0), 1e-5);
+    EXPECT_NEAR(0.5 * (0.2 + 0.8 * 7. / 8.), at(out, 32, 24, 1), 1e-5);
+    EXPECT_NEAR(0.25, at(out, 32, 24, 2), 1e-5);
+
+    // Never below the average of the same copies.
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 0. }));
+    RenderedPlane mean;
+    ASSERT_TRUE(renderRGBA(node, inner, &mean));
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_GE(at(out, 32, 24, c) + 1e-6f, at(mean, 32, 24, c)) << "channel " << c;
+    }
+}
+
+// A tile of the render equals the same pixels of the full render, bit for bit, in every mode,
+// and with the transform, Use Target, Pixel Offset, an Exponential ramp, Max and a holdout.
 TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(source));
     setParitySourceOrigin(source, 0, 0);
-    for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
+    NodePtr holdout = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(holdout));
+    setParitySourceOrigin(holdout, 5, 3);
+    const std::vector<std::pair<const char*, bool>> cases = {
+        { kDirBlurParamModeDirectional, false },
+        { kDirBlurParamModeRadial, false },
+        { kDirBlurParamModeZoom, false },
+        { kDirBlurParamModeDirectional, true },
+        { kDirBlurParamModeRadial, true },
+        { kDirBlurParamModeZoom, true },
+    };
+    for (const std::pair<const char*, bool>& tc : cases) {
+        const char* mode = tc.first;
+        const bool extras = tc.second;
         NodePtr node = makeDirBlur(source, mode);
         ASSERT_TRUE(bool(node));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 12. }));
@@ -516,6 +851,18 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { 1. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamFalloff, { 1. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamToColor, { 0.5, 0.8, 1., 1. }));
+        if (extras) {
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamTranslate, { 3., -2. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamRotate, { 12. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.2, 0.9 }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamSkewX, { 0.1 }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamUseTarget, { 1. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamTarget, { 10., 40. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamPixelOffset, { 4. }));
+            ASSERT_TRUE(setKnobValue(node, kDirBlurParamRamp, std::string(kDirBlurParamRampExponential)));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { (std::string(mode) == kDirBlurParamModeRadial) ? 1. : 0. }));
+            connectNodes(holdout, node, kDirBlurInputHoldout, true);
+        }
         const RectI rod = pixelRoD(node);
         RenderedPlane whole;
         ASSERT_TRUE(renderRGBA(node, rod, &whole));
@@ -526,7 +873,7 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
             for (int y = tile.y1; y < tile.y2; ++y) {
                 for (int x = tile.x1; x < tile.x2; ++x) {
                     for (int c = 0; c < 4; ++c) {
-                        ASSERT_EQ(at(whole, x, y, c), at(part, x, y, c)) << mode << " at (" << x << "," << y << ") channel " << c;
+                        ASSERT_EQ(at(whole, x, y, c), at(part, x, y, c)) << mode << (extras ? " with extras" : "") << " at (" << x << "," << y << ") channel " << c;
                     }
                 }
             }
@@ -564,6 +911,17 @@ TEST_F(NativeDirBlurTest, SameBothWays)
     ASSERT_TRUE(setKnobValue(node, kDirBlurParamMode, std::string(kDirBlurParamModeRadial)));
     ASSERT_TRUE(setKnobValues(node, kDirBlurParamFalloff, { 2. }));
     expectSame("radial-falloff");
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamRotate, { 20. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.3, 1.3 }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 1. }));
+    ASSERT_TRUE(setKnobValue(node, kDirBlurParamRamp, std::string(kDirBlurParamRampExponential)));
+    expectSame("radial-transform-max-exponential");
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 0. }));
+    NodePtr holdout = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(holdout));
+    setParitySourceOrigin(holdout, 3, 7);
+    connectNodes(holdout, node, kDirBlurInputHoldout, true);
+    expectSame("radial-transform-holdout");
 
     NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(mask));
@@ -595,6 +953,15 @@ TEST_F(NativeDirBlurTest, Golden)
     }));
     v.push_back(goldenVariant("zoomTint", false, [](const GoldenGraph& g) {
         return setKnobValues(g.node, kDirBlurParamLength, { 30. }) && setKnobValues(g.node, kDirBlurParamFromColor, { 1., 0.9, 0.6, 1. }) && setKnobValues(g.node, kDirBlurParamToColor, { 0.2, 0.3, 1., 0.5 });
+    }));
+    v.push_back(goldenVariant("godRays", false, [](const GoldenGraph& g) {
+        return setKnobValues(g.node, kDirBlurParamLength, { 0. }) && setKnobValues(g.node, kDirBlurParamScale, { 1.4, 1.4 }) && setKnobValues(g.node, kDirBlurParamRotate, { 8. }) && setKnobValues(g.node, kDirBlurParamFromColor, { 1., 0.9, 0.6, 1. }) && setKnobValues(g.node, kDirBlurParamToColor, { 0.1, 0.2, 0.8, 0.5 }) && setKnobValue(g.node, kDirBlurParamRamp, std::string(kDirBlurParamRampExponential));
+    }));
+    v.push_back(goldenVariant("zoomMaxOffset", false, [](const GoldenGraph& g) {
+        return setKnobValues(g.node, kDirBlurParamLength, { 20. }) && setKnobValues(g.node, kDirBlurParamPixelOffset, { 5. }) && setKnobValues(g.node, kDirBlurParamMax, { 1. }) && setKnobValues(g.node, kDirBlurParamFalloff, { 1. });
+    }));
+    v.push_back(goldenVariant("directionalTarget", false, [](const GoldenGraph& g) {
+        return setKnobValue(g.node, kDirBlurParamMode, std::string(kDirBlurParamModeDirectional)) && setKnobValues(g.node, kDirBlurParamLength, { 12. }) && setKnobValues(g.node, kDirBlurParamUseTarget, { 1. }) && setKnobValues(g.node, kDirBlurParamTranslate, { 4., 2. });
     }));
     v.push_back(goldenVariant("maskmix", true, [](const GoldenGraph& g) {
         return setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

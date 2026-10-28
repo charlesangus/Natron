@@ -310,6 +310,115 @@ TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)
     }
 }
 
+// The controls carried over from God Rays and Nuke's DirBlur, in every mode: the transform about
+// Center, Use Target, Pixel Offset, the Exponential ramp and Max, against the CPU render.
+TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithTransformTargetOffsetRampAndMax)
+{
+    NodePtr source = makeParitySource(3, 5);
+    ASSERT_TRUE(bool(source));
+    struct Setting {
+        const char* name;
+        double length;
+        bool centered;
+        bool transform;
+        bool invert;
+        bool target;
+        double pixelOffset;
+        bool exponential;
+        bool max;
+    };
+    const Setting settings[] = {
+        { "transform only", 0., false, true, false, false, 0., false, false },
+        { "transform inverted centered", 10., true, true, true, false, 0., false, false },
+        { "target", 14., false, false, false, true, 0., false, false },
+        { "pixel offset", 8., false, false, false, false, 6., false, false },
+        { "exponential", 16., false, false, false, false, 0., true, false },
+        { "max", 16., true, false, false, false, 0., false, true },
+        { "everything", 12., false, true, false, true, 3., true, true },
+    };
+    for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
+        for (const Setting& s : settings) {
+            NodePtr node = makeDirBlur(source, mode);
+            ASSERT_TRUE(bool(node));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { s.length }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 12. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { s.centered ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamFromColor, { 1., 0.8, 0.5, 1. }));
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamToColor, { 0.1, 0.4, 1.2, 0.5 }));
+            if (s.transform) {
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamTranslate, { 4., -3. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamRotate, { 15. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.3, 0.8 }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamSkewY, { 0.15 }));
+                ASSERT_TRUE(setKnobValue(node, kDirBlurParamSkewOrder, std::string("YX")));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamTransformAmount, { 0.8 }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamInvert, { s.invert ? 1. : 0. }));
+            }
+            if (s.target) {
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamUseTarget, { 1. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamTarget, { 12., 40. }));
+            }
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamPixelOffset, { s.pixelOffset }));
+            if (s.exponential) {
+                ASSERT_TRUE(setKnobValue(node, kDirBlurParamRamp, std::string(kDirBlurParamRampExponential)));
+            }
+            ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { s.max ? 1. : 0. }));
+            ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, std::string(mode) + " " + s.name));
+        }
+    }
+}
+
+// The Holdout input's channel, resampled through each copy's matrix, against the CPU render: by
+// channel, averaging and with Max, and through the mask and mix.
+TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderWithHoldout)
+{
+    NodePtr source = makeParitySource(3, 5);
+    NodePtr holdoutSource = makeParitySource(6, 2);
+    ASSERT_TRUE(bool(source) && bool(holdoutSource));
+    struct HoldoutCase {
+        const char* name;
+        const char* mode;
+        const char* channel;
+        bool max;
+        bool mask;
+    };
+    const HoldoutCase cases[] = {
+        { "alpha", kDirBlurParamModeZoom, "rgba.A", false, false },
+        { "red", kDirBlurParamModeDirectional, "rgba.R", false, false },
+        { "max", kDirBlurParamModeRadial, "rgba.G", true, false },
+        { "masked", kDirBlurParamModeZoom, "rgba.B", false, true },
+    };
+    for (const HoldoutCase& c : cases) {
+        NodePtr node = makeDirBlur(source, c.mode);
+        ASSERT_TRUE(bool(node));
+        DirBlur* effect = effectOf(node);
+        ASSERT_TRUE(effect != NULL);
+        const ImageLayerDesc rgba = ImageLayerDesc::getRGBAComponents();
+        EXPECT_FALSE(effect->readsGpuInput(kDirBlurInputHoldout, rgba, kTime, ViewIdx(0))) << c.name;
+        connectNodes(holdoutSource, node, kDirBlurInputHoldout, true);
+        KnobChannelSelect* channel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kDirBlurParamHoldoutChannel).get());
+        ASSERT_TRUE(channel != NULL);
+        channel->set(c.channel);
+        EXPECT_TRUE(effect->readsGpuInput(kDirBlurInputHoldout, rgba, kTime, ViewIdx(0))) << c.name;
+        ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 14. }));
+        ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 10. }));
+        ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { c.max ? 1. : 0. }));
+        if (c.mask) {
+            connectNodes(source, node, kDirBlurInputMask, true);
+            KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(node->getKnobByName("maskChannel_Mask").get());
+            ASSERT_TRUE(maskChannel != NULL);
+            maskChannel->set("rgba.A");
+            ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
+            ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
+        }
+        // The holdout is read over the region the source is, unclipped by the source.
+        const RectI rect(20, 10, 41, 37);
+        const RectI read = effect->getGpuInputRoI(kDirBlurInputHoldout, kTime, ViewIdx(0), rect, RenderScale::identity);
+        EXPECT_TRUE(read.contains(rect)) << c.name;
+        ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, std::string("holdout ") + c.name));
+    }
+}
+
 // A Grade, the blur and a Grade render as one GPU region and match the CPU render.
 TEST_F(NativeDirBlurGpuTest, GradeDirBlurGradeChainRunsAsOneRegion)
 {

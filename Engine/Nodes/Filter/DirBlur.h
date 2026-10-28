@@ -28,10 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/RectD.h"
@@ -52,11 +54,31 @@
 #define kDirBlurParamSamples "samples"
 #define kDirBlurParamCentered "centered"
 #define kDirBlurParamFalloff "falloff"
+#define kDirBlurParamUseTarget "useTarget"
+#define kDirBlurParamTarget "target"
+#define kDirBlurParamPixelOffset "pixelOffset"
+#define kDirBlurParamTranslate "translate"
+#define kDirBlurParamRotate "rotate"
+#define kDirBlurParamScale "scale"
+#define kDirBlurParamUniform "uniform"
+#define kDirBlurParamSkewX "skewX"
+#define kDirBlurParamSkewY "skewY"
+#define kDirBlurParamSkewOrder "skewOrder"
+#define kDirBlurParamTransformAmount "transformAmount"
+#define kDirBlurParamInvert "invert"
+#define kDirBlurParamInteractive "interactive"
+#define kDirBlurParamResetCenter "resetCenter"
 #define kDirBlurParamFromColor "fromColor"
 #define kDirBlurParamToColor "toColor"
+#define kDirBlurParamRamp "ramp"
+#define kDirBlurParamRampLinear "linear"
+#define kDirBlurParamRampExponential "exponential"
+#define kDirBlurParamMax "max"
+#define kDirBlurParamHoldoutChannel "holdoutChannel"
 
 #define kDirBlurInputSource 0
 #define kDirBlurInputMask 1
+#define kDirBlurInputHoldout 2
 
 NATRON_NAMESPACE_ENTER
 
@@ -64,6 +86,11 @@ enum DirBlurModeEnum {
     eDirBlurModeDirectional = 0,
     eDirBlurModeRadial = 1,
     eDirBlurModeZoom = 2,
+};
+
+enum DirBlurRampEnum {
+    eDirBlurRampLinear = 0,
+    eDirBlurRampExponential = 1,
 };
 
 struct DirBlurParams {
@@ -74,21 +101,35 @@ struct DirBlurParams {
     double centerY = 0.;
     // Degrees, counter-clockwise from +x.
     double direction = 45.;
+    // Directional only: the direction from the centre to the target replaces direction.
+    bool useTarget = false;
+    double targetX = 0.;
+    double targetY = 0.;
     int samples = 32;
     bool centered = false;
     double falloff = 0.;
+    // Zoom only: canonical pixels added to every sample's zoom distance.
+    double pixelOffset = 0.;
+    // Applied along the blur in every mode, about the centre: a sample at position t takes the
+    // transform at amount t.
+    TransformMath::TransformParams transform;
+    bool invert = false;
     double fromColor[4] = { 1., 1., 1., 1. };
     double toColor[4] = { 1., 1., 1., 1. };
+    DirBlurRampEnum ramp = eDirBlurRampLinear;
+    bool max = false;
 };
 
 /**
- * @brief One sample of the blur: the destination-to-source matrix, canonical or in pixels, and
- * the factor each channel's sample is multiplied by before it is summed, in channel-bit order
- * (R, G, B, A). The factors are the sample's weight times its tint over the sum of the weights.
+ * @brief One sample of the blur: the destination-to-source matrix, canonical or in pixels, the
+ * factor each channel's sample is multiplied by, in channel-bit order (R, G, B, A), and its
+ * weight. Averaging, the factors are the weight times the tint, and the weights are normalised to
+ * sum to one; with Max, the factors are the falloff times the tint, unnormalised.
  **/
 struct DirBlurSample {
     TransformMath::Mat3 inverse;
     float factor[4];
+    float weight;
 };
 
 class DirBlur
@@ -122,6 +163,26 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     DirBlurParams getParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /// Whether params move the image at all; when they do not the node is an identity, whatever
+    /// the tints, Max or holdout, as God Rays is.
+    static bool hasMotion(const DirBlurParams& params) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The tint of the samples at fraction a of the blur, in [0, 1]: from fromColor at 0 to
+     * toColor at 1, linearly, or geometrically with Exponential, each colour held to at least
+     * kMinExponentialTint.
+     **/
+    static double tintAt(const DirBlurParams& params, int c, double a) WARN_UNUSED_RETURN;
+
+    /// The smallest tint an Exponential ramp starts or ends at.
+    static constexpr double kMinExponentialTint = 0.001;
+
+    /**
+     * @brief The layer and the channel of it Holdout Channel selects on the Holdout input; false
+     * when the input is disconnected, the knob is None or the layer is absent.
+     **/
+    bool resolveHoldoutChannel(double time, ViewIdx view, ImageLayerDesc* layer, int* channel) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The canonical distance a Zoom Length is measured at: half the diagonal of the
@@ -177,6 +238,16 @@ public:
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getInputLayersRead(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    std::list<ImageLayerDesc>* layers) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 protected:
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
@@ -185,8 +256,18 @@ protected:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    // Moves the centre to the middle of the source's region of definition, or of the project
+    // format without one, changing Translate so that the transform's full amount keeps its place.
+    void resetCenter(double time);
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -208,8 +289,25 @@ private:
     KnobIntWPtr _samples;
     KnobBoolWPtr _centered;
     KnobDoubleWPtr _falloff;
+    KnobBoolWPtr _useTarget;
+    KnobDoubleWPtr _target;
+    KnobDoubleWPtr _pixelOffset;
+    KnobDoubleWPtr _translate;
+    KnobDoubleWPtr _rotate;
+    KnobDoubleWPtr _scale;
+    KnobBoolWPtr _uniform;
+    KnobDoubleWPtr _skewX;
+    KnobDoubleWPtr _skewY;
+    KnobChoiceWPtr _skewOrder;
+    KnobDoubleWPtr _transformAmount;
+    KnobBoolWPtr _invert;
+    KnobBoolWPtr _interactive;
+    KnobButtonWPtr _resetCenter;
     KnobColorWPtr _fromColor;
     KnobColorWPtr _toColor;
+    KnobChoiceWPtr _ramp;
+    KnobBoolWPtr _max;
+    KnobChannelSelectWPtr _holdoutChannel;
 };
 
 NATRON_NAMESPACE_EXIT

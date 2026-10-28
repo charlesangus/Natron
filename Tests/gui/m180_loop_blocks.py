@@ -42,11 +42,9 @@ try:
         view = node_graph_view()
         if view is None:
             return None
+        # NodeGraph.scene() raises "already deleted" in this binary; the view lists its items itself.
         try:
-            scene = hold(view.scene())
-            if scene is None:
-                return None
-            for item in scene.items():
+            for item in view.items():
                 obj = item.toGraphicsObject()
                 if obj is not None and obj.objectName() == "LoopBlockItem":
                     return hold(obj)

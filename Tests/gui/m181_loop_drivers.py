@@ -101,9 +101,12 @@ try:
         return False
 
     def knob_field(panel, script_name):
+        """The first-dimension field of the knob named script_name: its tool tip opens with the script
+        name in bold. A bare substring test also matches other knobs whose help text mentions it."""
+        tag = "<b>%s</b>" % script_name
         for w in panel.findChildren(QWidget):
             try:
-                if w.objectName() == "dim-0" and w.isVisible() and script_name in w.toolTip():
+                if w.objectName() == "dim-0" and w.isVisible() and tag in w.toolTip()[:60]:
                     _held.append(w)
                     return w
             except RuntimeError:

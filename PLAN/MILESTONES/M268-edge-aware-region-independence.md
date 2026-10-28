@@ -1,4 +1,4 @@
-# M262 - Edge-Aware Region Independence
+# M268 - Edge-Aware Region Independence
 
 > Stub — elaborate before starting (PLAN-FORMAT.md §5).
 

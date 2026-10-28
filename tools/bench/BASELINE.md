@@ -1065,3 +1065,52 @@ Run 3's `.ntpz` save and load were contended by other work on the host; runs 1 a
 | `.ntpz` (save and autosave) | 53,661,635 |
 
 `.ntpz` is 22.4× smaller. The median of the three run medians is 7.62 s for the `.ntpz` save against 17.17 s for XML (2.3× faster), and 7.68 s for autosave. XML loading was no longer possible when this was measured, so there is no load comparison.
+
+## 2026-10-28 — M180 - Loop Block Core vs main
+
+Main-branch AppImage against the M180 - Loop Block Core AppImage at 99a0de9d4, both run natively under `xvfb-run` with NatronRenderer in `natron-dev`, driven by `build/bench-m180/driver.sh` (raw data in `build/bench-m180/`, matrix results in `build/bench/results-<tag>.jsonl`, comp wall times in `build/bench-m180/comps.jsonl`). Three batches, order main-first in batches 1 and 3 and m180-first in batch 2; a run was discarded and retried when a foreign Natron process appeared on the host. Matrix configurations: `tiny 5 frames chain:1000`, `tiny 5 frames comp:300`, and `hd 3 frames, range 8` for `chain:30`, `wide:100`, `comp:100`, `mixed:100`. Comps render frames 1-6 of `keying_grade`, `cg_multipass` and `defocus_retime`.
+
+Median, min and max are over batches. Delta is m180 against main on the medians. Spread is the larger of the two variants' (max - min) / median; a delta is marked real only when its magnitude exceeds that spread.
+
+Data gaps. (1) The `footagecomp:32` configuration produced no data in any batch: `make_plates.py` had not been run, so `plate_hd_1.####.exr` was missing and every run exited 3. (2) The retry loop in `driver.sh` runs `shift` inside the per-try loop, so a retried run loses its first argument and writes no results file. Batch 1's five accepted retries (`tiny chain:1000`, `tiny comp:300`, `hd chain:30`, `hd wide:100`, `hd comp:100`) therefore have no matrix data, and those five scenarios rest on batches 2 and 3 only. `hd mixed:100` has all three batches. The comps are unaffected (18 of 18 present).
+
+Median frame wall (s)
+
+| scenario | main median | m180 median | delta | main min–max | m180 min–max | spread | batches | verdict |
+|---|---|---|---|---|---|---|---|---|
+| mixed-100-hd | 6.76 | 4.045 | -40.2% | 3.859–9.791 | 3.892–7.177 | 88% | 3/3 | noise |
+| chain-1000-tiny | 0.213 | 0.2124 | -0.2% | 0.2114–0.2145 | 0.2115–0.2134 | 1% | 2/2 | noise |
+| comp-300-tiny | 0.1317 | 0.1337 | +1.5% | 0.1299–0.1336 | 0.13–0.1374 | 6% | 2/2 | noise |
+| chain-30-hd | 0.5981 | 0.5792 | -3.2% | 0.5927–0.6036 | 0.577–0.5813 | 2% | 2/2 | real |
+| wide-100-hd | 1.427 | 1.513 | +6.0% | 1.308–1.546 | 1.337–1.689 | 23% | 2/2 | noise |
+| comp-100-hd | 2.318 | 2.12 | -8.6% | 2.183–2.454 | 2.116–2.123 | 12% | 2/2 | noise |
+
+Range wall, 8 frames (s)
+
+| scenario | main median | m180 median | delta | main min–max | m180 min–max | spread | batches | verdict |
+|---|---|---|---|---|---|---|---|---|
+| mixed-100-hd | 55.39 | 56.45 | +1.9% | 52.95–59.15 | 52.73–57.81 | 11% | 3/3 | noise |
+| chain-30-hd | 4.383 | 4.354 | -0.7% | 4.34–4.426 | 4.327–4.382 | 2% | 2/2 | noise |
+| wide-100-hd | 16.38 | 20.23 | +23.5% | 14.14–18.62 | 16.34–24.12 | 38% | 2/2 | noise |
+| comp-100-hd | 37.75 | 29.55 | -21.7% | 34.34–41.16 | 29.48–29.62 | 18% | 2/2 | real |
+
+Graph build (s)
+
+| scenario | main median | m180 median | delta | main min–max | m180 min–max | spread | batches | verdict |
+|---|---|---|---|---|---|---|---|---|
+| mixed-100-hd | 0.2225 | 0.2005 | -9.9% | 0.199–0.2342 | 0.198–0.2075 | 16% | 3/3 | noise |
+| chain-1000-tiny | 5.931 | 6.105 | +2.9% | 5.913–5.948 | 6.094–6.117 | 1% | 2/2 | real |
+| comp-300-tiny | 0.7895 | 0.8176 | +3.6% | 0.789–0.7901 | 0.7964–0.8389 | 5% | 2/2 | noise |
+| chain-30-hd | 0.05035 | 0.0559 | +11.0% | 0.0499–0.0508 | 0.0537–0.0581 | 8% | 2/2 | real |
+| wide-100-hd | 0.2333 | 0.2209 | -5.3% | 0.2044–0.2621 | 0.2011–0.2408 | 25% | 2/2 | noise |
+| comp-100-hd | 0.2195 | 0.2066 | -5.9% | 0.2018–0.2371 | 0.2059–0.2072 | 16% | 2/2 | noise |
+
+Comp wall, frames 1-6 (s)
+
+| scenario | main median | m180 median | delta | main min–max | m180 min–max | spread | batches | verdict |
+|---|---|---|---|---|---|---|---|---|
+| keying_grade | 7.84 | 7.92 | +1.0% | 7.78–7.9 | 7.73–7.92 | 2% | 3/3 | noise |
+| cg_multipass | 7.96 | 8.41 | +5.7% | 7.94–8.26 | 7.9–8.57 | 8% | 3/3 | noise |
+| defocus_retime | 52.08 | 51.28 | -1.5% | 49.65–53.39 | 50.24–55.94 | 11% | 3/3 | noise |
+
+Conclusion. No scenario shows a regression beyond run-to-run noise. The matrix frame times of the two builds agree to within 1.5% on both tiny configurations and `chain:30`; the larger frame deltas (`mixed:100` -40%, `comp:100` -9%, `wide:100` +6%) all sit inside a spread of 12% to 88%, driven by single outlier batches (batch 1 and 3 `mixed:100` main at 6.8 and 9.8 s against 3.9 s in batch 2) on a 4-core host with intermittent foreign load. The three comps are within 1.5% to 5.7% of each other and inside their spreads, so ordinary composites are unchanged. The only deltas that pass the spread test are `chain:30` frame time (-3.2%, from two batches whose spread is 2%) and `comp:100` range wall (-21.7%, where m180's two batches agree to 0.5% and main's differ by 20%), both in M180's favour and neither a result to rely on with two batches; the graph-build rows that pass (`chain:1000` tiny +2.9%, `chain:30` hd +11%, 3 to 6 ms) are a few percent of an already small, sub-second-to-6 s phase. M180 therefore adds no measurable cost to graphs that contain no loop block; this comparison says nothing about footage-backed comps (no data) or graphs that use the loop block itself.

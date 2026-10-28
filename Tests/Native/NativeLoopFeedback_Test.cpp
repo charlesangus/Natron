@@ -646,7 +646,9 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     expectBothWays(end, countingWindow());
 
     setParitySourceComponents(source, "rgba");
+    CountingTestRegistry::reset();
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    std::cerr << "ABodyChangingComponents first RGBA render: body rendered " << CountingTestRegistry::renders(counting) << " times" << std::endl;
 
     // Tell a body that iterates wrongly from a loop input that is not RGBA.
     float sourceValue = -1.f;
@@ -667,7 +669,8 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     EXPECT_EQ(sourceValue + 3.f, finalPlane.pixels[0]) << "R";
     EXPECT_EQ(sourceValue + 3.f + 10.f, finalPlane.pixels[1]) << "G";
     EXPECT_EQ(sourceValue + 3.f + 20.f, finalPlane.pixels[2]) << "B";
-    EXPECT_EQ(sourceValue + 3.f + 30.f, finalPlane.pixels[3]) << "A";
+    // Grade leaves alpha alone by default, whatever its alpha offset.
+    EXPECT_EQ(sourceValue + 3.f, finalPlane.pixels[3]) << "A";
 
     // The LoopBegin's metadata under iteration contexts 1 and 2.
     std::shared_ptr<LoopEnd> loopEnd = std::dynamic_pointer_cast<LoopEnd>(end->getEffectInstance());
@@ -688,6 +691,17 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
 
     begin->getPersistentMessage(&message, &messageType, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+
+    // Tells a warning posted again by the RGBA renders from one left over from the alpha ones.
+    if (!message.isEmpty()) {
+        begin->clearPersistentMessage(false);
+        CountingTestRegistry::reset();
+        ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderSchedulerModeLegacy, true, &finalPlane));
+        QString again;
+        begin->getPersistentMessage(&again, &messageType, false);
+        std::cerr << "ABodyChangingComponents after clearing and rendering again, LoopBegin message: \""
+                  << again.toStdString() << "\" (body rendered " << CountingTestRegistry::renders(counting) << " times)" << std::endl;
+    }
 }
 
 // Iterating over frames, each iteration adds its frame onto the one before: a trail.

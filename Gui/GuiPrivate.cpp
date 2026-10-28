@@ -166,6 +166,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , renderAllWriters(0)
     , renderSelectedNode(0)
     , enableRenderStats(0)
+    , actionToggleInteractive(0)
     , actionConnectInput()
     , actionImportLayout(0)
     , actionExportLayout(0)

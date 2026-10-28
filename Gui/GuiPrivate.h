@@ -118,6 +118,7 @@ public:
     ActionWithShortcut *renderAllWriters;
     ActionWithShortcut *renderSelectedNode;
     ActionWithShortcut *enableRenderStats;
+    ActionWithShortcut* actionToggleInteractive;
     ActionWithShortcut* actionConnectInput[NATRON_CONNECT_INPUT_NB];
     ActionWithShortcut* actionImportLayout;
     ActionWithShortcut* actionExportLayout;

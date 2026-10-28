@@ -68,6 +68,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionShowAbout);
     (void)QT_TR_NOOP(kShortcutDescActionRenderSelected);
     (void)QT_TR_NOOP(kShortcutDescActionEnableRenderStats);
+    (void)QT_TR_NOOP(kShortcutDescActionToggleInteractive);
     (void)QT_TR_NOOP(kShortcutDescActionRenderAll);
     (void)QT_TR_NOOP(kShortcutDescActionConnectViewerToInput1);
     (void)QT_TR_NOOP(kShortcutDescActionConnectViewerToInput2);

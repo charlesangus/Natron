@@ -849,6 +849,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionRenderAll, kShortcutDescActionRenderAll, Qt::NoModifier, Qt::Key_F5);
 
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionEnableRenderStats, kShortcutDescActionEnableRenderStats, Qt::NoModifier, Qt::Key_F2);
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionToggleInteractive, kShortcutDescActionToggleInteractive, Qt::AltModifier, Qt::Key_U);
 
     // Note: keys 0-1 are handled by Gui::handleNativeKeys(), and should thus work even on international keyboards
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, kShortcutDescActionConnectViewerToInput1, Qt::NoModifier, Qt::Key_1);

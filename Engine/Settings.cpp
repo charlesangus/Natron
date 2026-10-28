@@ -708,8 +708,9 @@ Settings::initializeKnobsUserInterface()
 
     _renderOnEditingFinished = AppManager::createKnob<KnobBool>( this, tr("Refresh viewer only when editing is finished") );
     _renderOnEditingFinished->setName("renderOnEditingFinished");
-    _renderOnEditingFinished->setHintToolTip( tr("When checked, the viewer triggers a new render only when mouse is released when editing parameters, curves "
-                                                 " or the timeline. This setting doesn't apply to roto splines editing.") );
+    _renderOnEditingFinished->setHintToolTip(tr("When checked, the viewer triggers a new render only when mouse is released when editing parameters, curves "
+                                                " or the timeline. This setting doesn't apply to roto splines editing. "
+                                                "The Interactive Updates action in the Render menu toggles it."));
     _uiPage->addKnob(_renderOnEditingFinished);
 
     _maxPanelsOpened = AppManager::createKnob<KnobInt>( this, tr("Maximum number of open settings panels (0=\"unlimited\")") );
@@ -3403,6 +3404,7 @@ void
 Settings::setRenderOnEditingFinishedOnly(bool render)
 {
     _renderOnEditingFinished->setValue(render);
+    saveSetting(_renderOnEditingFinished.get());
 }
 
 std::string

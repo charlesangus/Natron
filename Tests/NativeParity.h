@@ -162,7 +162,7 @@ private:
 ImageLayerDesc paritySourceExtraLayer();
 
 /**
- * @brief A per-value bound: |native - reference| <= absolute + relative * max(1, |reference|).
+ * @brief A per-value regression bound: |native - reference| <= absolute + relative * max(1, |reference|).
  * A pair of NaNs matches, and so do two equal infinities. The named classes are the ones every
  * per-node parity test picks from.
  **/
@@ -191,25 +191,17 @@ struct ParityTolerance {
 };
 
 /**
- * @brief One plugin ID instantiated twice on the same parity source: `ofx` pinned to the exact
- * major `ofxMajor`, and `native` pinned to `nativeMajor`. `ofx` is null when that exact major is
- * not registered (the OFX plugin was retired), in which case compareParity() replays recorded
- * references instead. `mask` is the shared mask source when one was asked for.
+ * @brief A node under test, `id` pinned to the exact major `nativeMajor`, fed by a parity source.
+ * compareParity() holds its render to the references recorded for `id`. `mask` is the mask
+ * source when one was asked for.
  **/
 struct ParityPair {
     std::string id;
-    int ofxMajor = -1;
     int nativeMajor = -1;
     AppInstancePtr app;
     NodePtr source;
     NodePtr mask;
-    NodePtr ofx;
     NodePtr native;
-
-    bool live() const
-    {
-        return bool(ofx);
-    }
 };
 
 /**
@@ -219,31 +211,29 @@ struct ParityPair {
 bool isPluginMajorRegistered(const std::string& id, int major);
 
 /**
- * @brief Creates a parity source and connects it to input 0 of both nodes. With a non-empty
- * `maskInputLabel`, also creates a second parity source and connects it to the input bearing that
- * label on both nodes. Each node is created at its exact major; a failure to do so, or a native
- * node that cannot be created, is reported with ADD_FAILURE() and leaves `native` null.
+ * @brief Creates the node at its exact major and a parity source connected to its input 0. With a
+ * non-empty `maskInputLabel`, also creates a second parity source and connects it to the input
+ * bearing that label. A node that cannot be created is reported with ADD_FAILURE() and leaves
+ * `native` null.
  **/
 ParityPair makeParityPair(const AppInstancePtr& app,
                           const std::string& id,
-                          int ofxMajor,
                           int nativeMajor,
                           const std::string& maskInputLabel = std::string());
 
 /**
- * @brief Creates another parity source and connects it to the input labelled `inputLabel` on
- * both nodes of the pair. Returns it, or null after an ADD_FAILURE() when either node lacks the
- * input or a connection is refused.
+ * @brief Creates another parity source and connects it to the input labelled `inputLabel` on the
+ * node. Returns it, or null after an ADD_FAILURE() when the node lacks the input or the
+ * connection is refused.
  **/
 NodePtr connectParityInput(ParityPair& pair, const std::string& inputLabel);
 
 NodePtr createNodeAtMajor(const AppInstancePtr& app, const std::string& id, int major);
 
 /**
- * @brief Sets knob `name` on both nodes of the pair (the OFX one only when live). For a
- * double/colour, int or bool knob, a single value is applied to every dimension, otherwise one
+ * @brief Sets knob `name` on the node under test. For a double/colour, int or bool knob, a single value is applied to every dimension, otherwise one
  * value per dimension. The string overload sets a choice by option ID and a string knob by value.
- * Returns false after an ADD_FAILURE() when a node lacks the knob or its type does not fit.
+ * Returns false after an ADD_FAILURE() when the node lacks the knob or its type does not fit.
  **/
 bool setKnobOnBoth(const ParityPair& pair, const std::string& name, std::initializer_list<double> values);
 bool setKnobOnBoth(const ParityPair& pair, const std::string& name, const std::string& value);
@@ -265,18 +255,16 @@ RectI paritySourceWindow(const NodePtr& source, double time, unsigned mipmapLeve
 /**
  * @brief Where compareParity() reads and writes references. Empty strings select the defaults:
  * NATRON_PARITY_RECORD_DIR for recording, NATRON_TESTS_FIXTURES_DIR/native-parity for replay.
- * `forceReplay` compares against the references even while the OFX plugin is loadable.
  **/
 struct ParityOptions {
     std::string recordDir;
     std::string referenceDir;
-    bool forceReplay = false;
     double time = 1.;
 };
 
 struct ParityResult {
     bool ok = false;
-    bool live = false;
+    bool recorded = false;
     int planesCompared = 0;
     std::string plane;
     std::string channel;
@@ -292,16 +280,15 @@ std::string describe(const ParityResult& r);
 
 /**
  * @brief Renders `pair.native` and compares every channel of every plane it presents against the
- * reference, over `roi` (pixel coordinates at `mipmapLevel`; a null rect means the source's
- * region of definition at that level).
+ * references recorded for the case, over `roi` (pixel coordinates at `mipmapLevel`; a null rect
+ * means the source's region of definition at that level).
  *
- * Live (the OFX node exists and forceReplay is off): the reference is `pair.ofx` rendered the
- * same way, and both nodes must present the same planes. With `record` and a record directory,
- * the OFX planes are also written as parity references.
- * Replay: the reference is the recorded file for each plane, and every recorded plane of the case
- * must be presented by the native node.
- * With neither, the call adds a gtest failure naming what is missing. A mismatch does not: it is
- * returned with the first differing value and the largest absolute difference.
+ * Record (`record` and a record directory): the node's planes are written as the case's
+ * references and nothing is compared. Re-record whenever the node's behaviour changes on purpose.
+ * Replay: every plane the node presents must have a reference, and every recorded plane of the
+ * case must be presented by the node. A missing reference adds a gtest failure naming it. A
+ * mismatch does not: it is returned with the first differing value and the largest absolute
+ * difference.
  *
  * References live at <dir>/<id>/<stem>.f32 for the colour plane and <dir>/<id>/<stem>.<layer>.f32
  * for any other, with stem `caseName`, suffixed ".mip<N>" above mipmap 0 so one case can be
@@ -335,21 +322,6 @@ struct ParityF32Image {
 
 bool writeParityF32(const std::string& path, const ParityF32Image& image, std::string* error = 0);
 bool readParityF32(const std::string& path, ParityF32Image* image, std::string* error = 0);
-
-/**
- * @brief Every problem that keeps `nativeNode` from being a drop-in for `ofxNode`'s parameters:
- * each user-visible OFX knob must exist on the native node with the same script name, knob type,
- * dimension and default per dimension, a choice's default compared by option ID. Secret knobs,
- * pages, separators, the OFX-internal names (NatronOfxParamProcess*, unPremultBy*,
- * aChannelsChanged, bChannelsChanged) and `ignoredNames` are skipped.
- **/
-std::vector<std::string> knobParityProblems(const NodePtr& ofxNode,
-                                            const NodePtr& nativeNode,
-                                            const std::vector<std::string>& ignoredNames = std::vector<std::string>());
-
-void expectKnobParity(const NodePtr& ofxNode,
-                      const NodePtr& nativeNode,
-                      const std::vector<std::string>& ignoredNames = std::vector<std::string>());
 
 NATRON_NAMESPACE_EXIT
 

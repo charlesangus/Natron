@@ -427,8 +427,8 @@ Files a port adds, per node (`<Dir>` is the node's directory under
 - [ ] `Gui/Resources/Images/NativeNodes/<icon>.png`: the icon, globbed by
       `Gui/CMakeLists.txt`; the `NodeSpec` icon path names it.
 - [ ] `Engine/OfxRetired/<ofx-id>`: one marker per OFX ID the port retires, see
-      `Engine/OfxRetired/README.md`. An ID the native node keeps (same plug-in ID)
-      gets no marker; the native registration already replaces it.
+      `Engine/OfxRetired/README.md`. The native node registers under its own plain
+      ID (see "IDs and versions"), never under the retired one.
 - [ ] Any test that used a retired ID as a fixture moves to the test-only bundle
       in `Tests/OfxTestPlugins/`.
 
@@ -1224,15 +1224,19 @@ or redeclare:
   which `ImageNode` calls after the op's `createKnobs()`).
 
 The stage knobs sit together below the node's own knobs, under one separator, in
-this order: (Un)premult by, the mask selectors and Invert mask, Mix. A node's own
-knobs follow the OFX plugin's order, names, types, dimensions and defaults. The
-OFX-internal `NatronOfxParamProcess*` and `unPremultBy*` are not declared.
+this order: (Un)premult by, the mask selectors and Invert mask, Mix.
+
+A node's own knobs, their defaults and its maths are designed on their own
+merits. Nothing is copied from an OFX plug-in for the sake of matching it, and
+nothing is kept because an older node had it. Script names are camelCase
+(`blackPoint`, `matrixSize`), and a label is the readable form of its script
+name (`matrixSize` is "Matrix Size"). Grouping is a `/`-separated menu path.
+
 Nothing in the graph keeps premult state: OFX clips and the images they fetch
 always answer unpremultiplied, the host discards the output premult a plugin
 reports, and unpremultiplying is only ever the explicit "(Un)premult by"
-choice. Labels drop the `OFX` suffix and grouping is a `/`-separated path
-matching the OFX menus. The filters (Blur, EdgeDetect, ErodeDilate) have no
-`Premult` stage and filter the data as stored.
+choice. Only colour nodes take the `Premult` stage; filters (Blur, EdgeDetect,
+ErodeDilate) never do and filter the data as stored.
 
 ### Scheduler declaration: zero unplanned pulls
 
@@ -1245,8 +1249,8 @@ or Resample op widens the source's region of interest by its halo or filter
 reach. A node that reads more -- another input, another time, a wider window --
 declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
-`route()` and the op, matching the OpenFX conditions so identities become
-identity tasks. No node here touches deep data or GL.
+`route()` and the op, so identities become identity tasks. No node here touches
+deep data or GL.
 
 ### Threading
 
@@ -1294,51 +1298,68 @@ within a few rows instead of after the whole window.
 
 ### IDs and versions
 
-A native node registers under the ID of the OFX plugin it replaces, with
-`majorVersion` one above the highest OFX major registered for that ID and minor
-0, so every unversioned or older request -- Python `app.createNode(id)`, PyPlug
-calls, Roto's and Tracker's internal nodes -- resolves to the native node. The
-OFX plugin stays loadable by its exact major until its family is retired, which
-is how a parity test renders both side by side. The ID and major live in
-`PLUGINID_NATRON_<NAME>` and `PLUGIN_MAJOR_NATRON_<NAME>` next to the class; each
-node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are in
-`Gui/Resources/Images/NativeNodes/<pluginID>.png`.
+A native node registers under a plain ID, its name without spaces (`Grade`,
+`ColorCorrect`, `Merge`, `DeepMerge`, `Read`), at major version 1 and minor 0.
+Reverse-domain IDs are for OFX plug-ins, which run in any host; a node built
+into Natron needs none, and never registers under the ID of an OFX plug-in it
+replaces. There is no compatibility with those IDs: a project or script that
+names one gets the missing-plugin node. The ID and major live in
+`PLUGINID_NATRON_<NAME>` and `PLUGIN_MAJOR_NATRON_<NAME>` next to the class;
+each node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are
+in `Gui/Resources/Images/NativeNodes/<pluginID>.png`.
 
-Siblings are one op under several IDs, each with its own `NodeSpec`: `Solid` is a
-`ConstantNode` over `ConstantOp` with its own spec; `TransformMasked` is
-`TransformImageNode<true>`, the `TransformOp` node with a mask input; `Add`,
-`Multiply` and `Gamma` are `ColorMathNode<KIND>`; `Erode` and `Dilate` are
-`ErodeDilateNode<MODE>`. The compat versions of retired plugins are gone, and
-nothing migrates a project saved with the OFX versions.
+A plain ID must not equal the ID of a bundled OFX plug-in, nor the name of a
+node-menu group under the same parent: the menu tree
+(`GuiApplicationManagerPrivate::findPluginToolButtonInternal()`) keeps groups
+and plug-ins in one list per level and matches both by ID.
 
-### Writing a parity test
+### One node per feature
 
-Parity tests live in `Tests/Native/` and are picked up by a glob, so
+A feature is one node. Variants of it are knobs on that node, not more IDs:
+erode and dilate are the sign of one size, and a mask input is optional on the
+node that takes it rather than a second "masked" node. The node menus list each
+node once. The only menu entries that are presets are Merge's operations (Plus,
+Matte, Multiply, ...; see `Merge/docs/Merge.md`), which create `Merge` with its
+`operation` set; they are not plug-ins, and projects only ever hold `Merge`.
+
+Distinct features may still share a class: `Add`, `Multiply` and `Gamma` are
+separate nodes, each `ColorMathNode<KIND>` with its own `NodeSpec`.
+
+### Regression fixtures
+
+Recorded references are regression fixtures. They pin what a node renders
+today, so an unintended change fails a test. They are not a contract with any
+other implementation: when a node's behaviour changes on purpose (a fix, a new
+default, a redesigned knob), its references are re-recorded in the same
+change, and the commit says why.
+
+Fixture tests live in `Tests/Native/` and are picked up by a glob, so
 `Tests/CMakeLists.txt` stays untouched. The helpers are in `Tests/NativeParity.h`.
 
-1. `makeParityPair(app, id, ofxMajor, nativeMajor, maskInputLabel)` creates the
-   node at both exact majors, fed by the deterministic `ParitySourceTestEffect`
-   (64x48, with negatives, super-whites and exact-0, exact-1 and ramp alpha
-   bands). `pair.ofx` is null once the OFX plugin is retired.
-2. `setKnobOnBoth()` applies the same values to both nodes, and
-   `connectParityInput()` wires further inputs.
+1. `makeParityPair(app, id, nativeMajor, maskInputLabel)` creates the node at
+   its exact major, fed by the deterministic `ParitySourceTestEffect` (64x48,
+   with negatives, super-whites and exact-0, exact-1 and ramp alpha bands).
+2. `setKnobOnBoth()` sets knob values on the node, and `connectParityInput()`
+   wires further inputs.
 3. `compareParity(pair, caseName, roi, mipmapLevel, tolerance, record)` renders
-   both through `renderRoI` and compares every channel of every plane. Run every
-   case at mipmap 0 and 1.
-4. Mark about three representative cases per node `record`. With
-   `NATRON_PARITY_RECORD_DIR` set, the OFX output of those is written as
+   the node through `renderRoI` and compares every channel of every plane it
+   presents against the case's references,
    `Tests/fixtures/native-parity/<id>/<case>.f32` (`NPAR` header, width, height,
-   components, float32 little-endian; `.mip1` suffix for mipmap 1), at windows
-   near 64x48 and within the family cap of 1.5 MB. Decide which cases to record
-   *before* the record step: an unrecorded case is deleted with the plugin.
-5. After retirement the same call replays the references. With neither a live
-   OFX plugin nor a reference, the test fails; there is no skip.
+   components, float32 little-endian; `.mip1` suffix for mipmap 1, a `.<layer>`
+   suffix for planes other than the colour plane). Run every case at mipmap 0
+   and 1.
+4. With `NATRON_PARITY_RECORD_DIR` set, every case passing `record` writes the
+   node's output as its references instead of comparing. Record at windows
+   near 64x48, within a family cap of 1.5 MB, and review the fixture diff like
+   code. A node whose ID changes moves its fixture directory with it.
+5. A case with no reference fails, and so does a recorded plane the node no
+   longer presents; there is no skip.
 
 A node's tolerance is a named constant at the top of its test, built from one of
 the classes below, and a node that cannot meet its class carries a measured bound
 with the reason beside it.
 
-### Parity tolerances
+### Regression tolerances
 
 `ParityTolerance` accepts a value when
 `|native - reference| <= absolute + relative * max(1, |reference|)`. A pair of
@@ -1353,17 +1374,13 @@ NaNs matches, as do equal infinities.
 | IIR | `iir()` | 1e-4 absolute | Blur, EdgeDetect, Transform motion blur |
 
 Each node's tolerance row (class, the constant its test uses, notes), measured
-exceptions and GPU parity notes live in that node's doc,
+exceptions and GPU notes live in that node's doc,
 `Engine/Nodes/<Family>/docs/<Node>.md`.
-
-Measured exceptions and what they are not:
-
-- **Deliberate fixes** are divergences, excluded from parity by case; each is recorded in the node's doc.
 
 ### GPU parity
 
-A native node's GPU path is held to the node's own CPU render, not to the OFX
-plugin, and states its tolerance in this section: a node row above gets a GPU
+A native node's GPU path is held to the node's own CPU render and states its
+tolerance in this section: a node row above gets a GPU
 bound beside its CPU class, or a measured exception below it, in the same change
 that lets the node answer `canRenderOnGpu()`. Vulkan division is 2.5 ulp and
 `pow` and the trigonometric functions are looser still, so a GPU bound is

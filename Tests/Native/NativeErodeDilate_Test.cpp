@@ -57,7 +57,6 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const int kOfxMajor = 2;
 const double kTime = 1.;
 
 struct MorphologyVariant {
@@ -130,10 +129,9 @@ protected:
 
     ParityPair makePair(const MorphologyVariant& variant)
     {
-        ParityPair pair = makeParityPair(getApp(), variant.id, kOfxMajor, variant.nativeMajor);
+        ParityPair pair = makeParityPair(getApp(), variant.id, variant.nativeMajor);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX plugin is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -152,7 +150,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, fullName, RectI(), mipmapLevel, kTolerance, record);
             EXPECT_TRUE(r.ok) << fullName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << fullName;
             std::cout << "[ parity ] " << fullName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

@@ -60,7 +60,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kChromaKeyerID = PLUGINID_NATRON_CHROMAKEYER;
-const int kOfxChromaKeyerMajor = 1;
 const int kNativeChromaKeyerMajor = PLUGIN_MAJOR_NATRON_CHROMAKEYER;
 const double kTime = 1.;
 
@@ -108,7 +107,7 @@ setChannelSelectOnBoth(const ParityPair& pair,
                        const std::string& name,
                        const std::string& value)
 {
-    return setChannelSelect(pair.native, name, value) && (!pair.ofx || setChannelSelect(pair.ofx, name, value));
+    return setChannelSelect(pair.native, name, value);
 }
 
 } // namespace
@@ -128,10 +127,9 @@ protected:
                         const std::string& components = std::string("rgba"))
     {
         resetProject();
-        ParityPair pair = makeParityPair(getApp(), kChromaKeyerID, kOfxChromaKeyerMajor, kNativeChromaKeyerMajor);
+        ParityPair pair = makeParityPair(getApp(), kChromaKeyerID, kNativeChromaKeyerMajor);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX ChromaKeyer is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (!pair.native || !pair.source) {
             return pair;
@@ -176,7 +174,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] ChromaKeyer " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

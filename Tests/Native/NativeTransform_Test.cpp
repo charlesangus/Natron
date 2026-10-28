@@ -62,7 +62,6 @@ namespace {
 
 const char* const kTransformID = PLUGINID_NATRON_TRANSFORM;
 const char* const kTransformMaskedID = PLUGINID_NATRON_TRANSFORMMASKED;
-const int kOfxTransformMajor = 1;
 const int kNativeTransformMajor = PLUGIN_MAJOR_NATRON_TRANSFORM;
 const int kNativeTransformMaskedMajor = PLUGIN_MAJOR_NATRON_TRANSFORMMASKED;
 const double kTime = 1.;
@@ -158,11 +157,10 @@ protected:
                         int nativeMajor,
                         const std::string& maskInputLabel = std::string())
     {
-        ParityPair pair = makeParityPair(getApp(), id, kOfxTransformMajor, nativeMajor, maskInputLabel);
+        ParityPair pair = makeParityPair(getApp(), id, nativeMajor, maskInputLabel);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX " << id << " is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -181,7 +179,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << pair.id << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] " << pair.id << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

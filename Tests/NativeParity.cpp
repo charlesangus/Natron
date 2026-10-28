@@ -97,18 +97,6 @@ joinStrings(const std::vector<std::string>& items)
     return out;
 }
 
-std::string
-describeLayers(const std::list<ImageLayerDesc>& layers)
-{
-    std::vector<std::string> names;
-
-    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        names.push_back(it->getLayerID() + "(" + std::to_string(it->getNumComponents()) + ")");
-    }
-
-    return "[" + joinStrings(names) + "]";
-}
-
 std::list<ImageLayerDesc>
 presentLayers(const NodePtr& node,
               double time)
@@ -136,93 +124,24 @@ findInputByLabel(const NodePtr& node,
 }
 
 bool
-connectBoth(const ParityPair& pair,
-            const NodePtr& input,
-            const std::string& inputLabel)
+connectToNode(const ParityPair& pair,
+              const NodePtr& input,
+              const std::string& inputLabel)
 {
-    bool ok = true;
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
+    const int inputNb = inputLabel.empty() ? 0 : findInputByLabel(pair.native, inputLabel);
 
-    for (int i = 0; i < 2; ++i) {
-        if (!nodes[i]) {
-            continue;
-        }
-        const int inputNb = inputLabel.empty() ? 0 : findInputByLabel(nodes[i], inputLabel);
-        if (inputNb < 0) {
-            ADD_FAILURE() << nodes[i]->getPluginID() << " has no input labelled \"" << inputLabel << "\"";
-            ok = false;
-            continue;
-        }
-        if (!NodeCollection::connectNodes(inputNb, input, nodes[i])) {
-            ADD_FAILURE() << "cannot connect a parity source to input " << inputNb << " of " << nodes[i]->getPluginID();
-            ok = false;
-        }
+    if (inputNb < 0) {
+        ADD_FAILURE() << pair.native->getPluginID() << " has no input labelled \"" << inputLabel << "\"";
+
+        return false;
+    }
+    if (!NodeCollection::connectNodes(inputNb, input, pair.native)) {
+        ADD_FAILURE() << "cannot connect a parity source to input " << inputNb << " of " << pair.native->getPluginID();
+
+        return false;
     }
 
-    return ok;
-}
-
-std::string
-formatDouble(double v)
-{
-    std::ostringstream ss;
-
-    ss.precision(17);
-    ss << v;
-
-    return ss.str();
-}
-
-// The defaults of `knob`, one string per dimension, so knobs of any value type compare alike.
-std::vector<std::string>
-knobDefaults(const KnobIPtr& knob)
-{
-    std::vector<std::string> out;
-    const int dims = knob->getDimension();
-
-    if (KnobChoice* choice = dynamic_cast<KnobChoice*>(knob.get())) {
-        for (int d = 0; d < dims; ++d) {
-            out.push_back(choice->getEntry(choice->getDefaultValue(d)).id);
-        }
-    } else if (Knob<double>* dbl = dynamic_cast<Knob<double>*>(knob.get())) {
-        for (int d = 0; d < dims; ++d) {
-            out.push_back(formatDouble(dbl->getDefaultValue(d)));
-        }
-    } else if (Knob<int>* integer = dynamic_cast<Knob<int>*>(knob.get())) {
-        for (int d = 0; d < dims; ++d) {
-            out.push_back(std::to_string(integer->getDefaultValue(d)));
-        }
-    } else if (Knob<bool>* boolean = dynamic_cast<Knob<bool>*>(knob.get())) {
-        for (int d = 0; d < dims; ++d) {
-            out.push_back(boolean->getDefaultValue(d) ? "true" : "false");
-        }
-    } else if (Knob<std::string>* str = dynamic_cast<Knob<std::string>*>(knob.get())) {
-        for (int d = 0; d < dims; ++d) {
-            out.push_back(str->getDefaultValue(d));
-        }
-    }
-
-    return out;
-}
-
-bool
-isOfxInternalKnobName(const std::string& name)
-{
-    static const char* const prefixes[] = { "NatronOfxParamProcess", "unPremultBy" };
-    static const char* const names[] = { "aChannelsChanged", "bChannelsChanged" };
-
-    for (const char* prefix : prefixes) {
-        if (name.compare(0, std::strlen(prefix), prefix) == 0) {
-            return true;
-        }
-    }
-    for (const char* n : names) {
-        if (name == n) {
-            return true;
-        }
-    }
-
-    return false;
+    return true;
 }
 
 std::string
@@ -325,7 +244,6 @@ compareOnePlane(const RenderedPlane& reference,
 
 bool
 renderPlanes(const NodePtr& node,
-             const std::string& what,
              double time,
              unsigned mipmapLevel,
              const RectI& window,
@@ -336,7 +254,7 @@ renderPlanes(const NodePtr& node,
     std::string error;
 
     if (!renderNodePlanesDirect(node, time, ViewIdx(0), mipmapLevel, window, layers, planes, &error)) {
-        r->error = what + " render failed: " + error;
+        r->error = "render failed: " + error;
 
         return false;
     }
@@ -717,28 +635,23 @@ createNodeAtMajor(const AppInstancePtr& app,
 ParityPair
 makeParityPair(const AppInstancePtr& app,
                const std::string& id,
-               int ofxMajor,
                int nativeMajor,
                const std::string& maskInputLabel)
 {
     ParityPair pair;
 
     pair.id = id;
-    pair.ofxMajor = ofxMajor;
     pair.nativeMajor = nativeMajor;
     pair.app = app;
     pair.source = createNodeAtMajor(app, kTestPluginIDParitySource, -1);
     if (!pair.source) {
         return pair;
     }
-    if (isPluginMajorRegistered(id, ofxMajor)) {
-        pair.ofx = createNodeAtMajor(app, id, ofxMajor);
-    }
     pair.native = createNodeAtMajor(app, id, nativeMajor);
     if (!pair.native) {
         return pair;
     }
-    connectBoth(pair, pair.source, std::string());
+    connectToNode(pair, pair.source, std::string());
     if (!maskInputLabel.empty()) {
         pair.mask = connectParityInput(pair, maskInputLabel);
     }
@@ -750,9 +663,14 @@ NodePtr
 connectParityInput(ParityPair& pair,
                    const std::string& inputLabel)
 {
+    if (!pair.native) {
+        ADD_FAILURE() << "no node to connect " << inputLabel << " to";
+
+        return NodePtr();
+    }
     NodePtr source = createNodeAtMajor(pair.app, kTestPluginIDParitySource, -1);
 
-    if (!source || !connectBoth(pair, source, inputLabel)) {
+    if (!source || !connectToNode(pair, source, inputLabel)) {
         return NodePtr();
     }
 
@@ -841,14 +759,7 @@ setKnobOnBoth(const ParityPair& pair,
               const std::string& name,
               std::initializer_list<double> values)
 {
-    const std::vector<double> v(values);
-    bool ok = setKnobValues(pair.native, name, v);
-
-    if (pair.ofx) {
-        ok = setKnobValues(pair.ofx, name, v) && ok;
-    }
-
-    return ok;
+    return setKnobValues(pair.native, name, std::vector<double>(values));
 }
 
 bool
@@ -856,13 +767,7 @@ setKnobOnBoth(const ParityPair& pair,
               const std::string& name,
               const std::string& value)
 {
-    bool ok = setKnobValue(pair.native, name, value);
-
-    if (pair.ofx) {
-        ok = setKnobValue(pair.ofx, name, value) && ok;
-    }
-
-    return ok;
+    return setKnobValue(pair.native, name, value);
 }
 
 void
@@ -1026,7 +931,10 @@ describe(const ParityResult& r)
     std::ostringstream ss;
 
     ss.precision(9);
-    ss << (r.live ? "live" : "replay") << ", " << r.planesCompared << " plane(s)";
+    ss << (r.recorded ? "recorded" : "replay") << ", " << r.planesCompared << " plane(s)";
+    if (r.recorded) {
+        return ss.str();
+    }
     if (r.ok) {
         ss << ": match (max abs diff " << r.maxAbsDiff << ")";
 
@@ -1064,89 +972,85 @@ compareParity(const ParityPair& pair,
     const RectI window = roi.isNull() ? paritySourceWindow(pair.source, time, mipmapLevel) : roi;
     const std::list<ImageLayerDesc> nativeLayers = presentLayers(pair.native, time);
 
+    const std::string recordDir = recordDirFor(options);
+    if (record && !recordDir.empty()) {
+        std::vector<RenderedPlane> recorded;
+        if (!renderPlanes(pair.native, time, mipmapLevel, window, nativeLayers, &recorded, &r)) {
+            return r;
+        }
+        for (std::size_t i = 0; i < recorded.size(); ++i) {
+            ParityF32Image img;
+            img.width = recorded[i].window.width();
+            img.height = recorded[i].window.height();
+            img.nComps = static_cast<int>(recorded[i].channels.size());
+            img.pixels = recorded[i].pixels;
+            std::string error;
+            if (!writeParityF32(parityReferencePath(recordDir, pair.id, caseName, mipmapLevel, recorded[i].layer), img, &error)) {
+                r.error = "cannot record " + pair.id + " / " + caseName + ": " + error;
+                ADD_FAILURE() << r.error;
+
+                return r;
+            }
+        }
+        r.ok = true;
+        r.recorded = true;
+        r.planesCompared = static_cast<int>(recorded.size());
+
+        return r;
+    }
+
     std::vector<RenderedPlane> reference;
     std::vector<RenderedPlane> native;
-    r.live = pair.live() && !options.forceReplay;
-    if (r.live) {
-        const std::list<ImageLayerDesc> ofxLayers = presentLayers(pair.ofx, time);
-        bool sameSet = (ofxLayers.size() == nativeLayers.size());
-        for (std::list<ImageLayerDesc>::const_iterator it = ofxLayers.begin(); sameSet && it != ofxLayers.end(); ++it) {
-            sameSet = std::find(nativeLayers.begin(), nativeLayers.end(), *it) != nativeLayers.end();
+    const std::string refDir = referenceDirFor(options);
+    const std::string caseDir = refDir + "/" + pair.id;
+    std::vector<std::string> missing;
+    std::list<ImageLayerDesc> loaded;
+    for (std::list<ImageLayerDesc>::const_iterator it = nativeLayers.begin(); it != nativeLayers.end(); ++it) {
+        const std::string path = parityReferencePath(refDir, pair.id, caseName, mipmapLevel, *it);
+        if (!QFileInfo::exists(QString::fromStdString(path))) {
+            missing.push_back(path);
+            continue;
         }
-        if (!sameSet) {
-            r.error = "planes differ: ofx " + describeLayers(ofxLayers) + ", native " + describeLayers(nativeLayers);
+        ParityF32Image img;
+        std::string error;
+        if (!readParityF32(path, &img, &error)) {
+            r.error = error;
 
             return r;
         }
-        if (!renderPlanes(pair.ofx, "ofx", time, mipmapLevel, window, ofxLayers, &reference, &r) || !renderPlanes(pair.native, "native", time, mipmapLevel, window, ofxLayers, &native, &r)) {
-            return r;
-        }
-        const std::string recordDir = recordDirFor(options);
-        if (record && !recordDir.empty()) {
-            for (std::size_t i = 0; i < reference.size(); ++i) {
-                ParityF32Image img;
-                img.width = reference[i].window.width();
-                img.height = reference[i].window.height();
-                img.nComps = static_cast<int>(reference[i].channels.size());
-                img.pixels = reference[i].pixels;
-                std::string error;
-                if (!writeParityF32(parityReferencePath(recordDir, pair.id, caseName, mipmapLevel, reference[i].layer), img, &error)) {
-                    ADD_FAILURE() << "cannot record " << pair.id << " / " << caseName << ": " << error;
-                }
-            }
-        }
-    } else {
-        const std::string refDir = referenceDirFor(options);
-        const std::string caseDir = refDir + "/" + pair.id;
-        std::vector<std::string> missing;
-        std::list<ImageLayerDesc> loaded;
-        for (std::list<ImageLayerDesc>::const_iterator it = nativeLayers.begin(); it != nativeLayers.end(); ++it) {
-            const std::string path = parityReferencePath(refDir, pair.id, caseName, mipmapLevel, *it);
-            if (!QFileInfo::exists(QString::fromStdString(path))) {
-                missing.push_back(path);
-                continue;
-            }
-            ParityF32Image img;
-            std::string error;
-            if (!readParityF32(path, &img, &error)) {
-                r.error = error;
-
-                return r;
-            }
-            if ((img.width != window.width()) || (img.height != window.height()) || (img.nComps != it->getNumComponents())) {
-                std::ostringstream ss;
-                ss << path << " is " << img.width << "x" << img.height << "x" << img.nComps << ", the case renders "
-                   << window.width() << "x" << window.height() << "x" << it->getNumComponents();
-                r.error = ss.str();
-
-                return r;
-            }
-            RenderedPlane plane;
-            plane.layer = *it;
-            plane.window = window;
-            plane.channels = it->getChannels();
-            plane.pixels.swap(img.pixels);
-            reference.push_back(plane);
-            loaded.push_back(*it);
-        }
-        if (!missing.empty()) {
-            r.error = "neither " + pair.id + " at major " + std::to_string(pair.ofxMajor) + " nor the reference(s) " + joinStrings(missing) + " are available";
-            ADD_FAILURE() << r.error;
+        if ((img.width != window.width()) || (img.height != window.height()) || (img.nComps != it->getNumComponents())) {
+            std::ostringstream ss;
+            ss << path << " is " << img.width << "x" << img.height << "x" << img.nComps << ", the case renders "
+               << window.width() << "x" << window.height() << "x" << it->getNumComponents();
+            r.error = ss.str();
 
             return r;
         }
-        std::set<std::string> recorded = recordedPlaneNames(caseDir, caseName, mipmapLevel);
-        for (std::list<ImageLayerDesc>::const_iterator it = nativeLayers.begin(); it != nativeLayers.end(); ++it) {
-            recorded.erase(it->isColorLayer() ? std::string() : it->getLayerID());
-        }
-        if (!recorded.empty()) {
-            r.error = "the native node does not present the recorded plane(s) " + joinStrings(std::vector<std::string>(recorded.begin(), recorded.end()));
+        RenderedPlane plane;
+        plane.layer = *it;
+        plane.window = window;
+        plane.channels = it->getChannels();
+        plane.pixels.swap(img.pixels);
+        reference.push_back(plane);
+        loaded.push_back(*it);
+    }
+    if (!missing.empty()) {
+        r.error = pair.id + " / " + caseName + " has no recorded reference " + joinStrings(missing);
+        ADD_FAILURE() << r.error;
 
-            return r;
-        }
-        if (!renderPlanes(pair.native, "native", time, mipmapLevel, window, loaded, &native, &r)) {
-            return r;
-        }
+        return r;
+    }
+    std::set<std::string> recorded = recordedPlaneNames(caseDir, caseName, mipmapLevel);
+    for (std::list<ImageLayerDesc>::const_iterator it = nativeLayers.begin(); it != nativeLayers.end(); ++it) {
+        recorded.erase(it->isColorLayer() ? std::string() : it->getLayerID());
+    }
+    if (!recorded.empty()) {
+        r.error = "the native node does not present the recorded plane(s) " + joinStrings(std::vector<std::string>(recorded.begin(), recorded.end()));
+
+        return r;
+    }
+    if (!renderPlanes(pair.native, time, mipmapLevel, window, loaded, &native, &r)) {
+        return r;
     }
 
     r.ok = true;
@@ -1164,62 +1068,5 @@ compareParity(const ParityPair& pair,
 
     return r;
 } // compareParity
-
-std::vector<std::string>
-knobParityProblems(const NodePtr& ofxNode,
-                   const NodePtr& nativeNode,
-                   const std::vector<std::string>& ignoredNames)
-{
-    std::vector<std::string> problems;
-
-    if (!ofxNode || !nativeNode) {
-        problems.push_back("a node is missing");
-
-        return problems;
-    }
-    const std::vector<KnobIPtr>& knobs = ofxNode->getKnobs();
-    for (std::vector<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        const KnobIPtr& knob = *it;
-        if (!knob || knob->getIsSecret() || dynamic_cast<KnobPage*>(knob.get()) || dynamic_cast<KnobSeparator*>(knob.get())) {
-            continue;
-        }
-        const std::string& name = knob->getName();
-        if (isOfxInternalKnobName(name) || (std::find(ignoredNames.begin(), ignoredNames.end(), name) != ignoredNames.end())) {
-            continue;
-        }
-        KnobIPtr other = nativeNode->getKnobByName(name);
-        if (!other) {
-            problems.push_back("\"" + name + "\" is missing on the native node");
-            continue;
-        }
-        if (other->typeName() != knob->typeName()) {
-            problems.push_back("\"" + name + "\" is a " + other->typeName() + ", the OFX knob a " + knob->typeName());
-            continue;
-        }
-        if (other->getDimension() != knob->getDimension()) {
-            problems.push_back("\"" + name + "\" has " + std::to_string(other->getDimension()) + " dimensions, the OFX knob " + std::to_string(knob->getDimension()));
-            continue;
-        }
-        const std::vector<std::string> a = knobDefaults(knob);
-        const std::vector<std::string> b = knobDefaults(other);
-        if (a != b) {
-            problems.push_back("\"" + name + "\" defaults to [" + joinStrings(b) + "], the OFX knob to [" + joinStrings(a) + "]");
-        }
-    }
-
-    return problems;
-}
-
-void
-expectKnobParity(const NodePtr& ofxNode,
-                 const NodePtr& nativeNode,
-                 const std::vector<std::string>& ignoredNames)
-{
-    const std::vector<std::string> problems = knobParityProblems(ofxNode, nativeNode, ignoredNames);
-
-    for (std::size_t i = 0; i < problems.size(); ++i) {
-        ADD_FAILURE() << "knob parity: " << problems[i];
-    }
-}
 
 NATRON_NAMESPACE_EXIT

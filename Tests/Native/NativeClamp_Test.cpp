@@ -57,7 +57,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kClampID = PLUGINID_NATRON_CLAMP;
-const int kOfxClampMajor = 2;
 const int kNativeClampMajor = PLUGIN_MAJOR_NATRON_CLAMP;
 
 const ParityTolerance kClampTolerance = ParityTolerance::exact();
@@ -91,10 +90,9 @@ class NativeClampTest
 protected:
     ParityPair makePair(bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kClampID, kOfxClampMajor, kNativeClampMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kClampID, kNativeClampMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Clamp is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -107,7 +105,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kClampTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Clamp " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

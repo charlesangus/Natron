@@ -82,7 +82,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIOLOOKTRANSFORM, -1, PLUGIN_MAJOR_NATRON_OCIOLOOKTRANSFORM);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIOLOOKTRANSFORM, PLUGIN_MAJOR_NATRON_OCIOLOOKTRANSFORM);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && dynamic_cast<OCIOLookTransform*>(pair.native->getEffectInstance().get()));

@@ -54,7 +54,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kPositionID = PLUGINID_NATRON_POSITION;
-const int kOfxPositionMajor = 1;
 const int kNativePositionMajor = PLUGIN_MAJOR_NATRON_POSITION;
 const double kTime = 1.;
 
@@ -93,11 +92,10 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), kPositionID, kOfxPositionMajor, kNativePositionMajor);
+        ParityPair pair = makeParityPair(getApp(), kPositionID, kNativePositionMajor);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Position is retired, so parity replays the recorded references";
 
         return pair;
     }
@@ -110,7 +108,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel, par), mipmapLevel, kPositionTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Position " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

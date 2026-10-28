@@ -131,10 +131,9 @@ protected:
     ParityPair makePair(const ColorMathCase& op,
                         bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), op.id, kOfxColorMathMajor, kNativeColorMathMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), op.id, kNativeColorMathMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native)) << op.label;
-        EXPECT_FALSE(pair.live()) << "the OFX " << op.label << " is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native)) << op.label;
 
         return pair;
@@ -148,7 +147,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, op.tolerance, record);
             EXPECT_TRUE(r.ok) << op.label << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << op.label << " " << caseName;
             std::cout << "[ parity ] " << op.label << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

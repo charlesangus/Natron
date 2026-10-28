@@ -175,7 +175,7 @@ protected:
     ParityPair makePair(const char* id,
                         int major)
     {
-        ParityPair pair = makeParityPair(getApp(), id, -1, major);
+        ParityPair pair = makeParityPair(getApp(), id, major);
 
         EXPECT_TRUE(bool(pair.native));
 

@@ -68,7 +68,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kCropID = PLUGINID_NATRON_CROP;
-const int kOfxCropMajor = 1;
 const int kNativeCropMajor = PLUGIN_MAJOR_NATRON_CROP;
 const double kTime = 1.;
 
@@ -171,10 +170,9 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), kCropID, kOfxCropMajor, kNativeCropMajor);
+        ParityPair pair = makeParityPair(getApp(), kCropID, kNativeCropMajor);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Crop is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -200,7 +198,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Crop " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

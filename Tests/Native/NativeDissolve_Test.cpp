@@ -63,7 +63,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kDissolveID = PLUGINID_NATRON_DISSOLVE;
-const int kOfxDissolveMajor = 1;
 const int kNativeDissolveMajor = PLUGIN_MAJOR_NATRON_DISSOLVE;
 const double kTime = 1.;
 
@@ -114,10 +113,9 @@ protected:
     ParityPair makePair(int inputs,
                         bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kDissolveID, kOfxDissolveMajor, kNativeDissolveMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kDissolveID, kNativeDissolveMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Dissolve is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -141,7 +139,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, kDissolveTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Dissolve " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

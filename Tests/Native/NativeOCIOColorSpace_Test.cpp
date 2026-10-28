@@ -79,7 +79,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIOCOLORSPACE, -1, PLUGIN_MAJOR_NATRON_OCIOCOLORSPACE);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIOCOLORSPACE, PLUGIN_MAJOR_NATRON_OCIOCOLORSPACE);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && dynamic_cast<OCIOColorSpace*>(pair.native->getEffectInstance().get()));

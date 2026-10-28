@@ -88,7 +88,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIODISPLAY, -1, PLUGIN_MAJOR_NATRON_OCIODISPLAY);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_OCIODISPLAY, PLUGIN_MAJOR_NATRON_OCIODISPLAY);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && dynamic_cast<OCIODisplay*>(pair.native->getEffectInstance().get()));

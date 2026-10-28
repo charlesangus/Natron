@@ -60,7 +60,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kKeyerID = PLUGINID_NATRON_KEYER;
-const int kOfxKeyerMajor = 1;
 const int kNativeKeyerMajor = PLUGIN_MAJOR_NATRON_KEYER;
 const double kTime = 1.;
 
@@ -97,7 +96,7 @@ setChannelSelectOnBoth(const ParityPair& pair,
                        const std::string& name,
                        const std::string& value)
 {
-    return setChannelSelect(pair.native, name, value) && (!pair.ofx || setChannelSelect(pair.ofx, name, value));
+    return setChannelSelect(pair.native, name, value);
 }
 
 double
@@ -128,10 +127,9 @@ protected:
                         const std::string& components = std::string("rgba"))
     {
         resetProject();
-        ParityPair pair = makeParityPair(getApp(), kKeyerID, kOfxKeyerMajor, kNativeKeyerMajor);
+        ParityPair pair = makeParityPair(getApp(), kKeyerID, kNativeKeyerMajor);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Keyer is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (!pair.native || !pair.source) {
             return pair;
@@ -178,7 +176,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kKeyerTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Keyer " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

@@ -94,16 +94,15 @@ const char* const kAllBundledPyPlugs[] = {
 };
 
 // The subset of kAllBundledPyPlugs whose exported script pins at least one channel-agnostic
-// inner node (one whose EffectInstance::defaultProcessesAllLayers() is true, e.g. a Blur, a
-// Transform or a Switch) to a colour view (rgba/rgb/alpha), rather than leaving it on its own
-// All default.
+// inner node (one whose EffectInstance::defaultProcessesAllLayers() is true, e.g. a Blur or a
+// Transform) to a colour view (rgba/rgb/alpha), rather than leaving it on its own All default.
+// The native Switch routes whole inputs and has no channel set to pin, so ZMask and ZRemap, whose
+// only such node was a Switch, are not listed.
 const char* const kPyPlugsWithColorPinnedInnerNodes[] = {
     "fr.inria.AngleBlur",
     "fr.inria.DropShadow",
     "fr.inria.LightWrap",
     "fr.inria.PIKColor",
-    "fr.inria.ZMask",
-    "fr.inria.ZRemap",
 };
 
 bool

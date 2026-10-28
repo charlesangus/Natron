@@ -162,7 +162,7 @@ protected:
 #ifdef NATRON_HAVE_GPU
 
 // B against a clean plate partly outside it, with gain and offset, without the plate, with every
-// channel processed, and under a mask and mix, against the node's own render over parity sources.
+// channel processed, and under a mask and mix, against the node's own render over its RoD.
 TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -225,7 +225,12 @@ TEST_F(NativeDifferenceGpuTest, MatchesTheCpuRender)
         const GpuQuery query = queryFor(node, 4);
         ASSERT_TRUE(effect->canRenderOnGpu(query)) << c.name;
 
-        const RectI window(-2, -2, kParitySourceWidth + kAOriginX + 2, kParitySourceHeight + kAOriginY + 2);
+        // The node's RoD, the union of its inputs': the engine renders nothing outside it, where a
+        // negative offset would otherwise give the GPU a matte the CPU leaves black.
+        RectI window = paritySourceWindow(b, kTime, 0);
+        if (a) {
+            window.merge(paritySourceWindow(a, kTime, 0));
+        }
         RenderedPlane cpu;
         ASSERT_TRUE(renderRgba(node, window, &cpu)) << c.name;
 

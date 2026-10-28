@@ -290,9 +290,19 @@ TEST_F(NativeDifferenceTest, WithoutBItIsBlack)
     NodePtr node = makeDifference(NodePtr(), makeSource(kAOriginX, kAOriginY));
     ASSERT_TRUE(bool(node));
 
-    RenderedPlane plane;
-    ASSERT_TRUE(renderRGBA(node, RectI(0, 0, 16, 16), &plane));
-    for (float v : plane.pixels) {
-        ASSERT_EQ(0.f, v);
-    }
+    // Black is an identity of no input, as for Switch and STMap: renderRoI succeeds without
+    // producing a plane, which the helper reports as "no plane".
+    EffectInstancePtr effect = node->getEffectInstance();
+    double inputTime = 0.;
+    ViewIdx inputView(0);
+    int inputNb = -3;
+    EXPECT_TRUE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, RectI(0, 0, 16, 16), ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_EQ(-1, inputNb);
+
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    EXPECT_FALSE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, RectI(0, 0, 16, 16), layers, &planes, &error));
+    EXPECT_EQ(std::string(kRenderProducedNoPlane), error);
+    EXPECT_TRUE(planes.empty());
 }

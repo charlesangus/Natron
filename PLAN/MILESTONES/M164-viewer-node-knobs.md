@@ -24,17 +24,17 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Phase 164.1: Engine knobs
 
-- [ ] M164.P1.T1 — Colour knobs on ViewerInstance
+- [x] M164.P1.T1 — Colour knobs on ViewerInstance
   - files: Engine/ViewerInstance.{h,cpp}, Engine/ViewerInstancePrivate.h, Tests/ViewerKnobs_Test.cpp
   - approach: gain, gamma, their enable toggles, display/view/look, autoContrast, checkerboard — persistent, readable labels, RB-3 script names where they exist; getters read the knobs; knobChanged calls the existing redraw paths; setEvaluateOnChange(false).
   - verify: a knob set is seen by the getter; upstream hashes unchanged; project.yaml round-trip.
   - size: M
-- [ ] M164.P1.T2 — Channel, input and wipe knobs
+- [x] M164.P1.T2 — Channel, input and wipe knobs
   - files: same, Tests/ViewerKnobs_Test.cpp
   - approach: channels, layer, alpha layer (input-bound via declareLayerKnob), inputs A/B, compositing operator, (Q1) wipe centre/angle/mix.
   - verify: as P1.T1 plus the missing-layer case.
   - size: M
-- [ ] M164.P1.T3 — Playback, RoI and processing knobs
+- [x] M164.P1.T3 — Playback, RoI and processing knobs
   - files: same, Tests/ViewerKnobs_Test.cpp
   - approach: fps, fps lock, frame range, userRoI and its enable, clipToProject, fullFrame, renderScale (enable and index).
   - verify: round-trip; a render request fires only for the processing knobs.
@@ -42,22 +42,22 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Phase 164.2: Toolbar and Python become views of the knobs
 
-- [ ] M164.P2.T1 — Bind the colour row
+- [x] M164.P2.T1 — Bind the colour row
   - files: Gui/ViewerTab.cpp, Gui/ViewerTab10.cpp, Gui/ViewerTabPrivate.h
   - approach: widget edits set knobs through the global undo stack; knob changes update widgets with signals blocked; remove duplicate member state.
   - verify: Xvfb: drag gain, undo, slider and knob both revert.
   - size: M
-- [ ] M164.P2.T2 — Bind channels, layers, inputs and the wipe
+- [x] M164.P2.T2 — Bind channels, layers, inputs and the wipe
   - files: Gui/ViewerTab20.cpp, Gui/ViewerTab30.cpp, Gui/ViewerGL.cpp, Gui/ViewerTabPrivate.h
   - approach: same pattern; the wipe handle drag writes the wipe knobs.
   - verify: Xvfb: a Python set moves the combos and the wipe handle.
   - size: M
-- [ ] M164.P2.T3 — Bind the player, RoI and proxy row
+- [x] M164.P2.T3 — Bind the player, RoI and proxy row
   - files: Gui/ViewerTab40.cpp, Gui/ViewerTab.cpp, Gui/ViewerGL.cpp, Gui/ViewerTabPrivate.h
   - approach: fps box and lock, in/out spin boxes, RoI drag, clip-to-project, full frame, render-scale combo drive the knobs.
   - verify: Xvfb with undo on a RoI drag.
   - size: M
-- [ ] M164.P2.T4 — PyGuiApp viewer API through the knobs
+- [x] M164.P2.T4 — PyGuiApp viewer API through the knobs
   - files: Gui/PyGuiApp.{h,cpp}
   - approach: setFrameRange, setCompositingOperator, setAInput/setBInput, setChannels, setProxy* (PyGuiApp.h:73-101) set the knobs; getParam reaches every knob.
   - verify: a setter and getParam().getValue() agree.
@@ -65,7 +65,7 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Phase 164.3: End-to-end check
 
-- [ ] M164.P3.T1 — Two-viewer GUI script
+- [x] M164.P3.T1 — Two-viewer GUI script
   - files: Tests/gui/m164_viewer_knobs.py
   - approach: set gain, gamma, display/view and wipe on two viewers from the toolbar and Python; save, close, reopen; per-viewer restore, zoom not restored; undo; upstream cache not invalidated (like cache_invalidation_viewer.py).
   - verify: remote GUI job passes; screenshots.

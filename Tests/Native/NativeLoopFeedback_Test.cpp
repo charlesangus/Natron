@@ -649,18 +649,6 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     CountingTestRegistry::reset();
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
     std::cerr << "ABodyChangingComponents first RGBA render: body rendered " << CountingTestRegistry::renders(counting) << " times" << std::endl;
-    { // M182-DIAG
-        QString diagMessage; // M182-DIAG
-        int diagType = -1; // M182-DIAG
-        begin->getPersistentMessage(&diagMessage, &diagType, false); // M182-DIAG
-        std::cerr << "M182-DIAG after RGBA render 1: type " << diagType << " message \"" << diagMessage.toStdString() << "\" value " << value << std::endl; // M182-DIAG
-        begin->clearPersistentMessage(false); // M182-DIAG
-        CountingTestRegistry::reset(); // M182-DIAG
-        float diagValue = -1.f; // M182-DIAG
-        ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &diagValue)); // M182-DIAG
-        begin->getPersistentMessage(&diagMessage, &diagType, false); // M182-DIAG
-        std::cerr << "M182-DIAG after RGBA render 2: type " << diagType << " message \"" << diagMessage.toStdString() << "\" value " << diagValue << " (body rendered " << CountingTestRegistry::renders(counting) << " times)" << std::endl; // M182-DIAG
-    } // M182-DIAG
 
     // Tell a body that iterates wrongly from a loop input that is not RGBA.
     float sourceValue = -1.f;
@@ -701,19 +689,10 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
         EXPECT_TRUE(layer == ImageLayerDesc::getRGBAComponents()) << "iteration " << k << " layer " << layer.getUserFacingLabel() << " (" << layer.getNumComponents() << " comps)";
     }
 
-    begin->getPersistentMessage(&message, &messageType, false);
-    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
-
-    // Tells a warning posted again by the RGBA renders from one left over from the alpha ones.
-    if (!message.isEmpty()) {
-        begin->clearPersistentMessage(false);
-        CountingTestRegistry::reset();
-        ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderSchedulerModeLegacy, true, &finalPlane));
-        QString again;
-        begin->getPersistentMessage(&again, &messageType, false);
-        std::cerr << "ABodyChangingComponents after clearing and rendering again, LoopBegin message: \""
-                  << again.toStdString() << "\" (body rendered " << CountingTestRegistry::renders(counting) << " times)" << std::endl;
-    }
+    // getPersistentMessage appends: read into an empty string, not the one holding the alpha warning.
+    QString rgbaMessage;
+    begin->getPersistentMessage(&rgbaMessage, &messageType, false);
+    EXPECT_TRUE(rgbaMessage.isEmpty()) << rgbaMessage.toStdString();
 }
 
 // Iterating over frames, each iteration adds its frame onto the one before: a trail.

@@ -60,3 +60,4 @@ output-layer code M251 - Cycles Rendering wrote instead of duplicating it.
 ## Decisions
 
 - 2026-10-27 — **Share the read-back with Cycles (planner):** one delegate-agnostic path, per-delegate files hold only AOV token names and quirks.
+- 2026-10-28 — **No stand-in light for MoonRay (implementer):** Natron's headlight is a Hydra simple light set on Storm's engines only; hdMoonray renders no simple light, so a MoonRay render of a stage without lights is black, with no injected light. Revisit together with M251 - Cycles Rendering's open question on its 0.5 grey no-light background.

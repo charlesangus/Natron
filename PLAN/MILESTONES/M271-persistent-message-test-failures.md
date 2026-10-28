@@ -36,3 +36,7 @@ Two tests fail 5 times out of 5 on main after M178 - Render Context Core merged,
   - size: M
 
 **Verification gate:** `tools/ci/remote/build.sh debug --tests` passes (it reproduces PR CI, per the debug-asserts note), and `PersistentMessageTest.RenderFailingAfterItsChannelCheckPassedKeepsTheError` and `ShuffleRenderTest.ExplicitRowVariesPerFrameOnShuffleDisableChain` pass 5 of 5 on a local RADV debug build.
+
+## Decisions
+
+- 2026-10-28: cause (by code reading; RADV confirmation pending): a node delivered by a GPU region never ran renderRoI's clear of a stale missing-channel error (EffectInstanceRenderRoI.cpp:1823), so a CPU render's error stuck after a later GPU render of the same Shuffle. contextCountWarningMessage ruled out (needs fan-outs). Fix: runGpuRegion retires channel-selector messages on success (retireChannelSelectorMessages); makeGpuTaskPlanes refuses nodes failing Node::checkSelectedChannelsPresent so the CPU posts the error. Regression tests in NativeGpuChain and GpuRegionFallback (GPU-forced, skip without a GPU). Why the tests passed just before M178 is not established.

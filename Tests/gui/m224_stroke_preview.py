@@ -42,7 +42,7 @@ STALL_LOG = os.environ.get("NATRON_STALL_LOG", "")
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtWidgets import QAbstractButton, QApplication, QMainWindow
 
@@ -243,15 +243,33 @@ try:
         else:
             report("NOTE NATRON_STALL_LOG is not set; stalls were not checked")
 
+    def untone_view():
+        """The viewer defaults to a tone-mapped view; absolute pixel checks need the plain one."""
+        for w in gt.widgets_of("ComboBox"):
+            try:
+                if not (w.isVisible() and "View:" in (w.toolTip() or "")):
+                    continue
+                items = [str(i) for i in (w.property("natronItems") or [])]
+            except RuntimeError:
+                continue
+            for name in ("Un-tone-mapped", "Raw"):
+                if name in items:
+                    QMetaObject.invokeMethod(w, "setCurrentIndex", Q_ARG(int, items.index(name)))
+                    QApplication.processEvents()
+                    return True
+        return False
+
     def steps():
-        ok = yield ("until", lambda: main_window() is not None and viewer_gl() is not None, STARTUP_TIMEOUT_S)
-        require(ok, "the main window and viewer are up")
-        gt.close_all_panels()
-        activate()
+        ok = yield ("until", lambda: main_window() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the main window is up")
         viewer = app.getNode("Viewer1")
         if viewer is None:
             viewer = app.createNode("fr.inria.built-in.Viewer")
         require(viewer is not None, "a Viewer node exists")
+        ok = yield ("until", lambda: viewer_gl() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the viewer is up")
+        gt.close_all_panels()
+        activate()
 
         # An open settings panel makes the node's viewer interact the active one.
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
@@ -275,6 +293,8 @@ try:
         require(gl is not None, "the viewer is visible")
         _keep["gl"] = gl
         activate()
+        require(untone_view(), "picked the Un-tone-mapped view")
+        yield ("sleep", RENDER_MS)
 
         for cmd in preview_phase(gl):
             yield cmd

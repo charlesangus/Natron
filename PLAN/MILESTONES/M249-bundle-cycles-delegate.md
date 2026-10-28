@@ -55,5 +55,6 @@ to discover. No Natron node code changes here; the deliverable is a delegate tha
 
 ## Decisions
 
+- 2026-10-28: implemented (build pending). Cycles standalone v5.2.0 pinned by tag+sha256 (Apache-2.0), CPU only (GPU later per the user), OSL/OpenPGL/GL display off; built by tools/ci/local/build-cycles.sh in the dev image against the image's USD 26.08/OIIO/OpenEXR/TBB/Embree/OIDN; patch drops `override` on IsSupported(bool) removed in USD 26.08. Installed into USD's plugin folder (no PXR_PLUGINPATH_NAME). stage-bundle copies OIDN's CPU module; check-startup requires the Cycles plugin to load. Estimated AppImage growth: OIDN ~+46 MB, Embree ~+8 MB compressed. Open to user: keep OIDN (denoising) or build without it.
 - 2026-10-27 — **Bundle in the AppImage (user):** both delegates ship in the release, not discovery-only.
 - 2026-10-27 — **CPU first (user):** GPU devices are planned for later.

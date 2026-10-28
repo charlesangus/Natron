@@ -27,6 +27,10 @@ STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 170
 SETTLE_MS = 700
 FALLBACK_SIZE = (1920.0, 1080.0)
+WINDOW_SIZE = (1920, 1080)
+GEOMETRY_POLL_MS = 200
+GEOMETRY_STABLE_POLLS = 5
+GEOMETRY_TIMEOUT_S = 15.0
 ALL_SECTIONS = ("panel", "lines", "rectangle", "drag")
 
 PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
@@ -196,6 +200,40 @@ try:
             report("NOTE could not frame the viewer: no centerViewer slot found")
         QApplication.processEvents()
 
+    def geometry_key():
+        window = gt._find_main_window()
+        gl = visible_viewer()
+        if window is None or gl is None:
+            return None
+        g = window.geometry()
+        return (g.x(), g.y(), g.width(), g.height(), gl.width(), gl.height())
+
+    def place_main_window():
+        """Without a window manager the main window is not maximised: size it to the screen."""
+        window = gt._find_main_window()
+        if window is None:
+            report("NOTE could not find the main window to resize")
+            return
+        window.showNormal()
+        window.setGeometry(0, 0, WINDOW_SIZE[0], WINDOW_SIZE[1])
+        QApplication.processEvents()
+
+    def wait_stable_geometry():
+        """Yields until the window and the viewer report the same geometry on several polls."""
+        waited = 0
+        last, same = None, 0
+        while waited < GEOMETRY_TIMEOUT_S * 1000:
+            yield ("sleep", GEOMETRY_POLL_MS)
+            waited += GEOMETRY_POLL_MS
+            QApplication.processEvents()
+            now = geometry_key()
+            same = same + 1 if (now is not None and now == last) else 0
+            last = now
+            if same >= GEOMETRY_STABLE_POLLS:
+                report("NOTE window and viewer geometry stable: %r" % (now,))
+                return
+        report("NOTE geometry did not settle within %gs: %r" % (GEOMETRY_TIMEOUT_S, last))
+
     def viewer_grab():
         widget = visible_viewer()
         if widget is None:
@@ -236,8 +274,10 @@ try:
     def show(viewer, node):
         connect(viewer, 0, node)
         yield ("sleep", SETTLE_MS)
+        yield from wait_stable_geometry()
         frame_all()
         yield ("sleep", SETTLE_MS)
+        yield from wait_stable_geometry()
 
     def send_mouse(widget, etype, pos, button, buttons):
         QApplication.sendEvent(widget, QMouseEvent(etype, QPointF(pos), button, buttons, Qt.NoModifier))
@@ -409,6 +449,10 @@ try:
         viewer_node()
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         gt.require(ok, "viewer widget is up")
+        place_main_window()
+        yield from wait_stable_geometry()
+        frame_all()
+        yield from wait_stable_geometry()
         gt.close_all_panels()
         yield ("sleep", 1000)
         gt.close_all_panels()

@@ -934,15 +934,15 @@ TEST_F(CacheStressTest, NonHashedKnobSweep)
                                   << joined;
 }
 
-// Growing a layer AddLayers names, and adding one it does not, change the registry the node and
-// the project digest fold in.
+// Adding project layers the AddLayers node does not name (the registry refuses growing an existing
+// one) changes the registry the node and the project digest fold in.
 TEST_F(CacheStressTest, AddLayersRegistryChange)
 {
     Options options = defaults();
     options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
-    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("mask", 2)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("cachestressExtra", 2)));
     options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 1.)));
-    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("other", 3)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("cachestressOther", 3)));
     options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
     EXPECT_EQ(0, expectClean(getApp(), buildAddLayers, kSeeds, options));
 }

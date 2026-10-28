@@ -95,10 +95,14 @@ const KnobSetting kBusySetting[] = {
 
 const char* const kFormulas[] = { "jzazbz", "darktableUcs" };
 
+// JzAzBz's PQ curve (exponent 134) and the L'-M' difference in az amplify float rounding: on
+// lavapipe a float JzAzBz round trip drifts up to 2.6e-4 from its input on the CPU and 2.8e-4 on
+// the GPU, and the two disagree by up to 3.75e-4 over random Rec.2020 colours, so 1e-4 holds only
+// for the UCS formula.
 ParityTolerance
-gpuTolerance()
+gpuTolerance(int saturationFormula)
 {
-    return ParityTolerance::make(0., 1e-4);
+    return ParityTolerance::make(0., (saturationFormula == ColorBalanceRGBOp::eSaturationFormulaJzAzBz) ? 1e-3 : 1e-4);
 }
 
 ColorBalanceRGB*
@@ -197,7 +201,8 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
         EXPECT_EQ(0u, run.writtenOutside) << what;
         ASSERT_EQ(want.size(), run.pixels.size()) << what;
 
-        const ImageDiff diff = compareImages(want, run.pixels, gpuTolerance());
+        const int formula = effect->bakeColorBalanceRGB(kTime, ViewIdx(0)).saturationFormula;
+        const ImageDiff diff = compareImages(want, run.pixels, gpuTolerance(formula));
         EXPECT_EQ(0u, diff.mismatches) << what << " components " << nComps << ": first at float " << diff.firstMismatchIndex << " in "
                                        << src[diff.firstMismatchIndex] << " gpu " << run.pixels[diff.firstMismatchIndex] << " cpu "
                                        << want[diff.firstMismatchIndex] << ", worst " << diff.worstAbsolute;

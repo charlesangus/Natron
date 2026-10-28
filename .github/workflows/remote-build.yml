@@ -59,6 +59,11 @@ on:
         required: false
         type: string
         default: ''
+      gui_ref:
+        description: 'With from_run: branch or sha whose scripts, fixtures and run-gui-test.sh the GUI jobs check out instead of the from_run commit; the AppImage and dev image still come from from_run'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -475,6 +480,7 @@ jobs:
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
       sha: ${{ steps.resolve.outputs.sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
       run: ${{ steps.resolve.outputs.run }}
       artifact: ${{ steps.resolve.outputs.artifact }}
       image: ${{ steps.image.outputs.image }}
@@ -486,6 +492,7 @@ jobs:
           REPO: ${{ github.repository }}
           GUI_SCRIPTS: ${{ inputs.gui_scripts }}
           FROM_RUN: ${{ inputs.from_run }}
+          GUI_REF: ${{ inputs.gui_ref }}
           APPIMAGE: ${{ inputs.appimage }}
           SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
@@ -493,6 +500,10 @@ jobs:
           set -euo pipefail
           if [[ -z "${GUI_SCRIPTS// /}" ]]; then
             echo "::error::from_run needs gui_scripts; it skips the build, so there is nothing else to do"
+            exit 1
+          fi
+          if [[ -n "$GUI_REF" && -z "$FROM_RUN" ]]; then
+            echo "::error::gui_ref only applies with from_run"
             exit 1
           fi
           matrix='[]'
@@ -528,6 +539,7 @@ jobs:
           {
             echo "matrix=$matrix"
             echo "sha=$SHA"
+            echo "ref=${GUI_REF:-$SHA}"
             echo "run=$RUN_ID"
             echo "artifact=$artifact"
           } >> "$GITHUB_OUTPUT"
@@ -572,11 +584,12 @@ jobs:
         shell: bash -l {0}
 
     steps:
-      # The scripts and their fixtures come from the commit the AppImage was built from.
+      # The scripts and their fixtures come from the commit the AppImage was built from, or from
+      # gui_ref when given.
       - name: Checkout the commit under test
         uses: actions/checkout@v5.0.1
         with:
-          ref: ${{ needs.gui-matrix.outputs.sha }}
+          ref: ${{ needs.gui-matrix.outputs.ref }}
           submodules: false
           lfs: false
 

@@ -132,6 +132,9 @@ AppImage of an earlier `remote-build` run (artifacts last 7 days). The GUI
 jobs check out that run's commit, so the scripts and fixtures, the
 `run-gui-test.sh` and the dev image are the ones of the branch under test,
 which need not carry this workflow itself: dispatch from a branch that does.
+`--gui-ref <ref>` (only with `--from-run`) checks out that branch or sha for the
+scripts, fixtures and `run-gui-test.sh` instead of the run's commit, still
+testing the run's AppImage under the dev image of the run's commit.
 `--from-run` takes no build or test options, and replaces only
 `build/remote/<preset>/gui/`.
 

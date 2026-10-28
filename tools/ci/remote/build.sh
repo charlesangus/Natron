@@ -48,6 +48,9 @@
 #                        (so its branch need not carry this workflow). Takes no
 #                        build or test options, and needs --gui. Only
 #                        build/remote/<preset>/gui/ is replaced.
+#   --gui-ref <ref>    -> with --from-run: check out this branch or sha for the
+#                        scripts, fixtures and run-gui-test.sh instead of the
+#                        from-run commit; the AppImage is still that run's.
 #   --mode            -> print the build mode (local or remote) and exit. Takes
 #                        no other arguments. The mode is the first non-blank,
 #                        non-# line of .local/build-mode at the repo root; a
@@ -65,7 +68,7 @@ WATCH_INTERVAL_SECS=30
 
 usage() {
     echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
-    echo "       build.sh <fast|release> --from-run <run-id> --gui \"<script> ...\"" >&2
+    echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
 
@@ -104,6 +107,7 @@ SHUFFLE_SEEDS=""
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
+GUI_REF=""
 BUILD_OPTION=false
 
 if [[ " $* " == *" --mode "* ]]; then
@@ -192,6 +196,16 @@ while [[ $# -gt 0 ]]; do
             FROM_RUN="$1"
             shift
             ;;
+        --gui-ref)
+            shift
+            if [[ $# -eq 0 || -z "$1" || "$1" == -* ]]; then
+                echo "build.sh: --gui-ref needs a branch name or sha" >&2
+                usage
+                exit 1
+            fi
+            GUI_REF="$1"
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -220,6 +234,12 @@ fi
 # gtest takes a seed from 0 to 99999; 0 would pick a time-based one, which a rerun cannot repeat.
 if [[ -n "${SHUFFLE_SEEDS}" ]] && ! [[ "${SHUFFLE_SEEDS}" =~ ^[1-9][0-9]{0,4}(,[1-9][0-9]{0,4})*$ ]]; then
     echo "build.sh: --shuffle-seeds must be comma-separated integers from 1 to 99999, got '${SHUFFLE_SEEDS}'" >&2
+    usage
+    exit 1
+fi
+
+if [[ -n "${GUI_REF}" && -z "${FROM_RUN}" ]]; then
+    echo "build.sh: --gui-ref is only valid with --from-run" >&2
     usage
     exit 1
 fi
@@ -298,7 +318,8 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "token=${TOKEN}" \
     -f "gui_scripts=${GUI_SCRIPTS}" \
-    -f "from_run=${FROM_RUN}"
+    -f "from_run=${FROM_RUN}" \
+    -f "gui_ref=${GUI_REF}"
 
 # gh 2.23 prints no run ID on dispatch, so the run is found by the token that
 # the workflow echoes into its run name.

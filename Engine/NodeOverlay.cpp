@@ -392,6 +392,29 @@ Node::addRectangleInteract(const KnobDoublePtr& bottomLeft,
     }
 }
 
+void
+Node::addRampInteract(const KnobDoublePtr& point0,
+                      const KnobDoublePtr& point1,
+                      const KnobBoolPtr& interactive)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    HostOverlayKnobsRampPtr knobs = std::make_shared<HostOverlayKnobsRamp>();
+    knobs->addKnob(point0, HostOverlayKnobsRamp::eKnobsEnumerationPoint0);
+    knobs->addKnob(point1, HostOverlayKnobsRamp::eKnobsEnumerationPoint1);
+    if (interactive) {
+        knobs->addKnob(interactive, HostOverlayKnobsRamp::eKnobsEnumerationInteractive);
+    }
+    // Kept in background mode too, like the rectangle, so the declaration can be checked without
+    // a GUI.
+    NodeGuiIPtr nodeGui = getNodeGui();
+    if (!nodeGui) {
+        _imp->nativeOverlays.push_back(knobs);
+    } else {
+        nodeGui->addDefaultInteract(knobs);
+    }
+}
+
 std::list<HostOverlayKnobsPtr>
 Node::getPendingHostOverlays() const
 {

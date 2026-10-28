@@ -194,6 +194,27 @@ private:
 
 typedef std::shared_ptr<HostOverlayKnobsRectangle> HostOverlayKnobsRectanglePtr;
 
+// Two points, each drawn with a dashed line through it orthogonal to the line between them.
+class HostOverlayKnobsRamp
+    : public HostOverlayKnobs {
+public:
+    enum KnobsEnumeration {
+        eKnobsEnumerationPoint0,
+        eKnobsEnumerationPoint1,
+        eKnobsEnumerationInteractive
+    };
+
+    HostOverlayKnobsRamp()
+        : HostOverlayKnobs()
+    {
+    }
+
+    virtual ~HostOverlayKnobsRamp() { }
+
+private:
+    virtual void describeOverlayKnobs() OVERRIDE FINAL;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // HOSTOVERLAYSUPPORT_H

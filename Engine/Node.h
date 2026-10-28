@@ -1726,6 +1726,14 @@ public:
                               const KnobBoolPtr& enable);
 
     /**
+     * @brief Declares the ramp overlay: two draggable points, each with a dashed line through it
+     * orthogonal to the line between them. A null interactive follows the global preference.
+     **/
+    void addRampInteract(const KnobDoublePtr& point0,
+                         const KnobDoublePtr& point1,
+                         const KnobBoolPtr& interactive = KnobBoolPtr());
+
+    /**
      * @brief Host overlays declared before the node has a GUI; they are handed to the GUI by
      * initializeHostOverlays().
      **/

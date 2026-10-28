@@ -207,4 +207,12 @@ HostOverlayKnobsRectangle::describeOverlayKnobs()
     describeKnob(eKnobsEnumerationEnable, KnobBool::typeNameStatic(), 1, true);
 }
 
+void
+HostOverlayKnobsRamp::describeOverlayKnobs()
+{
+    describeKnob(eKnobsEnumerationPoint0, KnobDouble::typeNameStatic(), 2);
+    describeKnob(eKnobsEnumerationPoint1, KnobDouble::typeNameStatic(), 2);
+    describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
+}
+
 NATRON_NAMESPACE_EXIT

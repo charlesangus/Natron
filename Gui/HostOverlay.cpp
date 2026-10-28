@@ -25,8 +25,9 @@
 
 #include "HostOverlay.h"
 
-#include <list>
 #include <cmath>
+#include <limits>
+#include <list>
 #include <stdexcept>
 
 #include "Gui/NodeGui.h"
@@ -36,9 +37,11 @@
 
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/Transform.h"
 #include "Engine/Utils.h"
@@ -1000,6 +1003,380 @@ fround(double val,
     return pscale10 * std::floor(val / pscale10 + 0.5);
 }
 
+// The part of the line through p along v inside the rectangle, if any.
+bool
+clipLineToRect(const OfxPointD& p,
+               const OfxPointD& v,
+               const RectD& r,
+               OfxPointD* a,
+               OfxPointD* b)
+{
+    if ((v.x == 0.) && (v.y == 0.)) {
+        return false;
+    }
+    const double pos[2] = { p.x, p.y };
+    const double dir[2] = { v.x, v.y };
+    const double lo[2] = { r.x1, r.y1 };
+    const double hi[2] = { r.x2, r.y2 };
+    double s0 = -std::numeric_limits<double>::infinity();
+    double s1 = std::numeric_limits<double>::infinity();
+    for (int k = 0; k < 2; ++k) {
+        if (dir[k] == 0.) {
+            if ((pos[k] < lo[k]) || (pos[k] > hi[k])) {
+                return false;
+            }
+        } else {
+            double ta = (lo[k] - pos[k]) / dir[k];
+            double tb = (hi[k] - pos[k]) / dir[k];
+            if (ta > tb) {
+                std::swap(ta, tb);
+            }
+            s0 = (std::max)(s0, ta);
+            s1 = (std::min)(s1, tb);
+        }
+    }
+    if (s0 > s1) {
+        return false;
+    }
+    a->x = p.x + s0 * v.x;
+    a->y = p.y + s0 * v.y;
+    b->x = p.x + s1 * v.x;
+    b->y = p.y + s1 * v.y;
+
+    return true;
+}
+
+class RampInteract
+    : public DefaultInteractI {
+    enum StateEnum {
+        eStateIdle = 0,
+        eStateDraggingPoint0,
+        eStateDraggingPoint1
+    };
+
+    KnobDoubleWPtr _point[2];
+    KnobBoolWPtr _interactive;
+    OfxPointD _dragPos[2];
+    OfxPointD _lastMousePos;
+    StateEnum _state;
+    bool _interactiveDrag;
+
+public:
+    RampInteract(const HostOverlayKnobsRamp* knobs,
+                 HostOverlay* overlay)
+        : DefaultInteractI(overlay)
+        , _point()
+        , _interactive()
+        , _dragPos()
+        , _lastMousePos()
+        , _state(eStateIdle)
+        , _interactiveDrag(false)
+    {
+        _point[0] = knobs->getKnob<KnobDouble>(HostOverlayKnobsRamp::eKnobsEnumerationPoint0);
+        _point[1] = knobs->getKnob<KnobDouble>(HostOverlayKnobsRamp::eKnobsEnumerationPoint1);
+        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsRamp::eKnobsEnumerationInteractive);
+        for (int i = 0; i < 2; ++i) {
+            _dragPos[i].x = _dragPos[i].y = 0.;
+        }
+        _lastMousePos.x = _lastMousePos.y = 0.;
+    }
+
+    virtual ~RampInteract()
+    {
+    }
+
+    virtual bool isInteractForKnob(const KnobI* knob) const OVERRIDE FINAL
+    {
+        return _point[0].lock().get() == knob || _point[1].lock().get() == knob;
+    }
+
+    static double pointSize()
+    {
+        return 5.;
+    }
+
+    static double pointTolerance()
+    {
+        return 6.;
+    }
+
+    virtual void draw(double time,
+                      const RenderScale& /*renderScale*/,
+                      ViewIdx view,
+                      const OfxPointD& pscale,
+                      const QPointF& /*lastPenPos*/,
+                      const OfxRGBColourD& color,
+                      const OfxPointD& shadow,
+                      const QFont& font,
+                      const QFontMetrics& /*fm*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return;
+        }
+        const double screenPixelRatio = getScreenPixelRatio();
+        OfxPointD p[2];
+        getPoints(time, p);
+
+        // Each line runs through its point orthogonally to p0p1, across the node's output.
+        RectD rod;
+        getOutputRect(time, view, &rod);
+        OfxPointD ortho;
+        ortho.x = -(p[1].y - p[0].y);
+        ortho.y = p[1].x - p[0].x;
+        OfxPointD lineStart[2];
+        OfxPointD lineEnd[2];
+        bool hasLine[2];
+        for (int i = 0; i < 2; ++i) {
+            hasLine[i] = clipLineToRect(p[i], ortho, rod, &lineStart[i], &lineEnd[i]);
+        }
+
+        glEnable(GL_LINE_SMOOTH);
+        glEnable(GL_BLEND);
+        glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+        glLineWidth(1.5f * screenPixelRatio);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glLineStipple(2, 0xAAAA);
+        glPointSize(pointSize() * screenPixelRatio);
+
+        // Draw everything twice
+        // l = 0: shadow
+        // l = 1: drawing
+        for (int l = 0; l < 2; ++l) {
+            // shadow (uses GL_PROJECTION)
+            glMatrixMode(GL_PROJECTION);
+            int direction = (l == 0) ? 1 : -1;
+            // translate (1,-1) pixels
+            glTranslated(direction * shadow.x, -direction * shadow.y, 0);
+            glMatrixMode(GL_MODELVIEW);
+
+            for (int i = 0; i < 2; ++i) {
+                glDisable(GL_LINE_STIPPLE);
+                glDisable(GL_POINT_SMOOTH);
+                const bool dragging = _state == (i == 0 ? eStateDraggingPoint0 : eStateDraggingPoint1);
+                float r = (float)color.r;
+                float g = (float)color.g;
+                float b = (float)color.b;
+                if (dragging) {
+                    r = 0.f;
+                    g = 1.f;
+                    b = 0.f;
+                }
+                glColor3f(r * l, g * l, b * l);
+                glBegin(GL_POINTS);
+                glVertex2d(p[i].x, p[i].y);
+                glEnd();
+
+                if (hasLine[i]) {
+                    glEnable(GL_LINE_STIPPLE);
+                    glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
+                    glBegin(GL_LINES);
+                    glVertex2d(lineStart[i].x, lineStart[i].y);
+                    glVertex2d(lineEnd[i].x, lineEnd[i].y);
+                    glEnd();
+                    glDisable(GL_LINE_STIPPLE);
+                }
+
+                QColor c;
+                c.setRgbF(r * l, g * l, b * l);
+                KnobDoublePtr knob = _point[i].lock();
+                renderText(p[i].x, p[i].y + pointSize() * pscale.y,
+                           pscale.x, pscale.y, QString::fromUtf8(knob->getLabel().c_str()), c, font);
+            }
+        }
+        glPointSize(1);
+    }
+
+    virtual bool penMotion(double time,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           const OfxPointD& pscale,
+                           const QPointF& /*lastPenPos*/,
+                           const QPointF& penPos,
+                           const QPoint& /*penPosViewport*/,
+                           double /*pressure*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return false;
+        }
+        bool valuesChanged = false;
+        const int dragged = draggedPoint();
+        if (dragged >= 0) {
+            _dragPos[dragged].x += penPos.x() - _lastMousePos.x;
+            _dragPos[dragged].y += penPos.y() - _lastMousePos.y;
+            valuesChanged = true;
+            if (_interactiveDrag) {
+                setPoint(time, dragged, pscale);
+            }
+            requestRedraw();
+        }
+        _lastMousePos.x = penPos.x();
+        _lastMousePos.y = penPos.y();
+
+        return valuesChanged;
+    }
+
+    virtual bool penDown(double time,
+                         const RenderScale& /*renderScale*/,
+                         ViewIdx /*view*/,
+                         const OfxPointD& pscale,
+                         const QPointF& /*lastPenPos*/,
+                         const QPointF& penPos,
+                         const QPoint& /*penPosViewport*/,
+                         double /*pressure*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return false;
+        }
+        OfxPointD p[2];
+        getPoints(time, p);
+        if (_state == eStateIdle) {
+            KnobBoolPtr interactive = _interactive.lock();
+            if (interactive) {
+                _interactiveDrag = interactive->getValueAtTime(time);
+            } else {
+                _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
+            }
+        }
+        OfxPointD pen;
+        pen.x = penPos.x();
+        pen.y = penPos.y();
+        if (isNearby(pen, p[0], pscale)) {
+            _state = eStateDraggingPoint0;
+        } else if (isNearby(pen, p[1], pscale)) {
+            _state = eStateDraggingPoint1;
+        } else {
+            _state = eStateIdle;
+        }
+        _dragPos[0] = p[0];
+        _dragPos[1] = p[1];
+        _lastMousePos = pen;
+        const bool didSomething = _state != eStateIdle;
+        if (didSomething) {
+            requestRedraw();
+        }
+
+        return didSomething;
+    }
+
+    virtual bool penUp(double time,
+                       const RenderScale& /*renderScale*/,
+                       ViewIdx /*view*/,
+                       const OfxPointD& pscale,
+                       const QPointF& /*lastPenPos*/,
+                       const QPointF& /*penPos*/,
+                       const QPoint& /*penPosViewport*/,
+                       double /*pressure*/) OVERRIDE FINAL
+    {
+        if (!isActive()) {
+            return false;
+        }
+        bool didSomething = false;
+        const int dragged = draggedPoint();
+        if (!_interactiveDrag && (dragged >= 0)) {
+            setPoint(time, dragged, pscale);
+            didSomething = true;
+        } else if (dragged >= 0) {
+            requestRedraw();
+        }
+        _state = eStateIdle;
+
+        return didSomething;
+    }
+
+    virtual bool loseFocus(double /*time*/,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/) OVERRIDE FINAL
+    {
+        _interactiveDrag = false;
+        _state = eStateIdle;
+
+        return false;
+    }
+
+private:
+    bool isActive() const
+    {
+        for (int i = 0; i < 2; ++i) {
+            KnobDoublePtr knob = _point[i].lock();
+            if (!knob || !knob->shouldDrawOverlayInteract()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    int draggedPoint() const
+    {
+        return _state == eStateDraggingPoint0 ? 0 : (_state == eStateDraggingPoint1 ? 1 : -1);
+    }
+
+    static bool isNearby(const OfxPointD& pen,
+                         const OfxPointD& p,
+                         const OfxPointD& pscale)
+    {
+        return std::fabs(pen.x - p.x) <= pointTolerance() * pscale.x && std::fabs(pen.y - p.y) <= pointTolerance() * pscale.y;
+    }
+
+    void getPoints(double time,
+                   OfxPointD p[2]) const
+    {
+        if (_state != eStateIdle) {
+            p[0] = _dragPos[0];
+            p[1] = _dragPos[1];
+
+            return;
+        }
+        for (int i = 0; i < 2; ++i) {
+            KnobDoublePtr knob = _point[i].lock();
+            double v[2];
+            for (int d = 0; d < 2; ++d) {
+                v[d] = knob->getValueAtTime(time, d);
+                if (knob->getValueIsNormalized(d) != eValueIsNormalizedNone) {
+                    v[d] = knob->denormalize(d, time, v[d]);
+                }
+            }
+            p[i].x = v[0];
+            p[i].y = v[1];
+        }
+    }
+
+    // The node's output at the time, or the project format when it has none.
+    void getOutputRect(double time,
+                       ViewIdx view,
+                       RectD* rect) const
+    {
+        EffectInstancePtr effect = _overlay->getNode()->getNode()->getEffectInstance();
+        bool isProjectFormat = false;
+        if ((effect->getRegionOfDefinition_public(effect->getRenderHash(), time, RenderScale::identity, view, rect, &isProjectFormat) != eStatusFailed) && !rect->isNull()) {
+            return;
+        }
+        Format format;
+        effect->getApp()->getProject()->getProjectDefaultFormat(&format);
+        *rect = format.toCanonicalFormat();
+    }
+
+    void setPoint(double time,
+                  int i,
+                  const OfxPointD& pscale)
+    {
+        KnobDoublePtr knob = _point[i].lock();
+        double v[2] = { fround(_dragPos[i].x, pscale.x), fround(_dragPos[i].y, pscale.y) };
+        for (int d = 0; d < 2; ++d) {
+            if (knob->getValueIsNormalized(d) != eValueIsNormalizedNone) {
+                v[d] = knob->normalize(d, time, v[d]);
+            }
+        }
+        EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
+        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
+        // Do not use setValues(x,y) (see note at the top of this file).
+        nonBlockingSetValues(knob, v[0], v[1], eValueChangedReasonNatronGuiEdited);
+        holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+    }
+};
+
+typedef std::shared_ptr<RampInteract> RampInteractPtr;
+
 typedef std::list<DefaultInteractIPtr> DefaultInteractIPtrList;
 typedef std::list<TransformInteract> TransformInteracts;
 
@@ -1089,6 +1466,7 @@ HostOverlay::addInteract(const HostOverlayKnobsPtr& knobs)
     HostOverlayKnobsTransform* isTransform = dynamic_cast<HostOverlayKnobsTransform*>( knobs.get() );
     HostOverlayKnobsCornerPin* isCornerPin = dynamic_cast<HostOverlayKnobsCornerPin*>( knobs.get() );
     HostOverlayKnobsRectangle* isRectangle = dynamic_cast<HostOverlayKnobsRectangle*>(knobs.get());
+    HostOverlayKnobsRamp* isRamp = dynamic_cast<HostOverlayKnobsRamp*>(knobs.get());
     DefaultInteractIPtr overlay;
     if (isPosition) {
         PositionInteractPtr p( new PositionInteract(isPosition, this) );
@@ -1101,6 +1479,9 @@ HostOverlay::addInteract(const HostOverlayKnobsPtr& knobs)
         overlay = p;
     } else if (isRectangle) {
         RectangleInteractPtr p(new RectangleInteract(isRectangle, this));
+        overlay = p;
+    } else if (isRamp) {
+        RampInteractPtr p(new RampInteract(isRamp, this));
         overlay = p;
     }
 

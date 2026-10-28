@@ -37,14 +37,17 @@ SETTLE_MS = 800
 STARTUP_TIMEOUT_S = 60.0
 UNTONED_VIEW = "Un-tone-mapped"
 EXPRESSION = "//Cam + //Geo"
+# Not UsdGeomCamera's fallback (50, the knob's default): setting a knob to its current value changes
+# nothing, so it is no edit and authors nothing.
+FOCAL_LENGTH = 85.0
 
 try:
     from PySide6.QtCore import Q_ARG, QMetaObject
     from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPlainTextEdit, QTextEdit
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPlainTextEdit, QTabBar, QTextEdit
     from pxr import Sdf, Usd
 
-    from guitest import FIXTURES, OUT, check, close_all_panels, finish, plugin_problem, report, require, run, shot, widgets_of
+    from guitest import FIXTURES, OUT, check, class_name, close_all_panels, finish, plugin_problem, report, require, run, shot, widgets_of
 
     layer_path = os.path.join(FIXTURES, "m52-layer-stack.usda")
     referenced_path = os.path.join(FIXTURES, "m52-referenced.usda")
@@ -175,8 +178,22 @@ try:
         return str(w.property("natronCurrentText")) == UNTONED_VIEW
 
     def node_graph_view():
-        views = [v for v in widgets_of("NodeGraph") if v.isVisible()]
-        return views[0] if views else None
+        graphs = widgets_of("NodeGraph")
+        views = [v for v in graphs if v.isVisible()]
+        if views:
+            return views[0]
+        # A finished render (renderBlocking) leaves the Progress panel current in the node graph's pane.
+        for graph in graphs:
+            pane = graph.parentWidget()
+            while pane is not None and class_name(pane) != "TabWidget":
+                pane = pane.parentWidget()
+            bars = pane.findChildren(QTabBar) if pane is not None else []
+            for i in range(bars[0].count() if bars else 0):
+                QMetaObject.invokeMethod(pane, "makeCurrentTab", Q_ARG(int, i))
+                QApplication.processEvents()
+                if graph.isVisible():
+                    return graph
+        return None
 
     def panel_of(node):
         label = node.getLabel()
@@ -269,8 +286,10 @@ try:
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         untouched = authored_properties(edit)
         check(untouched == {}, "untouched, USDEditPrim authors no properties (%r)" % (untouched,))
-        param(edit, "focalLength").setValue(50.0)
+        focal = param(edit, "focalLength")
+        focal.setValue(FOCAL_LENGTH)
         yield ("sleep", SETTLE_MS)
+        check(abs(focal.get() - FOCAL_LENGTH) < 1e-6, "focalLength reads back %g (%r)" % (FOCAL_LENGTH, focal.get()))
         touched = authored_properties(edit)
         check(touched == {"/World/Cam": ["focalLength"]},
               "touching only focalLength authors exactly that property on /World/Cam (%r)" % (touched,))

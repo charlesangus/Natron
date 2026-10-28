@@ -50,8 +50,11 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+
+#include <pxr/usd/usd/primRange.h>
 
 #include <OpenImageIO/imageio.h>
 
@@ -682,6 +685,226 @@ writeLiveTextureFile(const LiveTextureBufferConstPtr& buffer,
 
     return ok;
 }
+
+// Whether shader is a USDProject3D projection: its glslfx source is the projection shader.
+bool
+isProjectionShader(const PXR_NS::UsdShadeShader& shader)
+{
+    PXR_NS::SdfAssetPath asset;
+
+    if (!shader || !shader.GetSourceAsset(&asset, PXR_NS::TfToken("glslfx"))) {
+        return false;
+    }
+    const std::string& path = asset.GetAssetPath();
+    const std::string file(kUSDProject3DShaderFile);
+    if (path.size() < file.size() || path.compare(path.size() - file.size(), file.size(), file) != 0) {
+        return false;
+    }
+
+    return (path.size() == file.size()) || (path[path.size() - file.size() - 1] == '/');
+}
+
+bool
+meshMightVary(const PXR_NS::UsdGeomMesh& mesh)
+{
+    if (mesh.GetPointsAttr().ValueMightBeTimeVarying() || mesh.GetFaceVertexIndicesAttr().ValueMightBeTimeVarying()) {
+        return true;
+    }
+    for (PXR_NS::UsdPrim prim = mesh.GetPrim(); prim && !prim.IsPseudoRoot(); prim = prim.GetParent()) {
+        const PXR_NS::UsdGeomXformable xformable(prim);
+        if (xformable && xformable.TransformMightBeTimeVarying()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Faces whose projective depth varies more than this across them show the per-vertex UVs warping.
+constexpr double kBakedProjectionWarpTolerance = 0.01;
+
+struct ProjectionBake {
+    // Materials left with their Storm shader, and the gprim bound to each that is not a mesh.
+    std::vector<std::pair<std::string, std::string>> unbaked;
+    std::set<std::string> warped;
+    std::set<std::string> behind;
+    // The prim whose authoring failed, if one did.
+    std::string failed;
+};
+
+/**
+ * @brief Bakes the USDProject3D materials of scene for renderers other than Storm, as overs in
+ * output: each mesh bound to one gets its projection as faceVarying st (sampled at times when the
+ * camera or the mesh moves) and the material's surface becomes an unlit UsdPreviewSurface reading
+ * the plate's texture through st. A material also bound to a gprim that is not a mesh keeps its
+ * Storm shader.
+ **/
+void
+bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
+                const PXR_NS::SdfLayerRefPtr& output,
+                const std::vector<double>& times,
+                ProjectionBake* result)
+{
+    if (!scene || !output || times.empty()) {
+        return;
+    }
+    std::map<PXR_NS::SdfPath, PXR_NS::UsdShadeShader> projections;
+    for (const PXR_NS::UsdPrim& prim : scene->Traverse()) {
+        if (prim.IsA<PXR_NS::UsdShadeMaterial>()) {
+            const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
+            if (isProjectionShader(surface)) {
+                projections[prim.GetPath()] = surface;
+            }
+        }
+    }
+    if (projections.empty()) {
+        return;
+    }
+    std::map<PXR_NS::SdfPath, std::vector<PXR_NS::UsdPrim>> bound;
+    for (const PXR_NS::UsdPrim& prim : scene->Traverse()) {
+        if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
+            continue;
+        }
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+        if (material && projections.count(material.GetPath())) {
+            bound[material.GetPath()].push_back(prim);
+        }
+    }
+
+    const PXR_NS::UsdStageRefPtr out = PXR_NS::UsdStage::Open(output, PXR_NS::UsdStage::LoadNone);
+    if (!out) {
+        result->failed = output->GetIdentifier();
+
+        return;
+    }
+    const PXR_NS::TfToken st("st");
+    for (const std::pair<const PXR_NS::SdfPath, std::vector<PXR_NS::UsdPrim>>& entry : bound) {
+        const PXR_NS::SdfPath& materialPath = entry.first;
+        const PXR_NS::UsdShadeShader& shader = projections[materialPath];
+        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(entry.second.begin(), entry.second.end(), [](const PXR_NS::UsdPrim& prim) {
+            return !prim.IsA<PXR_NS::UsdGeomMesh>();
+        });
+        if (other != entry.second.end()) {
+            result->unbaked.push_back(std::make_pair(materialPath.GetString(), other->GetPath().GetString()));
+            continue;
+        }
+
+        const PXR_NS::UsdShadeInput matrixInput = shader.GetInput(PXR_NS::TfToken("worldToProjector"));
+        const bool cameraVaries = matrixInput && matrixInput.GetAttr().ValueMightBeTimeVarying();
+        for (const PXR_NS::UsdPrim& prim : entry.second) {
+            const PXR_NS::UsdGeomMesh mesh(prim);
+            const bool varies = cameraVaries || meshMightVary(mesh);
+            const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());
+            if (!over) {
+                result->failed = prim.GetPath().GetString();
+
+                return;
+            }
+            // Over any st the layer already holds, whose time samples would win over a default.
+            for (const char* name : { "primvars:st", "primvars:st:indices" }) {
+                const PXR_NS::UsdAttribute attribute = over.GetAttribute(PXR_NS::TfToken(name));
+                if (attribute) {
+                    attribute.Clear();
+                }
+            }
+            const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(over).CreatePrimvar(st, PXR_NS::SdfValueTypeNames->TexCoord2fArray, PXR_NS::UsdGeomTokens->faceVarying);
+            if (!primvar) {
+                result->failed = prim.GetPath().GetString();
+
+                return;
+            }
+            const std::size_t sampleCount = varies ? times.size() : 1;
+            for (std::size_t i = 0; i < sampleCount; ++i) {
+                const PXR_NS::UsdTimeCode time(times[i]);
+                const PXR_NS::UsdTimeCode authored = varies ? time : PXR_NS::UsdTimeCode::Default();
+                PXR_NS::GfMatrix4d worldToProjector(1.);
+                PXR_NS::VtVec3fArray points;
+                PXR_NS::VtIntArray counts;
+                PXR_NS::VtIntArray indices;
+                if (matrixInput) {
+                    matrixInput.Get(&worldToProjector, time);
+                }
+                mesh.GetPointsAttr().Get(&points, time);
+                mesh.GetFaceVertexCountsAttr().Get(&counts, time);
+                mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
+                const PXR_NS::GfMatrix4d toProjector = PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim) * worldToProjector;
+
+                PXR_NS::VtVec2fArray uvs(points.size());
+                std::vector<double> depths(points.size());
+                for (std::size_t p = 0; p < points.size(); ++p) {
+                    const PXR_NS::GfVec4d c = PXR_NS::GfVec4d(points[p][0], points[p][1], points[p][2], 1.) * toProjector;
+                    // Behind the camera the frame is mirrored through it: the UV is where the
+                    // point would be in front, the face it is on wrong either way.
+                    const double w = std::max(std::abs(c[3]), 1e-12);
+                    depths[p] = c[3];
+                    uvs[p] = PXR_NS::GfVec2f((float)(c[0] / w), (float)(c[1] / w));
+                }
+                std::size_t offset = 0;
+                for (const int count : counts) {
+                    double nearest = HUGE_VAL;
+                    double farthest = -HUGE_VAL;
+                    for (int v = 0; (v < count) && (offset + v < indices.size()); ++v) {
+                        const int index = indices[offset + v];
+                        if ((index >= 0) && ((std::size_t)index < depths.size())) {
+                            nearest = std::min(nearest, depths[index]);
+                            farthest = std::max(farthest, depths[index]);
+                        }
+                    }
+                    offset += (std::size_t)std::max(count, 0);
+                    if (nearest <= 0.) {
+                        if (nearest != HUGE_VAL) {
+                            result->behind.insert(prim.GetPath().GetString());
+                        }
+                    } else if (farthest > nearest * (1. + kBakedProjectionWarpTolerance)) {
+                        result->warped.insert(prim.GetPath().GetString());
+                    }
+                }
+                if (!primvar.Set(uvs, authored) || !primvar.SetIndices(indices, authored)) {
+                    result->failed = prim.GetPath().GetString();
+
+                    return;
+                }
+            }
+        }
+
+        // The plate's texture, already reading st, feeds an unlit preview surface in place of the
+        // projection shader.
+        const PXR_NS::UsdShadeMaterial material(out->OverridePrim(materialPath));
+        PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(out, materialPath.AppendChild(PXR_NS::TfToken("BakedSurface")));
+        bool ok = material && surface && surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
+        const PXR_NS::UsdShadeInput diffuse = ok ? surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f) : PXR_NS::UsdShadeInput();
+        const PXR_NS::UsdShadeInput emissive = ok ? surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f) : PXR_NS::UsdShadeInput();
+        ok = diffuse && diffuse.Set(PXR_NS::GfVec3f(0.f)) && emissive;
+        PXR_NS::UsdShadeConnectableAPI plateSource;
+        PXR_NS::TfToken plateOutput;
+        PXR_NS::UsdShadeAttributeType plateType;
+        const PXR_NS::UsdShadeInput plate = shader.GetInput(PXR_NS::TfToken("plate"));
+        if (ok && plate && plate.GetConnectedSource(&plateSource, &plateOutput, &plateType)) {
+            PXR_NS::UsdShadeShader texture(out->OverridePrim(plateSource.GetPath()));
+            const PXR_NS::UsdShadeOutput rgb = texture ? texture.CreateOutput(PXR_NS::TfToken("rgb"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeOutput();
+            ok = rgb && emissive.ConnectToSource(rgb);
+            int outside = 0;
+            const PXR_NS::UsdShadeInput outsideInput = shader.GetInput(PXR_NS::TfToken("outside"));
+            if (ok && outsideInput && outsideInput.Get(&outside) && (outside == (int)USDProject3D::eOutsideTransparent)) {
+                // Outside the frame the black-wrapped texture's alpha is 0: a cutout there.
+                const PXR_NS::UsdShadeOutput alpha = texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float);
+                const PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
+                const PXR_NS::UsdShadeInput threshold = surface.CreateInput(PXR_NS::TfToken("opacityThreshold"), PXR_NS::SdfValueTypeNames->Float);
+                ok = alpha && opacity && threshold && opacity.ConnectToSource(alpha) && threshold.Set(0.5f);
+            }
+        } else if (ok) {
+            ok = emissive.Set(PXR_NS::GfVec3f(0.f));
+        }
+        const PXR_NS::UsdShadeOutput surfaceOutput = ok ? surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeOutput();
+        ok = surfaceOutput && material.CreateSurfaceOutput().ConnectToSource(surfaceOutput);
+        const PXR_NS::UsdPrim projection = ok ? out->OverridePrim(shader.GetPath()) : PXR_NS::UsdPrim();
+        if (!projection || !projection.SetActive(false)) {
+            result->failed = materialPath.GetString();
+
+            return;
+        }
+    }
+} // bakeProjections
 } // anonymous namespace
 
 USDWrite::USDWrite(NodePtr node)
@@ -958,6 +1181,7 @@ USDWrite::writeFrameRange(int firstFrame,
     };
     std::vector<Written> written;
     QStringList removedSidecars;
+    ProjectionBake projectionBake;
     {
         // The scene's layers are read while they are flattened: no write may edit them meanwhile.
         SceneWriteBarrier::ReadScope read;
@@ -1051,6 +1275,20 @@ USDWrite::writeFrameRange(int firstFrame,
                 }
             }
             propagateRanges(arcs, &stacks);
+        }
+
+        // Before the asset paths are rewritten: the baked surfaces read the plates' live textures.
+        {
+            std::vector<double> times;
+            for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+                times.push_back(SceneOps::frameToTimeCode(scene, frame, fps));
+            }
+            bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, &projectionBake);
+            if (!projectionBake.failed.empty()) {
+                const std::string errors = takeUsdErrors(mark);
+
+                return fail(tr("The projection on %1 could not be baked for export%2").arg(QString::fromStdString(projectionBake.failed)).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
+            }
         }
 
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
@@ -1206,6 +1444,29 @@ USDWrite::writeFrameRange(int firstFrame,
                                .arg(outputInfo.fileName())
                                .arg((int)unexportedLiveTextures.size())
                                .arg(QString::fromStdString(*unexportedLiveTextures.begin())));
+    }
+    for (const std::pair<std::string, std::string>& unbaked : projectionBake.unbaked) {
+        warnings.push_back(tr("The projection material %1 is written for Storm only, which other renderers do not draw: "
+                              "%2, bound to it, is not a mesh, which its projection could be baked onto as UVs.")
+                               .arg(QString::fromStdString(unbaked.first))
+                               .arg(QString::fromStdString(unbaked.second)));
+    }
+    const auto joinPaths = [](const std::set<std::string>& paths) {
+        QStringList names;
+        for (const std::string& path : paths) {
+            names.push_back(QString::fromStdString(path));
+        }
+
+        return names.join(QString::fromUtf8(", "));
+    };
+    if (!projectionBake.warped.empty()) {
+        warnings.push_back(tr("The projections baked onto %1 warp between their vertices, being UVs: subdivide those meshes "
+                              "for a closer match to the live projection.")
+                               .arg(joinPaths(projectionBake.warped)));
+    }
+    if (!projectionBake.behind.empty()) {
+        warnings.push_back(tr("Faces of %1 reach behind the projecting camera, where their baked UVs are wrong.")
+                               .arg(joinPaths(projectionBake.behind)));
     }
     // A layered write replaces its own sidecars, as expected; a flattened one removes files the user
     // may not know the export mode made, so it says which.

@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <string>
@@ -45,7 +46,9 @@
 #include "BaseTest.h"
 #include "SceneTestEffect.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -54,11 +57,15 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -588,4 +595,163 @@ TEST_F(USDWriteLiveTextureTest, WithoutExportTheUrisAreWrittenWithAWarning)
     writer->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeWarning, type);
     EXPECT_TRUE(message.contains(QString::fromStdString(uri))) << message.toStdString();
+}
+
+class USDWriteProjectionTest
+    : public USDWriteTest {
+protected:
+    // A Constant projected through a camera on +Z framing a 2:1 card at the origin exactly, onto
+    // that card. The card's prim is /Card1.
+    void createRig()
+    {
+        ProjectPtr project = getApp()->getProject();
+        project->setAutoSetProjectFormatEnabled(true);
+        project->setOrAddProjectFormat(Format(0, 0, 2000, 1000, "wide2to1", 1.));
+
+        NodePtr plate = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr projector = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+        card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        ASSERT_TRUE(plate && camera && projector && card);
+        plate->setScriptName("Plate1");
+        projector->setScriptName("Project1");
+        card->setScriptName("Card1");
+        ASSERT_DOUBLE_EQ(2., getKnob<KnobDouble>(card, kSceneParamScale)->getValue(0));
+        getKnob<KnobDouble>(camera, kUSDCameraParamFocalLength)->setValue(50.);
+        getKnob<KnobDouble>(camera, kUSDCameraParamHorizontalAperture)->setValue(36.);
+        getKnob<KnobDouble>(camera, kUSDCameraParamVerticalAperture)->setValue(18.);
+        getKnob<KnobDouble>(camera, kSceneParamTranslate)->setValue(50. / 18., ViewSpec::all(), 2);
+        ASSERT_TRUE(projector->connectInput(plate, kUSDProject3DInputImage));
+        ASSERT_TRUE(projector->connectInput(camera, kUSDProject3DInputCamera));
+        ASSERT_TRUE(card->connectInput(projector, 0));
+    }
+
+    static PXR_NS::UsdGeomPrimvar stOf(const PXR_NS::UsdStageRefPtr& stage)
+    {
+        const PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1")) : PXR_NS::UsdPrim();
+
+        EXPECT_TRUE(prim.IsValid());
+
+        return prim ? PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st")) : PXR_NS::UsdGeomPrimvar();
+    }
+
+    static QString messageOf(const NodePtr& node)
+    {
+        QString message;
+        int type = 0;
+
+        node->getPersistentMessage(&message, &type, false);
+
+        return message;
+    }
+
+    NodePtr camera;
+    NodePtr card;
+};
+
+// Exported, the projection is the plate's texture on a preview surface, read through UVs that put
+// the frame's corners at (0, 0) and (1, 1); the Storm shader is left inactive.
+TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(bool(card));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 3);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+    // Facing the camera, the card's UVs are exact: no warning.
+    EXPECT_FALSE(writer->hasPersistentMessage()) << messageOf(writer).toStdString();
+    EXPECT_EQ(QStringList() << QString::fromUtf8("Plate1_rgba.exr"), fileNames(tmp.path() + QString::fromUtf8("/scene_textures")));
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+    ASSERT_TRUE(bool(st));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->faceVarying, st.GetInterpolation());
+    EXPECT_EQ((std::size_t)0, st.GetAttr().GetNumTimeSamples());
+    PXR_NS::VtVec2fArray uvs;
+    ASSERT_TRUE(st.ComputeFlattened(&uvs));
+    ASSERT_FALSE(uvs.empty());
+    PXR_NS::GfVec2f low(HUGE_VALF, HUGE_VALF);
+    PXR_NS::GfVec2f high(-HUGE_VALF, -HUGE_VALF);
+    for (const PXR_NS::GfVec2f& uv : uvs) {
+        for (int c = 0; c < 2; ++c) {
+            low[c] = std::min(low[c], uv[c]);
+            high[c] = std::max(high[c], uv[c]);
+        }
+    }
+    EXPECT_NEAR(0.f, low[0], 1e-4f);
+    EXPECT_NEAR(0.f, low[1], 1e-4f);
+    EXPECT_NEAR(1.f, high[0], 1e-4f);
+    EXPECT_NEAR(1.f, high[1], 1e-4f);
+
+    const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1"))).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(material));
+    const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    PXR_NS::TfToken id;
+    ASSERT_TRUE(surface.GetShaderId(&id));
+    EXPECT_EQ(std::string("UsdPreviewSurface"), id.GetString());
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("emissiveColor")).GetConnectedSource(&source, &sourceName, &sourceType));
+    EXPECT_EQ(std::string("rgb"), sourceName.GetString());
+    PXR_NS::SdfAssetPath file;
+    ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetInput(PXR_NS::TfToken("file")).Get(&file));
+    EXPECT_EQ(std::string("./scene_textures/Plate1_rgba.exr"), file.GetAssetPath());
+    const PXR_NS::UsdPrim projection = material.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DShaderName));
+    ASSERT_TRUE(projection.IsValid());
+    EXPECT_FALSE(projection.IsActive());
+}
+
+TEST_F(USDWriteProjectionTest, AMovingCameraBakesUVsPerFrame)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(bool(card));
+    KnobDouble* translate = getKnob<KnobDouble>(camera, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(card, path, USDWrite::eExportModeLayered, 1, 3);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 3, ViewIdx(0)));
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+    ASSERT_TRUE(bool(st));
+    std::vector<double> times;
+    ASSERT_TRUE(st.GetAttr().GetTimeSamples(&times));
+    ASSERT_EQ((std::size_t)3, times.size());
+    // The camera half a unit right at the last frame: the card a quarter of the frame left.
+    PXR_NS::VtVec2fArray first, last;
+    ASSERT_TRUE(st.ComputeFlattened(&first, PXR_NS::UsdTimeCode(times.front())));
+    ASSERT_TRUE(st.ComputeFlattened(&last, PXR_NS::UsdTimeCode(times.back())));
+    ASSERT_EQ(first.size(), last.size());
+    for (std::size_t i = 0; i < first.size(); ++i) {
+        EXPECT_NEAR(first[i][0] - 0.25f, last[i][0], 1e-4f) << i;
+        EXPECT_NEAR(first[i][1], last[i][1], 1e-4f) << i;
+    }
+}
+
+TEST_F(USDWriteProjectionTest, ATiltedCoarseCardWarnsThatItsBakeWarps)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(bool(card));
+    getKnob<KnobDouble>(card, kSceneParamRotate)->setValue(60., ViewSpec::all(), 1);
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    const QString message = messageOf(writer);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Card1"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("warp"))) << message.toStdString();
 }

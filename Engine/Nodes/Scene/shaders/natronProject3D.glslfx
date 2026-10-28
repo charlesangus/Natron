@@ -1,0 +1,116 @@
+-- glslfx version 0.1
+
+//
+// Natron's camera projection surface for Storm: the plate, sampled where the
+// fragment's world position projects through a camera, shown unlit.
+//
+
+-- configuration
+{
+    "parameters": {
+        "plate": {
+            "default": [0.0, 0.0, 0.0, 1.0],
+            "documentation": "The projected image. Connect a texture's rgba output."
+        },
+        "worldToProjector": {
+            "default": [1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0, 1.0],
+            "documentation": "World to the camera's clip space, with x and y mapped from -1..1 to 0..1 (row vectors, as GfMatrix4d)."
+        },
+        "projectorOrigin": {
+            "default": [0.0, 0.0, 0.0, 1.0],
+            "documentation": "The camera's world position with w 1, or for an orthographic camera its backward view direction with w 0."
+        },
+        "projectOn": {
+            "default": 0,
+            "documentation": "0 both sides, 1 the faces facing the camera, 2 the faces facing away."
+        },
+        "crop": {
+            "default": 1,
+            "documentation": "1: outside the frame is the outside mode; 0: the plate's edge pixels extend."
+        },
+        "clip": {
+            "default": 0,
+            "documentation": "1: outside the camera's near and far planes is the outside mode."
+        },
+        "outside": {
+            "default": 0,
+            "documentation": "Where nothing projects: 0 opaque black, 1 transparent."
+        }
+    },
+    "techniques": {
+        "default": {
+            "displacementShader": {
+                "source": [ "NatronProject3D.Displacement" ]
+            },
+            "surfaceShader": {
+                "source": [ "NatronProject3D.Surface" ]
+            }
+        }
+    }
+}
+
+-- glsl NatronProject3D.Displacement
+
+vec4
+displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord)
+{
+    return Peye;
+}
+
+-- glsl NatronProject3D.Surface
+
+FORWARD_DECL(bool IsFlipped());
+
+vec4
+natronProject3DOutside()
+{
+    if (HdGet_outside() == 1) {
+        discard;
+    }
+
+    return vec4(0.0, 0.0, 0.0, 1.0);
+}
+
+vec4
+surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
+{
+    // Derivatives before any branch. The geometric normal faces the viewer;
+    // the face's own side follows the winding.
+    vec3 Ng = normalize(cross(dFdx(Peye.xyz), dFdy(Peye.xyz)));
+    vec3 outward = (gl_FrontFacing != IsFlipped()) ? Ng : -Ng;
+
+    vec4 Pworld = vec4(mat4(GetWorldToViewInverseMatrix()) * vec4(Peye.xyz, 1.0));
+
+    int projectOn = HdGet_projectOn();
+    if (projectOn != 0) {
+        vec4 origin = vec4(mat4(GetWorldToViewMatrix()) * HdGet_projectorOrigin());
+        vec3 toProjector = origin.xyz - Peye.xyz * origin.w;
+        bool facing = dot(outward, toProjector) > 0.0;
+        if (facing != (projectOn == 1)) {
+            return natronProject3DOutside();
+        }
+    }
+
+    vec4 c = vec4(mat4(HdGet_worldToProjector()) * Pworld);
+    // Behind the camera nothing projects.
+    if (c.w <= 0.0) {
+        return natronProject3DOutside();
+    }
+    vec3 ndc = c.xyz / c.w;
+    if (HdGet_clip() != 0 && (ndc.z < -1.0 || ndc.z > 1.0)) {
+        return natronProject3DOutside();
+    }
+    vec2 uv = ndc.xy;
+    if (HdGet_crop() != 0) {
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+            return natronProject3DOutside();
+        }
+    } else {
+        uv = clamp(uv, vec2(0.0), vec2(1.0));
+    }
+
+    return ApplyColorOverrides(HdGet_plate(uv));
+}

@@ -101,6 +101,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         {
             CreatingNodeTreeFlag_RAII createNodeTree( _publicInterface->getGui()->getApp() );
             const NodeCollection::NamingBatch namingBatch(group.lock());
+            const NodeStackingBatch stackingBatch(_publicInterface);
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();

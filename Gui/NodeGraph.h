@@ -209,15 +209,30 @@ public:
     // Stacks each node above the visible nodes it overlaps, in order.
     void stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes);
 
+    // True while a project load restores nodes: stacking, edges and the navigator wait for
+    // onProjectNodesRestored().
+    bool isLoadingProjectNodes() const;
+
+    // Called once the project's nodes are restored, including after a failed load.
+    void onProjectNodesRestored();
+
     /**
      * @brief Queues a refresh of the node's state indicator and rendering edges. The refresh
      * timer only runs while nodes are queued.
      **/
     void scheduleNodeRenderStateRefresh(NodeGui* node);
 
+    /**
+     * @brief Frame changes reach only the nodes registered here, through one timeline
+     * connection per graph. A node stays registered until it is destroyed.
+     **/
+    void registerFrameDependentNode(NodeGui* node);
+
 public Q_SLOTS:
 
     void deleteSelection();
+
+    void onTimelineFrameChanged(SequenceTime time, int reason);
 
     void connectCurrentViewerToSelection(int inputNB, bool isASide);
 

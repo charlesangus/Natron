@@ -880,6 +880,17 @@ Gui::centerAllNodeGraphsWithTimer()
 }
 
 void
+Gui::onProjectNodesRestoredInNodeGraphs()
+{
+    if (_imp->_nodeGraphArea) {
+        _imp->_nodeGraphArea->onProjectNodesRestored();
+    }
+    for (std::list<NodeGraph*>::iterator it = _imp->_groups.begin(); it != _imp->_groups.end(); ++it) {
+        (*it)->onProjectNodesRestored();
+    }
+}
+
+void
 Gui::setLastEnteredTabWidget(TabWidget* tab)
 {
     _imp->_lastEnteredTabWidget = tab;

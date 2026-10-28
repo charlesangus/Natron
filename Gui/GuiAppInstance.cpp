@@ -878,6 +878,7 @@ GuiAppInstance::onProjectNodesRestored()
     if (!_imp->_gui) {
         return;
     }
+    _imp->_gui->onProjectNodesRestoredInNodeGraphs();
     // Every node of every sub-graph, so a Group's own pipes are repainted right after load too.
     NodesList allNodes;
     getProject()->getNodes_recursive(allNodes, true);

@@ -28,6 +28,7 @@
 
 #include <cmath> // abs, ceil, floor
 #include <stdexcept>
+#include <unordered_set>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
@@ -273,19 +274,25 @@ NodeGraph::deleteSelection()
 {
     if ( !_imp->_selection.empty() ) {
         NodesGuiList nodesToRemove = _imp->_selection;
-
+        std::unordered_set<NodeGui*> nodesToRemoveSet;
+        for (NodesGuiList::const_iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
+            nodesToRemoveSet.insert(it->get());
+        }
 
         ///For all backdrops also move all the nodes contained within it
         for (NodesGuiList::iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
             NodesGuiList nodesWithinBD = getNodesWithinBackdrop(*it);
             for (NodesGuiList::iterator it2 = nodesWithinBD.begin(); it2 != nodesWithinBD.end(); ++it2) {
-                NodesGuiList::iterator found = std::find(nodesToRemove.begin(), nodesToRemove.end(), *it2);
-                if ( found == nodesToRemove.end() ) {
+                if (nodesToRemoveSet.insert(it2->get()).second) {
                     nodesToRemove.push_back(*it2);
                 }
             }
         }
 
+        std::unordered_set<const EffectInstance*> effectsToRemove;
+        for (NodesGuiList::const_iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
+            effectsToRemove.insert((*it)->getNode()->getEffectInstance().get());
+        }
 
         for (NodesGuiList::iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
             const KnobsVec & knobs = (*it)->getNode()->getKnobs();
@@ -317,14 +324,7 @@ NodeGraph::deleteSelection()
                     }
 
                     if ( isEffect && ( isEffect != (*it)->getNode()->getEffectInstance().get() ) ) {
-                        bool isInSelection = false;
-                        for (NodesGuiList::iterator it3 = nodesToRemove.begin(); it3 != nodesToRemove.end(); ++it3) {
-                            if ((*it3)->getNode()->getEffectInstance().get() == isEffect) {
-                                isInSelection = true;
-                                break;
-                            }
-                        }
-                        if (!isInSelection) {
+                        if (!effectsToRemove.count(isEffect)) {
                             std::string masterNodeName = (*it)->getNode()->getFullyQualifiedName();
                             std::string master = masterNodeName + "." + knobs[i]->getName();
                             std::string slave = isEffect->getNode()->getFullyQualifiedName() + "." + listener->getName();
@@ -514,6 +514,10 @@ NodeGraph::invalidateNavigatorContent()
     _imp->nodesBoundsDirty = true;
     _imp->navigatorContentDirty = true;
     _imp->_refreshOverlays = true;
+    if (isLoadingProjectNodes()) {
+        // paintEvent() skips the load; onProjectNodesRestored() invalidates once more.
+        return;
+    }
     if (!_imp->navigatorRenderTimer.isActive()) {
         _imp->navigatorRenderTimer.start(NATRON_NAVIGATOR_RENDER_DELAY_MS);
     }

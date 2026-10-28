@@ -449,7 +449,18 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
     QObject::connect( internalNode.get(), SIGNAL(previewKnobToggled()), this, SLOT(onPreviewKnobToggled()) );
     QObject::connect( internalNode.get(), SIGNAL(disabledKnobToggled(bool)), this, SLOT(onDisabledKnobToggled(bool)) );
-    QObject::connect(internalNode->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime, int)), this, SLOT(onTimelineTimeChanged(SequenceTime, int)));
+    // Whatever can key the Disable knob or give it an expression makes the node follow the timeline.
+    KnobBoolPtr disabledKnob = internalNode->getDisabledKnob();
+    KnobSignalSlotHandler* disabledHandler = disabledKnob ? disabledKnob->getSignalSlotHandler().get() : 0;
+    if (disabledHandler) {
+        QObject::connect(disabledHandler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(multipleKeyFramesSet(std::list<double>, ViewSpec, int, int)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(expressionChanged(int)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(knobSlaved(int, bool)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(linkChanged()), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(animationLevelChanged(ViewSpec, int)), this, SLOT(refreshFrameDependency()));
+    }
     QObject::connect( internalNode.get(), SIGNAL(streamWarningsChanged()), this, SLOT(onStreamWarningsChanged()) );
     QObject::connect( internalNode.get(), SIGNAL(nodeExtraLabelChanged(QString)), this, SLOT(refreshNodeText(QString)) );
     QObject::connect(internalNode.get(), SIGNAL(layerSelectionChanged()), this, SLOT(onLayerSelectionChanged()));
@@ -536,6 +547,7 @@ NodeGui::initialize(NodeGraph* dag,
     if (internalNode) {
         internalNode->initializeHostOverlays();
     }
+    refreshFrameDependency();
 } // initialize
 
 void
@@ -1396,15 +1408,18 @@ NodeGui::refreshPositionEnd(double x,
     if (_graph && !_graph->deferNodeStacking(this)) {
         _graph->stackNodesAboveOverlapping(std::vector<NodeGui*>(1, this));
     }
-    refreshAttachedEdgesAndLinks();
+    // A project load refreshes every edge once its nodes are restored.
+    refreshAttachedEdgesAndLinks(!_graph || !_graph->isLoadingProjectNodes());
 }
 
 void
-NodeGui::refreshAttachedEdgesAndLinks()
+NodeGui::refreshAttachedEdgesAndLinks(bool refreshEdgesNow)
 {
-    refreshEdges();
     NodePtr node = getNode();
-    if (node) {
+    if (refreshEdgesNow) {
+        refreshEdges();
+    }
+    if (node && refreshEdgesNow) {
         const NodesWList & outputs = node->getGuiOutputs();
 
         for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
@@ -3472,6 +3487,22 @@ NodeGui::applyDisabledState(bool disabled)
         return;
     }
     _disabledCross->setVisible(disabled);
+}
+
+void
+NodeGui::refreshFrameDependency()
+{
+    if (!_graph) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    KnobBoolPtr disabledKnob = node->getDisabledKnob();
+    if (disabledKnob && disabledKnob->hasAnimation()) {
+        _graph->registerFrameDependentNode(this);
+    }
 }
 
 void

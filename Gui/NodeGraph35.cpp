@@ -26,10 +26,13 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -46,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/Gui.h"
@@ -223,8 +227,79 @@ NodeGraph::endNodeStackingBatch()
 }
 
 bool
+NodeGraph::isLoadingProjectNodes() const
+{
+    Gui* gui = getGui();
+    GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    return project && project->isLoadingProjectInternal();
+}
+
+void
+NodeGraph::onProjectNodesRestored()
+{
+    if (_imp->loadStackingBatchOpen) {
+        _imp->loadStackingBatchOpen = false;
+        endNodeStackingBatch();
+    }
+    // Expressions and links are restored after the node GUIs are created.
+    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
+        (*it)->refreshFrameDependency();
+    }
+    invalidateNavigatorContent();
+}
+
+void
+NodeGraph::registerFrameDependentNode(NodeGui* node)
+{
+    NodeGuiWPtr weak = node->weak_from_this();
+    if (weak.expired()) {
+        return;
+    }
+    NodeGuiWPtr& entry = _imp->frameDependentNodes[node];
+    // A destroyed node's address can be reused by a new one.
+    if (entry.lock().get() != node) {
+        entry = weak;
+    }
+    if (!_imp->timelineConnected) {
+        NodePtr internalNode = node->getNode();
+        if (internalNode && internalNode->getApp()) {
+            _imp->timelineConnected = true;
+            QObject::connect(internalNode->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime, int)),
+                             this, SLOT(onTimelineFrameChanged(SequenceTime, int)));
+        }
+    }
+}
+
+void
+NodeGraph::onTimelineFrameChanged(SequenceTime time,
+                                  int reason)
+{
+    std::vector<NodeGuiPtr> nodes;
+    nodes.reserve(_imp->frameDependentNodes.size());
+    for (std::unordered_map<NodeGui*, NodeGuiWPtr>::iterator it = _imp->frameDependentNodes.begin(); it != _imp->frameDependentNodes.end();) {
+        NodeGuiPtr node = it->second.lock();
+        if (node) {
+            nodes.push_back(node);
+            ++it;
+        } else {
+            it = _imp->frameDependentNodes.erase(it);
+        }
+    }
+    for (std::vector<NodeGuiPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->onTimelineTimeChanged(time, reason);
+    }
+}
+
+bool
 NodeGraph::deferNodeStacking(NodeGui* node)
 {
+    // Nodes restored by a project load are stacked once, when the load ends.
+    if (!_imp->loadStackingBatchOpen && isLoadingProjectNodes()) {
+        _imp->loadStackingBatchOpen = true;
+        beginNodeStackingBatch();
+    }
     if (_imp->stackingBatchDepth <= 0) {
         return false;
     }
@@ -262,14 +337,100 @@ NodeGraph::stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes)
             candidates.push_back(it->get());
         }
     }
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        for (std::vector<NodeGui*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
-            if ((*it != nodes[i]) && (*it)->intersects(bboxes[i])) {
-                nodes[i]->setAboveItem(*it);
+    if (nodes.size() * candidates.size() <= 4096) {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            for (std::vector<NodeGui*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+                if ((*it != nodes[i]) && (*it)->intersects(bboxes[i])) {
+                    nodes[i]->setAboveItem(*it);
+                }
+            }
+        }
+
+        return;
+    }
+
+    // Large batches (a project load, a big paste) bin the candidates in a uniform grid so each node
+    // only tests its neighbours. The grid is a conservative prefilter: matches are visited in graph
+    // order and still go through intersects(), so the stacking is the same as the full scan.
+    std::vector<QRectF> candRects;
+    candRects.reserve(candidates.size());
+    std::vector<double> sizes;
+    sizes.reserve(candidates.size());
+    for (std::vector<NodeGui*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+        QRectF r = (*it)->mapRectToScene((*it)->boundingRect()).adjusted(-1, -1, 1, 1);
+        candRects.push_back(r);
+        sizes.push_back(std::max(r.width(), r.height()));
+    }
+    std::nth_element(sizes.begin(), sizes.begin() + sizes.size() / 2, sizes.end());
+    const double cell = std::max(1., sizes[sizes.size() / 2]);
+    const double maxCell = (double)std::numeric_limits<int>::max() / 2;
+    struct CellRange {
+        int x0, y0, x1, y1;
+    };
+    const auto cellRange = [cell, maxCell](const QRectF& r) {
+        CellRange c;
+        c.x0 = (int)qBound(-maxCell, std::floor(r.left() / cell), maxCell);
+        c.y0 = (int)qBound(-maxCell, std::floor(r.top() / cell), maxCell);
+        c.x1 = (int)qBound(-maxCell, std::floor(r.right() / cell), maxCell);
+        c.y1 = (int)qBound(-maxCell, std::floor(r.bottom() / cell), maxCell);
+
+        return c;
+    };
+    const auto cellKey = [](int x, int y) {
+        return ((quint64)(quint32)x << 32) | (quint64)(quint32)y;
+    };
+    const qint64 kMaxCellsPerRect = 64;
+
+    std::unordered_map<quint64, std::vector<int>> grid;
+    std::vector<int> oversize;
+    for (int c = 0; c < (int)candidates.size(); ++c) {
+        const CellRange cr = cellRange(candRects[c]);
+        if ((qint64)(cr.x1 - cr.x0 + 1) * (cr.y1 - cr.y0 + 1) > kMaxCellsPerRect) {
+            oversize.push_back(c);
+            continue;
+        }
+        for (int x = cr.x0; x <= cr.x1; ++x) {
+            for (int y = cr.y0; y <= cr.y1; ++y) {
+                grid[cellKey(x, y)].push_back(c);
             }
         }
     }
-}
+
+    std::vector<std::size_t> stamp(candidates.size(), 0);
+    std::vector<int> matches;
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        matches.clear();
+        const CellRange cr = cellRange(bboxes[i]);
+        if ((qint64)(cr.x1 - cr.x0 + 1) * (cr.y1 - cr.y0 + 1) > kMaxCellsPerRect) {
+            for (int c = 0; c < (int)candidates.size(); ++c) {
+                matches.push_back(c);
+            }
+        } else {
+            for (int x = cr.x0; x <= cr.x1; ++x) {
+                for (int y = cr.y0; y <= cr.y1; ++y) {
+                    std::unordered_map<quint64, std::vector<int>>::const_iterator found = grid.find(cellKey(x, y));
+                    if (found == grid.end()) {
+                        continue;
+                    }
+                    for (std::vector<int>::const_iterator c = found->second.begin(); c != found->second.end(); ++c) {
+                        if (stamp[*c] != i + 1) {
+                            stamp[*c] = i + 1;
+                            matches.push_back(*c);
+                        }
+                    }
+                }
+            }
+            matches.insert(matches.end(), oversize.begin(), oversize.end());
+            std::sort(matches.begin(), matches.end());
+        }
+        for (std::vector<int>::const_iterator c = matches.begin(); c != matches.end(); ++c) {
+            NodeGui* cand = candidates[*c];
+            if ((cand != nodes[i]) && candRects[*c].intersects(bboxes[i]) && cand->intersects(bboxes[i])) {
+                nodes[i]->setAboveItem(cand);
+            }
+        }
+    }
+} // stackNodesAboveOverlapping
 
 void
 NodeGraph::toggleCacheInfo()

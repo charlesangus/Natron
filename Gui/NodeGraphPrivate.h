@@ -324,6 +324,9 @@ public:
     int lowDetailFontHeight;
 
     int stackingBatchDepth;
+    bool loadStackingBatchOpen;
+    std::unordered_map<NodeGui*, NodeGuiWPtr> frameDependentNodes;
+    bool timelineConnected;
     std::vector<NodeGuiWPtr> stackingPending;
     std::unordered_set<NodeGui*> stackingPendingSet;
 

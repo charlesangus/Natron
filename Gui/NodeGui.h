@@ -647,6 +647,9 @@ public Q_SLOTS:
      **/
     void onTimelineTimeChanged(SequenceTime time, int reason);
 
+    // Registers the node with its graph for frame changes once its Disable knob is animated.
+    void refreshFrameDependency();
+
     /**
      * @brief Updates the position of the items contained by the node to fit into
      * the new width and height.
@@ -805,7 +808,7 @@ private:
     // The navigator thumbnail shows node bodies, so any change to their bounds or look calls this.
     void invalidateGraphNavigator();
 
-    void refreshAttachedEdgesAndLinks();
+    void refreshAttachedEdgesAndLinks(bool refreshEdgesNow = true);
 
     void setNameItemHtml(const QString & name, const QString & label);
 

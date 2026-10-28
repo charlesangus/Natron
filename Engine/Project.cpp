@@ -660,11 +660,15 @@ Project::loadProjectInternal(const QString& path,
     projectSerialization.creationDate = manifest.creationDate;
 
     bool ret = false;
-    {
+    try {
         FlagSetter __raii_loadingProjectInternal__(true, &_imp->isLoadingProjectInternal, &_imp->isLoadingProjectMutex);
 
         ret = fromSerialization(projectSerialization, name, path, mustSave);
-    } // __raii_loadingProjectInternal__
+    } catch (...) {
+        // The GUI defers layout work until the nodes are restored: let it catch up with what loaded.
+        getApp()->onProjectNodesRestored();
+        throw;
+    }
 
     // The manifest holds what changes on every save, so that project.yaml does not.
     _imp->lastAuthorName->setValue(manifest.author);

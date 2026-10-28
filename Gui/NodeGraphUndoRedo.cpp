@@ -29,6 +29,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -306,6 +307,10 @@ RemoveMultipleNodesCommand::RemoveMultipleNodesCommand(NodeGraph* graph,
     , _graph(graph)
     , _isRedone(false)
 {
+    std::unordered_set<const Node*> removedNodes;
+    for (std::list<NodeGuiPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        removedNodes.insert((*it)->getNode().get());
+    }
     for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         NodeToRemove n;
         n.node = *it;
@@ -317,14 +322,8 @@ RemoveMultipleNodesCommand::RemoveMultipleNodesCommand(NodeGraph* graph,
             if (!output) {
                 continue;
             }
-            bool restore = true;
-            for (std::list<NodeGuiPtr> ::const_iterator it3 = nodes.begin(); it3 != nodes.end(); ++it3) {
-                if ( (*it3)->getNode() == output ) {
-                    ///we found the output in the selection, don't restore it
-                    restore = false;
-                }
-            }
-            if (restore) {
+            // An output removed along with the node is not reconnected.
+            if (!removedNodes.count(output.get())) {
                 n.outputsToRestore.push_back(output);
             }
         }

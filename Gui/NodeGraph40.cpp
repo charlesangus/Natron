@@ -31,6 +31,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 #include <QApplication>
@@ -238,12 +239,15 @@ pasteOntoNode(NodeGraph* graph,
     const QPointF entryPosBefore = entryGui->getPos_mt_safe();
     graph->moveNodesForIdealPosition(entryGui, targetGui, true);
     const QPointF delta = entryGui->getPos_mt_safe() - entryPosBefore;
-    for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
-        if (*it == entryGui) {
-            continue;
+    {
+        const NodeStackingBatch stackingBatch(graph);
+        for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+            if (*it == entryGui) {
+                continue;
+            }
+            const QPointF pos = (*it)->getPos_mt_safe();
+            (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
         }
-        const QPointF pos = (*it)->getPos_mt_safe();
-        (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
     }
 
     // Node creation re-routes one input of each of the target's outputs to the node it placed,
@@ -434,6 +438,10 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
     double ymin = std::numeric_limits<int>::max();
     double ymax = std::numeric_limits<int>::min();
     NodesGuiList nodesToCopy = _imp->_selection;
+    std::unordered_set<NodeGui*> nodesToCopySet;
+    for (NodesGuiList::const_iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
+        nodesToCopySet.insert(it->get());
+    }
     for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
         QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
         if ( ( bbox.x() + bbox.width() ) > xmax ) {
@@ -455,8 +463,7 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
         if (isBd) {
             NodesGuiList nodesWithinBD = getNodesWithinBackdrop(*it);
             for (NodesGuiList::iterator it2 = nodesWithinBD.begin(); it2 != nodesWithinBD.end(); ++it2) {
-                NodesGuiList::iterator found = std::find(nodesToCopy.begin(), nodesToCopy.end(), *it2);
-                if ( found == nodesToCopy.end() ) {
+                if (nodesToCopySet.insert(it2->get()).second) {
                     nodesToCopy.push_back(*it2);
                 }
             }
@@ -485,23 +492,26 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
     std::list<NodeGuiPtr> newNodesList;
     std::map<std::string, std::string> oldNewScriptNamesMapping;
     std::list<std::pair<NodePtr, NodePtr>> linkedNodes;
-    for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
-        NodePtr sourceNode = (*it)->getNode();
-        Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
-        sourceNode->toSerialization(internalSerialization.get());
-        NodeGuiPtr copy = _imp->pasteNode(internalSerialization, sourceNode, offset,
-                                          _imp->group.lock(), std::string(), &linkedNodes, &oldNewScriptNamesMapping);
-        if (!copy) {
-            continue;
+    {
+        const NodeCollection::NamingBatch namingBatch(_imp->group.lock());
+        const NodeStackingBatch stackingBatch(this);
+        for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
+            NodePtr sourceNode = (*it)->getNode();
+            Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
+            sourceNode->toSerialization(internalSerialization.get());
+            NodeGuiPtr copy = _imp->pasteNode(internalSerialization, sourceNode, offset,
+                                              _imp->group.lock(), std::string(), &linkedNodes, &oldNewScriptNamesMapping);
+            if (!copy) {
+                continue;
+            }
+
+            newNodes.push_back(std::make_pair(internalSerialization->scriptName, copy));
+            newNodesList.push_back(copy);
+            serializations.push_back(internalSerialization);
+
+            oldNewScriptNamesMapping[internalSerialization->scriptName] = copy->getNode()->getScriptName();
         }
-
-        newNodes.push_back(std::make_pair(internalSerialization->scriptName, copy));
-        newNodesList.push_back(copy);
-        serializations.push_back(internalSerialization);
-
-        oldNewScriptNamesMapping[internalSerialization->scriptName] = copy->getNode()->getScriptName();
     }
-
 
     assert( serializations.size() == newNodes.size() );
     ///restore connections

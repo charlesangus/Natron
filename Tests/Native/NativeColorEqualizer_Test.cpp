@@ -44,11 +44,14 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorEqualizer.h"
 #include "Engine/Nodes/Color/DtColorSpaces.h"
+#include "Engine/Nodes/Generator/Noise.h"
+#include "Engine/Nodes/Generator/NoiseCore.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
@@ -618,23 +621,22 @@ TEST_F(NativeColorEqualizerTest, OutputDoesNotDependOnTheRequestedRegion)
     if (HasFatalFailure()) {
         return;
     }
-    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    NodePtr reformat = createNode(QString::fromUtf8(PLUGINID_NATRON_REFORMAT), PLUGIN_MAJOR_NATRON_REFORMAT);
-    ASSERT_TRUE(bool(source) && bool(reformat));
-    setParitySourceComponents(source, "rgba");
-    setParitySourceNoise(source, true);
-    connectNodes(source, reformat, 0, true);
-    ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, kReformatParamTypeOptionToBox));
-    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 640., 480. }));
-    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 1. }));
-    ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, kReformatParamResizeOptionDistort));
+    // A noise generator spans the project format, so the frame is genuinely busy at 640x480.
+    ProjectPtr project = getApp()->getProject();
+    project->reset(false, true);
+    project->setAutoSetProjectFormatEnabled(true);
+    project->setOrAddProjectFormat(Format(0, 0, 640, 480, "colorEqualizerRegion", 1.));
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_NOISE), PLUGIN_MAJOR_NATRON_NOISE);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(setKnobValues(source, kNoiseParamType, { (double)NoiseCore::kNoiseTypeWhite }));
+    ASSERT_TRUE(setKnobValues(source, kNoiseParamSeed, { 1234. }));
 
     // One node a window, so that neither reuses the frame the other computed.
     NodePtr nodes[2];
     for (NodePtr& node : nodes) {
         node = makeNode();
         ASSERT_TRUE(bool(node));
-        connectNodes(reformat, node, kColorEqualizerInputSource, true);
+        connectNodes(source, node, kColorEqualizerInputSource, true);
         ColorEqualizer* effect = effectOf(node);
         ASSERT_TRUE(effect != NULL);
         // Kodachrome 64-like subsamples its parameter filter by 4.
@@ -644,9 +646,8 @@ TEST_F(NativeColorEqualizerTest, OutputDoesNotDependOnTheRequestedRegion)
     }
 
     RectD rod;
-    bool isProjectFormat = false;
     EffectInstancePtr effect = nodes[0]->getEffectInstance();
-    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod));
     ASSERT_EQ(640., rod.width());
     ASSERT_EQ(480., rod.height());
 

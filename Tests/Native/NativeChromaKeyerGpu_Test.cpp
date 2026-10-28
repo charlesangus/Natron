@@ -151,8 +151,11 @@ const char* const kSourceAlphaNames[3] = { "ignore", "insidemask", "normal" };
 
 // The unpremultiplied output divides the suppressed colour by the key alpha, so a one-ulp
 // difference in the float key, which the CPU rounds from double, grows by the inverse of an alpha
-// that can be near zero.
-const ParityTolerance kUnpremultipliedTolerance = ParityTolerance::make(0., 1e-3);
+// that can be near zero. The background key is not clamped to 1, so alpha passes through zero
+// rather than stopping at the exact zero both sides turn into white: the green setting divides by
+// an alpha near 1e-4 (a 1.2e-3 relative difference on llvmpipe). A wrong branch or term differs
+// by far more than this bound.
+const ParityTolerance kUnpremultipliedTolerance = ParityTolerance::make(0., 1e-2);
 
 const ParityTolerance&
 toleranceForShow(int show)

@@ -129,6 +129,8 @@ KeyerOp::createKnobs(KnobHolder* knobHolder,
             knob->setDisplayMinimum(0., i);
             knob->setDisplayMaximum(1., i);
         }
+        // Hidden under the default Luminance key source; refreshKeySourceDependents() shows it for Colour.
+        knob->setSecret(true);
         page->addKnob(knob);
         keyColor = knob;
     }

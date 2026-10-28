@@ -533,6 +533,7 @@ TEST_F(GpuRegionFallbackTest, ChromaKeyerWithoutMaskMatchesCpu)
 }
 
 // The mask producer is connected but is asked for an empty window, so the region has no image to read for it.
+// The mask is inverted: a mask that misses the window makes the Keyer an identity, which never reaches the GPU.
 TEST_F(GpuRegionFallbackTest, KeyerWithMaskOfEmptyRoIMatchesCpu)
 {
     if (!gpuOrSkip()) {
@@ -544,6 +545,10 @@ TEST_F(GpuRegionFallbackTest, KeyerWithMaskOfEmptyRoIMatchesCpu)
     ASSERT_TRUE(source && mask && keyer);
     connectNodes(source, keyer, kKeyerInputSource, true);
     connectNodes(mask, keyer, kKeyerInputMask, true);
+    KnobChannelSelect* selector = dynamic_cast<KnobChannelSelect*>(keyer->getKnobByName("maskChannel_Mask").get());
+    ASSERT_TRUE(selector && setKnobValues(keyer, "enableMask_Mask", { 1. }));
+    selector->set("rgba.A");
+    ASSERT_TRUE(setKnobValues(keyer, kOfxMaskInvertParamName, { 1. }));
 
     expectRegionMatchesCpu(keyer, { keyer });
 }

@@ -134,6 +134,51 @@ joined(const std::vector<std::string>& names)
     return ret;
 }
 
+// The value of every dimension of a numeric or boolean knob, as text; empty for other knob types.
+std::vector<std::string>
+dimensionValues(const KnobIPtr& knob)
+{
+    std::vector<std::string> ret;
+    const int n = knob->getDimension();
+
+    for (int i = 0; i < n; ++i) {
+        if (Knob<double>* d = dynamic_cast<Knob<double>*>(knob.get())) {
+            ret.push_back(valueString(d->getValue(i, ViewSpec::current(), false)));
+        } else if (Knob<int>* in = dynamic_cast<Knob<int>*>(knob.get())) {
+            ret.push_back(valueString(in->getValue(i, ViewSpec::current(), false)));
+        } else if (Knob<bool>* b = dynamic_cast<Knob<bool>*>(knob.get())) {
+            ret.push_back(b->getValue(i, ViewSpec::current(), false) ? "true" : "false");
+        } else {
+            return std::vector<std::string>();
+        }
+    }
+
+    return ret;
+}
+
+// The dimensions other than `dimension` whose value differs between the two snapshots; empty when
+// `dimension` itself differs or the snapshots cannot be compared.
+std::vector<std::string>
+otherDimensionsThatMoved(const std::vector<std::string>& before,
+                         const std::vector<std::string>& after,
+                         int dimension)
+{
+    std::vector<std::string> ret;
+
+    if ((before.size() != after.size()) || (dimension < 0) || ((std::size_t)dimension >= before.size()) || (before[dimension] != after[dimension])) {
+        return ret;
+    }
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        if (before[i] != after[i]) {
+            std::ostringstream ss;
+            ss << "dim " << i << " " << before[i] << " -> " << after[i];
+            ret.push_back(ss.str());
+        }
+    }
+
+    return ret;
+}
+
 struct SweepReport {
     std::vector<std::string> failures;
     std::vector<std::string> notes;
@@ -181,6 +226,7 @@ perturbDimension(const NodePtr& node,
     const U64 before = node->getHashValue();
     const U64 knobBefore = knob->getContentHash();
     const KnobHashSnapshot snapshot = snapshotKnobHashes(node);
+    const std::vector<std::string> valuesBefore = dimensionValues(knob);
 
     if (!edit.apply()) {
         report->failures.push_back(label + ": the knob refused the edit " + edit.what);
@@ -232,6 +278,15 @@ perturbDimension(const NodePtr& node,
     if (moved.empty()) {
         report->failures.push_back(msg.str() + ", HASH GAP: every render-hashed knob is back to its original content");
     } else if (std::find(moved.begin(), moved.end(), knob->getName()) != moved.end()) {
+        const std::vector<std::string> otherDimensions = otherDimensionsThatMoved(valuesBefore, dimensionValues(knob), dimension);
+        if (!otherDimensions.empty()) {
+            // The edited dimension is back, but the plugin rewrote other dimensions of the same
+            // knob while reacting to the edit (a range kept in order, for instance); the hash
+            // follows them, as it does for side effects on other knobs.
+            report->notes.push_back(msg.str() + ", side effects on its own " + joined(otherDimensions) + (moved.size() > 1 ? " (also moved: " + joined(moved) + ")" : std::string()));
+
+            return;
+        }
         report->failures.push_back(msg.str() + ", the knob's own content did not come back (also moved: " + joined(moved) + ")");
     } else {
         // The plugin rewrote other knobs while reacting to the edit; the hash follows them,

@@ -90,35 +90,48 @@ mainPageOf(const NodePtr& node)
     return KnobPagePtr();
 }
 
-// Every visible knob of the main page from the first footer knob on, by role; a knob that is not
-// part of the footer shows up as its name, so a stray one fails the comparison.
+// Every visible knob of the main page from the separator that opens the footer on, by role. The
+// footer opens at the last separator above the first non-separator footer knob, so separators the
+// plug-in places higher on the page are not part of it; a knob that is not part of the footer shows
+// up as its name, so a stray one fails the comparison.
 std::vector<std::string>
 footerTail(const NodePtr& node,
            bool* separatorAfterSeparator)
 {
     const KnobPagePtr page = mainPageOf(node);
     const KnobsVec children = page ? page->getChildren() : KnobsVec();
-    std::vector<std::string> tail;
-    bool inFooter = false;
-    bool previousWasSeparator = false;
+    std::vector<KnobIPtr> visible;
+
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        if (!children[i]->getIsSecret()) {
+            visible.push_back(children[i]);
+        }
+    }
 
     *separatorAfterSeparator = false;
-    for (std::size_t i = 0; i < children.size(); ++i) {
-        if (children[i]->getIsSecret()) {
-            continue;
-        }
-        const std::string role = roleOf(children[i]);
-        if (!inFooter && !role.empty()) {
-            inFooter = true;
-        }
-        const bool isSeparator = (role == "separator");
-        if (isSeparator && previousWasSeparator) {
+    for (std::size_t i = 1; i < visible.size(); ++i) {
+        if ((roleOf(visible[i]) == "separator") && (roleOf(visible[i - 1]) == "separator")) {
             *separatorAfterSeparator = true;
         }
-        previousWasSeparator = isSeparator;
-        if (inFooter) {
-            tail.push_back(role.empty() ? children[i]->getName() : role);
+    }
+
+    std::size_t firstFooterKnob = visible.size();
+    for (std::size_t i = 0; i < visible.size(); ++i) {
+        const std::string role = roleOf(visible[i]);
+        if (!role.empty() && (role != "separator")) {
+            firstFooterKnob = i;
+            break;
         }
+    }
+    std::size_t start = firstFooterKnob;
+    while ((start > 0) && (roleOf(visible[start - 1]) == "separator")) {
+        --start;
+    }
+
+    std::vector<std::string> tail;
+    for (std::size_t i = start; i < visible.size(); ++i) {
+        const std::string role = roleOf(visible[i]);
+        tail.push_back(role.empty() ? visible[i]->getName() : role);
     }
 
     return tail;

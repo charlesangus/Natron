@@ -75,6 +75,11 @@
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/OCIO/OCIOCDLTransform.h"
+#include "Engine/Nodes/OCIO/OCIOColorSpace.h"
+#include "Engine/Nodes/OCIO/OCIODisplay.h"
+#include "Engine/Nodes/OCIO/OCIOFileTransform.h"
+#include "Engine/Nodes/OCIO/OCIOLookTransform.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
@@ -158,6 +163,11 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_OCIOCOLORSPACE,
+        PLUGINID_NATRON_OCIODISPLAY,
+        PLUGINID_NATRON_OCIOCDLTRANSFORM,
+        PLUGINID_NATRON_OCIOFILETRANSFORM,
+        PLUGINID_NATRON_OCIOLOOKTRANSFORM,
     };
 
     return ids;

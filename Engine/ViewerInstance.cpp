@@ -590,6 +590,15 @@ ViewerInstance::initializeKnobs()
 
     KnobDoublePtr wipeCenter = createViewerKnob<KnobDouble>(this, page, tr("Wipe Center"), kViewerParamWipeCenter,
                                                             tr("The centre of the wipe handle, in canonical coordinates."), 2);
+    if (AppInstancePtr app = getApp()) {
+        if (ProjectPtr project = app->getProject()) {
+            Format format;
+            project->getProjectDefaultFormat(&format);
+            const RectD canonical = format.toCanonicalFormat();
+            wipeCenter->setDefaultValue((canonical.x1 + canonical.x2) / 2., 0);
+            wipeCenter->setDefaultValue((canonical.y1 + canonical.y2) / 2., 1);
+        }
+    }
     k.wipeCenter = wipeCenter;
 
     KnobDoublePtr wipeAmount = createViewerKnob<KnobDouble>(this, page, tr("Wipe Amount"), kViewerParamWipeAmount,
@@ -4584,24 +4593,70 @@ ViewerInstance::redrawViewerNow()
     _imp->uiContext->redrawNow();
 }
 
-ProjectColorManagement::DisplayProcessorPtr
-ViewerInstance::getDisplayProcessor() const
+static std::string
+firstListedName(const std::vector<std::string>& names,
+                const std::string& a,
+                const std::string& b,
+                const std::string& c)
+{
+    const std::string* candidates[] = { &a, &b, &c };
+    for (const std::string* name : candidates) {
+        if (!name->empty() && (std::find(names.begin(), names.end(), *name) != names.end())) {
+            return *name;
+        }
+    }
+
+    return names.empty() ? std::string() : names.front();
+}
+
+void
+ViewerInstance::getResolvedDisplayTransform(std::string* display,
+                                            std::string* view,
+                                            std::string* look) const
 {
     KnobStringPtr displayKnob = _imp->knobs.display.lock();
     KnobStringPtr viewKnob = _imp->knobs.view.lock();
     KnobStringPtr lookKnob = _imp->knobs.look.lock();
-    std::string display = displayKnob ? displayKnob->getValue() : std::string();
-    std::string view = viewKnob ? viewKnob->getValue() : std::string();
-    const std::string look = lookKnob ? lookKnob->getValue() : std::string();
+    const std::string savedDisplay = displayKnob ? displayKnob->getValue() : std::string();
+    const std::string savedView = viewKnob ? viewKnob->getValue() : std::string();
+    const std::string savedLook = lookKnob ? lookKnob->getValue() : std::string();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    std::string resolvedDisplay, resolvedView, resolvedLook;
+
+    if (colorManagement) {
+        std::string projectDisplay, projectView;
+        project->getDefaultDisplayView(&projectDisplay, &projectView);
+        resolvedDisplay = firstListedName(colorManagement->getDisplays(), savedDisplay, projectDisplay, colorManagement->getDefaultDisplay());
+        resolvedView = firstListedName(colorManagement->getViews(resolvedDisplay), savedView, projectView, colorManagement->getDefaultView(resolvedDisplay));
+        const std::vector<std::string> looks = colorManagement->getLooks();
+        if (std::find(looks.begin(), looks.end(), savedLook) != looks.end()) {
+            resolvedLook = savedLook;
+        }
+    }
+    if (display) {
+        *display = resolvedDisplay;
+    }
+    if (view) {
+        *view = resolvedView;
+    }
+    if (look) {
+        *look = resolvedLook;
+    }
+}
+
+ProjectColorManagement::DisplayProcessorPtr
+ViewerInstance::getDisplayProcessor() const
+{
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
     if (!colorManagement) {
         return ProjectColorManagement::DisplayProcessorPtr();
     }
-    if (display.empty() || view.empty()) {
-        project->getDefaultDisplayView(&display, &view);
-    }
+    std::string display, view, look;
+    getResolvedDisplayTransform(&display, &view, &look);
 
     return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, look);
 }

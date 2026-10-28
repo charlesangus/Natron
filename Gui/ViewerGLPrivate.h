@@ -199,9 +199,6 @@ struct ViewerGL::Implementation
     std::unique_ptr<QOpenGLShaderProgram> shaderRGB; /*!< The shader program used to render RGB data*/
     std::unique_ptr<QOpenGLShaderProgram> shaderBlack; /*!< The shader program used when the viewer is disconnected.*/
     bool shaderLoaded; /*!< Flag to check whether the shaders have already been loaded.*/
-    std::string displayName; // the display transform, shared by the A and B textures; empty uses the project defaults
-    std::string viewName;
-    std::string lookName;
     std::string shaderCacheID; // cache ID of the processor shaderRGB was built from
     std::vector<OCIOLutTexture> ocioTextures; // bound to texture units 1..N
     OCIO_NAMESPACE::GpuShaderDescRcPtr ocioShaderDesc;
@@ -265,8 +262,6 @@ struct ViewerGL::Implementation
     RectD draggedUserRoI;
     ZoomContext zoomCtx; /*!< All zoom related variables are packed into this object. */
     mutable QMutex zoomCtxMutex; /// protectx zoomCtx*
-    QMutex clipToDisplayWindowMutex;
-    bool clipToDisplayWindow;
     mutable QMutex wipeControlsMutex;
     double mixAmount; /// the amount of the second input to blend, by default 1.
     double wipeAngle; /// the angle to the X axis

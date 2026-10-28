@@ -134,9 +134,6 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , shaderRGB()
     , shaderBlack()
     , shaderLoaded(false)
-    , displayName()
-    , viewName()
-    , lookName()
     , shaderCacheID()
     , ocioTextures()
     , ocioShaderDesc()
@@ -175,7 +172,6 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , buildUserRoIOnNextPress(false)
     , draggedUserRoI()
     , zoomCtx(0.01, 1024.) // protected by mutex
-    , clipToDisplayWindow(true) // protected by mutex
     , wipeControlsMutex()
     , mixAmount(1.) // protected by mutex
     , wipeAngle(M_PI_2) // protected by mutex
@@ -291,11 +287,7 @@ ViewerGL::Implementation::drawRenderingVAO(unsigned int mipmapLevel,
     ///the RoD of the image in canonical coords.
     RectD rod = _this->getRoD(textureIndex);
 
-    bool clipToDisplayWindow;
-    {
-        QMutexLocker l(&this->clipToDisplayWindowMutex);
-        clipToDisplayWindow = this->clipToDisplayWindow;
-    }
+    const bool clipToDisplayWindow = _this->isClippingImageToFormat();
     RectD rectClippedToRoI(canonicalRoIRoundedToTileSize);
     rectClippedToRoI.clipIfOverlaps(rod);
 
@@ -864,13 +856,10 @@ ViewerGL::Implementation::getDisplayProcessor() const
     if (!colorManagement) {
         return ProjectColorManagement::DisplayProcessorPtr();
     }
-    std::string display = displayName;
-    std::string view = viewName;
-    if (display.empty() || view.empty()) {
-        project->getDefaultDisplayView(&display, &view);
-    }
+    std::string display, view, look;
+    node->getResolvedDisplayTransform(&display, &view, &look);
 
-    return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, lookName);
+    return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, look);
 }
 
 void

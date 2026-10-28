@@ -117,15 +117,20 @@ fillMenu(ComboBox* menu,
          const std::string& selected)
 {
     menu->clear();
-    int index = 0;
+    int index = -1;
     for (std::size_t i = 0; i < names.size(); ++i) {
         menu->addItem(QString::fromUtf8(names[i].c_str()));
         if (names[i] == selected) {
             index = (int)i;
         }
     }
-    if (!names.empty()) {
+    if (index >= 0) {
         menu->setCurrentIndex_no_emit(index);
+    } else if (!selected.empty()) {
+        // A name the config lacks stays shown, unlisted, so the saved value reads as missing.
+        menu->setCurrentText_no_emit(QString::fromUtf8(selected.c_str()));
+    } else if (!names.empty()) {
+        menu->setCurrentIndex_no_emit(0);
     }
     if (!menu->property("fitConnected").toBool()) {
         menu->setProperty("fitConnected", true);
@@ -143,13 +148,13 @@ ViewerTab::getDisplayTransform(std::string* display,
                                std::string* look) const
 {
     if (display) {
-        *display = _imp->viewerDisplay->getCurrentIndexText().toStdString();
+        *display = _imp->viewerValue<std::string>(kViewerParamDisplay, std::string());
     }
     if (view) {
-        *view = _imp->viewerView->getCurrentIndexText().toStdString();
+        *view = _imp->viewerValue<std::string>(kViewerParamView, std::string());
     }
     if (look) {
-        *look = (_imp->viewerLook->activeIndex() <= 0) ? std::string() : _imp->viewerLook->getCurrentIndexText().toStdString();
+        *look = _imp->viewerValue<std::string>(kViewerParamLook, std::string());
     }
 }
 
@@ -158,78 +163,48 @@ ViewerTab::setDisplayTransform(const std::string& display,
                                const std::string& view,
                                const std::string& look)
 {
-    populateDisplayTransformMenus(display, view, look);
-    applyDisplayTransform();
+    _imp->setViewerValue<std::string>(kViewerParamDisplay, display);
+    _imp->setViewerValue<std::string>(kViewerParamView, view);
+    _imp->setViewerValue<std::string>(kViewerParamLook, look);
 }
 
 void
-ViewerTab::populateDisplayTransformMenus(const std::string& display,
-                                         const std::string& view,
-                                         const std::string& look)
+ViewerTab::refreshDisplayTransformMenus()
 {
     ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
-    std::vector<std::string> displays, views, looks;
-    std::string projectDisplay, projectView;
-    std::string chosenDisplay, chosenView, chosenLook;
+    std::string display, view, look;
+    getDisplayTransform(&display, &view, &look);
 
-    if (colorManagement) {
-        project->getDefaultDisplayView(&projectDisplay, &projectView);
-        displays = colorManagement->getDisplays();
-        if (containsName(displays, display)) {
-            chosenDisplay = display;
-        } else if (containsName(displays, projectDisplay)) {
-            chosenDisplay = projectDisplay;
-        } else if (containsName(displays, colorManagement->getDefaultDisplay())) {
-            chosenDisplay = colorManagement->getDefaultDisplay();
-        } else if (!displays.empty()) {
-            chosenDisplay = displays.front();
-        }
-
-        views = colorManagement->getViews(chosenDisplay);
-        if (containsName(views, view)) {
-            chosenView = view;
-        } else if (containsName(views, projectView)) {
-            chosenView = projectView;
-        } else if (containsName(views, colorManagement->getDefaultView(chosenDisplay))) {
-            chosenView = colorManagement->getDefaultView(chosenDisplay);
-        } else if (!views.empty()) {
-            chosenView = views.front();
-        }
-
-        looks = colorManagement->getLooks();
-        if (containsName(looks, look)) {
-            chosenLook = look;
-        }
+    std::string resolvedDisplay, resolvedView, resolvedLook;
+    if (_imp->viewerNode) {
+        _imp->viewerNode->getResolvedDisplayTransform(&resolvedDisplay, &resolvedView, &resolvedLook);
     }
-
+    // The View menu lists the views of the display the viewer renders with.
+    std::vector<std::string> displays, views, looks;
+    if (colorManagement) {
+        displays = colorManagement->getDisplays();
+        views = colorManagement->getViews(resolvedDisplay);
+        looks = colorManagement->getLooks();
+    }
     std::vector<std::string> lookItems(1, std::string(kViewerLookNone));
     lookItems.insert(lookItems.end(), looks.begin(), looks.end());
 
     _imp->populatingDisplayTransform = true;
-    fillMenu(_imp->viewerDisplay, displays, chosenDisplay);
-    fillMenu(_imp->viewerView, views, chosenView);
-    fillMenu(_imp->viewerLook, lookItems, chosenLook.empty() ? std::string(kViewerLookNone) : chosenLook);
+    fillMenu(_imp->viewerDisplay, displays, display.empty() ? resolvedDisplay : display);
+    fillMenu(_imp->viewerView, views, view.empty() ? resolvedView : view);
+    fillMenu(_imp->viewerLook, lookItems, look.empty() ? std::string(kViewerLookNone) : look);
     _imp->populatingDisplayTransform = false;
-}
 
-void
-ViewerTab::applyDisplayTransform()
-{
-    std::string display, view, look;
-
-    getDisplayTransform(&display, &view, &look);
-    _imp->viewer->setDisplayTransform(display, view, look);
-    // Null once the viewer node is deleted, while the tab can still see a project reset.
-    if (_imp->viewerNode) {
-        _imp->viewerNode->setDisplayTransform(display, view, look);
+    if (_imp->viewer) {
+        _imp->viewer->refreshDisplayTransform();
     }
 }
 
 void
 ViewerTab::setUserRoIEnabled(bool b)
 {
-    onEnableViewerRoIButtonToggle(b);
+    _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
 }
 
 bool
@@ -241,32 +216,35 @@ ViewerTab::isAutoContrastEnabled() const
 void
 ViewerTab::setAutoContrastEnabled(bool b)
 {
-    _imp->autoContrast->setChecked(b);
-    _imp->gainSlider->setEnabled(!b);
-    _imp->gainBox->setEnabled(!b);
-    _imp->toggleGainButton->setEnabled(!b);
-    _imp->gammaSlider->setEnabled(!b);
-    _imp->gammaBox->setEnabled(!b);
-    _imp->toggleGammaButton->setEnabled(!b);
-    _imp->viewerNode->onAutoContrastChanged(b, true);
+    _imp->setViewerValue<bool>(kViewerParamAutoContrast, b);
 }
 
 void
 ViewerTab::setUserRoI(const RectD & r)
 {
     _imp->viewer->setUserRoI(r);
+    writeUserRoIKnobs(r);
+}
+
+void
+ViewerTab::writeUserRoIKnobs(const RectD& r)
+{
+    _imp->setViewerValue<double>(kViewerParamUserRoIBottomLeft, r.x1, 0);
+    _imp->setViewerValue<double>(kViewerParamUserRoIBottomLeft, r.y1, 1);
+    _imp->setViewerValue<double>(kViewerParamUserRoISize, r.width(), 0);
+    _imp->setViewerValue<double>(kViewerParamUserRoISize, r.height(), 1);
 }
 
 void
 ViewerTab::setClipToProject(bool b)
 {
-    onClipToProjectButtonToggle(b);
+    _imp->setViewerValue<bool>(kViewerParamClipToFormat, b);
 }
 
 void
 ViewerTab::setFullFrameProcessing(bool fullFrame)
 {
-    onFullFrameButtonToggle(fullFrame);
+    _imp->setViewerValue<bool>(kViewerParamFullFrame, fullFrame);
 }
 
 bool
@@ -278,15 +256,14 @@ ViewerTab::isFullFrameProcessingEnabled() const
 void
 ViewerTab::setGain(double d)
 {
-    double fstop = std::log(d) / M_LN2;
-
-    _imp->gainBox->setValue(fstop);
-    _imp->gainSlider->seekScalePosition(fstop);
-    _imp->viewer->setGain(d);
-    _imp->viewerNode->onGainChanged(d);
-    _imp->toggleGainButton->setDown(d != 1.);
-    _imp->toggleGainButton->setChecked(d != 1.);
-    _imp->lastFstopValue = fstop;
+    if (d <= 0.) {
+        return;
+    }
+    const double fstop = std::log(d) / M_LN2;
+    _imp->setViewerValue<bool>(kViewerParamEnableGain, d != 1.);
+    if (d != 1.) {
+        _imp->setViewerValue<double>(kViewerParamGain, fstop);
+    }
 }
 
 double
@@ -298,13 +275,10 @@ ViewerTab::getGain() const
 void
 ViewerTab::setGamma(double gamma)
 {
-    _imp->gammaBox->setValue(gamma);
-    _imp->gammaSlider->seekScalePosition(gamma);
-    _imp->viewerNode->onGammaChanged(gamma);
-    _imp->viewer->setGamma(gamma);
-    _imp->toggleGammaButton->setDown(gamma != 1.);
-    _imp->toggleGammaButton->setChecked(gamma != 1.);
-    _imp->lastGammaValue = gamma;
+    _imp->setViewerValue<bool>(kViewerParamEnableGamma, gamma != 1.);
+    if (gamma != 1.) {
+        _imp->setViewerValue<double>(kViewerParamGamma, gamma);
+    }
 }
 
 double
@@ -316,12 +290,10 @@ ViewerTab::getGamma() const
 void
 ViewerTab::setMipmapLevel(unsigned int level)
 {
+    _imp->setViewerValue<bool>(kViewerParamEnableDownscale, level > 0);
     if (level > 0) {
-        _imp->renderScaleCombo->setCurrentIndex(level - 1);
+        _imp->setViewerValue<int>(kViewerParamDownscaleLevel, (int)level - 1);
     }
-
-    _imp->viewerNode->onMipmapLevelChanged(level);
-    _imp->viewer->checkIfViewPortRoIValidOrRender();
 }
 
 unsigned int
@@ -333,7 +305,7 @@ ViewerTab::getMipmapLevel() const
 void
 ViewerTab::setRenderScaleActivated(bool act)
 {
-    onRenderScaleButtonClicked(act);
+    _imp->setViewerValue<bool>(kViewerParamEnableDownscale, act);
 }
 
 bool
@@ -403,8 +375,8 @@ ViewerTab::setChannels(const std::string & channelsStr)
     int index = _imp->viewerChannels->itemIndex( QString::fromUtf8( channelsStr.c_str() ) );
 
     if (index != -1) {
-        _imp->viewerChannels->setCurrentIndex_no_emit(index);
-        setDisplayChannels(index, true);
+        _imp->setViewerValue<int>(kViewerParamDisplayChannels, index);
+        _imp->setViewerValue<int>(kViewerParamDisplayChannelsB, index);
     }
 }
 
@@ -429,44 +401,28 @@ ViewerTab::discardInternalNodePointer()
 void
 ViewerTab::onAutoContrastChanged(bool b)
 {
-    _imp->autoContrast->setDown(b);
-    _imp->autoContrast->setChecked(b);
-    _imp->gainSlider->setEnabled(!b);
-    _imp->gainBox->setEnabled(!b);
-    _imp->toggleGainButton->setEnabled(!b);
-    _imp->gammaBox->setEnabled(!b);
-    _imp->gammaSlider->setEnabled(!b);
-    _imp->toggleGammaButton->setEnabled(!b);
-    if (!b) {
-        _imp->viewerNode->onGainChanged( std::pow( 2, _imp->gainBox->value() ) );
-        _imp->viewerNode->onGammaChanged( _imp->gammaBox->value() );
-    }
-    _imp->viewerNode->onAutoContrastChanged(b, true);
+    editViewerKnobs(tr("Auto Contrast"), [this, b]() {
+        _imp->setViewerValue<bool>(kViewerParamAutoContrast, b);
+    });
+    refreshColorControlsFromKnobs();
 }
 
 void
 ViewerTab::onRenderScaleComboIndexChanged(int index)
 {
-    unsigned int level;
-
-    if (_imp->renderScaleActive) {
-        level = index + 1;
-    } else {
-        level = 0;
-    }
-    _imp->viewerNode->onMipmapLevelChanged(level);
-    _imp->viewer->checkIfViewPortRoIValidOrRender();
+    editViewerKnobs(tr("Downscale Level"), [this, index]() {
+        _imp->setViewerValue<int>(kViewerParamDownscaleLevel, index);
+    });
+    refreshProcessingButtonsFromKnobs();
 }
 
 void
 ViewerTab::onRenderScaleButtonClicked(bool checked)
 {
-    _imp->activateRenderScale->blockSignals(true);
-    _imp->renderScaleActive = checked;
-    _imp->activateRenderScale->setDown(checked);
-    _imp->activateRenderScale->setChecked(checked);
-    _imp->activateRenderScale->blockSignals(false);
-    onRenderScaleComboIndexChanged( _imp->renderScaleCombo->activeIndex() );
+    editViewerKnobs(tr("Enable Downscale"), [this, checked]() {
+        _imp->setViewerValue<bool>(kViewerParamEnableDownscale, checked);
+    });
+    refreshProcessingButtonsFromKnobs();
 }
 
 #if 0
@@ -905,28 +861,22 @@ ViewerTab::notifyGuiClosing()
 }
 
 void
-ViewerTab::onCompositingOperatorChangedInternal(ViewerCompositingOperatorEnum oldOp,
-                                                ViewerCompositingOperatorEnum newOp)
+ViewerTab::refreshCompositingOperatorFromKnob()
 {
-    // Do not reset the wipe controls, this makes "toggle wipe" impractical!
-    // instead, the user should use the "center wipe" shortcut (Shift-F)
-    //if ( (oldOp == eViewerCompositingOperatorNone) && (newOp != eViewerCompositingOperatorNone) ) {
-    //    _imp->viewer->resetWipeControls();
-    //}
-    Q_UNUSED(oldOp);
+    const ViewerCompositingOperatorEnum op = getCompositingOperator();
+    const bool noWipe = _imp->viewerNode && _imp->viewerNode->isWipeDisabledByDataKind();
 
-    _imp->secondInputImage->setEnabled_natron(newOp != eViewerCompositingOperatorNone);
+    if (op != eViewerCompositingOperatorNone) {
+        _imp->compOperatorPrevious = op;
+    }
+    _imp->compositingOperator->setCurrentIndex_no_emit((int)op);
+    _imp->compositingOperator->setEnabled_natron(!noWipe);
+    _imp->secondInputImage->setEnabled_natron(op != eViewerCompositingOperatorNone);
 
-    // Do not reset input B, it should only be disabled! Else "toggle wipe" becomes impractical
-    //if (newOp == eViewerCompositingOperatorNone) {
-    //    _imp->secondInputImage->setCurrentIndex_no_emit(0);
-    //    _imp->viewerNode->setInputB(-1);
-    //}
-
-    if ( (newOp == eViewerCompositingOperatorNone) || !_imp->secondInputImage->getEnabled_natron()  || (_imp->secondInputImage->activeIndex() == 0) ) {
+    if ((op == eViewerCompositingOperatorNone) || (_imp->secondInputImage->activeIndex() <= 0)) {
         manageSlotsForInfoWidget(1, false);
         _imp->infoWidget[1]->hide();
-    } else if (newOp != eViewerCompositingOperatorNone) {
+    } else {
         manageSlotsForInfoWidget(1, true);
         _imp->infoWidget[1]->show();
     }
@@ -937,159 +887,59 @@ ViewerTab::onCompositingOperatorChangedInternal(ViewerCompositingOperatorEnum ol
 void
 ViewerTab::onCompositingOperatorIndexChanged(int index)
 {
-    ViewerCompositingOperatorEnum newOp, oldOp;
-    {
-        QMutexLocker l(&_imp->compOperatorMutex);
-        oldOp = _imp->compOperator;
-        switch (index) {
-        case 0:
-            _imp->compOperator = eViewerCompositingOperatorNone;
-            _imp->secondInputImage->setEnabled_natron(false);
-            manageSlotsForInfoWidget(1, false);
-            _imp->infoWidget[1]->hide();
-            break;
-        case 1:
-            _imp->compOperator = eViewerCompositingOperatorWipeUnder;
-            break;
-        case 2:
-            _imp->compOperator = eViewerCompositingOperatorWipeOver;
-            break;
-        case 3:
-            _imp->compOperator = eViewerCompositingOperatorWipeMinus;
-            break;
-        case 4:
-            _imp->compOperator = eViewerCompositingOperatorWipeOnionSkin;
-            break;
-        case 5:
-            _imp->compOperator = eViewerCompositingOperatorStackUnder;
-            break;
-        case 6:
-            _imp->compOperator = eViewerCompositingOperatorStackOver;
-            break;
-        case 7:
-            _imp->compOperator = eViewerCompositingOperatorStackMinus;
-            break;
-        case 8:
-            _imp->compOperator = eViewerCompositingOperatorStackOnionSkin;
-            break;
-
-        default:
-            break;
-        }
-        assert(index == (int)_imp->compOperator);
-        newOp = _imp->compOperator;
+    if ((index < (int)eViewerCompositingOperatorNone) || (index > (int)eViewerCompositingOperatorStackOnionSkin)) {
+        return;
     }
-
-    onCompositingOperatorChangedInternal(oldOp, newOp);
+    editViewerKnobs(tr("Operation"), [this, index]() {
+        _imp->setViewerValue<int>(kViewerParamOperation, index);
+    });
+    refreshCompositingOperatorFromKnob();
 }
 
 void
 ViewerTab::setCompositingOperator(ViewerCompositingOperatorEnum op)
 {
-    if (_imp->wipeDisabledByDataKind && (op != eViewerCompositingOperatorNone)) {
-        // No wipe while an input is a scene; the operator comes back once none is.
-        _imp->compositingOperatorBeforeScene = op;
-        op = eViewerCompositingOperatorNone;
-    }
-    int comboIndex;
-
-    switch (op) {
-    case eViewerCompositingOperatorNone:
-        comboIndex = 0;
-        break;
-    case eViewerCompositingOperatorWipeUnder:
-        comboIndex = 1;
-        break;
-    case eViewerCompositingOperatorWipeOver:
-        comboIndex = 2;
-        break;
-    case eViewerCompositingOperatorWipeMinus:
-        comboIndex = 3;
-        break;
-    case eViewerCompositingOperatorWipeOnionSkin:
-        comboIndex = 4;
-        break;
-    case eViewerCompositingOperatorStackUnder:
-        comboIndex = 5;
-        break;
-    case eViewerCompositingOperatorStackOver:
-        comboIndex = 6;
-        break;
-    case eViewerCompositingOperatorStackMinus:
-        comboIndex = 7;
-        break;
-    case eViewerCompositingOperatorStackOnionSkin:
-        comboIndex = 8;
-        break;
-
-    default:
-        throw std::logic_error("ViewerTab::setCompositingOperator(): unknown operator");
-        break;
-    }
-    assert(comboIndex == (int)op);
-
-    ViewerCompositingOperatorEnum oldOp;
-    {
-        QMutexLocker l(&_imp->compOperatorMutex);
-        oldOp = _imp->compOperator;
-        _imp->compOperator = op;
-        _imp->compOperatorPrevious = oldOp;
-    }
-    _imp->compositingOperator->setCurrentIndex_no_emit(comboIndex);
-    onCompositingOperatorChangedInternal(oldOp, op);
+    // While an input is a scene the operator reads as None, and the knob's comes back once none is.
+    _imp->setViewerValue<int>(kViewerParamOperation, (int)op);
 }
 
 ViewerCompositingOperatorEnum
 ViewerTab::getCompositingOperator() const
 {
-    QMutexLocker l(&_imp->compOperatorMutex);
+    // MT-safe
+    if (!_imp->viewerNode || _imp->viewerNode->isWipeDisabledByDataKind()) {
+        return eViewerCompositingOperatorNone;
+    }
+    const int op = _imp->viewerValue<int>(kViewerParamOperation, (int)eViewerCompositingOperatorNone);
+    if ((op < (int)eViewerCompositingOperatorNone) || (op > (int)eViewerCompositingOperatorStackOnionSkin)) {
+        return eViewerCompositingOperatorNone;
+    }
 
-    return _imp->compOperator;
+    return (ViewerCompositingOperatorEnum)op;
 }
 
 ViewerCompositingOperatorEnum
 ViewerTab::getCompositingOperatorPrevious() const
 {
-    QMutexLocker l(&_imp->compOperatorMutex);
-
     return _imp->compOperatorPrevious;
 }
 
 void
 ViewerTab::setInputA(int index)
 {
-    ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(index);
-
-    if ( found == _imp->inputNamesMap.end() ) {
+    if (_imp->inputNamesMap.find(index) == _imp->inputNamesMap.end()) {
         return;
     }
-
-    int comboboxIndex = _imp->firstInputImage->itemIndex(found->second.name);
-    if (comboboxIndex == -1) {
-        return;
-    }
-    _imp->firstInputImage->setCurrentIndex(comboboxIndex);
-    _imp->viewerNode->setInputA(index);
-
-    abortViewersAndRefresh();
+    _imp->setViewerValue<int>(kViewerParamAInput, index);
 }
 
 void
 ViewerTab::setInputB(int index)
 {
-    ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(index);
-
-    if ( found == _imp->inputNamesMap.end() ) {
+    if (_imp->inputNamesMap.find(index) == _imp->inputNamesMap.end()) {
         return;
     }
-
-    int comboboxIndex = _imp->secondInputImage->itemIndex(found->second.name);
-    if (comboboxIndex == -1) {
-        return;
-    }
-    _imp->secondInputImage->setCurrentIndex(comboboxIndex);
-    _imp->viewerNode->setInputB(index);
-    abortViewersAndRefresh();
+    _imp->setViewerValue<int>(kViewerParamBInput, index);
 }
 
 void
@@ -1099,81 +949,81 @@ ViewerTab::getActiveInputs(int* a,
     _imp->viewerNode->getActiveInputs(*a, *b);
 }
 
+int
+ViewerTab::inputIndexForMenuText(const QString& text) const
+{
+    for (ViewerTabPrivate::InputNamesMap::const_iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
+        if (it->second.name == text) {
+            return it->first;
+        }
+    }
+
+    return -1;
+}
+
 void
 ViewerTab::switchInputAAndB()
 {
-    QString aIndex = _imp->firstInputImage->getCurrentIndexText();
-    QString bIndex = _imp->secondInputImage->getCurrentIndexText();
+    const int inputAIndex = inputIndexForMenuText(_imp->firstInputImage->getCurrentIndexText());
+    const int inputBIndex = inputIndexForMenuText(_imp->secondInputImage->getCurrentIndexText());
 
-    _imp->firstInputImage->setCurrentText_no_emit(bIndex);
-    _imp->secondInputImage->setCurrentText_no_emit(aIndex);
-
-    int inputAIndex = -1, inputBIndex = -1;
-    for (ViewerTabPrivate::InputNamesMap::iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
-        if (it->second.name == aIndex) {
-            inputAIndex = it->first;
-        } else if (it->second.name == bIndex) {
-            inputBIndex = it->first;
-        }
-    }
     if (inputBIndex == inputAIndex) {
         return;
     }
-    _imp->viewerNode->setInputA(inputBIndex);
-    _imp->viewerNode->setInputB(inputAIndex);
+    editViewerKnobs(tr("Switch Inputs A And B"), [this, inputAIndex, inputBIndex]() {
+        _imp->setViewerValue<int>(kViewerParamAInput, inputBIndex);
+        _imp->setViewerValue<int>(kViewerParamBInput, inputAIndex);
+    });
+    refreshInputMenusFromKnobs();
     _imp->viewer->updatePersistentMessage();
-
-    abortViewersAndRefresh();
 }
 
 ///Called when the user change the combobox choice
 void
 ViewerTab::onFirstInputNameChanged(const QString & text)
 {
-    int inputIndex = -1;
+    const int inputIndex = inputIndexForMenuText(text);
 
-    for (ViewerTabPrivate::InputNamesMap::iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
-        if (it->second.name == text) {
-            inputIndex = it->first;
-            break;
-        }
-    }
-    _imp->viewerNode->setInputA(inputIndex);
+    editViewerKnobs(tr("Input A"), [this, inputIndex]() {
+        _imp->setViewerValue<int>(kViewerParamAInput, inputIndex);
+    });
+    refreshInputMenusFromKnobs();
     _imp->viewer->updatePersistentMessage();
-
-    abortViewersAndRefresh();
 }
 
 ///Called when the user change the combobox choice
 void
 ViewerTab::onSecondInputNameChanged(const QString & text)
 {
-    int inputIndex = -1;
+    const int inputIndex = inputIndexForMenuText(text);
 
-    for (ViewerTabPrivate::InputNamesMap::iterator it = _imp->inputNamesMap.begin(); it != _imp->inputNamesMap.end(); ++it) {
-        if (it->second.name == text) {
-            inputIndex = it->first;
-            break;
+    editViewerKnobs(tr("Input B"), [this, inputIndex]() {
+        _imp->setViewerValue<int>(kViewerParamBInput, inputIndex);
+        // Picking a B input turns the wipe on.
+        if ((inputIndex != -1) && (getCompositingOperator() == eViewerCompositingOperatorNone) && !_imp->viewerNode->isWipeDisabledByDataKind()) {
+            _imp->setViewerValue<int>(kViewerParamOperation, (int)eViewerCompositingOperatorWipeUnder);
         }
-    }
-    _imp->viewerNode->setInputB(inputIndex);
+    });
+    refreshInputMenusFromKnobs();
     _imp->viewer->updatePersistentMessage();
-    if (inputIndex == -1) {
-        manageSlotsForInfoWidget(1, false);
-        //setCompositingOperator(eViewerCompositingOperatorNone);
-        _imp->infoWidget[1]->hide();
-    } else {
-        if ( !_imp->infoWidget[1]->isVisible() ) {
-            _imp->infoWidget[1]->show();
-            manageSlotsForInfoWidget(1, true);
-            _imp->secondInputImage->setEnabled_natron(true);
-            if (_imp->compOperator == eViewerCompositingOperatorNone) {
-                //_imp->viewer->resetWipeControls();
-                setCompositingOperator(eViewerCompositingOperatorWipeUnder);
-            }
-        }
+}
+
+void
+ViewerTab::refreshInputMenusFromKnobs()
+{
+    const int active[2] = {
+        _imp->viewerValue<int>(kViewerParamAInput, -1),
+        _imp->viewerValue<int>(kViewerParamBInput, -1),
+    };
+    ComboBox* menus[2] = { _imp->firstInputImage, _imp->secondInputImage };
+
+    // A disconnected input index shows none.
+    for (int i = 0; i < 2; ++i) {
+        ViewerTabPrivate::InputNamesMap::iterator found = _imp->inputNamesMap.find(active[i]);
+        const int menuIndex = (found != _imp->inputNamesMap.end()) ? menus[i]->itemIndex(found->second.name) : -1;
+        menus[i]->setCurrentIndex_no_emit(std::max(menuIndex, 0));
     }
-    abortViewersAndRefresh();
+    refreshCompositingOperatorFromKnob();
 }
 
 ///This function is called only when the user changed inputs on the node graph
@@ -1183,50 +1033,11 @@ ViewerTab::onActiveInputsChanged()
     int activeInputs[2];
 
     _imp->viewerNode->getActiveInputs(activeInputs[0], activeInputs[1]);
-    ViewerTabPrivate::InputNamesMap::iterator foundA = _imp->inputNamesMap.find(activeInputs[0]);
-    if ( foundA != _imp->inputNamesMap.end() ) {
-        int indexInA = _imp->firstInputImage->itemIndex(foundA->second.name);
-        assert(indexInA != -1);
-        if (indexInA != -1) {
-            _imp->firstInputImage->setCurrentIndex_no_emit(indexInA);
-        }
-    } else {
-        _imp->firstInputImage->setCurrentIndex_no_emit(0);
-    }
+    refreshInputMenusFromKnobs();
 
-    ViewerCompositingOperatorEnum op = getCompositingOperator();
-    _imp->secondInputImage->setEnabled_natron(op != eViewerCompositingOperatorNone);
-
-    ViewerTabPrivate::InputNamesMap::iterator foundB = _imp->inputNamesMap.find(activeInputs[1]);
-    if ( foundB != _imp->inputNamesMap.end() ) {
-        int indexInB = _imp->secondInputImage->itemIndex(foundB->second.name);
-
-        assert(indexInB != -1);
-        _imp->secondInputImage->setCurrentIndex_no_emit(indexInB);
-    } else {
-        _imp->secondInputImage->setCurrentIndex_no_emit(0);
-    }
-
-    if ( (op == eViewerCompositingOperatorNone) || !_imp->secondInputImage->getEnabled_natron()  || (_imp->secondInputImage->activeIndex() == 0) ) {
-        manageSlotsForInfoWidget(1, false);
-        _imp->infoWidget[1]->hide();
-    } else if (op != eViewerCompositingOperatorNone) {
-        manageSlotsForInfoWidget(1, true);
-        _imp->infoWidget[1]->show();
-    }
-
-    bool autoWipe = getInternalNode()->isInputChangeRequestedFromViewer();
-
-    /*if ( ( (activeInputs[0] == -1) || (activeInputs[1] == -1) ) //only 1 input is valid
-         && ( op != eViewerCompositingOperatorNone) ) {
-        //setCompositingOperator(eViewerCompositingOperatorNone);
-        _imp->infoWidget[1]->hide();
-        manageSlotsForInfoWidget(1, false);
-        // _imp->secondInputImage->setEnabled_natron(false);
-       }
-       else*/if ( autoWipe && (activeInputs[0] != -1) && (activeInputs[1] != -1) && (activeInputs[0] != activeInputs[1])
-         && (op == eViewerCompositingOperatorNone) ) {
-        //_imp->viewer->resetWipeControls();
+    const bool autoWipe = getInternalNode()->isInputChangeRequestedFromViewer();
+    if (autoWipe && (activeInputs[0] != -1) && (activeInputs[1] != -1) && (activeInputs[0] != activeInputs[1])
+        && (getCompositingOperator() == eViewerCompositingOperatorNone) && !_imp->viewerNode->isWipeDisabledByDataKind()) {
         setCompositingOperator(eViewerCompositingOperatorWipeUnder);
     }
     _imp->viewer->updatePersistentMessage();
@@ -1270,8 +1081,8 @@ ViewerTab::onAvailableComponentsChanged()
     refreshLayerAndAlphaChannelComboBox();
 }
 
-void
-ViewerTab::refreshFPSBoxFromClipPreferences()
+double
+ViewerTab::getLockedFps() const
 {
     int activeInputs[2];
 
@@ -1284,8 +1095,8 @@ ViewerTab::refreshFPSBoxFromClipPreferences()
     if (input) {
         metadata = input->getMetadata(getTimeLine()->currentFrame(), getCurrentView());
     }
-    _imp->fpsBox->setValue(metadata ? metadata->getOutputFrameRate() : getGui()->getApp()->getProjectFrameRate());
-    onSpinboxFpsChangedInternal( _imp->fpsBox->value() );
+
+    return metadata ? metadata->getOutputFrameRate() : getGui()->getApp()->getProjectFrameRate();
 }
 
 static std::string makeUpFormatName(const RectI& format, double par)
@@ -1326,10 +1137,8 @@ ViewerTab::setInfoBarAndViewerResolution(const RectI& rect, const RectD& canonic
 void
 ViewerTab::onClipPreferencesChanged()
 {
-    //Try to set auto-fps if it is enabled
-    if (_imp->fpsLocked) {
-        refreshFPSBoxFromClipPreferences();
-    }
+    // A locked fps follows the input's.
+    refreshFpsFromKnobs();
 
     Format format;
     getGui()->getApp()->getProject()->getProjectDefaultFormat(&format);

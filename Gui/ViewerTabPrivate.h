@@ -40,8 +40,11 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Global/Enums.h"
 
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Knob.h"
+#include "Engine/UndoGesture.h"
+#include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Gui/ComboBox.h"
 #include "Gui/GuiFwd.h"
@@ -74,10 +77,6 @@ struct ViewerTabPrivate
     QVBoxLayout* viewerSubContainerLayout;
     // Beside viewer in viewerSubContainerLayout; one of the two is visible.
     SceneViewport* sceneViewport;
-    // Wipe is off and its operator menu disabled while an input is a scene; the operator chosen
-    // before comes back afterwards.
-    bool wipeDisabledByDataKind;
-    ViewerCompositingOperatorEnum compositingOperatorBeforeScene;
     QVBoxLayout* mainLayout;
 
     /*Viewer Settings*/
@@ -88,8 +87,6 @@ struct ViewerTabPrivate
     //ComboBox* viewerLayers;
     ComboBox* layerChoice;
     ComboBox* alphaChannelChoice;
-    mutable QMutex currentLayerMutex;
-    QString currentLayerChoice, currentAlphaLayerChoice;
     // The time and view the layer menus were last listed at, so that a menu index picked later
     // maps into the same list even if the timeline moved meanwhile.
     double layerMenuTime;
@@ -106,7 +103,6 @@ struct ViewerTabPrivate
     Button* pauseButton;
     QIcon iconRefreshOff, iconRefreshOn;
     Button* activateRenderScale;
-    bool renderScaleActive;
     ComboBox* renderScaleCombo;
     Label* firstInputLabel;
     ComboBox* firstInputImage;
@@ -119,10 +115,8 @@ struct ViewerTabPrivate
     Button* toggleGainButton;
     SpinBox* gainBox;
     ScaleSliderQWidget* gainSlider;
-    double lastFstopValue;
     Button* autoContrast;
     SpinBox* gammaBox;
-    double lastGammaValue;
     Button* toggleGammaButton;
     ScaleSliderQWidget* gammaSlider;
     ComboBox* viewerDisplay;
@@ -134,8 +128,6 @@ struct ViewerTabPrivate
     Button* checkerboardButton;
     Button* pickerButton;
     ComboBox* viewsComboBox;
-    ViewIdx currentViewIndex;
-    QMutex currentViewMutex;
     /*Info*/
     InfoViewerWidget* infoWidget[2];
 
@@ -165,16 +157,15 @@ struct ViewerTabPrivate
     Button* tripleSyncButton;
     QCheckBox* canEditFpsBox;
     ClickableLabel* canEditFpsLabel;
-    mutable QMutex fpsLockedMutex;
-    bool fpsLocked;
     SpinBox* fpsBox;
-    double userFps;
     ComboBox* timeFormat;
     Button* turboButton;
     QTimer mustSetUpPlaybackButtonsTimer;
 
     /*frame seeker*/
     TimeLineGui* timeLineGui;
+    // Open while the timeline's bounds are dragged, so the drag is one undo entry.
+    UndoGesture timelineBoundsGesture;
 
     // This is all nodes that have a viewer context
     typedef std::map<NodeGuiWPtr, NodeViewerContextPtr, std::owner_less<NodeGuiWPtr>> NodeViewerContextsMap;
@@ -195,8 +186,7 @@ struct ViewerTabPrivate
     // We don't use a map because we need to retain the insertion order for each plug-in
     std::list<PluginViewerContext> currentNodeContext;
     InputNamesMap inputNamesMap;
-    mutable QMutex compOperatorMutex;
-    ViewerCompositingOperatorEnum compOperator;
+    // The last operator other than None, which toggling the wipe brings back.
     ViewerCompositingOperatorEnum compOperatorPrevious;
     ViewerInstance* viewerNode; // < pointer to the internal node
     mutable QMutex visibleToolbarsMutex; //< protects the 4 bool below
@@ -207,8 +197,7 @@ struct ViewerTabPrivate
     bool rightToolbarVisible;
     bool topToolbarVisible;
     bool isFileDialogViewer;
-    mutable QMutex checkerboardMutex;
-    bool checkerboardEnabled;
+    // The fps playback runs at: the desiredFps knob, or the input's or project's while locked.
     mutable QMutex fpsMutex;
     double fps;
 
@@ -217,6 +206,36 @@ struct ViewerTabPrivate
 
     ViewerTabPrivate(ViewerTab* publicInterface,
                      ViewerInstance* node);
+
+    template <typename K>
+    std::shared_ptr<K> viewerKnob(const char* name) const
+    {
+        return viewerNode ? viewerNode->getKnobByNameAndType<K>(name) : std::shared_ptr<K>();
+    }
+
+    // A viewer knob's value; T is the knob's value type (an int for a choice).
+    template <typename T>
+    T viewerValue(const char* name,
+                  const T& fallback,
+                  int dimension = 0) const
+    {
+        std::shared_ptr<Knob<T>> knob = viewerKnob<Knob<T>>(name);
+
+        return knob ? knob->getValue(dimension) : fallback;
+    }
+
+    // Sets a viewer knob unless it already holds value, so an edit that changes nothing emits nothing.
+    template <typename T>
+    void setViewerValue(const char* name,
+                        const T& value,
+                        int dimension = 0) const
+    {
+        std::shared_ptr<Knob<T>> knob = viewerKnob<Knob<T>>(name);
+
+        if (knob && (knob->getValue(dimension) != value)) {
+            knob->setValue(value, ViewSpec::all(), dimension);
+        }
+    }
 
 #ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
     // return the tronsform to apply to the overlay as a 3x3 homography in canonical coordinates
@@ -241,7 +260,7 @@ struct ViewerTabPrivate
     // one view matching its layout, so the alpha menu lists each colour channel once (either
     // may be null). storageColorLayer is the one storage colour entry a chosen colour view maps
     // back to before it reaches the viewer node (getNoneComponents() if no input carries a
-    // colour plane).
+    // colour plane; may be null).
     void getLayerViewsAvailabelAtTime(double time, ViewIdx view, std::list<ImageLayerDesc>* layerViews, std::list<ImageLayerDesc>* channelViews, ImageLayerDesc* storageColorLayer) const;
 
     // The viewer tool slot a node's interface occupies: one slot shared by every curve host (any

@@ -31,7 +31,9 @@
 
 #include <QDebug>
 #include <QPointer>
+#include <QSignalBlocker>
 #include <QTimer>
+#include <QUndoCommand>
 
 #include <QAction>
 #include <QVBoxLayout>
@@ -43,6 +45,7 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
+#include "Engine/UndoGesture.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -65,10 +68,221 @@
 #include "Gui/SpinBox.h"
 #include "Gui/ThemedIcon.h"
 #include "Gui/TimeLineGui.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+const char* const kViewerKnobNames[] = {
+    kViewerParamEnableGain,
+    kViewerParamGain,
+    kViewerParamEnableGamma,
+    kViewerParamGamma,
+    kViewerParamAutoContrast,
+    kViewerParamCheckerboard,
+    kViewerParamDisplay,
+    kViewerParamView,
+    kViewerParamLook,
+    kViewerParamDisplayChannels,
+    kViewerParamDisplayChannelsB,
+    kViewerParamLayer,
+    kViewerParamAlphaChannel,
+    kViewerParamAInput,
+    kViewerParamBInput,
+    kViewerParamOperation,
+    kViewerParamWipeCenter,
+    kViewerParamWipeAmount,
+    kViewerParamWipeAngle,
+    kViewerParamActiveView,
+    kViewerParamEnableFps,
+    kViewerParamFps,
+    kViewerParamInPoint,
+    kViewerParamOutPoint,
+    kViewerParamEnableUserRoI,
+    kViewerParamUserRoIBottomLeft,
+    kViewerParamUserRoISize,
+    kViewerParamClipToFormat,
+    kViewerParamFullFrame,
+    kViewerParamEnableDownscale,
+    kViewerParamDownscaleLevel,
+};
+
+// One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
+struct ViewerKnobValues {
+    std::vector<double> numbers;
+    std::vector<std::string> strings;
+
+    bool operator==(const ViewerKnobValues& other) const
+    {
+        return (numbers == other.numbers) && (strings == other.strings);
+    }
+
+    bool operator!=(const ViewerKnobValues& other) const
+    {
+        return !(*this == other);
+    }
+};
+
+ViewerKnobValues
+readViewerKnob(const KnobIPtr& knob)
+{
+    ViewerKnobValues values;
+    const int nDims = knob->getDimension();
+
+    for (int i = 0; i < nDims; ++i) {
+        if (KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get())) {
+            values.strings.push_back(isString->getValue(i));
+        } else if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
+            values.numbers.push_back(isBool->getValue(i) ? 1. : 0.);
+        } else if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
+            values.numbers.push_back(isInt->getValue(i));
+        } else if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
+            values.numbers.push_back(isDouble->getValue(i));
+        }
+    }
+
+    return values;
+}
+
+// Writes only the dimensions that differ from the knob's current values.
+void
+writeViewerKnob(const KnobIPtr& knob,
+                const ViewerKnobValues& values)
+{
+    const ViewerKnobValues current = readViewerKnob(knob);
+
+    for (std::size_t i = 0; i < values.strings.size() && i < current.strings.size(); ++i) {
+        if (values.strings[i] != current.strings[i]) {
+            dynamic_cast<KnobStringBase*>(knob.get())->setValue(values.strings[i], ViewSpec::all(), (int)i);
+        }
+    }
+    for (std::size_t i = 0; i < values.numbers.size() && i < current.numbers.size(); ++i) {
+        if (values.numbers[i] == current.numbers[i]) {
+            continue;
+        }
+        if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
+            isBool->setValue(values.numbers[i] != 0., ViewSpec::all(), (int)i);
+        } else if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
+            isInt->setValue((int)values.numbers[i], ViewSpec::all(), (int)i);
+        } else if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
+            isDouble->setValue(values.numbers[i], ViewSpec::all(), (int)i);
+        }
+    }
+}
+
+/**
+ * @brief An edit of the viewer's knobs from its toolbar. The first redo runs the edit and keeps
+ * the before and after values of every viewer knob it changed; undo and redo write those back.
+ **/
+class ViewerKnobsCommand
+    : public QUndoCommand,
+      public UndoGestureMember {
+public:
+    ViewerKnobsCommand(const NodePtr& node,
+                       const QString& text,
+                       const std::function<void()>& apply,
+                       quint64 gestureKey)
+        : QUndoCommand(text)
+        , UndoGestureMember()
+        , _node(node)
+        , _apply(apply)
+        , _changes()
+    {
+        setGestureKey(gestureKey);
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        write(false);
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        if (!_apply) {
+            write(true);
+
+            return;
+        }
+        std::function<void()> apply;
+        apply.swap(_apply);
+
+        NodePtr node = _node.lock();
+        if (!node) {
+            setObsolete(true);
+
+            return;
+        }
+        std::vector<ViewerKnobValues> before;
+        for (std::size_t i = 0; i < sizeof(kViewerKnobNames) / sizeof(kViewerKnobNames[0]); ++i) {
+            KnobIPtr knob = node->getKnobByName(kViewerKnobNames[i]);
+            before.push_back(knob ? readViewerKnob(knob) : ViewerKnobValues());
+        }
+        apply();
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            KnobIPtr knob = node->getKnobByName(kViewerKnobNames[i]);
+            if (!knob) {
+                continue;
+            }
+            ViewerKnobValues after = readViewerKnob(knob);
+            if (after != before[i]) {
+                _changes[(int)i] = std::make_pair(before[i], after);
+            }
+        }
+        if (_changes.empty()) {
+            setObsolete(true);
+        }
+    }
+
+    virtual int id() const OVERRIDE FINAL
+    {
+        return kViewerKnobsCommandCompressionID;
+    }
+
+    virtual bool mergeWith(const QUndoCommand* command) OVERRIDE FINAL
+    {
+        const ViewerKnobsCommand* other = dynamic_cast<const ViewerKnobsCommand*>(command);
+
+        if (!other || (other->id() != id()) || !inSameGestureAs(*other) || (other->_node.lock() != _node.lock())) {
+            return false;
+        }
+        for (Changes::const_iterator it = other->_changes.begin(); it != other->_changes.end(); ++it) {
+            Changes::iterator found = _changes.find(it->first);
+            if (found == _changes.end()) {
+                _changes.insert(*it);
+            } else {
+                found->second.second = it->second.second;
+            }
+        }
+
+        return true;
+    }
+
+private:
+    void write(bool after)
+    {
+        NodePtr node = _node.lock();
+
+        if (!node) {
+            return;
+        }
+        for (Changes::const_iterator it = _changes.begin(); it != _changes.end(); ++it) {
+            KnobIPtr knob = node->getKnobByName(kViewerKnobNames[it->first]);
+            if (knob) {
+                writeViewerKnob(knob, after ? it->second.second : it->second.first);
+            }
+        }
+    }
+
+    typedef std::map<int, std::pair<ViewerKnobValues, ViewerKnobValues>> Changes;
+
+    NodeWPtr _node;
+    std::function<void()> _apply;
+    Changes _changes;
+};
+
+} // anon namespace
 
 static void
 makeFullyQualifiedLabel(Node* node,
@@ -575,7 +789,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
             _imp->viewer->setRegionOfDefinition(canonicalFormat, projectFormat.getPixelAspectRatio(), i);
             setInfoBarAndViewerResolution(projectFormat, canonicalFormat, projectFormat.getPixelAspectRatio(), i);
         }
-        _imp->viewer->resetWipeControls();
     }
 
     _imp->viewerSubContainerLayout->addWidget(_imp->viewer, 1);
@@ -761,7 +974,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->canEditFpsBox->setFixedSize(buttonSize);
     //_imp->canEditFpsBox->setIconSize(buttonIconSize);
     _imp->canEditFpsBox->setToolTip(canEditFpsBoxTT);
-    _imp->canEditFpsBox->setChecked(!_imp->fpsLocked);
     QObject::connect( _imp->canEditFpsBox, SIGNAL(clicked(bool)), this, SLOT(onCanSetFPSClicked(bool)) );
 
     _imp->canEditFpsLabel = new ClickableLabel(tr("fps:"), _imp->playerButtonsContainer);
@@ -769,12 +981,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->canEditFpsLabel->setToolTip(canEditFpsBoxTT);
     //_imp->canEditFpsLabel->setFont(font);
 
-
     _imp->fpsBox = new SpinBox(_imp->playerButtonsContainer, SpinBox::eSpinBoxTypeDouble);
-    _imp->fpsBox->setEnabled(!_imp->fpsLocked);
     _imp->fpsBox->decimals(1);
-    _imp->userFps = 24.;
-    _imp->fpsBox->setValue(_imp->userFps);
     _imp->fpsBox->setIncrement(0.1);
     _imp->fpsBox->setToolTip( QString::fromUtf8("<p><b>") + tr("fps:") + QString::fromUtf8("</b></p>") + tr(
                                   "Viewer playback framerate, in frames per second.") );
@@ -943,8 +1151,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     double leftBound, rightBound;
     gui->getApp()->getFrameRange(&leftBound, &rightBound);
     _imp->timeLineGui->setBoundaries(leftBound, rightBound);
-    onTimelineBoundariesChanged(leftBound, rightBound);
     _imp->timeLineGui->setFrameRangeEdited(false);
+    _imp->timeLineGui->installEventFilter(this);
     /*================================================*/
 
 
@@ -1036,10 +1244,17 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                 }
             });
         }
-        setDisplayTransform(std::string(), std::string(), std::string());
     }
 
-    refreshLayerAndAlphaChannelComboBox();
+    // The toolbar shows the viewer node's knobs, and follows them whoever sets them.
+    for (std::size_t i = 0; i < sizeof(kViewerKnobNames) / sizeof(kViewerKnobNames[0]); ++i) {
+        KnobIPtr knob = _imp->viewerNode->getKnobByName(kViewerKnobNames[i]);
+        KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+        if (handler) {
+            QObject::connect(handler.get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(onViewerKnobValueChanged(ViewSpec, int, int)));
+        }
+    }
+    refreshAllFromViewerKnobs();
 
     QTimer::singleShot( 25, _imp->timeLineGui, SLOT(recenterOnBounds()) );
 
@@ -1081,22 +1296,7 @@ ViewerTab::onActiveInputDataKindChanged()
         return;
     }
 
-    const bool noWipe = node->isWipeDisabledByDataKind();
-    if (noWipe != _imp->wipeDisabledByDataKind) {
-        if (noWipe) {
-            _imp->compositingOperatorBeforeScene = getCompositingOperator();
-            _imp->wipeDisabledByDataKind = true;
-            setCompositingOperator(eViewerCompositingOperatorNone);
-        } else {
-            _imp->wipeDisabledByDataKind = false;
-            const ViewerCompositingOperatorEnum op = _imp->compositingOperatorBeforeScene;
-            _imp->compositingOperatorBeforeScene = eViewerCompositingOperatorNone;
-            if (op != eViewerCompositingOperatorNone) {
-                setCompositingOperator(op);
-            }
-        }
-        _imp->compositingOperator->setEnabled_natron(!noWipe);
-    }
+    refreshCompositingOperatorFromKnob();
 
     const bool scene = (node->getActiveInputDataKind() == eDataKindScene);
     if (scene && !_imp->sceneViewport) {
@@ -1163,6 +1363,250 @@ ViewerTab::onSceneEvaluated(int textureIndex)
         fps = getGui()->getApp()->getProjectFrameRate();
     }
     _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
+}
+
+void
+ViewerTab::editViewerKnobs(const QString& text,
+                           const std::function<void()>& apply,
+                           quint64 gestureKey)
+{
+    NodePtr node = _imp->viewerNode ? _imp->viewerNode->getNode() : NodePtr();
+    UndoHistory* history = getGui() ? getGui()->getUndoHistory() : 0;
+
+    if (!node || !history) {
+        apply();
+
+        return;
+    }
+    history->push(new ViewerKnobsCommand(node, text, apply, gestureKey), UndoScope(UndoScope::holderForNode(node)));
+}
+
+void
+ViewerTab::commitWipeControls(const QPointF& center,
+                              double mixAmount,
+                              double angle)
+{
+    editViewerKnobs(tr("Wipe"), [this, center, mixAmount, angle]() {
+        _imp->setViewerValue<double>(kViewerParamWipeCenter, center.x(), 0);
+        _imp->setViewerValue<double>(kViewerParamWipeCenter, center.y(), 1);
+        _imp->setViewerValue<double>(kViewerParamWipeAmount, mixAmount);
+        _imp->setViewerValue<double>(kViewerParamWipeAngle, angle);
+    });
+    refreshWipeAndRoIFromKnobs();
+}
+
+void
+ViewerTab::commitUserRoI(const RectD& roi)
+{
+    editViewerKnobs(tr("Region Of Interest"), [this, roi]() {
+        writeUserRoIKnobs(roi);
+    });
+    refreshWipeAndRoIFromKnobs();
+}
+
+void
+ViewerTab::onViewerKnobValueChanged(ViewSpec /*view*/,
+                                    int /*dimension*/,
+                                    int /*reason*/)
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+    KnobIPtr knob = handler ? handler->getKnob() : KnobIPtr();
+
+    if (knob) {
+        refreshFromViewerKnob(knob->getName());
+    }
+}
+
+void
+ViewerTab::refreshFromViewerKnob(const std::string& name)
+{
+    if ((name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamAutoContrast) || (name == kViewerParamCheckerboard)) {
+        refreshColorControlsFromKnobs();
+    } else if ((name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook)) {
+        refreshDisplayTransformMenus();
+    } else if (name == kViewerParamDisplayChannels) {
+        _imp->viewerChannels->setCurrentIndex_no_emit(_imp->viewerValue<int>(kViewerParamDisplayChannels, 1));
+    } else if ((name == kViewerParamLayer) || (name == kViewerParamAlphaChannel)) {
+        refreshLayerAndAlphaChannelComboBox();
+    } else if ((name == kViewerParamAInput) || (name == kViewerParamBInput)) {
+        refreshInputMenusFromKnobs();
+    } else if (name == kViewerParamOperation) {
+        refreshCompositingOperatorFromKnob();
+    } else if ((name == kViewerParamWipeCenter) || (name == kViewerParamWipeAmount) || (name == kViewerParamWipeAngle) || (name == kViewerParamEnableUserRoI) || (name == kViewerParamUserRoIBottomLeft) || (name == kViewerParamUserRoISize)) {
+        refreshWipeAndRoIFromKnobs();
+    } else if ((name == kViewerParamClipToFormat) || (name == kViewerParamFullFrame) || (name == kViewerParamEnableDownscale) || (name == kViewerParamDownscaleLevel)) {
+        refreshProcessingButtonsFromKnobs();
+    } else if (name == kViewerParamActiveView) {
+        refreshViewsMenuFromKnob();
+        // The inputs' layers can differ from one view to another.
+        refreshLayerAndAlphaChannelComboBox();
+        abortRendering();
+        _imp->viewerNode->renderCurrentFrame(true);
+    } else if ((name == kViewerParamEnableFps) || (name == kViewerParamFps)) {
+        refreshFpsFromKnobs();
+    } else if ((name == kViewerParamInPoint) || (name == kViewerParamOutPoint)) {
+        refreshFrameRangeFromKnobs();
+        abortViewersAndRefresh();
+    }
+}
+
+void
+ViewerTab::refreshAllFromViewerKnobs()
+{
+    refreshColorControlsFromKnobs();
+    refreshDisplayTransformMenus();
+    _imp->viewerChannels->setCurrentIndex_no_emit(_imp->viewerValue<int>(kViewerParamDisplayChannels, 1));
+    refreshLayerAndAlphaChannelComboBox();
+    refreshInputMenusFromKnobs();
+    refreshWipeAndRoIFromKnobs();
+    refreshProcessingButtonsFromKnobs();
+    refreshViewsMenuFromKnob();
+    refreshFpsFromKnobs();
+    refreshFrameRangeFromKnobs();
+}
+
+void
+ViewerTab::refreshColorControlsFromKnobs()
+{
+    const bool gainEnabled = _imp->viewerValue<bool>(kViewerParamEnableGain, false);
+    const double fstop = gainEnabled ? _imp->viewerValue<double>(kViewerParamGain, 0.) : 0.;
+    const bool gammaEnabled = _imp->viewerValue<bool>(kViewerParamEnableGamma, false);
+    const double gamma = gammaEnabled ? _imp->viewerValue<double>(kViewerParamGamma, 1.) : 1.;
+    const bool autoContrast = _imp->viewerValue<bool>(kViewerParamAutoContrast, false);
+    const bool checkerboard = _imp->viewerValue<bool>(kViewerParamCheckerboard, false);
+
+    {
+        QSignalBlocker b0(_imp->toggleGainButton), b1(_imp->gainBox), b2(_imp->gainSlider);
+        QSignalBlocker b3(_imp->toggleGammaButton), b4(_imp->gammaBox), b5(_imp->gammaSlider);
+        QSignalBlocker b6(_imp->autoContrast), b7(_imp->checkerboardButton);
+
+        _imp->toggleGainButton->setChecked(gainEnabled);
+        _imp->toggleGainButton->setDown(gainEnabled);
+        if (_imp->gainBox->value() != fstop) {
+            _imp->gainBox->setValue(fstop);
+        }
+        _imp->gainSlider->seekScalePosition(fstop);
+
+        _imp->toggleGammaButton->setChecked(gammaEnabled);
+        _imp->toggleGammaButton->setDown(gammaEnabled);
+        if (_imp->gammaBox->value() != gamma) {
+            _imp->gammaBox->setValue(gamma);
+        }
+        _imp->gammaSlider->seekScalePosition(gamma);
+
+        _imp->autoContrast->setChecked(autoContrast);
+        _imp->autoContrast->setDown(autoContrast);
+        _imp->gainSlider->setEnabled(!autoContrast);
+        _imp->gainBox->setEnabled(!autoContrast);
+        _imp->toggleGainButton->setEnabled(!autoContrast);
+        _imp->gammaSlider->setEnabled(!autoContrast);
+        _imp->gammaBox->setEnabled(!autoContrast);
+        _imp->toggleGammaButton->setEnabled(!autoContrast);
+
+        _imp->checkerboardButton->setChecked(checkerboard);
+        _imp->checkerboardButton->setDown(checkerboard);
+    }
+
+    _imp->viewer->setGain(_imp->viewerNode->getGain());
+    _imp->viewer->setGamma(_imp->viewerNode->getGamma());
+    _imp->viewer->redraw();
+}
+
+void
+ViewerTab::refreshWipeAndRoIFromKnobs()
+{
+    const QPointF center(_imp->viewerValue<double>(kViewerParamWipeCenter, 0., 0),
+                         _imp->viewerValue<double>(kViewerParamWipeCenter, 0., 1));
+
+    _imp->viewer->setWipeControls(center, _imp->viewerValue<double>(kViewerParamWipeAmount, 1.),
+                                  _imp->viewerValue<double>(kViewerParamWipeAngle, 0.));
+
+    const double width = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0);
+    const double height = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 1);
+    if ((width > 0.) && (height > 0.)) {
+        const double x1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 0);
+        const double y1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 1);
+        _imp->viewer->setUserRoI(RectD(x1, y1, x1 + width, y1 + height));
+    }
+
+    const bool roiEnabled = _imp->viewerValue<bool>(kViewerParamEnableUserRoI, false);
+    {
+        QSignalBlocker b(_imp->enableViewerRoI);
+        _imp->enableViewerRoI->setChecked(roiEnabled);
+        _imp->enableViewerRoI->setDown(roiEnabled);
+    }
+    _imp->viewer->setUserRoIEnabled(roiEnabled);
+}
+
+void
+ViewerTab::refreshProcessingButtonsFromKnobs()
+{
+    const bool clip = _imp->viewerValue<bool>(kViewerParamClipToFormat, true);
+    const bool fullFrame = _imp->viewerValue<bool>(kViewerParamFullFrame, false);
+    const bool downscale = _imp->viewerValue<bool>(kViewerParamEnableDownscale, false);
+    const int level = _imp->viewerValue<int>(kViewerParamDownscaleLevel, 0);
+
+    QSignalBlocker b0(_imp->clipToProjectFormatButton), b1(_imp->fullFrameProcessingButton);
+    QSignalBlocker b2(_imp->activateRenderScale), b3(_imp->renderScaleCombo);
+
+    _imp->clipToProjectFormatButton->setChecked(clip);
+    _imp->clipToProjectFormatButton->setDown(clip);
+    _imp->fullFrameProcessingButton->setChecked(fullFrame);
+    _imp->fullFrameProcessingButton->setDown(fullFrame);
+    _imp->activateRenderScale->setChecked(downscale);
+    _imp->activateRenderScale->setDown(downscale);
+    _imp->renderScaleCombo->setCurrentIndex_no_emit(level);
+}
+
+void
+ViewerTab::refreshFpsFromKnobs()
+{
+    const bool userFps = _imp->viewerValue<bool>(kViewerParamEnableFps, false);
+    // A locked fps follows the input's, or the project's without one.
+    const double fps = userFps ? _imp->viewerValue<double>(kViewerParamFps, 24.) : getLockedFps();
+
+    {
+        QSignalBlocker b0(_imp->canEditFpsBox), b1(_imp->fpsBox);
+        _imp->canEditFpsBox->setChecked(userFps);
+        _imp->fpsBox->setEnabled(userFps);
+        if (_imp->fpsBox->value() != fps) {
+            _imp->fpsBox->setValue(fps);
+        }
+    }
+    {
+        QMutexLocker k(&_imp->fpsMutex);
+        _imp->fps = fps;
+    }
+    RenderEnginePtr engine = _imp->viewerNode->getRenderEngine();
+    if (engine) {
+        engine->setDesiredFPS(fps);
+    }
+}
+
+void
+ViewerTab::refreshFrameRangeFromKnobs()
+{
+    const int first = _imp->viewerValue<int>(kViewerParamInPoint, 1);
+    const int last = _imp->viewerValue<int>(kViewerParamOutPoint, 1);
+
+    SequenceTime curFirst, curLast;
+    _imp->timeLineGui->getBounds(&curFirst, &curLast);
+    {
+        QSignalBlocker b0(_imp->playBackInputSpinbox), b1(_imp->playBackOutputSpinbox);
+        _imp->playBackInputSpinbox->setValue(first);
+        _imp->playBackOutputSpinbox->setValue(last);
+    }
+    if ((curFirst == first) && (curLast == last)) {
+        return;
+    }
+    _imp->timeLineGui->setBoundaries(first, last);
+
+    // A range other than the project's no longer follows it.
+    double projectFirst = first, projectLast = last;
+    if (getGui() && getGui()->getApp()) {
+        getGui()->getApp()->getFrameRange(&projectFirst, &projectLast);
+    }
+    _imp->timeLineGui->setFrameRangeEdited((first != projectFirst) || (last != projectLast));
 }
 
 NATRON_NAMESPACE_EXIT

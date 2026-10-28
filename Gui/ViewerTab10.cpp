@@ -26,9 +26,10 @@
 #include "ViewerTab.h"
 #include "ViewerTabPrivate.h"
 
+#include <QDebug>
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
-#include <QDebug>
 
 #include <QApplication>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -72,18 +73,38 @@ ViewerTab::onDisplayTransformComboBoxChanged(int /*index*/)
     if (_imp->populatingDisplayTransform) {
         return;
     }
-    std::string display, view, look;
-    getDisplayTransform(&display, &view, &look);
-    // Refilled so that the View menu lists the views of the display just picked.
-    setDisplayTransform(display, view, look);
+    const std::string display = _imp->viewerDisplay->getCurrentIndexText().toStdString();
+    std::string view = _imp->viewerView->getCurrentIndexText().toStdString();
+    // The Look menu's first entry is None; an unlisted look is kept as it is.
+    const std::string look = (_imp->viewerLook->activeIndex() == 0) ? std::string() : _imp->viewerLook->getCurrentIndexText().toStdString();
+
+    // A display change keeps the view only if the new display lists it.
+    ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (colorManagement) {
+        const std::vector<std::string> views = colorManagement->getViews(display);
+        if (std::find(views.begin(), views.end(), view) == views.end()) {
+            std::string projectDisplay, projectView;
+            project->getDefaultDisplayView(&projectDisplay, &projectView);
+            if (std::find(views.begin(), views.end(), projectView) != views.end()) {
+                view = projectView;
+            } else if (!colorManagement->getDefaultView(display).empty()) {
+                view = colorManagement->getDefaultView(display);
+            } else if (!views.empty()) {
+                view = views.front();
+            }
+        }
+    }
+    editViewerKnobs(tr("Display Transform"), [this, display, view, look]() {
+        setDisplayTransform(display, view, look);
+    });
+    refreshDisplayTransformMenus();
 }
 
 void
 ViewerTab::onProjectColorConfigChanged()
 {
-    std::string display, view, look;
-    getDisplayTransform(&display, &view, &look);
-    setDisplayTransform(display, view, look);
+    refreshDisplayTransformMenus();
 
     ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
     if (project && !project->isLoadingProject() && _imp->viewerNode) {
@@ -95,25 +116,35 @@ ViewerTab::onProjectColorConfigChanged()
 void
 ViewerTab::onEnableViewerRoIButtonToggle(bool b)
 {
-    _imp->enableViewerRoI->setDown(b);
-    _imp->enableViewerRoI->setChecked(b);
-    _imp->viewer->setUserRoIEnabled(b);
+    editViewerKnobs(tr("Enable Region Of Interest"), [this, b]() {
+        writeUserRoIEnabled(b);
+    });
+    refreshWipeAndRoIFromKnobs();
+}
+
+void
+ViewerTab::writeUserRoIEnabled(bool b)
+{
+    // An RoI never set takes the one the viewer draws by default.
+    if (b && (_imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0) <= 0.)) {
+        writeUserRoIKnobs(_imp->viewer->getUserRegionOfInterest());
+    }
+    _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
 }
 
 void
 ViewerTab::onCreateNewRoIPressed()
 {
-    _imp->enableViewerRoI->setDown(true);
-    _imp->enableViewerRoI->setChecked(true);
+    editViewerKnobs(tr("Enable Region Of Interest"), [this]() {
+        writeUserRoIEnabled(true);
+    });
+    refreshWipeAndRoIFromKnobs();
     _imp->viewer->setBuildNewUserRoI(true);
-    _imp->viewer->setUserRoIEnabled(true);
 }
 
 void
 ViewerTab::updateViewsMenu(const std::vector<std::string>& viewNames)
 {
-    int currentIndex = _imp->viewsComboBox->activeIndex();
-
     _imp->viewsComboBox->clear();
     for (std::size_t i = 0; i < viewNames.size(); ++i) {
         _imp->viewsComboBox->addItem( QString::fromUtf8( viewNames[i].c_str() ) );
@@ -125,26 +156,32 @@ ViewerTab::updateViewsMenu(const std::vector<std::string>& viewNames)
     } else {
         _imp->viewsComboBox->show();
     }
-    if ( ( currentIndex < _imp->viewsComboBox->count() ) && (currentIndex != -1) ) {
-        _imp->viewsComboBox->setCurrentIndex(currentIndex);
-    } else {
-        _imp->viewsComboBox->setCurrentIndex(0);
-    }
+    refreshViewsMenuFromKnob();
     getGui()->updateViewsActions( viewNames.size() );
+}
+
+void
+ViewerTab::refreshViewsMenuFromKnob()
+{
+    _imp->viewsComboBox->setCurrentIndex_no_emit(getCurrentView());
 }
 
 void
 ViewerTab::setCurrentView(ViewIdx view)
 {
-    _imp->viewsComboBox->setCurrentIndex(view);
+    _imp->setViewerValue<int>(kViewerParamActiveView, view.value());
 }
 
 ViewIdx
 ViewerTab::getCurrentView() const
 {
-    QMutexLocker l(&_imp->currentViewMutex);
+    // MT-safe. A view the project no longer has shows its first.
+    const int view = _imp->viewerValue<int>(kViewerParamActiveView, 0);
+    Gui* gui = getGui();
+    ProjectPtr project = (gui && gui->getApp()) ? gui->getApp()->getProject() : ProjectPtr();
+    const int count = project ? project->getProjectViewsCount() : 1;
 
-    return _imp->currentViewIndex;
+    return ViewIdx(((view >= 0) && (view < count)) ? view : 0);
 }
 
 void
@@ -212,16 +249,19 @@ ViewerTab::togglePlaybackMode()
 void
 ViewerTab::onFullFrameButtonToggle(bool b)
 {
-    _imp->fullFrameProcessingButton->setDown(b);
-    _imp->viewerNode->setFullFrameProcessingEnabled(b);
-
+    editViewerKnobs(tr("Full Frame"), [this, b]() {
+        _imp->setViewerValue<bool>(kViewerParamFullFrame, b);
+    });
+    refreshProcessingButtonsFromKnobs();
 }
 
 void
 ViewerTab::onClipToProjectButtonToggle(bool b)
 {
-    _imp->clipToProjectFormatButton->setDown(b);
-    _imp->viewer->setClipToFormat(b);
+    editViewerKnobs(tr("Clip To Format"), [this, b]() {
+        _imp->setViewerValue<bool>(kViewerParamClipToFormat, b);
+    });
+    refreshProcessingButtonsFromKnobs();
 }
 
 void
@@ -263,11 +303,7 @@ ViewerTab::startPause(bool b)
             return;
         }
         app->setLastViewerUsingTimeline( _imp->viewerNode->getNode() );
-        std::vector<ViewIdx> viewsToRender;
-        {
-            QMutexLocker k(&_imp->currentViewMutex);
-            viewsToRender.push_back(_imp->currentViewIndex);
-        }
+        std::vector<ViewIdx> viewsToRender(1, getCurrentView());
         _imp->viewerNode->getRenderEngine()->renderFromCurrentFrame(app->isRenderStatsActionChecked(), viewsToRender, eRenderDirectionForward);
     }
 }
@@ -397,11 +433,7 @@ ViewerTab::startBackward(bool b)
             return;
         }
         app->setLastViewerUsingTimeline( _imp->viewerNode->getNode() );
-        std::vector<ViewIdx> viewsToRender;
-        {
-            QMutexLocker k(&_imp->currentViewMutex);
-            viewsToRender.push_back(_imp->currentViewIndex);
-        }
+        std::vector<ViewIdx> viewsToRender(1, getCurrentView());
         _imp->viewerNode->getRenderEngine()->renderFromCurrentFrame(app->isRenderStatsActionChecked(), viewsToRender, eRenderDirectionBackward);
     }
 }
@@ -503,7 +535,7 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
     }
 
     // The inputs' layers, format, PAR and frame rate can differ from one frame to the next.
-    refreshLayerAndAlphaChannelComboBoxAtTime(time, true);
+    refreshLayerAndAlphaChannelComboBoxAtTime(time);
     onClipPreferencesChanged();
 
     if (isShowingScene()) {
@@ -776,11 +808,11 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionRefreshWithStats, modifiers, key) ) {
         refresh(true);
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionROIEnabled, modifiers, key) ) {
-        onEnableViewerRoIButtonToggle( !_imp->enableViewerRoI->isDown() );
+        onEnableViewerRoIButtonToggle(!_imp->viewerValue<bool>(kViewerParamEnableUserRoI, false));
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionNewROI, modifiers, key) ) {
         onCreateNewRoIPressed();
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyEnabled, modifiers, key) ) {
-        onRenderScaleButtonClicked(!_imp->renderScaleActive);
+        onRenderScaleButtonClicked(!_imp->viewerValue<bool>(kViewerParamEnableDownscale, false));
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel2, modifiers, key) ) {
         _imp->renderScaleCombo->setCurrentIndex(0);
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel4, modifiers, key) ) {
@@ -915,36 +947,23 @@ void
 ViewerTab::setDisplayChannels(int i,
                               bool setBothInputs)
 {
+    editViewerKnobs(tr("Display Channels"), [this, i, setBothInputs]() {
+        writeDisplayChannels(i, setBothInputs);
+    });
     _imp->viewerChannelsAutoswitchedToAlpha = false;
-    DisplayChannelsEnum channels;
+}
 
-    switch (i) {
-    case 0:
-        channels = eDisplayChannelsY;
-        break;
-    case 1:
-        channels = eDisplayChannelsRGB;
-        break;
-    case 2:
-        channels = eDisplayChannelsR;
-        break;
-    case 3:
-        channels = eDisplayChannelsG;
-        break;
-    case 4:
-        channels = eDisplayChannelsB;
-        break;
-    case 5:
-        channels = eDisplayChannelsA;
-        break;
-    case 6:
-        channels = eDisplayChannelsMatte;
-        break;
-    default:
-        channels = eDisplayChannelsRGB;
-        break;
+void
+ViewerTab::writeDisplayChannels(int i,
+                                bool setBothInputs)
+{
+    // The menu and the knobs share the order Luminance, RGB, R, G, B, A, Matte.
+    const int index = ((i >= 0) && (i <= 6)) ? i : 1;
+
+    _imp->setViewerValue<int>(kViewerParamDisplayChannels, index);
+    if (setBothInputs) {
+        _imp->setViewerValue<int>(kViewerParamDisplayChannelsB, index);
     }
-    _imp->viewerNode->setDisplayChannels(channels, setBothInputs);
 }
 
 void
@@ -957,6 +976,19 @@ bool
 ViewerTab::eventFilter(QObject *target,
                        QEvent* e)
 {
+    if (target == _imp->timeLineGui) {
+        // A drag of the timeline's bounds is one undo entry.
+        if (e->type() == QEvent::MouseButtonPress) {
+            _imp->timelineBoundsGesture.begin();
+        } else if (e->type() == QEvent::MouseButtonRelease) {
+            // The timeline emits the drag's last bounds when it handles the release.
+            QTimer::singleShot(0, this, [this]() {
+                _imp->timelineBoundsGesture.end();
+            });
+        }
+
+        return QWidget::eventFilter(target, e);
+    }
     if (e->type() == QEvent::MouseButtonPress) {
         Gui* gui = getGui();
         if (gui) {
@@ -1004,64 +1036,28 @@ ViewerTab::sizeHint() const
 void
 ViewerTab::onViewsComboboxChanged(int index)
 {
-    {
-        QMutexLocker l(&_imp->currentViewMutex);
-        _imp->currentViewIndex = ViewIdx(index);
-    }
-    // The inputs' layers can differ from one view to another.
-    refreshLayerAndAlphaChannelComboBox(true);
-    abortRendering();
-    _imp->viewerNode->renderCurrentFrame(true);
+    editViewerKnobs(tr("Active View"), [this, index]() {
+        _imp->setViewerValue<int>(kViewerParamActiveView, index);
+    });
+    refreshFromViewerKnob(kViewerParamActiveView);
 }
 
 void
 ViewerTab::previousView()
 {
-    ViewIdx idx;
-    {
-        QMutexLocker k(&_imp->currentViewMutex);
-        idx = _imp->currentViewIndex;
-    }
-    int nbViews = _imp->viewsComboBox->count();
+    const int nbViews = _imp->viewsComboBox->count();
+    const int current = getCurrentView().value();
 
-    if (idx.value() == 0) {
-        idx = ViewIdx(nbViews - 1);
-    } else {
-        idx = ViewIdx(idx.value() - 1);
-    }
-    _imp->viewsComboBox->setCurrentIndex_no_emit( idx.value() );
-    {
-        QMutexLocker k(&_imp->currentViewMutex);
-        _imp->currentViewIndex = idx;
-    }
-    refreshLayerAndAlphaChannelComboBox(true);
-    abortRendering();
-    _imp->viewerNode->renderCurrentFrame(true);
+    onViewsComboboxChanged((current == 0) ? (nbViews - 1) : (current - 1));
 }
 
 void
 ViewerTab::nextView()
 {
-    ViewIdx idx;
-    {
-        QMutexLocker k(&_imp->currentViewMutex);
-        idx = _imp->currentViewIndex;
-    }
-    int nbViews = _imp->viewsComboBox->count();
+    const int nbViews = _imp->viewsComboBox->count();
+    const int current = getCurrentView().value();
 
-    if (idx.value() == nbViews - 1) {
-        idx = ViewIdx(0);
-    } else {
-        idx = ViewIdx(idx.value() + 1);
-    }
-    _imp->viewsComboBox->setCurrentIndex_no_emit( idx.value() );
-    {
-        QMutexLocker k(&_imp->currentViewMutex);
-        _imp->currentViewIndex = idx;
-    }
-    refreshLayerAndAlphaChannelComboBox(true);
-    abortRendering();
-    _imp->viewerNode->renderCurrentFrame(true);
+    onViewsComboboxChanged((current >= nbViews - 1) ? 0 : (current + 1));
 }
 
 NATRON_NAMESPACE_EXIT

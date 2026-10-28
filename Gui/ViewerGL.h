@@ -98,8 +98,6 @@ public:
 
     double getPAR(int texIndex) const;
 
-    void setClipToFormat(bool b);
-
     virtual bool isClippingImageToFormat() const OVERRIDE FINAL;
     virtual ImageBitDepthEnum getBitDepth() const OVERRIDE FINAL;
 
@@ -280,13 +278,10 @@ public Q_SLOTS:
 
     void onCheckerboardSettingsChanged();
 
-
     /**
-     * @brief Reset the wipe position so it is in the center of the B input.
-     * If B input is disconnected it goes in the middle of the A input.
-     * Otherwise it goes in the middle of the project window
+     * @brief Shows the wipe handle at the given place, as the viewer node's wipe knobs hold it.
      **/
-    void resetWipeControls();
+    void setWipeControls(const QPointF& center, double mixAmount, double angle);
 
     void clearLastRenderedTexture();
 
@@ -321,6 +316,7 @@ public:
 
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
 
+    // Shows or hides the RoI the viewer node's knobs enable; rendering follows the knobs.
     void setUserRoIEnabled(bool b);
 
     void setBuildNewUserRoI(bool b);
@@ -328,6 +324,7 @@ public:
     virtual bool isUserRegionOfInterestEnabled() const OVERRIDE FINAL;
     virtual RectD getUserRegionOfInterest() const OVERRIDE FINAL;
 
+    // The RoI drawn and dragged, which the viewer node's knobs hold once a drag ends.
     void setUserRoI(const RectD & r);
 
     /**
@@ -420,10 +417,10 @@ public:
     void setGamma(double g);
 
     /**
-     * @brief Sets the display, view and look the 32f shader and the colour picker use, for both
-     * the A and B textures. An empty display or view uses the project's defaults.
+     * @brief Redraws with the viewer node's current display, view and look, which the 32f shader
+     * and the colour picker use for both the A and B textures.
      **/
-    void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
+    void refreshDisplayTransform();
 
     bool isWipeHandleVisible() const;
 

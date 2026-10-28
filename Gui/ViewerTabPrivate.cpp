@@ -59,8 +59,6 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , viewerSubContainer(NULL)
     , viewerSubContainerLayout(NULL)
     , sceneViewport(NULL)
-    , wipeDisabledByDataKind(false)
-    , compositingOperatorBeforeScene(eViewerCompositingOperatorNone)
     , mainLayout(NULL)
     , firstSettingsRow(NULL)
     , secondSettingsRow(NULL)
@@ -83,7 +81,6 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , iconRefreshOff()
     , iconRefreshOn()
     , activateRenderScale(NULL)
-    , renderScaleActive(false)
     , renderScaleCombo(NULL)
     , firstInputLabel(NULL)
     , firstInputImage(NULL)
@@ -94,10 +91,8 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , toggleGainButton(NULL)
     , gainBox(NULL)
     , gainSlider(NULL)
-    , lastFstopValue(0.)
     , autoContrast(NULL)
     , gammaBox(NULL)
-    , lastGammaValue(1.)
     , toggleGammaButton(NULL)
     , gammaSlider(NULL)
     , viewerDisplay(NULL)
@@ -109,8 +104,6 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , checkerboardButton(NULL)
     , pickerButton(NULL)
     , viewsComboBox(NULL)
-    , currentViewIndex(0)
-    , currentViewMutex()
     , infoWidget()
     , playerButtonsContainer(0)
     , playerLayout(NULL)
@@ -136,17 +129,13 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , tripleSyncButton(0)
     , canEditFpsBox(NULL)
     , canEditFpsLabel(NULL)
-    , fpsLockedMutex()
-    , fpsLocked(true)
     , fpsBox(NULL)
-    , userFps(24)
     , turboButton(NULL)
     , timeLineGui(NULL)
+    , timelineBoundsGesture()
     , nodesContext()
     , currentNodeContext()
     , inputNamesMap()
-    , compOperatorMutex()
-    , compOperator(eViewerCompositingOperatorNone)
     , compOperatorPrevious(eViewerCompositingOperatorWipeUnder)
     , viewerNode(node)
     , visibleToolbarsMutex()
@@ -157,8 +146,6 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , rightToolbarVisible(true)
     , topToolbarVisible(true)
     , isFileDialogViewer(false)
-    , checkerboardMutex()
-    , checkerboardEnabled(false)
     , fpsMutex()
     , fps(24.)
     , hasPenDown(false)
@@ -422,11 +409,13 @@ ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
     std::set<ImageLayerDesc> storage;
     getComponentsAvailabel(time, view, &storage);
 
-    *storageColorLayer = ImageLayerDesc::getNoneComponents();
-    for (std::set<ImageLayerDesc>::const_iterator it = storage.begin(); it != storage.end(); ++it) {
-        if (it->isColorLayer()) {
-            *storageColorLayer = *it;
-            break;
+    if (storageColorLayer) {
+        *storageColorLayer = ImageLayerDesc::getNoneComponents();
+        for (std::set<ImageLayerDesc>::const_iterator it = storage.begin(); it != storage.end(); ++it) {
+            if (it->isColorLayer()) {
+                *storageColorLayer = *it;
+                break;
+            }
         }
     }
 

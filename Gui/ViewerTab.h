@@ -39,6 +39,8 @@
 #include "Gui/PanelWidget.h"
 #include "Gui/GuiFwd.h"
 
+#include <functional>
+
 #include <QSize>
 #include <QEnterEvent>
 
@@ -125,11 +127,18 @@ private:
                                           KeyboardModifiers km, Qt::Key qKey, const Qt::KeyboardModifiers& mods);
 
 public:
+    /**
+     * @brief Runs apply, which sets knobs of the viewer node, as one entry of the project's undo
+     * history. Edits carrying the same non-zero gestureKey (one drag) fold into one entry.
+     **/
+    void editViewerKnobs(const QString& text, const std::function<void()>& apply, quint64 gestureKey = 0);
 
+    // Undoable writes of a wipe handle or RoI drag to the viewer node's knobs.
+    void commitWipeControls(const QPointF& center, double mixAmount, double angle);
+    void commitUserRoI(const RectD& roi);
 
-    ////////
-    /////////////The following functions are used when serializing/deserializing the project gui
-    ///////////// so the viewer can restore the exact same settings to the user.
+    // The setters below set the viewer node's knobs directly, without an undo entry, the way any
+    // caller other than a toolbar widget changes the viewer.
     bool isClippedToProject() const;
 
     /**
@@ -148,8 +157,8 @@ public:
     bool isFullFrameProcessingEnabled() const;
 
     /**
-     * @brief Selects the given display, view and look. A name the config lacks falls back to the
-     * project's default display and view, then to the config's defaults; an unknown look to "None".
+     * @brief Sets the display, view and look. A name the config lacks is kept and shown as
+     * missing while the viewer renders with the fallback of ViewerInstance::getResolvedDisplayTransform().
      **/
     void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
 
@@ -169,14 +178,23 @@ public:
     void setChannels(const std::string & channelsStr);
 
 private:
-
+    // An undoable edit of the display channels.
     void setDisplayChannels(int index, bool setBothInputs);
+
+    // Writes the display channels knobs, inside an edit.
+    void writeDisplayChannels(int index, bool setBothInputs);
 
     /**
      * @brief Switches the display channels to A when the chosen layer (or colour view) has a
      * single channel, and back to RGB when leaving such a layer if the switch to A was automatic.
+     * Writes the knobs, inside an edit.
      **/
     void autoSwitchDisplayChannelsForLayer(const ImageLayerDesc& chosen);
+
+    void setGainFromToolbar(double fstop, quint64 gestureKey);
+    void setGammaFromToolbar(double gamma, quint64 gestureKey);
+
+    void writeUserRoIKnobs(const RectD& r);
 
 public:
 
@@ -285,14 +303,13 @@ public:
 
     /**
      * @brief Relists the layer and alpha channel menus from the inputs' layers at this viewer's
-     * current frame and view. With keepAbsentSelection, a chosen layer or alpha channel the
-     * inputs lack at this frame stays chosen instead of falling back to Color, so scrubbing
-     * through a frame that lacks it does not lose the choice.
+     * current frame and view and shows the viewer node's layer and alpha channel in them. One the
+     * inputs lack shows as an unlisted entry; the knobs are never written.
      **/
-    void refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection = false);
+    void refreshLayerAndAlphaChannelComboBox();
 
     // Same, at the given frame of this viewer's timeline.
-    void refreshLayerAndAlphaChannelComboBoxAtTime(double time, bool keepAbsentSelection);
+    void refreshLayerAndAlphaChannelComboBoxAtTime(double time);
 
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
 
@@ -325,12 +342,6 @@ public:
     void toggleViewerPauseMode(bool allInputs);
 
     bool isViewerPaused(int texIndex) const;
-
-    QString getCurrentLayerName() const;
-
-    QString getCurrentAlphaLayerName() const;
-
-    void setCurrentLayers(const QString& layer, const QString& alphaLayer);
 
     void setInfoBarAndViewerResolution(const RectI& rect, const RectD& canonicalRect, double par, int texIndex);
 
@@ -489,29 +500,44 @@ public Q_SLOTS:
 
     void toggleTripleSync(bool toggled);
 
+private Q_SLOTS:
+
+    void onViewerKnobValueChanged(ViewSpec view, int dimension, int reason);
+
 private:
+    // Shows the viewer node's knobs in the widgets and in the GL viewer, with no widget signal.
+    void refreshFromViewerKnob(const std::string& name);
+    void refreshAllFromViewerKnobs();
+    void refreshColorControlsFromKnobs();
+    void refreshCompositingOperatorFromKnob();
+    void refreshInputMenusFromKnobs();
+    void refreshFpsFromKnobs();
+    void refreshFrameRangeFromKnobs();
+    void refreshProcessingButtonsFromKnobs();
+    void refreshWipeAndRoIFromKnobs();
+    void refreshViewsMenuFromKnob();
+
+    // The fps playback runs at: the input's or the project's while the fps is locked.
+    double getLockedFps() const;
 
     void abortViewersAndRefresh();
 
     /**
-     * @brief Refills the Display/View/Look menus from the project's config and selects the given
-     * names, with the fallbacks of setDisplayTransform(). Emits no signal.
+     * @brief Refills the Display/View/Look menus from the project's config and shows the viewer
+     * node's names: an empty one as the name the viewer resolves it to, one the config lacks as
+     * an unlisted entry. Emits no signal.
      **/
-    void populateDisplayTransformMenus(const std::string& display, const std::string& view, const std::string& look);
+    void refreshDisplayTransformMenus();
 
-    /**
-     * @brief Hands the menus' selection to the GL viewer and the viewer node.
-     **/
-    void applyDisplayTransform();
+    // The input index whose menu entry reads text, -1 for none.
+    int inputIndexForMenuText(const QString& text) const;
 
-    void refreshFPSBoxFromClipPreferences();
+    void editFrameRange(const QString& text, int first, int last, quint64 gestureKey);
 
-    void onSpinboxFpsChangedInternal(double fps);
+    // Writes the RoI enable knob; an RoI never set takes the one the viewer draws.
+    void writeUserRoIEnabled(bool enabled);
 
     void onPickerButtonClickedInternal(ViewerTab* caller, bool);
-
-    void onCompositingOperatorChangedInternal(ViewerCompositingOperatorEnum oldOp, ViewerCompositingOperatorEnum newOp);
-
 
     void manageTimelineSlot(bool disconnectPrevious, const TimeLinePtr& timeline);
 

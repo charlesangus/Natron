@@ -373,8 +373,16 @@ public:
     void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
 
     /**
-     * @brief The processor for the current display, view and look, from the project's working
-     * space. Null when the config cannot build it. MT-safe.
+     * @brief The display, view and look the viewer renders with. An empty display or view, or a
+     * name the project's config lacks, falls back to the project's defaults, then to the config's,
+     * then to its first entry; a look the config lacks renders as none. The knobs keep the names
+     * they hold. MT-safe.
+     **/
+    void getResolvedDisplayTransform(std::string* display, std::string* view, std::string* look) const;
+
+    /**
+     * @brief The processor for getResolvedDisplayTransform(), from the project's working space.
+     * Null when the config cannot build it. MT-safe.
      **/
     ProjectColorManagement::DisplayProcessorPtr getDisplayProcessor() const;
 

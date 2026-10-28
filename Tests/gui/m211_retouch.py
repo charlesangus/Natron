@@ -38,7 +38,7 @@ DRAG = (80, -50)  # widget pixels, y down
 MIN_OUTLINE_PIXELS = 100
 
 try:
-    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, QRect, Qt, QTimer
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QScrollArea, QTreeWidget
@@ -49,6 +49,14 @@ try:
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
+
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
 
     def main_window():
         for w in QApplication.topLevelWidgets():
@@ -68,7 +76,7 @@ try:
             for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
                 try:
                     if w.text() == label:
-                        return panel
+                        return hold(panel)
                 except RuntimeError:
                     continue
         return None
@@ -78,42 +86,46 @@ try:
             parent = tree.parentWidget()
             while parent is not None and parent is not panel:
                 if gt.class_name(parent) == "RotoPanel":
-                    return tree
+                    return hold(tree)
                 parent = parent.parentWidget()
         return None
 
     def column_of(tree, header):
-        h = tree.headerItem()
-        for c in range(tree.columnCount()):
-            if h.text(c) == header:
+        m = hold(tree.model())
+        for c in range(m.columnCount()):
+            if m.headerData(c, Qt.Horizontal) == header:
                 return c
         return -1
 
-    def tree_item(tree, name):
-        def walk(item):
-            if item.text(0) == name:
-                return item
-            for i in range(item.childCount()):
-                found = walk(item.child(i))
+    def row_index(tree, name):
+        """The column-0 index of name's row, read through the model: Natron rebuilds the tree's
+        items, so a QTreeWidgetItem wrapper kept across a rebuild is already deleted."""
+        m = hold(tree.model())
+
+        def walk(parent):
+            for r in range(m.rowCount(parent)):
+                index = m.index(r, 0, parent)
+                if index.data() == name:
+                    return index
+                found = walk(index)
                 if found is not None:
                     return found
             return None
-        for i in range(tree.topLevelItemCount()):
-            found = walk(tree.topLevelItem(i))
-            if found is not None:
-                return found
-        return None
+        return walk(QModelIndex())
 
     def shape_column_text(node, name):
-        panel = panel_of(node)
-        tree = curve_tree(panel) if panel is not None else None
-        if tree is None:
+        try:
+            panel = panel_of(node)
+            tree = curve_tree(panel) if panel is not None else None
+            if tree is None:
+                return None
+            col = column_of(tree, COLUMN_HEADER)
+            index = row_index(tree, name)
+            if col < 0 or index is None:
+                return None
+            return index.siblingAtColumn(col).data()
+        except RuntimeError:
             return None
-        col = column_of(tree, COLUMN_HEADER)
-        item = tree_item(tree, name)
-        if col < 0 or item is None:
-            return None
-        return item.text(col)
 
     def content_height(panel):
         heights = [a.widget().sizeHint().height() for a in panel.findChildren(QScrollArea) if a.widget() is not None]
@@ -315,13 +327,14 @@ try:
         yield ("sleep", SETTLE_MS)
         tree = curve_tree(panel_of(node))
         require(tree is not None, "found the curve list")
-        item = tree_item(tree, name)
-        require(item is not None, "the shape has a row in the curve list")
-        tree.clearSelection()
-        item.setSelected(True)
-        tree.scrollToItem(item)
+        index = row_index(tree, name)
+        require(index is not None, "the shape has a row in the curve list")
+        tree.selectionModel().select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        tree.scrollTo(index)
         QApplication.processEvents()
-        rect = tree.visualItemRect(item)
+        index = row_index(tree, name)
+        require(index is not None, "the shape keeps its row in the curve list")
+        rect = tree.visualRect(index)
         click = QPoint(tree.header().sectionViewportPosition(0) + 10, rect.center().y())
         del menu_seen[:]
         QTimer.singleShot(400, lambda: pick_from_popup("Move to Scale 3"))

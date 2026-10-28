@@ -9,14 +9,15 @@ Checks:
     focalLength the layered USDWrite's root layer holds exactly that one property, and only that knob's
     Authored toggle is on. Panel screenshot.
  2. USDVariant on /World/Asset switches the `look` variant: the Variants menu lists left and right, and
-    the cube's red pixels move to blue pixels on the other side of the viewer (relative pixel comparison,
-    Un-tone-mapped view) and the flattened stage agrees.
+    the red cube turns blue once the view is reframed on it (Un-tone-mapped view), and the flattened
+    stage holds the right variant's colour and position (Flatten bakes the selection and drops variant
+    sets, so there is no selection left to read).
  3. A PrimSelector expression ("//Cam + //Geo") typed into USDEditPrim's Prim Pattern is accepted
     without a node error, the panel shows it, and it selects both prims.
  4. USDEditPrim in Define mode (schema Sphere, /rig/ball) creates the prim and the missing /rig Xform;
     the viewer changes and the flattened stage has both.
  5. USDReference brings /World/Ext (from m52-referenced.usda) into the scene: /World/Ext/Marker composes
-    and the viewer changes.
+    and, with the camera framed on both, the viewer differs from the scene without it.
  6. USDSetAttribute authors a typed custom float, and a color3f primvar that the viewer shows.
 
 Screenshots: m52_editprim_panel.png, m52_variant_left.png, m52_variant_right.png, m52_variant_panel.png,
@@ -42,8 +43,8 @@ EXPRESSION = "//Cam + //Geo"
 FOCAL_LENGTH = 85.0
 
 try:
-    from PySide6.QtCore import Q_ARG, QMetaObject
-    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, Qt
+    from PySide6.QtGui import QGuiApplication, QKeyEvent
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPlainTextEdit, QTabBar, QTextEdit
     from pxr import Sdf, Usd
 
@@ -149,6 +150,19 @@ try:
                 if abs(pa.red() - pb.red()) + abs(pa.green() - pb.green()) + abs(pa.blue() - pb.blue()) > 30:
                     count += 1
         return count
+
+    def frame_view():
+        """Frames the free camera on the whole stage, as F does: the viewer frames only the first scene it
+        shows, so prims added or moved later can sit outside the view."""
+        v = view()
+        if v is None:
+            return False
+        before = v.property("natronSceneLastPaintMs") or 0
+        QApplication.sendEvent(v, QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.NoModifier))
+        ok = yield ("until", lambda: view() is not None and (view().property("natronSceneLastPaintMs") or 0) > before,
+                    POLL_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
+        return ok
 
     def save_shots(name):
         shot(name + ".png")
@@ -335,18 +349,24 @@ try:
         ok = yield ("until", lambda: differing_pixels(left_view, grab_view()) > 100, POLL_TIMEOUT_S)
         check(ok, "selecting the right variant changes the viewer")
         yield ("sleep", SETTLE_MS)
+        ok = yield from frame_view()
+        check(ok, "the viewer reframes on the right variant's cube")
         right_view = save_shots("m52_variant_right")
         right = coloured()
         report("NOTE right variant hues %r" % (right,))
         check("b" in right and right["b"][0] > 20 and right.get("r", (0, 0))[0] < right["b"][0] // 4,
               "the right variant shows the blue cube, not the red one")
-        if "r" in left and "b" in right:
-            check(abs(right["b"][1] - left["r"][1]) > 20,
-                  "the cube is on the other side of the viewer (%.0f px apart)" % abs(right["b"][1] - left["r"][1]))
         stage = flattened(variant)
-        geo = stage.GetPrimAtPath("/World/Asset") if stage else None
-        selection = geo.GetVariantSets().GetVariantSet("look").GetVariantSelection() if geo else None
-        check(selection == "right", "the composed stage's look variant is right (%r)" % (selection,))
+        geo = stage.GetPrimAtPath("/World/Asset/Geo") if stage else None
+        colour = geo.GetAttribute("primvars:displayColor").Get() if geo else None
+        moved = geo.GetAttribute("xformOp:translate").Get() if geo else None
+        check(colour is not None and len(colour) == 1 and tuple(colour[0]) == (0.0, 0.0, 1.0)
+              and moved is not None and tuple(moved) == (3.0, 0.0, 0.0),
+              "the composed Geo is the right variant's: blue at x=3 (%r, %r)" % (colour, moved))
+        show(read)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        ok = yield from frame_view()
+        check(ok, "the viewer reframes on the input scene")
         yield from open_panel(variant)
         shot("m52_variant_panel.png")
 
@@ -381,20 +401,22 @@ try:
         yield from open_panel(define)
         shot("m52_define_panel.png")
 
-        # 5. USDReference brings in a file.
-        show(read)
-        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
-        yield ("sleep", SETTLE_MS)
-        plain = grab_view()
+        # 5. USDReference brings in a file. Framed on the referenced scene, the view is compared with the
+        # input alone under the same camera.
         param(reference, "primPath").setValue("/World/Ext")
         require(set_choice(param(reference, "source"), "file"), "the Source menu offers File")
         param(reference, "file").setValue(referenced_path)
         show(reference)
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
-        ok = yield ("until", lambda: differing_pixels(plain, grab_view()) > 50, POLL_TIMEOUT_S)
-        check(ok, "the referenced cube changes the viewer")
+        ok = yield from frame_view()
+        check(ok, "the viewer reframes on the referenced scene")
+        referenced_view = save_shots("m52_reference")
+        show(read)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
-        save_shots("m52_reference")
+        check(differing_pixels(referenced_view, grab_view()) > 50, "the referenced cube changes the viewer")
+        ok = yield from frame_view()
+        check(ok, "the viewer reframes on the input scene")
         stage = flattened(reference)
         paths = prim_paths(stage)
         report("NOTE reference prims %r" % (paths,))

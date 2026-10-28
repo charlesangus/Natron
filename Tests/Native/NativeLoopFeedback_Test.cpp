@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <iostream>
 #include <list>
 #include <string>
 #include <vector>
@@ -621,11 +622,19 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     NodePtr source = createParitySource("alpha");
     NodePtr begin = createLoopBegin(std::string());
     NodePtr counting = createCounting(1.);
+    // Adds a different amount per channel, so that the final channels tell what fed the body.
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr end = createFeedbackEnd(3);
-    ASSERT_TRUE(source && begin && counting && end);
+    ASSERT_TRUE(source && begin && counting && grade && end);
+    KnobColorPtr gradeOffset = std::dynamic_pointer_cast<KnobColor>(grade->getKnobByName(kGradeParamOffset));
+    ASSERT_TRUE(bool(gradeOffset));
+    for (int i = 0; i < gradeOffset->getDimension(); ++i) {
+        gradeOffset->setValue(10. * i, ViewSpec::all(), i);
+    }
     ASSERT_TRUE(begin->connectInput(source, 0));
     ASSERT_TRUE(counting->connectInput(begin, 0));
-    ASSERT_TRUE(end->connectInput(counting, 0));
+    ASSERT_TRUE(grade->connectInput(counting, 0));
+    ASSERT_TRUE(end->connectInput(grade, 0));
 
     float value = -1.f;
     ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
@@ -649,6 +658,33 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     ImageLayerDesc beginLayer, beginPaired;
     EffectInstance::getLayersFromMetadata(*beginEffect->getTimeInvariantMetadata(), -1, &beginLayer, &beginPaired);
     EXPECT_TRUE(beginLayer == ImageLayerDesc::getRGBAComponents()) << "LoopBegin output layer " << beginLayer.getUserFacingLabel() << " (" << beginLayer.getNumComponents() << " comps)";
+
+    RenderedPlane finalPlane;
+    ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderSchedulerModeLegacy, true, &finalPlane));
+    ASSERT_GE(finalPlane.pixels.size(), (std::size_t)4);
+    std::cerr << "ABodyChangingComponents final RGBA " << finalPlane.pixels[0] << " " << finalPlane.pixels[1] << " "
+              << finalPlane.pixels[2] << " " << finalPlane.pixels[3] << " (source " << sourceValue << ")" << std::endl;
+    EXPECT_EQ(sourceValue + 3.f, finalPlane.pixels[0]) << "R";
+    EXPECT_EQ(sourceValue + 3.f + 10.f, finalPlane.pixels[1]) << "G";
+    EXPECT_EQ(sourceValue + 3.f + 20.f, finalPlane.pixels[2]) << "B";
+    EXPECT_EQ(sourceValue + 3.f + 30.f, finalPlane.pixels[3]) << "A";
+
+    // The LoopBegin's metadata under iteration contexts 1 and 2.
+    std::shared_ptr<LoopEnd> loopEnd = std::dynamic_pointer_cast<LoopEnd>(end->getEffectInstance());
+    ASSERT_TRUE(bool(loopEnd));
+    for (int k = 1; k <= 2; ++k) {
+        RenderContextPtr iteration = LoopEnd::iterationContext(RenderContext::empty(), loopEnd->getLoopName(), k, 3, 0, 1, kTime);
+        ActionContextScope contextScope(true, iteration);
+        NodeMetadataConstPtr metadata = beginEffect->getMetadata(kTime, ViewIdx(0));
+        ASSERT_TRUE(bool(metadata)) << "iteration " << k;
+        const int comps = EffectInstance::getNCompsFromMetadata(*metadata, -1);
+        ImageLayerDesc layer, paired;
+        EffectInstance::getLayersFromMetadata(*metadata, -1, &layer, &paired);
+        std::cerr << "ABodyChangingComponents LoopBegin metadata under iteration " << k << ": nComps " << comps << ", layer "
+                  << layer.getUserFacingLabel().c_str() << " (" << layer.getNumComponents() << " comps)" << std::endl;
+        EXPECT_EQ(4, comps) << "iteration " << k << " nComps";
+        EXPECT_TRUE(layer == ImageLayerDesc::getRGBAComponents()) << "iteration " << k << " layer " << layer.getUserFacingLabel() << " (" << layer.getNumComponents() << " comps)";
+    }
 
     begin->getPersistentMessage(&message, &messageType, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();

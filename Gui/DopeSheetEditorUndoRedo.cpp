@@ -604,6 +604,73 @@ DSTransformKeysCommand::mergeWith(const QUndoCommand *other)
     return true;
 }
 
+////////////////////////// DSTrimFrameRangeCommand //////////////////////////
+
+DSTrimFrameRangeCommand::DSTrimFrameRangeCommand(const DSNodePtr& frameRange,
+                                                 bool lastEnd,
+                                                 int oldFrame,
+                                                 int newFrame,
+                                                 QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _frameRange(frameRange->getInternalNode())
+    , _lastEnd(lastEnd)
+    , _oldFrame(oldFrame)
+    , _newFrame(newFrame)
+{
+    setText(lastEnd ? tr("Set last frame") : tr("Set first frame"));
+}
+
+void
+DSTrimFrameRangeCommand::undo()
+{
+    setFrame(_oldFrame);
+}
+
+void
+DSTrimFrameRangeCommand::redo()
+{
+    setFrame(_newFrame);
+}
+
+void
+DSTrimFrameRangeCommand::setFrame(int frame)
+{
+    NodePtr node = _frameRange.lock();
+    if (!node) {
+        setObsolete(true);
+
+        return;
+    }
+    KnobIntPtr knob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(_lastEnd ? kFrameRangeParamLastFrame : kFrameRangeParamFirstFrame));
+    assert(knob);
+    if (!knob) {
+        return;
+    }
+    knob->setValue(frame, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
+}
+
+int
+DSTrimFrameRangeCommand::id() const
+{
+    return kDopeSheetEditorTrimFrameRangeCommandCompressionID;
+}
+
+bool
+DSTrimFrameRangeCommand::mergeWith(const QUndoCommand* other)
+{
+    const DSTrimFrameRangeCommand* cmd = dynamic_cast<const DSTrimFrameRangeCommand*>(other);
+    if (!cmd || (cmd->id() != id()) || !inSameGestureAs(*cmd) || (cmd->_lastEnd != _lastEnd)) {
+        return false;
+    }
+    NodePtr node = _frameRange.lock();
+    if (!node || (node != cmd->_frameRange.lock())) {
+        return false;
+    }
+    _newFrame = cmd->_newFrame;
+
+    return true;
+}
+
 ////////////////////////// DSLeftTrimReaderCommand //////////////////////////
 
 DSLeftTrimReaderCommand::DSLeftTrimReaderCommand(const DSNodePtr& reader,

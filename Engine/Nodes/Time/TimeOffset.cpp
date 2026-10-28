@@ -149,4 +149,17 @@ TimeOffset::getFrameRange(double* first,
     }
 }
 
+bool
+TimeOffset::getConstantShift(double* shift) const
+{
+    KnobDoublePtr offset = op().timeOffset.lock();
+    KnobBoolPtr reverse = op().reverseInput.lock();
+    if (!offset || !reverse || reverse->getValue() || offset->isAnimated(0) || !offset->getExpression(0).empty()) {
+        return false;
+    }
+    *shift = offset->getValue();
+
+    return true;
+}
+
 NATRON_NAMESPACE_EXIT

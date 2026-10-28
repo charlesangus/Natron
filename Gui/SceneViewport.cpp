@@ -46,6 +46,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -67,6 +68,7 @@
 #include <pxr/base/gf/vec2i.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/errorMark.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/glf/simpleLight.h>
@@ -241,6 +243,9 @@ struct SceneViewportRenderer::Implementation {
     std::string selected;
     std::unique_ptr<UsdImagingGLEngine> engine;
     U64 engineCount = 0;
+    // The delegate the next engine is made with, and why it could not be, if it could not.
+    std::string rendererId = kRenderDelegateStormId;
+    std::string rendererError;
 
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
@@ -386,10 +391,34 @@ struct SceneViewportRenderer::Implementation {
         if (engine) {
             return true;
         }
+        if (!rendererError.empty()) {
+            return false;
+        }
+        rendererError = RenderDelegates::unavailableMessage(rendererId);
+        if (!rendererError.empty()) {
+            return false;
+        }
+        // Named even for Storm: with no id the engine takes the first delegate by priority that
+        // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
-        engine.reset(new UsdImagingGLEngine(parameters));
-        ++engineCount;
-        ++engineConstructionCount;
+        parameters.rendererPluginId = TfToken(rendererId);
+        {
+            TfErrorMark mark;
+            engine.reset(new UsdImagingGLEngine(parameters));
+            ++engineCount;
+            ++engineConstructionCount;
+            if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
+                std::string reasons;
+                for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+                    reasons += (reasons.empty() ? ": " : "; ") + it->GetCommentary();
+                }
+                mark.Clear();
+                engine.reset();
+                rendererError = "The renderer " + rendererId + " could not be started" + reasons + ".";
+
+                return false;
+            }
+        }
         engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
         applySelection();
 
@@ -1102,6 +1131,41 @@ SceneViewportRenderer::releaseGL()
 }
 
 void
+SceneViewportRenderer::setRendererId(const std::string& id)
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    const std::string renderer = id.empty() ? std::string(kRenderDelegateStormId) : id;
+
+    // The error is cleared even for the same id, so that choosing it again retries it.
+    _imp->rendererError.clear();
+    if (renderer == _imp->rendererId) {
+        return;
+    }
+    _imp->rendererId = renderer;
+    _imp->engine.reset();
+}
+
+const std::string&
+SceneViewportRenderer::getRendererId() const
+{
+    return _imp->rendererId;
+}
+
+const std::string&
+SceneViewportRenderer::getRendererError() const
+{
+    return _imp->rendererError;
+}
+
+std::string
+SceneViewportRenderer::getEngineRendererId() const
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+
+    return _imp->engine ? _imp->engine->GetCurrentRendererId().GetString() : std::string();
+}
+
+void
 SceneViewportRenderer::getBackgroundColor(float rgb[3])
 {
     rgb[0] = rgb[1] = rgb[2] = kBackgroundDisplay;
@@ -1308,6 +1372,8 @@ SceneViewport::publishState()
     setProperty("natronSceneSynced", isSceneSynced());
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    setProperty("natronSceneRenderer", QString::fromStdString(_imp->renderer.getRendererId()));
+    setProperty("natronSceneRendererError", QString::fromStdString(_imp->renderer.getRendererError()));
 }
 
 const QString&
@@ -1326,6 +1392,17 @@ void
 SceneViewport::setDrawMode(SceneViewportRenderer::DrawModeEnum mode)
 {
     _imp->renderer.setDrawMode(mode);
+    update();
+}
+
+void
+SceneViewport::setRendererId(const QString& id)
+{
+    // Dropping the old engine needs its context.
+    makeCurrent();
+    _imp->renderer.setRendererId(id.toStdString());
+    doneCurrent();
+    publishState();
     update();
 }
 
@@ -1479,12 +1556,14 @@ SceneViewport::paintGL()
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
+    setProperty("natronSceneRendererError", rendererError);
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
-    if (!_imp->error.isEmpty()) {
+    if (!_imp->error.isEmpty() || !rendererError.isEmpty()) {
         painter.setPen(QColor(230, 90, 80));
-        painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, _imp->error);
+        painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, _imp->error.isEmpty() ? rendererError : _imp->error);
     } else if (_imp->renderer.hasScene()) {
         QString mode;
         switch (_imp->renderer.getDrawMode()) {
@@ -1751,6 +1830,27 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
         const SceneViewportRenderer::DrawModeEnum mode = item.mode;
         QObject::connect(action, &QAction::triggered, this, [this, mode]() {
             setDrawMode(mode);
+        });
+    }
+
+    QMenu* renderers = menu.addMenu(tr("Renderer"));
+    QActionGroup* rendererGroup = new QActionGroup(renderers);
+    const std::string& rendererId = _imp->renderer.getRendererId();
+    for (const RenderDelegates::Delegate& delegate : RenderDelegates::list()) {
+        QString label = QString::fromStdString(delegate.displayName);
+        if (!delegate.available) {
+            label = tr("%1 (unavailable)").arg(label);
+        }
+        QAction* action = renderers->addAction(label);
+        action->setCheckable(true);
+        action->setChecked(rendererId == delegate.id);
+        action->setActionGroup(rendererGroup);
+        if (!delegate.available) {
+            action->setToolTip(QString::fromStdString(delegate.error));
+        }
+        const QString id = QString::fromStdString(delegate.id);
+        QObject::connect(action, &QAction::triggered, this, [this, id]() {
+            setRendererId(id);
         });
     }
 

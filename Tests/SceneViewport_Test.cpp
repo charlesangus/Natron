@@ -51,6 +51,7 @@
 #include <QSurfaceFormat>
 
 #include "Engine/AppManager.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Gui/GuiGLRequirements.h"
@@ -683,4 +684,33 @@ TEST_F(SceneViewportStorm, PaintSkipsWhileTheViewerLockIsHeld)
     writer.join();
     EXPECT_TRUE(error.empty()) << error;
     EXPECT_NE(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
+}
+
+// Switching the viewer to a delegate that cannot load drops the Storm engine and shows the
+// loader's error instead of a frame; switching back makes one Storm engine again.
+TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
+{
+    if (_skip) {
+        return;
+    }
+    const std::string stub = "NatronTestStubRendererPlugin";
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
+    const U64 engines = _renderer.getEngineCount();
+
+    _renderer.setRendererId(stub);
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_EQ(engines, _renderer.getEngineCount());
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
+    EXPECT_EQ(0, countNonBackground(_fbo->toImage()));
+
+    _renderer.setRendererId(kRenderDelegateStormId);
+    EXPECT_TRUE(_renderer.getRendererError().empty());
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
+    EXPECT_EQ(engines + 1, _renderer.getEngineCount());
 }

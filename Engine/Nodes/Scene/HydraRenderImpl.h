@@ -35,6 +35,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
@@ -60,6 +61,12 @@ NATRON_NAMESPACE_ENTER
  *
  * Those stages read the scene's layers outside any SceneWriteBarrier::ReadScope, so the thread is
  * a participant of the barrier: a write waits for the job it is running and holds back the next.
+ *
+ * Every other Hydra render delegate (RenderDelegates) renders on a second thread with no GL at
+ * all: its engines are made by plug-in id with the GPU off, their AOVs are CPU buffers read back
+ * as they are, and they count against no GPU budget. A slow CPU render so never holds up Storm,
+ * and between its passes it lets barrier writes through. An owner's engine lives on the thread of
+ * the delegate it last rendered with; a render with another delegate drops it there.
  **/
 namespace HydraRender {
 // How the camera's aperture is conformed to the output format (CameraUtilConformWindow).
@@ -108,6 +115,11 @@ struct Request {
     PXR_NS::GfFrustum frustum;
     int width = 0;
     int height = 0;
+    // The render delegate's plug-in id. One that is not installed or cannot render here fails the
+    // render with an error naming it, before any engine is made: there is no fallback.
+    std::string renderer = kRenderDelegateStormId;
+    // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
+    std::function<bool()> aborted;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -180,7 +192,7 @@ public:
 /**
  * @brief Renders request on the render thread, unless the owner's last render can be reused (its
  * stage unedited, and the time, view and size unchanged), then runs job there and waits for it. Returns what job returns; false with
- * *error set if the render failed.
+ * *error set if the render failed. Storm only: other delegates' pixels are read back.
  **/
 bool withRender(const Request& request,
                 const std::function<bool(RenderAccess& access, std::string* error)>& job,
@@ -213,11 +225,14 @@ bool renderWindow(const Request& request,
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
 
-// Drops owner's stage and engine, on the render thread, without waiting.
+// Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 
-// Drops every owner's stage and engine, on the render thread, without waiting.
+// Drops every owner's stage and Storm engine, on the render thread, without waiting.
 void releaseAll();
+
+// Drops every owner's stage and engine of a delegate other than Storm, without waiting.
+void releaseAllCpuEngines();
 
 /**
  * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
@@ -226,10 +241,13 @@ void releaseAll();
 void setMemoryBudget(std::size_t bytes);
 std::size_t getMemoryBudget();
 
-// How many engines are alive, waiting for the render thread's queue to drain.
+// How many Storm engines are alive, waiting for the render thread's queue to drain.
 std::size_t getEngineCount();
 
-// How many engines have been made in this process.
+// How many engines of other delegates are alive, waiting for their thread's queue to drain.
+std::size_t getCpuEngineCount();
+
+// How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
 
 // The description of the render thread's context, making it if need be; empty if it cannot be.

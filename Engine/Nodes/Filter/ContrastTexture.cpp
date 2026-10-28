@@ -235,6 +235,8 @@ ContrastTexture::initializeKnobs()
     maskDisplay->setDefaultValue((int)CT::eDisplayOff);
     page->addKnob(maskDisplay);
     _maskDisplay = maskDisplay;
+
+    addStageKnobs(page);
 } // ContrastTexture::initializeKnobs
 
 CT::Params

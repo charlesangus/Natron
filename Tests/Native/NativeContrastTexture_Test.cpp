@@ -422,6 +422,10 @@ TEST_F(NativeContrastTextureTest, NodeMatchesKernels)
         ASSERT_EQ(want.size(), got.size());
         std::size_t mismatches = 0;
         for (std::size_t i = 0; i < want.size(); ++i) {
+            // Alpha is not in the node's default channels, so it is the source's even in a preview.
+            if ((i % 4) == 3) {
+                continue;
+            }
             if (std::fabs(want[i] - got[i]) > kKernelTolerance * std::max(1.f, std::fabs(want[i]))) {
                 if (mismatches++ == 0) {
                     ADD_FAILURE() << d.id << ": first mismatch at float " << i << ", " << got[i] << " for " << want[i];
@@ -429,10 +433,8 @@ TEST_F(NativeContrastTextureTest, NodeMatchesKernels)
             }
         }
         EXPECT_EQ(0u, mismatches) << d.id;
-        if (d.display == CT::eDisplayOff) {
-            for (std::size_t k = 0; k < want.size() / 4; ++k) {
-                ASSERT_EQ(image[k * 4 + 3], got[k * 4 + 3]) << "alpha of pixel " << k;
-            }
+        for (std::size_t k = 0; k < want.size() / 4; ++k) {
+            ASSERT_EQ(image[k * 4 + 3], got[k * 4 + 3]) << d.id << ": alpha of pixel " << k;
         }
     }
 }

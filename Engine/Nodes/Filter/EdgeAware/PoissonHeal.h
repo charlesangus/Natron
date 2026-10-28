@@ -34,7 +34,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief darktable's dt_heal() (src/common/heal.c, after GIMP's healing tool and Georgiev's
- * healing brush): seamless cloning by solving the Laplace equation.
+ * healing brush): seamless cloning by solving the Laplace equation. The solution and its
+ * convergence depend on the whole buffer, so pass the whole frame (EdgeAwareCommon.h).
  **/
 namespace EdgeAware {
 /// The default iteration cap of darktable's retouch module.

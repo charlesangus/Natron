@@ -47,7 +47,8 @@ NATRON_NAMESPACE_ENTER
  * later dispatches when a function returns. Intermediates are scratch buffers ctx holds, so ctx
  * needs a buffer pool. A buffer of more than 2^32 floats is refused. The results match the CPU's
  * to rounding: GPU division and transcendental functions are not correctly rounded, and the error
- * sums of the heal and the colour guided filter's tiles run in another order.
+ * sums of the heal and the colour guided filter's tiles run in another order. The whole-frame
+ * contract of EdgeAwareCommon.h applies unchanged: every buffer is the node's whole frame.
  **/
 namespace EdgeAware {
 /// boxMean(), in place.

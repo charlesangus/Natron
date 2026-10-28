@@ -233,7 +233,8 @@ try:
         check(len(layer.getChildren()) >= 1, "the strokes are in the RotoPaint's base layer")
         grab = Grab(gl)
         for k, pts in enumerate(strokes):
-            colours = [grab.colour(p) for p in pts]
+            # The viewer labels the RoD corners, which sit on the strokes' ends.
+            colours = [grab.colour(p) for p in pts[2:-2]]
             check(all(is_red(c) for c in colours), "stroke %d is on screen once the renders land (%s)" % (k + 1, colours[:3]))
         gt.shot("m224_two_strokes.png")
 

@@ -181,10 +181,18 @@ Layer::insertItem(int pos,
 void
 Layer::removeItem(ItemBase* item)
 {
-    if (refusesShapeEdit(_layer->getContext())) {
+    RotoCurveContextPtr context = _layer->getContext();
+    if (refusesShapeEdit(context)) {
         return;
     }
-    _layer->removeItem( item->getInternalItem() );
+    RotoItemPtr internal = item->getInternalItem();
+    if (!context || (internal->getParentLayer() != _layer)) {
+        _layer->removeItem(internal);
+
+        return;
+    }
+    // Through the context, so the item leaves the selection and the panel as well.
+    context->removeItem(internal);
 }
 
 std::list<ItemBase*>

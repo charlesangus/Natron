@@ -954,6 +954,16 @@ ViewerTab::onViewerChannelsChanged(int i)
 }
 
 bool
+ViewerTab::event(QEvent* e)
+{
+    if ((e->type() == QEvent::ShortcutOverride) && claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        return true;
+    }
+
+    return QWidget::event(e);
+}
+
+bool
 ViewerTab::eventFilter(QObject *target,
                        QEvent* e)
 {

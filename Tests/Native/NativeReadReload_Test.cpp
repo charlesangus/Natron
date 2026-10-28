@@ -195,6 +195,33 @@ TEST_F(NativeReadReloadTest, TheReloadButtonSitsBesideTheFile)
     EXPECT_EQ(reload, *(fileAt + 1));
 }
 
+TEST_F(NativeReadReloadTest, ThePanelHasOneReload)
+{
+    ASSERT_TRUE(writeFlatExr(_path, kWidth, kHeight, kRgba, kFirst));
+    _read = createWorkingSpaceRead(_path);
+    ASSERT_TRUE(bool(_read));
+
+    for (const char* name : { kOfxImageEffectFileParamName, kOfxImageEffectProxyParamName }) {
+        KnobFile* file = dynamic_cast<KnobFile*>(_read->getKnobByName(name).get());
+        ASSERT_TRUE(file != NULL) << name;
+        EXPECT_FALSE(file->showsReloadButton()) << name << ": the Reload button reloads it";
+    }
+
+    int reloads = 0;
+    const KnobsVec& knobs = _read->getEffectInstance()->getKnobs();
+    for (const KnobIPtr& knob : knobs) {
+        if (dynamic_cast<KnobButton*>(knob.get()) && ((knob->getName() == kNatronReadParamReload) || (knob->getLabel() == "Reload"))) {
+            ++reloads;
+        }
+    }
+    EXPECT_EQ(1, reloads);
+
+    ASSERT_TRUE(outputIsFlat(kFirst));
+    ASSERT_TRUE(writeFlatExr(_path, kWidth, kHeight, kRgba, kSecond));
+    pressReload();
+    EXPECT_TRUE(outputIsFlat(kSecond));
+}
+
 TEST_F(NativeReadReloadTest, ReloadReadsTheLayersOfAFileChangedOnDisk)
 {
     ASSERT_TRUE(writeFlatExr(_path, kWidth, kHeight, kRgba, kFirst));

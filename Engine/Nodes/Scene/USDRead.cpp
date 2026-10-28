@@ -176,6 +176,7 @@ USDRead::initializeKnobs()
     filename->setName(kUSDReadParamFile);
     filename->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) to read."));
     filename->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
+    filename->setShowsReloadButton(false);
     filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;

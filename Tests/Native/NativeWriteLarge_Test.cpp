@@ -326,9 +326,6 @@ TEST_F(NativeWriteLargeTest, NodeWritesAFrameOverTwoGigabytes)
     KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(_writer->getKnobByName(kOfxImageEffectFileParamName).get());
     ASSERT_TRUE(file != NULL);
     file->setValue(path);
-    ASSERT_TRUE(setChoice(kNatronWriteParamFormatType, kNatronWriteFormatTypeFixed));
-    ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatSize, { (double)kWidth, (double)kHeight }));
-    ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatPar, { 1. }));
     ASSERT_TRUE(setChoice(kNatronWriteParamBitDepth, "32f"));
     ASSERT_TRUE(setChoice(kNatronWriteParamCompression, "none"));
 

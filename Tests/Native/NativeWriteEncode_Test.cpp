@@ -60,6 +60,7 @@
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -326,9 +327,7 @@ protected:
 TEST_F(NativeWriteEncodeTest, KnobsKeepTheWriteOIIOScriptNames)
 {
     static const char* const kNames[] = {
-        kOfxImageEffectFileParamName, kNatronWriteParamOverwrite, kNatronWriteParamFormatType,
-        kNatronParamFormatChoice, kNatronParamFormatSize, kNatronParamFormatPar,
-        kNatronWriteParamClipToRoD, kNatronWriteParamBitDepth, kNatronWriteParamCompression,
+        kOfxImageEffectFileParamName, kNatronWriteParamOverwrite, kNatronWriteParamClipToRoD, kNatronWriteParamBitDepth, kNatronWriteParamCompression,
         kNatronWriteParamQuality, kNatronWriteParamDWACompressionLevel,
         kNatronWriteParamZIPCompressionLevel, kNatronWriteParamTileSize, kNatronWriteParamFrameStep
     };
@@ -340,14 +339,12 @@ TEST_F(NativeWriteEncodeTest, KnobsKeepTheWriteOIIOScriptNames)
     ASSERT_TRUE(overwrite != NULL);
     EXPECT_TRUE(overwrite->getValue());
 
-    KnobChoice* formatType = dynamic_cast<KnobChoice*>(knob(_writer, kNatronWriteParamFormatType).get());
-    ASSERT_TRUE(formatType != NULL);
-    const std::vector<ChoiceOption> entries = formatType->getEntries_mt_safe();
-    ASSERT_EQ(3u, entries.size());
-    EXPECT_EQ(std::string(kNatronWriteFormatTypeInput), entries[0].id);
-    EXPECT_EQ(std::string(kNatronWriteFormatTypeProject), entries[1].id);
-    EXPECT_EQ(std::string(kNatronWriteFormatTypeFixed), entries[2].id);
-    EXPECT_EQ(std::string(kNatronWriteFormatTypeProject), formatType->getActiveEntry().id);
+    static const char* const kGone[] = {
+        "formatType", kNatronParamFormatChoice, kNatronParamFormatSize, kNatronParamFormatPar
+    };
+    for (std::size_t i = 0; i < sizeof(kGone) / sizeof(kGone[0]); ++i) {
+        EXPECT_FALSE(bool(_writer->getKnobByName(kGone[i]))) << kGone[i] << ": the Write always writes its input's format";
+    }
 
     KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(knob(_writer, kNatronWriteParamBitDepth).get());
     ASSERT_TRUE(bitDepth != NULL);
@@ -389,16 +386,6 @@ TEST_F(NativeWriteEncodeTest, OptionsFollowTheFormatOfTheFileName)
     setFile(pathOf("options.exr"));
     EXPECT_TRUE(isShown(kNatronWriteParamClipToRoD));
     EXPECT_FALSE(isShown(kNatronWriteParamQuality));
-}
-
-TEST_F(NativeWriteEncodeTest, FormatChoiceIsShownOnlyForAFixedFormat)
-{
-    setFile(pathOf("fixed.exr"));
-    EXPECT_FALSE(isShown(kNatronParamFormatChoice));
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamFormatType, kNatronWriteFormatTypeFixed));
-    EXPECT_TRUE(isShown(kNatronParamFormatChoice));
-    ASSERT_TRUE(setChoice(_writer, kNatronWriteParamFormatType, kNatronWriteFormatTypeInput));
-    EXPECT_FALSE(isShown(kNatronParamFormatChoice));
 }
 
 TEST_F(NativeWriteEncodeTest, EncodesTheColourPlane)
@@ -518,6 +505,58 @@ TEST_F(NativeWriteEncodeTest, ClipToRoDWritesTheRoDAsTheDataWindow)
     d = compare(file, reference);
     EXPECT_EQ(kWidth * kHeight * 4, d.compared);
     EXPECT_LE(d.maxError, 1e-6) << "outside the region of definition the file is black, as the render is";
+}
+
+TEST_F(NativeWriteEncodeTest, WritesTheInputFormatNotTheProjectFormat)
+{
+    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, 1920, 1080, "nativeWriteEncodeHD", 1.));
+    ASSERT_TRUE(setChoice(_checker, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(_checker, kNativeGeneratorParamBottomLeft, { 8., 6. }));
+    ASSERT_TRUE(setKnobValues(_checker, kNativeGeneratorParamSize, { 32., 24. }));
+
+    NodePtr reformat = createNode(QString::fromUtf8(PLUGINID_NATRON_REFORMAT), PLUGIN_MAJOR_NATRON_REFORMAT);
+    ASSERT_TRUE(bool(reformat));
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, kReformatParamTypeOptionToBox));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 640., 360. }));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 1. }));
+    ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, kReformatParamResizeOptionNone));
+    ASSERT_TRUE(setKnobValues(reformat, kReformatParamCenter, { 0. }));
+    disconnectNodes(_checker, _writer, true);
+    connectNodes(_checker, reformat, 0, true);
+    connectNodes(reformat, _writer, 0, true);
+
+    EffectInstancePtr reformatEffect = reformat->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+    ASSERT_EQ(eStatusOK, reformatEffect->getRegionOfDefinition_public(reformatEffect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    const RectI dataWindow = rod.toPixelEnclosing(0u, 1.);
+    ASSERT_GT(dataWindow.width(), 0);
+    ASSERT_GT(dataWindow.height(), 0);
+
+    const std::string clipped = pathOf("inputFormatClipped.exr");
+    setFile(clipped);
+    KnobBool* clipToRoD = dynamic_cast<KnobBool*>(knob(_writer, kNatronWriteParamClipToRoD).get());
+    ASSERT_TRUE(clipToRoD != NULL);
+    clipToRoD->setValue(true);
+    renderFrame();
+
+    FileImage file;
+    std::string error;
+    ASSERT_TRUE(readBack(clipped, &file, &error)) << error;
+    EXPECT_EQ(0, file.spec.full_x);
+    EXPECT_EQ(0, file.spec.full_y);
+    EXPECT_EQ(640, file.spec.full_width);
+    EXPECT_EQ(360, file.spec.full_height);
+    EXPECT_EQ(dataWindow, OiioReadSupport::dataWindowOf(file.spec));
+
+    const std::string full = pathOf("inputFormatFull.exr");
+    clipToRoD->setValue(false);
+    setFile(full);
+    renderFrame();
+    ASSERT_TRUE(readBack(full, &file, &error)) << error;
+    EXPECT_EQ(640, file.spec.full_width);
+    EXPECT_EQ(360, file.spec.full_height);
+    EXPECT_EQ(RectI(0, 0, 640, 360), OiioReadSupport::dataWindowOf(file.spec));
 }
 
 TEST_F(NativeWriteEncodeTest, OverwriteOffLeavesAnExistingFileUntouched)

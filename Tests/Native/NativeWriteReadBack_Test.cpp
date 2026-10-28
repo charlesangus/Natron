@@ -161,20 +161,28 @@ protected:
         ADD_FAILURE() << "no entry " << id << " in " << name;
     }
 
-    // Makes the written file's format differ from the project's and the input's.
-    void writeFixedFormatFile(const std::string& path)
+    // The Write always writes its input's format, so the file is restamped in a format that differs
+    // from the project's and the input's, holding the Write's current output content hash.
+    void writeForeignFormatFile(const std::string& path)
     {
         setFile(path);
         setBitDepth("32f");
         pickOutputSpace(project()->getWorkingColorSpace());
-        setChoice(kNatronWriteParamFormatType, kNatronWriteFormatTypeFixed);
-        ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatSize, { (double)kFileWidth, (double)kFileHeight }));
-        ASSERT_TRUE(setKnobValues(_writer, kNatronParamFormatPar, { kFilePar }));
-        // Clipped to the input's RoD the file is written in the input's pixel aspect, not the format's.
-        KnobBool* clipToRoD = dynamic_cast<KnobBool*>(_writer->getKnobByName(kNatronWriteParamClipToRoD).get());
-        ASSERT_TRUE(clipToRoD != NULL);
-        clipToRoD->setValue(false, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
         writeSequence();
+
+        OIIO::ImageSpec spec(kFileWidth, kFileHeight, 4, OIIO::TypeDesc::FLOAT);
+        spec.channelnames = { "R", "G", "B", "A" };
+        spec.alpha_channel = 3;
+        spec.attribute("PixelAspectRatio", (float)kFilePar);
+        spec.attribute(kNatronWriteOutputHashAttribute, currentHashText());
+        std::vector<float> pixels((std::size_t)kFileWidth * kFileHeight * 4, kGray);
+        OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+
+        ASSERT_TRUE(bool(out));
+        ASSERT_TRUE(out->open(path, spec));
+        ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()));
+        ASSERT_TRUE(out->close());
+        pressReload();
     }
 
     RectI outputFormat() const
@@ -577,7 +585,7 @@ TEST_F(NativeWriteReadBackTest, ReloadReadsTheLayersOfAFileChangedOnDisk)
 
 TEST_F(NativeWriteReadBackTest, ReadBackReportsTheFilesFormatAndPixelAspect)
 {
-    writeFixedFormatFile(pathOf("format.exr"));
+    writeForeignFormatFile(pathOf("format.exr"));
     ASSERT_EQ(RectI(0, 0, kWidth, kHeight), outputFormat());
     ASSERT_EQ(1., outputPar());
 
@@ -589,7 +597,7 @@ TEST_F(NativeWriteReadBackTest, ReadBackReportsTheFilesFormatAndPixelAspect)
 
 TEST_F(NativeWriteReadBackTest, TurningReadBackOffReportsTheInputsFormatAgain)
 {
-    writeFixedFormatFile(pathOf("formatoff.exr"));
+    writeForeignFormatFile(pathOf("formatoff.exr"));
     setReadBack(true);
     ASSERT_EQ(RectI(0, 0, kFileWidth, kFileHeight), outputFormat());
 

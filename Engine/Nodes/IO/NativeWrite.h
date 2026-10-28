@@ -61,7 +61,6 @@
 #define kNatronWriteParamStartRender "startRender"
 
 #define kNatronWriteParamOverwrite "overwrite"
-#define kNatronWriteParamFormatType "formatType"
 #define kNatronWriteParamClipToRoD "clipToRoD"
 #define kNatronWriteParamBitDepth "bitDepth"
 #define kNatronWriteParamCompression "compression"
@@ -81,10 +80,6 @@
 #define kNatronWriteFrameRangeProject "project"
 #define kNatronWriteFrameRangeManual "manual"
 
-#define kNatronWriteFormatTypeInput "input"
-#define kNatronWriteFormatTypeProject "project"
-#define kNatronWriteFormatTypeFixed "fixed"
-
 #define kNatronWritePartSplittingSingle "single"
 #define kNatronWritePartSplittingViews "views"
 #define kNatronWritePartSplittingViewsLayers "views_layers"
@@ -102,11 +97,13 @@ NATRON_NAMESPACE_ENTER
  * @brief The native image writer, registered under PLUGINID_NATRON_WRITE at major 2.
  *
  * The planned knobs keep WriteOIIO's script names, because tests, tools and host code look knobs up by name:
- * filename, overwrite, formatType, the host format knobs, clipToRoD, frameRange, firstFrame,
+ * filename, overwrite, clipToRoD, frameRange, firstFrame,
  * lastFrame, frameIncr, bitDepth, compression, quality, dwaCompressionLevel, zipCompressionLevel,
  * tileSize, partSplitting, viewsSelector, ocioOutputSpace, ocioOutputSpaceIndex,
  * ocioOutputSpaceSet, the Context group key1..4 and value1..4, the hidden ocioConfigFile and
  * ocioWorkingSpace, writeMetadata, readBack, reload.
+ *
+ * The file always takes the input's format; a Reformat upstream changes it.
  **/
 class NativeWrite
     : public NativeEffectBase {
@@ -276,8 +273,8 @@ private:
 
     void refreshViewsMenu();
 
-    // The format window the format type selects, in pixels.
-    void selectedFormat(double time, ViewIdx view, RectI* display, double* par) const;
+    // The input's format in pixels, else its region of definition when the format is empty.
+    void inputFormat(double time, ViewIdx view, RectI* display, double* par) const;
 
     bool clipToRoDActive() const;
 
@@ -327,10 +324,6 @@ private:
     OcioSpaceKnobs _outputSpace;
     KnobOutputFileWPtr _filename;
     KnobBoolWPtr _overwrite;
-    KnobChoiceWPtr _formatType;
-    KnobChoiceWPtr _format;
-    KnobIntWPtr _formatSize;
-    KnobDoubleWPtr _formatPar;
     KnobBoolWPtr _clipToRoD;
     KnobChoiceWPtr _bitDepth;
     KnobChoiceWPtr _compression;

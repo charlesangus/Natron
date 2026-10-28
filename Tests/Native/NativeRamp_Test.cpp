@@ -197,14 +197,15 @@ TEST_F(NativeRampTest, EachFalloffMatchesHandValues)
     struct Expected {
         const char* id;
         float quarter;
+        float middle;
         float threeQuarters;
     };
     const Expected expected[] = {
-        { "linear", 0.25f, 0.75f },
-        { "smooth", 0.15625f, 0.84375f },
-        { "easein", 0.109375f, 0.703125f },
-        { "easeout", 0.296875f, 0.890625f },
-        { "quadratic", 0.125f, 0.875f },
+        { "linear", 0.25f, 0.5f, 0.75f },
+        { "smooth", 0.15625f, 0.5f, 0.84375f },
+        { "easein", 0.109375f, 0.375f, 0.703125f },
+        { "easeout", 0.296875f, 0.625f, 0.890625f },
+        { "quadratic", 0.125f, 0.5f, 0.875f },
     };
     for (const Expected& e : expected) {
         ASSERT_TRUE(setKnobValue(node, kRampParamFalloff, e.id));
@@ -212,7 +213,7 @@ TEST_F(NativeRampTest, EachFalloffMatchesHandValues)
         ASSERT_TRUE(renderRgba(node, frame(), &plane));
         EXPECT_NEAR(0.f, at(plane, 0, 5, 0), kTolerance) << e.id;
         EXPECT_NEAR(e.quarter, at(plane, 10, 5, 0), kTolerance) << e.id;
-        EXPECT_NEAR(0.5f, at(plane, 20, 5, 0), kTolerance) << e.id;
+        EXPECT_NEAR(e.middle, at(plane, 20, 5, 0), kTolerance) << e.id;
         EXPECT_NEAR(e.threeQuarters, at(plane, 30, 5, 0), kTolerance) << e.id;
         EXPECT_NEAR(1.f, at(plane, 40, 5, 0), kTolerance) << e.id;
     }

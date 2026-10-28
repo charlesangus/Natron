@@ -291,6 +291,13 @@ struct SceneGraphModel::Implementation {
         listenedStage = UsdStageWeakPtr();
     }
 
+    // Compares raw pointers: under C++20, a TfWeakPtr/TfRefPtr comparison resolves to Tf's
+    // reversed friend operator==, which calls itself forever.
+    bool isListened(const UsdStageRefPtr& stage) const
+    {
+        return get_pointer(listenedStage) == get_pointer(stage);
+    }
+
     // Needs the stage's lock.
     void listen(const UsdStageRefPtr& stage)
     {
@@ -497,7 +504,7 @@ struct SceneGraphModel::Implementation {
         bool namesRead = item->namesRead;
         TfTokenVector names;
         source->readStage([&](const SceneStage* sceneStage) {
-            if (!sceneStage || (listenedStage != sceneStage->getStage())) {
+            if (!sceneStage || !isListened(sceneStage->getStage())) {
                 return;
             }
             const UsdStageRefPtr& stage = sceneStage->getStage();
@@ -628,7 +635,7 @@ SceneGraphModel::refresh()
             return;
         }
         const UsdStageRefPtr& stage = sceneStage->getStage();
-        if (!_imp->listener || (_imp->listenedStage != stage)) {
+        if (!_imp->listener || !_imp->isListened(stage)) {
             _imp->listen(stage);
             rootData = readPrimData(stage->GetPseudoRoot());
             action = eReset;

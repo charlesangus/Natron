@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 // clang-format off
 CLANG_DIAG_OFF(deprecated-declarations)
@@ -50,6 +51,19 @@ CLANG_DIAG_ON(deprecated-declarations)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What the viewer overlay draws of a Bezier at one time: the curve and the feather as x,y
+ * float pairs, with their bounding boxes.
+ **/
+struct BezierOverlayPolygons {
+    std::vector<float> curve;
+    std::vector<float> feather;
+    RectD curveBBox;
+    RectD featherBBox;
+    bool hasFeather;
+};
+
+typedef std::shared_ptr<const BezierOverlayPolygons> BezierOverlayPolygonsConstPtr;
 
 /**
  * @class A base class for all items made by the roto context
@@ -472,6 +486,13 @@ public:
      * otherwise if it has never been called, evaluateAtTime_DeCasteljau will be called to compute the bounding box.
      **/
     virtual RectD getBoundingBox(double time) const OVERRIDE;
+
+    /**
+     * @brief The polygons the viewer overlay draws at time, evaluated from the GUI copy, with the
+     * feather when withFeather is true. The last result is kept until the shape, its GUI copy or
+     * its transform changes, or another time is asked for. Main thread only.
+     **/
+    BezierOverlayPolygonsConstPtr getOverlayPolygons(double time, bool withFeather) const;
     static void bezierSegmentListBboxUpdate(bool useGuiCurves,
                                             const std::list<BezierCPPtr> & points,
                                             bool finished,
@@ -601,6 +622,13 @@ public:
     void setAutoOrientationComputation(bool autoCompute);
 
     bool dequeueGuiActions();
+
+    /**
+     * @brief Sets point, a control or feather point of this Bezier, to the GUI state of state
+     * at every time. While the node renders only the GUI copy changes, and the render picks it
+     * up when the queued GUI edits are dequeued, as with any other edit.
+     **/
+    void restorePointState(const BezierCPPtr& point, const BezierCP& state);
 
 protected:
     virtual void appendGeometryContentHash(ContentHasher& h) const OVERRIDE;

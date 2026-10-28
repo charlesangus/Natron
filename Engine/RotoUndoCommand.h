@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -46,13 +47,69 @@ NATRON_NAMESPACE_ENTER
 class RotoCurveInteract;
 class RotoPaintInteract;
 
-// The commands below that override mergeWith() take the key of the interact's open undo gesture
-// when they are created and merge only with a command of the same gesture, so one drag is one
-// undo step and two drags of the same points are two.
-
-class MoveControlPointsUndoCommand
+/**
+ * @brief An undo step for one drag of existing points. It copies the points it edits once, when
+ * the first motion of the drag creates it, and every later motion of the same gesture extends it
+ * in place, so the cost of a motion does not grow with the keyframes the points carry. Undo
+ * copies the dragged state before putting the points back, and a redo after an undo puts that
+ * copy back rather than replaying the motions.
+ **/
+class RotoDragUndoCommand
     : public UndoCommand,
       public UndoGestureMember {
+public:
+    virtual ~RotoDragUndoCommand();
+
+    double getTime() const
+    {
+        return _time;
+    }
+
+    /**
+     * @brief Whether a motion of the gesture with the given key may still extend this command:
+     * it was created in that gesture and has never been undone.
+     **/
+    bool isOpenIn(quint64 gestureKey) const
+    {
+        return !_undone && UndoGesture::sameGesture(getGestureKey(), gestureKey);
+    }
+
+protected:
+    RotoDragUndoCommand(const RotoCurveInteractPtr& roto,
+                        double time);
+
+    /**
+     * @brief Copies point, which this command is about to edit. Null points and points already
+     * added are ignored.
+     **/
+    void addPoint(const BezierCPPtr& point);
+
+    /**
+     * @brief Copies the current state of the points, then puts back the state they had when
+     * they were added.
+     **/
+    void restoreBefore();
+
+    /**
+     * @brief Puts back the state restoreBefore() copied.
+     **/
+    void restoreAfter();
+
+    bool hasBeenUndone() const
+    {
+        return _undone;
+    }
+
+    RotoCurveInteractWPtr _roto;
+    double _time; //< the time at which the change was made
+
+private:
+    std::vector<BezierCPPtr> _points, _before, _after;
+    bool _undone;
+};
+
+class MoveControlPointsUndoCommand
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveControlPointsUndoCommand)
 
 public:
@@ -66,25 +123,24 @@ public:
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Moves the points by a further (dx, dy), as the next motion of the drag.
+     **/
+    void addDelta(double dx, double dy);
 
 private:
+    void movePoints(double dx, double dy);
 
-    bool _firstRedoCalled; //< false by default
-    RotoCurveInteractWPtr _roto;
     double _dx, _dy;
-    bool _featherLinkEnabled;
-    bool _rippleEditEnabled;
     KnobButtonWPtr _selectedTool; //< corresponds to the RotoGui::RotoToolEnum enum
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<int> _indexesToMove; //< indexes of the control points
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> > _originalPoints, _selectedPoints, _pointsToDrag;
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints, _pointsToDrag;
 };
 
 class TransformUndoCommand
-    : public UndoCommand,
-      public UndoGestureMember {
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(TransformUndoCommand)
 
 public:
@@ -114,20 +170,27 @@ public:
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Applies a further transform to the points, as the next motion of the drag.
+     **/
+    void addTransform(double centerX,
+                      double centerY,
+                      double rot,
+                      double skewX,
+                      double skewY,
+                      double tx,
+                      double ty,
+                      double sx,
+                      double sy);
 
 private:
+    void transformPoints(Transform::Matrix3x3 matrix);
 
-    void transformPoint(const BezierCPPtr & point);
-
-    bool _firstRedoCalled; //< false by default
-    RotoCurveInteractWPtr _roto;
-    bool _rippleEditEnabled;
     KnobButtonWPtr _selectedTool; //< corresponds to the RotoGui::RotoToolEnum enum
     Transform::Matrix3x3Ptr _matrix;
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
-    std::list<std::pair<BezierCPPtr, BezierCPPtr> > _originalPoints, _selectedPoints;
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints;
 };
 
 class AddPointUndoCommand
@@ -277,8 +340,7 @@ private:
 };
 
 class MoveTangentUndoCommand
-    : public UndoCommand,
-      public UndoGestureMember {
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveTangentUndoCommand)
 
 public:
@@ -294,26 +356,25 @@ public:
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Drags the tangent by a further (dx, dy), as the next motion of the drag.
+     **/
+    void addDelta(double dx, double dy, bool breakTangents);
 
 private:
+    void moveTangent(double dx, double dy);
 
-    bool _firstRedoCalled; //< false by default
-    RotoCurveInteractWPtr _roto;
     double _dx, _dy;
-    bool _featherLinkEnabled;
-    bool _rippleEditEnabled;
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<std::pair<BezierCPPtr, BezierCPPtr> > _selectedPoints;
-    BezierCPPtr _tangentBeingDragged, _oldCp, _oldFp;
+    BezierCPPtr _tangentBeingDragged;
     bool _left;
     bool _breakTangents;
 };
 
 class MoveFeatherBarUndoCommand
-    : public UndoCommand,
-      public UndoGestureMember {
+    : public RotoDragUndoCommand {
     Q_DECLARE_TR_FUNCTIONS(MoveFeatherBarUndoCommand)
 
 public:
@@ -333,24 +394,24 @@ public:
 
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
-    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
+    /**
+     * @brief Drags the bar by a further (dx, dy), as the next motion of the drag.
+     **/
+    void addDelta(double dx, double dy);
 
 private:
     struct FeatherBar {
         BezierCPPtr cp, fp;
-        BezierCPPtr oldCp, oldFp;
     };
 
     void addFeatherBar(const std::pair<BezierCPPtr, BezierCPPtr>& point);
 
-    RotoCurveInteractWPtr _roto;
-    bool _firstRedoCalled;
+    void moveFeathers(double dx, double dy);
+
     double _dx, _dy;
-    bool _rippleEditEnabled;
-    double _time; //< the time at which the change was made
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<std::pair<BezierCPPtr, BezierCPPtr>> _selectedPoints;
-    std::pair<BezierCPPtr, BezierCPPtr> _grabbedPoint;
     // The grabbed bar is first: its direction sets the distance every bar moves by.
     std::list<FeatherBar> _bars;
 };
@@ -402,6 +463,10 @@ private:
     KnobButtonWPtr _selectedTool;
     BezierPtr _curve;
 };
+
+// The commands below that override mergeWith() take the key of the interact's open undo gesture
+// when they are created and merge only with a command of the same gesture, so one drag is one
+// undo step and two drags of the same points are two.
 
 class SmoothCuspUndoCommand
     : public UndoCommand,

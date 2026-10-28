@@ -1301,6 +1301,33 @@ Settings::initializeKnobsViewers()
                                             "displayed only for the render path for the current viewer "
                                             "inputs.") );
     _viewersTab->addKnob(_viewerOverlaysPath);
+
+    _rotoShapeDragRender = AppManager::createKnob<KnobChoice>(this, tr("Roto Shape Drag Render"));
+    _rotoShapeDragRender->setName("rotoShapeDragRender");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)eRotoShapeDragRenderAdaptive);
+        entries.push_back(ChoiceOption("adaptive",
+                                       tr("Adaptive").toStdString(),
+                                       tr("Render while dragging, and wait for the release once a render takes longer than 100 ms.").toStdString()));
+        assert(entries.size() == (int)eRotoShapeDragRenderAlwaysLive);
+        entries.push_back(ChoiceOption("live",
+                                       tr("Always Live").toStdString(),
+                                       tr("Render while dragging however long each render takes.").toStdString()));
+        assert(entries.size() == (int)eRotoShapeDragRenderOnRelease);
+        entries.push_back(ChoiceOption("onRelease",
+                                       tr("On Release").toStdString(),
+                                       tr("Render only when the drag ends.").toStdString()));
+        _rotoShapeDragRender->populateChoices(entries);
+    }
+    _rotoShapeDragRender->setHintToolTip(tr("When the viewer renders a Roto or RotoPaint shape while its points, tangents, "
+                                            "feather or transform box are dragged.\n"
+                                            "Adaptive renders while dragging, one render at a time with the latest edit, and "
+                                            "waits for the release for the rest of the drag once a render takes longer than "
+                                            "100 ms.\n"
+                                            "Always Live renders while dragging however long each render takes.\n"
+                                            "On Release renders only when the drag ends."));
+    _viewersTab->addKnob(_rotoShapeDragRender);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1743,6 +1770,7 @@ Settings::setDefaultValues()
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
+    _rotoShapeDragRender->setDefaultValue((int)eRotoShapeDragRenderAdaptive);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2593,6 +2621,12 @@ bool
 Settings::viewerOverlaysPath() const
 {
     return _viewerOverlaysPath->getValue();
+}
+
+Settings::RotoShapeDragRenderEnum
+Settings::getRotoShapeDragRender() const
+{
+    return (RotoShapeDragRenderEnum)_rotoShapeDragRender->getValue();
 }
 
 GpuComputeModeEnum

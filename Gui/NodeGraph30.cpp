@@ -210,6 +210,10 @@ NodeGraph::keyReleaseEvent(QKeyEvent* e)
         if (_imp->_bendPointsVisible) {
             _imp->setNodesBendPointsVisible(false);
         }
+        if (!e->isAutoRepeat()) {
+            setKissAiming(false);
+            update();
+        }
     }
 
     handleUnCaughtKeyUpEvent(e);

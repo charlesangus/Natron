@@ -287,6 +287,7 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp

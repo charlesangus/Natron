@@ -286,6 +286,18 @@ private:
 
     void cancelSplice();
 
+    void setKissAiming(bool aiming);
+
+    void updateKissPreview();
+
+    void clearKissPreview();
+
+    void commitKiss();
+
+    void rollBackKisses();
+
+    QUndoCommand* takeKissCommand(NodesGuiList* touched);
+
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 
     bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);

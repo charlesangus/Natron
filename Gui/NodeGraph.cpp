@@ -155,6 +155,10 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_hintOutputEdge->setDefaultColor(Edge::highlightColor(100));
     _imp->_hintOutputEdge->hide();
 
+    _imp->_kissPreviewEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
+    _imp->_kissPreviewEdge->setUseHighlight(true);
+    _imp->_kissPreviewEdge->hide();
+
     _imp->_tL = new NodeGraphTextItem(this, 0, false);
     _imp->_tL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
     scene->addItem(_imp->_tL);
@@ -212,7 +216,17 @@ NodeGraph::~NodeGraph()
         }
         _imp->_hintOutputEdge->setParentItem(NULL);
         delete _imp->_hintOutputEdge;
+
+        scene = _imp->_kissPreviewEdge->scene();
+        if (scene) {
+            scene->removeItem(_imp->_kissPreviewEdge);
+        }
+        _imp->_kissPreviewEdge->setParentItem(NULL);
+        delete _imp->_kissPreviewEdge;
     }
+
+    delete _imp->_kissCommand;
+    _imp->_kissCommand = nullptr;
 
     QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
     _imp->_nodeCreationShortcutEnabled = false;

@@ -228,6 +228,24 @@ firstMatch(const std::string& value,
     return found;
 }
 
+std::string
+patternForLabel(const std::string& label)
+{
+    const bool regexPrefixed = label.compare(0, std::strlen(kPatternRegexPrefix), kPatternRegexPrefix) == 0;
+    if (!regexPrefixed && (label.find_first_of("*?[") == std::string::npos)) {
+        return label;
+    }
+    std::string pattern = kPatternRegexPrefix;
+    for (char c : label) {
+        if ((c != '\0') && std::strchr("\\^$.|?*+()[]{}", c)) {
+            pattern += '\\';
+        }
+        pattern += c;
+    }
+
+    return pattern;
+}
+
 } // namespace RFV
 
 NATRON_NAMESPACE_EXIT

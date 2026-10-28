@@ -64,6 +64,14 @@ bool matchesGlob(const std::string& value, const std::string& glob);
  **/
 int firstMatch(const std::string& value, const std::vector<std::string>& lines, std::string* error = nullptr);
 
+/**
+ * @brief The pattern line matching exactly label and nothing else. A label without '*', '?' or
+ * '[' that does not start with kPatternRegexPrefix is its own glob; any other label, since globs
+ * have no escape character, is kPatternRegexPrefix and the label with every ECMAScript special
+ * character backslash-escaped.
+ **/
+std::string patternForLabel(const std::string& label);
+
 } // namespace RFV
 
 NATRON_NAMESPACE_EXIT

@@ -179,6 +179,13 @@ RFVSwitch::initializeKnobs()
     page->addKnob(variable);
     _variable = variable;
 
+    KnobButtonPtr matchVariable = createKnob<KnobButton>(tr(kRFVSwitchParamMatchVariableLabel));
+    matchVariable->setName(kRFVSwitchParamMatchVariable);
+    matchVariable->setHintToolTip(tr(kRFVSwitchParamMatchVariableHint));
+    matchVariable->setEvaluateOnChange(false);
+    page->addKnob(matchVariable);
+    _matchVariable = matchVariable;
+
     KnobIntPtr count = createKnob<KnobInt>(tr(kRFVSwitchParamPatternCountLabel));
     count->setName(kRFVSwitchParamPatternCount);
     count->setHintToolTip(tr(kRFVSwitchParamPatternCountHint));
@@ -257,6 +264,11 @@ RFVSwitch::knobChanged(KnobI* k,
 
             return true;
         }
+    }
+    if (k == _matchVariable.lock().get()) {
+        matchVariableOptions();
+
+        return true;
     }
     if (k == _patternCount.lock().get()) {
         refreshRows();
@@ -400,6 +412,82 @@ RFVSwitch::removeRow(int row)
     countKnob->setValue(count - 1);
     endChanges();
     reconnectInputs(inputs);
+}
+
+void
+RFVSwitch::matchVariableOptions()
+{
+    KnobStringPtr variable = _variable.lock();
+    KnobIntPtr countKnob = _patternCount.lock();
+    if (!variable || !countKnob) {
+        return;
+    }
+    const std::string name = variable->getValue();
+    const QString variableName = QString::fromUtf8(name.c_str());
+    if (name.empty()) {
+        postMatchNote(tr("Match Variable: no variable is named in Variable.").toStdString());
+
+        return;
+    }
+    // The lookup choiceLabel() matches with, so the rows written are the labels it compares.
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    KnobIPtr declared = project ? RFV::findDeclaredVariable(project.get(), name) : KnobIPtr();
+    if (!declared) {
+        postMatchNote(tr("Match Variable: the project declares no variable %1.").arg(variableName).toStdString());
+
+        return;
+    }
+    KnobChoicePtr choice = std::dynamic_pointer_cast<KnobChoice>(declared);
+    if (!choice) {
+        postMatchNote(tr("Match Variable: the project variable %1 is not a Choice.").arg(variableName).toStdString());
+
+        return;
+    }
+
+    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+    const int rows = std::min((int)entries.size(), (int)_patterns.size());
+    beginChanges();
+    for (int i = 0; i < (int)_patterns.size(); ++i) {
+        std::string pattern;
+        if (i < rows) {
+            const ChoiceOption& entry = entries[i];
+            pattern = RFV::patternForLabel(entry.label.empty() ? entry.id : entry.label);
+        }
+        _patterns[i].lock()->setValue(pattern);
+    }
+    countKnob->setValue(std::max(rows, 1));
+    endChanges();
+    refreshRows();
+    refreshInputsVisibility();
+
+    const int leftOut = (int)entries.size() - rows;
+    if (leftOut > 0) {
+        postMatchNote(tr("Match Variable: %1 has %2 options and the node %3 inputs; the last %4 were left out.")
+                          .arg(variableName)
+                          .arg((int)entries.size())
+                          .arg((int)_patterns.size())
+                          .arg(leftOut)
+                          .toStdString());
+    }
+} // RFVSwitch::matchVariableOptions
+
+void
+RFVSwitch::postMatchNote(const std::string& note)
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    QMutexLocker locker(&_messageMutex);
+    _matchNote = note;
+    QString shown;
+    int shownType = 0;
+    node->getPersistentMessage(&shown, &shownType, false);
+    if ((shown.toStdString() != note) || (shownType != (int)eMessageTypeWarning)) {
+        node->setPersistentMessage(eMessageTypeWarning, note);
+    }
+    _postedMessage = note;
 }
 
 void
@@ -594,7 +682,10 @@ RFVSwitch::reportOutcome(const Outcome& outcome)
         _messageWarnings.insert(outcome.warning);
     }
     const bool isError = !_messageErrors.empty();
-    const std::string wanted = isError ? joined(_messageErrors) : joined(_messageWarnings);
+    std::string wanted = isError ? joined(_messageErrors) : joined(_messageWarnings);
+    if (wanted.empty()) {
+        wanted = _matchNote;
+    }
 
     QString shown;
     int shownType = 0;
@@ -633,6 +724,7 @@ RFVSwitch::clearPostedMessage()
         return;
     }
     QMutexLocker locker(&_messageMutex);
+    _matchNote.clear();
     if (_postedMessage.empty()) {
         return;
     }

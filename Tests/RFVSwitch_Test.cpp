@@ -246,6 +246,25 @@ protected:
         return knob;
     }
 
+    KnobChoicePtr addProjectChoice(const std::string& name,
+                                   const std::vector<ChoiceOption>& options)
+    {
+        ProjectPtr project = getApp()->getProject();
+        KnobChoicePtr knob = project->createChoiceKnob(name, name);
+        std::string error;
+        EXPECT_TRUE(RFV::addAsVariable(project.get(), knob, &error)) << error;
+        knob->populateChoices(options);
+
+        return knob;
+    }
+
+    static void pressMatchVariable(const NodePtr& node)
+    {
+        KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(kRFVSwitchParamMatchVariable));
+        ASSERT_TRUE(bool(button));
+        button->trigger();
+    }
+
     bool renderPixel(const NodePtr& root,
                      RenderSchedulerModeEnum mode,
                      double time,
@@ -771,5 +790,129 @@ TEST_F(RFVSwitchTest, SetValueEditThroughTheCacheSwitches)
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., false));
         value->setValue("sh030");
         EXPECT_EQ(20.f, renderFirstPixel(set, mode, 1., false));
+    }
+}
+
+// Match Variable writes one row per option of the project's Choice, a label holding a glob
+// character as an escaped regex and an empty label as its id, and leaves the inputs where they
+// are, so selecting option N passes input N.
+TEST_F(RFVSwitchTest, MatchVariableWritesOneRowPerOption)
+{
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("plain", "Plain", ""));
+    options.push_back(ChoiceOption("star", "a*b", ""));
+    options.push_back(ChoiceOption("third", "", ""));
+    KnobChoicePtr variant = addProjectChoice("variant", options);
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr b = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr c = createCounting(kTestPluginIDCounting, 30.);
+    NodePtr rfvSwitch = createSwitch("variant", "old");
+    ASSERT_TRUE(variant && a && b && c && rfvSwitch);
+    connectNodes(a, rfvSwitch, 0, true);
+    connectNodes(b, rfvSwitch, 1, true);
+    connectNodes(c, rfvSwitch, 2, true);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_EQ(3, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(std::string("Plain\nre:a\\*b\nthird"), patternsOf(rfvSwitch));
+    EXPECT_FALSE(patternOf(rfvSwitch, 2)->getIsSecret());
+    EXPECT_TRUE(patternOf(rfvSwitch, 3)->getIsSecret());
+    EXPECT_EQ(a, rfvSwitch->getRealInput(0));
+    EXPECT_EQ(b, rfvSwitch->getRealInput(1));
+    EXPECT_EQ(c, rfvSwitch->getRealInput(2));
+    EXPECT_TRUE(rfvSwitch->isInputVisible(2));
+    EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
+
+    const float expected[] = { 10.f, 20.f, 30.f };
+    for (RenderSchedulerModeEnum mode : kModes) {
+        for (int option = 0; option < 3; ++option) {
+            variant->setValue(option);
+            EXPECT_EQ(expected[option], renderFirstPixel(rfvSwitch, mode)) << option;
+        }
+    }
+}
+
+// With fewer options than rows, the surplus rows are emptied and hidden; an input past them
+// stays connected.
+TEST_F(RFVSwitchTest, MatchVariableEmptiesTheSurplusRows)
+{
+    std::vector<ChoiceOption> options;
+    options.push_back(ChoiceOption("low", "Low", ""));
+    options.push_back(ChoiceOption("high", "High", ""));
+    KnobChoicePtr quality = addProjectChoice("quality", options);
+    NodePtr d = createCounting(kTestPluginIDCounting, 40.);
+    NodePtr rfvSwitch = createSwitch("quality", "a\nb\nc\nd");
+    ASSERT_TRUE(quality && d && rfvSwitch);
+    connectNodes(d, rfvSwitch, 3, true);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_EQ(2, patternCountOf(rfvSwitch)->getValue());
+    EXPECT_EQ(std::string("Low\nHigh"), patternsOf(rfvSwitch));
+    for (int row = 2; row < 4; ++row) {
+        EXPECT_EQ(std::string(), patternOf(rfvSwitch, row)->getValue()) << row;
+        EXPECT_TRUE(patternOf(rfvSwitch, row)->getIsSecret()) << row;
+    }
+    EXPECT_EQ(d, rfvSwitch->getRealInput(3));
+    EXPECT_TRUE(rfvSwitch->isInputVisible(3));
+    EXPECT_FALSE(rfvSwitch->isInputVisible(2));
+}
+
+// An empty, undeclared or non-Choice variable changes nothing and says why; the next edit takes
+// the message back.
+TEST_F(RFVSwitchTest, MatchVariableWithoutAChoiceChangesNothing)
+{
+    KnobStringPtr shot = addProjectString("shot", "sh010");
+    NodePtr rfvSwitch = createSwitch("", "keep\nme");
+    ASSERT_TRUE(shot && rfvSwitch);
+    KnobStringPtr variable = std::dynamic_pointer_cast<KnobString>(rfvSwitch->getKnobByName(kRFVSwitchParamVariable));
+    ASSERT_TRUE(bool(variable));
+
+    struct Case {
+        const char* variable;
+        const char* why;
+    };
+    const Case cases[] = {
+        { "", "no variable" },
+        { "missing", "declares no variable missing" },
+        { "shot", "shot is not a Choice" },
+    };
+    for (const Case& c : cases) {
+        variable->setValue(c.variable);
+        EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << c.variable;
+        pressMatchVariable(rfvSwitch);
+        EXPECT_EQ(2, patternCountOf(rfvSwitch)->getValue()) << c.variable;
+        EXPECT_EQ(std::string("keep\nme"), patternsOf(rfvSwitch)) << c.variable;
+        EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8(c.why))) << c.variable << ": " << messageOf(rfvSwitch).toStdString();
+    }
+    patternOf(rfvSwitch, 0)->setValue("edited");
+    EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
+}
+
+// Past the last input the options are left out, and the message, which a successful render
+// keeps, says how many.
+TEST_F(RFVSwitchTest, MatchVariableCapsTheRowsAtTheInputs)
+{
+    const int optionCount = kRFVSwitchInputCount + 4;
+    std::vector<ChoiceOption> options;
+    for (int i = 0; i < optionCount; ++i) {
+        options.push_back(ChoiceOption("id" + std::to_string(i), "o" + std::to_string(i), ""));
+    }
+    KnobChoicePtr many = addProjectChoice("many", options);
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr rfvSwitch = createSwitch("many", "");
+    ASSERT_TRUE(many && a && rfvSwitch);
+    connectNodes(a, rfvSwitch, 0, true);
+
+    pressMatchVariable(rfvSwitch);
+    EXPECT_EQ(kRFVSwitchInputCount, patternCountOf(rfvSwitch)->getValue());
+    for (int row = 0; row < kRFVSwitchInputCount; ++row) {
+        EXPECT_EQ("o" + std::to_string(row), patternOf(rfvSwitch, row)->getValue()) << row;
+    }
+    EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("the last 4 were left out"))) << messageOf(rfvSwitch).toStdString();
+
+    many->setValue(0);
+    for (RenderSchedulerModeEnum mode : kModes) {
+        EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
+        EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("the last 4 were left out"))) << messageOf(rfvSwitch).toStdString();
     }
 }

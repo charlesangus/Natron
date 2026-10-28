@@ -177,6 +177,7 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 
 ## Decisions
 
+- 2026-10-28: Phase 118.1 implemented (build pending; bench at the gate). Stall-to-cause map (P1.T1): pan/zoom/drag/resize/centre → navigator re-render + per-paint walk; hover → unindexed scans + forced repaint; drag_move → P2.T1 + navigator; click/select-all/rubber-band → P2.T2; edit_label → P2.T4; set_expression and knob fan-out → P3.T1/T2/T4; frame_step → P4.T3; load → P4.T1 + naming; paste/duplicate → P3.T5, P4.T2; delete/undo hang → double navigator update (fixed in T2), activate/deactivate and P2.T5 (confirm with eu-stack). Navigator: bounds-only thumbnail, re-rendered at most every 250 ms, never in paint. Hit tests walk top-level items (no spatial index: panning moves the root item). Antialias setting cached, refreshed on Preferences save. Low-detail decided per paint; items skipped in paint, not hidden. One badge item and one cross item per node (12 → 2 items); tooltips via NodeGraph::viewportEvent.
 - 2026-10-13 — Budgets apply to the real host the user tests on, and only Xvfb regressions are checked in the container (user). The milestone does not name the machine.
 - 2026-10-13 — Expression work covers GUI-thread costs only (user). GIL contention between render threads and the GUI is measured by the stall monitor, not fixed.
 - 2026-10-13 — Low-zoom level of detail is allowed, gated by the user signing off the screenshots (user).

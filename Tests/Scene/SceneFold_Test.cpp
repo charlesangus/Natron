@@ -63,12 +63,21 @@ stackOf(const PXR_NS::SdfLayerRefPtr& layer)
     return SceneOps::appendLayer(ScenePayload(), layer, 1);
 }
 
+// usda wants a newline after a non-empty prim's opening brace and between properties.
 const char* const kScene = "def Xform \"World\" {\n"
                            "    def Xform \"Heavy\" {\n"
-                           "        def Cube \"A\" { double size = 1 }\n"
-                           "        def Cube \"B\" { double size = 1 double3 xformOp:translate = (3, 0, 0) uniform token[] xformOpOrder = [\"xformOp:translate\"] }\n"
+                           "        def Cube \"A\" {\n"
+                           "            double size = 1\n"
+                           "        }\n"
+                           "        def Cube \"B\" {\n"
+                           "            double size = 1\n"
+                           "            double3 xformOp:translate = (3, 0, 0)\n"
+                           "            uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                           "        }\n"
                            "    }\n"
-                           "    def Cube \"Light\" { double size = 2 }\n"
+                           "    def Cube \"Light\" {\n"
+                           "        double size = 2\n"
+                           "    }\n"
                            "}\n";
 
 struct Imaged {
@@ -174,7 +183,7 @@ TEST(SceneFoldTest, AFoldedSubtreeIsImagedAsItsBounds)
 
 TEST(SceneFoldTest, AFoldUnloadsPayloadsBelowIt)
 {
-    PXR_NS::SdfLayerRefPtr asset = makeLayer("def Xform \"Asset\" { def Cube \"Geo\" {} }\n");
+    PXR_NS::SdfLayerRefPtr asset = makeLayer("def Xform \"Asset\" {\n    def Cube \"Geo\" {}\n}\n");
     PXR_NS::SdfLayerRefPtr layer = makeLayer("def Xform \"World\" {\n"
                                              "    def Xform \"Outer\" {\n"
                                              "        def Xform \"P\" ( payload = @"
@@ -213,7 +222,7 @@ TEST(SceneFoldTest, FoldingTheTopOfALargeSceneLightensImaging)
     std::ostringstream body;
     body << "def Xform \"World\" {\n";
     for (int i = 0; i < kCubes; ++i) {
-        body << "    def Cube \"C" << i << "\" { double size = 0.5 }\n";
+        body << "    def Cube \"C" << i << "\" {\n        double size = 0.5\n    }\n";
     }
     body << "}\n";
     PXR_NS::SdfLayerRefPtr layer = makeLayer(body.str());

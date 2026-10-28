@@ -249,7 +249,7 @@ future core work has solid ground to build on.
 | M149 | SplineWarp Mesh Solver | doing | M147 | bosley-native-nodes | E3 | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
 | M150 | SplineWarp GPU Kernel | doing | M147 | bosley-native-nodes | E3 | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
 | M151 | SplineWarp Motion Blur | doing | M147, M150 | bosley-native-nodes | E3 | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
-| M152 | Curve Track Links And Roto Copy | todo | M148 |  | E3 | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
+| M152 | Curve Track Links And Roto Copy | doing | M148 | bosley-native-nodes | E3 | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
 | M153 | Distortion Concatenation | todo | M147, M113 |  | E14 | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |
 | M154 | Fresh Buffer Page Zeroing | done | M109 | gpu | E5 | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |

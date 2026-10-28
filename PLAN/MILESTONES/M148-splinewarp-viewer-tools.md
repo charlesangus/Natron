@@ -64,7 +64,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 
 ## Phase 148.1: Interact and warp tools
 
-- [ ] M148.P1.T1 — `SplineWarpInteract`, the toolbar and the point tool
+- [x] M148.P1.T1 — `SplineWarpInteract`, the toolbar and the point tool
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.{h,cpp}` (new), `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/RotoCurveInteract.{h,cpp}`
   - approach:
     - Derive from `RotoCurveInteract`, and hook it up as the node's overlay through the base's delegation pattern.
@@ -74,7 +74,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
   - verify: `Tests/Native/SplineWarpTools_Test.cpp` (new) checks the toolbar page's children and that the point tool's action creates a one-CP open curve through the context. The Xvfb gate covers the interaction.
   - size: L
 
-- [ ] M148.P1.T2 — Warp actions with undo
+- [x] M148.P1.T2 — Warp actions with undo
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpUndo.{h,cpp}` (new), `Tests/Native/SplineWarpTools_Test.cpp`
   - approach:
     - Duplicate and Link: clone the curve (the copy ctor), insert it above the original, link with `duplicate=true`, and select the copy.
@@ -84,7 +84,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
   - verify: the test covers Duplicate and Link rendering bit-exact identity before any edit, Link auto-aligning a re-started copy, Swap matching invert for a single link, each refusal, and undo/redo restoring the model and the content hash.
   - size: L
 
-- [ ] M148.P1.T3 — Correspondence tool
+- [x] M148.P1.T3 — Correspondence tool
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpUndo.{h,cpp}`, `Tests/Native/SplineWarpTools_Test.cpp`
   - approach:
     - On pen-down, find the nearest linked curve and parameter with `isPointOnCurve`. Create the correspondence, placing the partner parameter by the current span's arc-length pairing.
@@ -142,6 +142,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion against 
 
 ## Decisions
 
+- 2026-10-28: Phase 1 implemented (86b0c3735, build pending). No BSpline tool (shared base has none). Warp actions return their undo command (background apps discard pushed commands). Correspondence picking uses SplineWarpCurve::nearestParam (isPointOnCurve reads timeline time, main thread only). Toggle Boundary on mixed selection sets all, clears if all set. Duplicate and Link takes exactly one curve, names <name>_copy[N]. Auto-key on keys new correspondences at the current time. Swap is exact only for unreversed zero-offset links. Open (put to the user): where the one-shot warp actions live (toolbar groups only hold switchable tools) — PM recommendation: a Nuke-style Join tool (Nuke's SplineWarp links A→B with a Join tool) plus right-click menu entries for the others; and whether Swap must be exact for reversed/offset links.
 - 2026-10-20 — **Duplicate and Link lands on top, as the selected destination (user, grill):** the warp starts at zero, so nothing jumps.
 - 2026-10-20 — **Colours, a show toggle and a warped/unwarped toggle (user, grill).**
 - 2026-10-20 — **A dedicated correspondence tool, with ends constrained to their curves (user, grill).**

@@ -229,6 +229,8 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
     _imp->_spliceCancelled = false;
     _imp->_kissCancelled = false;
     _imp->_kissAiming = false;
+    _imp->_shakeDetector.reset();
+    _imp->_dragClock.start();
     _imp->_deltaSinceMousePress = QPointF(0, 0);
     if ( buttonDownIsMiddle(e) ) {
         _imp->_evtState = eEventStateMovingArea;
@@ -435,14 +437,18 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         didSomething = true;
     }
     if (!didSomething) {
-        if ( buttonDownIsLeft(e) ) {
+        if (buttonDownIsLeft(e) && modCASIsControl(e) && groupEdited) {
+            clearCutLine();
+            _imp->_evtState = eEventStateCutting;
+            extendCutLine(lastMousePosScene);
+        } else if (buttonDownIsLeft(e)) {
             if ( !modCASIsShift(e) ) {
                 deselect();
             }
             _imp->_evtState = eEventStateSelectionRect;
             _imp->_lastSelectionStartPointScene = lastMousePosScene;
             _imp->_selectionRect = QRectF(lastMousePosScene.x(), lastMousePosScene.y(), 0, 0);
-        } else if ( buttonDownIsMiddle(e) ) {
+        } else if (buttonDownIsMiddle(e)) {
             _imp->_evtState = eEventStateMovingArea;
             QGraphicsView::mousePressEvent(e);
         }

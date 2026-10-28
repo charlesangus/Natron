@@ -596,7 +596,10 @@ ConnectCommand::doConnect(const NodeGuiPtr &oldSrc,
                 internalDst->disconnectInput( internalDst->getInputIndex( internalOldSrc.get() ) );
             }
         } else if (internalOldSrc && !internalNewSrc) {
-            internalDst->disconnectInput( internalDst->getInputIndex( internalOldSrc.get() ) );
+            // The source may feed more than one of dst's inputs; disconnect this command's one.
+            const std::vector<NodeWPtr>& inputs = internalDst->getInputs();
+            const bool atInput = (inputNb >= 0) && (inputNb < (int)inputs.size()) && (inputs[inputNb].lock() == internalOldSrc);
+            internalDst->disconnectInput(atInput ? inputNb : internalDst->getInputIndex(internalOldSrc.get()));
         } else if (!internalOldSrc && internalNewSrc) {
             Node::CanConnectInputReturnValue ret = internalDst->canConnectInput(internalNewSrc, inputNb);
             bool connectionOk = ret == Node::eCanConnectInput_ok ||
@@ -623,9 +626,10 @@ ConnectCommand::doConnect(const NodeGuiPtr &oldSrc,
 
 KissConnectCommand::KissConnectCommand(NodeGraph* graph,
                                        Edge* edge,
+                                       const NodeGuiPtr& oldSrc,
                                        const NodeGuiPtr& newSrc,
                                        QUndoCommand* parent)
-    : ConnectCommand(graph, edge, NodeGuiPtr(), newSrc, parent)
+    : ConnectCommand(graph, edge, oldSrc, newSrc, parent)
     , _firstRedoCalled(false)
 {
 }

@@ -298,6 +298,14 @@ private:
 
     QUndoCommand* takeKissCommand(NodesGuiList* touched);
 
+    void disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken);
+
+    void extendCutLine(const QPointF& scenePos);
+
+    void clearCutLine();
+
+    void commitCut();
+
     bool connectInputArrowToNode(Edge* arrow, const NodeGuiPtr& target);
 
     bool moveInputArrowDestinationToNode(Edge* arrow, const NodeGuiPtr& target);

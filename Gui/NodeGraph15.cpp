@@ -525,6 +525,8 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
         }
     } else if (state == eEventStateSelectionRect) {
         _imp->editSelectionFromSelectionRectangle(modCASIsShift(e));
+    } else if (state == eEventStateCutting) {
+        commitCut();
     }
     // Kisses still held here were made by a drag that did not end in the move branch above.
     NodesGuiList kissTouched;

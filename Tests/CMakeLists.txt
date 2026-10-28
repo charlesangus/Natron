@@ -277,6 +277,7 @@ set(GuiTests_SOURCES
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
+    EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
@@ -289,6 +290,7 @@ set(GuiTests_SOURCES
     NodeGraphConnect_Test.cpp
     NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
+    NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
     ScaleSliderQWidget_Test.cpp

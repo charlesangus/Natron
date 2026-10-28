@@ -26,13 +26,20 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
-#include <cstdlib>
-#include <set>
-#include <map>
-#include <vector>
-#include <locale>
 #include <algorithm> // min, max
+#include <cstddef>
+#include <cstdlib>
+#include <locale>
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <vector>
+
+CLANG_DIAG_OFF(deprecated)
+CLANG_DIAG_OFF(uninitialized)
+#include <QPolygonF>
+CLANG_DIAG_ON(deprecated)
+CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Backdrop.h"
 #include "Engine/CreateNodeArgs.h"
@@ -402,6 +409,20 @@ NodeGraph::paintEvent(QPaintEvent* e)
         p.drawRect(r);
         double w = p.pen().widthF();
         p.fillRect(QRect(r.x() + w, r.y() + w, r.width() - w, r.height() - w), color);
+    }
+
+    if ((_imp->_evtState == eEventStateCutting) && (_imp->_cutLine.size() > 1) && !isDoingNavigatorRender()) {
+        QPainter p(viewport());
+        p.setRenderHint(QPainter::Antialiasing);
+        QPen pen(Edge::highlightColor());
+        pen.setWidthF(TO_DPIX(2.));
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        QPolygonF line;
+        for (std::size_t i = 0; i < _imp->_cutLine.size(); ++i) {
+            line << mapFromScene(_imp->_root->mapToScene(_imp->_cutLine[i]));
+        }
+        p.drawPolyline(line);
     }
 } // NodeGraph::paintEvent
 

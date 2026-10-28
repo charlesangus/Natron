@@ -1,4 +1,5 @@
-"""The dope sheet draws and moves clips for the native TimeOffset and FrameRange nodes.
+"""The dope sheet draws and moves clips for the native TimeOffset and FrameRange nodes, and draws
+keys upstream of a TimeOffset at the frames the viewer shows them.
 
 A Read feeds TimeOffset, which feeds FrameRange; a second Read feeds Retime. The clip of each row
 is found by hovering along it: the view shows the open-hand cursor over a TimeOffset or FrameRange
@@ -7,6 +8,12 @@ follow a constant offset, an animated offset (each end sits at the output frame 
 t - offset(t) = that end of the Read's clip) and FrameRange's first and last frames. Dragging a
 clip must move a constant offset by a whole number of frames, every key of an animated offset by
 the same number of frames in time and value, and FrameRange's first and last frames together.
+Dragging either end of the FrameRange clip moves only its first or only its last frame, and undo
+puts each back.
+
+A Transform keyed at frame 10 feeds a second TimeOffset of +5. With the viewer on the Transform
+the key sits at 10; with the viewer on the TimeOffset it is drawn at 15, and dragging it to 17
+moves the key to 12.
 
 Screenshots of the dope sheet go to $NATRON_GUI_TEST_OUT as m124_dope_*.png.
 
@@ -29,6 +36,7 @@ READ_ID = "fr.inria.built-in.Read"
 TIMEOFFSET_ID = "TimeOffset"
 FRAMERANGE_ID = "FrameRange"
 RETIME_ID = "Retime"
+TRANSFORM_ID = "net.sf.openfx.TransformPlugin"
 SEQUENCE = "flat-seq-layers.####.exr"
 READ_LAST_FRAME = 30
 CONSTANT_OFFSET = 10
@@ -38,12 +46,17 @@ FIT_RANGE = (-5, 60)
 MAX_ZOOM_OUT_STEPS = 40
 DRAG_FRAMES = 5
 MIN_PIXELS_PER_FRAME = 3.0
+TRIM_FIRST_FRAMES = 3
+TRIM_LAST_FRAMES = 4
+KEY_FRAME = 10
+KEY_SHIFT = 5
+KEY_DRAG_TO = 17
 
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, QRect, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMainWindow
 
     import guitest as gt
     from guitest import check, report, require
@@ -157,6 +170,62 @@ try:
             mouse(view, QEvent.MouseMove, x0 + dx * i / steps_n, y, Qt.NoButton, Qt.LeftButton)
         mouse(view, QEvent.MouseButtonRelease, x0 + dx, y, Qt.LeftButton, Qt.NoButton)
         return True
+
+    def drag_from(x0, y, dx):
+        view = dope_view()
+        if view is None or y is None:
+            return False
+        win = view.window()
+        win.activateWindow()
+        mouse(view, QEvent.MouseMove, x0, y, Qt.NoButton, Qt.NoButton)
+        mouse(view, QEvent.MouseButtonPress, x0, y, Qt.LeftButton, Qt.LeftButton)
+        steps_n = 8
+        for i in range(1, steps_n + 1):
+            mouse(view, QEvent.MouseMove, x0 + dx * i / steps_n, y, Qt.NoButton, Qt.LeftButton)
+        mouse(view, QEvent.MouseButtonRelease, x0 + dx, y, Qt.LeftButton, Qt.NoButton)
+        return True
+
+    def child_row_y(parent_label, child_label):
+        """Centre y of the row child_label below the row parent_label, scrolled into view."""
+        tree, parent = hierarchy(), row_index(parent_label)
+        if tree is None or parent is None:
+            return None
+        model = tree.model()
+        for r in range(model.rowCount(parent)):
+            idx = model.index(r, 0, parent)
+            if idx.data() == child_label:
+                tree.scrollTo(idx)
+                QApplication.processEvents()
+                rect = tree.visualRect(idx)
+                return rect.center().y() if rect.isValid() and rect.height() > 0 else None
+        return None
+
+    def cursor_at(x, y):
+        view = dope_view()
+        mouse(view, QEvent.MouseMove, x, y, Qt.NoButton, Qt.NoButton)
+        shape = view.cursor().shape()
+        mouse(view, QEvent.MouseMove, 0, 0, Qt.NoButton, Qt.NoButton)
+        return shape
+
+    def main_window():
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, QMainWindow) and gt.class_name(w) == "Gui":
+                return w
+        return None
+
+    def trigger_undo():
+        win = main_window()
+        if win is None or win.menuBar() is None:
+            return False
+        for act in win.menuBar().actions():
+            menu = gt.menu_of(act)
+            if menu is not None and act.text().lower().startswith("edit"):
+                for a in menu.actions():
+                    if a.text().lower().startswith("undo") and a.isEnabled():
+                        a.trigger()
+                        QApplication.processEvents()
+                        return True
+        return False
 
     def clear_dope_selection():
         # A press on empty space below the rows clears the selection, so a selected clip's box no
@@ -363,6 +432,94 @@ try:
         check(df == dl and df != 0 and abs(df + DRAG_FRAMES) <= 1,
               "the drag moved firstFrame and lastFrame together by about -%d (%d, %d)" % (DRAG_FRAMES, df, dl))
         crop_shot("m124_dope_framerange_dragged")
+        clear_dope_selection()
+        yield ("sleep", SETTLE_MS)
+
+        # ---- FrameRange end handles: just outside each end of the clip.
+        gt.section("framerange ends")
+        f0, l0 = range_first.get(), range_last.get()
+        range_y = row_center_y(range_node.getLabel())
+        left_x = pixel_of(f0) - 1
+        right_x = pixel_of(l0 + 1) + 1
+        check(cursor_at(left_x, range_y) == Qt.SplitHCursor, "the left end of the FrameRange clip shows the resize cursor")
+        check(cursor_at(right_x, range_y) == Qt.SplitHCursor, "the right end of the FrameRange clip shows the resize cursor")
+        check(cursor_at(pixel_of((f0 + l0 + 1) / 2.0), range_y) == Qt.OpenHandCursor,
+              "the middle of the FrameRange clip still shows the move cursor")
+
+        require(drag_from(left_x, range_y, TRIM_FIRST_FRAMES * ppf), "dragged the left end")
+        yield ("sleep", SETTLE_MS)
+        f1, l1 = range_first.get(), range_last.get()
+        check(abs(f1 - f0 - TRIM_FIRST_FRAMES) <= 1 and f1 != f0 and l1 == l0,
+              "the left end moved only firstFrame, by about %d (%d -> %d, lastFrame %d -> %d)"
+              % (TRIM_FIRST_FRAMES, f0, f1, l0, l1))
+        clear_dope_selection()
+        yield ("sleep", SETTLE_MS)
+
+        right_x = pixel_of(l1 + 1) + 1
+        require(drag_from(right_x, row_center_y(range_node.getLabel()), TRIM_LAST_FRAMES * ppf), "dragged the right end")
+        yield ("sleep", SETTLE_MS)
+        f2, l2 = range_first.get(), range_last.get()
+        check(abs(l2 - l1 - TRIM_LAST_FRAMES) <= 1 and l2 != l1 and f2 == f1,
+              "the right end moved only lastFrame, by about %d (%d -> %d, firstFrame %d -> %d)"
+              % (TRIM_LAST_FRAMES, l1, l2, f1, f2))
+        crop_shot("m124_dope_framerange_ends")
+        clear_dope_selection()
+        yield ("sleep", SETTLE_MS)
+
+        check(trigger_undo(), "undo the right-end drag")
+        yield ("sleep", SETTLE_MS)
+        check((range_first.get(), range_last.get()) == (f1, l1),
+              "undo restores lastFrame in one step (%r)" % ((range_first.get(), range_last.get()),))
+        check(trigger_undo(), "undo the left-end drag")
+        yield ("sleep", SETTLE_MS)
+        check((range_first.get(), range_last.get()) == (f0, l0),
+              "undo restores firstFrame in one step (%r)" % ((range_first.get(), range_last.get()),))
+
+        # ---- keys upstream of a TimeOffset follow the viewer.
+        gt.section("keys through a TimeOffset")
+        transform = create(TRANSFORM_ID, 600, 0)
+        shift_node = create(TIMEOFFSET_ID, 600, 150)
+        require(shift_node.connectInput(0, transform), "connect the Transform to the second TimeOffset")
+        shift_node.getParam("timeOffset").set(float(KEY_SHIFT))
+        rotate = transform.getParam("rotate")
+        require(rotate is not None, "the Transform has a rotate parameter")
+        rotate.setValueAtTime(30.0, KEY_FRAME, 0)
+        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        require(viewer is not None, "a Viewer node exists")
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
+        require(viewer.connectInput(0, transform), "the Viewer shows the Transform")
+        ok = yield ("until", lambda: row_index(transform.getLabel()) is not None, POLL_TIMEOUT_S)
+        require(ok, "the dope sheet has a row for the Transform")
+        hierarchy().expandAll()
+        yield ("sleep", SETTLE_MS)
+        rotate_label = rotate.getLabel()
+        key_y = child_row_y(transform.getLabel(), rotate_label)
+        require(key_y is not None, "the Transform's %s row is laid out" % rotate_label,
+                "rows %r" % ([(t, h) for t, _i, h in tree_rows()],))
+        dope_view().update()
+        yield ("sleep", SETTLE_MS)
+        check(cursor_at(pixel_of(KEY_FRAME), key_y) == Qt.CrossCursor,
+              "viewing the Transform, its key is at frame %d" % KEY_FRAME)
+
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, shift_node), "the Viewer shows the TimeOffset")
+        yield ("sleep", SETTLE_MS)
+        key_y = child_row_y(transform.getLabel(), rotate_label)
+        check(cursor_at(pixel_of(KEY_FRAME + KEY_SHIFT), key_y) == Qt.CrossCursor,
+              "viewing the TimeOffset, the key is drawn at frame %d" % (KEY_FRAME + KEY_SHIFT))
+        check(cursor_at(pixel_of(KEY_FRAME), key_y) != Qt.CrossCursor,
+              "viewing the TimeOffset, nothing is drawn at frame %d" % KEY_FRAME)
+        crop_shot("m124_dope_keys_shifted")
+
+        require(drag_from(pixel_of(KEY_FRAME + KEY_SHIFT), key_y, (KEY_DRAG_TO - KEY_FRAME - KEY_SHIFT) * ppf),
+                "dragged the shifted key")
+        yield ("sleep", SETTLE_MS)
+        keys = keys_of(rotate)
+        report("NOTE rotate keys after the drag %r" % (keys,))
+        check(len(keys) == 1 and abs(keys[0][0] - (KEY_DRAG_TO - KEY_SHIFT)) < 1e-9,
+              "dragging the key to frame %d writes frame %d (%r)" % (KEY_DRAG_TO, KEY_DRAG_TO - KEY_SHIFT, keys))
+        crop_shot("m124_dope_keys_dragged")
         clear_dope_selection()
 
         faulthandler.cancel_dump_traceback_later()

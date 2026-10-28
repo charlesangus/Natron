@@ -119,6 +119,13 @@ public:
      **/
     virtual void getFrameRange(double* first,
                                double* last) OVERRIDE FINAL;
+
+    /**
+     * @brief Whether every output frame shows the Source a constant number of frames earlier, and
+     * that number: true when the offset is neither animated nor an expression and the input is not
+     * reversed. Clipping to the input range is ignored, as within that range the shift holds.
+     **/
+    bool getConstantShift(double* shift) const;
 };
 
 NATRON_NAMESPACE_EXIT

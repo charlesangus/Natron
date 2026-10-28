@@ -35,26 +35,12 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
-#include "Engine/Image.h"
-#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
-#include "Engine/Nodes/Image/GpuRender.h"
-#include "Engine/Nodes/Time/TimeBlend.h"
-#include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// Integrating the speed and evaluating the warp curve leave rounding error on times that are
-// meant to be whole frames; without this a whole frame would blend with its neighbour at a
-// weight of nearly zero.
-constexpr double kWholeFrameTolerance = 1e-6;
-
-// The widest input span Box averages, so that a high speed cannot ask for an unbounded number of
-// frames per output frame.
-constexpr double kMaxBoxSpan = 255.;
-
 bool
 boundedRange(const EffectInstancePtr& input,
              double* first,
@@ -79,10 +65,10 @@ createOutsideKnob(KnobHolder* holder,
     knob->setName(name);
     knob->setHintToolTip(hint.toStdString());
     std::vector<ChoiceOption> options;
-    options.push_back(ChoiceOption(kRetimeOutsideContinue, EffectInstance::tr("Continue").toStdString(), EffectInstance::tr("The retime carried on past the end of the output range at the speed there.").toStdString()));
-    options.push_back(ChoiceOption(kRetimeOutsideHold, EffectInstance::tr("Hold").toStdString(), EffectInstance::tr("The nearest end of the output range.").toStdString()));
-    options.push_back(ChoiceOption(kRetimeOutsideLoop, EffectInstance::tr("Loop").toStdString(), EffectInstance::tr("The output range repeated.").toStdString()));
-    options.push_back(ChoiceOption(kRetimeOutsideBounce, EffectInstance::tr("Bounce").toStdString(), EffectInstance::tr("The output range played forwards and backwards in turn.").toStdString()));
+    options.push_back(ChoiceOption(kRetimeOutsideContinue, EffectInstance::tr("Continue").toStdString(), EffectInstance::tr("The retime carried on past the end of the new range at the speed there.").toStdString()));
+    options.push_back(ChoiceOption(kRetimeOutsideHold, EffectInstance::tr("Hold").toStdString(), EffectInstance::tr("The nearest end of the new range.").toStdString()));
+    options.push_back(ChoiceOption(kRetimeOutsideLoop, EffectInstance::tr("Loop").toStdString(), EffectInstance::tr("The new range repeated.").toStdString()));
+    options.push_back(ChoiceOption(kRetimeOutsideBounce, EffectInstance::tr("Bounce").toStdString(), EffectInstance::tr("The new range played forwards and backwards in turn.").toStdString()));
     options.push_back(ChoiceOption(kRetimeOutsideBlack, EffectInstance::tr("Black").toStdString(), EffectInstance::tr("An empty image.").toStdString()));
     knob->populateChoices(options);
     knob->setDefaultValue((int)Retime::eOutsideHold);
@@ -93,12 +79,12 @@ createOutsideKnob(KnobHolder* holder,
 }
 
 KnobDoublePtr
-createEndKnob(KnobHolder* holder,
-              const KnobPagePtr& page,
-              const char* name,
-              const QString& label,
-              const QString& hint,
-              double defaultValue)
+createFrameKnob(KnobHolder* holder,
+                const KnobPagePtr& page,
+                const char* name,
+                const QString& label,
+                const QString& hint,
+                double defaultValue)
 {
     KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, label.toStdString());
     knob->setName(name);
@@ -107,7 +93,6 @@ createEndKnob(KnobHolder* holder,
     knob->setDisplayMinimum(1.);
     knob->setDisplayMaximum(100.);
     knob->setAnimationEnabled(false);
-    knob->setDefaultAllDimensionsEnabled(false);
     knob->setAddNewLine(false);
     page->addKnob(knob);
 
@@ -115,16 +100,17 @@ createEndKnob(KnobHolder* holder,
 }
 
 KnobBoolPtr
-createLockKnob(KnobHolder* holder,
-               const KnobPagePtr& page,
-               const char* name,
-               const QString& label,
-               const QString& hint)
+createUseKnob(KnobHolder* holder,
+              const KnobPagePtr& page,
+              const char* name,
+              const QString& label,
+              const QString& hint,
+              bool defaultValue)
 {
     KnobBoolPtr knob = AppManager::createKnob<KnobBool>(holder, label.toStdString());
     knob->setName(name);
     knob->setHintToolTip(hint.toStdString());
-    knob->setDefaultValue(false);
+    knob->setDefaultValue(defaultValue);
     knob->setAnimationEnabled(false);
     page->addKnob(knob);
 
@@ -137,22 +123,23 @@ toBeforeAfter(Retime::Outside outside)
     return (outside == Retime::eOutsideBounce) ? ReadTimeDomain::eBeforeAfterBounce : ReadTimeDomain::eBeforeAfterLoop;
 }
 
-bool
-isWholeFrame(double time,
-             double* frame)
+// The integral of knob from from to to, negative when to is before from.
+double
+integrate(const KnobDoublePtr& knob,
+          double from,
+          double to,
+          ViewIdx view)
 {
-    const double rounded = std::floor(time + 0.5);
-    if (std::abs(time - rounded) > kWholeFrameTolerance) {
-        return false;
+    if (to < from) {
+        return -knob->getIntegrateFromTimeToTime(to, from, view, 0);
     }
-    *frame = rounded;
 
-    return true;
+    return knob->getIntegrateFromTimeToTime(from, to, view, 0);
 }
 } // anonymous namespace
 
 Retime::Retime(NodePtr node)
-    : StagedImageEffect(node)
+    : TimeSampledEffect(node)
 {
 }
 
@@ -177,41 +164,35 @@ Retime::initializeKnobs()
 {
     const KnobPagePtr page = createControlsPage();
 
-    _inputFirst = createEndKnob(this, page, kRetimeParamInputFirst, tr("Input First"),
-                                tr("The first input frame the retime uses; the input's first frame unless Input First Lock is on."), 1.);
-    _inputFirstLock = createLockKnob(this, page, kRetimeParamInputFirstLock, tr("Input First Lock"),
-                                     tr("Use Input First rather than the input's first frame."));
-    _inputLast = createEndKnob(this, page, kRetimeParamInputLast, tr("Input Last"),
-                               tr("The last input frame the retime uses; the input's last frame unless Input Last Lock is on."), 100.);
-    _inputLastLock = createLockKnob(this, page, kRetimeParamInputLastLock, tr("Input Last Lock"),
-                                    tr("Use Input Last rather than the input's last frame."));
-
-    KnobBoolPtr reverseKnob = createKnob<KnobBool>(tr("Reverse").toStdString());
-    reverseKnob->setName(kRetimeParamReverse);
-    reverseKnob->setHintToolTip(tr("Play the input range backwards, from its last frame to its first.").toStdString());
-    reverseKnob->setDefaultValue(false);
-    page->addKnob(reverseKnob);
-    _reverse = reverseKnob;
-
-    _outputFirst = createEndKnob(this, page, kRetimeParamOutputFirst, tr("Output First"),
-                                 tr("The first output frame of the retime. Unless Output First Lock is on, the input's first frame, "
-                                    "or, when only Output Last Lock is on, what the speed makes it."),
-                                 1.);
-    _outputFirstLock = createLockKnob(this, page, kRetimeParamOutputFirstLock, tr("Output First Lock"),
-                                      tr("Start the output at Output First. With Output Last Lock also on, the speed is the one "
-                                         "that fits the input range into the output range."));
-    _outputLast = createEndKnob(this, page, kRetimeParamOutputLast, tr("Output Last"),
-                                tr("The last output frame of the retime; unless Output Last Lock is on, what the speed makes it."), 100.);
-    _outputLastLock = createLockKnob(this, page, kRetimeParamOutputLastLock, tr("Output Last Lock"),
-                                     tr("End the output at Output Last. With Output First Lock also on, the speed is the one "
-                                        "that fits the input range into the output range."));
+    _originalIn = createFrameKnob(this, page, kRetimeParamOriginalIn, tr("Original In"),
+                                  tr("The input frame that lands on New In. With Use In Mapping off, the input's first frame."), 1.);
+    _newIn = createFrameKnob(this, page, kRetimeParamNewIn, tr("New In"),
+                             tr("The output frame Original In lands on, where the new range starts. With Use In Mapping off, "
+                                "what the speed (or Original In, with neither mapping on) makes it."),
+                             1.);
+    _useInMapping = createUseKnob(this, page, kRetimeParamUseInMapping, tr("Use In Mapping"),
+                                  tr("Land Original In on New In. With Use Out Mapping also on, the speed is the one that fits "
+                                     "the original range into the new range."),
+                                  true);
+    _originalOut = createFrameKnob(this, page, kRetimeParamOriginalOut, tr("Original Out"),
+                                   tr("The input frame that lands on New Out. With Use Out Mapping off, the input's last frame."), 100.);
+    _originalOut.lock()->setDefaultAllDimensionsEnabled(false);
+    _newOut = createFrameKnob(this, page, kRetimeParamNewOut, tr("New Out"),
+                              tr("The output frame Original Out lands on, where the new range ends. With Use Out Mapping off, "
+                                 "what the speed makes it."),
+                              100.);
+    _newOut.lock()->setDefaultAllDimensionsEnabled(false);
+    _useOutMapping = createUseKnob(this, page, kRetimeParamUseOutMapping, tr("Use Out Mapping"),
+                                   tr("Land Original Out on New Out. With Use In Mapping also on, the speed is the one that fits "
+                                      "the original range into the new range."),
+                                   false);
 
     KnobDoublePtr speedKnob = createKnob<KnobDouble>(tr("Speed").toStdString());
     speedKnob->setName(kRetimeParamSpeed);
-    speedKnob->setHintToolTip(tr("Input frames per output frame. It is integrated from the first output frame, so an animated "
-                                 "speed accelerates (above 1), decelerates (below 1) or reverses (below 0) the input. The output "
-                                 "range's length uses the speed at its locked end, or at its first frame. Ignored when both "
-                                 "output ends are locked.")
+    speedKnob->setHintToolTip(tr("Input frames per output frame. It is integrated from the mapped end, so an animated speed "
+                                 "accelerates (above 1), decelerates (below 1) or reverses (below 0) the input. The new range's "
+                                 "length uses the speed at the mapped end. With both mappings on it is the one that fits the "
+                                 "ranges, and read-only.")
                                   .toStdString());
     speedKnob->setDefaultValue(1.);
     speedKnob->setDisplayMinimum(0.1);
@@ -219,109 +200,66 @@ Retime::initializeKnobs()
     page->addKnob(speedKnob);
     _speed = speedKnob;
 
-    _before = createOutsideKnob(this, page, kRetimeParamBefore, tr("Before"), tr("What the frames before the output range show."));
-    _after = createOutsideKnob(this, page, kRetimeParamAfter, tr("After"), tr("What the frames after the output range show."));
+    KnobBoolPtr reverseKnob = createKnob<KnobBool>(tr("Reverse").toStdString());
+    reverseKnob->setName(kRetimeParamReverse);
+    reverseKnob->setHintToolTip(tr("Play the original range backwards, from Original Out to Original In.").toStdString());
+    reverseKnob->setDefaultValue(false);
+    page->addKnob(reverseKnob);
+    _reverse = reverseKnob;
 
-    KnobChoicePtr filterKnob = createKnob<KnobChoice>(tr("Filter").toStdString());
-    filterKnob->setName(kRetimeParamFilter);
-    filterKnob->setHintToolTip(tr("How an output frame that falls between two input frames is made.").toStdString());
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kRetimeFilterNearest, tr("Nearest").toStdString(), tr("The nearest input frame.").toStdString()));
-        options.push_back(ChoiceOption(kRetimeFilterBlend, tr("Blend").toStdString(), tr("The two nearest input frames blended linearly.").toStdString()));
-        options.push_back(ChoiceOption(kRetimeFilterFractional, tr("Fractional").toStdString(),
-                                       tr("The input at the fractional time, for an input that can render between frames.").toStdString()));
-        options.push_back(ChoiceOption(kRetimeFilterBox, tr("Box").toStdString(),
-                                       tr("The input frames the shutter covers, averaged, each weighted by how much of it the shutter covers.").toStdString()));
-        filterKnob->populateChoices(options);
-    }
-    filterKnob->setDefaultValue((int)eFilterBlend);
-    filterKnob->setAnimationEnabled(false);
-    page->addKnob(filterKnob);
-    _filter = filterKnob;
+    _before = createOutsideKnob(this, page, kRetimeParamBefore, tr("Before"), tr("What the frames before the new range show."));
+    _after = createOutsideKnob(this, page, kRetimeParamAfter, tr("After"), tr("What the frames after the new range show."));
 
-    KnobDoublePtr shutterKnob = createKnob<KnobDouble>(tr("Shutter").toStdString());
-    shutterKnob->setName(kRetimeParamShutter);
-    shutterKnob->setHintToolTip(tr("With the Box filter, the output frames each output frame averages over, centred on it: the "
-                                   "input frames that span covers are blended. Lower values blend fewer frames; 0 reads the "
-                                   "nearest frame.")
-                                    .toStdString());
-    shutterKnob->setDefaultValue(1.);
-    shutterKnob->setMinimum(0.);
-    shutterKnob->setDisplayMinimum(0.);
-    shutterKnob->setDisplayMaximum(2.);
-    page->addKnob(shutterKnob);
-    _shutter = shutterKnob;
+    createFilterKnobs(page);
 
     addStageKnobs(page);
-
-    KnobPagePtr warpPage = createKnob<KnobPage>(tr("Time Warp").toStdString());
-    KnobParametricPtr warpKnob = createKnob<KnobParametric>(tr("Warp").toStdString(), 1);
-    warpKnob->setName(kRetimeParamWarp);
-    warpKnob->setHintToolTip(tr("Maps the input range, after the speed, onto itself across the output range: a shallow slope "
-                                "slows the input down and a negative slope plays it backwards.")
-                                 .toStdString());
-    warpKnob->setDimensionName(0, "warp");
-    warpKnob->setCurveColor(0, 0.5, 0.5, 1.);
-    warpKnob->setParametricRange(0., 1.);
-    warpKnob->setDisplayMinimumsAndMaximums(std::vector<double>(1, 0.), std::vector<double>(1, 1.));
-    for (double x : { 0., 1. }) {
-        StatusEnum stat = warpKnob->addControlPoint(eValueChangedReasonPluginEdited, 0, x, x, eKeyframeTypeCubic);
-        Q_UNUSED(stat);
-    }
-    warpKnob->setDefaultCurvesFromCurves();
-    warpPage->addKnob(warpKnob);
-    _warp = warpKnob;
 } // Retime::initializeKnobs
 
 Retime::Ranges
 Retime::ranges(ViewIdx view) const
 {
     Ranges r;
-    KnobDoublePtr inputFirstKnob = _inputFirst.lock();
-    KnobDoublePtr inputLastKnob = _inputLast.lock();
-    KnobBoolPtr inputFirstLockKnob = _inputFirstLock.lock();
-    KnobBoolPtr inputLastLockKnob = _inputLastLock.lock();
-    KnobDoublePtr outputFirstKnob = _outputFirst.lock();
-    KnobDoublePtr outputLastKnob = _outputLast.lock();
-    KnobBoolPtr outputFirstLockKnob = _outputFirstLock.lock();
-    KnobBoolPtr outputLastLockKnob = _outputLastLock.lock();
+    KnobDoublePtr originalInKnob = _originalIn.lock();
+    KnobDoublePtr newInKnob = _newIn.lock();
+    KnobBoolPtr useInKnob = _useInMapping.lock();
+    KnobDoublePtr originalOutKnob = _originalOut.lock();
+    KnobDoublePtr newOutKnob = _newOut.lock();
+    KnobBoolPtr useOutKnob = _useOutMapping.lock();
     KnobDoublePtr speedKnob = _speed.lock();
-    if (!inputFirstKnob || !inputLastKnob || !inputFirstLockKnob || !inputLastLockKnob || !outputFirstKnob || !outputLastKnob || !outputFirstLockKnob || !outputLastLockKnob || !speedKnob) {
+    if (!originalInKnob || !newInKnob || !useInKnob || !originalOutKnob || !newOutKnob || !useOutKnob || !speedKnob) {
         return r;
     }
 
-    const bool inputFirstLocked = inputFirstLockKnob->getValue();
-    const bool inputLastLocked = inputLastLockKnob->getValue();
-    r.inputFirst = inputFirstKnob->getValue();
-    r.inputLast = inputLastKnob->getValue();
+    const bool useIn = useInKnob->getValue();
+    const bool useOut = useOutKnob->getValue();
+    r.originalIn = originalInKnob->getValue();
+    r.originalOut = originalOutKnob->getValue();
     double first = 0.;
     double last = 0.;
-    if ((!inputFirstLocked || !inputLastLocked) && boundedRange(getInput(0), &first, &last)) {
-        if (!inputFirstLocked) {
-            r.inputFirst = first;
+    if ((!useIn || !useOut) && boundedRange(getInput(0), &first, &last)) {
+        if (!useIn) {
+            r.originalIn = first;
         }
-        if (!inputLastLocked) {
-            r.inputLast = last;
+        if (!useOut) {
+            r.originalOut = last;
         }
     }
 
-    const double length = r.inputLast - r.inputFirst;
-    const bool outputFirstLocked = outputFirstLockKnob->getValue();
-    const bool outputLastLocked = outputLastLockKnob->getValue();
-    if (outputFirstLocked && outputLastLocked) {
-        r.outputFirst = outputFirstKnob->getValue();
-        r.outputLast = outputLastKnob->getValue();
+    const double length = r.originalOut - r.originalIn;
+    if (useIn && useOut) {
+        r.newIn = newInKnob->getValue();
+        r.newOut = newOutKnob->getValue();
         r.fixedSpeed = true;
-        r.speed = (r.outputLast != r.outputFirst) ? length / (r.outputLast - r.outputFirst) : 0.;
-    } else if (outputLastLocked) {
-        r.outputLast = outputLastKnob->getValue();
-        r.speed = speedKnob->getValueAtTime(r.outputLast, 0, view);
-        r.outputFirst = (r.speed != 0.) ? r.outputLast - length / std::abs(r.speed) : r.outputLast;
+        r.speed = (r.newOut != r.newIn) ? length / (r.newOut - r.newIn) : 0.;
+    } else if (useOut) {
+        r.anchorOut = true;
+        r.newOut = newOutKnob->getValue();
+        r.speed = speedKnob->getValueAtTime(r.newOut, 0, view);
+        r.newIn = (r.speed != 0.) ? r.newOut - length / std::abs(r.speed) : r.newOut;
     } else {
-        r.outputFirst = outputFirstLocked ? outputFirstKnob->getValue() : r.inputFirst;
-        r.speed = speedKnob->getValueAtTime(r.outputFirst, 0, view);
-        r.outputLast = (r.speed != 0.) ? r.outputFirst + length / std::abs(r.speed) : r.outputFirst;
+        r.newIn = useIn ? newInKnob->getValue() : r.originalIn;
+        r.speed = speedKnob->getValueAtTime(r.newIn, 0, view);
+        r.newOut = (r.speed != 0.) ? r.newIn + length / std::abs(r.speed) : r.newIn;
     }
 
     return r;
@@ -338,8 +276,8 @@ Retime::outputTime(double time,
     if (!beforeKnob || !afterKnob) {
         return false;
     }
-    const double low = std::min(r.outputFirst, r.outputLast);
-    const double high = std::max(r.outputFirst, r.outputLast);
+    const double low = std::min(r.newIn, r.newOut);
+    const double high = std::max(r.newIn, r.newOut);
     *mapped = time;
     *moving = true;
     if ((time >= low) && (time <= high)) {
@@ -379,21 +317,16 @@ Retime::inputTime(double mapped,
                   ViewIdx view) const
 {
     KnobDoublePtr speedKnob = _speed.lock();
-    KnobParametricPtr warpKnob = _warp.lock();
-    if (!speedKnob || !warpKnob) {
+    if (!speedKnob) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    const double integrated = r.fixedSpeed ? r.speed * (mapped - r.outputFirst) : speedKnob->getIntegrateFromTimeToTime(r.outputFirst, mapped, view, 0);
-    double s = reverse ? (r.inputLast - integrated) : (r.inputFirst + integrated);
-    const double length = r.inputLast - r.inputFirst;
-    if (length != 0.) {
-        double warped = 0.;
-        if (warpKnob->getValue(0, (s - r.inputFirst) / length, &warped) == eStatusOK) {
-            s = r.inputFirst + length * warped;
-        }
-    }
+    const double anchor = r.anchorOut ? r.newOut : r.newIn;
+    const double advance = r.fixedSpeed ? r.speed * (mapped - anchor) : integrate(speedKnob, anchor, mapped, view);
+    // The original end that lands on the anchor: reversed, the other one does.
+    const bool fromOut = (r.anchorOut != reverse);
+    const double start = fromOut ? r.originalOut : r.originalIn;
 
-    return s;
+    return reverse ? (start - advance) : (start + advance);
 }
 
 bool
@@ -425,10 +358,8 @@ Retime::sample(double time,
                ViewIdx view) const
 {
     Sample result;
-    KnobChoicePtr filterKnob = _filter.lock();
     KnobBoolPtr reverseKnob = _reverse.lock();
-    KnobDoublePtr shutterKnob = _shutter.lock();
-    if (!filterKnob || !reverseKnob || !shutterKnob || !getInput(0)) {
+    if (!reverseKnob || !getInput(0)) {
         return result;
     }
     const Ranges r = ranges(view);
@@ -443,151 +374,33 @@ Retime::sample(double time,
         return result;
     }
 
-    result.kind = Sample::eInput;
-    const Filter filter = (Filter)std::clamp(filterKnob->getValue(), (int)eFilterNearest, (int)eFilterBox);
-    double frame = 0.;
-    if ((filter != eFilterBox) && isWholeFrame(s, &frame)) {
-        result.times.push_back(frame);
-
-        return result;
-    }
-    switch (filter) {
-    case eFilterNearest:
-        result.times.push_back(std::floor(s + 0.5));
-        break;
-    case eFilterFractional:
-        result.times.push_back(s);
-        break;
-    case eFilterBlend: {
-        const double from = std::floor(s);
-        result.kind = Sample::eBlend;
-        result.times = { from, from + 1. };
-        result.weights = { 1. - (s - from), s - from };
-        break;
-    }
-    case eFilterBox: {
-        // The shutter's ends, mapped like its centre but without wrapping, so that a loop's seam
-        // or a held end does not stretch the span; the centre counts too, for a warp that turns.
-        double low = s;
-        double high = s;
-        const double half = moving ? 0.5 * std::max(0., shutterKnob->getValueAtTime(time, 0, view)) : 0.;
-        if (half > 0.) {
-            for (double end : { mapped - half, mapped + half }) {
-                const double e = inputTime(end, r, reverse, view);
-                if (std::isfinite(e)) {
-                    low = std::min(low, e);
-                    high = std::max(high, e);
-                }
+    const TimeSample::Filter filter = filterValue();
+    // The shutter's ends, mapped like its centre but without wrapping, so that a loop's seam or a
+    // held end does not stretch the span; the centre counts too, for a speed that turns.
+    double low = s;
+    double high = s;
+    const double half = (moving && (filter == TimeSample::eFilterBox)) ? 0.5 * shutterAt(time, view) : 0.;
+    if (half > 0.) {
+        for (double end : { mapped - half, mapped + half }) {
+            const double e = inputTime(end, r, reverse, view);
+            if (std::isfinite(e)) {
+                low = std::min(low, e);
+                high = std::max(high, e);
             }
         }
-        // Within the input range the span stays inside it; Continue reads past it on purpose.
-        const double inputLow = std::min(r.inputFirst, r.inputLast);
-        const double inputHigh = std::max(r.inputFirst, r.inputLast);
-        if ((s >= inputLow) && (s <= inputHigh)) {
-            low = std::max(low, inputLow - 0.5);
-            high = std::min(high, inputHigh + 0.5);
-        }
-        low = std::max(low, s - 0.5 * kMaxBoxSpan);
-        high = std::min(high, s + 0.5 * kMaxBoxSpan);
-        // Frame f covers [f - 0.5, f + 0.5).
-        for (double f = std::floor(low + 0.5); f <= std::floor(high + 0.5); f += 1.) {
-            const double weight = std::min(high, f + 0.5) - std::max(low, f - 0.5);
-            if (weight > kWholeFrameTolerance) {
-                result.times.push_back(f);
-                result.weights.push_back(weight);
-            }
-        }
-        if (result.times.size() > 1) {
-            result.kind = Sample::eBlend;
-        } else {
-            if (result.times.empty()) {
-                result.times.push_back(isWholeFrame(s, &frame) ? frame : std::floor(s + 0.5));
-            }
-            result.weights.clear();
-        }
-        break;
-    }
     }
 
-    return result;
+    // Within the original range the span stays inside it; Continue reads past it on purpose.
+    return TimeSample::filter(filter, s, low, high, std::min(r.originalIn, r.originalOut), std::max(r.originalIn, r.originalOut));
 } // Retime::sample
-
-Route
-Retime::route(double time,
-              ViewIdx view)
-{
-    const Sample s = sample(time, view);
-    switch (s.kind) {
-    case Sample::eBlack:
-        return Route::black();
-    case Sample::eInput:
-        return Route::input(0, s.times[0]);
-    case Sample::eBlend:
-        break;
-    }
-
-    return Route::none();
-}
-
-FramesNeededMap
-Retime::getFramesNeeded(double time,
-                        ViewIdx view)
-{
-    const Sample s = sample(time, view);
-    if (s.kind != Sample::eBlend) {
-        return StagedImageEffect::getFramesNeeded(time, view);
-    }
-    FramesNeededMap frames;
-    for (double t : s.times) {
-        RangeD range;
-        range.min = range.max = t;
-        frames[0][view].push_back(range);
-    }
-
-    return frames;
-}
-
-StatusEnum
-Retime::getRegionOfDefinition(U64 /*hash*/,
-                              double time,
-                              const RenderScale& scale,
-                              ViewIdx view,
-                              RectD* rod)
-{
-    *rod = RectD();
-    const Sample s = sample(time, view);
-    EffectInstancePtr input = getInput(0);
-    if ((s.kind == Sample::eBlack) || !input) {
-        return eStatusOK;
-    }
-    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-    for (double t : s.times) {
-        RectD inputRoD;
-        bool isProjectFormat = false;
-        // An input reports its empty region as a failure; it is still the region it has.
-        if ((input->getRegionOfDefinition_public(input->getRenderHash(), t, inputScale, view, &inputRoD, &isProjectFormat) == eStatusFailed) && !inputRoD.isNull()) {
-            return eStatusFailed;
-        }
-        if (inputRoD.isNull()) {
-            continue;
-        }
-        if (rod->isNull()) {
-            *rod = inputRoD;
-        } else {
-            rod->merge(inputRoD);
-        }
-    }
-
-    return eStatusOK;
-}
 
 void
 Retime::getFrameRange(double* first,
                       double* last)
 {
     const Ranges r = ranges(ViewIdx(0));
-    *first = std::floor(std::min(r.outputFirst, r.outputLast));
-    *last = std::ceil(std::max(r.outputFirst, r.outputLast));
+    *first = std::floor(std::min(r.newIn, r.newOut));
+    *last = std::ceil(std::max(r.newIn, r.newOut));
 }
 
 bool
@@ -601,14 +414,12 @@ Retime::knobChanged(KnobI* k,
         return false;
     }
     const KnobIPtr rangeKnobs[] = {
-        _inputFirst.lock(),
-        _inputFirstLock.lock(),
-        _inputLast.lock(),
-        _inputLastLock.lock(),
-        _outputFirst.lock(),
-        _outputFirstLock.lock(),
-        _outputLast.lock(),
-        _outputLastLock.lock(),
+        _originalIn.lock(),
+        _newIn.lock(),
+        _useInMapping.lock(),
+        _originalOut.lock(),
+        _newOut.lock(),
+        _useOutMapping.lock(),
         _speed.lock(),
     };
     for (const KnobIPtr& knob : rangeKnobs) {
@@ -637,135 +448,41 @@ Retime::onInputChanged(int /*inputNb*/)
 void
 Retime::refreshDerivedKnobs()
 {
-    if (_refreshingKnobs) {
+    KnobBoolPtr useInKnob = _useInMapping.lock();
+    KnobBoolPtr useOutKnob = _useOutMapping.lock();
+    KnobDoublePtr speedKnob = _speed.lock();
+    if (_refreshingKnobs || !useInKnob || !useOutKnob || !speedKnob) {
         return;
     }
     _refreshingKnobs = true;
     const Ranges r = ranges(ViewIdx(0));
-    const std::pair<KnobDoubleWPtr, KnobBoolWPtr> ends[] = {
-        { _inputFirst, _inputFirstLock },
-        { _inputLast, _inputLastLock },
-        { _outputFirst, _outputFirstLock },
-        { _outputLast, _outputLastLock },
+    const bool useIn = useInKnob->getValue();
+    const bool useOut = useOutKnob->getValue();
+    const std::pair<KnobDoubleWPtr, bool> frames[] = {
+        { _originalIn, useIn },
+        { _newIn, useIn },
+        { _originalOut, useOut },
+        { _newOut, useOut },
     };
-    const double values[] = { r.inputFirst, r.inputLast, r.outputFirst, r.outputLast };
+    const double values[] = { r.originalIn, r.newIn, r.originalOut, r.newOut };
     for (int i = 0; i < 4; ++i) {
-        KnobDoublePtr valueKnob = ends[i].first.lock();
-        KnobBoolPtr lockKnob = ends[i].second.lock();
-        if (!valueKnob || !lockKnob) {
+        KnobDoublePtr knob = frames[i].first.lock();
+        if (!knob) {
             continue;
         }
-        const bool locked = lockKnob->getValue();
-        valueKnob->setAllDimensionsEnabled(locked);
-        if (!locked && (valueKnob->getValue() != values[i])) {
-            valueKnob->setValue(values[i]);
+        const bool used = frames[i].second;
+        knob->setAllDimensionsEnabled(used);
+        if (!used && (knob->getValue() != values[i])) {
+            knob->setValue(values[i]);
         }
+    }
+    const bool fixed = useIn && useOut;
+    speedKnob->setAllDimensionsEnabled(!fixed);
+    // An animated or expression-driven speed keeps its curve; only a constant shows the fit.
+    if (fixed && !speedKnob->isAnimated(0) && speedKnob->getExpression(0).empty() && (speedKnob->getValue() != r.speed)) {
+        speedKnob->setValue(r.speed);
     }
     _refreshingKnobs = false;
-}
-
-bool
-Retime::isOpIdentity(double /*time*/,
-                     const RenderScale& /*scale*/,
-                     const RectI& /*roi*/,
-                     ViewIdx /*view*/)
-{
-    return false;
-}
-
-StatusEnum
-Retime::renderOp(const RenderActionArgs& args,
-                 const StagePlan& /*plan*/)
-{
-    const Sample s = sample(args.time, args.view);
-    if (s.kind != Sample::eBlend) {
-        // route() answers every other sample, so the host never renders it.
-        return eStatusFailed;
-    }
-    for (const std::pair<ImageLayerDesc, ImagePtr>& output : args.outputLayers) {
-        // All are fetched before any image is locked: fetching renders upstream. A null image
-        // at a declared time is an input with nothing there, which reads as black.
-        std::vector<ImagePtr> images(s.times.size());
-        for (std::size_t i = 0; i < s.times.size(); ++i) {
-            if (!declaresInputTime(0, args.time, args.view, s.times[i])) {
-                return eStatusFailed;
-            }
-            images[i] = fetchInputAt(0, s.times[i], args, &output.first);
-        }
-        if (!TimeBlend::renderCpu(output.second, args.roi, images, s.weights)) {
-            return eStatusFailed;
-        }
-    }
-
-    return eStatusOK;
-}
-
-bool
-Retime::canRenderOpOnGpu(const GpuQuery& query) const
-{
-#ifdef NATRON_HAVE_GPU
-    // Only the main layer is read at other times on the GPU for now.
-    if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || !query.plane.isColorLayer()) {
-        return false;
-    }
-    const Sample s = sample(query.time, query.view);
-    EffectInstancePtr input = getInput(0);
-    if ((s.kind != Sample::eBlend) || !input) {
-        return false;
-    }
-    const RenderScale inputScale = input->supportsRenderScale() ? query.mappedScale : RenderScale::identity;
-    for (double t : s.times) {
-        bool found = false;
-        for (const GpuInputTimes& times : query.inputTimes) {
-            if ((times.inputNb == 0) && (std::find(times.times.begin(), times.times.end(), t) != times.times.end())) {
-                found = true;
-            }
-        }
-        if (!found && (t != query.time)) {
-            return false;
-        }
-        // A frame with nothing there reads as black on the CPU; a region has no view of it, so
-        // that blend renders on the CPU.
-        RectD rod;
-        bool isProjectFormat = false;
-        if ((input->getRegionOfDefinition_public(input->getRenderHash(), t, inputScale, query.view, &rod, &isProjectFormat) == eStatusFailed) || rod.isNull()) {
-            return false;
-        }
-    }
-
-    return true;
-#else
-    Q_UNUSED(query);
-
-    return false;
-#endif
-}
-
-bool
-Retime::getOpGpuInputLayer(int /*inputNb*/,
-                           const ImageLayerDesc& plane,
-                           double /*time*/,
-                           ViewIdx /*view*/,
-                           ImageLayerDesc* layer) const
-{
-    *layer = plane;
-
-    return true;
-}
-
-StatusEnum
-Retime::renderOpGpu(const GpuRenderArgs& args)
-{
-    const Sample s = sample(args.query.time, args.query.view);
-    if (s.kind != Sample::eBlend) {
-        return eStatusFailed;
-    }
-    std::vector<const GpuImageView*> views;
-    for (double t : s.times) {
-        views.push_back(args.inputAt(0, t));
-    }
-
-    return TimeBlend::recordGpu(args, views, s.weights);
 }
 
 NATRON_NAMESPACE_EXIT

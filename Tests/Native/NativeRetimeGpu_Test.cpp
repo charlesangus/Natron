@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <initializer_list>
 #include <map>
 #include <string>
 #include <vector>
@@ -35,11 +36,13 @@
 #include "Tests/Native/NativeTimeNodesTest.h"
 #include "Tests/NativeParity.h"
 
+#include "Engine/Curve.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/FrameRange.h"
 #include "Engine/Nodes/Time/Retime.h"
 #include "Engine/Nodes/Time/TimeBlend.h"
+#include "Engine/Nodes/Time/TimeWarp.h"
 
 NATRON_NAMESPACE_USING
 
@@ -99,7 +102,7 @@ TEST_F(NativeRetimeGpuTest, BoxMatchesTheCpu)
     ASSERT_TRUE(bool(source));
     NodePtr retime = createOver(PLUGINID_NATRON_RETIME, PLUGIN_MAJOR_NATRON_RETIME, source);
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterBox);
     setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.3);
     Retime* effect = dynamic_cast<Retime*>(retime->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
@@ -138,8 +141,11 @@ TEST_F(NativeRetimeGpuTest, AMissingFrameIsBlackOnBothPaths)
     setKnob<KnobChoice>(range, kFrameRangeParamAfter, (int)FrameRangeOp::eBlack);
     NodePtr retime = createOver(PLUGINID_NATRON_RETIME, PLUGIN_MAJOR_NATRON_RETIME, range);
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobBool>(retime, kRetimeParamInputLastLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamInputLast, 10.);
+    // Input frame 10 lands on output frame 19 at half speed, which starts input frame 1 at frame 1.
+    setKnob<KnobBool>(retime, kRetimeParamUseInMapping, false);
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, true);
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalOut, 10.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 19.);
     setKnob<KnobDouble>(retime, kRetimeParamSpeed, 0.5);
     Retime* effect = dynamic_cast<Retime*>(retime->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
@@ -169,4 +175,43 @@ TEST_F(NativeRetimeGpuTest, AMissingFrameIsBlackOnBothPaths)
     ASSERT_EQ(present.cpu.size(), present.gpu.size());
     const ImageDiff presentDiff = compareImages(present.cpu, present.gpu, ParityTolerance::make(1e-6, 0.));
     EXPECT_EQ(0u, presentDiff.mismatches) << "first at float " << presentDiff.firstMismatchIndex << ", worst " << presentDiff.worstAbsolute;
+}
+
+// TimeWarp shares Retime's render: a lookup between two frames blends them on the GPU as on the CPU.
+TEST_F(NativeRetimeGpuTest, TimeWarpBlendMatchesTheCpu)
+{
+    const std::vector<int> keyed = { 1, 2, 3, 4, 5, 6 };
+    NodePtr source = createSource(1, 50, keyed);
+    ASSERT_TRUE(bool(source));
+    NodePtr warp = createOver(PLUGINID_NATRON_TIMEWARP, PLUGIN_MAJOR_NATRON_TIMEWARP, source);
+    ASSERT_TRUE(bool(warp));
+    KnobDoublePtr lookup = std::dynamic_pointer_cast<KnobDouble>(warp->getKnobByName(kTimeWarpParamLookup));
+    ASSERT_TRUE(bool(lookup));
+    lookup->removeAnimation(ViewSpec::all(), 0);
+    lookup->setValueAtTime(1., 1., ViewSpec::all(), 0);
+    lookup->setValueAtTime(11., 4., ViewSpec::all(), 0);
+    for (double t : { 1., 11. }) {
+        KeyFrame key;
+        ASSERT_TRUE(lookup->setInterpolationAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, t, eKeyframeTypeLinear, &key));
+    }
+    TimeWarp* effect = dynamic_cast<TimeWarp*>(warp->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+
+    // Lookups 1.6, 2.5 and 3.4.
+    const double times[] = { 3., 6., 9. };
+    for (double time : times) {
+        SCOPED_TRACE(time);
+        ASSERT_EQ(TimeWarp::Sample::eBlend, effect->sample(time, ViewIdx(0)).kind);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ source, warp }), warp, NativeTimeNodes::kWindow, time);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.ok) << result.error;
+        EXPECT_TRUE(result.ranInRegion(warp)) << "the TimeWarp was not placed in a GPU region";
+        const std::map<std::string, int>::const_iterator tasks = result.gpuTasksPerNode.find(warp->getScriptName_mt_safe());
+        EXPECT_TRUE((tasks != result.gpuTasksPerNode.end()) && (tasks->second > 0)) << "the TimeWarp fell back to the CPU";
+        ASSERT_EQ(result.cpu.size(), result.gpu.size());
+        const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::make(1e-6, 0.));
+        EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+    }
 }

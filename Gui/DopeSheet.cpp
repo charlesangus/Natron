@@ -26,6 +26,7 @@
 #include "DopeSheet.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -39,6 +40,7 @@
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Time/FrameRange.h"
@@ -799,6 +801,31 @@ DopeSheet::trimReaderRight(const DSNodePtr &reader,
     }
 
     DSRightTrimReaderCommand* cmd = new DSRightTrimReaderCommand(reader, lastFrame, newLastFrame, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForNode(node));
+}
+
+void
+DopeSheet::trimFrameRange(const DSNodePtr& frameRange,
+                          bool lastEnd,
+                          double newFrame)
+{
+    NodePtr node = frameRange->getInternalNode();
+    KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamFirstFrame));
+    KnobIntPtr lastFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamLastFrame));
+    if (!firstFrameKnob || !lastFrameKnob) {
+        return;
+    }
+    const int first = firstFrameKnob->getValue();
+    const int last = lastFrameKnob->getValue();
+    const int oldFrame = lastEnd ? last : first;
+    int frame = (int)std::floor(newFrame + 0.5);
+    frame = lastEnd ? std::max(frame, first) : std::min(frame, last);
+    if (frame == oldFrame) {
+        return;
+    }
+
+    DSTrimFrameRangeCommand* cmd = new DSTrimFrameRangeCommand(frameRange, lastEnd, oldFrame, frame);
     cmd->setGestureKey(_imp->editGesture.key());
     _imp->pushUndoCommand(cmd, scopeForNode(node));
 }

@@ -80,13 +80,14 @@ public:
      * Each state, except esNoEditingState, corresponds to  an user
      * interaction.
      */
-    enum EventStateEnum
-    {
+    enum EventStateEnum {
         esNoEditingState,
         esPickKeyframe,
         esReaderLeftTrim,
         esReaderRightTrim,
         esReaderSlip,
+        esFrameRangeLeftTrim,
+        esFrameRangeRightTrim,
         esSelectionByRect,
         esMoveKeyframeSelection,
         esMoveCurrentFrameIndicator,
@@ -192,6 +193,12 @@ public Q_SLOTS:
      * has changed.
      */
     void onTimeLineBoundariesChanged(int, int);
+
+    /**
+     * @brief Redraws when a viewer's inputs change, since keys are drawn at the frame the active
+     * viewer shows them.
+     **/
+    void onViewersChanged();
 
     /**
      * @brief Handles 'dsNode' for the next refreshes of the view.

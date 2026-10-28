@@ -128,15 +128,21 @@ protected:
         }
     }
 
-    // Replaces the warp curve with a linear one through (0, 0) and (1, end).
-    void setLinearWarp(const NodePtr& node,
-                       double end)
+    // The input time the output at time reads, before the filter.
+    static double sourceAt(const NodePtr& node,
+                           double time)
     {
-        KnobParametricPtr warp = std::dynamic_pointer_cast<KnobParametric>(node->getKnobByName(kRetimeParamWarp));
-        ASSERT_TRUE(bool(warp));
-        ASSERT_EQ(eStatusOK, warp->deleteAllControlPoints(eValueChangedReasonUserEdited, 0));
-        ASSERT_EQ(eStatusOK, warp->addControlPoint(eValueChangedReasonUserEdited, 0, 0., 0., eKeyframeTypeLinear));
-        ASSERT_EQ(eStatusOK, warp->addControlPoint(eValueChangedReasonUserEdited, 0, 1., end, eKeyframeTypeLinear));
+        Retime* retime = retimeOf(node);
+        double source = -1.;
+        EXPECT_TRUE(retime && retime->sourceTime(time, ViewIdx(0), &source)) << "at " << time;
+
+        return source;
+    }
+
+    static KnobDoublePtr doubleKnob(const NodePtr& node,
+                                    const char* name)
+    {
+        return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
     }
 };
 
@@ -194,13 +200,13 @@ TEST_F(NativeRetimeTest, NearestAndFractionalFilters)
     setKnob<KnobDouble>(retime, kRetimeParamSpeed, 0.25);
 
     // Output frame 4 reads input frame 1.75, output frame 5 input frame 2.
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterNearest);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterNearest);
     expectInputAt(retime, 4., 2.);
     expectInputAt(retime, 3., 2.);
     expectInputAt(retime, 2., 1.);
     expectInputAt(retime, 5., 2.);
 
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterFractional);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterFractional);
     expectInputAt(retime, 4., 1.75);
     expectInputAt(retime, 5., 2.);
 }
@@ -249,7 +255,7 @@ TEST_F(NativeRetimeTest, BoxAtSpeedOneReadsTheFrame)
 {
     NodePtr retime = createRetime();
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterBox);
 
     expectInputAt(retime, 1., 1.);
     expectInputAt(retime, 10., 10.);
@@ -262,7 +268,7 @@ TEST_F(NativeRetimeTest, BoxAveragesTheFramesTheShutterCovers)
 {
     NodePtr retime = createRetime({ 17, 18, 19, 20, 21 });
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterBox);
     setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
 
     expectMean(retime, 10., { 18, 19, 20 }, { 0.5, 1., 0.5 });
@@ -282,7 +288,7 @@ TEST_F(NativeRetimeTest, BoxAtLowSpeedReadsTheFramesUnderTheShutter)
 {
     NodePtr retime = createRetime({ 1, 2 });
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterBox);
     setKnob<KnobDouble>(retime, kRetimeParamSpeed, 0.25);
 
     expectInputAt(retime, 4., 2.);
@@ -295,7 +301,7 @@ TEST_F(NativeRetimeTest, BoxNeitherBlursAHeldFrameNorReadsPastTheInputRange)
 {
     NodePtr retime = createRetime({ 49, 50 });
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)Retime::eFilterBox);
+    setKnob<KnobChoice>(retime, kRetimeParamFilter, (int)TimeSample::eFilterBox);
     setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
 
     // The output range is [1, 25.5]; past it After holds input frame 50.
@@ -314,48 +320,152 @@ TEST_F(NativeRetimeTest, BoxNeitherBlursAHeldFrameNorReadsPastTheInputRange)
     EXPECT_NEAR(1., last.weights[1], 1e-9);
 }
 
-TEST_F(NativeRetimeTest, WarpCurveReshapesTheInputRange)
-{
-    NodePtr retime = createRetime({ 25, 26 });
-    ASSERT_TRUE(bool(retime));
-    setLinearWarp(retime, 0.5);
-
-    expectInputAt(retime, 1., 1.);
-    // 24/49 of the way through the range, warped to 12/49 of it: input frame 13.
-    expectInputAt(retime, 25., 13.);
-    expectBlend(retime, 50., 25, 0.5);
-}
-
-TEST_F(NativeRetimeTest, LockedOutputEndsSetTheSpeed)
-{
-    NodePtr retime = createRetime({ 5, 6 });
-    ASSERT_TRUE(bool(retime));
-    setKnob<KnobBool>(retime, kRetimeParamOutputFirstLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamOutputFirst, 1.);
-    setKnob<KnobBool>(retime, kRetimeParamOutputLastLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamOutputLast, 99.);
-    // Ignored: the locked ends make the speed 0.5.
-    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 3.);
-
-    expectFrameRange(retime, 1., 99.);
-    expectInputAt(retime, 11., 6.);
-    expectBlend(retime, 10., 5, 0.5);
-}
-
-// Unlocked, the output ends show the range the speed derives and edits to them are reset, so the
-// hash sweep exempts them; locked, they are render parameters and must move the hash.
-TEST_F(NativeRetimeTest, LockedOutputEndsMoveTheHash)
+TEST_F(NativeRetimeTest, HasNoWarpCurve)
 {
     NodePtr retime = createRetime();
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobBool>(retime, kRetimeParamOutputFirstLock, true);
-    setKnob<KnobBool>(retime, kRetimeParamOutputLastLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamOutputFirst, 1.);
-    setKnob<KnobDouble>(retime, kRetimeParamOutputLast, 50.);
+    EXPECT_FALSE(bool(retime->getKnobByName("warp")));
+    EXPECT_FALSE(bool(retime->getKnobByName("inputFirstLock")));
+    EXPECT_FALSE(bool(retime->getKnobByName("outputLastLock")));
+}
 
-    const char* const ends[] = { kRetimeParamOutputFirst, kRetimeParamOutputLast };
+TEST_F(NativeRetimeTest, MappingKnobDefaults)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    KnobBoolPtr useIn = std::dynamic_pointer_cast<KnobBool>(retime->getKnobByName(kRetimeParamUseInMapping));
+    KnobBoolPtr useOut = std::dynamic_pointer_cast<KnobBool>(retime->getKnobByName(kRetimeParamUseOutMapping));
+    ASSERT_TRUE(bool(useIn));
+    ASSERT_TRUE(bool(useOut));
+    EXPECT_TRUE(useIn->getValue());
+    EXPECT_FALSE(useOut->getValue());
+    EXPECT_EQ("Original In", retime->getKnobByName(kRetimeParamOriginalIn)->getLabel());
+    EXPECT_EQ("New Out", retime->getKnobByName(kRetimeParamNewOut)->getLabel());
+    EXPECT_EQ("Use In Mapping", useIn->getLabel());
+}
+
+// In mapping alone: original in 10 lands on new in 20 and speed 2 plays from there.
+TEST_F(NativeRetimeTest, InMappingAloneAnchorsTheInFrame)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalIn, 10.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 20.);
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
+
+    EXPECT_DOUBLE_EQ(10., sourceAt(retime, 20.));
+    EXPECT_DOUBLE_EQ(12., sourceAt(retime, 21.));
+    EXPECT_DOUBLE_EQ(14., sourceAt(retime, 22.));
+    expectInputAt(retime, 21., 12.);
+    // The out follows: the input's last frame, 50, lands on 20 + 40 / 2.
+    EXPECT_DOUBLE_EQ(40., doubleKnob(retime, kRetimeParamNewOut)->getValue());
+    EXPECT_DOUBLE_EQ(50., doubleKnob(retime, kRetimeParamOriginalOut)->getValue());
+    EXPECT_FALSE(doubleKnob(retime, kRetimeParamNewOut)->isEnabled(0));
+    EXPECT_TRUE(doubleKnob(retime, kRetimeParamSpeed)->isEnabled(0));
+    expectFrameRange(retime, 20., 40.);
+    // Before the new range the default Before holds the original in.
+    expectInputAt(retime, 5., 10.);
+}
+
+// Both mappings: 1..99 onto 1..50 sets the speed to (99 - 1) / (50 - 1) = 2, read-only, and the
+// range to [1, 50].
+TEST_F(NativeRetimeTest, BothMappingsFitTheRangesAndSetTheSpeed)
+{
+    NodePtr retime = createRetime({ 5, 6 });
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, true);
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalIn, 1.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 1.);
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalOut, 99.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 50.);
+
+    KnobDoublePtr speed = doubleKnob(retime, kRetimeParamSpeed);
+    ASSERT_TRUE(bool(speed));
+    EXPECT_DOUBLE_EQ(2., speed->getValue());
+    EXPECT_FALSE(speed->isEnabled(0));
+    expectFrameRange(retime, 1., 50.);
+    EXPECT_DOUBLE_EQ(1., sourceAt(retime, 1.));
+    EXPECT_DOUBLE_EQ(3., sourceAt(retime, 2.));
+    EXPECT_DOUBLE_EQ(99., sourceAt(retime, 50.));
+
+    // Expanding: 1..10 onto 1..19 is speed 0.5, and the ranges still meet at both ends.
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalIn, 1.);
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalOut, 10.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 19.);
+    EXPECT_DOUBLE_EQ(0.5, speed->getValue());
+    expectFrameRange(retime, 1., 19.);
+    expectInputAt(retime, 11., 6.);
+    expectBlend(retime, 10., 5, 0.5);
+    EXPECT_DOUBLE_EQ(10., sourceAt(retime, 19.));
+
+    // Reverse still applies: the original out lands on the new in.
+    setKnob<KnobBool>(retime, kRetimeParamReverse, true);
+    EXPECT_DOUBLE_EQ(10., sourceAt(retime, 1.));
+    EXPECT_DOUBLE_EQ(1., sourceAt(retime, 19.));
+
+    // Turning a mapping off gives the speed back to the user.
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, false);
+    EXPECT_TRUE(speed->isEnabled(0));
+}
+
+// Out mapping alone: original out 30 lands on new out 80 and the in follows the speed.
+TEST_F(NativeRetimeTest, OutMappingAloneAnchorsTheOutFrame)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobBool>(retime, kRetimeParamUseInMapping, false);
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, true);
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalOut, 30.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 80.);
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 2.);
+
+    EXPECT_DOUBLE_EQ(30., sourceAt(retime, 80.));
+    EXPECT_DOUBLE_EQ(28., sourceAt(retime, 79.));
+    // The in follows: the input's first frame, 1, lands on 80 - 29 / 2.
+    EXPECT_DOUBLE_EQ(1., doubleKnob(retime, kRetimeParamOriginalIn)->getValue());
+    EXPECT_DOUBLE_EQ(65.5, doubleKnob(retime, kRetimeParamNewIn)->getValue());
+    EXPECT_FALSE(doubleKnob(retime, kRetimeParamNewIn)->isEnabled(0));
+    EXPECT_DOUBLE_EQ(1., sourceAt(retime, 65.5));
+    expectFrameRange(retime, 65., 80.);
+    // The speed changes the in, not the out.
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 1.);
+    EXPECT_DOUBLE_EQ(30., sourceAt(retime, 80.));
+    expectFrameRange(retime, 51., 80.);
+
+    // Reversed, the original in lands on the new out.
+    setKnob<KnobBool>(retime, kRetimeParamReverse, true);
+    EXPECT_DOUBLE_EQ(1., sourceAt(retime, 80.));
+    EXPECT_DOUBLE_EQ(30., sourceAt(retime, 51.));
+}
+
+// The dope sheet draws a Retime's bar over its frame range, which follows the new range.
+TEST_F(NativeRetimeTest, FrameRangeFollowsTheNewRange)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    expectFrameRange(retime, 1., 50.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 101.);
+    expectFrameRange(retime, 101., 150.);
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, 0.5);
+    expectFrameRange(retime, 101., 199.);
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, true);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 120.);
+    expectFrameRange(retime, 101., 120.);
+}
+
+// A derived end shows the range the mappings resolve and edits to it are reset, so the hash sweep
+// exempts New Out; with its mapping on it is a render parameter and must move the hash.
+TEST_F(NativeRetimeTest, MappedEndsMoveTheHash)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, true);
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 1.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 50.);
+
+    const char* const ends[] = { kRetimeParamNewIn, kRetimeParamNewOut, kRetimeParamOriginalIn, kRetimeParamOriginalOut };
     for (const char* end : ends) {
-        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(retime->getKnobByName(end));
+        KnobDoublePtr knob = doubleKnob(retime, end);
         ASSERT_TRUE(bool(knob)) << end;
         retime->refreshHashNow();
         const U64 before = retime->getHashValue();
@@ -370,35 +480,41 @@ TEST_F(NativeRetimeTest, LockedOutputEndsMoveTheHash)
     }
 }
 
-TEST_F(NativeRetimeTest, LockedInputEndsLimitTheInputRange)
+// An original end whose mapping is off is the input's end, shown read-only; with the mapping on
+// it is the knob's value.
+TEST_F(NativeRetimeTest, UnmappedOriginalEndsFollowTheInput)
 {
     NodePtr retime = createRetime();
     ASSERT_TRUE(bool(retime));
-    setKnob<KnobBool>(retime, kRetimeParamInputFirstLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamInputFirst, 11.);
-    setKnob<KnobBool>(retime, kRetimeParamInputLastLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamInputLast, 20.);
+    KnobDoublePtr originalOut = doubleKnob(retime, kRetimeParamOriginalOut);
+    ASSERT_TRUE(bool(originalOut));
+    EXPECT_DOUBLE_EQ(50., originalOut->getValue());
+    EXPECT_FALSE(originalOut->isEnabled(0));
 
-    // The output starts at the input's first frame and lasts its length.
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, true);
+    EXPECT_TRUE(originalOut->isEnabled(0));
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalIn, 11.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 11.);
+    setKnob<KnobDouble>(retime, kRetimeParamOriginalOut, 20.);
+    setKnob<KnobDouble>(retime, kRetimeParamNewOut, 20.);
     expectFrameRange(retime, 11., 20.);
-    expectInputAt(retime, 11., 11.);
     expectInputAt(retime, 15., 15.);
     expectInputAt(retime, 25., 20.);
 
-    // An unlocked end shows what the retime resolves it to.
-    setKnob<KnobBool>(retime, kRetimeParamInputLastLock, false);
-    KnobDoublePtr inputLast = std::dynamic_pointer_cast<KnobDouble>(retime->getKnobByName(kRetimeParamInputLast));
-    ASSERT_TRUE(bool(inputLast));
-    EXPECT_DOUBLE_EQ(50., inputLast->getValue());
+    // With neither mapping the original range is the input's and starts where it does.
+    setKnob<KnobBool>(retime, kRetimeParamUseInMapping, false);
+    setKnob<KnobBool>(retime, kRetimeParamUseOutMapping, false);
+    EXPECT_DOUBLE_EQ(1., doubleKnob(retime, kRetimeParamOriginalIn)->getValue());
+    EXPECT_DOUBLE_EQ(1., doubleKnob(retime, kRetimeParamNewIn)->getValue());
+    expectFrameRange(retime, 1., 50.);
 }
 
 TEST_F(NativeRetimeTest, BeforeAndAfterModes)
 {
     NodePtr retime = createRetime();
     ASSERT_TRUE(bool(retime));
-    // The output range becomes [11, 60].
-    setKnob<KnobBool>(retime, kRetimeParamOutputFirstLock, true);
-    setKnob<KnobDouble>(retime, kRetimeParamOutputFirst, 11.);
+    // The new range becomes [11, 60].
+    setKnob<KnobDouble>(retime, kRetimeParamNewIn, 11.);
     expectFrameRange(retime, 11., 60.);
     expectInputAt(retime, 11., 1.);
 

@@ -28,29 +28,24 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-
 #include "Engine/EngineFwd.h"
-#include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Time/TimeSampledEffect.h"
 
 #define PLUGINID_NATRON_RETIME "Retime"
 #define PLUGIN_MAJOR_NATRON_RETIME 1
 
-#define kRetimeParamInputFirst "inputFirst"
-#define kRetimeParamInputFirstLock "inputFirstLock"
-#define kRetimeParamInputLast "inputLast"
-#define kRetimeParamInputLastLock "inputLastLock"
-#define kRetimeParamReverse "reverse"
-#define kRetimeParamOutputFirst "outputFirst"
-#define kRetimeParamOutputFirstLock "outputFirstLock"
-#define kRetimeParamOutputLast "outputLast"
-#define kRetimeParamOutputLastLock "outputLastLock"
+#define kRetimeParamOriginalIn "originalIn"
+#define kRetimeParamNewIn "newIn"
+#define kRetimeParamUseInMapping "useInMapping"
+#define kRetimeParamOriginalOut "originalOut"
+#define kRetimeParamNewOut "newOut"
+#define kRetimeParamUseOutMapping "useOutMapping"
 #define kRetimeParamSpeed "speed"
+#define kRetimeParamReverse "reverse"
 #define kRetimeParamBefore "before"
 #define kRetimeParamAfter "after"
-#define kRetimeParamFilter "filter"
-#define kRetimeParamShutter "shutter"
-#define kRetimeParamWarp "warp"
+#define kRetimeParamFilter kTimeSampleParamFilter
+#define kRetimeParamShutter kTimeSampleParamShutter
 
 #define kRetimeOutsideContinue "continue"
 #define kRetimeOutsideHold "hold"
@@ -58,10 +53,10 @@
 #define kRetimeOutsideBounce "bounce"
 #define kRetimeOutsideBlack "black"
 
-#define kRetimeFilterNearest "nearest"
-#define kRetimeFilterBlend "blend"
-#define kRetimeFilterFractional "fractional"
-#define kRetimeFilterBox "box"
+#define kRetimeFilterNearest kTimeSampleFilterNearest
+#define kRetimeFilterBlend kTimeSampleFilterBlend
+#define kRetimeFilterFractional kTimeSampleFilterFractional
+#define kRetimeFilterBox kTimeSampleFilterBox
 
 NATRON_NAMESPACE_ENTER
 
@@ -72,9 +67,10 @@ inline constexpr InputSpec kRetimeInputs[] = {
 inline constexpr NodeSpec kRetimeNodeSpec = {
     .id = PLUGINID_NATRON_RETIME,
     .label = "Retime",
-    .description = "Changes the timing of the input: maps an input frame range onto an output frame range at a "
-                   "speed that may be animated, optionally reversed and reshaped by a warp curve, and chooses what "
-                   "the frames outside the output range show and how a frame between two input frames is made.",
+    .description = "Changes the speed of the input: an original frame lands on a new frame and the speed, which may "
+                   "be animated, plays the input from there, or two original frames land on two new frames and the "
+                   "speed is the one that fits them. Chooses what the frames outside the new range show and how a "
+                   "frame between two input frames is made.",
     .grouping = PLUGIN_GROUP_TIME,
     .majorVersion = PLUGIN_MAJOR_NATRON_RETIME,
     .minorVersion = 0,
@@ -89,14 +85,15 @@ inline constexpr ImagePipelineSpec kRetimePipeline = {
 };
 
 /**
- * @brief Retime: maps the input range onto the output range. With both output ends locked the
- * output range is theirs and the speed is the one that fits the input range into it. Otherwise the
- * output starts at outputFirst when locked, else at the input's first frame (or ends at outputLast
- * when only that is locked) and lasts the input's length over the speed at that end. A Blend
- * between two input frames renders, on the CPU or the GPU; everything else is a route to the input.
+ * @brief Retime: maps the original range [originalIn, originalOut] onto the new range
+ * [newIn, newOut]. With the in mapping alone, originalIn lands on newIn and the speed there sets
+ * newOut; with the out mapping alone, originalOut lands on newOut and the speed there sets newIn;
+ * with both, the speed is the one that fits the ranges onto each other. An original end whose
+ * mapping is off is the input's end when the input is bounded. A Blend between two input frames
+ * renders, on the CPU or the GPU; everything else is a route to the input.
  **/
 class Retime
-    : public StagedImageEffect {
+    : public TimeSampledEffect {
 public:
     enum Outside {
         eOutsideContinue = 0,
@@ -106,41 +103,21 @@ public:
         eOutsideBlack,
     };
 
-    enum Filter {
-        eFilterNearest = 0,
-        eFilterBlend,
-        eFilterFractional,
-        eFilterBox,
-    };
-
     /**
-     * @brief The ranges the retime maps between, as the locks and the speed resolve them.
+     * @brief The ranges the retime maps between, as the mappings and the speed resolve them.
      **/
     struct Ranges {
-        double inputFirst = 1.;
-        double inputLast = 1.;
-        double outputFirst = 1.;
-        double outputLast = 1.;
-        // With both output ends locked the speed is the one that maps the ranges onto each
-        // other, and the speed knob is ignored.
+        double originalIn = 1.;
+        double originalOut = 1.;
+        double newIn = 1.;
+        double newOut = 1.;
+        // With both mappings on the speed is the one that maps the ranges onto each other, and
+        // the speed knob is ignored.
         bool fixedSpeed = false;
         double speed = 1.;
-    };
-
-    /**
-     * @brief What the output at a time shows: nothing (black), the input at times[0], or the
-     * weighted mean of the input at each of times, ascending whole frames, weighted by weights.
-     **/
-    struct Sample {
-        enum Kind {
-            eBlack,
-            eInput,
-            eBlend,
-        };
-
-        Kind kind = eBlack;
-        std::vector<double> times;
-        std::vector<double> weights;
+        // With the out mapping alone the speed is integrated from newOut, which originalOut
+        // lands on; otherwise from newIn.
+        bool anchorOut = false;
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -156,41 +133,24 @@ public:
 
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief The input ends come from the knobs whose lock is on, else from the Source's frame
-     * range when it is bounded, else from the knobs; the output ends as the class comment says.
-     **/
     Ranges ranges(ViewIdx view) const;
 
     /**
      * @brief The input time the output at time reads, before the filter: the speed integrated
-     * from the output's first frame, from the input's first frame or, reversed (as reverse is
-     * at time), back from its last, then through the warp curve. Outside the output range,
-     * before and after decide. False for Black.
+     * from the anchor (newIn, or newOut with the out mapping alone), added to the original end
+     * that lands there or, reversed (as reverse is at time), taken from the other original end.
+     * Outside the new range, before and after decide. False for Black.
      **/
     bool sourceTime(double time, ViewIdx view, double* source) const;
 
     /**
-     * @brief The source time through the filter. Except with Box, a source time within 1e-6 of
-     * a whole frame counts as that frame. Box averages the input frames the shutter, centred on
-     * time and mapped to input frames, covers, each weighted by its overlap.
+     * @brief The source time through the filter. Box's shutter, centred on time, is mapped to
+     * input frames like time.
      **/
-    Sample sample(double time, ViewIdx view) const;
-
-    virtual Route route(double time,
-                        ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual FramesNeededMap getFramesNeeded(double time,
-                                            ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual Sample sample(double time, ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief The output range, its ends rounded outwards to whole frames.
+     * @brief The new range, its ends rounded outwards to whole frames.
      **/
     virtual void getFrameRange(double* first,
                                double* last) OVERRIDE FINAL;
@@ -208,25 +168,7 @@ private:
 
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
-    virtual bool isOpIdentity(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum renderOp(const RenderActionArgs& args,
-                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool getOpGpuInputLayer(int inputNb,
-                                    const ImageLayerDesc& plane,
-                                    double time,
-                                    ViewIdx view,
-                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    // Shows the resolved ends in the knobs whose lock is off, which are read-only.
+    // Shows the resolved values in the knobs the mappings derive, which are read-only.
     void refreshDerivedKnobs();
 
     /**
@@ -236,25 +178,20 @@ private:
      **/
     bool outputTime(double time, const Ranges& r, double* mapped, bool* moving) const;
 
-    // The input time at the output time mapped (within or past the output range), not filtered.
+    // The input time at the output time mapped (within or past the new range), not filtered.
     double inputTime(double mapped, const Ranges& r, bool reverse, ViewIdx view) const;
 
     bool _refreshingKnobs = false;
-    KnobDoubleWPtr _inputFirst;
-    KnobBoolWPtr _inputFirstLock;
-    KnobDoubleWPtr _inputLast;
-    KnobBoolWPtr _inputLastLock;
-    KnobBoolWPtr _reverse;
-    KnobDoubleWPtr _outputFirst;
-    KnobBoolWPtr _outputFirstLock;
-    KnobDoubleWPtr _outputLast;
-    KnobBoolWPtr _outputLastLock;
+    KnobDoubleWPtr _originalIn;
+    KnobDoubleWPtr _newIn;
+    KnobBoolWPtr _useInMapping;
+    KnobDoubleWPtr _originalOut;
+    KnobDoubleWPtr _newOut;
+    KnobBoolWPtr _useOutMapping;
     KnobDoubleWPtr _speed;
+    KnobBoolWPtr _reverse;
     KnobChoiceWPtr _before;
     KnobChoiceWPtr _after;
-    KnobChoiceWPtr _filter;
-    KnobDoubleWPtr _shutter;
-    KnobParametricWPtr _warp;
 };
 
 NATRON_NAMESPACE_EXIT

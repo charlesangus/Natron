@@ -62,6 +62,16 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 /**
+ * @brief Whether the frames of range are walked: each whole frame of a range with whole-frame bounds, or the one
+ * time of a single-time range, fractional or not.
+ **/
+bool
+isPlannedRange(const RangeD& range)
+{
+    return (range.min == range.max) || ((range.min == (int)range.min) && (range.max == (int)range.max));
+}
+
+/**
  * @brief Layers asked of one frame/view at the mipmap level its consumer reads it at.
  **/
 struct PlanesRequest {
@@ -455,9 +465,9 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                 for (U32 range = 0; range < viewIt->second.size(); ++range) {
                     int nbFramesPreFetched = 0;
 
-                    // if the range bounds are not ints, the fetched images will probably anywhere within this range - no need to pre-render
-                    if ( (viewIt->second[range].min == (int)viewIt->second[range].min) &&
-                         ( viewIt->second[range].max == (int)viewIt->second[range].max) ) {
+                    // A range with fractional bounds is read anywhere within it, so only whole-frame ranges and single
+                    // times are rendered ahead.
+                    if (isPlannedRange(viewIt->second[range])) {
                         for (double f = viewIt->second[range].min;
                              f <= viewIt->second[range].max && nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
                              f += 1.) {
@@ -1055,8 +1065,9 @@ visitRequestPassItem(bool useTransforms,
             for (U32 range = 0; range < viewIt->second.size(); ++range) {
                 int nbFramesPreFetched = 0;
 
-                // if the range bounds are not ints, the fetched images will probably anywhere within this range - no need to pre-render
-                if ((viewIt->second[range].min == (int)viewIt->second[range].min) && (viewIt->second[range].max == (int)viewIt->second[range].max)) {
+                // A range with fractional bounds is read anywhere within it, so only whole-frame ranges and single
+                // times are planned.
+                if (isPlannedRange(viewIt->second[range])) {
                     for (double f = viewIt->second[range].min; f <= viewIt->second[range].max; f += 1.) {
                         // Frames past the pre-fetch cap are still walked: getImage pulls them during the
                         // render and their renderRoI uses this request data.

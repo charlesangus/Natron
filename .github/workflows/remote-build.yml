@@ -1,6 +1,6 @@
 name: Remote build
 
-run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}${{ inputs.cmake_args != '' && format(' cmake:{0}', inputs.cmake_args) || '' }}
+run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}${{ inputs.cmake_args != '' && format(' cmake:{0}', inputs.cmake_args) || '' }}${{ inputs.from_run != '' && format(' from:{0}', inputs.from_run) || '' }}
 
 on:
   # A push run builds fast with no tests and no AppImage; it exists to
@@ -49,9 +49,26 @@ on:
         required: false
         type: string
         default: ''
+      gui_scripts:
+        description: 'Space-separated Tests/gui/*.py scripts to run under Xvfb against the AppImage, one job each'
+        required: false
+        type: string
+        default: ''
+      from_run:
+        description: 'Run id whose AppImage (of this preset) the GUI scripts use; skips the build, and the scripts come from that run''s commit'
+        required: false
+        type: string
+        default: ''
+      gui_ref:
+        description: 'With from_run: branch or sha whose scripts, fixtures and run-gui-test.sh the GUI jobs check out instead of the from_run commit; the AppImage and dev image still come from from_run'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  # Downloads the AppImage of another run for from_run.
+  actions: read
 
 env:
   CI: 'True'
@@ -72,6 +89,7 @@ jobs:
   remote-build:
     name: remote-build
     needs: dev-image
+    if: ${{ !inputs.from_run }}
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
@@ -88,6 +106,7 @@ jobs:
       NATRON_BUILD_JOBS: 4
     outputs:
       tree: ${{ steps.upload_tree.outcome }}
+      appimage: ${{ steps.upload_appimage.outcome }}
 
     steps:
       - name: Checkout branch
@@ -235,6 +254,7 @@ jobs:
         run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
 
       - name: Upload AppImage
+        id: upload_appimage
         if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -407,7 +427,7 @@ jobs:
   results:
     name: results
     needs: [remote-build, ctest]
-    if: always() && inputs.tests
+    if: always() && inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
     steps:
       - name: Download ctest logs
@@ -447,3 +467,195 @@ jobs:
           test -d "smoke-renders/smoke-render-legacy-$SUFFIX"
           test -d "smoke-renders/smoke-render-taskgraph-$SUFFIX"
           diff -r "smoke-renders/smoke-render-legacy-$SUFFIX" "smoke-renders/smoke-render-taskgraph-$SUFFIX"
+
+  # Resolves what the GUI jobs run: the script matrix, the commit whose scripts and fixtures they
+  # check out, the AppImage artifact and the run holding it, and the dev image. For from_run all
+  # of these come from that run, so a branch without this workflow can still be checked; its
+  # commit's dev image matches the PySide6 its AppImage bundles, which run-gui-test.sh relies on.
+  gui-matrix:
+    name: gui matrix
+    needs: dev-image
+    if: inputs.gui_scripts != '' || inputs.from_run != ''
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      run: ${{ steps.resolve.outputs.run }}
+      artifact: ${{ steps.resolve.outputs.artifact }}
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Resolve scripts and AppImage
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          GUI_SCRIPTS: ${{ inputs.gui_scripts }}
+          FROM_RUN: ${{ inputs.from_run }}
+          GUI_REF: ${{ inputs.gui_ref }}
+          APPIMAGE: ${{ inputs.appimage }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GUI_SCRIPTS// /}" ]]; then
+            echo "::error::from_run needs gui_scripts; it skips the build, so there is nothing else to do"
+            exit 1
+          fi
+          if [[ -n "$GUI_REF" && -z "$FROM_RUN" ]]; then
+            echo "::error::gui_ref only applies with from_run"
+            exit 1
+          fi
+          matrix='[]'
+          for script in $GUI_SCRIPTS; do
+            if ! [[ "$script" =~ ^Tests/gui/[A-Za-z0-9_][A-Za-z0-9_.-]*\.py$ ]]; then
+              echo "::error::gui_scripts entry '$script' is not a Tests/gui/<name>.py path"
+              exit 1
+            fi
+            matrix=$(jq -c --arg s "$script" --arg n "$(basename "$script" .py)" \
+              '. + [{script: $s, name: $n}] | unique_by(.name)' <<<"$matrix")
+          done
+          if [[ -n "$FROM_RUN" ]]; then
+            if ! [[ "$FROM_RUN" =~ ^[0-9]+$ ]]; then
+              echo "::error::from_run '$FROM_RUN' is not a run id"
+              exit 1
+            fi
+            SHA=$(gh api "repos/$REPO/actions/runs/$FROM_RUN" --jq .head_sha)
+            RUN_ID="$FROM_RUN"
+            artifact="natron-$PRESET-$SHA"
+            available=$(gh api --paginate "repos/$REPO/actions/runs/$FROM_RUN/artifacts" \
+              --jq '.artifacts[] | select(.expired | not) | .name')
+            if ! grep -qxF "$artifact" <<<"$available"; then
+              echo "::error::run $FROM_RUN has no artifact $artifact; its unexpired AppImages: $(grep '^natron-' <<<"$available" | tr '\n' ' ')"
+              exit 1
+            fi
+          else
+            if [[ "$APPIMAGE" != true || "$PRESET" == debug ]]; then
+              echo "::error::gui_scripts need an AppImage: set appimage and a fast or release preset, or use from_run"
+              exit 1
+            fi
+            artifact="natron-$PRESET-$SHA"
+          fi
+          {
+            echo "matrix=$matrix"
+            echo "sha=$SHA"
+            echo "ref=${GUI_REF:-$SHA}"
+            echo "run=$RUN_ID"
+            echo "artifact=$artifact"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the commit under test
+        if: inputs.from_run != ''
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+          submodules: false
+          lfs: false
+
+      - name: Resolve dev image
+        id: image
+        env:
+          FROM_RUN: ${{ inputs.from_run }}
+          IMAGE: ${{ needs.dev-image.outputs.image }}
+        run: |
+          if [[ -n "$FROM_RUN" && -x tools/ci/local/dev-image-tag.sh ]]; then
+            IMAGE=$(tools/ci/local/dev-image-tag.sh)
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  gui:
+    name: gui (${{ matrix.name }})
+    needs: [gui-matrix, remote-build]
+    if: >-
+      !cancelled() && needs.gui-matrix.result == 'success'
+      && (inputs.from_run != '' || needs.remote-build.outputs.appimage == 'success')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.gui-matrix.outputs.matrix) }}
+    container:
+      image: ${{ needs.gui-matrix.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      # The scripts and their fixtures come from the commit the AppImage was built from, or from
+      # gui_ref when given.
+      - name: Checkout the commit under test
+        uses: actions/checkout@v5.0.1
+        with:
+          ref: ${{ needs.gui-matrix.outputs.ref }}
+          submodules: false
+          lfs: false
+
+      # Only the LFS fixtures a script names are fetched, so most scripts download none.
+      - name: List LFS fixtures the script uses
+        id: lfs
+        env:
+          SCRIPT: ${{ matrix.script }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+          include=()
+          if [[ -f "$SCRIPT" ]]; then
+            while IFS= read -r path; do
+              if grep -qF "$(basename "$path")" "$SCRIPT"; then
+                include+=("$path")
+              fi
+            done < <(git lfs ls-files -n)
+          fi
+          echo "include=$(IFS=,; echo "${include[*]}")" >> "$GITHUB_OUTPUT"
+
+      # Restore only: a save here would store a partial object set under the full set's key.
+      - name: Restore LFS objects
+        if: steps.lfs.outputs.include != ''
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Pull LFS fixtures
+        if: steps.lfs.outputs.include != ''
+        env:
+          INCLUDE: ${{ steps.lfs.outputs.include }}
+        run: |
+          git lfs install --local
+          git lfs pull --include "$INCLUDE"
+
+      - name: Download AppImage
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: ${{ needs.gui-matrix.outputs.artifact }}
+          run-id: ${{ needs.gui-matrix.outputs.run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: gui-appimage
+
+      - name: Run ${{ matrix.script }}
+        timeout-minutes: 25
+        env:
+          SCRIPT: ${{ matrix.script }}
+          GUI_TEST_SCREEN_SIZE: 1920x1080
+          GUI_TEST_TIMEOUT: 900
+          ARTIFACT: ${{ needs.gui-matrix.outputs.artifact }}
+        run: |
+          appimage=$(find gui-appimage -name '*.AppImage' -print -quit)
+          if [[ -z "$appimage" ]]; then
+            echo "::error::no AppImage in $ARTIFACT"
+            exit 1
+          fi
+          export NATRON_GUI_TEST_OUT="$GITHUB_WORKSPACE/build/gui-out"
+          Tests/gui/run-gui-test.sh "$SCRIPT" "$appimage"
+
+      - name: Upload GUI output
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.name }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out
+          if-no-files-found: warn
+          retention-days: 7

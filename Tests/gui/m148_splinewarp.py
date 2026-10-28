@@ -192,12 +192,20 @@ try:
         pos = tree.visualItemRect(item).center()
         send_mouse(tree.viewport(), QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
 
+    def column_of(tree, header):
+        h = tree.headerItem()
+        for i in range(tree.columnCount()):
+            if h.text(i) == header:
+                return i
+        return -1
+
     def role_and_partner(tree, curve):
         item = tree_item(tree, curve)
-        if item is None:
+        role_col = column_of(tree, "Role")
+        partner_col = column_of(tree, "Linked To")
+        if item is None or role_col < 0 or partner_col < 0:
             return None, None
-        n = tree.columnCount()
-        return item.text(n - 2), item.text(n - 1)
+        return item.text(role_col), item.text(partner_col)
 
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
@@ -240,11 +248,13 @@ try:
         require(tree is not None, "the settings panel holds the curve list")
 
         gt.section("panel-columns")
-        n = tree.columnCount()
-        header = tree.headerItem()
-        check(header.text(n - 2) == "Role", "the curve list has a Role column (%r)" % header.text(n - 2))
-        check(header.text(n - 1) == "Linked To", "the curve list has a Linked To column (%r)" % header.text(n - 1))
-        check(not tree.isColumnHidden(n - 2) and not tree.isColumnHidden(n - 1), "both columns are shown")
+        role_col = column_of(tree, "Role")
+        partner_col = column_of(tree, "Linked To")
+        check(role_col >= 0, "the curve list has a Role column")
+        check(partner_col >= 0, "the curve list has a Linked To column")
+        check(role_col >= 0 and partner_col >= 0
+              and not tree.isColumnHidden(role_col) and not tree.isColumnHidden(partner_col),
+              "both columns are shown")
 
         gt.section("duplicate-and-link")
         x0, y0, x1, y1 = RECT

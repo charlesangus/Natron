@@ -33,6 +33,7 @@
 #include <QMetaObject>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
@@ -67,6 +68,14 @@ ImageLayerDesc
 primIdLayer()
 {
     return ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id"));
+}
+
+ImageLayerDesc
+normalLayer()
+{
+    static const char* const channels[] = { "X", "Y", "Z" };
+
+    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
 }
 
 std::string
@@ -338,6 +347,10 @@ USDRender::getComponentsNeededAndProduced(double time,
     produced.push_back(ImageLayerDesc::getRGBAComponents());
     produced.push_back(depthLayer());
     produced.push_back(primIdLayer());
+    // Storm renders no normal AOV.
+    if (!RenderDelegates::isStorm(rendererId())) {
+        produced.push_back(normalLayer());
+    }
 }
 
 FramesNeededMap
@@ -498,6 +511,7 @@ USDRender::render(const RenderActionArgs& args)
     HydraRender::Request& request = setup.request;
     const RectI& pixels = setup.pixels;
     request.aborted = [this]() { return aborted(); };
+    request.threads = appPTR->getNCPUsAvailableForEffect();
 
     HydraRender::Result result;
     if (!HydraRender::render(request, &result, &error)) {
@@ -523,11 +537,13 @@ USDRender::render(const RenderActionArgs& args)
             ePlaneColor,
             ePlaneDepth,
             ePlanePrimId,
+            ePlaneNormal,
             ePlaneOther
         };
         const std::string& layerID = it->first.getLayerID();
         const PlaneEnum plane = it->first.isColorLayer() ? ePlaneColor : (layerID == "depth") ? ePlaneDepth
             : (layerID == "primId")                                                           ? ePlanePrimId
+            : (layerID == "normal")                                                           ? ePlaneNormal
                                                                                               : ePlaneOther;
         const int nComps = (int)image->getComponentsCount();
         const RectI roi = args.roi.intersect(image->getBounds());
@@ -558,6 +574,9 @@ USDRender::render(const RenderActionArgs& args)
                         break;
                     case ePlanePrimId:
                         value = inside ? result.primId[index] : 0.f;
+                        break;
+                    case ePlaneNormal:
+                        value = (inside && (c < 3) && !result.normal.empty()) ? result.normal[index * 3 + (std::size_t)c] : 0.f;
                         break;
                     case ePlaneOther:
                         break;

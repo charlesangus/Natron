@@ -38,6 +38,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
+#include <pxr/base/vt/value.h>
 
 NATRON_NAMESPACE_ENTER
 
@@ -120,6 +121,9 @@ struct Request {
     std::string renderer = kRenderDelegateStormId;
     // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
     std::function<bool()> aborted;
+    // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
+    // calling task; any count when 0. Cycles takes it when the owner's engine is made.
+    int threads = 0;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -128,6 +132,9 @@ struct Result {
     std::vector<float> depth; // the distance along the camera's view axis, +inf where nothing was hit
     std::vector<float> primId; // hashToFloat(primPathHash(path)), 0 where nothing was hit
     std::map<std::uint32_t, std::string> primPaths; // the paths of the hashes primId holds
+    // 3 per pixel: the shading normal in camera space, 0 where nothing was hit. Empty when the
+    // delegate renders no normal AOV, as Storm.
+    std::vector<float> normal;
 };
 
 /**
@@ -142,7 +149,8 @@ bool render(const Request& request,
 enum PlaneEnum {
     ePlaneColor = 0,
     ePlaneDepth,
-    ePlanePrimId
+    ePlanePrimId,
+    ePlaneNormal
 };
 
 /**
@@ -224,6 +232,14 @@ bool renderWindow(const Request& request,
 
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
+
+/**
+ * @brief Render settings (UsdImagingGLEngine::SetRendererSetting) every engine of renderer gets
+ * before it first renders; an engine made under other settings is made again. Until the settings
+ * knobs exist only tests use it, to fix a path tracer's sample count and seed.
+ **/
+void setRendererSettings(const std::string& renderer,
+                         const std::map<std::string, PXR_NS::VtValue>& settings);
 
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);

@@ -35,6 +35,7 @@
 #include <functional>
 #include <future>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -47,6 +48,7 @@
 #include <pxr/base/gf/half.h>
 #include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec2i.h>
+#include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec4d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
@@ -72,6 +74,7 @@
 #define emit
 #endif
 
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -99,6 +102,19 @@ HydraGLContextFactory gFactory;
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
 
+typedef std::map<std::string, VtValue> RendererSettings;
+std::mutex gSettingsMutex;
+std::map<std::string, RendererSettings> gSettings;
+
+RendererSettings
+rendererSettings(const std::string& renderer)
+{
+    std::lock_guard<std::mutex> lock(gSettingsMutex);
+    std::map<std::string, RendererSettings>::const_iterator found = gSettings.find(renderer);
+
+    return (found == gSettings.end()) ? RendererSettings() : found->second;
+}
+
 struct EngineEntry {
     // The render delegate the engine was made with, and the name its errors give it.
     std::string renderer;
@@ -107,8 +123,12 @@ struct EngineEntry {
     // request's scene. Declared first so that the engine, which reads it, goes first.
     std::unique_ptr<SceneStage> stage;
     std::unique_ptr<UsdImagingGLEngine> engine;
-    // Whether the engine lights the stage with a headlight, as it does when the stage has no light.
+    // Whether the engine lights the stage with a headlight, as Storm's does when the stage has no light.
     bool headlight = false;
+    // The render settings the engine was made with (setRendererSettings()).
+    std::map<std::string, VtValue> settings;
+    // Whether the delegate renders the normal AOV, which only some do.
+    bool normal = false;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -718,7 +738,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
     const int width = request.width;
     const int height = request.height;
-    const TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
     const std::string renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
 
     EngineEntry& entry = _engines[request.owner];
@@ -744,13 +763,16 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
     const bool edited = entry.stage->sync(request.scene);
     const UsdStageRefPtr& stage = entry.stage->getStage();
+    // The headlight is Storm's: a path tracer lights a stage without lights as it does itself.
     bool headlight = entry.headlight;
-    if (edited || !entry.engine) {
+    if (_gl && (edited || !entry.engine)) {
         headlight = !hasSceneLight(stage);
     }
+    const RendererSettings settings = rendererSettings(renderer);
     // A headlight once set cannot be taken back, so the engine is made again when the stage gains
-    // or loses its lights.
-    if (!entry.engine || (headlight != entry.headlight)) {
+    // or loses its lights; and some settings, such as Cycles' integrator's, restart a render only
+    // when they change, so an engine is made again under new ones too.
+    if (!entry.engine || (headlight != entry.headlight) || (settings != entry.settings)) {
         entry.engine.reset();
         entry.rendered = false;
         UsdImagingGLEngine::Parameters parameters;
@@ -764,7 +786,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             parameters.gpuEnabled = false;
         }
         std::string startError;
-        {
+        const std::function<void()> make = [&]() {
             TfErrorMark mark;
             entry.engine.reset(new UsdImagingGLEngine(parameters));
             ++gEngineBuilds;
@@ -776,6 +798,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 mark.Clear();
                 startError = "The renderer " + entry.rendererName + " could not be started" + startError + ".";
             }
+        };
+        if (CyclesAovs::isCycles(renderer)) {
+            CyclesAovs::withThreadBudget(request.threads, make);
+        } else {
+            make();
         }
         if (!startError.empty()) {
             *error = startError;
@@ -785,6 +812,22 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             return nullptr;
         }
         entry.engine->SetEnablePresentation(false);
+        if (CyclesAovs::isCycles(renderer)) {
+            CyclesAovs::configureEngine(entry.engine.get());
+        }
+        for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
+            entry.engine->SetRendererSetting(TfToken(it->first), it->second);
+        }
+        entry.settings = settings;
+        TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
+        entry.normal = false;
+        if (!_gl) {
+            const TfTokenVector offered = entry.engine->GetRendererAovs();
+            entry.normal = std::find(offered.begin(), offered.end(), HdAovTokens->normal) != offered.end();
+            if (entry.normal) {
+                aovs.push_back(HdAovTokens->normal);
+            }
+        }
         if (!entry.engine->SetRendererAovs(aovs)) {
             *error = _gl ? "Storm on " + contextDescription() + " offers no color, depth and primId AOVs."
                          : entry.rendererName + " offers no color, depth, primId and instanceId AOVs.";
@@ -846,8 +889,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             }
             if (cancel && cancel->load()) {
                 *error = "The " + entry.rendererName + " render was cancelled.";
-                // Its threads would go on rendering the cancelled frame; the next render makes
-                // the engine again.
+                // Its threads would go on rendering the cancelled frame. Cycles has no stop: its
+                // render pass cancels the session and its session joins its thread as the engine
+                // goes. The next render makes the engine again.
+                if (engine->IsStopRendererSupported()) {
+                    (void)engine->StopRenderer();
+                }
                 entry.engine.reset();
                 entry.rendered = false;
 
@@ -919,8 +966,6 @@ RenderThread::cpuFrame(EngineEntry& entry,
     }
 
     {
-        // Storm's depth is the window depth in [0, 1]: back to the camera space, the inverse
-        // projection gives the point's distance along the view axis.
         MappedAov depth(entry, HdAovTokens->depth, error);
         if (!depth.valid()) {
             return false;
@@ -928,7 +973,14 @@ RenderThread::cpuFrame(EngineEntry& entry,
         const HdFormat componentFormat = HdGetComponentFormat(depth.format());
         const GfMatrix4d inverse = projection.GetInverse();
         result->depth.assign(pixels, std::numeric_limits<float>::infinity());
-        for (int y = 0; y < height; ++y) {
+        const bool cycles = CyclesAovs::isCycles(entry.renderer);
+        for (std::size_t i = 0; cycles && (i < pixels); ++i) {
+            result->depth[i] = CyclesAovs::depthToDistance(componentToFloat(componentFormat, depth.pixel(i)));
+        }
+        // Storm's depth, and that of the delegates keeping to Hydra's convention, is the window
+        // depth in [0, 1]: back to the camera space, the inverse projection gives the point's
+        // distance along the view axis.
+        for (int y = 0; !cycles && (y < height); ++y) {
             const double ndcY = (y + 0.5) / height * 2. - 1.;
             for (int x = 0; x < width; ++x) {
                 const std::size_t i = (std::size_t)y * (std::size_t)width + (std::size_t)x;
@@ -941,6 +993,33 @@ RenderThread::cpuFrame(EngineEntry& entry,
                 const double z = ndcX * inverse[0][2] + ndcY * inverse[1][2] + ndcZ * inverse[2][2] + inverse[3][2];
                 const double w = ndcX * inverse[0][3] + ndcY * inverse[1][3] + ndcZ * inverse[2][3] + inverse[3][3];
                 result->depth[i] = (float)(-z / w);
+            }
+        }
+    }
+
+    result->normal.clear();
+    if (entry.normal) {
+        // Hydra's normal AOV is in world space; the normal matrix of the view takes it to the
+        // camera's.
+        MappedAov normal(entry, HdAovTokens->normal, error);
+        if (!normal.valid()) {
+            return false;
+        }
+        const HdFormat componentFormat = HdGetComponentFormat(normal.format());
+        const std::size_t components = HdGetComponentCount(normal.format());
+        const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
+        const GfMatrix4d toCamera = entry.view.GetInverse().GetTranspose();
+        result->normal.assign(pixels * 3, 0.f);
+        for (std::size_t i = 0; (components >= 3) && (i < pixels); ++i) {
+            const unsigned char* at = normal.pixel(i);
+            GfVec3d n(componentToFloat(componentFormat, at), componentToFloat(componentFormat, at + componentSize), componentToFloat(componentFormat, at + 2 * componentSize));
+            if (n.GetLengthSq() == 0.) {
+                continue;
+            }
+            n = toCamera.TransformDir(n);
+            n.Normalize();
+            for (int c = 0; c < 3; ++c) {
+                result->normal[i * 3 + (std::size_t)c] = (float)n[c];
             }
         }
     }
@@ -986,6 +1065,9 @@ RenderThread::cpuWindow(EngineEntry& entry,
                 case HydraRender::ePlanePrimId:
                     out[c] = inside ? frame.primId[i] : 0.f;
                     break;
+                case HydraRender::ePlaneNormal:
+                    out[c] = (inside && (c < 3) && !frame.normal.empty()) ? frame.normal[i * 3 + (std::size_t)c] : 0.f;
+                    break;
                 }
             }
         }
@@ -1016,13 +1098,15 @@ RenderThread::decodeIds(EngineEntry& entry,
         }
         entry.primId.assign(pixels, 0.f);
         entry.primPaths.clear();
+        const bool cycles = CyclesAovs::isCycles(entry.renderer);
         std::map<std::pair<std::int32_t, std::int32_t>, std::uint32_t> decoded;
         for (std::size_t i = 0; i < pixels; ++i) {
             const std::int32_t prim = readInt(primIds.pixel(i));
             if (prim < 0) {
                 continue;
             }
-            const std::pair<std::int32_t, std::int32_t> key(prim, readInt(instanceIds.pixel(i)));
+            const std::int32_t instance = readInt(instanceIds.pixel(i));
+            const std::pair<std::int32_t, std::int32_t> key(prim, cycles ? CyclesAovs::instanceIndex(instance) : instance);
             std::map<std::pair<std::int32_t, std::int32_t>, std::uint32_t>::const_iterator found = decoded.find(key);
             std::uint32_t hash = 0;
             if (found != decoded.end()) {
@@ -1196,6 +1280,10 @@ RenderThread::pack(EngineEntry& entry,
         glTextureParameteri(depth, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
         (void)takeGlError();
         break;
+    case HydraRender::ePlaneNormal:
+        *error = "Storm renders no normal AOV.";
+
+        return false;
     case HydraRender::ePlanePrimId:
         if (!decodeIds(entry, error)) {
             return false;
@@ -1692,6 +1780,19 @@ releaseAll()
     RenderThread& thread = RenderThread::storm();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+}
+
+void
+setRendererSettings(const std::string& renderer,
+                    const std::map<std::string, VtValue>& settings)
+{
+    std::lock_guard<std::mutex> lock(gSettingsMutex);
+
+    if (settings.empty()) {
+        gSettings.erase(renderer);
+    } else {
+        gSettings[renderer] = settings;
+    }
 }
 
 void

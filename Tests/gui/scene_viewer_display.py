@@ -93,7 +93,7 @@ try:
     light = make("USDLight", 150, 0)
     light.setScriptName("RedLight")
     light.getParam("lightType").setValue(2)
-    light.getParam("color").set(1.0, 0.0, 0.0)
+    light.getParam("color").set(1.0, 0.0, 0.0, 1.0)
     light.getParam("intensity").setValue(20.0)
     light.getParam("width").setValue(2.0)
     light.getParam("height").setValue(2.0)

@@ -22,6 +22,7 @@ The drop-on-pipe hint paints the target pipe and the two ghost pipes green: `Edg
 
 ## Decisions
 
+- 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-28 — Release gate green. Next: GUI checks/screenshots (container held for the M117/M180 benches), then AppImage + UAT.
 - 2026-10-25 — highlight-colour-source: the Preferences Selection colour is the app's highlight colour; no new setting: it is already the shared highlight (ComboBox, checkbox, dope sheet) and `QPalette::Highlight` is only set locally.
 

@@ -71,6 +71,7 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 ## Decisions
 
+- 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-26 — **Live textures split from M53 and moved into the MVP (user, M19/M20 UAT grill).**
 - 2026-10-26 — **The resolver never renders (cat-plan):** consumers pre-render needed URIs on their own worker before Hydra sync; this replaces M53's plan of rendering inside `OpenAsset`, which risked deadlock on the GUI thread.
 - 2026-10-26 — **Animated textures by time-sampled asset paths (cat-plan):** the payload stays time-independent (M19), and per-frame hashes come without rendering.

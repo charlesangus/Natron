@@ -53,4 +53,5 @@ handles on its first match (`drawTransformHandles`, `getHandleTarget` in
 
 ## Decisions
 
+- 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-27 — PM: R/Y act as transform tools while the 3D view has focus (over the Viewer's own R/Y); the pivot toggle is menu-only. A created edit node is inserted after the viewed node and takes all its outputs (the scene edit applies downstream, not only in the Viewer). Handle drags preview and write once on release as one undo step.

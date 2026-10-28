@@ -59,6 +59,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 
 ## Decisions
 
+- 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-25 — **Master pin for one module:** `contrastntexture` exists only on darktable master (the 5.8 draft), and bumping `DARKTABLE_REF` would invalidate every M80 - Native RAW Support reference. So this module gets its own `DARKTABLE_MASTER_REF` and a second harness image.
 
 **Verification gate:**

@@ -97,6 +97,7 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Decisions
 
+- 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-27 — Gate run 40531328785: only failure was RenderIsolation timing out after all 12 cases passed (hang at process exit, taskgraph leg; ~1 s everywhere else). Treated as a flake; M229's gate (contains M228 HEAD) is the re-run. If it recurs, file a shutdown-deadlock milestone.
 - 2026-10-27 — A plain left-drag marquee-selects wherever it starts, in every preset (Nuke docs: "click and drag a marquee"); a click selects, Ctrl+drag tumbles. Locked navigation: the view draws a transient camera during the gesture and writes the camera knobs once on release (one undo step); wheel runs commit 300 ms after the last step. Root cause was a knob write → evaluate → full scene re-sync per mouse event.
 - 2026-10-27 — UAT round 1 (user): fixes in Phase 228.4. Lock with several cameras offers a menu (PM call: one camera locks directly).

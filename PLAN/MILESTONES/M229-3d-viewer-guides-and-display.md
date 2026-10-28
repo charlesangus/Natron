@@ -52,4 +52,5 @@ add them (usdview draws its own). Our overlay pass sits next to `drawGrid` in
 
 ## Decisions
 
+- 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-27 — Display keys are Ctrl+4/5/6 (wireframe/shaded/unshaded), Ctrl+G grid, Ctrl+Shift+G guides: plain 4/5/6 already connect viewer inputs. Guides are 1 scene unit long. Show Grid moved into a Display submenu.

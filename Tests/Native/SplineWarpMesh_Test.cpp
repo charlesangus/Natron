@@ -516,3 +516,36 @@ TEST(SplineWarpMesh, TheCachesKeepSolversApart)
     EXPECT_EQ(fromMesh.get(), fromMeshAgain.get());
     EXPECT_NE(fromMesh.get(), fromTps.get());
 }
+
+// A soft boundary's pairs pin the mesh along an open polyline: nothing moves on it, the warp eases
+// toward it, and unlike a hard boundary it masks nothing.
+TEST(SplineWarpMesh, ASoftBoundaryPinsItsCurveAndMasksNothing)
+{
+    std::vector<SplineWarpSamplePair> pairs = square(40., 3., -2.);
+    std::vector<SplineWarpSamplePolyline> polylines = squareOutline();
+    std::vector<int> soft;
+    for (int k = 0; k <= 4; ++k) {
+        soft.push_back((int)pairs.size());
+        pairs.push_back(makePair(70., 10. * k, 70., 10. * k));
+    }
+    polylines.push_back(makePolyline(soft, false));
+    const SplineWarpMesh mesh = SplineWarpMesh::build(pairs, polylines, SplineWarpMesh::paddedBox(pairs, RectD()));
+    for (std::size_t k = 1; k < soft.size(); ++k) {
+        EXPECT_TRUE(hasConstrainedEdge(mesh, soft[k - 1], soft[k])) << k;
+    }
+    const SplineWarpField field(mesh, std::vector<SplineWarpBoundaryShape>(), RectI(-10, -10, 90, 60), 1., 1., 1.);
+
+    ASSERT_FALSE(field.isIdentity());
+    for (int k = 0; k <= 4; ++k) {
+        // The grid is interpolated, so within a fraction of the 3 px the link moves.
+        const Point s = field.getSource(70., 10. * k);
+        EXPECT_NEAR(70., s.x, 0.15) << k;
+        EXPECT_NEAR(10. * k, s.y, 0.15) << k;
+    }
+    const Point inside = field.getSource(20., 20.);
+    EXPECT_NEAR(23., inside.x, 1e-6);
+    EXPECT_NEAR(18., inside.y, 1e-6);
+    const Point between = field.getSource(55., 20.);
+    EXPECT_GT(between.x - 55., 0.1);
+    EXPECT_LT(between.x - 55., 3. - 0.1);
+}

@@ -52,6 +52,10 @@
 #define kSplineWarpParamSolver "solver"
 #define kSplineWarpParamSmoothness "smoothness"
 #define kSplineWarpParamCurveResolution "curveResolution"
+#define kSplineWarpParamBoundaryCurveResolution "boundaryCurveResolution"
+#define kSplineWarpParamLayerAmount "layerAmount"
+#define kSplineWarpParamLinkAmount "linkAmount"
+#define kSplineWarpParamBoundaryBBox "boundaryBBox"
 #define kSplineWarpParamFieldResolution "fieldResolution"
 #define kSplineWarpParamBBox "bbox"
 #define kSplineWarpParamMotionBlur "motionBlur"
@@ -185,6 +189,9 @@ private:
         bool mesh = false;
         double smoothness = 0.;
         double curveResolution = 4.;
+        double boundaryCurveResolution = 4.;
+        // The Source's format in canonical coordinates, held still when not null.
+        RectD boundaryFormat;
         double fieldResolution = 8.;
         Resampler::FilterEnum filter = Resampler::eFilterCubic;
         bool clamp = false;
@@ -221,10 +228,12 @@ private:
         double amount;
         bool invert;
         double spacing;
+        double boundarySpacing;
+        RectD boundaryFormat;
 
         bool operator==(const SampleKey& o) const
         {
-            return contextHash == o.contextHash && time == o.time && amount == o.amount && invert == o.invert && spacing == o.spacing;
+            return contextHash == o.contextHash && time == o.time && amount == o.amount && invert == o.invert && spacing == o.spacing && boundarySpacing == o.boundarySpacing && boundaryFormat == o.boundaryFormat;
         }
     };
 
@@ -329,6 +338,12 @@ private:
     void updateClampEnabled(double time, ViewIdx view);
     void updateSmoothnessVisibility();
 
+    // Loads layerAmount and linkAmount from the selected layers and links, and enables each when
+    // the selection is one it edits.
+    void syncAmountKnobs();
+    // Writes knob, layerAmount when layer and linkAmount otherwise, to the selected targets.
+    void writeAmountKnob(const KnobDoublePtr& knob, bool layer);
+
     KnobDoubleWPtr _amount;
     KnobBoolWPtr _invert;
     KnobChoiceWPtr _solver;
@@ -343,6 +358,12 @@ private:
     KnobDoubleWPtr _shutter;
     KnobChoiceWPtr _shutterOffset;
     KnobDoubleWPtr _shutterCustomOffset;
+    KnobDoubleWPtr _layerAmount;
+    KnobDoubleWPtr _linkAmount;
+    KnobBoolWPtr _boundaryBBox;
+    KnobDoubleWPtr _boundaryCurveResolution;
+    // While syncAmountKnobs() sets the amount knobs, which must not write back.
+    bool _syncingAmounts;
 
     SplineWarpInteractPtr _ui;
     std::unique_ptr<SplineWarpPanelHook> _panelHook;

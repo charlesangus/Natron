@@ -9,8 +9,13 @@ Each curve has a role, shown in the panel's Role column:
 
 - **Source** and **Destination**: the two curves of a link. The Linked To column names the other
   curve. Overlays draw sources red and destinations blue.
-- **Boundary**: a closed curve that limits the warp. Overlays draw it yellow.
+- **Hard Boundary**: a closed curve that limits the warp. Overlays draw it yellow.
+- **Soft Boundary**: a curve, open or closed, that holds the image still along it without limiting
+  the warp elsewhere. Overlays draw it green.
 - No role: the curve is ignored by the warp. Overlays draw it grey.
+
+A curve or layer whose Activated box is off at the current frame is ignored by the warp, whatever
+its role.
 
 Links and boundaries are made from a curve's context menu in the panel:
 
@@ -24,8 +29,9 @@ Links and boundaries are made from a curve's context menu in the panel:
 - **Unlink** removes the links of the selected curves. The curves stay, with no role.
 - **Swap Source/Destination** swaps the two curves of each selected link, keeping how their
   points pair.
-- **Toggle Boundary** makes every selected curve a boundary, or none of them when they all are.
-  Only closed, unlinked curves can be boundaries.
+- **Toggle Hard Boundary** and **Toggle Soft Boundary** make every selected curve that kind of
+  boundary, or none of them when they all are. Making a curve one kind of boundary clears the
+  other. Hard boundaries must be closed and unlinked; soft boundaries only unlinked.
 
 Actions that do not apply to the selection are greyed out. Each action is one undo step.
 
@@ -35,21 +41,28 @@ point of the other curve. Drag either end along its curve; it cannot pass the co
 either side, so the pairing never folds. Delete or Backspace removes the selected one. With
 auto-keying on, adding or moving a correspondence sets a key at the current frame.
 
-**Boundaries and feather:** with at least one boundary, nothing outside every boundary's feather
+**Boundaries and feather:** with at least one hard boundary, nothing outside every boundary's feather
 moves. Inside a boundary's curve the warp is whole; between the curve and its feather it eases to
 nothing along the curve's feather fall-off. A boundary with no feather cuts the warp off at the
-curve.
+curve. A soft boundary only pins the image along its curve: the warp fades toward it but still
+moves everything on the far side. Boundary BBox (on by default) adds the Source format's
+rectangle as a soft boundary, so the image edges stay put. Boundary Curve Resolution is the
+distance, in full-resolution pixels, between samples along hard and soft boundaries.
 
 **Amounts:** each link has its own amount (Python: `SplineWarpCurveLink.setAmount`), and the
 Amount knob scales every link on top of that. An amount moves the destination toward the source
-before the solve, so at 0 the source curve is held in place and nothing moves. Invert swaps every
+before the solve, so at 0 the source curve is held in place and nothing moves. Layer Amount scales
+every link whose destination curve is inside the selected layers, nested layers multiplying; it
+is enabled when only layers are selected. Link Amount edits the amount of the selected linked
+curves' links, enabled when every selected curve is linked. Both follow the selection and key
+the layer or link they edit; they are not saved themselves. Invert swaps every
 link's source and destination, so the warp goes the other way.
 
 **Solver:** Thin Plate Spline, the smoothest map that moves every curve sample where its link asks.
 Smoothness lets the solve stray from the curves, which tames folds where curves pull against each
 other. Curve Resolution is the distance, in full-resolution pixels, between samples along the
 curves. Field Resolution is the spacing of the grid the warp is evaluated on; pixels in between
-are interpolated. Filter, Clamp and Black Outside set how the Source is resampled. BBox keeps the
+are interpolated. These, the filter and the motion blur settings are on the Render page. Filter, Clamp and Black Outside set how the Source is resampled. BBox keeps the
 Source's region of definition or grows it by where the warp moves the Source's edges and by the
 destination curves. A transform above the Source is folded into the same resample. The host mask
 and mix apply as for every staged node.
@@ -59,6 +72,6 @@ curves, the destination curves, or both, joined by dashed lines between the pair
 curves cannot be picked. Boundaries and curves with no role are always shown. Output Warped, when
 off, makes the node output its Source unwarped, so you can compare; it is on again when the project
 is loaded. While a point is dragged the viewer renders a draft: the field four times as coarse and
-the curves sampled half as finely. The full-quality frame follows when the drag ends.
+the curves and boundaries sampled half as finely. The full-quality frame follows when the drag ends.
 
-Python: `node.getSplineWarp()` returns the links and boundaries of the node's curves.
+Python: `node.getSplineWarp()` returns the links, boundaries and layer amounts of the node's curves.

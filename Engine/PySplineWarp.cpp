@@ -36,6 +36,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/PyRoto.h"
+#include "Engine/RotoLayer.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -59,6 +60,12 @@ BezierPtr
 bezierOf(BezierCurve* curve)
 {
     return curve ? std::dynamic_pointer_cast<Bezier>(curve->getInternalItem()) : BezierPtr();
+}
+
+RotoLayerPtr
+rotoLayerOf(Layer* layer)
+{
+    return layer ? std::dynamic_pointer_cast<RotoLayer>(layer->getInternalItem()) : RotoLayerPtr();
 }
 
 BezierCurve*
@@ -339,6 +346,53 @@ SplineWarpCurves::isBoundary(BezierCurve* curve) const
     BezierPtr bezier = bezierOf(curve);
 
     return bezier && _ctx->isBoundary(bezier);
+}
+
+void
+SplineWarpCurves::setSoftBoundary(BezierCurve* curve,
+                                  bool boundary)
+{
+    if (refuses()) {
+        return;
+    }
+    runRaising([&]() { _ctx->setSoftBoundary(bezierOf(curve), boundary); });
+}
+
+bool
+SplineWarpCurves::isSoftBoundary(BezierCurve* curve) const
+{
+    BezierPtr bezier = bezierOf(curve);
+
+    return bezier && _ctx->isSoftBoundary(bezier);
+}
+
+double
+SplineWarpCurves::getLayerAmount(Layer* layer,
+                                 double time) const
+{
+    return _ctx->getLayerAmount(rotoLayerOf(layer), time);
+}
+
+void
+SplineWarpCurves::setLayerAmount(Layer* layer,
+                                 double value,
+                                 double time)
+{
+    if (refuses()) {
+        return;
+    }
+    runRaising([&]() { _ctx->setLayerAmount(rotoLayerOf(layer), value, time); });
+}
+
+void
+SplineWarpCurves::setLayerAmountAtTime(Layer* layer,
+                                       double time,
+                                       double value)
+{
+    if (refuses()) {
+        return;
+    }
+    runRaising([&]() { _ctx->setLayerAmountAtTime(rotoLayerOf(layer), time, value); });
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

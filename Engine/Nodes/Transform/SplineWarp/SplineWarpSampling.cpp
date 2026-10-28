@@ -142,6 +142,13 @@ struct BoundaryPlan {
     int count;
 };
 
+struct SoftBoundaryPlan {
+    const std::vector<Point>* polyline;
+    std::vector<double> cumulative;
+    bool closed;
+    int count;
+};
+
 int
 countFor(double length,
          double spacing)
@@ -235,6 +242,48 @@ pointAtClosedArc(const std::vector<Point>& polygon,
     const double f = (span > 0.) ? (s - cumulative[lo]) / span : 0.;
     const Point& p = polygon[lo];
     const Point& q = polygon[hi % n];
+
+    return makePoint(p.x + f * (q.x - p.x), p.y + f * (q.y - p.y));
+}
+
+// Arc length at each vertex of polyline, plus at the closing vertex when closed.
+std::vector<double>
+arcCumulative(const std::vector<Point>& polyline,
+              bool closed)
+{
+    const std::size_t n = polyline.size();
+    const std::size_t edges = closed ? n : (n ? n - 1 : 0);
+    std::vector<double> c(edges + 1, 0.);
+
+    for (std::size_t i = 0; i < edges; ++i) {
+        const Point& p = polyline[i];
+        const Point& q = polyline[(i + 1) % n];
+        c[i + 1] = c[i] + std::hypot(q.x - p.x, q.y - p.y);
+    }
+
+    return c;
+}
+
+Point
+pointAtArc(const std::vector<Point>& polyline,
+           const std::vector<double>& cumulative,
+           double s)
+{
+    const std::size_t n = polyline.size();
+    std::vector<double>::const_iterator it = std::upper_bound(cumulative.begin(), cumulative.end(), s);
+    const std::size_t hi = (std::size_t)(it - cumulative.begin());
+
+    if (hi == 0) {
+        return polyline[0];
+    }
+    if (hi >= cumulative.size()) {
+        return polyline[(cumulative.size() - 1) % n];
+    }
+    const std::size_t lo = hi - 1;
+    const double span = cumulative[hi] - cumulative[lo];
+    const double f = (span > 0.) ? (s - cumulative[lo]) / span : 0.;
+    const Point& p = polyline[lo];
+    const Point& q = polyline[hi % n];
 
     return makePoint(p.x + f * (q.x - p.x), p.y + f * (q.y - p.y));
 }
@@ -548,13 +597,40 @@ splineWarpPolyline(const SplineWarpCurveShape& shape,
     return out;
 }
 
+SplineWarpSoftBoundarySamplingInput
+splineWarpRectangleBoundary(double x1,
+                            double y1,
+                            double x2,
+                            double y2)
+{
+    SplineWarpSoftBoundarySamplingInput input;
+
+    input.polyline.push_back(makePoint(x1, y1));
+    input.polyline.push_back(makePoint(x2, y1));
+    input.polyline.push_back(makePoint(x2, y2));
+    input.polyline.push_back(makePoint(x1, y2));
+    input.closed = true;
+
+    return input;
+}
+
 SplineWarpSampleSet
 sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
                  const std::vector<SplineWarpBoundarySamplingInput>& boundaries,
                  const SplineWarpSamplingSettings& settings)
 {
+    return sampleSplineWarp(links, boundaries, std::vector<SplineWarpSoftBoundarySamplingInput>(), settings);
+}
+
+SplineWarpSampleSet
+sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
+                 const std::vector<SplineWarpBoundarySamplingInput>& boundaries,
+                 const std::vector<SplineWarpSoftBoundarySamplingInput>& softBoundaries,
+                 const SplineWarpSamplingSettings& settings)
+{
     SplineWarpSampleSet result;
     const double spacing = (settings.spacing > 0.) ? settings.spacing : 1.;
+    const double boundarySpacing = (settings.boundarySpacing > 0.) ? settings.boundarySpacing : 1.;
 
     std::vector<LinkPlan> linkPlans;
     for (std::size_t i = 0; i < links.size(); ++i) {
@@ -577,8 +653,31 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
         plan.shape.feather = expandOutward(splineWarpPolyline(featherShape, kBoundaryPointsPerSegment), std::fabs(b.featherDistance));
         plan.shape.fallOff = (b.fallOff > 0.) ? b.fallOff : 1.;
         plan.cumulative = closedCumulative(plan.shape.feather);
-        plan.count = std::max(3, countFor(plan.cumulative.back(), spacing));
+        plan.count = std::max(3, countFor(plan.cumulative.back(), boundarySpacing));
         boundaryPlans.push_back(plan);
+    }
+
+    std::vector<SoftBoundaryPlan> softPlans;
+    for (std::size_t i = 0; i < softBoundaries.size(); ++i) {
+        const SplineWarpSoftBoundarySamplingInput& b = softBoundaries[i];
+        if (b.polyline.empty()) {
+            continue;
+        }
+        SoftBoundaryPlan plan;
+        plan.polyline = &b.polyline;
+        plan.closed = b.closed && (b.polyline.size() > 2);
+        plan.cumulative = arcCumulative(b.polyline, plan.closed);
+        const double length = plan.cumulative.back();
+        if (!(length > 0.)) {
+            plan.closed = false;
+            plan.count = 1;
+        } else {
+            plan.count = countFor(length, boundarySpacing);
+            if (plan.closed) {
+                plan.count = std::max(3, plan.count);
+            }
+        }
+        softPlans.push_back(plan);
     }
 
     // The budget scales every span and boundary down by the same factor.
@@ -594,6 +693,9 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
     for (std::size_t i = 0; i < boundaryPlans.size(); ++i) {
         total += boundaryPlans[i].count;
     }
+    for (std::size_t i = 0; i < softPlans.size(); ++i) {
+        total += softPlans[i].count + ((!softPlans[i].closed && (softPlans[i].cumulative.back() > 0.)) ? 1 : 0);
+    }
     if ((settings.budget > 0) && (total > settings.budget)) {
         const double factor = (double)settings.budget / (double)total;
         for (std::size_t i = 0; i < linkPlans.size(); ++i) {
@@ -604,6 +706,9 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
         }
         for (std::size_t i = 0; i < boundaryPlans.size(); ++i) {
             boundaryPlans[i].count = std::max(3, (int)std::floor(boundaryPlans[i].count * factor));
+        }
+        for (std::size_t i = 0; i < softPlans.size(); ++i) {
+            softPlans[i].count = std::max(softPlans[i].closed ? 3 : 1, (int)std::floor(softPlans[i].count * factor));
         }
     }
 
@@ -626,6 +731,18 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
         }
         result.boundaries.push_back(plan.shape);
         rangeEnds.push_back(std::make_pair(result.pairs.size(), true));
+    }
+    for (std::size_t i = 0; i < softPlans.size(); ++i) {
+        const SoftBoundaryPlan& plan = softPlans[i];
+        const double length = plan.cumulative.back();
+        const int count = plan.count + ((!plan.closed && (length > 0.)) ? 1 : 0);
+        for (int k = 0; k < count; ++k) {
+            SplineWarpSamplePair pair;
+            pair.destination = (k < plan.count) ? pointAtArc(*plan.polyline, plan.cumulative, length * k / plan.count) : plan.polyline->back();
+            pair.source = pair.destination;
+            result.pairs.push_back(pair);
+        }
+        rangeEnds.push_back(std::make_pair(result.pairs.size(), plan.closed));
     }
 
     std::vector<int> remap;
@@ -682,9 +799,20 @@ sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
     return result;
 } // sampleSplineWarp
 
+namespace {
+// Whether curve takes part in the warp at time: activated, and inside no deactivated layer.
+bool
+curveIsActive(const Bezier& curve,
+              double time)
+{
+    return curve.isActivated(time) && !curve.isDeactivatedRecursive();
+}
+} // anonymous namespace
+
 SplineWarpSampleSet
 sampleSplineWarp(const SplineWarpContext& context,
-                 const SplineWarpSamplingSettings& settings)
+                 const SplineWarpSamplingSettings& settings,
+                 const std::vector<SplineWarpSoftBoundarySamplingInput>& extraSoftBoundaries)
 {
     const double time = settings.time;
     // The shapes outlive the inputs pointing at them.
@@ -697,7 +825,7 @@ sampleSplineWarp(const SplineWarpContext& context,
         const SplineWarpLinkPtr& link = contextLinks[i];
         const BezierPtr source = link->getSource();
         const BezierPtr destination = link->getDestination();
-        if (!source || !destination || !source->isActivated(time) || !destination->isActivated(time)) {
+        if (!source || !destination || !curveIsActive(*source, time) || !curveIsActive(*destination, time)) {
             continue;
         }
         SplineWarpLinkSamplingInput input;
@@ -707,7 +835,7 @@ sampleSplineWarp(const SplineWarpContext& context,
         input.destination = &shapes.back();
         input.startOffset = link->getStartOffset();
         input.reversed = link->isReversed();
-        input.amount = link->getAmount(time);
+        input.amount = link->getAmount(time) * context.getInheritedLayerAmount(destination, time);
         const int count = link->getCorrespondenceCount();
         for (int k = 0; k < count; ++k) {
             double s, d;
@@ -721,7 +849,7 @@ sampleSplineWarp(const SplineWarpContext& context,
     const std::list<BezierPtr> contextBoundaries = context.getBoundaries();
     for (std::list<BezierPtr>::const_iterator it = contextBoundaries.begin(); it != contextBoundaries.end(); ++it) {
         const BezierPtr& curve = *it;
-        if (!curve->isActivated(time)) {
+        if (!curveIsActive(*curve, time)) {
             continue;
         }
         SplineWarpBoundarySamplingInput input;
@@ -734,7 +862,22 @@ sampleSplineWarp(const SplineWarpContext& context,
         boundaries.push_back(input);
     }
 
-    return sampleSplineWarp(links, boundaries, settings);
+    std::vector<SplineWarpSoftBoundarySamplingInput> softBoundaries;
+    const std::list<BezierPtr> contextSoftBoundaries = context.getSoftBoundaries();
+    for (std::list<BezierPtr>::const_iterator it = contextSoftBoundaries.begin(); it != contextSoftBoundaries.end(); ++it) {
+        const BezierPtr& curve = *it;
+        if (!curveIsActive(*curve, time)) {
+            continue;
+        }
+        const SplineWarpCurveShape shape = SplineWarpCurveShape::fromBezier(*curve, time);
+        SplineWarpSoftBoundarySamplingInput input;
+        input.polyline = splineWarpPolyline(shape, kBoundaryPointsPerSegment);
+        input.closed = shape.isClosed();
+        softBoundaries.push_back(input);
+    }
+    softBoundaries.insert(softBoundaries.end(), extraSoftBoundaries.begin(), extraSoftBoundaries.end());
+
+    return sampleSplineWarp(links, boundaries, softBoundaries, settings);
 }
 
 namespace {

@@ -240,6 +240,11 @@ protected:
         if (node && input) {
             connectNodes(input, node, 0, true);
         }
+        // These tests compare against warps that move the whole image, which the format
+        // boundary would pin.
+        if (node && (std::string(id) == PLUGINID_NATRON_SPLINEWARP)) {
+            EXPECT_TRUE(setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }));
+        }
 
         return node;
     }

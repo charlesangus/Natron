@@ -460,7 +460,7 @@ SplineWarpInteract::getRefusal(SplineWarpActionEnum action,
             if (context->getLink(*it)) {
                 return tr("%1: %2 is already linked.").arg(name, curveName(*it)).toStdString();
             }
-            if (context->isBoundary(*it)) {
+            if (context->isBoundary(*it) || context->isSoftBoundary(*it)) {
                 return tr("%1: %2 is a boundary.").arg(name, curveName(*it)).toStdString();
             }
         }
@@ -473,19 +473,23 @@ SplineWarpInteract::getRefusal(SplineWarpActionEnum action,
                                                        : tr("Swap: none of the selected curves is linked.").toStdString();
         }
         break;
-    case eSplineWarpActionToggleBoundary:
+    case eSplineWarpActionToggleHardBoundary:
+    case eSplineWarpActionToggleSoftBoundary: {
+        const bool soft = (action == eSplineWarpActionToggleSoftBoundary);
+        const QString name = soft ? tr("Toggle Soft Boundary") : tr("Toggle Hard Boundary");
         if (!context || curves.empty() || (curves.size() != items.size())) {
-            return tr("Toggle Boundary needs selected curves.").toStdString();
+            return tr("%1 needs selected curves.").arg(name).toStdString();
         }
         for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
             if (context->getLink(*it)) {
-                return tr("Toggle Boundary: %1 is linked.").arg(curveName(*it)).toStdString();
+                return tr("%1: %2 is linked.").arg(name, curveName(*it)).toStdString();
             }
-            if (!SplineWarpCurveShape::isClosedCurve(**it)) {
-                return tr("Toggle Boundary: %1 is not closed.").arg(curveName(*it)).toStdString();
+            if (!soft && !SplineWarpCurveShape::isClosedCurve(**it)) {
+                return tr("%1: %2 is not closed.").arg(name, curveName(*it)).toStdString();
             }
         }
         break;
+    }
     }
 
     return std::string();
@@ -504,23 +508,26 @@ SplineWarpInteract::runAction(SplineWarpActionEnum action,
         return unlinkSelected(pushed);
     case eSplineWarpActionSwap:
         return swapSelected(pushed);
-    case eSplineWarpActionToggleBoundary:
-        return toggleBoundarySelected(pushed);
+    case eSplineWarpActionToggleHardBoundary:
+        return toggleBoundarySelected(false, pushed);
+    case eSplineWarpActionToggleSoftBoundary:
+        return toggleBoundarySelected(true, pushed);
     }
 
     return std::string();
 }
 
 std::string
-SplineWarpInteract::canToggleBoundary() const
+SplineWarpInteract::canToggleBoundary(bool soft) const
 {
-    return getRefusal(eSplineWarpActionToggleBoundary, getSelectedRotoItems());
+    return getRefusal(soft ? eSplineWarpActionToggleSoftBoundary : eSplineWarpActionToggleHardBoundary, getSelectedRotoItems());
 }
 
 std::string
-SplineWarpInteract::toggleBoundarySelected(UndoCommandPtr* pushed)
+SplineWarpInteract::toggleBoundarySelected(bool soft,
+                                           UndoCommandPtr* pushed)
 {
-    const std::string refusal = canToggleBoundary();
+    const std::string refusal = canToggleBoundary(soft);
 
     if (!refusal.empty()) {
         return refuse(QString::fromUtf8(refusal.c_str()));
@@ -529,11 +536,16 @@ SplineWarpInteract::toggleBoundarySelected(UndoCommandPtr* pushed)
     std::list<BezierPtr> curves = getSelectedBeziers();
     bool allBoundaries = true;
     for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        allBoundaries = allBoundaries && context->isBoundary(*it);
+        allBoundaries = allBoundaries && (soft ? context->isSoftBoundary(*it) : context->isBoundary(*it));
     }
-    push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Toggle Boundary").toStdString(), [context, curves, allBoundaries]() {
+    const std::string label = soft ? tr("Toggle Soft Boundary").toStdString() : tr("Toggle Hard Boundary").toStdString();
+    push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), label, [context, curves, allBoundaries, soft]() {
              for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-                 context->setBoundary(*it, !allBoundaries);
+                 if (soft) {
+                     context->setSoftBoundary(*it, !allBoundaries);
+                 } else {
+                     context->setBoundary(*it, !allBoundaries);
+                 }
              }
          }),
          pushed);
@@ -831,6 +843,7 @@ enum CurveSideEnum {
     eCurveSideSource,
     eCurveSideDestination,
     eCurveSideBoundary,
+    eCurveSideSoftBoundary,
 };
 
 CurveSideEnum
@@ -839,6 +852,9 @@ sideOf(const SplineWarpContext& context,
 {
     if (context.isBoundary(curve)) {
         return eCurveSideBoundary;
+    }
+    if (context.isSoftBoundary(curve)) {
+        return eCurveSideSoftBoundary;
     }
     SplineWarpLinkPtr link = context.getLink(curve);
     if (!link) {
@@ -852,6 +868,7 @@ sideOf(const SplineWarpContext& context,
 const double kSourceColor[4] = { 1., 0.35, 0.35, 1. };
 const double kDestinationColor[4] = { 0.35, 0.6, 1., 1. };
 const double kBoundaryColor[4] = { 1., 0.85, 0.25, 1. };
+const double kSoftBoundaryColor[4] = { 0.55, 0.9, 0.45, 1. };
 const double kUnlinkedColor[4] = { 0.55, 0.55, 0.55, 1. };
 const double kPairLineColor[4] = { 0.85, 0.85, 0.85, 0.5 };
 const double kCorrespondenceColor[4] = { 1., 0.6, 0.1, 1. };
@@ -910,6 +927,9 @@ SplineWarpInteract::getCurveOverlayColor(const RotoDrawableItemPtr& item,
         break;
     case eCurveSideBoundary:
         c = kBoundaryColor;
+        break;
+    case eCurveSideSoftBoundary:
+        c = kSoftBoundaryColor;
         break;
     case eCurveSideUnlinked:
         break;

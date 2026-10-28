@@ -283,6 +283,11 @@ protected:
         if (node && input) {
             connectNodes(input, node, 0, true);
         }
+        // These tests compare against warps that move the whole image, which the format
+        // boundary would pin.
+        if (node && (std::string(id) == PLUGINID_NATRON_SPLINEWARP)) {
+            EXPECT_TRUE(setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }));
+        }
 
         return node;
     }
@@ -333,6 +338,10 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
         kSplineWarpParamBBox,
+        kSplineWarpParamLayerAmount,
+        kSplineWarpParamLinkAmount,
+        kSplineWarpParamBoundaryBBox,
+        kSplineWarpParamBoundaryCurveResolution,
     };
     for (const char* name : names) {
         EXPECT_TRUE(bool(node->getKnobByName(name))) << name;
@@ -355,6 +364,48 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     ASSERT_TRUE(bool(bbox));
     EXPECT_EQ(0, bbox->getValue());
     EXPECT_EQ("BBox", bbox->getLabel());
+
+    KnobDoublePtr layerAmount = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamLayerAmount));
+    ASSERT_TRUE(bool(layerAmount));
+    EXPECT_EQ("Layer Amount", layerAmount->getLabel());
+    EXPECT_EQ(1., layerAmount->getValue());
+    EXPECT_FALSE(layerAmount->getIsPersistent());
+    EXPECT_FALSE(layerAmount->isEnabled(0));
+    KnobDoublePtr linkAmount = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamLinkAmount));
+    ASSERT_TRUE(bool(linkAmount));
+    EXPECT_EQ("Link Amount", linkAmount->getLabel());
+    EXPECT_EQ(1., linkAmount->getValue());
+    EXPECT_FALSE(linkAmount->getIsPersistent());
+    EXPECT_FALSE(linkAmount->isEnabled(0));
+    KnobBoolPtr boundaryBBox = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kSplineWarpParamBoundaryBBox));
+    ASSERT_TRUE(bool(boundaryBBox));
+    EXPECT_EQ("Boundary BBox", boundaryBBox->getLabel());
+    // makeNode() turns it off for the render tests; its default is on.
+    EXPECT_TRUE(boundaryBBox->getDefaultValue(0));
+    KnobDoublePtr boundaryCurveResolution = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamBoundaryCurveResolution));
+    ASSERT_TRUE(bool(boundaryCurveResolution));
+    EXPECT_EQ("Boundary Curve Resolution", boundaryCurveResolution->getLabel());
+    EXPECT_EQ(4., boundaryCurveResolution->getValue());
+
+    // The warp's own controls on the first page, how it is rendered on the Render page.
+    KnobPagePtr controls = amount->getTopLevelPage();
+    ASSERT_TRUE(bool(controls));
+    for (const char* name : { kSplineWarpParamInvert, kSplineWarpParamLayerAmount, kSplineWarpParamLinkAmount, kSplineWarpParamBoundaryBBox }) {
+        KnobIPtr knob = node->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_EQ(controls, knob->getTopLevelPage()) << name;
+    }
+    for (const char* name : { kSplineWarpParamSolver, kSplineWarpParamSmoothness, kSplineWarpParamCurveResolution,
+                              kSplineWarpParamBoundaryCurveResolution, kSplineWarpParamFieldResolution, kResamplerParamFilterType,
+                              kResamplerParamFilterClamp, kResamplerParamFilterBlackOutside, kSplineWarpParamBBox,
+                              kSplineWarpParamMotionBlur, kSplineWarpParamShutter, kResamplerParamShutterOffset,
+                              kResamplerParamShutterCustomOffset }) {
+        KnobIPtr knob = node->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        KnobPagePtr page = knob->getTopLevelPage();
+        ASSERT_TRUE(bool(page)) << name;
+        EXPECT_EQ("Render", page->getLabel()) << name;
+    }
 
     KnobChoicePtr solver = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kSplineWarpParamSolver));
     ASSERT_TRUE(bool(solver));

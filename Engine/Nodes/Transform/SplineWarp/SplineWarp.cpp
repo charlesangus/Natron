@@ -31,12 +31,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
 #include <span>
 #include <vector>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Bezier.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
@@ -52,6 +54,7 @@
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 
@@ -134,6 +137,7 @@ mergePoint(RectD* r,
 
 SplineWarp::SplineWarp(NodePtr node)
     : StagedImageEffect(node)
+    , _syncingAmounts(false)
     // Built here, as RotoPaint's is: Node::load() ends the knob bracket with endChanges(), which
     // already calls knobChanged() and so forwards to the interact.
     , _ui(SplineWarpInteract::create(this))
@@ -217,6 +221,50 @@ SplineWarp::initializeKnobs()
     page->addKnob(invert);
     _invert = invert;
 
+    KnobDoublePtr layerAmount = createKnob<KnobDouble>(tr("Layer Amount"));
+    layerAmount->setName(kSplineWarpParamLayerAmount);
+    layerAmount->setHintToolTip(tr("How far the links whose destination curves are in the selected layers move, on top of "
+                                   "Amount and each link's own amount; nested layers multiply. Enabled when only layers "
+                                   "and the curves inside them are selected, and edits every selected layer."));
+    layerAmount->setDefaultValue(1.);
+    layerAmount->setMinimum(0.);
+    layerAmount->setMaximum(1.);
+    layerAmount->setDisplayMinimum(0.);
+    layerAmount->setDisplayMaximum(1.);
+    // The amount lives on the layers; the knob only shows and edits the selected ones.
+    layerAmount->setIsPersistent(false);
+    layerAmount->setEvaluateOnChange(false);
+    layerAmount->setAllDimensionsEnabled(false);
+    page->addKnob(layerAmount);
+    _layerAmount = layerAmount;
+
+    KnobDoublePtr linkAmount = createKnob<KnobDouble>(tr("Link Amount"));
+    linkAmount->setName(kSplineWarpParamLinkAmount);
+    linkAmount->setHintToolTip(tr("How far the links of the selected curves move their destinations toward their sources, "
+                                  "on top of Amount and the layers' amounts. Enabled when every selected curve is "
+                                  "linked."));
+    linkAmount->setDefaultValue(1.);
+    linkAmount->setMinimum(0.);
+    linkAmount->setMaximum(1.);
+    linkAmount->setDisplayMinimum(0.);
+    linkAmount->setDisplayMaximum(1.);
+    linkAmount->setIsPersistent(false);
+    linkAmount->setEvaluateOnChange(false);
+    linkAmount->setAllDimensionsEnabled(false);
+    page->addKnob(linkAmount);
+    _linkAmount = linkAmount;
+
+    KnobBoolPtr boundaryBBox = createKnob<KnobBool>(tr("Boundary BBox"));
+    boundaryBBox->setName(kSplineWarpParamBoundaryBBox);
+    boundaryBBox->setHintToolTip(tr("Hold the edges of the Source's format still, as a soft boundary, so the warp eases "
+                                    "out toward them instead of moving the whole image."));
+    boundaryBBox->setDefaultValue(true);
+    boundaryBBox->setAnimationEnabled(false);
+    page->addKnob(boundaryBBox);
+    _boundaryBBox = boundaryBBox;
+
+    const KnobPagePtr renderPage = createKnob<KnobPage>(tr("Render"));
+
     KnobChoicePtr solver = createKnob<KnobChoice>(tr("Solver"));
     solver->setName(kSplineWarpParamSolver);
     solver->setHintToolTip(tr("How the warp between the curves is computed."));
@@ -235,7 +283,7 @@ SplineWarp::initializeKnobs()
     }
     solver->setDefaultValue(0);
     solver->setAnimationEnabled(false);
-    page->addKnob(solver);
+    renderPage->addKnob(solver);
     _solver = solver;
 
     KnobDoublePtr smoothness = createKnob<KnobDouble>(tr("Smoothness"));
@@ -247,7 +295,7 @@ SplineWarp::initializeKnobs()
     smoothness->setMinimum(0.);
     smoothness->setDisplayMinimum(0.);
     smoothness->setDisplayMaximum(1.);
-    page->addKnob(smoothness);
+    renderPage->addKnob(smoothness);
     _smoothness = smoothness;
 
     KnobDoublePtr curveResolution = createKnob<KnobDouble>(tr("Curve Resolution"));
@@ -260,8 +308,20 @@ SplineWarp::initializeKnobs()
     curveResolution->setDisplayMinimum(1.);
     curveResolution->setDisplayMaximum(32.);
     curveResolution->setAnimationEnabled(false);
-    page->addKnob(curveResolution);
+    renderPage->addKnob(curveResolution);
     _curveResolution = curveResolution;
+
+    KnobDoublePtr boundaryCurveResolution = createKnob<KnobDouble>(tr("Boundary Curve Resolution"));
+    boundaryCurveResolution->setName(kSplineWarpParamBoundaryCurveResolution);
+    boundaryCurveResolution->setHintToolTip(tr("The distance, in full-resolution pixels, between consecutive samples "
+                                               "along the boundaries and soft boundaries, the format's edges included."));
+    boundaryCurveResolution->setDefaultValue(4.);
+    boundaryCurveResolution->setMinimum(0.5);
+    boundaryCurveResolution->setDisplayMinimum(1.);
+    boundaryCurveResolution->setDisplayMaximum(32.);
+    boundaryCurveResolution->setAnimationEnabled(false);
+    renderPage->addKnob(boundaryCurveResolution);
+    _boundaryCurveResolution = boundaryCurveResolution;
 
     KnobDoublePtr fieldResolution = createKnob<KnobDouble>(tr("Field Resolution"));
     fieldResolution->setName(kSplineWarpParamFieldResolution);
@@ -273,7 +333,7 @@ SplineWarp::initializeKnobs()
     fieldResolution->setDisplayMinimum(1.);
     fieldResolution->setDisplayMaximum(64.);
     fieldResolution->setAnimationEnabled(false);
-    page->addKnob(fieldResolution);
+    renderPage->addKnob(fieldResolution);
     _fieldResolution = fieldResolution;
 
     KnobChoicePtr filter = createKnob<KnobChoice>(tr(kResamplerParamFilterTypeLabel));
@@ -290,7 +350,7 @@ SplineWarp::initializeKnobs()
     filter->setDefaultValue((int)Resampler::eFilterCubic);
     filter->setAddNewLine(false);
     filter->setSpacingBetweenItems(1);
-    page->addKnob(filter);
+    renderPage->addKnob(filter);
     _filter = filter;
 
     KnobBoolPtr clamp = createKnob<KnobBool>(tr(kResamplerParamFilterClampLabel));
@@ -299,14 +359,14 @@ SplineWarp::initializeKnobs()
     clamp->setDefaultValue(false);
     clamp->setAddNewLine(false);
     clamp->setSpacingBetweenItems(1);
-    page->addKnob(clamp);
+    renderPage->addKnob(clamp);
     _clamp = clamp;
 
     KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
     blackOutside->setName(kResamplerParamFilterBlackOutside);
     blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
     blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
+    renderPage->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
     KnobChoicePtr bbox = createKnob<KnobChoice>(tr("BBox"));
@@ -324,7 +384,7 @@ SplineWarp::initializeKnobs()
     }
     bbox->setDefaultValue(0);
     bbox->setAnimationEnabled(false);
-    page->addKnob(bbox);
+    renderPage->addKnob(bbox);
     _bbox = bbox;
 
     KnobDoublePtr motionBlur = createKnob<KnobDouble>(tr("Motion Blur"));
@@ -339,7 +399,7 @@ SplineWarp::initializeKnobs()
     motionBlur->setDisplayMaximum(4.);
     motionBlur->setIncrement(0.01);
     motionBlur->setDefaultValue(0.);
-    page->addKnob(motionBlur);
+    renderPage->addKnob(motionBlur);
     _motionBlur = motionBlur;
 
     KnobDoublePtr shutter = createKnob<KnobDouble>(tr("Shutter"));
@@ -351,7 +411,7 @@ SplineWarp::initializeKnobs()
     shutter->setDisplayMaximum(2.);
     shutter->setIncrement(0.01);
     shutter->setDefaultValue(0.5);
-    page->addKnob(shutter);
+    renderPage->addKnob(shutter);
     _shutter = shutter;
 
     KnobChoicePtr shutterOffset = createKnob<KnobChoice>(tr(kResamplerParamShutterOffsetLabel));
@@ -366,7 +426,7 @@ SplineWarp::initializeKnobs()
         shutterOffset->populateChoices(options);
     }
     shutterOffset->setDefaultValue((int)Resampler::eShutterOffsetStart);
-    page->addKnob(shutterOffset);
+    renderPage->addKnob(shutterOffset);
     _shutterOffset = shutterOffset;
 
     KnobDoublePtr shutterCustomOffset = createKnob<KnobDouble>(tr(kResamplerParamShutterCustomOffsetLabel));
@@ -378,7 +438,7 @@ SplineWarp::initializeKnobs()
     shutterCustomOffset->setDisplayMaximum(1.);
     shutterCustomOffset->setIncrement(0.1);
     shutterCustomOffset->setDefaultValue(0.);
-    page->addKnob(shutterCustomOffset);
+    renderPage->addKnob(shutterCustomOffset);
     _shutterCustomOffset = shutterCustomOffset;
 
     addStageKnobs(page);
@@ -389,6 +449,17 @@ SplineWarp::initializeKnobs()
     _ui->createDisplayKnobs(page);
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
+
+    RotoCurveContextPtr curveContext = getNode()->getCurveContext();
+    if (curveContext) {
+        QObject::connect(curveContext.get(), &RotoCurveContext::selectionChanged, this, [this](int) {
+            syncAmountKnobs();
+        });
+        // Linking and unlinking change which selections linkAmount edits.
+        QObject::connect(curveContext.get(), &RotoCurveContext::itemPanelColumnsChanged, this, [this](const RotoItemPtr&) {
+            syncAmountKnobs();
+        });
+    }
 
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
@@ -419,11 +490,116 @@ SplineWarp::updateSmoothnessVisibility()
     smoothness->setSecret(solver->getValue() == 1);
 }
 
+static SplineWarpContextPtr
+splineWarpContext(const SplineWarp& effect)
+{
+    NodePtr node = effect.getNode();
+
+    return node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
+}
+
+namespace {
+struct AmountTargets {
+    std::list<RotoLayerPtr> layers;
+    // Some layers are selected, and every selected curve is inside one of them.
+    bool onlyLayers = false;
+    std::vector<SplineWarpLinkPtr> links;
+    // Some curves are selected, and every one is linked.
+    bool allLinked = false;
+};
+
+AmountTargets
+amountTargets(const SplineWarpContext& context)
+{
+    AmountTargets targets;
+    const std::list<RotoItemPtr> selected = context.getSelectedItems();
+    std::list<BezierPtr> curves;
+
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(*it)) {
+            targets.layers.push_back(layer);
+        } else if (BezierPtr curve = std::dynamic_pointer_cast<Bezier>(*it)) {
+            curves.push_back(curve);
+        }
+    }
+    bool curvesInLayers = true;
+    bool allLinked = !curves.empty();
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        bool inside = false;
+        for (RotoLayerPtr layer = (*it)->getParentLayer(); layer && !inside; layer = layer->getParentLayer()) {
+            inside = std::find(targets.layers.begin(), targets.layers.end(), layer) != targets.layers.end();
+        }
+        curvesInLayers = curvesInLayers && inside;
+        SplineWarpLinkPtr link = context.getLink(*it);
+        if (!link) {
+            allLinked = false;
+        } else if (std::find(targets.links.begin(), targets.links.end(), link) == targets.links.end()) {
+            targets.links.push_back(link);
+        }
+    }
+    targets.onlyLayers = !targets.layers.empty() && curvesInLayers;
+    targets.allLinked = allLinked;
+
+    return targets;
+}
+
+void
+loadAmountKnob(const KnobDoublePtr& knob,
+               bool enabled,
+               const SplineWarpAnimatedValue& value)
+{
+    knob->setAllDimensionsEnabled(enabled);
+    knob->removeAnimation(ViewSpec::all(), 0);
+    knob->setValue(value.getStaticValue(), ViewSpec::all(), 0, true);
+    if (value.isAnimated()) {
+        knob->cloneCurve(ViewSpec::all(), 0, value.getCurve());
+    }
+}
+} // anonymous namespace
+
+void
+SplineWarp::syncAmountKnobs()
+{
+    KnobDoublePtr layerAmount = _layerAmount.lock();
+    KnobDoublePtr linkAmount = _linkAmount.lock();
+    SplineWarpContextPtr context = splineWarpContext(*this);
+
+    if (!layerAmount || !linkAmount || !context) {
+        return;
+    }
+    const AmountTargets targets = amountTargets(*context);
+    _syncingAmounts = true;
+    loadAmountKnob(layerAmount, targets.onlyLayers, targets.onlyLayers ? context->getLayerAmountValue(targets.layers.front()) : SplineWarpAnimatedValue(1.));
+    loadAmountKnob(linkAmount, targets.allLinked, targets.allLinked ? targets.links.front()->getAmountValue() : SplineWarpAnimatedValue(1.));
+    _syncingAmounts = false;
+}
+
+void
+SplineWarp::writeAmountKnob(const KnobDoublePtr& knob,
+                            bool layer)
+{
+    SplineWarpContextPtr context = splineWarpContext(*this);
+
+    if (!context) {
+        return;
+    }
+    const AmountTargets targets = amountTargets(*context);
+    const std::shared_ptr<Curve> curve = knob->getCurve(ViewIdx(0), 0);
+    const Curve keys = curve ? Curve(*curve) : Curve();
+    const double value = knob->getValue(0, ViewIdx(0));
+    if (layer && targets.onlyLayers) {
+        context->assignLayerAmounts(targets.layers, value, keys);
+    } else if (!layer && targets.allLinked) {
+        context->assignLinkAmounts(targets.links, value, keys);
+    }
+}
+
 void
 SplineWarp::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
+    syncAmountKnobs();
 
     KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
     _ui->setCurrentTool(defaultAction);
@@ -448,6 +624,15 @@ SplineWarp::knobChanged(KnobI* k,
     KnobChoicePtr solver = _solver.lock();
     if (solver && (k == solver.get())) {
         updateSmoothnessVisibility();
+
+        return true;
+    }
+    KnobDoublePtr layerAmount = _layerAmount.lock();
+    KnobDoublePtr linkAmount = _linkAmount.lock();
+    if ((layerAmount && (k == layerAmount.get())) || (linkAmount && (k == linkAmount.get()))) {
+        if (!_syncingAmounts) {
+            writeAmountKnob(layerAmount && (k == layerAmount.get()) ? layerAmount : linkAmount, layerAmount && (k == layerAmount.get()));
+        }
 
         return true;
     }
@@ -623,6 +808,22 @@ SplineWarp::readSettings(double time,
     if (curveResolution) {
         settings->curveResolution = std::max(0.5, curveResolution->getValueAtTime(time, 0, view));
     }
+    KnobDoublePtr boundaryCurveResolution = _boundaryCurveResolution.lock();
+    if (boundaryCurveResolution) {
+        settings->boundaryCurveResolution = std::max(0.5, boundaryCurveResolution->getValueAtTime(time, 0, view));
+    }
+    KnobBoolPtr boundaryBBox = _boundaryBBox.lock();
+    EffectInstancePtr source = getInput(kSplineWarpInputSource);
+    if (boundaryBBox && boundaryBBox->getValueAtTime(time, 0, view) && source) {
+        const NodeMetadataConstPtr metadata = source->getRenderMetadata(time, view);
+        if (metadata) {
+            const RectI format = metadata->getOutputFormat();
+            const double par = metadata->getPixelAspectRatio(-1);
+            if (!format.isNull() && (par > 0.)) {
+                settings->boundaryFormat.set(format.x1 * par, format.y1, format.x2 * par, format.y2);
+            }
+        }
+    }
     KnobDoublePtr fieldResolution = _fieldResolution.lock();
     if (fieldResolution) {
         settings->fieldResolution = std::max(1., fieldResolution->getValueAtTime(time, 0, view));
@@ -668,6 +869,7 @@ SplineWarp::readSettings(double time,
     settings->warped = !_ui || _ui->isOutputWarped();
     if (draft) {
         settings->curveResolution *= 2.;
+        settings->boundaryCurveResolution *= 2.;
         settings->fieldResolution *= 4.;
         settings->filter = Resampler::eFilterImpulse;
     }
@@ -710,14 +912,6 @@ SplineWarp::getSourceBounds(double time,
     return rod;
 }
 
-static SplineWarpContextPtr
-splineWarpContext(const SplineWarp& effect)
-{
-    NodePtr node = effect.getNode();
-
-    return node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
-}
-
 std::shared_ptr<const SplineWarpSampleSet>
 SplineWarp::sampleWarp(double time,
                        const Settings& settings)
@@ -732,14 +926,23 @@ SplineWarp::sampleWarp(double time,
     key.amount = settings.amount;
     key.invert = settings.invert;
     key.spacing = settings.curveResolution;
+    key.boundarySpacing = settings.boundaryCurveResolution;
+    key.boundaryFormat = settings.boundaryFormat;
     SplineWarpSamplingSettings sampling;
     sampling.time = time;
     sampling.globalAmount = settings.amount;
     sampling.invert = settings.invert;
     sampling.spacing = settings.curveResolution;
+    sampling.boundarySpacing = settings.boundaryCurveResolution;
 
     return _samples.get(key, [&]() {
-        return sampleSplineWarp(*context, sampling);
+        std::vector<SplineWarpSoftBoundarySamplingInput> format;
+        if (!settings.boundaryFormat.isNull()) {
+            const RectD& f = settings.boundaryFormat;
+            format.push_back(splineWarpRectangleBoundary(f.x1, f.y1, f.x2, f.y2));
+        }
+
+        return sampleSplineWarp(*context, sampling, format);
     });
 }
 

@@ -4,7 +4,7 @@ the Show and Output Warped settings.
 
 A CheckerBoard feeds a SplineWarp feeding the viewer, with the SplineWarp's settings panel open.
 Curves are made through the node's Roto context; the links are made from the curve list's context
-menu (Duplicate and Link, Link, Toggle Boundary), which run the same actions as the viewer. The
+menu (Duplicate and Link, Link, Toggle Hard Boundary), which run the same actions as the viewer. The
 destination of a closed curve is then dragged in the viewer, with a screenshot taken mid-drag (the
 draft frame) and after the pen is up. Saves screenshots of every step.
 
@@ -407,11 +407,11 @@ try:
         require(len(items) == 1, "selected the boundary curve in the curve list")
         before = grab_viewer()
         seen = {}
-        run_menu_action(tree, items[0], "Toggle Boundary", seen)
+        run_menu_action(tree, items[0], "Toggle Hard Boundary", seen)
         ok = yield ("until", lambda: sw.isBoundary(boundary), POLL_TIMEOUT_S)
-        check(ok, "Toggle Boundary made the curve a boundary")
+        check(ok, "Toggle Hard Boundary made the curve a boundary")
         role, partner = role_and_partner(tree, boundary)
-        check(role == "Boundary" and partner == "", "the boundary's Role is Boundary (%r, %r)" % (role, partner))
+        check(role == "Hard Boundary" and partner == "", "the boundary's Role is Hard Boundary (%r, %r)" % (role, partner))
         yield ("sleep", RENDER_MS)
         img = grab_viewer()
         check(len(coloured_pixels(img, is_boundary)) > MIN_INK, "the boundary is drawn yellow")
@@ -419,9 +419,9 @@ try:
         gt.shot("m148-boundary-feather.png")
         items = select_in_tree(tree, [closed])
         seen = {}
-        run_menu_action(tree, items[0], "Toggle Boundary", seen)
+        run_menu_action(tree, items[0], "Toggle Hard Boundary", seen)
         yield ("sleep", MENU_MS * 2)
-        check(seen.get("Toggle Boundary") is False, "Toggle Boundary is greyed out for a linked curve")
+        check(seen.get("Toggle Hard Boundary") is False, "Toggle Hard Boundary is greyed out for a linked curve")
         gt.shot("m148-panel-final.png")
 
         faulthandler.cancel_dump_traceback_later()

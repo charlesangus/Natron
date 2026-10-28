@@ -69,7 +69,8 @@ enum SplineWarpActionEnum {
     eSplineWarpActionLink,
     eSplineWarpActionUnlink,
     eSplineWarpActionSwap,
-    eSplineWarpActionToggleBoundary,
+    eSplineWarpActionToggleHardBoundary,
+    eSplineWarpActionToggleSoftBoundary,
 };
 
 class SplineWarpInteract;
@@ -152,12 +153,14 @@ public:
     std::string swapSelected(UndoCommandPtr* pushed = 0);
 
     /**
-     * @brief Makes every selected curve a boundary, or, when they all are, none of them.
+     * @brief Makes every selected curve a boundary of the given kind, or, when they all are, none
+     * of them. A curve made one kind of boundary stops being the other.
      **/
-    std::string toggleBoundarySelected(UndoCommandPtr* pushed = 0);
+    std::string toggleBoundarySelected(bool soft,
+                                       UndoCommandPtr* pushed = 0);
 
-    // Why toggleBoundarySelected() would refuse the current selection, empty when it would not.
-    std::string canToggleBoundary() const;
+    // Why toggleBoundarySelected(soft) would refuse the current selection, empty when it would not.
+    std::string canToggleBoundary(bool soft) const;
 
     // Why action would refuse items as the selection, in that order; empty when it would not.
     std::string getRefusal(SplineWarpActionEnum action, const std::list<RotoItemPtr>& items) const;

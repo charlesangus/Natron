@@ -152,13 +152,35 @@ struct SplineWarpBoundarySamplingInput {
     }
 };
 
+/**
+ * @brief One soft boundary, ready to sample: a polyline in canonical coordinates, held still
+ * along its length.
+ **/
+struct SplineWarpSoftBoundarySamplingInput {
+    std::vector<Point> polyline;
+    bool closed;
+
+    SplineWarpSoftBoundarySamplingInput()
+        : polyline()
+        , closed(false)
+    {
+    }
+};
+
+/**
+ * @brief The closed outline of the rectangle (x1, y1)-(x2, y2) as a soft boundary.
+ **/
+SplineWarpSoftBoundarySamplingInput splineWarpRectangleBoundary(double x1, double y1, double x2, double y2);
+
 struct SplineWarpSamplingSettings {
     double time;
     // Multiplies every link's amount.
     double globalAmount;
     bool invert;
-    // The arc length between consecutive samples along a curve, in canonical pixels.
+    // The arc length between consecutive samples along a link's curves, in canonical pixels.
     double spacing;
+    // The same along boundaries and soft boundaries.
+    double boundarySpacing;
     int budget;
 
     SplineWarpSamplingSettings()
@@ -166,6 +188,7 @@ struct SplineWarpSamplingSettings {
         , globalAmount(1.)
         , invert(false)
         , spacing(4.)
+        , boundarySpacing(4.)
         , budget(kSplineWarpSampleBudget)
     {
     }
@@ -175,10 +198,12 @@ struct SplineWarpSamplingSettings {
  * @brief The constraints of a warp at one time.
  **/
 struct SplineWarpSampleSet {
-    // Link pairs first, then boundary pairs, after merging and decimation.
+    // Link pairs first, then boundary pairs, then soft-boundary pairs, after merging and
+    // decimation.
     std::vector<SplineWarpSamplePair> pairs;
     int linkPairCount;
-    // Each link's destination curve, then each boundary's feather outline, after merging.
+    // Each link's destination curve, then each boundary's feather outline, then each soft
+    // boundary, after merging.
     std::vector<SplineWarpSamplePolyline> polylines;
     std::vector<SplineWarpBoundaryShape> boundaries;
     // With boundaries: whether a link pair's destination lies inside a boundary's feather. When
@@ -213,17 +238,30 @@ struct SplineWarpSampleSet {
  * with no segment pairs with its single point. Each pair's destination is then lerped toward its
  * source by globalAmount times the link's amount, after swapping the sides when inverted.
  *
- * Each boundary contributes zero-displacement pairs along its feather outline.
+ * Each boundary contributes zero-displacement pairs along its feather outline, and each soft
+ * boundary along its polyline, a sample every settings.boundarySpacing. Soft boundaries mask
+ * nothing.
+ **/
+SplineWarpSampleSet sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
+                                     const std::vector<SplineWarpBoundarySamplingInput>& boundaries,
+                                     const std::vector<SplineWarpSoftBoundarySamplingInput>& softBoundaries,
+                                     const SplineWarpSamplingSettings& settings);
+
+/**
+ * @brief Same, without soft boundaries.
  **/
 SplineWarpSampleSet sampleSplineWarp(const std::vector<SplineWarpLinkSamplingInput>& links,
                                      const std::vector<SplineWarpBoundarySamplingInput>& boundaries,
                                      const SplineWarpSamplingSettings& settings);
 
 /**
- * @brief Same, on the activated links and boundaries of context at settings.time.
+ * @brief Same, on the links, boundaries and soft boundaries of context whose curves are
+ * activated at settings.time, inside no deactivated layer, plus extraSoftBoundaries. A link's
+ * amount is multiplied by the amounts of the layers holding its destination.
  **/
 SplineWarpSampleSet sampleSplineWarp(const SplineWarpContext& context,
-                                     const SplineWarpSamplingSettings& settings);
+                                     const SplineWarpSamplingSettings& settings,
+                                     const std::vector<SplineWarpSoftBoundarySamplingInput>& extraSoftBoundaries = std::vector<SplineWarpSoftBoundarySamplingInput>());
 
 /**
  * @brief The closed polyline through shape, perSegment points per segment.

@@ -42,12 +42,16 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Project.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoItem.h"
+#include "Engine/RotoLayer.h"
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/SplineWarpSerialization.h"
 
@@ -414,7 +418,8 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     single[0] = std::make_pair(420., 390.);
     BezierPtr pinDestination = makeCurve(ctx, single, false);
     BezierPtr boundary = makeQuad(ctx, -50., -50., 600.);
-    ASSERT_TRUE(bool(a) && bool(b) && bool(c) && bool(d) && bool(pinSource) && bool(pinDestination) && bool(boundary));
+    BezierPtr soft = makeOpenLine(ctx, 0., 300.);
+    ASSERT_TRUE(bool(a) && bool(b) && bool(c) && bool(d) && bool(pinSource) && bool(pinDestination) && bool(boundary) && bool(soft));
 
     SplineWarpLinkPtr closedLink = ctx->linkWithAlignment(a, b, 1.5, true);
     ASSERT_TRUE(bool(closedLink));
@@ -434,18 +439,28 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_EQ(0, ctx->addCorrespondence(pinLink, 0., 0.));
 
     ctx->setBoundary(boundary, true);
+    ctx->setSoftBoundary(soft, true);
+
+    RotoLayerPtr layer = ctx->addLayer();
+    ASSERT_TRUE(bool(layer));
+    layer->addItem(d);
+    ctx->setLayerAmountAtTime(layer, 1., 0.25);
+    ctx->setLayerAmountAtTime(layer, 20., 0.75);
 
     Serialization::RotoContextSerialization saved;
     ctx->toSerialization(&saved);
     ASSERT_TRUE(saved.hasSplineWarp);
     ASSERT_EQ(std::size_t(3), saved.splineWarp.links.size());
     ASSERT_EQ(std::size_t(1), saved.splineWarp.boundaries.size());
+    ASSERT_EQ(std::size_t(1), saved.splineWarp.softBoundaries.size());
+    ASSERT_EQ(std::size_t(1), saved.splineWarp.layerAmounts.size());
 
     const std::string hostName = host->getScriptName();
     const U64 savedHash = ctx->getContentHash();
     const std::string aName = a->getScriptName(), bName = b->getScriptName(), cName = c->getScriptName(), dName = d->getScriptName();
     const std::string pinSourceName = pinSource->getScriptName(), pinDestinationName = pinDestination->getScriptName();
     const std::string boundaryName = boundary->getScriptName();
+    const std::string softName = soft->getScriptName(), layerName = layer->getScriptName();
     struct SavedCorrespondence {
         double time, source, destination;
     };
@@ -469,6 +484,8 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     pinSource.reset();
     pinDestination.reset();
     boundary.reset();
+    soft.reset();
+    layer.reset();
     closedLink.reset();
     openLink.reset();
     pinLink.reset();
@@ -537,6 +554,154 @@ TEST_F(SplineWarpModelTest, SaveAndLoadRoundTripsTheModel)
     ASSERT_TRUE(bool(loadedBoundary));
     EXPECT_TRUE(loadedCtx->isBoundary(loadedBoundary));
     EXPECT_EQ(eSplineWarpCurveRoleLinked, loadedCtx->getRole(curveNamed(aName)));
+    BezierPtr loadedSoft = curveNamed(softName);
+    ASSERT_TRUE(bool(loadedSoft));
+    EXPECT_TRUE(loadedCtx->isSoftBoundary(loadedSoft));
+    EXPECT_EQ(eSplineWarpCurveRoleSoftBoundary, loadedCtx->getRole(loadedSoft));
+
+    RotoLayerPtr loadedLayer = std::dynamic_pointer_cast<RotoLayer>(loadedCtx->getItemByName(layerName));
+    ASSERT_TRUE(bool(loadedLayer));
+    EXPECT_TRUE(loadedCtx->getLayerAmountValue(loadedLayer).isAnimated());
+    EXPECT_DOUBLE_EQ(0.25, loadedCtx->getLayerAmount(loadedLayer, 1.));
+    EXPECT_DOUBLE_EQ(0.75, loadedCtx->getLayerAmount(loadedLayer, 20.));
+    EXPECT_DOUBLE_EQ(0.25, loadedCtx->getInheritedLayerAmount(curveNamed(dName), 1.));
+}
+
+// Each pair's destination, for comparing sample sets.
+static std::vector<Point>
+destinationsOf(const SplineWarpSampleSet& set)
+{
+    std::vector<Point> points;
+
+    for (std::size_t i = 0; i < set.pairs.size(); ++i) {
+        points.push_back(set.pairs[i].destination);
+    }
+
+    return points;
+}
+
+static void
+expectSameDestinations(const SplineWarpSampleSet& a,
+                       const SplineWarpSampleSet& b)
+{
+    ASSERT_EQ(a.pairs.size(), b.pairs.size());
+    const std::vector<Point> pa = destinationsOf(a), pb = destinationsOf(b);
+    for (std::size_t i = 0; i < pa.size(); ++i) {
+        EXPECT_NEAR(pa[i].x, pb[i].x, 1e-9) << i;
+        EXPECT_NEAR(pa[i].y, pb[i].y, 1e-9) << i;
+    }
+}
+
+TEST_F(SplineWarpModelTest, LayerAmountsScaleTheirLinksAndNestingMultiplies)
+{
+    NodePtr host;
+    SplineWarpContextPtr ctx = makeHost(&host);
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr source = makeOpenLine(ctx, 0., 0.);
+    BezierPtr destination = makeOpenLine(ctx, 0., 40.);
+    ASSERT_TRUE(source && destination);
+    SplineWarpLinkPtr link = ctx->linkWithAlignment(source, destination, 0., false);
+    ASSERT_TRUE(bool(link));
+    SplineWarpSamplingSettings settings;
+    settings.time = kTime;
+
+    RotoLayerPtr outer = ctx->addLayer();
+    RotoLayerPtr inner = ctx->addLayer();
+    ASSERT_TRUE(outer && inner);
+    outer->addItem(inner);
+    inner->addItem(destination);
+    EXPECT_EQ(1., ctx->getLayerAmount(inner, kTime));
+    const U64 hashBefore = ctx->getContentHash();
+
+    ctx->setLinkAmount(link, 0.5, kTime);
+    const SplineWarpSampleSet byLinkHalf = sampleSplineWarp(*ctx, settings);
+    ctx->setLinkAmount(link, 0.25, kTime);
+    const SplineWarpSampleSet byLinkQuarter = sampleSplineWarp(*ctx, settings);
+    ctx->setLinkAmount(link, 1., kTime);
+    EXPECT_EQ(hashBefore, ctx->getContentHash());
+
+    ctx->setLayerAmount(inner, 0.5, kTime);
+    EXPECT_NE(hashBefore, ctx->getContentHash());
+    EXPECT_DOUBLE_EQ(0.5, ctx->getInheritedLayerAmount(destination, kTime));
+    EXPECT_DOUBLE_EQ(1., ctx->getInheritedLayerAmount(source, kTime));
+    expectSameDestinations(byLinkHalf, sampleSplineWarp(*ctx, settings));
+
+    ctx->setLayerAmount(outer, 0.5, kTime);
+    EXPECT_DOUBLE_EQ(0.25, ctx->getInheritedLayerAmount(destination, kTime));
+    expectSameDestinations(byLinkQuarter, sampleSplineWarp(*ctx, settings));
+
+    // Amounts are clamped to 0..1, and a layer of another node is refused.
+    ctx->setLayerAmount(outer, 2., kTime);
+    EXPECT_EQ(1., ctx->getLayerAmount(outer, kTime));
+    NodePtr otherHost;
+    SplineWarpContextPtr other = makeHost(&otherHost);
+    ASSERT_TRUE(bool(other));
+    RotoLayerPtr foreign = other->getOrCreateBaseLayer();
+    ASSERT_TRUE(bool(foreign));
+    EXPECT_THROW(ctx->setLayerAmount(foreign, 0.5, kTime), std::invalid_argument);
+
+    // Removing the layer drops its amount.
+    ctx->removeItem(inner, RotoItem::eSelectionReasonOther);
+    Serialization::RotoContextSerialization s;
+    ctx->toSerialization(&s);
+    for (std::list<Serialization::SplineWarpLayerAmountSerialization>::const_iterator it = s.splineWarp.layerAmounts.begin(); it != s.splineWarp.layerAmounts.end(); ++it) {
+        EXPECT_NE(inner->getScriptName(), it->layer);
+    }
+}
+
+TEST_F(SplineWarpModelTest, TheAmountKnobsFollowTheSelection)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    ASSERT_TRUE(bool(node));
+    SplineWarpContextPtr ctx = std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext());
+    KnobDoublePtr layerAmount = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamLayerAmount));
+    KnobDoublePtr linkAmount = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamLinkAmount));
+    ASSERT_TRUE(ctx && layerAmount && linkAmount);
+
+    BezierPtr a = makeOpenLine(ctx, 0., 0.);
+    BezierPtr b = makeOpenLine(ctx, 0., 40.);
+    BezierPtr loose = makeOpenLine(ctx, 0., 80.);
+    ASSERT_TRUE(a && b && loose);
+    SplineWarpLinkPtr link = ctx->linkWithAlignment(a, b, 0., false);
+    ASSERT_TRUE(bool(link));
+    ctx->setLinkAmount(link, 0.4, kTime);
+    RotoLayerPtr layer = ctx->addLayer();
+    ASSERT_TRUE(bool(layer));
+    layer->addItem(b);
+    ctx->setLayerAmount(layer, 0.6, kTime);
+
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(layerAmount->isEnabled(0));
+    EXPECT_FALSE(linkAmount->isEnabled(0));
+
+    // A linked curve: Link Amount shows its link's amount.
+    ctx->select(b, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(linkAmount->isEnabled(0));
+    EXPECT_DOUBLE_EQ(0.4, linkAmount->getValue());
+    EXPECT_FALSE(layerAmount->isEnabled(0));
+    // An unlinked curve too: disabled.
+    ctx->select(loose, RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(linkAmount->isEnabled(0));
+    ctx->deselect(loose, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(linkAmount->isEnabled(0));
+
+    // An edit keys the link.
+    linkAmount->setValueAtTime(5., 0.8, ViewSpec::all(), 0);
+    EXPECT_TRUE(link->getAmountValue().isAnimated());
+    EXPECT_DOUBLE_EQ(0.8, link->getAmount(5.));
+
+    // Selecting the layer selects the curve inside it: Layer Amount shows the layer's amount.
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    ctx->select(layer, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(layerAmount->isEnabled(0));
+    EXPECT_DOUBLE_EQ(0.6, layerAmount->getValue());
+    layerAmount->setValue(0.3);
+    EXPECT_DOUBLE_EQ(0.3, ctx->getLayerAmount(layer, kTime));
+    EXPECT_FALSE(layerAmount->getIsPersistent());
+
+    // A curve outside the layer disables it.
+    ctx->select(loose, RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(layerAmount->isEnabled(0));
 }
 
 TEST_F(SplineWarpModelTest, LoadDropsALinkWhoseCurveIsMissing)

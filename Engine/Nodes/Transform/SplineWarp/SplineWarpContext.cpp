@@ -42,6 +42,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpAlign.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
+#include "Engine/RotoLayer.h"
 
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/SplineWarpSerialization.h"
@@ -85,6 +86,14 @@ bool
 SplineWarpAnimatedValue::isAnimated() const
 {
     return _curve.isAnimated();
+}
+
+void
+SplineWarpAnimatedValue::assign(double value,
+                                const Curve& curve)
+{
+    _value = value;
+    _curve.clone(curve);
 }
 
 void
@@ -347,6 +356,8 @@ SplineWarpContext::SplineWarpContext(const NodePtr& node)
     , _warpMutex()
     , _links()
     , _boundaries()
+    , _softBoundaries()
+    , _layerAmounts()
     , _loading(false)
 {
 }
@@ -393,6 +404,42 @@ containsCurve(const std::list<BezierWPtr>& curves,
 
     return false;
 }
+
+bool
+eraseCurve(std::list<BezierWPtr>* curves,
+           const Bezier* curve)
+{
+    for (std::list<BezierWPtr>::iterator it = curves->begin(); it != curves->end(); ++it) {
+        if (it->lock().get() == curve) {
+            curves->erase(it);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::list<BezierPtr>
+lockedCurves(const std::list<BezierWPtr>& curves)
+{
+    std::list<BezierPtr> ret;
+
+    for (std::list<BezierWPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        BezierPtr curve = it->lock();
+        if (curve) {
+            ret.push_back(curve);
+        }
+    }
+
+    return ret;
+}
+
+double
+clampAmount(double amount)
+{
+    return std::max(0., std::min(amount, 1.));
+}
 } // anonymous namespace
 
 void
@@ -408,6 +455,9 @@ SplineWarpContext::checkLinkable(const BezierPtr& curve,
     }
     if (containsCurve(_boundaries, curve.get())) {
         throw std::invalid_argument(std::string("SplineWarp: the ") + what + " curve is a boundary.");
+    }
+    if (containsCurve(_softBoundaries, curve.get())) {
+        throw std::invalid_argument(std::string("SplineWarp: the ") + what + " curve is a soft boundary.");
     }
     if (findLinkLocked(curve.get())) {
         throw std::invalid_argument(std::string("SplineWarp: the ") + what + " curve is already linked.");
@@ -449,6 +499,9 @@ SplineWarpContext::getRole(const BezierPtr& curve) const
     if (containsCurve(_boundaries, curve.get())) {
         return eSplineWarpCurveRoleBoundary;
     }
+    if (containsCurve(_softBoundaries, curve.get())) {
+        return eSplineWarpCurveRoleSoftBoundary;
+    }
     if (findLinkLocked(curve.get())) {
         return eSplineWarpCurveRoleLinked;
     }
@@ -466,31 +519,49 @@ void
 SplineWarpContext::setBoundary(const BezierPtr& curve,
                                bool boundary)
 {
+    setBoundaryRole(curve, false, boundary);
+}
+
+bool
+SplineWarpContext::isSoftBoundary(const BezierPtr& curve) const
+{
+    return getRole(curve) == eSplineWarpCurveRoleSoftBoundary;
+}
+
+void
+SplineWarpContext::setSoftBoundary(const BezierPtr& curve,
+                                   bool softBoundary)
+{
+    setBoundaryRole(curve, true, softBoundary);
+}
+
+void
+SplineWarpContext::setBoundaryRole(const BezierPtr& curve,
+                                   bool soft,
+                                   bool on)
+{
     KnobContentWrite write;
     {
         std::lock_guard<std::mutex> l(_warpMutex);
-        const bool isBoundaryNow = curve && containsCurve(_boundaries, curve.get());
-        if (isBoundaryNow == boundary) {
+        std::list<BezierWPtr>& curves = soft ? _softBoundaries : _boundaries;
+        const bool isNow = curve && containsCurve(curves, curve.get());
+        if (isNow == on) {
             return;
         }
-        if (boundary) {
+        if (on) {
             if (!ownsCurve(curve)) {
-                throw std::invalid_argument("SplineWarp: a boundary must be a curve of this node.");
+                throw std::invalid_argument(soft ? "SplineWarp: a soft boundary must be a curve of this node." : "SplineWarp: a boundary must be a curve of this node.");
             }
-            if (!SplineWarpCurveShape::isClosedCurve(*curve)) {
+            if (!soft && !SplineWarpCurveShape::isClosedCurve(*curve)) {
                 throw std::invalid_argument("SplineWarp: a boundary must be a closed curve.");
             }
             if (findLinkLocked(curve.get())) {
-                throw std::invalid_argument("SplineWarp: a linked curve cannot be a boundary.");
+                throw std::invalid_argument(soft ? "SplineWarp: a linked curve cannot be a soft boundary." : "SplineWarp: a linked curve cannot be a boundary.");
             }
-            _boundaries.push_back(curve);
+            eraseCurve(soft ? &_boundaries : &_softBoundaries, curve.get());
+            curves.push_back(curve);
         } else {
-            for (std::list<BezierWPtr>::iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
-                if (it->lock() == curve) {
-                    _boundaries.erase(it);
-                    break;
-                }
-            }
+            eraseCurve(&curves, curve.get());
         }
     }
     warpDataChanged(true);
@@ -500,17 +571,118 @@ SplineWarpContext::setBoundary(const BezierPtr& curve,
 std::list<BezierPtr>
 SplineWarpContext::getBoundaries() const
 {
-    std::list<BezierPtr> ret;
     std::lock_guard<std::mutex> l(_warpMutex);
 
-    for (std::list<BezierWPtr>::const_iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
-        BezierPtr curve = it->lock();
-        if (curve) {
-            ret.push_back(curve);
+    return lockedCurves(_boundaries);
+}
+
+std::list<BezierPtr>
+SplineWarpContext::getSoftBoundaries() const
+{
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    return lockedCurves(_softBoundaries);
+}
+
+double
+SplineWarpContext::getLayerAmount(const RotoLayerPtr& layer,
+                                  double time) const
+{
+    return getLayerAmountValue(layer).getValueAt(time);
+}
+
+SplineWarpAnimatedValue
+SplineWarpContext::getLayerAmountValue(const RotoLayerPtr& layer) const
+{
+    std::lock_guard<std::mutex> l(_warpMutex);
+
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::const_iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+        if (layer && (it->first.lock() == layer)) {
+            return it->second;
         }
     }
 
-    return ret;
+    return SplineWarpAnimatedValue(1.);
+}
+
+double
+SplineWarpContext::getInheritedLayerAmount(const RotoItemPtr& item,
+                                           double time) const
+{
+    std::vector<RotoLayerPtr> layers;
+    for (RotoLayerPtr layer = item ? item->getParentLayer() : RotoLayerPtr(); layer; layer = layer->getParentLayer()) {
+        layers.push_back(layer);
+    }
+    double amount = 1.;
+    std::lock_guard<std::mutex> l(_warpMutex);
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::const_iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+        if (std::find(layers.begin(), layers.end(), it->first.lock()) != layers.end()) {
+            amount *= it->second.getValueAt(time);
+        }
+    }
+
+    return amount;
+}
+
+SplineWarpAnimatedValue&
+SplineWarpContext::layerAmountLocked(const RotoLayerPtr& layer)
+{
+    // _warpMutex is held.
+    if (!layer || (layer->getContext().get() != this)) {
+        throw std::invalid_argument("SplineWarp: the layer is not in this node.");
+    }
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+        if (it->first.lock() == layer) {
+            return it->second;
+        }
+    }
+    _layerAmounts.push_back(std::make_pair(RotoLayerWPtr(layer), SplineWarpAnimatedValue(1.)));
+
+    return _layerAmounts.back().second;
+}
+
+void
+SplineWarpContext::setLayerAmount(const RotoLayerPtr& layer,
+                                  double amount,
+                                  double time)
+{
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        layerAmountLocked(layer).setValue(clampAmount(amount), time);
+    }
+    warpDataChanged(true);
+}
+
+void
+SplineWarpContext::setLayerAmountAtTime(const RotoLayerPtr& layer,
+                                        double time,
+                                        double amount)
+{
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        layerAmountLocked(layer).setValueAtTime(time, clampAmount(amount));
+    }
+    warpDataChanged(true);
+}
+
+void
+SplineWarpContext::assignLayerAmounts(const std::list<RotoLayerPtr>& layers,
+                                      double value,
+                                      const Curve& curve)
+{
+    if (layers.empty()) {
+        return;
+    }
+    KnobContentWrite write;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+            layerAmountLocked(*it).assign(clampAmount(value), curve);
+        }
+    }
+    warpDataChanged(true);
 }
 
 SplineWarpLinkPtr
@@ -692,6 +864,24 @@ SplineWarpContext::setLinkAmountAtTime(const SplineWarpLinkPtr& link,
     {
         std::lock_guard<std::mutex> l(link->_mutex);
         link->_amount.setValueAtTime(time, std::max(0., std::min(amount, 1.)));
+    }
+    warpDataChanged(true);
+}
+
+void
+SplineWarpContext::assignLinkAmounts(const std::vector<SplineWarpLinkPtr>& links,
+                                     double value,
+                                     const Curve& curve)
+{
+    if (links.empty()) {
+        return;
+    }
+    KnobContentWrite write;
+    for (std::size_t i = 0; i < links.size(); ++i) {
+        if (links[i]) {
+            std::lock_guard<std::mutex> l(links[i]->_mutex);
+            links[i]->_amount.assign(clampAmount(value), curve);
+        }
     }
     warpDataChanged(true);
 }
@@ -1037,6 +1227,26 @@ SplineWarpContext::onCurveFinishedChanged(const BezierPtr& curve)
 void
 SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
 {
+    RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(item);
+    if (layer) {
+        KnobContentWrite write;
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> l(_warpMutex);
+            for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+                if (it->first.lock() == layer) {
+                    _layerAmounts.erase(it);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if (changed) {
+            warpDataChanged(true);
+        }
+
+        return;
+    }
     BezierPtr curve = std::dynamic_pointer_cast<Bezier>(item);
 
     if (!curve) {
@@ -1046,13 +1256,8 @@ SplineWarpContext::onItemRemoved(const RotoItemPtr& item)
     bool changed = false;
     {
         std::lock_guard<std::mutex> l(_warpMutex);
-        for (std::list<BezierWPtr>::iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
-            if (it->lock() == curve) {
-                _boundaries.erase(it);
-                changed = true;
-                break;
-            }
-        }
+        changed = eraseCurve(&_boundaries, curve.get());
+        changed = eraseCurve(&_softBoundaries, curve.get()) || changed;
         SplineWarpLinkPtr link = findLinkLocked(curve.get());
         if (link) {
             _links.erase(std::find(_links.begin(), _links.end(), link));
@@ -1080,6 +1285,8 @@ struct SplineWarpHostState
 
     std::vector<SavedLink> links;
     std::list<BezierWPtr> boundaries;
+    std::list<BezierWPtr> softBoundaries;
+    std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> layerAmounts;
 };
 } // anonymous namespace
 
@@ -1090,6 +1297,8 @@ SplineWarpContext::saveHostState() const
     std::lock_guard<std::mutex> l(_warpMutex);
 
     state->boundaries = _boundaries;
+    state->softBoundaries = _softBoundaries;
+    state->layerAmounts = _layerAmounts;
     for (std::size_t i = 0; i < _links.size(); ++i) {
         const SplineWarpLink& link = *_links[i];
         std::lock_guard<std::mutex> ll(link._mutex);
@@ -1119,6 +1328,8 @@ SplineWarpContext::restoreHostState(const RotoCurveContextHostStatePtr& state)
     {
         std::lock_guard<std::mutex> l(_warpMutex);
         _boundaries = saved->boundaries;
+        _softBoundaries = saved->softBoundaries;
+        _layerAmounts = saved->layerAmounts;
         _links.clear();
         for (std::size_t i = 0; i < saved->links.size(); ++i) {
             const SplineWarpHostState::SavedLink& entry = saved->links[i];
@@ -1148,6 +1359,17 @@ SplineWarpContext::appendHostContentHash(ContentHasher& h) const
     for (std::list<BezierWPtr>::const_iterator it = _boundaries.begin(); it != _boundaries.end(); ++it) {
         BezierPtr curve = it->lock();
         h.appendString(curve ? curve->getScriptName() : std::string());
+    }
+    h.appendU64((U64)_softBoundaries.size());
+    for (std::list<BezierWPtr>::const_iterator it = _softBoundaries.begin(); it != _softBoundaries.end(); ++it) {
+        BezierPtr curve = it->lock();
+        h.appendString(curve ? curve->getScriptName() : std::string());
+    }
+    h.appendU64((U64)_layerAmounts.size());
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::const_iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+        RotoLayerPtr layer = it->first.lock();
+        h.appendString(layer ? layer->getScriptName() : std::string());
+        it->second.appendContentHash(h);
     }
     h.appendU64((U64)_links.size());
     for (std::size_t i = 0; i < _links.size(); ++i) {
@@ -1184,6 +1406,21 @@ SplineWarpContext::toSerialization(Serialization::RotoContextSerialization* seri
             warp.boundaries.push_back(curve->getScriptName());
         }
     }
+    for (std::list<BezierWPtr>::const_iterator it = _softBoundaries.begin(); it != _softBoundaries.end(); ++it) {
+        BezierPtr curve = it->lock();
+        if (curve) {
+            warp.softBoundaries.push_back(curve->getScriptName());
+        }
+    }
+    for (std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>>::const_iterator it = _layerAmounts.begin(); it != _layerAmounts.end(); ++it) {
+        RotoLayerPtr layer = it->first.lock();
+        if (layer) {
+            Serialization::SplineWarpLayerAmountSerialization s;
+            s.layer = layer->getScriptName();
+            it->second.toSerialization(&s.amount);
+            warp.layerAmounts.push_back(s);
+        }
+    }
     for (std::size_t i = 0; i < _links.size(); ++i) {
         const SplineWarpLink& link = *_links[i];
         std::lock_guard<std::mutex> ll(link._mutex);
@@ -1215,6 +1452,8 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
         std::lock_guard<std::mutex> l(_warpMutex);
         _links.clear();
         _boundaries.clear();
+        _softBoundaries.clear();
+        _layerAmounts.clear();
     }
     _loading = true;
     RotoCurveContext::fromSerialization(serialization);
@@ -1236,6 +1475,24 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
             }
             _boundaries.push_back(curve);
         }
+        for (std::list<std::string>::const_iterator it = warp.softBoundaries.begin(); it != warp.softBoundaries.end(); ++it) {
+            BezierPtr curve = std::dynamic_pointer_cast<Bezier>(getItemByName(*it));
+            if (!curve || containsCurve(_boundaries, curve.get()) || containsCurve(_softBoundaries, curve.get())) {
+                logDropped("SplineWarp: dropped soft boundary " + *it + ": no curve without another boundary role has that name.");
+                continue;
+            }
+            _softBoundaries.push_back(curve);
+        }
+        for (std::list<Serialization::SplineWarpLayerAmountSerialization>::const_iterator it = warp.layerAmounts.begin(); it != warp.layerAmounts.end(); ++it) {
+            RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(getItemByName(it->layer));
+            if (!layer) {
+                logDropped("SplineWarp: dropped the amount of layer " + it->layer + ": no layer has that name.");
+                continue;
+            }
+            SplineWarpAnimatedValue amount(1.);
+            amount.fromSerialization(it->amount);
+            _layerAmounts.push_back(std::make_pair(RotoLayerWPtr(layer), amount));
+        }
         for (std::list<Serialization::SplineWarpLinkSerialization>::const_iterator it = warp.links.begin(); it != warp.links.end(); ++it) {
             BezierPtr source = std::dynamic_pointer_cast<Bezier>(getItemByName(it->source));
             BezierPtr destination = std::dynamic_pointer_cast<Bezier>(getItemByName(it->destination));
@@ -1244,7 +1501,7 @@ SplineWarpContext::fromSerialization(const Serialization::RotoContextSerializati
                 logDropped("SplineWarp: dropped link " + name + ": a curve is missing.");
                 continue;
             }
-            if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
+            if ((source == destination) || containsCurve(_boundaries, source.get()) || containsCurve(_boundaries, destination.get()) || containsCurve(_softBoundaries, source.get()) || containsCurve(_softBoundaries, destination.get()) || findLinkLocked(source.get()) || findLinkLocked(destination.get())) {
                 logDropped("SplineWarp: dropped link " + name + ": a curve is a boundary or in another link.");
                 continue;
             }

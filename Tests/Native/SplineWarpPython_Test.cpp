@@ -272,6 +272,45 @@ TEST_F(SplineWarpPythonTest, ErrorsRaiseValueError)
                                                                            "assert len(sw.getLinks()) == 0\n");
 }
 
+// Soft boundaries and layer amounts, set from Python, reach the model.
+TEST_F(SplineWarpPythonTest, SoftBoundariesAndLayerAmounts)
+{
+    resetProject();
+    NodePtr node = makeSplineWarp(NodePtr());
+    ASSERT_TRUE(bool(node));
+
+    expectScript(std::string(kPythonHelpers) + "n = " + pythonName(node) + "\n"
+                                                                           "roto = n.getRotoContext()\n"
+                                                                           "sw = n.getSplineWarp()\n"
+                                                                           "a = quad(roto, 20., 15., 10.)\n"
+                                                                           "b = quad(roto, 20., 15., 10., 3., -2.)\n"
+                                                                           "l = sw.link(a, b)\n"
+                                                                           "line = roto.createBezier(2., 2., 1.)\n"
+                                                                           "line.addControlPoint(40., 2.)\n"
+                                                                           "sw.setSoftBoundary(line, True)\n"
+                                                                           "assert sw.isSoftBoundary(line)\n"
+                                                                           "assert not sw.isBoundary(line)\n"
+                                                                           "assert raises(lambda: sw.setSoftBoundary(a, True)), 'linked curve as soft boundary'\n"
+                                                                           "assert raises(lambda: sw.link(line, quad(roto, 4., 30., 6.))), 'soft boundary linked'\n"
+                                                                           "layer = roto.createLayer()\n"
+                                                                           "layer.addItem(b)\n"
+                                                                           "assert abs(sw.getLayerAmount(layer, 1.) - 1.) < 1e-12\n"
+                                                                           "sw.setLayerAmount(layer, 0.5, 1.)\n"
+                                                                           "assert abs(sw.getLayerAmount(layer, 1.) - 0.5) < 1e-12\n"
+                                                                           "sw.setLayerAmountAtTime(layer, 10., 0.25)\n"
+                                                                           "assert abs(sw.getLayerAmount(layer, 10.) - 0.25) < 1e-12\n"
+                                                                           "assert raises(lambda: sw.setLayerAmount(None, 0.5, 1.)), 'no layer'\n");
+
+    SplineWarpContextPtr ctx = std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext());
+    ASSERT_TRUE(bool(ctx));
+    EXPECT_EQ(1u, ctx->getSoftBoundaries().size());
+    const std::vector<SplineWarpLinkPtr> links = ctx->getLinks();
+    ASSERT_EQ(1u, links.size());
+    ASSERT_TRUE(bool(links[0]->getDestination()));
+    EXPECT_DOUBLE_EQ(0.25, ctx->getInheritedLayerAmount(links[0]->getDestination(), 10.));
+    EXPECT_DOUBLE_EQ(1., ctx->getInheritedLayerAmount(links[0]->getSource(), 10.));
+}
+
 TEST_F(SplineWarpPythonTest, OtherNodesHaveNoSplineWarp)
 {
     resetProject();

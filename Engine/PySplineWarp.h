@@ -93,7 +93,7 @@ private:
 };
 
 /**
- * @brief The links and boundaries of a SplineWarp node's curves. The curves themselves are made and
+ * @brief The links, boundaries and layer amounts of a SplineWarp node's curves. The curves themselves are made and
  * edited through the node's Roto context.
  **/
 class SplineWarpCurves {
@@ -109,6 +109,15 @@ public:
 
     void setBoundary(BezierCurve* curve, bool boundary);
     bool isBoundary(BezierCurve* curve) const;
+
+    // A soft boundary pins the warp along the curve, open or closed, without masking.
+    void setSoftBoundary(BezierCurve* curve, bool boundary);
+    bool isSoftBoundary(BezierCurve* curve) const;
+
+    // A layer's amount scales every link whose destination curve is inside it.
+    double getLayerAmount(Layer* layer, double time) const;
+    void setLayerAmount(Layer* layer, double value, double time);
+    void setLayerAmountAtTime(Layer* layer, double time, double value);
 
 private:
     bool refuses() const;

@@ -32,6 +32,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "Engine/Curve.h"
@@ -46,12 +47,14 @@ struct SplineWarpAnimatedValueSerialization;
 
 /**
  * @brief What a curve does in the warp. A linked curve is the source or destination of a link; a
- * boundary is a closed curve outside of which nothing moves.
+ * (hard) boundary is a closed curve outside of which nothing moves; a soft boundary, open or
+ * closed, holds the image still along itself and masks nothing.
  **/
 enum SplineWarpCurveRoleEnum {
     eSplineWarpCurveRoleUnlinked = 0,
     eSplineWarpCurveRoleLinked,
-    eSplineWarpCurveRoleBoundary
+    eSplineWarpCurveRoleBoundary,
+    eSplineWarpCurveRoleSoftBoundary
 };
 
 /**
@@ -72,6 +75,16 @@ public:
     }
 
     bool isAnimated() const;
+
+    const Curve& getCurve() const
+    {
+        return _curve;
+    }
+
+    /**
+     * @brief Makes the static value value and the keyframes those of curve.
+     **/
+    void assign(double value, const Curve& curve);
 
     /**
      * @brief Keys value at time when the value is animated, sets the static value otherwise.
@@ -167,6 +180,9 @@ typedef std::shared_ptr<SplineWarpContext> SplineWarpContextPtr;
  * links between them. A curve is in at most one link, a boundary is never linked, and only a closed
  * curve can be a boundary. Every edit is made on the main thread; the queries are MT-safe.
  *
+ * Each layer has an amount, 1 by default, and a link's amount is multiplied by those of every
+ * layer holding its destination curve.
+ *
  * Correspondence parameters and start offsets follow control-point insertions and removals so they
  * keep their place on the curve. Deleting a curve deletes its link or its boundary role, and
  * opening a boundary curve clears its role.
@@ -194,6 +210,40 @@ public:
     void setBoundary(const BezierPtr& curve, bool boundary);
 
     std::list<BezierPtr> getBoundaries() const;
+
+    bool isSoftBoundary(const BezierPtr& curve) const;
+
+    /**
+     * @brief Throws std::invalid_argument when making a soft boundary of a curve that is linked or
+     * not in this context. Making a curve one kind of boundary clears the other kind.
+     **/
+    void setSoftBoundary(const BezierPtr& curve, bool softBoundary);
+
+    std::list<BezierPtr> getSoftBoundaries() const;
+
+    /**
+     * @brief The layer's own amount at time, 1 unless set.
+     **/
+    double getLayerAmount(const RotoLayerPtr& layer, double time) const;
+    SplineWarpAnimatedValue getLayerAmountValue(const RotoLayerPtr& layer) const;
+
+    /**
+     * @brief The product of the amounts of every layer holding item, at time.
+     **/
+    double getInheritedLayerAmount(const RotoItemPtr& item, double time) const;
+
+    /**
+     * @brief See SplineWarpAnimatedValue::setValue(). amount is clamped to [0, 1]. Throws
+     * std::invalid_argument when layer is not in this context.
+     **/
+    void setLayerAmount(const RotoLayerPtr& layer, double amount, double time);
+    void setLayerAmountAtTime(const RotoLayerPtr& layer, double time, double amount);
+
+    /**
+     * @brief Gives every layer of layers the static value value and the keyframes of curve, as a
+     * node knob holds them.
+     **/
+    void assignLayerAmounts(const std::list<RotoLayerPtr>& layers, double value, const Curve& curve);
 
     /**
      * @brief Links source to destination, aligned by computeSplineWarpAlignment() at the current
@@ -239,6 +289,11 @@ public:
     void setLinkAmountAtTime(const SplineWarpLinkPtr& link, double time, double amount);
 
     /**
+     * @brief Gives every link of links the static value value and the keyframes of curve.
+     **/
+    void assignLinkAmounts(const std::vector<SplineWarpLinkPtr>& links, double value, const Curve& curve);
+
+    /**
      * @brief Adds a static correspondence and returns its index. Throws std::invalid_argument when
      * a parameter is outside its curve's range.
      **/
@@ -272,7 +327,8 @@ public:
     virtual void onItemRemoved(const RotoItemPtr& item) OVERRIDE;
 
     /**
-     * @brief Saves the links (the same objects, with their values) and the boundaries.
+     * @brief Saves the links (the same objects, with their values), the boundaries and the layer
+     * amounts.
      **/
     virtual RotoCurveContextHostStatePtr saveHostState() const OVERRIDE;
     virtual void restoreHostState(const RotoCurveContextHostStatePtr& state) OVERRIDE;
@@ -285,6 +341,8 @@ protected:
 
 private:
     bool ownsCurve(const BezierPtr& curve) const;
+    void setBoundaryRole(const BezierPtr& curve, bool soft, bool on);
+    SplineWarpAnimatedValue& layerAmountLocked(const RotoLayerPtr& layer);
     SplineWarpLinkPtr findLinkLocked(const Bezier* curve) const;
     void checkLinkable(const BezierPtr& curve, const char* what) const;
     void remapCurveParams(const BezierPtr& curve, const std::function<double(double)>& f);
@@ -295,6 +353,8 @@ private:
     mutable std::mutex _warpMutex;
     std::vector<SplineWarpLinkPtr> _links;
     std::list<BezierWPtr> _boundaries;
+    std::list<BezierWPtr> _softBoundaries;
+    std::list<std::pair<RotoLayerWPtr, SplineWarpAnimatedValue>> _layerAmounts;
     bool _loading;
 };
 

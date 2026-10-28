@@ -3,7 +3,9 @@ screenshots for the gate.
 
 The source is a grid of point lights: the product of a CheckerBoard with horizontal lines only and
 one with vertical lines only, each line bright, inset by a Rectangle so that the format's edges
-carry no line. One light sits at the format's centre. Sections (all by default; LENSAB_GUI_SECTIONS
+carry no line. Each CheckerBoard also draws a line through the format's centre along its other axis,
+so the grid's centre is a cross of lines, not a light; the cat-eye's centre check masks the grid down
+to the cross's intersection, one isolated light at the format's centre. Sections (all by default; LENSAB_GUI_SECTIONS
 selects some, comma-separated):
     cat-eye      the centre light keeps its disc while the edge lights clip into cat-eyes
     swirl        the tangential cat-eye differs from the radial one
@@ -48,8 +50,15 @@ DEFOCUS_SIZE = 40.0
 
 PIXEL_DIFF_MIN = 40
 CHANGED_PIXELS_MIN = 40
-# The centre light's disc may move by a rounding of the display, never by a clip.
+# The centre light's disc may move by a rounding of the display, never by a clip. Kernels are
+# picked per output cell and the disc reaches past the centre cell, so its rim is gathered with the
+# neighbouring cells' kernels, clipped by catEye * 32 px / half-diagonal (3% of the radius on HD)
+# on the side away from the light, then renormalised: a sub-pixel change at 28% zoom.
 CENTRE_CHANGED_MAX_FRACTION = 0.02
+# The side of the mask isolating the centre light from the grid's centre cross.
+CENTRE_MASK_SIZE = 2.0 * LIGHT_WIDTH
+# Lit pixels the isolated centre light shows at the least, so that its check is not vacuous.
+CENTRE_LIT_MIN = 20
 FRINGE_MIN = 60
 FRINGE_PIXELS_MIN = 40
 
@@ -130,11 +139,15 @@ try:
         param(checker, "centerlineWidth").set(0.0)
         return checker
 
+    def format_size():
+        probe = create(PLUGIN_CHECKER, -400, 0)
+        size = rod_size(probe)
+        destroy_all([probe])
+        return size
+
     def make_lights():
         """The point-light grid: returns (output node, every node built, (width, height))."""
-        probe = create(PLUGIN_CHECKER, -400, 0)
-        w, h = rod_size(probe)
-        destroy_all([probe])
+        w, h = format_size()
         box_w, box_h = w / LIGHTS_X, h / LIGHTS_Y
         # Boxes larger than the format leave each CheckerBoard its lines along one axis only.
         rows = line_checker(-200, 0, 4.0 * w, box_h)
@@ -156,6 +169,24 @@ try:
         connect(lights, 0, grid)
         connect(lights, 1, inset)
         return lights, [lights, inset, grid, columns, rows], (w, h)
+
+    def centre_light(lights):
+        """The grid masked to its centre: returns (output node, every node built). The format stays the
+        grid's, so the viewer frames it as it frames the grid."""
+        w, h = format_size()
+        mask = create(PLUGIN_RECTANGLE, 400, 0)
+        param(mask, "bottomLeft").setValue((w - CENTRE_MASK_SIZE) / 2.0, 0)
+        param(mask, "bottomLeft").setValue((h - CENTRE_MASK_SIZE) / 2.0, 1)
+        param(mask, "size").setValue(CENTRE_MASK_SIZE, 0)
+        param(mask, "size").setValue(CENTRE_MASK_SIZE, 1)
+        param(mask, "softness").setValue(0.0)
+        param(mask, "color1").set(1.0, 1.0, 1.0, 1.0)
+        param(mask, "color0").set(0.0, 0.0, 0.0, 1.0)
+        light = create(PLUGIN_MERGE, 200, 300)
+        set_choice(light, "operation", "multiply")
+        connect(light, 0, lights)
+        connect(light, 1, mask)
+        return light, [light, mask]
 
     def viewer_node():
         v = app.getNode("Viewer1")
@@ -306,7 +337,20 @@ try:
         moved, total = changed_pixels(crop(discs, corner_rect(rect)), crop(eyes, corner_rect(rect)))
         check(moved >= CHANGED_PIXELS_MIN,
               "the cat-eye clips the edge lights' discs (%d of %d corner pixels differ)" % (moved, total))
-        moved, total = changed_pixels(crop(discs, centre_rect(rect)), crop(eyes, centre_rect(rect)))
+
+        light, light_nodes = centre_light(lights)
+        nodes = light_nodes + nodes
+        connect(defocus, 0, light)
+        param(defocus, "catEye").set(0.0)
+        yield from show(viewer, defocus)
+        centre_disc = viewer_grab()
+        param(defocus, "catEye").set(1.0)
+        yield from show(viewer, defocus)
+        centre_eye = viewer_grab()
+        gt.shot("lens-cat-eye-centre.png")
+        moved, total = changed_pixels(crop(centre_disc, centre_rect(rect)), crop(centre_eye, centre_rect(rect)))
+        lit, _ = changed_pixels(crop(centre_disc, centre_rect(rect)), crop(centre_disc, (0, 0) + tuple(centre_rect(rect)[2:])))
+        check(lit >= CENTRE_LIT_MIN, "the isolated centre light is lit (%d of %d centre pixels)" % (lit, total))
         check(0 <= moved <= CENTRE_CHANGED_MAX_FRACTION * total,
               "the centre light keeps its disc (%d of %d centre pixels differ, limit %d)" %
               (moved, total, int(CENTRE_CHANGED_MAX_FRACTION * total)))
@@ -393,6 +437,9 @@ try:
             check(zdefocus.getParam(name) is not None, "ZDefocus has the lens knob %r" % name)
         param(zdefocus, "catEye").set(1.0)
         param(zdefocus, "chromaticAberration").set(0.3)
+        # The lens knobs sit in closed groups so that the panel fits a 1080 px screen; open the
+        # aberrations for the screenshot.
+        param(zdefocus, "lensAberrations").setOpened(True)
         yield from show(viewer, zdefocus)
         check(gt.any_panel_open(), "the ZDefocus settings panel is open")
         gt.shot("lens-zdefocus-panel.png")

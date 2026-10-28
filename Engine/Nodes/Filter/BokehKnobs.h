@@ -32,6 +32,8 @@
 #include "Engine/Nodes/Filter/BokehKernel.h"
 #include "Engine/Nodes/Filter/LensAberration.h"
 
+#define kBokehParamKernelTextureGroup "kernelTexture"
+#define kBokehParamLensAberrationsGroup "lensAberrations"
 #define kBokehParamFilterShape "filterShape"
 #define kBokehParamInnerSize "innerSize"
 #define kBokehParamInnerFeather "innerFeather"
@@ -56,10 +58,10 @@ class KnobReader;
  **/
 class BokehKnobs {
 public:
-    /// The texture knobs of Disc and Blades kernels, Nuke's ZDefocus filter controls.
+    /// The texture knobs of Disc and Blades kernels, Nuke's ZDefocus filter controls, in a closed group.
     void addTextureKnobs(KnobHolder* holder, const KnobPagePtr& page);
 
-    /// The cat-eye and chromatic aberration knobs.
+    /// The cat-eye and chromatic aberration knobs, in a closed group.
     void addLensKnobs(KnobHolder* holder, const KnobPagePtr& page);
 
     /// The texture knobs' values into shape, leaving its other fields.

@@ -43,7 +43,7 @@ const int kOrientationTangential = 1;
 
 KnobDoublePtr
 addFraction(KnobHolder* holder,
-            const KnobPagePtr& page,
+            const KnobGroupPtr& group,
             const char* name,
             const QString& label,
             const QString& hint,
@@ -60,9 +60,26 @@ addFraction(KnobHolder* holder,
     knob->setDisplayMinimum(minimum);
     knob->setDisplayMaximum(maximum);
     knob->setDefaultValue(defaultValue);
-    page->addKnob(knob);
+    group->addKnob(knob);
 
     return knob;
+}
+
+KnobGroupPtr
+addClosedGroup(KnobHolder* holder,
+               const KnobPagePtr& page,
+               const char* name,
+               const QString& label,
+               const QString& hint)
+{
+    KnobGroupPtr group = AppManager::createKnob<KnobGroup>(holder, label);
+
+    group->setName(name);
+    group->setHintToolTip(hint.toStdString());
+    group->setDefaultValue(false);
+    page->addKnob(group);
+
+    return group;
 }
 
 double
@@ -77,15 +94,18 @@ void
 BokehKnobs::addTextureKnobs(KnobHolder* holder,
                             const KnobPagePtr& page)
 {
-    _filterShape = addFraction(holder, page, kBokehParamFilterShape, EffectInstance::tr("Filter Shape"),
+    const KnobGroupPtr group = addClosedGroup(holder, page, kBokehParamKernelTextureGroup, EffectInstance::tr("Kernel Texture"),
+                                              EffectInstance::tr("The Disc and Blades kernels' texture: profile, onion ring, catadioptric hole "
+                                                                 "and spherical aberration."));
+    _filterShape = addFraction(holder, group, kBokehParamFilterShape, EffectInstance::tr("Filter Shape"),
                                EffectInstance::tr("Disc and Blades kernels: the bokeh's profile, from a Gaussian at 0 to the flat shape at 1."), 0., 1., 1.);
-    _innerSize = addFraction(holder, page, kBokehParamInnerSize, EffectInstance::tr("Inner Size"),
+    _innerSize = addFraction(holder, group, kBokehParamInnerSize, EffectInstance::tr("Inner Size"),
                              EffectInstance::tr("Disc and Blades kernels: the size of the inner shape, the onion ring's inside, as a fraction of the bokeh."), 0., 1., 0.8);
-    _innerFeather = addFraction(holder, page, kBokehParamInnerFeather, EffectInstance::tr("Inner Feather"),
+    _innerFeather = addFraction(holder, group, kBokehParamInnerFeather, EffectInstance::tr("Inner Feather"),
                                 EffectInstance::tr("Disc and Blades kernels: how the inner shape's brightness blends into the rim's. Above 0.5 it "
                                                    "feathers outward, reaching the rim at 1; below it, inward, from the centre at 0."),
                                 0., 1., 1.);
-    KnobDoublePtr brightness = addFraction(holder, page, kBokehParamInnerBrightness, EffectInstance::tr("Inner Brightness"),
+    KnobDoublePtr brightness = addFraction(holder, group, kBokehParamInnerBrightness, EffectInstance::tr("Inner Brightness"),
                                            EffectInstance::tr("Disc and Blades kernels: the brightness of the inner shape against the rim's 1. Below 1 "
                                                               "the bokeh shows a bright ring."),
                                            0., 1., 1.);
@@ -99,12 +119,12 @@ BokehKnobs::addTextureKnobs(KnobHolder* holder,
                                      .toStdString());
     catadioptric->setDefaultValue(false);
     catadioptric->setAddNewLine(false);
-    page->addKnob(catadioptric);
+    group->addKnob(catadioptric);
     _catadioptric = catadioptric;
 
-    _catadioptricSize = addFraction(holder, page, kBokehParamCatadioptricSize, EffectInstance::tr("Catadioptric Size"),
+    _catadioptricSize = addFraction(holder, group, kBokehParamCatadioptricSize, EffectInstance::tr("Catadioptric Size"),
                                     EffectInstance::tr("Disc and Blades kernels, with Catadioptric: the hole's size as a fraction of the bokeh."), 0., 1., 0.3);
-    _sphericalAberration = addFraction(holder, page, kBokehParamSphericalAberration, EffectInstance::tr("Spherical Aberration"),
+    _sphericalAberration = addFraction(holder, group, kBokehParamSphericalAberration, EffectInstance::tr("Spherical Aberration"),
                                        EffectInstance::tr("Disc and Blades kernels: brightens the bokeh's rim when positive and its centre when "
                                                           "negative, as an under- or over-corrected lens does."),
                                        -1., 1., 0.);
@@ -114,7 +134,9 @@ void
 BokehKnobs::addLensKnobs(KnobHolder* holder,
                          const KnobPagePtr& page)
 {
-    KnobDoublePtr catEye = addFraction(holder, page, kBokehParamCatEye, EffectInstance::tr("Cat Eye"),
+    const KnobGroupPtr group = addClosedGroup(holder, page, kBokehParamLensAberrationsGroup, EffectInstance::tr("Lens Aberrations"),
+                                              EffectInstance::tr("Cat-eye vignetting and chromatic aberration."));
+    KnobDoublePtr catEye = addFraction(holder, group, kBokehParamCatEye, EffectInstance::tr("Cat Eye"),
                                        EffectInstance::tr("Optical vignetting: away from the format's centre the bokeh is cut by a second aperture "
                                                           "offset by this many bokeh radii at the corners, turning discs into cat's eyes. Kernels "
                                                           "change in steps of 32 pixels."),
@@ -134,10 +156,10 @@ BokehKnobs::addLensKnobs(KnobHolder* holder,
         orientation->populateChoices(options);
     }
     orientation->setDefaultValue(0);
-    page->addKnob(orientation);
+    group->addKnob(orientation);
     _catEyeOrientation = orientation;
 
-    KnobDoublePtr amount = addFraction(holder, page, kBokehParamChromaticAberration, EffectInstance::tr("Chromatic Aberration"),
+    KnobDoublePtr amount = addFraction(holder, group, kBokehParamChromaticAberration, EffectInstance::tr("Chromatic Aberration"),
                                        EffectInstance::tr("Scales each colour channel's bokeh by 1 plus this amount times its Chromatic Offset, "
                                                           "fringing the bokeh with colour. The alpha and other channels follow the green."),
                                        -0.5, 0.5, 0.);
@@ -158,7 +180,7 @@ BokehKnobs::addLensKnobs(KnobHolder* holder,
         offset->setDisplayMinimum(-1., i);
         offset->setDisplayMaximum(1., i);
     }
-    page->addKnob(offset);
+    group->addKnob(offset);
     _chromaticOffset = offset;
 }
 

@@ -176,7 +176,7 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 
 ## Phase 130.4: Documentation
 
-- [ ] M131.P4.T1 — Document the nodes
+- [x] M131.P4.T1 — Document the nodes
   - files: `Engine/Nodes/Filter/docs/{Defocus,ZDefocus}.md`
   - approach: one doc file per node (M120 - Native Node Port Kit's scheme), the kernel library described in `Defocus.md`: knobs, the lens formula, the depth conventions, GPU caps and tolerances.
   - verify: reviewed at the gate against the node code.

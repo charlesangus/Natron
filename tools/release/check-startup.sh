@@ -301,6 +301,9 @@ for plugin_name in ("usd", "sdf", "sdr", "usdGeom", "usdLux", "usdShade", "usdAb
 # Natron registers the natron:// live-texture resolver and image reader itself at startup.
 if not Plug.Registry().GetPluginWithName("natronLiveTexture"):
     fail("OpenUSD has no natronLiveTexture plug-in registered; Resources/usd/natronLiveTexture is missing")
+# USDProject3D's Storm surface ships beside that plug-in's plugInfo.json.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture").FindPluginResource("natronProject3D.glslfx", True):
+    fail("Resources/usd/natronLiveTexture/natronProject3D.glslfx is missing")
 for extension in ("usda", "usdc", "abc"):
     if not Sdf.FileFormat.FindByExtension(extension):
         fail("OpenUSD has no file format for .%s" % extension)

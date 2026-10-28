@@ -270,6 +270,10 @@ install(FILES ${NatronEngine_WB_PRESETS_JSON} DESTINATION Resources/darktable)
 set(NatronEngine_LIVE_TEXTURE_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/plugInfo.json)
 configure_file(${NatronEngine_LIVE_TEXTURE_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/plugInfo.json COPYONLY)
 install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/natronLiveTexture)
+# USDProject3D's Storm surface, found through that plug-in's resources (USDProject3D::getShaderPath).
+set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
+configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
+install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
 
 # Some Linux dependencies (notably Qt) can expose the distribution FreeType
 # before this static library's transitive link interface is expanded.  The

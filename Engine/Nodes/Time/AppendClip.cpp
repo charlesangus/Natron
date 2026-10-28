@@ -53,7 +53,7 @@ struct ClipPlace {
 
 // Lays the clips out up to time, or to the end with lastOnly, leaving the last two placed in
 // *previous and *current, as OFX AppendClip does. Returns false when the answer is already in
-// *early: before the first clip, or no clip at all.
+// *early: before the first clip, or no clip at all. Each clip placed is appended to placed.
 bool
 placeClips(std::span<const std::optional<AppendClipRange>> clips,
            const AppendClipSettings& s,
@@ -63,7 +63,8 @@ placeClips(std::span<const std::optional<AppendClipRange>> clips,
            ClipPlace* current,
            int* firstClip,
            int* lastClip,
-           AppendClipSources* early)
+           AppendClipSources* early,
+           std::vector<ClipPlace>* placed = nullptr)
 {
     *previous = ClipPlace { -1, -1, s.firstFrame, s.firstFrame - 1 };
     *current = ClipPlace { -1, -1, s.firstFrame, s.firstFrame - 1 };
@@ -96,6 +97,9 @@ placeClips(std::span<const std::optional<AppendClipRange>> clips,
                 return false;
             }
             *current = ClipPlace { i, r.first, s.firstFrame, std::max(s.firstFrame + (r.last - r.first), s.firstFrame) };
+            if (placed) {
+                placed->push_back(*current);
+            }
             continue;
         }
         // Never more than two clips at a time: the next one starts after the one before the
@@ -110,6 +114,9 @@ placeClips(std::span<const std::optional<AppendClipRange>> clips,
         }
         *previous = *current;
         *current = next;
+        if (placed) {
+            placed->push_back(next);
+        }
     }
 
     return true;
@@ -193,6 +200,26 @@ appendClipLastFrame(std::span<const std::optional<AppendClipRange>> clips,
     placeClips(clips, settings, 0., true, &c0, &c1, &firstClip, &lastClip, &early);
 
     return c1.outMax;
+}
+
+std::vector<AppendClipPlacement>
+appendClipPlacements(std::span<const std::optional<AppendClipRange>> clips,
+                     const AppendClipSettings& settings)
+{
+    ClipPlace c0;
+    ClipPlace c1;
+    int firstClip = 0;
+    int lastClip = -1;
+    AppendClipSources early;
+    std::vector<ClipPlace> placed;
+    placeClips(clips, settings, 0., true, &c0, &c1, &firstClip, &lastClip, &early, &placed);
+    std::vector<AppendClipPlacement> result;
+    result.reserve(placed.size());
+    for (const ClipPlace& c : placed) {
+        result.push_back(AppendClipPlacement { c.clip, c.min, c.outMin, c.outMax });
+    }
+
+    return result;
 }
 
 AppendClip::AppendClip(NodePtr node)
@@ -476,6 +503,12 @@ AppendClip::getFrameRange(double* first,
     const AppendClipSettings s = settings();
     *first = s.firstFrame;
     *last = appendClipLastFrame(clips, s);
+}
+
+std::vector<AppendClipPlacement>
+AppendClip::placements() const
+{
+    return appendClipPlacements(clipRanges(), settings());
 }
 
 bool

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <functional>
 #include <initializer_list>
 #include <list>
@@ -242,6 +243,24 @@ TEST_F(NativeAppendClipTest, LayoutOfThreeClipsWithADissolve)
     EXPECT_EQ(-1, appendClipSources(clipList({ std::nullopt }), settings, 1.).clip0);
 }
 
+// The dope sheet draws each connected input where it plays.
+TEST_F(NativeAppendClipTest, PlacementsOfThreeClipsWithADissolve)
+{
+    AppendClipSettings settings;
+    settings.crossDissolve = 3;
+    const std::vector<AppendClipPlacement> placed = appendClipPlacements(clipList({ AppendClipRange { 1, 10 }, AppendClipRange { 21, 30 }, AppendClipRange { 101, 105 } }), settings);
+    ASSERT_EQ(3u, placed.size());
+    const int expected[3][4] = { { 0, 1, 1, 10 }, { 1, 21, 8, 17 }, { 2, 101, 15, 19 } };
+    for (std::size_t i = 0; i < placed.size(); ++i) {
+        EXPECT_EQ(expected[i][0], placed[i].input) << i;
+        EXPECT_EQ(expected[i][1], placed[i].first) << i;
+        EXPECT_EQ(expected[i][2], placed[i].outFirst) << i;
+        EXPECT_EQ(expected[i][3], placed[i].outLast) << i;
+    }
+
+    EXPECT_TRUE(appendClipPlacements(clipList({ std::nullopt, std::nullopt }), settings).empty());
+}
+
 TEST_F(NativeAppendClipTest, ThreeClipsWithACrossDissolve)
 {
     NodePtr append = createAppendClip();
@@ -315,6 +334,18 @@ TEST_F(NativeAppendClipTest, DisconnectedMiddleInputIsSkipped)
     expectClipAt(append, 14., 0, 10.);
     expectClipAt(append, 15., 2, 101.);
     expectClipAt(append, 19., 2, 105.);
+
+    AppendClip* effect = dynamic_cast<AppendClip*>(append->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const std::vector<AppendClipPlacement> placed = effect->placements();
+    ASSERT_EQ(2u, placed.size());
+    EXPECT_EQ(0, placed[0].input);
+    EXPECT_EQ(5, placed[0].outFirst);
+    EXPECT_EQ(14, placed[0].outLast);
+    EXPECT_EQ(2, placed[1].input);
+    EXPECT_EQ(101, placed[1].first);
+    EXPECT_EQ(15, placed[1].outFirst);
+    EXPECT_EQ(19, placed[1].outLast);
 }
 
 TEST_F(NativeAppendClipTest, UpdateLastFrameButton)

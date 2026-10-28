@@ -4854,17 +4854,7 @@ OfxParametricInstance::addControlPoint(int curveIndex,
     if (!knob) {
         return kOfxStatFailed;
     }
-    StatusEnum stat;
-    EffectInstance* effect = dynamic_cast<EffectInstance*>( knob->getHolder() );
-    KeyframeTypeEnum interpolation = eKeyframeTypeSmooth; // a reasonable default
-    // The initial curve for some plugins may be better with a specific interpolation. Unfortunately, the kOfxParametricSuiteV1 doesn't offer different interpolation methods
-#ifdef DEBUG
-//#pragma message WARN("This is a hack, we should extend the parametric suite to add derivatives infos")
-#endif
-    if (effect && (effect->getPluginID() == PLUGINID_OFX_TIMEDISSOLVE)) {
-        interpolation = eKeyframeTypeHorizontal;
-    }
-    stat = knob->addControlPoint(eValueChangedReasonPluginEdited, curveIndex, key, value, interpolation);
+    StatusEnum stat = knob->addControlPoint(eValueChangedReasonPluginEdited, curveIndex, key, value, eKeyframeTypeSmooth);
 
     if (stat == eStatusOK) {
         return kOfxStatOK;

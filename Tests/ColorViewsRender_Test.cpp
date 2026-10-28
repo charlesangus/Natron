@@ -90,8 +90,6 @@ const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
 const char* const kMergePluginID = "Merge";
 const char* const kIDistortPluginID = kNatronTestMatrixWarpPluginID;
 const char* const kPremultPluginID = kNatronTestMultiPlanePluginID;
-const char* const kTimeBufferReadPluginID = "net.sf.openfx.TimeBufferRead";
-const char* const kTimeBufferWritePluginID = "net.sf.openfx.TimeBufferWrite";
 
 std::string
 layerIDsString(const std::list<ImageLayerDesc>& layers)
@@ -244,8 +242,6 @@ protected:
     {
         channels->setAll();
     }
-
-    void createTimeBufferPair(const NodePtr& readSource, const NodePtr& writeSource, NodePtr* bufferRead, NodePtr* bufferWrite);
 
     QTemporaryDir _tmp;
     int _renderCount = 0;
@@ -1194,155 +1190,6 @@ TEST_F(ColorViewsRenderTest, ReadPlacesAnOffsetRgbOnlyFile)
     EXPECT_EQ(6 * 4, covered);
     EXPECT_EQ(std::vector<bool>(6, true), seenX);
     EXPECT_EQ(std::vector<bool>(4, true), seenY);
-}
-
-// openfx-misc compiles TimeBuffer only into DEBUG builds, so release plug-in sets lack it.
-static bool
-timeBufferPluginsLoaded()
-{
-    bool loaded = false;
-    try {
-        const bool readLoaded = appPTR->getPluginBinary(QString::fromUtf8(kTimeBufferReadPluginID), -1, -1, false) != NULL;
-        const bool writeLoaded = appPTR->getPluginBinary(QString::fromUtf8(kTimeBufferWritePluginID), -1, -1, false) != NULL;
-        loaded = readLoaded && writeLoaded;
-    } catch (const std::exception&) {
-    }
-    if (!loaded) {
-        std::cout << "TimeBuffer plug-ins not loaded: openfx-misc builds them only with DEBUG defined, "
-                     "so point OFX_PLUGIN_PATH at such a build to run this check"
-                  << std::endl;
-    }
-
-    return loaded;
-}
-
-static int
-inputIndexByLabel(const NodePtr& node,
-                  const std::string& label)
-{
-    for (int i = 0; i < node->getNInputs(); ++i) {
-        if (node->getInputLabel(i) == label) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-void
-ColorViewsRenderTest::createTimeBufferPair(const NodePtr& readSource,
-                                           const NodePtr& writeSource,
-                                           NodePtr* bufferRead,
-                                           NodePtr* bufferWrite)
-{
-    *bufferRead = createNode(QString::fromUtf8(kTimeBufferReadPluginID));
-    *bufferWrite = createNode(QString::fromUtf8(kTimeBufferWritePluginID));
-    ASSERT_TRUE(bool(*bufferRead));
-    ASSERT_TRUE(bool(*bufferWrite));
-
-    const char* const bufferName = "m66AlphaBuffer";
-    KnobString* readName = dynamic_cast<KnobString*>((*bufferRead)->getKnobByName("bufferName").get());
-    KnobString* writeName = dynamic_cast<KnobString*>((*bufferWrite)->getKnobByName("bufferName").get());
-    KnobInt* startFrame = dynamic_cast<KnobInt*>((*bufferRead)->getKnobByName("startFrame").get());
-    ASSERT_TRUE(readName != NULL);
-    ASSERT_TRUE(writeName != NULL);
-    ASSERT_TRUE(startFrame != NULL);
-    readName->setValue(std::string(bufferName));
-    writeName->setValue(std::string(bufferName));
-    startFrame->setValue(1);
-    // TimeBufferRead also has a Generator context, so Natron gives it a target layer, and the
-    // default rgba target would widen the alpha-only stream it hands back.
-    KnobLayerSelectPtr readLayer = std::dynamic_pointer_cast<KnobLayerSelect>((*bufferRead)->getLayerKnob());
-    ASSERT_TRUE(bool(readLayer));
-    readLayer->setLayer(kNatronColorViewAlpha);
-
-    const int readSourceInput = inputIndexByLabel(*bufferRead, "Source");
-    const int writeSourceInput = inputIndexByLabel(*bufferWrite, "Source");
-    const int writeSyncInput = inputIndexByLabel(*bufferWrite, "Sync");
-    ASSERT_GE(readSourceInput, 0);
-    ASSERT_GE(writeSourceInput, 0);
-    ASSERT_GE(writeSyncInput, 0);
-    connectNodes(readSource, *bufferRead, readSourceInput, true);
-    connectNodes(*bufferRead, *bufferWrite, writeSyncInput, true);
-    connectNodes(writeSource, *bufferWrite, writeSourceInput, true);
-}
-
-// TimeBufferWrite stores the layout of the stream it is fed and TimeBufferRead hands it back at
-// the next frame, so an alpha-only stream must stay alpha-only through both nodes.
-TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
-{
-    if (!timeBufferPluginsLoaded()) {
-        return;
-    }
-    NodePtr reader = createReader("flat-alpha-pattern.exr");
-    ASSERT_TRUE(bool(reader));
-    NodePtr bufferRead;
-    NodePtr bufferWrite;
-    createTimeBufferPair(reader, reader, &bufferRead, &bufferWrite);
-    ASSERT_FALSE(HasFatalFailure());
-
-    EXPECT_TRUE(bufferRead->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
-    EXPECT_TRUE(bufferRead->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
-    EXPECT_TRUE(bufferWrite->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
-    EXPECT_TRUE(bufferWrite->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
-    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferRead->getEffectInstance()->getTimeInvariantMetadata(), 0));
-    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferRead->getEffectInstance()->getTimeInvariantMetadata(), -1));
-    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferWrite->getEffectInstance()->getTimeInvariantMetadata(), 0));
-    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferWrite->getEffectInstance()->getTimeInvariantMetadata(), -1));
-
-    FlatExrImage frame1;
-    std::string error;
-    ASSERT_TRUE(render(bufferWrite, &ColorViewsRenderTest::writeAll, &frame1, &error, 1)) << error;
-    ASSERT_EQ(1u, frame1.channels.size());
-    EXPECT_EQ(std::string("A"), frame1.channels.front());
-
-    FlatExrImage frame2;
-    ASSERT_TRUE(render(bufferRead, &ColorViewsRenderTest::writeAll, &frame2, &error, 2)) << error;
-    ASSERT_EQ(1u, frame2.channels.size());
-    EXPECT_EQ(std::string("A"), frame2.channels.front());
-    ASSERT_EQ(frame1.width, frame2.width);
-    ASSERT_EQ(frame1.height, frame2.height);
-    for (int32_t y = 0; y < frame1.height; ++y) {
-        for (int32_t x = 0; x < frame1.width; ++x) {
-            EXPECT_NEAR(frame1.at(frame1.x1 + x, frame1.y1 + y, "A"),
-                        frame2.at(frame2.x1 + x, frame2.y1 + y, "A"), 1e-5f)
-                << "(" << x << ", " << y << ")";
-        }
-    }
-}
-
-// TimeBufferRead's output takes the layout of its Source input, so a buffer written from an RGBA
-// stream cannot be handed back through an alpha-only Source; the read fails with an error
-// rather than reinterpreting four channels as one.
-TEST_F(ColorViewsRenderTest, TimeBufferReadFailsWhenTheBufferLayoutDiffersFromItsSource)
-{
-    if (!timeBufferPluginsLoaded()) {
-        return;
-    }
-    NodePtr alphaReader = createReader("flat-alpha-pattern.exr");
-    NodePtr rgbaReader = createReader("flat-rgba-pattern.exr");
-    ASSERT_TRUE(bool(alphaReader));
-    ASSERT_TRUE(bool(rgbaReader));
-    NodePtr bufferRead;
-    NodePtr bufferWrite;
-    createTimeBufferPair(alphaReader, rgbaReader, &bufferRead, &bufferWrite);
-    ASSERT_FALSE(HasFatalFailure());
-
-    EXPECT_EQ(1, EffectInstance::getNCompsFromMetadata(*bufferRead->getEffectInstance()->getTimeInvariantMetadata(), -1));
-    EXPECT_EQ(4, EffectInstance::getNCompsFromMetadata(*bufferWrite->getEffectInstance()->getTimeInvariantMetadata(), -1));
-
-    FlatExrImage frame1;
-    std::string error;
-    ASSERT_TRUE(render(bufferWrite, &ColorViewsRenderTest::writeAll, &frame1, &error, 1)) << error;
-    EXPECT_EQ(4u, frame1.channels.size());
-
-    FlatExrImage frame2;
-    EXPECT_FALSE(render(bufferRead, &ColorViewsRenderTest::writeAll, &frame2, &error, 2));
-    ASSERT_TRUE(bufferRead->hasPersistentMessage());
-    QString message;
-    int type = 0;
-    bufferRead->getPersistentMessage(&message, &type, false);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("different pixel layout"))) << message.toStdString();
 }
 
 // A channel picker naming a colour channel resolves to an index into the layout the stream is

@@ -596,8 +596,7 @@ enum OpenGLRequirementsTypeEnum
     eOpenGLRequirementsTypeRendering
 };
 
-enum DopeSheetItemType
-{
+enum DopeSheetItemType {
     eDopeSheetItemTypeCommon = 1001,
 
     // Range-based nodes
@@ -605,6 +604,7 @@ enum DopeSheetItemType
     eDopeSheetItemTypeRetime,
     eDopeSheetItemTypeTimeOffset,
     eDopeSheetItemTypeFrameRange,
+    eDopeSheetItemTypeAppendClip,
     eDopeSheetItemTypeGroup,
 
     // Others

@@ -244,6 +244,7 @@ HierarchyViewItemDelegate::sizeHint(const QStyleOptionViewItem &option,
     case eDopeSheetItemTypeRetime:
     case eDopeSheetItemTypeTimeOffset:
     case eDopeSheetItemTypeFrameRange:
+    case eDopeSheetItemTypeAppendClip:
     case eDopeSheetItemTypeGroup:
         heightOffset = 10;
         break;

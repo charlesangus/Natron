@@ -67,7 +67,6 @@
 #define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
 #define PLUGINID_OFX_CONSTANT "net.sf.openfx.ConstantPlugin"
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
-#define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
 
 #define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
 #define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")

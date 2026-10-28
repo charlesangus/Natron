@@ -48,6 +48,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/AppendClip.h"
 #include "Engine/Nodes/Time/FrameHold.h"
 #include "Engine/Nodes/Time/FrameRange.h"
 #include "Engine/Nodes/Time/Retime.h"
@@ -236,6 +237,7 @@ public:
     void drawNodeRowSeparation(const DSNodePtr dsNode) const;
 
     void drawRange(const DSNodePtr &dsNode) const;
+    void drawAppendClipSegments(const DSNodePtr& dsNode, const RectD& clipRectZoomCoords, const QColor& fillColor, bool isSelected) const;
     void drawKeyframes(const DSNodePtr &dsNode) const;
 
     void drawTexturedKeyframe(DopeSheetViewPrivate::KeyframeTexture textureType,
@@ -271,6 +273,7 @@ public:
     void computeRetimeRange(DSNode *retimer);
     void computeTimeOffsetRange(DSNode *timeOffset);
     void computeFRRange(DSNode *frameRange);
+    void computeAppendClipRange(DSNode* appendClip);
     void computeGroupRange(DSNode *group);
 
     // User interaction
@@ -298,6 +301,8 @@ public:
 
     //
     std::map<DSNode*, ClipRange> nodeRanges;
+    // Where each connected input of an AppendClip plays, drawn inside its clip.
+    std::map<DSNode*, std::vector<AppendClipPlacement>> appendClipSegments;
     std::list<DSNode*> nodeRangesBeingComputed; // to avoid recursion in groups
     int rangeComputationRecursion;
 
@@ -1280,6 +1285,10 @@ DopeSheetViewPrivate::drawRange(const DSNodePtr &dsNode) const
             glEnd();
         }
 
+        if (dsNode->getItemType() == eDopeSheetItemTypeAppendClip) {
+            drawAppendClipSegments(dsNode, clipRectZoomCoords, fillColor, isSelected);
+        }
+
         if ( isSelected && (dsNode->getItemType() == eDopeSheetItemTypeReader) ) {
             SettingsPtr settings = appPTR->getCurrentSettings();
             double selectionColorRGB[3];
@@ -1305,6 +1314,77 @@ DopeSheetViewPrivate::drawRange(const DSNodePtr &dsNode) const
         }
     }
 } // DopeSheetViewPrivate::drawRange
+
+// A cross-dissolve, where two inputs overlap, is filled halfway between the clip and the outline
+// colours; each input's first and last frames are marked with the outline colour, and a selected
+// clip names each input at its start.
+void
+DopeSheetViewPrivate::drawAppendClipSegments(const DSNodePtr& dsNode,
+                                             const RectD& clipRectZoomCoords,
+                                             const QColor& fillColor,
+                                             bool isSelected) const
+{
+    std::map<DSNode*, std::vector<AppendClipPlacement>>::const_iterator found = appendClipSegments.find(dsNode.get());
+    if ((found == appendClipSegments.end()) || found->second.empty()) {
+        return;
+    }
+    const std::vector<AppendClipPlacement>& segments = found->second;
+
+    GLProtectAttrib a(GL_CURRENT_BIT | GL_LINE_BIT);
+    glColor4f(fillColor.redF() * 0.75, fillColor.greenF() * 0.75, fillColor.blueF() * 0.75, 1.f);
+    for (std::size_t i = 1; i < segments.size(); ++i) {
+        const double overlapFirst = segments[i].outFirst;
+        const double overlapLast = std::min(segments[i - 1].outLast, segments[i].outLast) + 1;
+        if (overlapLast <= overlapFirst) {
+            continue;
+        }
+        glBegin(GL_POLYGON);
+        glVertex2f(overlapFirst, clipRectZoomCoords.top());
+        glVertex2f(overlapFirst, clipRectZoomCoords.bottom());
+        glVertex2f(overlapLast, clipRectZoomCoords.bottom());
+        glVertex2f(overlapLast, clipRectZoomCoords.top());
+        glEnd();
+    }
+
+    glColor4f(fillColor.redF(), fillColor.greenF(), fillColor.blueF(), 1.f);
+    glLineWidth(1. * _screenPixelRatio);
+    glBegin(GL_LINES);
+    for (const AppendClipPlacement& segment : segments) {
+        const double edges[2] = { (double)segment.outFirst, (double)segment.outLast + 1 };
+        for (double x : edges) {
+            glVertex2d(x, clipRectZoomCoords.y1);
+            glVertex2d(x, clipRectZoomCoords.y2);
+        }
+    }
+    glEnd();
+
+    if (!isSelected) {
+        return;
+    }
+    NodePtr node = dsNode->getInternalNode();
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    double selectionColorRGB[3];
+    settings->getSelectionColor(&selectionColorRGB[0], &selectionColorRGB[1], &selectionColorRGB[2]);
+    QColor selectionColor;
+    selectionColor.setRgbF(selectionColorRGB[0], selectionColorRGB[1], selectionColorRGB[2]);
+    QFontMetrics fm(*_textFont);
+    const double fontHeight = fm.height() / _screenPixelRatio;
+    const double centerY = (clipRectZoomCoords.y1 + clipRectZoomCoords.y2) / 2.;
+    const double textY = zoomContext.toZoomCoordinates(0, zoomContext.toWidgetCoordinates(0, centerY).y() + fontHeight / 2.).y();
+    for (const AppendClipPlacement& segment : segments) {
+        QString text = node ? QString::fromUtf8(node->getInputLabel(segment.input).c_str()) : QString();
+        if (text.isEmpty()) {
+            text = QString::number(segment.input + 1);
+        }
+        const double left = zoomContext.toWidgetCoordinates(segment.outFirst, 0).x();
+        const double right = zoomContext.toWidgetCoordinates(segment.outLast + 1, 0).x();
+        const double textW = fm.horizontalAdvance(text) / _screenPixelRatio;
+        if (right - left < textW + 6) {
+            continue;
+        }
+        renderText(zoomContext.toZoomCoordinates(left + 3, 0).x(), textY, text, selectionColor, *_textFont);
+    }
+} // DopeSheetViewPrivate::drawAppendClipSegments
 
 /**
  * @brief DopeSheetViewPrivate::drawKeyframes
@@ -1931,6 +2011,9 @@ DopeSheetViewPrivate::computeNodeRange(DSNode *dsNode)
     case eDopeSheetItemTypeFrameRange:
         computeFRRange(dsNode);
         break;
+    case eDopeSheetItemTypeAppendClip:
+        computeAppendClipRange(dsNode);
+        break;
     case eDopeSheetItemTypeGroup:
         computeGroupRange(dsNode);
         break;
@@ -2084,6 +2167,41 @@ DopeSheetViewPrivate::computeFRRange(DSNode *frameRange)
     assert( found != nodeRangesBeingComputed.end() );
     nodeRangesBeingComputed.erase(found);
 }
+
+void
+DopeSheetViewPrivate::computeAppendClipRange(DSNode* appendClip)
+{
+    if (std::find(nodeRangesBeingComputed.begin(), nodeRangesBeingComputed.end(), appendClip) != nodeRangesBeingComputed.end()) {
+        return;
+    }
+
+    nodeRangesBeingComputed.push_back(appendClip);
+    ++rangeComputationRecursion;
+
+    ClipRange range;
+    std::vector<AppendClipPlacement> placements;
+    NodePtr node = appendClip->getInternalNode();
+    AppendClip* effect = node ? dynamic_cast<AppendClip*>(node->getEffectInstance().get()) : 0;
+    if (effect) {
+        placements = effect->placements();
+    }
+    if (!placements.empty()) {
+        range.first = placements.front().outFirst;
+        range.second = range.first;
+        for (const AppendClipPlacement& p : placements) {
+            range.second = std::max<double>(range.second, p.outLast + 1);
+        }
+    }
+    nodeRanges[appendClip] = range;
+    appendClipSegments[appendClip] = placements;
+
+    --rangeComputationRecursion;
+    std::list<DSNode*>::iterator found = std::find(nodeRangesBeingComputed.begin(), nodeRangesBeingComputed.end(), appendClip);
+    assert(found != nodeRangesBeingComputed.end());
+    if (found != nodeRangesBeingComputed.end()) {
+        nodeRangesBeingComputed.erase(found);
+    }
+} // DopeSheetViewPrivate::computeAppendClipRange
 
 void
 DopeSheetViewPrivate::computeGroupRange(DSNode *group)
@@ -2594,7 +2712,8 @@ DopeSheetViewPrivate::createContextMenu()
 } // DopeSheetViewPrivate::createContextMenu
 
 // Walks upstream from the active viewer's A and B inputs. A TimeOffset with a constant shift adds
-// it for everything above it; FrameRange is the identity inside its range; the other time remaps
+// it for everything above it; AppendClip adds, above each input, the shift that places that input on
+// its timeline; FrameRange is the identity inside its range; the other time remaps
 // have no single shift, so nothing above them is moved. A node reached along several paths keeps
 // the shift of the shortest one.
 void
@@ -2628,6 +2747,18 @@ DopeSheetViewPrivate::refreshKeyTimeOffsets()
         }
         const std::string pluginID = node->getPluginID();
         if ((pluginID == PLUGINID_NATRON_FRAMEHOLD) || (pluginID == PLUGINID_NATRON_RETIME) || (pluginID == PLUGINID_NATRON_TIMEWARP)) {
+            continue;
+        }
+        if (pluginID == PLUGINID_NATRON_APPENDCLIP) {
+            AppendClip* appendClip = dynamic_cast<AppendClip*>(node->getEffectInstance().get());
+            if (appendClip) {
+                for (const AppendClipPlacement& placement : appendClip->placements()) {
+                    NodePtr input = node->getInput(placement.input);
+                    if (input) {
+                        pending.push_back(std::make_pair(input.get(), offset + placement.outFirst - placement.first));
+                    }
+                }
+            }
             continue;
         }
         if (pluginID == PLUGINID_NATRON_TIMEOFFSET) {
@@ -3215,6 +3346,18 @@ DopeSheetView::onNodeAdded(DSNode *dsNode)
             connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
                     this, SLOT(onRangeNodeCurveChanged()));
         }
+    } else if (nodeType == eDopeSheetItemTypeAppendClip) {
+        static const char* const appendClipKnobs[] = { kAppendClipParamFirstFrame, kAppendClipParamLastFrame, kAppendClipParamCrossDissolve, 0 };
+        for (const char* const* name = appendClipKnobs; *name; ++name) {
+            KnobIPtr knob = node->getKnobByName(*name);
+            if (!knob) {
+                continue;
+            }
+            connect(knob->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)),
+                    this, SLOT(onRangeNodeChanged(ViewSpec, int, int)));
+        }
+        // Connecting, disconnecting or reordering inputs moves the clips.
+        connect(node.get(), SIGNAL(inputChanged(int)), this, SLOT(onRangeNodeCurveChanged()));
     }
 
     if (mustComputeNodeRange) {
@@ -3244,6 +3387,7 @@ DopeSheetView::onNodeAboutToBeRemoved(DSNode *dsNode)
     if ( toRemove != _imp->nodeRanges.end() ) {
         _imp->nodeRanges.erase(toRemove);
     }
+    _imp->appendClipSegments.erase(dsNode);
 
     _imp->computeSelectedKeysBRect();
 
@@ -3304,6 +3448,8 @@ DopeSheetView::onRangeNodeCurveChanged()
                 return;
             }
             dsNode = _imp->model->findDSNode( effectInstance->getNode().get() );
+        } else if (Node* senderNode = qobject_cast<Node*>(signalSender)) {
+            dsNode = _imp->model->findDSNode(senderNode);
         }
     }
 

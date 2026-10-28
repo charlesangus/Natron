@@ -374,6 +374,12 @@ public:
     void trimReaderLeft(const DSNodePtr &reader, double newFirstFrame);
     void trimReaderRight(const DSNodePtr &reader, double newLastFrame);
 
+    /**
+     * @brief Moves the first (or with lastEnd the last) frame of a FrameRange to newFrame, kept on
+     * its side of the other end.
+     */
+    void trimFrameRange(const DSNodePtr& frameRange, bool lastEnd, double newFrame);
+
     bool canSlipReader(const DSNodePtr &reader) const;
 
     void slipReader(const DSNodePtr &reader, double dt);

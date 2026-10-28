@@ -266,6 +266,37 @@ private:
 };
 
 /**
+ * @brief Moves one end of a FrameRange's clip: its First or its Last frame.
+ */
+class DSTrimFrameRangeCommand
+    : public QUndoCommand,
+      public UndoGestureMember {
+    Q_DECLARE_TR_FUNCTIONS(DSTrimFrameRangeCommand)
+
+public:
+    DSTrimFrameRangeCommand(const DSNodePtr& frameRange,
+                            bool lastEnd,
+                            int oldFrame,
+                            int newFrame,
+                            QUndoCommand* parent = 0);
+
+    void undo() OVERRIDE FINAL;
+    void redo() OVERRIDE FINAL;
+
+    int id() const OVERRIDE FINAL;
+    bool mergeWith(const QUndoCommand* other) OVERRIDE FINAL;
+
+private:
+    void setFrame(int frame);
+
+private:
+    NodeWPtr _frameRange;
+    bool _lastEnd;
+    int _oldFrame;
+    int _newFrame;
+};
+
+/**
  * @brief The DSSlipReaderCommand class describes an undoable action that trim
  * a reader by changing both its first and last frames.
  */

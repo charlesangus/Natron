@@ -2099,6 +2099,7 @@ struct ProgressiveRender::Implementation {
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(id);
         parameters.gpuEnabled = false;
+        CyclesAovs::registerSceneIndices();
         std::unique_ptr<UsdImagingGLEngine> made;
         const std::function<void()> make = [&]() {
             TfErrorMark mark;

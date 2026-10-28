@@ -47,7 +47,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
-#include "Engine/GpuCostModel.h"
+#include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
@@ -276,8 +276,8 @@ TEST_F(NativeCornerPinGpuTest, EligibilityFollowsTheSupportedSettings)
     EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "motion blur with a closed shutter";
 }
 
-// The cost model prices CornerPin with its motion blur rows only while the knobs ask for motion blur.
-TEST_F(NativeCornerPinGpuTest, CostTraitsFollowMotionBlur)
+// Only a CornerPin that renders with motion blur is Heavy; otherwise it keeps the Resample default.
+TEST_F(NativeCornerPinGpuTest, WeightIsHeavyWithMotionBlur)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
@@ -285,22 +285,14 @@ TEST_F(NativeCornerPinGpuTest, CostTraitsFollowMotionBlur)
     NodePtr node = makePin(source, kPins[0]);
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(animate(node));
+    StagedImageEffect* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
 
-    GpuCostModel model;
-    FrameGraph::Task task;
-    task.key.node = node;
-    task.key.time = kTime;
-    task.key.view = ViewIdx(0);
-    task.key.mipmapLevel = 0;
-    EXPECT_EQ(std::string(PLUGINID_NATRON_CORNERPIN), model.traitsOf(task).pluginId);
-    EXPECT_FALSE(model.traitsOf(task).motionBlur);
-    EXPECT_EQ(0., model.traitsOf(task).sigma);
-    EXPECT_TRUE(model.hasGpuCost(model.traitsOf(task)));
+    EXPECT_EQ(GpuWeight::Class::Filter, effect->gpuWeight(kTime, ViewIdx(0), 0).weightClass);
     ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamMotionBlur, { 1. }));
-    EXPECT_TRUE(model.traitsOf(task).motionBlur);
-    EXPECT_TRUE(model.hasGpuCost(model.traitsOf(task)));
+    EXPECT_TRUE(effect->gpuWeight(kTime, ViewIdx(0), 0).isHeavy());
     ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamShutter, { 0. }));
-    EXPECT_FALSE(model.traitsOf(task).motionBlur);
+    EXPECT_EQ(GpuWeight::Class::Filter, effect->gpuWeight(kTime, ViewIdx(0), 0).weightClass);
 }
 
 #ifdef NATRON_HAVE_GPU

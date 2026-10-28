@@ -53,7 +53,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/GpuCostModel.h"
+#include "Engine/GpuTransferModel.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
@@ -121,7 +121,7 @@ BaseTest::SetUp()
     _app = appPTR->getTopLevelInstance();
 
     // The cases of a suite share one process, so each starts from what a fresh process has: an
-    // empty project, empty caches and an unrefined cost model. Identical nodes share cache
+    // empty project, empty caches and an unrefined transfer model. Identical nodes share cache
     // entries by hash, and a project reset leaves the destroyed nodes' entries in place, so a
     // test node whose output depends on state outside its hash would otherwise be served an
     // earlier case's render, and a Read served from the cache would not set the project format.
@@ -130,7 +130,7 @@ BaseTest::SetUp()
         app->getProject()->reset(false, true);
     }
     appPTR->clearAllCaches();
-    GpuCostModel::session().reset();
+    GpuTransferModel::session().reset();
 
     registerTestPlugins();
 }

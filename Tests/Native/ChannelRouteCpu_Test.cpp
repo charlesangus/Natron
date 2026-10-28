@@ -459,6 +459,13 @@ TEST(ChannelRouteCpuTest, ColourBitsFollowTheFetchedLayout)
     }
 }
 
+TEST(ChannelRouteCpuTest, WeighsAsAPointOp)
+{
+    ChannelRouteCpuTestEffect effect((NodePtr()));
+
+    EXPECT_EQ(GpuWeight::Class::Point, effect.gpuWeight(0., ViewIdx(0), 0).weightClass);
+}
+
 // A route the executor cannot run fails the plane rather than writing part of it.
 TEST(ChannelRouteCpuTest, RejectsWhatItCannotRun)
 {

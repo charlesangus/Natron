@@ -68,6 +68,7 @@ set(Tests_SOURCES
     GpuPlacement_Test.cpp
     GpuRegionFallback_Test.cpp
     GpuResidency_Test.cpp
+    GpuWeight_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingNaming_Test.cpp

@@ -193,7 +193,8 @@ try:
                 QApplication.processEvents()
                 if graph.isVisible():
                     return graph
-        return None
+        # showSelectedNodeSettingsPanel does not need the graph on screen, so any NodeGraph will do.
+        return graphs[0] if graphs else None
 
     def panel_of(node):
         label = node.getLabel()

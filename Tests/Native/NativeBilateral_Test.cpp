@@ -415,13 +415,17 @@ TEST_F(NativeBilateralTest, ScaleInvariance)
         ASSERT_NO_FATAL_FAILURE(renderPair(plate, node, &in, &out));
         ASSERT_NO_FATAL_FAILURE(renderPair(plate100, node100, &in100, &out100));
         ASSERT_EQ(out.window, out100.window);
+        // Guided mode fits a and b from mean(I*key) - mean(I)*mean(key) and mean(key^2) - mean(key)^2
+        // in float; those differences cancel most of the digits, so scaling the image by 100 moves
+        // the result by a few 1e-4 relative where the bilateral mode stays within 1e-4.
+        const double tolerance = (mode == eBilateralModeGuided) ? 5e-4 : 1e-4;
         bool changed = false;
         const RectI& w = out.window;
         for (int y = w.y1; y < w.y2; ++y) {
             for (int x = w.x1; x < w.x2; ++x) {
                 for (int c = 0; c < 3; ++c) {
                     const float ref = at(out100, x, y, c);
-                    ASSERT_NEAR(100. * at(out, x, y, c), ref, 1e-4 * std::fabs(ref)) << modeName(mode) << " at (" << x << "," << y << ") channel " << c;
+                    ASSERT_NEAR(100. * at(out, x, y, c), ref, tolerance * std::fabs(ref)) << modeName(mode) << " at (" << x << "," << y << ") channel " << c;
                     changed = changed || (at(out, x, y, c) != at(in, x, y, c));
                 }
             }

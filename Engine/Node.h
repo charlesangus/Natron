@@ -621,6 +621,12 @@ public:
     KnobChannelSelectPtr getUnPremultBySelector() const;
 
     /**
+     * @brief Sets an OpenFX plug-in's hidden "interactive" and "hidpi" style params from the
+     * global Interactive Updates setting and the screen's device pixel ratio.
+     **/
+    void refreshHostDrivenOverlayParams();
+
+    /**
      * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
      * is plane's own (the classic "unpremult by its own alpha"), or -1 when the divisor belongs
      * to another layer and so is not one of plane's channels. That channel is the divisor, not
@@ -1525,7 +1531,11 @@ private:
 
     void createUnPremultSelector(const KnobPagePtr& mainPage);
 
-    void createStageFooterSeparator(const KnobPagePtr& mainPage);
+    void adoptHostDrivenOverlayParams();
+
+    std::vector<KnobIPtr> moveClampKnobsToFooter(const KnobPagePtr& mainPage);
+
+    void createFooterSeparator(const KnobPagePtr& mainPage, const std::vector<KnobIPtr>& footerKnobs);
 
     void createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                              const std::vector<std::string>& inputLabels,

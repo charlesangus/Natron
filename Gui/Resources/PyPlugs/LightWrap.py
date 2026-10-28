@@ -1050,7 +1050,7 @@ def createInstance(app,group):
     # End of node "Input1"
 
     # Start of node "Keyer1"
-    lastNode = app.createNode("net.sf.openfx.KeyerPlugin", 1, group)
+    lastNode = app.createNode("net.sf.openfx.KeyerPlugin", 3, group)
     lastNode.setScriptName("Keyer1")
     lastNode.setLabel("Keyer1")
     lastNode.setPosition(752, 164)
@@ -1058,19 +1058,13 @@ def createInstance(app,group):
     lastNode.setColor(0, 1, 0)
     groupKeyer1 = lastNode
 
-    param = lastNode.getParam("softnessLower")
-    if param is not None:
-        param.setValue(-1, 0)
-        del param
-
-    param = lastNode.getParam("softnessUpper")
+    # Alpha rises from the luma tolerance to 1 and stays at 1 over every highlight.
+    param = lastNode.getParam("range")
     if param is not None:
         param.setValue(0, 0)
-        del param
-
-    param = lastNode.getParam("userTextArea")
-    if param is not None:
-        param.setValue("<Natron>(Luminance)</Natron>")
+        param.setValue(1, 1)
+        param.setValue(1000000, 2)
+        param.setValue(1000000, 3)
         del param
 
     del lastNode
@@ -1584,8 +1578,8 @@ def createInstance(app,group):
     groupHighlightMerge.connectInput(1, groupDot2)
     groupDot4.connectInput(0, groupHighlightMerge)
 
-    param = groupKeyer1.getParam("softnessLower")
-    param.setExpression("thisGroup.lumaTolerance.getValue() - 1", False, 0)
+    param = groupKeyer1.getParam("range")
+    param.setExpression("thisGroup.lumaTolerance.getValue()", False, 0)
     del param
     param = groupBGBlur.getParam("size")
     group.getParam("bgblur").setAsAlias(param)

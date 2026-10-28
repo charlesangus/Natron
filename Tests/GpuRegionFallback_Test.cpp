@@ -502,7 +502,7 @@ TEST_F(GpuRegionFallbackTest, GradeWithConnectedDisabledMaskMatchesCpu)
 }
 
 // An unconnected input of a region member stays an empty view in the whole-region path, while the strip path skips it.
-TEST_F(GpuRegionFallbackTest, KeyerWithEmptyInsideMaskMatchesCpu)
+TEST_F(GpuRegionFallbackTest, KeyerWithEmptyMaskMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -517,7 +517,7 @@ TEST_F(GpuRegionFallbackTest, KeyerWithEmptyInsideMaskMatchesCpu)
     expectRegionMatchesCpu(keyer, { grade, keyer });
 }
 
-TEST_F(GpuRegionFallbackTest, ChromaKeyerWithEmptyInsideMaskMatchesCpu)
+TEST_F(GpuRegionFallbackTest, ChromaKeyerWithoutMaskMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -532,8 +532,8 @@ TEST_F(GpuRegionFallbackTest, ChromaKeyerWithEmptyInsideMaskMatchesCpu)
     expectRegionMatchesCpu(keyer, { grade, keyer });
 }
 
-// The inside mask producer is connected but is asked for an empty window, so the region has no image to read for it.
-TEST_F(GpuRegionFallbackTest, KeyerWithInsideMaskOfEmptyRoIMatchesCpu)
+// The mask producer is connected but is asked for an empty window, so the region has no image to read for it.
+TEST_F(GpuRegionFallbackTest, KeyerWithMaskOfEmptyRoIMatchesCpu)
 {
     if (!gpuOrSkip()) {
         return;
@@ -543,7 +543,7 @@ TEST_F(GpuRegionFallbackTest, KeyerWithInsideMaskOfEmptyRoIMatchesCpu)
     NodePtr keyer = makeNode(PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER);
     ASSERT_TRUE(source && mask && keyer);
     connectNodes(source, keyer, kKeyerInputSource, true);
-    connectNodes(mask, keyer, kKeyerInputInsideMask, true);
+    connectNodes(mask, keyer, kKeyerInputMask, true);
 
     expectRegionMatchesCpu(keyer, { keyer });
 }

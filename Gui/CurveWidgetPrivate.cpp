@@ -293,6 +293,9 @@ CurveWidgetPrivate::createMenu()
     updateOnPenUp->setChecked( appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly() );
     optionsMenu->addAction(updateOnPenUp);
     QObject::connect( updateOnPenUp, SIGNAL(triggered()), _widget, SLOT(onUpdateOnPenUpActionTriggered()) );
+    QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, updateOnPenUp, [updateOnPenUp]() {
+        updateOnPenUp->setChecked(appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly());
+    });
 } // createMenu
 
 void

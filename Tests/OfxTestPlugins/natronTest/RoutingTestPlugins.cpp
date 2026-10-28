@@ -571,6 +571,8 @@ RGBGeneratorPluginFactory::createInstance(OfxImageEffectHandle handle,
 
 #define kParamUnPremultBy "unPremultBy"
 #define kParamUnPremultByChannel "unPremultByChannel"
+#define kParamClampBlack "clampBlack"
+#define kParamClampWhite "clampWhite"
 
 class PointMatrixPlugin
     : public ImageEffect {
@@ -582,6 +584,8 @@ public:
         , _maskClip(fetchClip(kNatronTestPointMatrixClipMask))
         , _rows { fetchRGBAParam(kNatronTestPointMatrixParamOutputRed), fetchRGBAParam(kNatronTestPointMatrixParamOutputGreen),
                   fetchRGBAParam(kNatronTestPointMatrixParamOutputBlue), fetchRGBAParam(kNatronTestPointMatrixParamOutputAlpha) }
+        , _clampBlack(fetchBooleanParam(kParamClampBlack))
+        , _clampWhite(fetchBooleanParam(kParamClampWhite))
         , _unPremultBy(fetchBooleanParam(kParamUnPremultBy))
         , _unPremultByChannel(fetchChoiceParam(kParamUnPremultByChannel))
         , _mix(fetchDoubleParam(kNatronTestPointMatrixParamMix))
@@ -605,6 +609,8 @@ private:
         for (int c = 0; c < 4; ++c) {
             process[c] = _process[c]->getValueAtTime(args.time);
         }
+        const bool clampBlack = _clampBlack->getValueAtTime(args.time);
+        const bool clampWhite = _clampWhite->getValueAtTime(args.time);
         const bool unPremult = _unPremultBy->getValueAtTime(args.time);
         const int unPremultChannel = std::clamp(_unPremultByChannel->getValueAtTime(args.time), 0, 3);
         const double mix = _mix->getValueAtTime(args.time);
@@ -626,6 +632,12 @@ private:
                 double out[4];
                 for (int r = 0; r < 4; ++r) {
                     out[r] = m[r][0] * s[0] + m[r][1] * s[1] + m[r][2] * s[2] + m[r][3] * s[3];
+                    if (clampBlack) {
+                        out[r] = std::max(out[r], 0.);
+                    }
+                    if (clampWhite) {
+                        out[r] = std::min(out[r], 1.);
+                    }
                 }
                 if (divide) {
                     for (int c = 0; c < 3; ++c) {
@@ -672,6 +684,8 @@ private:
     Clip* _maskClip;
     RGBAParam* _rows[4];
     BooleanParam* _process[4];
+    BooleanParam* _clampBlack;
+    BooleanParam* _clampWhite;
     BooleanParam* _unPremultBy;
     ChoiceParam* _unPremultByChannel;
     DoubleParam* _mix;
@@ -723,6 +737,20 @@ describePointMatrixInContext(ImageEffectDescriptor& desc,
         param->setHint("The weights of R, G, B and A summed into this output channel.");
         param->setDefault(r == 0 ? 1. : 0., r == 1 ? 1. : 0., r == 2 ? 1. : 0., r == 3 ? 1. : 0.);
         param->setAnimates(true);
+        page->addChild(*param);
+    }
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamClampBlack);
+        param->setLabel("Clamp Black");
+        param->setHint("Set every output value below 0 to 0.");
+        param->setDefault(false);
+        page->addChild(*param);
+    }
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamClampWhite);
+        param->setLabel("Clamp White");
+        param->setHint("Set every output value above 1 to 1.");
+        param->setDefault(false);
         page->addChild(*param);
     }
     {

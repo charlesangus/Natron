@@ -64,7 +64,7 @@ NODES = {
     "gamma": ("net.sf.openfx.GammaPlugin", {"value": (1.2, 1.2, 1.2, 1.0)}, False),
     "saturation": ("net.sf.openfx.SaturationPlugin", {"saturation": 1.3}, False),
     "colorlookup": ("net.sf.openfx.ColorLookupPlugin", {"clampBlack": True, "clampWhite": True}, False),
-    "keyer": ("net.sf.openfx.KeyerPlugin", {"mode": 1, "keyColor": (0.5, 0.5, 0.5, 1.0)}, False),
+    "keyer": ("net.sf.openfx.KeyerPlugin", {"keySource": 1, "keyColor": (0.5, 0.5, 0.5)}, False),
     "chromakeyer": ("net.sf.openfx.ChromaKeyerPlugin", {"keyColor": (0.1, 0.9, 0.1, 1.0)}, False),
     "erode": ("net.sf.cimg.CImgErode", {"size": (6, 6)}, False),
     "erode21": ("net.sf.cimg.CImgErode", {"size": (21, 21)}, False),

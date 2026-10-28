@@ -204,24 +204,6 @@ TransformOp::createKnobs(KnobHolder* holder,
     page->addKnob(interactOpenKnob);
     interactOpen = interactOpenKnob;
 
-    KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Interactive Update"));
-    interactiveKnob->setName(kTransformNodeParamInteractive);
-    interactiveKnob->setHintToolTip(EffectInstance::tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
-    interactiveKnob->setDefaultValue(true);
-    interactiveKnob->setEvaluateOnChange(false);
-    page->addKnob(interactiveKnob);
-    interactive = interactiveKnob;
-
-    // Kept for knob parity with the OpenFX plug-in; the host overlay sizes itself.
-    KnobBoolPtr hiDPIKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("HiDPI"));
-    hiDPIKnob->setName(kTransformNodeParamHiDPI);
-    hiDPIKnob->setHintToolTip(EffectInstance::tr("Should be checked when the display area is High-DPI (a.k.a Retina). Draws OpenGL overlays twice larger."));
-    hiDPIKnob->setDefaultValue(false);
-    hiDPIKnob->setAnimationEnabled(false);
-    hiDPIKnob->setEvaluateOnChange(false);
-    page->addKnob(hiDPIKnob);
-    hiDPI = hiDPIKnob;
-
     KnobBoolPtr invertKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Invert"));
     invertKnob->setName(kTransformNodeParamInvert);
     invertKnob->setHintToolTip(EffectInstance::tr("Invert the transform."));
@@ -505,7 +487,7 @@ TransformImageNode<MASKED>::initializeKnobs()
     NodePtr node = this->getNode();
     if (node) {
         const TransformOp& op = this->op();
-        node->addTransformInteract(op.translate.lock(), op.scale.lock(), op.uniform.lock(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock(), op.interactive.lock());
+        node->addTransformInteract(op.translate.lock(), op.scale.lock(), op.uniform.lock(), op.rotate.lock(), op.skewX.lock(), op.skewY.lock(), op.skewOrder.lock(), op.center.lock(), op.invert.lock(), KnobBoolPtr());
     }
 } // TransformImageNode::initializeKnobs
 

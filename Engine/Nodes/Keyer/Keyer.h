@@ -36,50 +36,101 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
 #define PLUGINID_NATRON_KEYER "net.sf.openfx.KeyerPlugin"
-#define PLUGIN_MAJOR_NATRON_KEYER 2
+#define PLUGIN_MAJOR_NATRON_KEYER 3
 
+#define kKeyerParamKeySource "keySource"
 #define kKeyerParamKeyColor "keyColor"
-#define kKeyerParamMode "mode"
 #define kKeyerParamLuminanceMath "luminanceMath"
-#define kKeyerParamSoftnessLower "softnessLower"
-#define kKeyerParamToleranceLower "toleranceLower"
-#define kKeyerParamCenter "center"
-#define kKeyerParamToleranceUpper "toleranceUpper"
-#define kKeyerParamSoftnessUpper "softnessUpper"
-#define kKeyerParamDespill "despill"
-#define kKeyerParamDespillAngle "despillAngle"
-#define kKeyerParamShow "show"
-#define kKeyerParamSourceAlpha "sourceAlphaHandling"
+#define kKeyerParamRange "range"
 
-// Input indices, in the OpenFX clip order that scripts connect by.
+// Input indices, in the order scripts connect by.
 #define kKeyerInputSource 0
-#define kKeyerInputInsideMask 1
-#define kKeyerInputOutsideMask 2
-#define kKeyerInputBg 3
+#define kKeyerInputMask 1
 
 NATRON_NAMESPACE_ENTER
 
+inline constexpr InputSpec kKeyerInputs[] = {
+    InputSpec { .label = "Source" },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+};
+
 /**
- * @brief Luminance, colour and screen keyer, and a despiller. A foreground key is computed from
- * the source RGB by the keyer mode (the luminance, the projection on the key colour, or that
- * projection minus the distance to the key colour's axis), the piecewise-linear function of
- * the softness, tolerance and centre knobs turns it into a background key, the inside and
- * outside masks are mixed into that key, and, in Screen and None modes, the colour is despilled
- * within a cone around the key colour. The result is output as the source, the premultiplied or
- * unpremultiplied foreground, or the composite over Bg; the output is always RGBA with the
- * foreground key as alpha. Knob names, defaults, maths and region of definition are the
- * openfx-misc KeyerPlugin's; it registers under that plug-in's ID one major above. Editing the
- * key colour or the mode resets the thresholds to span the key colour, as the plug-in does.
- *
- * Divergence: an RGB source has no alpha, which the OpenFX plug-in reads out of bounds. Here
- * "Normal" source alpha composites with an alpha of one there, and "Add to Inside Mask" adds
- * nothing.
- *
- * It is a Custom op with no mask or mix stage: the inside and outside masks feed the key itself,
- * and its render writes the channels it does not process from the Source.
+ * @brief A luminance or colour keyer that outputs an alpha only. The key value is the source's
+ * luminance (luminanceMath, by default the working space's luma weights) or its projection on the
+ * key colour, the dot product of RGB with keyColor over keyColor's component sum. The alpha is
+ * the trapezoid of that value over the four range values A <= B <= C <= D: 0 up to A, rising to 1
+ * at B, 1 up to C and falling to 0 at D. RGB passes through untouched and nothing is
+ * premultiplied; the host mask and mix blend the new alpha with the source's. The output is RGBA
+ * whatever the source.
  **/
+struct KeyerOp {
+    enum KeySourceEnum {
+        eKeySourceLuminance = 0,
+        eKeySourceColor
+    };
+
+    // The trapezoid is ordered and every weight is a float, as the GPU kernel takes them.
+    struct Params {
+        KeySourceEnum keySource = eKeySourceLuminance;
+        bool lumaMax = false;
+        float weights[3] = { 0.f, 0.f, 0.f };
+        float range[4] = { 0.f, 0.1f, 0.9f, 1.f };
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = PLUGINID_NATRON_KEYER,
+        .label = "Keyer",
+        .description = "Pull an alpha from the luminance of the source or from its projection on a key colour.\n"
+                       "\n"
+                       "The alpha is a trapezoid over the key value, set by the four range values A, B, C and D: "
+                       "0 up to A, rising linearly to 1 at B, 1 from B to C, falling linearly to 0 at D and 0 above D. "
+                       "Equal neighbours make a hard edge. Moving one value pushes its neighbours so that "
+                       "A <= B <= C <= D always holds.\n"
+                       "\n"
+                       "In Luminance mode the key value is the luminance of RGB; by default it uses the luma weights "
+                       "of the project's working space. In Color mode it is the dot product of RGB with the key colour "
+                       "divided by the sum of the key colour's components, so the key colour itself keys at its own "
+                       "squared norm over that sum, 1 for a pure primary.\n"
+                       "\n"
+                       "RGB passes through untouched and is not premultiplied. Values above 1 and below 0 are keyed "
+                       "as they are, with no clamp.",
+        .grouping = PLUGIN_GROUP_KEYER,
+        .majorVersion = PLUGIN_MAJOR_NATRON_KEYER,
+        .minorVersion = 0,
+        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.KeyerPlugin.png",
+        .inputs = kKeyerInputs,
+    };
+
+    static constexpr ImagePipelineSpec kPipeline = {
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .layers = LayerPolicy::color(false, false, false, true),
+        .op = OpKind::Point,
+    };
+
+    void createKnobs(KnobHolder* holder,
+                     const KnobPagePtr& page);
+    Params bake(const KnobReader& reader) const;
+    bool isIdentity(const Params& params) const;
+    void row(const Params& params,
+             const RowIO& io) const;
+    GpuOpRef gpu(const Params& params) const;
+
+    // The key value of colour rgb, in float, one rounding per statement as the kernel computes it.
+    static float keyValue(const Params& params,
+                          const float* rgb);
+
+    KnobHolder* holder = nullptr;
+    KnobStringWPtr subLabel;
+    KnobChoiceWPtr keySource;
+    KnobColorWPtr keyColor;
+    KnobChoiceWPtr luminanceMath;
+    KnobDoubleWPtr range;
+};
+
+static_assert(PointOp<KeyerOp>);
+
 class Keyer
-    : public StagedImageEffect {
+    : public ImageNode<KeyerOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -90,46 +141,21 @@ public:
 
     virtual ~Keyer();
 
-    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
-    virtual StatusEnum getRegionOfDefinition(U64 hash,
-                                             double time,
-                                             const RenderScale& scale,
-                                             ViewIdx view,
-                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-private:
-    // Never an identity: the output is always RGBA with the key as alpha.
-    virtual bool isOpIdentity(double time,
-                              const RenderScale& scale,
-                              const RectI& roi,
-                              ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual StatusEnum renderOp(const RenderActionArgs& args,
-                                const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /**
+     * @brief The Params the op renders with at (time, view).
+     **/
+    KeyerOp::Params bakeKeyer(double time,
+                              ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Every mode and output of renderOp() for a float RGBA plane whose Source and Bg, when
-     * resolved, are RGB or RGBA; the masks are read in their own layers.
+     * @brief The op's CPU kernel over one row.
      **/
-    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    void keyerRow(const KeyerOp::Params& params,
+                  const RowIO& io) const;
 
-    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual bool getOpGpuInputLayer(int inputNb,
-                                    const ImageLayerDesc& plane,
-                                    double time,
-                                    ViewIdx view,
-                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
+private:
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
@@ -138,40 +164,21 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    // The output is RGBA whatever the source: the key is its alpha.
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The knob values renderOp() and renderOpGpu() key with; defined in Keyer.cpp.
-    struct Settings;
+    // Shows the knobs the key source uses and writes it into the sublabel.
+    void refreshKeySourceDependents();
 
-    void readSettings(double time, ViewIdx view, Settings* settings) const;
+    // Restores A <= B <= C <= D at time after one range value was set, by pushing its neighbours.
+    void orderRange(double time,
+                    ViewSpec view);
 
-    // The number of components renderOp() reads input inputNb in, or 0 when it reads no image.
-    int getResolvedInputNComps(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
-
-    // Whether renderOp() reads input inputNb as a mask: it is connected and its selector is on.
-    bool isKeyMaskUsed(int inputNb) const WARN_UNUSED_RETURN;
-
-    // Shows the knobs the current mode uses, and writes the mode into the sublabel.
-    void refreshModeDependents(double time, ViewIdx view);
-
-    // Sets the five threshold knobs so that they span the key colour for the mode.
-    void setThresholdsFromKeyColor(double time, ViewIdx view);
-
-    KnobStringWPtr _subLabel;
-    KnobColorWPtr _keyColor;
-    KnobChoiceWPtr _mode;
-    KnobChoiceWPtr _luminanceMath;
-    KnobDoubleWPtr _softnessLower;
-    KnobDoubleWPtr _toleranceLower;
-    KnobDoubleWPtr _center;
-    KnobDoubleWPtr _toleranceUpper;
-    KnobDoubleWPtr _softnessUpper;
-    KnobDoubleWPtr _despill;
-    KnobDoubleWPtr _despillAngle;
-    KnobChoiceWPtr _show;
-    KnobChoiceWPtr _sourceAlpha;
+    // The range as last ordered, to tell which value an edit moved.
+    double _lastRange[4];
+    bool _orderingRange;
 };
 
 NATRON_NAMESPACE_EXIT

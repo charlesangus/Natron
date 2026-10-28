@@ -26,18 +26,16 @@
 #include "ChromaKeyer.h"
 
 #include <algorithm>
-#include <atomic>
-#include <bitset>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <list>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -45,32 +43,33 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/ColorMath.h"
-#include "Engine/PoolParallelFor.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
 
 #ifdef NATRON_HAVE_GPU
 #include <span>
 
 #include "Engine/Gpu/GpuRecord.h"
-#include "Engine/Gpu/GpuWrap.h"
 #endif
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-const int kAbortCheckRows = 16;
-
 constexpr InputSpec kChromaKeyerInputs[] = {
     InputSpec { .label = "Source" },
-    InputSpec { .label = "InM", .role = InputRole::Mask, .optional = true },
-    InputSpec { .label = "OutM", .role = InputRole::Mask, .optional = true },
     InputSpec { .label = "Bg", .role = InputRole::Aux, .optional = true },
+    InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
 };
 
 constexpr NodeSpec kChromaKeyerNodeSpec = {
     .id = PLUGINID_NATRON_CHROMAKEYER,
     .label = "ChromaKeyer",
-    .description = "Simple chroma Keyer.\n"
+    .description = "Chroma keyer working in the scene-linear working space, with no clamping.\n"
+                   "The key colour and the Source are split into luma and chroma with the working space's luma weights; "
+                   "the chroma inside the acceptance angle around the key colour gives the background key.\n"
                    "Algorithm description:\n"
                    "Keith Jack, \"Video Demystified\", Independent Pub Group (Computer), 1996, pp. 214-222, http://www.ee-techs.com/circuit/video-demy5.pdf\n"
                    "A simplified version is described in:\n"
@@ -83,7 +82,7 @@ constexpr NodeSpec kChromaKeyerNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kChromaKeyerPipeline = {
-    .stages = { Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
     .layers = LayerPolicy::color(true, true, true, true),
     .op = OpKind::Custom,
 };
@@ -91,12 +90,6 @@ constexpr ImagePipelineSpec kChromaKeyerPipeline = {
 #ifndef M_PI
 #define M_PI 3.14159265358979323846264338327950288
 #endif
-
-enum ColorspaceEnum {
-    eColorspaceCcir601 = 0,
-    eColorspaceRec709,
-    eColorspaceRec2020
-};
 
 enum ShowEnum {
     eShowIntermediate = 0,
@@ -110,63 +103,31 @@ enum SourceAlphaEnum {
     eSourceAlphaInsideMask,
     eSourceAlphaNormal
 };
-
-typedef void (*ToYPbPrFunc)(float r, float g, float b, float* y, float* pb, float* pr);
-typedef void (*ToRGBFunc)(float y, float pb, float pr, float* r, float* g, float* b);
-
-// The Y'PbPr conversions of openfx-misc's ofxsLut.cpp, in single precision as there.
-#define CHROMAKEYER_YPBPR(NAME, KR, KB)                                              \
-    void rgbToYPbPr##NAME(float r, float g, float b, float* y, float* pb, float* pr) \
-    {                                                                                \
-        const float Kr = KR;                                                         \
-        const float Kb = KB;                                                         \
-        *y = Kr * r + (1 - Kr - Kb) * g + Kb * b;                                    \
-        *pb = (b - *y) / (2 * (1 - Kb));                                             \
-        *pr = (r - *y) / (2 * (1 - Kr));                                             \
-    }                                                                                \
-    void yPbPrToRGB##NAME(float y, float pb, float pr, float* r, float* g, float* b) \
-    {                                                                                \
-        const float Kr = KR;                                                         \
-        const float Kb = KB;                                                         \
-        *b = pb * (2 * (1 - Kb)) + y;                                                \
-        *r = pr * (2 * (1 - Kr)) + y;                                                \
-        *g = (y - Kr * *r - Kb * *b) / (1 - Kr - Kb);                                \
-    }
-
-const float kKr601 = 0.299f;
-const float kKb601 = 0.114f;
-const float kKr709 = 0.2126390058f;
-const float kKb709 = 0.07219231534f;
-const float kKr2020 = 0.2627f;
-const float kKb2020 = 0.0593f;
-
-CHROMAKEYER_YPBPR(601, kKr601, kKb601)
-CHROMAKEYER_YPBPR(709, kKr709, kKb709)
-CHROMAKEYER_YPBPR(2020, kKr2020, kKb2020)
-
-#undef CHROMAKEYER_YPBPR
 } // anonymous namespace
 
 struct ChromaKeyerSettings {
     float keyColor[3];
-    ColorspaceEnum colorspace;
-    bool linear;
+    // The working space's luma weights of red and blue; green's is what remains.
+    float kr;
+    float kb;
     double acceptanceAngle;
     double suppressionAngle;
     double keyLift;
     double keyGain;
     ShowEnum show;
     SourceAlphaEnum sourceAlpha;
+    bool sourceHasAlpha;
 
     ChromaKeyerSettings()
-        : colorspace(eColorspaceRec709)
-        , linear(false)
+        : kr(0.f)
+        , kb(0.f)
         , acceptanceAngle(120.)
         , suppressionAngle(40.)
         , keyLift(0.)
         , keyGain(1.)
         , show(eShowComposite)
         , sourceAlpha(eSourceAlphaIgnore)
+        , sourceHasAlpha(false)
     {
         keyColor[0] = keyColor[1] = keyColor[2] = 0.f;
     }
@@ -203,16 +164,13 @@ struct ChromaKeyGpuParams {
     uint32_t gainMode;
     uint32_t show;
     uint32_t sourceAlpha;
-    uint32_t channelMask;
     ChromaKeyGpuView bg;
-    ChromaKeyGpuView outMask;
-    uint32_t outMaskChannel;
 };
-static_assert(sizeof(ChromaKeyGpuParams) == 33 * 4, "the kernel reads 33 words");
+static_assert(sizeof(ChromaKeyGpuParams) == 24 * 4, "the kernel reads 24 words");
 
-const uint32_t kChromaKeyGpuLinear = 1;
-const uint32_t kChromaKeyGpuAcceptAll = 2;
-const uint32_t kChromaKeyGpuSuppressAll = 4;
+const uint32_t kChromaKeyGpuAcceptAll = 1;
+const uint32_t kChromaKeyGpuSuppressAll = 2;
+const uint32_t kChromaKeyGpuSourceHasAlpha = 4;
 
 const uint32_t kChromaKeyGpuGainRamp = 0;
 const uint32_t kChromaKeyGpuGainNonPositive = 1;
@@ -222,10 +180,8 @@ const uint32_t kChromaKeyGpuLiftFull = 2;
 class ChromaKeyKernel {
 public:
     explicit ChromaKeyKernel(const ChromaKeyerSettings& settings)
-        : _toYPbPr(NULL)
-        , _toRGB(NULL)
-        , _colorspace(settings.colorspace)
-        , _linear(settings.linear)
+        : _kr(settings.kr)
+        , _kb(settings.kb)
         , _acceptanceAngle(settings.acceptanceAngle)
         , _tanAcceptanceAngle2(0.)
         , _suppressionAngle(settings.suppressionAngle)
@@ -234,34 +190,14 @@ public:
         , _keyGain(settings.keyGain)
         , _show(settings.show)
         , _sourceAlpha(settings.sourceAlpha)
+        , _sourceHasAlpha(settings.sourceHasAlpha)
         , _sinKey(0.)
         , _cosKey(0.)
         , _xKey(0.)
         , _ys(0.)
     {
-        switch (settings.colorspace) {
-        case eColorspaceCcir601:
-            _toYPbPr = rgbToYPbPr601;
-            _toRGB = yPbPrToRGB601;
-            break;
-        case eColorspaceRec709:
-            _toYPbPr = rgbToYPbPr709;
-            _toRGB = yPbPrToRGB709;
-            break;
-        case eColorspaceRec2020:
-            _toYPbPr = rgbToYPbPr2020;
-            _toRGB = yPbPrToRGB2020;
-            break;
-        }
-
         float y, cb, cr;
-        const float keyR = ColorMath::boundForKeying(settings.keyColor[0]);
-        const float keyG = ColorMath::boundForKeying(settings.keyColor[1]);
-        const float keyB = ColorMath::boundForKeying(settings.keyColor[2]);
-        const float r = _linear ? keyR : ColorMath::toRec709(keyR);
-        const float g = _linear ? keyG : ColorMath::toRec709(keyG);
-        const float b = _linear ? keyB : ColorMath::toRec709(keyB);
-        _toYPbPr(r, g, b, &y, &cb, &cr);
+        toYPbPr(ColorMath::boundForKeying(settings.keyColor[0]), ColorMath::boundForKeying(settings.keyColor[1]), ColorMath::boundForKeying(settings.keyColor[2]), &y, &cb, &cr);
         if ((cb == 0.) && (cr == 0.)) {
             // A key without chrominance has no direction: default to a blue screen.
             cb = 1.;
@@ -283,25 +219,18 @@ public:
         }
     }
 
-    // fg is the source pixel (r, g, b, a) or null outside the source; fgHasAlpha says whether
-    // fg[3] is a real alpha. bg is always readable, zero where Bg has no pixel. out receives the
-    // four output channels.
+    // fg is the source pixel (r, g, b, a) or null outside the source. bg is always readable,
+    // zero where Bg has no pixel. out receives the four output channels.
     void process(const float* fg,
-                 bool fgHasAlpha,
                  const float* bg,
-                 float inMaskValue,
-                 float outMaskValue,
                  float* out) const
     {
-        float inMask = inMaskValue;
+        const bool fgHasAlpha = _sourceHasAlpha;
+        float inMask = 0.f;
         if ((_sourceAlpha == eSourceAlphaInsideMask) && fg && fgHasAlpha) {
-            inMask = (std::max)(inMask, fg[3]);
+            inMask = (std::max)(0.f, (std::min)(fg[3], 1.f));
         }
-        float outMask = outMaskValue;
         float Kbg = 0.f;
-
-        inMask = (std::max)(0.f, (std::min)(inMask, 1.f));
-        outMask = (std::max)(0.f, (std::min)(outMask, 1.f));
 
         float fgr = fg ? ColorMath::boundForKeying(fg[0]) : 0.f;
         float fgg = fg ? ColorMath::boundForKeying(fg[1]) : 0.f;
@@ -313,19 +242,11 @@ public:
         if (!fg) {
             Kbg = 1.f;
             fgr = fgg = fgb = 0.;
-        } else if (outMask >= 1.) {
-            Kbg = 1.f;
-            fgr = fgg = fgb = 0.;
         } else {
-            if (!_linear) {
-                fgr = ColorMath::toRec709(fgr);
-                fgg = ColorMath::toRec709(fgg);
-                fgb = ColorMath::toRec709(fgb);
-            }
             float fgy, fgcb, fgcr;
-            _toYPbPr(fgr, fgg, fgb, &fgy, &fgcb, &fgcr);
+            toYPbPr(fgr, fgg, fgb, &fgy, &fgcb, &fgcr);
 
-            // Rotate the (Cb, Cr) plane, normalised to [-1, 1], so the key colour is on the X axis.
+            // Rotate the (Cb, Cr) plane, scaled by two, so the key colour is on the X axis.
             double fgcbp = fgcb * 2;
             double fgcrp = fgcr * 2;
             double fgx = _cosKey * fgcbp + _sinKey * fgcrp;
@@ -339,13 +260,9 @@ public:
             }
             double fgx_scaled = fgx;
 
-            // The outside mask has priority over the inside mask, so the inside one is applied first.
             double Kfg_new = Kfg;
             if ((inMask > 0.) && (Kfg > 1. - inMask)) {
                 Kfg_new = 1. - inMask;
-            }
-            if ((outMask > 0.) && (Kfg < outMask)) {
-                Kfg_new = outMask;
             }
             if (Kfg != 0.) {
                 fgx_scaled = Kfg_new + std::abs(fgz) / _tanAcceptanceAngle2;
@@ -354,32 +271,18 @@ public:
 
             if (_show != eShowIntermediate) {
                 // X and Z are built from twice the chrominance, so removing Kfg from X removes
-                // Kfg / 2 from (Cb, Cr).
+                // Kfg / 2 from (Cb, Cr). Nothing is clamped: scene-linear values keep their range.
                 if ((fgx_scaled > 0) && ((_suppressionAngle <= 0.) || (_suppressionAngle >= 180.) || (fgx_scaled - std::abs(fgz) / _tanSuppressionAngle2 > 0.))) {
                     fgcb = 0;
                     fgcr = 0;
                 } else {
                     fgcb = static_cast<float>(fgcb - Kfg * _cosKey / 2);
                     fgcr = static_cast<float>(fgcr - Kfg * _sinKey / 2);
-                    fgcb = (std::max)(-0.5f, (std::min)(fgcb, 0.5f));
-                    fgcr = (std::max)(-0.5f, (std::min)(fgcr, 0.5f));
                 }
 
                 // _ys is such that the luminance of the key colour goes to zero.
                 fgy = static_cast<float>(fgy - _ys * Kfg);
-                if (fgy < 0) {
-                    fgy = fgr = fgg = fgb = 0;
-                } else {
-                    _toRGB(fgy, fgcb, fgcr, &fgr, &fgg, &fgb);
-                    fgr = (std::max)(0.f, (std::min)(fgr, 1.f));
-                    fgg = (std::max)(0.f, (std::min)(fgg, 1.f));
-                    fgb = (std::max)(0.f, (std::min)(fgb, 1.f));
-                    if (!_linear) {
-                        fgr = ColorMath::fromRec709(fgr);
-                        fgg = ColorMath::fromRec709(fgg);
-                        fgb = ColorMath::fromRec709(fgb);
-                    }
-                }
+                toRGB(fgy, fgcb, fgcr, &fgr, &fgg, &fgb);
             }
 
             // The gain scales the key colour's distance to the full key, and the lift is the
@@ -389,12 +292,9 @@ public:
             } else if (_keyLift >= 1.) {
                 Kbg = (Kfg >= _keyGain * _xKey) ? 1.f : 0.f;
             } else {
-                Kbg = (float)((Kfg / (_keyGain * _xKey) - _keyLift) / (1. - _keyLift));
-            }
-            if (Kbg > 1.) {
-                Kbg = 1.f;
-            } else if (Kbg < 0.) {
-                Kbg = 0.f;
+                // Unclamped, but kept finite: a near-zero key chroma would overflow it, and Bg
+                // times an infinite key is NaN where Bg is zero.
+                Kbg = ColorMath::boundForKeying((float)((Kfg / (_keyGain * _xKey) - _keyLift) / (1. - _keyLift)));
             }
         }
 
@@ -431,24 +331,10 @@ public:
 
 #ifdef NATRON_HAVE_GPU
     // The per-frame constants of process() for the GPU kernel, which keys in float: the branches
-    // on the angles, the gain and the lift become flags and modes, and the colourspace's
-    // coefficients and their sums are rounded to float as the conversions above round them.
+    // on the angles, the gain and the lift become flags and modes, and the luma weights and their
+    // sums are rounded to float as toYPbPr() and toRGB() round them.
     void getGpuParams(ChromaKeyGpuParams* p) const
     {
-        float kr = kKr709;
-        float kb = kKb709;
-        switch (_colorspace) {
-        case eColorspaceCcir601:
-            kr = kKr601;
-            kb = kKb601;
-            break;
-        case eColorspaceRec709:
-            break;
-        case eColorspaceRec2020:
-            kr = kKr2020;
-            kb = kKb2020;
-            break;
-        }
         p->cosKey = (float)_cosKey;
         p->sinKey = (float)_sinKey;
         p->ys = (float)_ys;
@@ -457,12 +343,12 @@ public:
         p->keyLift = (float)_keyLift;
         p->oneMinusLift = (float)(1. - _keyLift);
         p->gainXKey = (float)(_keyGain * _xKey);
-        p->kr = kr;
-        p->kb = kb;
-        p->kg = 1 - kr - kb;
-        p->twoOneMinusKb = 2 * (1 - kb);
-        p->twoOneMinusKr = 2 * (1 - kr);
-        p->flags = (_linear ? kChromaKeyGpuLinear : 0u) | ((_acceptanceAngle >= 180.) ? kChromaKeyGpuAcceptAll : 0u) | (((_suppressionAngle <= 0.) || (_suppressionAngle >= 180.)) ? kChromaKeyGpuSuppressAll : 0u);
+        p->kr = _kr;
+        p->kb = _kb;
+        p->kg = 1 - _kr - _kb;
+        p->twoOneMinusKb = 2 * (1 - _kb);
+        p->twoOneMinusKr = 2 * (1 - _kr);
+        p->flags = ((_acceptanceAngle >= 180.) ? kChromaKeyGpuAcceptAll : 0u) | (((_suppressionAngle <= 0.) || (_suppressionAngle >= 180.)) ? kChromaKeyGpuSuppressAll : 0u) | (_sourceHasAlpha ? kChromaKeyGpuSourceHasAlpha : 0u);
         p->gainMode = (_keyGain <= 0.) ? kChromaKeyGpuGainNonPositive : ((_keyLift >= 1.) ? kChromaKeyGpuLiftFull : kChromaKeyGpuGainRamp);
         p->show = (uint32_t)_show;
         p->sourceAlpha = (uint32_t)_sourceAlpha;
@@ -470,10 +356,33 @@ public:
 #endif // NATRON_HAVE_GPU
 
 private:
-    ToYPbPrFunc _toYPbPr;
-    ToRGBFunc _toRGB;
-    ColorspaceEnum _colorspace;
-    bool _linear;
+    // Y'PbPr with the working space's weights, in single precision.
+    void toYPbPr(float r,
+                 float g,
+                 float b,
+                 float* y,
+                 float* pb,
+                 float* pr) const
+    {
+        *y = _kr * r + (1 - _kr - _kb) * g + _kb * b;
+        *pb = (b - *y) / (2 * (1 - _kb));
+        *pr = (r - *y) / (2 * (1 - _kr));
+    }
+
+    void toRGB(float y,
+               float pb,
+               float pr,
+               float* r,
+               float* g,
+               float* b) const
+    {
+        *b = pb * (2 * (1 - _kb)) + y;
+        *r = pr * (2 * (1 - _kr)) + y;
+        *g = (y - _kr * *r - _kb * *b) / (1 - _kr - _kb);
+    }
+
+    float _kr;
+    float _kb;
     double _acceptanceAngle;
     double _tanAcceptanceAngle2;
     double _suppressionAngle;
@@ -482,6 +391,7 @@ private:
     double _keyGain;
     ShowEnum _show;
     SourceAlphaEnum _sourceAlpha;
+    bool _sourceHasAlpha;
     double _sinKey;
     double _cosKey;
     double _xKey;
@@ -556,92 +466,54 @@ readColorRow(const LockedImage* locked,
     }
 }
 
-// One value per pixel of `channel` of row y, zero wherever the image has no pixel.
-void
-readChannelRow(const LockedImage* locked,
-               int channel,
-               int x0,
-               int y,
-               int width,
-               float* row)
-{
-    std::fill(row, row + width, 0.f);
-    if (!locked || !locked->image) {
-        return;
-    }
-    const RectI& bounds = locked->bounds;
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int start = std::max(x0, bounds.x1);
-    const int end = std::min(x0 + width, bounds.x2);
-    if (start >= end) {
-        return;
-    }
-    const int nComps = (int)locked->image->getComponentsCount();
-    const float* pix = (const float*)locked->access->pixelAt(start, y);
-    for (int x = start; x < end; ++x, pix += nComps) {
-        row[x - x0] = pix[channel];
-    }
-}
-
 bool
 isFloatImage(const ImagePtr& image)
 {
     return !image || (image->getBitDepth() == eImageBitDepthFloat);
 }
 
-// The bits processed in a dstNComps-channel image holding `plane`. A one-channel plane rendered
-// into a wider image sits where EffectInstance's copy back reads it: alpha for a colour plane,
-// channel 0 otherwise.
-std::bitset<4>
-processedBitsForImage(const ImageLayerDesc& plane,
-                      int dstNComps,
-                      const std::bitset<4>& planeBits)
+#ifdef NATRON_HAVE_GPU
+// The float index of pixel (x, y) of v, false when the view does not fit the kernel's 32-bit
+// indices.
+bool
+gpuFloatIndex(const GpuImageView& v,
+              int x,
+              int y,
+              uint32_t* index)
 {
-    if ((plane.getNumComponents() != 1) || (dstNComps == 1)) {
-        return planeBits;
-    }
-    std::bitset<4> bits;
-    bits[plane.isColorLayer() ? 3 : 0] = planeBits[3];
+    const uint64_t base = v.byteOffset / sizeof(float);
+    const uint64_t rows = (uint64_t)std::max(0, v.bounds.height());
 
-    return bits;
+    if (base + rows * (uint64_t)v.rowStrideFloats > UINT32_MAX) {
+        return false;
+    }
+    *index = (uint32_t)(base + (uint64_t)(y - v.bounds.y1) * v.rowStrideFloats + (uint64_t)(x - v.bounds.x1) * v.nComps);
+
+    return true;
 }
 
-struct KeyJob {
-    ImagePtr dst;
-    ImagePtr src;
-    ImagePtr bg;
-    std::bitset<4> channels;
-    int srcIndex;
-    int bgIndex;
-    std::shared_ptr<Image::WriteAccess> dstAccess;
-
-    KeyJob()
-        : dst()
-        , src()
-        , bg()
-        , channels()
-        , srcIndex(-1)
-        , bgIndex(-1)
-    {
+// A view without a buffer packs as empty bounds, which the kernel reads as zero.
+bool
+packGpuView(const GpuImageView& v,
+            ChromaKeyGpuView* out)
+{
+    *out = ChromaKeyGpuView();
+    if (!v.buffer || v.bounds.isNull()) {
+        return true;
     }
-};
-
-struct KeyBand {
-    std::size_t job;
-    int y1;
-    int y2;
-
-    KeyBand(std::size_t jobIndex,
-            int firstRow,
-            int endRow)
-        : job(jobIndex)
-        , y1(firstRow)
-        , y2(endRow)
-    {
+    if (!gpuFloatIndex(v, v.bounds.x1, v.bounds.y1, &out->offset)) {
+        return false;
     }
-};
+    out->stride = (uint32_t)v.rowStrideFloats;
+    out->x1 = v.bounds.x1;
+    out->y1 = v.bounds.y1;
+    out->x2 = v.bounds.x2;
+    out->y2 = v.bounds.y2;
+    out->comps = (uint32_t)v.nComps;
+
+    return true;
+}
+#endif // NATRON_HAVE_GPU
 
 KnobColorPtr
 createKeyColorKnob(KnobHolder* holder,
@@ -744,8 +616,6 @@ readDouble(const KnobDoubleWPtr& weak,
 ChromaKeyer::ChromaKeyer(NodePtr node)
     : StagedImageEffect(node)
     , _keyColor()
-    , _colorspace()
-    , _linear()
     , _acceptanceAngle()
     , _suppressionAngle()
     , _keyLift()
@@ -777,14 +647,10 @@ ChromaKeyer::getInputHint(int inputNb) const
     switch (inputNb) {
     case kChromaKeyerInputSource:
         return tr("The foreground image to key.").toStdString();
-    case kChromaKeyerInputInsideMask:
-        return tr("The Inside Mask, or holdout matte, or core matte, used to confirm areas that are definitely foreground.").toStdString();
-    case kChromaKeyerInputOutsideMask:
-        return tr("The Outside Mask, or garbage matte, used to remove unwanted objects (lighting rigs, and so on) from the foreground. "
-                  "The Outside Mask has priority over the Inside Mask, so that areas where both are one are considered to be outside.")
-            .toStdString();
     case kChromaKeyerInputBg:
         return tr("The background image to replace the blue/green screen in the foreground.").toStdString();
+    case kChromaKeyerInputMask:
+        return tr("Limits the key: outside the mask the output is the Source.").toStdString();
     }
 
     return EffectInstance::getInputHint(inputNb);
@@ -810,20 +676,6 @@ ChromaKeyer::initializeKnobs()
 
     _keyColor = createKeyColorKnob(this, page, tr("Key Color").toStdString(), tr("Foreground key color; foreground areas containing the key color are replaced with the background image.").toStdString());
 
-    std::vector<ChoiceOption> colorspaces;
-    colorspaces.push_back(ChoiceOption("ccir601", "CCIR 601", tr("Use CCIR 601 (SD footage).").toStdString()));
-    colorspaces.push_back(ChoiceOption("rec709", "Rec. 709", tr("Use Rec. 709 (HD footage).").toStdString()));
-    colorspaces.push_back(ChoiceOption("rec2020", "Rec. 2020", tr("Use Rec. 2020 (UltraHD/4K footage).").toStdString()));
-    _colorspace = makeChoiceKnob(this, page, kChromaKeyerParamColorspace, tr("YCbCr Colorspace").toStdString(), tr("Formula used to compute YCbCr from RGB values.").toStdString(), colorspaces, (int)eColorspaceRec709, false);
-
-    KnobBoolPtr linear = createKnob<KnobBool>(tr("Linear Processing"));
-    linear->setName(kChromaKeyerParamLinear);
-    linear->setHintToolTip(tr("Do not delinearize RGB values to compute the key value."));
-    linear->setDefaultValue(false);
-    linear->setAnimationEnabled(false);
-    page->addKnob(linear);
-    _linear = linear;
-
     KnobDoublePtr acceptance = makeDoubleKnob(this, page, kChromaKeyerParamAcceptanceAngle, tr("Acceptance Angle").toStdString(), tr("Foreground colors are only suppressed inside the acceptance angle (alpha).").toStdString(), 120., 180., 180., false);
     _acceptanceAngle = acceptance;
 
@@ -843,13 +695,15 @@ ChromaKeyer::initializeKnobs()
     shows.push_back(ChoiceOption("premultiplied", "Premultiplied", tr("Color is the Source color after key color suppression, multiplied by alpha. Alpha is the foreground key.").toStdString()));
     shows.push_back(ChoiceOption("unpremultiplied", "Unpremultiplied", tr("Color is the Source color after key color suppression. Alpha is the foreground key.").toStdString()));
     shows.push_back(ChoiceOption("composite", "Composite", tr("Color is the composite of Source and Bg. Alpha is the foreground key.").toStdString()));
-    _show = makeChoiceKnob(this, page, kChromaKeyerParamShow, tr("Output Mode").toStdString(), tr("What image to output.").toStdString(), shows, (int)eShowComposite, false);
+    _show = makeChoiceKnob(this, page, kChromaKeyerParamShow, tr("Show").toStdString(), tr("What image to output.").toStdString(), shows, (int)eShowComposite, false);
 
     std::vector<ChoiceOption> alphas;
     alphas.push_back(ChoiceOption("ignore", "Ignore", tr("Ignore the source alpha.").toStdString()));
-    alphas.push_back(ChoiceOption("insidemask", "Add to Inside Mask", tr("Source alpha is added to the inside mask. Use for multi-pass keying.").toStdString()));
+    alphas.push_back(ChoiceOption("insidemask", "Inside Mask", tr("Source alpha marks areas that are definitely foreground: the key is kept below one minus it. Use for multi-pass keying.").toStdString()));
     alphas.push_back(ChoiceOption("normal", "Normal", tr("Foreground key is multiplied by source alpha when compositing.").toStdString()));
-    _sourceAlpha = makeChoiceKnob(this, page, kChromaKeyerParamSourceAlpha, tr("Source Alpha").toStdString(), tr("How the alpha embedded in the Source input should be used").toStdString(), alphas, (int)eSourceAlphaIgnore, true);
+    _sourceAlpha = makeChoiceKnob(this, page, kChromaKeyerParamSourceAlpha, tr("Source Alpha Handling").toStdString(), tr("How the alpha embedded in the Source input should be used. An RGB Source has none.").toStdString(), alphas, (int)eSourceAlphaIgnore, true);
+
+    addStageKnobs(page);
 }
 
 StatusEnum
@@ -870,8 +724,7 @@ ChromaKeyer::getRegionOfDefinition(U64 /*hash*/,
                                    ViewIdx view,
                                    RectD* rod)
 {
-    // The OpenFX default for its general context is the union of the non-optional clips, which
-    // is the source alone.
+    // The union of the non-optional inputs, which is the source alone.
     EffectInstancePtr input = getInput(kChromaKeyerInputSource);
 
     if (!input) {
@@ -893,234 +746,6 @@ ChromaKeyer::isOpIdentity(double /*time*/,
 }
 
 bool
-ChromaKeyer::isKeyMaskUsed(int inputNb) const
-{
-    return getInput(inputNb) && isMaskEnabled(inputNb);
-}
-
-void
-ChromaKeyer::readSettings(double time,
-                          ViewIdx view,
-                          ChromaKeyerSettings* settings) const
-{
-    KnobColorPtr keyColor = _keyColor.lock();
-    if (keyColor) {
-        for (int i = 0; i < 3; ++i) {
-            settings->keyColor[i] = (float)keyColor->getValueAtTime(time, i, view);
-        }
-    }
-    settings->colorspace = (ColorspaceEnum)readChoice(_colorspace, time, view, (int)eColorspaceRec709, (int)eColorspaceRec2020);
-    KnobBoolPtr linear = _linear.lock();
-    settings->linear = linear ? linear->getValueAtTime(time, 0, view) : false;
-    settings->acceptanceAngle = readDouble(_acceptanceAngle, time, view, 120.);
-    settings->suppressionAngle = readDouble(_suppressionAngle, time, view, 40.);
-    settings->keyLift = readDouble(_keyLift, time, view, 0.);
-    settings->keyGain = readDouble(_keyGain, time, view, 1.);
-    settings->show = (ShowEnum)readChoice(_show, time, view, (int)eShowComposite, (int)eShowComposite);
-    settings->sourceAlpha = (SourceAlphaEnum)readChoice(_sourceAlpha, time, view, (int)eSourceAlphaIgnore, (int)eSourceAlphaNormal);
-}
-
-StatusEnum
-ChromaKeyer::renderOp(const RenderActionArgs& args,
-                      const StagePlan& /*plan*/)
-{
-    ChromaKeyerSettings settings;
-    readSettings(args.time, args.view, &settings);
-    const ChromaKeyKernel kernel(settings);
-
-    // Every image is fetched before any is locked: fetching renders upstream, which may write into a
-    // cached image this render would otherwise already hold a read lock on.
-    const int maskInputs[2] = { kChromaKeyerInputInsideMask, kChromaKeyerInputOutsideMask };
-    ImagePtr masks[2];
-    int maskChannels[2] = { -1, -1 };
-    for (int k = 0; k < 2; ++k) {
-        if (!isKeyMaskUsed(maskInputs[k])) {
-            continue;
-        }
-        ImageLayerDesc maskLayer;
-        if (resolveInputPlaneForRender(maskInputs[k], args.time, args.view, &maskLayer, &maskChannels[k]) && (maskChannels[k] >= 0)) {
-            RectI maskRoI;
-            masks[k] = getImage(maskInputs[k], args.time, args.mappedScale, args.view, NULL, &maskLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &maskRoI);
-        }
-        if (masks[k] && (maskChannels[k] >= (int)masks[k]->getComponentsCount())) {
-            masks[k].reset();
-        }
-        if (!isFloatImage(masks[k])) {
-            return eStatusFailed;
-        }
-    }
-
-    const std::function<ImagePtr(int)> fetch = [&](int inputNb) {
-        ImageLayerDesc layer;
-        ImagePtr image;
-
-        if (getInput(inputNb) && resolveInputPlaneForRender(inputNb, args.time, args.view, &layer, NULL)) {
-            RectI roiPixel;
-            image = getImage(inputNb, args.time, args.mappedScale, args.view, NULL, &layer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roiPixel);
-        }
-
-        return image;
-    };
-
-    std::vector<KeyJob> jobs;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        KeyJob job;
-        job.dst = it->second;
-        if (job.dst) {
-            job.channels = processedBitsForImage(it->first, (int)job.dst->getComponentsCount(), args.processChannels);
-            job.src = fetch(kChromaKeyerInputSource);
-            job.bg = fetch(kChromaKeyerInputBg);
-            if (!isFloatImage(job.dst) || !isFloatImage(job.src) || !isFloatImage(job.bg)) {
-                return eStatusFailed;
-            }
-        }
-        jobs.push_back(job);
-    }
-
-    const RectI& roi = args.roi;
-    const int width = roi.width();
-    if ((width <= 0) || (roi.height() <= 0)) {
-        return eStatusOK;
-    }
-
-    // Images are locked here, on the calling thread, for the whole render; the band threads only
-    // compute pixel addresses through these accesses. An image reached through two inputs is
-    // locked once.
-    std::vector<LockedImage> locked;
-    const std::function<int(const ImagePtr&)> lockImage = [&](const ImagePtr& image) {
-        if (!image) {
-            return -1;
-        }
-        for (std::size_t i = 0; i < locked.size(); ++i) {
-            if (locked[i].image == image.get()) {
-                return (int)i;
-            }
-        }
-        LockedImage entry;
-        entry.image = image.get();
-        entry.bounds = image->getBounds();
-        entry.access = std::make_shared<Image::ReadAccess>(image.get());
-        locked.push_back(entry);
-
-        return (int)locked.size() - 1;
-    };
-    int maskIndices[2] = { lockImage(masks[0]), lockImage(masks[1]) };
-
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    std::vector<RectI> bandRects;
-    makeStageRowBands(roi, nThreads, &bandRects);
-    std::vector<KeyBand> bands;
-    for (std::size_t j = 0; j < jobs.size(); ++j) {
-        KeyJob& job = jobs[j];
-        if (!job.dst) {
-            continue;
-        }
-        job.srcIndex = lockImage(job.src);
-        job.bgIndex = lockImage(job.bg);
-        job.dstAccess = std::make_shared<Image::WriteAccess>(job.dst.get());
-        for (std::size_t b = 0; b < bandRects.size(); ++b) {
-            bands.push_back(KeyBand(j, bandRects[b].y1, bandRects[b].y2));
-        }
-    }
-
-    RenderCancellation cancel(this);
-
-    const std::function<void(int)> renderBand = [&](int bandIndex) {
-        const KeyBand& band = bands[bandIndex];
-        const KeyJob& job = jobs[band.job];
-        const int nComps = (int)job.dst->getComponentsCount();
-        std::vector<float> srcRow((std::size_t)width * 4);
-        std::vector<float> bgRow((std::size_t)width * 4);
-        std::vector<float> inMaskRow(width);
-        std::vector<float> outMaskRow(width);
-        const LockedImage* srcImage = (job.srcIndex >= 0) ? &locked[job.srcIndex] : NULL;
-        const LockedImage* bgImage = (job.bgIndex >= 0) ? &locked[job.bgIndex] : NULL;
-
-        for (int y = band.y1; y < band.y2; ++y) {
-            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
-                return;
-            }
-
-            int srcStart, srcEnd, bgStart, bgEnd;
-            bool srcHasAlpha, bgHasAlpha;
-            readColorRow(srcImage, roi.x1, y, width, &srcRow[0], &srcStart, &srcEnd, &srcHasAlpha);
-            readColorRow(bgImage, roi.x1, y, width, &bgRow[0], &bgStart, &bgEnd, &bgHasAlpha);
-            static_cast<void>(bgHasAlpha);
-            readChannelRow((maskIndices[0] >= 0) ? &locked[maskIndices[0]] : NULL, maskChannels[0], roi.x1, y, width, &inMaskRow[0]);
-            readChannelRow((maskIndices[1] >= 0) ? &locked[maskIndices[1]] : NULL, maskChannels[1], roi.x1, y, width, &outMaskRow[0]);
-
-            float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-            if (!dstPix) {
-                continue;
-            }
-            for (int i = 0; i < width; ++i, dstPix += nComps) {
-                const int x = roi.x1 + i;
-                const bool hasSrc = (x >= srcStart) && (x < srcEnd);
-                const float* srcPix = &srcRow[(std::size_t)i * 4];
-                float out[4];
-                kernel.process(hasSrc ? srcPix : NULL, srcHasAlpha, &bgRow[(std::size_t)i * 4], inMaskRow[i], outMaskRow[i], out);
-                for (int c = 0; c < nComps; ++c) {
-                    const int bit = (c < 4) ? pixelKernelChannelBit(nComps, c) : -1;
-                    if ((bit < 0) || !job.channels[bit]) {
-                        dstPix[c] = ((bit >= 0) && hasSrc && ((bit < 3) || srcHasAlpha)) ? srcPix[bit] : 0.f;
-                        continue;
-                    }
-                    dstPix[c] = out[bit];
-                }
-            }
-        }
-    };
-    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
-
-    return eStatusOK;
-} // ChromaKeyer::renderOp
-
-#ifdef NATRON_HAVE_GPU
-namespace {
-// The float index of pixel (x, y) of v, false when the view does not fit the kernel's 32-bit
-// indices.
-bool
-gpuFloatIndex(const GpuImageView& v,
-              int x,
-              int y,
-              uint32_t* index)
-{
-    const uint64_t base = v.byteOffset / sizeof(float);
-    const uint64_t rows = (uint64_t)std::max(0, v.bounds.height());
-
-    if (base + rows * (uint64_t)v.rowStrideFloats > UINT32_MAX) {
-        return false;
-    }
-    *index = (uint32_t)(base + (uint64_t)(y - v.bounds.y1) * v.rowStrideFloats + (uint64_t)(x - v.bounds.x1) * v.nComps);
-
-    return true;
-}
-
-// A view without a buffer packs as empty bounds, which the kernel reads as zero.
-bool
-packGpuView(const GpuImageView& v,
-            ChromaKeyGpuView* out)
-{
-    *out = ChromaKeyGpuView();
-    if (!v.buffer || v.bounds.isNull()) {
-        return true;
-    }
-    if (!gpuFloatIndex(v, v.bounds.x1, v.bounds.y1, &out->offset)) {
-        return false;
-    }
-    out->stride = (uint32_t)v.rowStrideFloats;
-    out->x1 = v.bounds.x1;
-    out->y1 = v.bounds.y1;
-    out->x2 = v.bounds.x2;
-    out->y2 = v.bounds.y2;
-    out->comps = (uint32_t)v.nComps;
-
-    return true;
-}
-} // anonymous namespace
-#endif // NATRON_HAVE_GPU
-
-bool
 ChromaKeyer::resolveColorInputLayer(int inputNb,
                                     double time,
                                     ViewIdx view,
@@ -1136,18 +761,129 @@ ChromaKeyer::resolveColorInputLayer(int inputNb,
 }
 
 bool
+ChromaKeyer::sourceHasAlpha(double time,
+                            ViewIdx view) const
+{
+    ImageLayerDesc layer;
+
+    if (!resolveColorInputLayer(kChromaKeyerInputSource, time, view, &layer)) {
+        return false;
+    }
+    const int nComps = layer.getNumComponents();
+
+    return (nComps >= 4) || (nComps == 1);
+}
+
+void
+ChromaKeyer::readSettings(double time,
+                          ViewIdx view,
+                          ChromaKeyerSettings* settings) const
+{
+    KnobColorPtr keyColor = _keyColor.lock();
+    if (keyColor) {
+        for (int i = 0; i < 3; ++i) {
+            settings->keyColor[i] = (float)keyColor->getValueAtTime(time, i, view);
+        }
+    }
+    double luma[3];
+    const double* fallback = ColorMath::acesCgLumaWeights();
+    for (int i = 0; i < 3; ++i) {
+        luma[i] = fallback[i];
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr cm = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (cm) {
+        cm->getWorkingLuma(luma);
+    }
+    settings->kr = (float)luma[0];
+    settings->kb = (float)luma[2];
+    settings->acceptanceAngle = readDouble(_acceptanceAngle, time, view, 120.);
+    settings->suppressionAngle = readDouble(_suppressionAngle, time, view, 40.);
+    settings->keyLift = readDouble(_keyLift, time, view, 0.);
+    settings->keyGain = readDouble(_keyGain, time, view, 1.);
+    settings->show = (ShowEnum)readChoice(_show, time, view, (int)eShowComposite, (int)eShowComposite);
+    settings->sourceAlpha = (SourceAlphaEnum)readChoice(_sourceAlpha, time, view, (int)eSourceAlphaIgnore, (int)eSourceAlphaNormal);
+    settings->sourceHasAlpha = sourceHasAlpha(time, view);
+}
+
+StatusEnum
+ChromaKeyer::renderOp(const RenderActionArgs& args,
+                      const StagePlan& plan)
+{
+    ChromaKeyerSettings settings;
+    readSettings(args.time, args.view, &settings);
+    const ChromaKeyKernel kernel(settings);
+
+    // The Source's pixels: the stages read it zero outside, where the key is the background.
+    RectI sourceRect;
+    bool hasSource = false;
+    EffectInstancePtr source = getInput(kChromaKeyerInputSource);
+    ImageLayerDesc sourceLayer;
+    if (source && (plan.sourceInput == kChromaKeyerInputSource) && resolveColorInputLayer(kChromaKeyerInputSource, args.time, args.view, &sourceLayer)) {
+        const RenderScale inputScale = source->supportsRenderScale() ? args.mappedScale : RenderScale::identity;
+        RectD rod;
+        bool isProjectFormat = false;
+        if (source->getRegionOfDefinition_public(source->getRenderHash(), args.time, inputScale, args.view, &rod, &isProjectFormat) == eStatusFailed) {
+            return eStatusFailed;
+        }
+        sourceRect = rod.toPixelEnclosing(args.mappedScale, getRenderMetadata(args.time, args.view)->getPixelAspectRatio(kChromaKeyerInputSource));
+        hasSource = true;
+    }
+
+    // Bg, fetched before runStagesCpu() fetches the rest, and locked here, on the calling thread;
+    // the band threads only read through it.
+    ImagePtr bg;
+    ImageLayerDesc bgLayer;
+    if (resolveColorInputLayer(kChromaKeyerInputBg, args.time, args.view, &bgLayer)) {
+        RectI bgRoI;
+        bg = getImage(kChromaKeyerInputBg, args.time, args.mappedScale, args.view, NULL, &bgLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &bgRoI);
+    }
+    if (!isFloatImage(bg)) {
+        return eStatusFailed;
+    }
+    LockedImage bgLocked;
+    if (bg) {
+        bgLocked.image = bg.get();
+        bgLocked.bounds = bg->getBounds();
+        bgLocked.access = std::make_shared<Image::ReadAccess>(bg.get());
+    }
+
+    const auto row = [&](const RowIO& io) {
+        const int nComps = io.nComps;
+
+        // getPreferredMetadataAt() makes the output RGBA; another plane passes through.
+        if (nComps != 4) {
+            std::copy(io.src[0], io.src[0] + (std::size_t)io.width * nComps, io.dst);
+
+            return;
+        }
+        std::vector<float> bgRow((std::size_t)io.width * 4);
+        int bgStart, bgEnd;
+        bool bgHasAlpha;
+        readColorRow(bg ? &bgLocked : NULL, io.x0, io.y, io.width, &bgRow[0], &bgStart, &bgEnd, &bgHasAlpha);
+        const bool rowInSource = hasSource && (io.y >= sourceRect.y1) && (io.y < sourceRect.y2);
+        for (int i = 0; i < io.width; ++i) {
+            const int x = io.x0 + i;
+            const bool inSource = rowInSource && (x >= sourceRect.x1) && (x < sourceRect.x2);
+            const float* srcPix = io.src[0] + (std::size_t)i * 4;
+            kernel.process(inSource ? srcPix : NULL, &bgRow[(std::size_t)i * 4], io.dst + (std::size_t)i * 4);
+        }
+    };
+
+    return runStagesCpu(*this, plan, args, StageRowFn(row));
+} // ChromaKeyer::renderOp
+
+bool
 ChromaKeyer::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps != 4)) {
+    if ((query.bitDepth != eImageBitDepthFloat) || (query.nComps != 4) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
         return false;
     }
-    const int colorInputs[2] = { kChromaKeyerInputSource, kChromaKeyerInputBg };
-    for (int k = 0; k < 2; ++k) {
-        ImageLayerDesc layer;
-        if (resolveColorInputLayer(colorInputs[k], query.time, query.view, &layer) && ((layer.getNumComponents() < 1) || (layer.getNumComponents() > 4))) {
-            return false;
-        }
+    ImageLayerDesc layer;
+    if (resolveColorInputLayer(kChromaKeyerInputBg, query.time, query.view, &layer) && ((layer.getNumComponents() < 1) || (layer.getNumComponents() > 4))) {
+        return false;
     }
 
     return true;
@@ -1165,12 +901,12 @@ ChromaKeyer::getOpGpuInputLayer(int inputNb,
                                 ViewIdx view,
                                 ImageLayerDesc* layer) const
 {
-    if ((inputNb != kChromaKeyerInputSource) && (inputNb != kChromaKeyerInputBg)) {
+    if (inputNb != kChromaKeyerInputBg) {
         stageGpuInputLayer(*this, inputNb, plane, time, view, layer);
 
         return true;
     }
-    // renderOp() reads an RGB Source or Bg as RGB, whatever plane it renders.
+    // renderOp() reads an RGB Bg as RGB, whatever plane it renders.
     *layer = plane;
     ImageLayerDesc resolved;
     if (resolveColorInputLayer(inputNb, time, view, &resolved) && (resolved.getNumComponents() > 0)) {
@@ -1180,44 +916,12 @@ ChromaKeyer::getOpGpuInputLayer(int inputNb,
     return true;
 }
 
-bool
-ChromaKeyer::getGpuReadableInput(const GpuRenderArgs& args,
-                                 int inputNb,
-                                 GpuImageView* view)
-{
-    *view = GpuImageView();
-    if ((inputNb < 0) || (inputNb >= (int)args.inputs.size())) {
-        return true;
-    }
-    const GpuImageView& in = args.inputs[inputNb];
-    EffectInstancePtr input = getInput(inputNb);
-    if (!input || !in.buffer) {
-        return true;
-    }
-    if ((in.nComps < 1) || (in.nComps > 4) || !PassExec::isUsableGpuView(in, in.nComps)) {
-        return false;
-    }
-    // renderOp() reads no pixel outside the input image, whose bounds lie within the input's
-    // region of definition; the view may extend past it.
-    const RenderScale& scale = args.query.mappedScale;
-    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
-    RectD rod;
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    *view = PassExec::cropGpuView(in, in.bounds.intersect(rod.toPixelEnclosing(scale, getRenderMetadata(args.query.time, args.query.view)->getPixelAspectRatio(inputNb))));
-
-    return true;
-}
-
 StatusEnum
 ChromaKeyer::renderOpGpu(const GpuRenderArgs& args)
 {
 #ifdef NATRON_HAVE_GPU
     const GpuQuery& query = args.query;
-    const RectI& rect = args.outputRect;
-    if (!canRenderOpOnGpu(query) || rect.isNull() || !PassExec::isUsableGpuView(args.output, 4) || !args.output.bounds.contains(rect)) {
+    if (!canRenderOpOnGpu(query)) {
         return eStatusFailed;
     }
 
@@ -1225,103 +929,31 @@ ChromaKeyer::renderOpGpu(const GpuRenderArgs& args)
     readSettings(query.time, query.view, &settings);
     ChromaKeyGpuParams params = ChromaKeyGpuParams();
     ChromaKeyKernel(settings).getGpuParams(&params);
-    for (int c = 0; c < 4; ++c) {
-        if (query.processChannels[c]) {
-            params.channelMask |= 1u << c;
-        }
-    }
 
-    // Views of the inputs as renderOp() fetches them; one without a buffer reads zero.
-    GpuImageView views[4];
-    const int colorInputs[2] = { kChromaKeyerInputSource, kChromaKeyerInputBg };
-    for (int k = 0; k < 2; ++k) {
-        ImageLayerDesc layer;
-        if (resolveColorInputLayer(colorInputs[k], query.time, query.view, &layer) && !getGpuReadableInput(args, colorInputs[k], &views[colorInputs[k]])) {
+    const StagePlan plan = resolveGpuPlan(query);
+    GpuRenderArgs cropped = args;
+    const int sourceInput = plan.sourceInput;
+    if ((sourceInput >= 0) && (sourceInput < (int)cropped.inputs.size())) {
+        // Cropped to the Source's region of definition, outside which the key is the background.
+        if (!stageGpuInputView(*this, args, sourceInput, &cropped.inputs[sourceInput])) {
             return eStatusFailed;
         }
     }
-    const int maskInputs[2] = { kChromaKeyerInputInsideMask, kChromaKeyerInputOutsideMask };
-    uint32_t maskComponents[2] = { 0, 0 };
-    for (int k = 0; k < 2; ++k) {
-        if (!isKeyMaskUsed(maskInputs[k])) {
-            continue;
-        }
-        ImageLayerDesc maskLayer;
-        int maskChannel = -1;
-        if (!resolveInputPlaneForRender(maskInputs[k], query.time, query.view, &maskLayer, &maskChannel) || (maskChannel < 0) || (maskChannel >= maskLayer.getNumComponents())) {
-            continue;
-        }
-        GpuImageView mask;
-        if (!getGpuReadableInput(args, maskInputs[k], &mask)) {
-            return eStatusFailed;
-        }
-        if (!mask.buffer) {
-            continue;
-        }
-        const int component = stageGpuMaskViewComponent(maskLayer, maskChannel, mask.nComps);
-        if ((component < 0) || (component >= mask.nComps)) {
-            return eStatusFailed;
-        }
-        views[maskInputs[k]] = mask;
-        maskComponents[k] = (uint32_t)component;
-    }
 
-    gpu::GpuWrapParams wrap = gpu::GpuWrapParams();
-    wrap.outX = rect.x1;
-    wrap.outY = rect.y1;
-    wrap.width = (uint32_t)rect.width();
-    wrap.height = (uint32_t)rect.height();
-    if (!gpuFloatIndex(args.output, rect.x1, rect.y1, &wrap.dstOffset)) {
+    GpuImageView bgView;
+    ImageLayerDesc bgLayer;
+    if (resolveColorInputLayer(kChromaKeyerInputBg, query.time, query.view, &bgLayer) && !stageGpuInputView(*this, args, kChromaKeyerInputBg, &bgView)) {
         return eStatusFailed;
     }
-    wrap.dstStride = (uint32_t)args.output.rowStrideFloats;
-
-    ChromaKeyGpuView packed;
-    if (!packGpuView(views[kChromaKeyerInputSource], &packed)) {
+    if (!packGpuView(bgView, &params.bg)) {
         return eStatusFailed;
     }
-    wrap.srcOffset = packed.offset;
-    wrap.srcStride = packed.stride;
-    wrap.srcX1 = packed.x1;
-    wrap.srcY1 = packed.y1;
-    wrap.srcX2 = packed.x2;
-    wrap.srcY2 = packed.y2;
-    wrap.nComps = packed.comps;
 
-    if (!packGpuView(views[kChromaKeyerInputInsideMask], &packed)) {
-        return eStatusFailed;
-    }
-    wrap.maskOffset = packed.offset;
-    wrap.maskStride = packed.stride;
-    wrap.maskX1 = packed.x1;
-    wrap.maskY1 = packed.y1;
-    wrap.maskX2 = packed.x2;
-    wrap.maskY2 = packed.y2;
-    wrap.maskComps = packed.comps;
-    wrap.maskChannel = maskComponents[0];
+    PixelKernelGpu op;
+    op.kernel = (int)gpu::GpuKernelId::chromakeyer_wrapped;
+    op.setParams(params);
 
-    if (!packGpuView(views[kChromaKeyerInputBg], &params.bg) || !packGpuView(views[kChromaKeyerInputOutsideMask], &params.outMask)) {
-        return eStatusFailed;
-    }
-    params.outMaskChannel = maskComponents[1];
-
-    gpu::GpuRecordContext& ctx = args.context;
-    gpu::GpuBuffer* paramBuffer = nullptr;
-    if (!ctx.scratch(sizeof(params), paramBuffer) || !paramBuffer || !ctx.updateBuffer(*paramBuffer, 0, std::as_bytes(std::span<const ChromaKeyGpuParams>(&params, 1)))) {
-        return eStatusFailed;
-    }
-    // The kernel reads no pixel of an input with empty bounds, so the parameter block stands in
-    // for its buffer.
-    const gpu::GpuBuffer* buffers[4];
-    for (int i = 0; i < 4; ++i) {
-        buffers[i] = views[i].buffer ? views[i].buffer : paramBuffer;
-    }
-    const gpu::GpuStatus status = ctx.dispatch(gpu::GpuKernelId::chromakeyer,
-                                               { buffers[kChromaKeyerInputSource], args.output.buffer, buffers[kChromaKeyerInputInsideMask], paramBuffer,
-                                                 buffers[kChromaKeyerInputBg], buffers[kChromaKeyerInputOutsideMask] },
-                                               wrap, { wrap.width, wrap.height, 1u });
-
-    return status ? eStatusOK : eStatusFailed;
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&bgView, 1));
 #else
     Q_UNUSED(args);
 

@@ -2659,6 +2659,7 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
 
     if (OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
         isOfxEffect->syncMultiplaneTwinsAfterLoad();
+        refreshHostDrivenOverlayParams();
     }
 
     // The serialized age is not read: the node cache key is a content hash, so a saved age carries
@@ -3478,19 +3479,65 @@ Node::createHostMixKnob(const KnobPagePtr& mainPage)
     _imp->mixWithSource = mixKnob;
 }
 
+std::vector<KnobIPtr>
+Node::moveClampKnobsToFooter(const KnobPagePtr& mainPage)
+{
+    std::vector<KnobIPtr> moved;
+    if (!mainPage) {
+        return moved;
+    }
+    KnobBoolPtr clampBlack = _imp->effect->getKnobByNameAndType<KnobBool>("clampBlack");
+    KnobBoolPtr clampWhite = _imp->effect->getKnobByNameAndType<KnobBool>("clampWhite");
+    if (clampBlack && (clampBlack->getParentKnob() != mainPage)) {
+        clampBlack.reset();
+    }
+    if (clampWhite && (clampWhite->getParentKnob() != mainPage)) {
+        clampWhite.reset();
+    }
+    if (clampBlack) {
+        clampBlack->setAddNewLine(!clampWhite);
+        mainPage->removeKnob(clampBlack.get());
+        mainPage->addKnob(clampBlack);
+        moved.push_back(clampBlack);
+    }
+    if (clampWhite) {
+        clampWhite->setAddNewLine(true);
+        mainPage->removeKnob(clampWhite.get());
+        mainPage->addKnob(clampWhite);
+        moved.push_back(clampWhite);
+    }
+
+    return moved;
+}
+
 void
-Node::createStageFooterSeparator(const KnobPagePtr& mainPage)
+Node::createFooterSeparator(const KnobPagePtr& mainPage,
+                            const std::vector<KnobIPtr>& footerKnobs)
 {
     if (!mainPage) {
         return;
     }
     const KnobsVec children = mainPage->getChildren();
-    if (children.empty() || dynamic_cast<KnobSeparator*>(children.back().get())) {
+    int first = -1;
+    for (int i = 0; i < (int)children.size(); ++i) {
+        if (std::find(footerKnobs.begin(), footerKnobs.end(), children[i]) != footerKnobs.end()) {
+            first = i;
+            break;
+        }
+    }
+    if (first <= 0) {
+        return;
+    }
+    int previous = first - 1;
+    while ((previous >= 0) && children[previous]->getIsSecret()) {
+        --previous;
+    }
+    if ((previous < 0) || dynamic_cast<KnobSeparator*>(children[previous].get())) {
         return;
     }
     KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
     sep->setName("advancedSep");
-    mainPage->addKnob(sep);
+    mainPage->insertKnob(first, sep);
 }
 
 void
@@ -3551,6 +3598,75 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
     }
     _imp->unPremultBySelector = channel;
 } // Node::createUnPremultSelector
+
+namespace {
+
+enum HostDrivenOverlayParamEnum {
+    eHostDrivenOverlayParamNone,
+    eHostDrivenOverlayParamInteractive,
+    eHostDrivenOverlayParamHiDPI
+};
+
+HostDrivenOverlayParamEnum
+hostDrivenOverlayParam(const KnobIPtr& knob)
+{
+    if (!dynamic_cast<KnobBool*>(knob.get())) {
+        return eHostDrivenOverlayParamNone;
+    }
+    const std::string& name = knob->getName();
+    if ((name == "interactive") || (name == "transformInteractive") || (name == "rampInteractive")) {
+        return eHostDrivenOverlayParamInteractive;
+    }
+    if (name == "hidpi") {
+        return eHostDrivenOverlayParamHiDPI;
+    }
+
+    return eHostDrivenOverlayParamNone;
+}
+
+} // anon namespace
+
+void
+Node::adoptHostDrivenOverlayParams()
+{
+    // openfx-supportext overlays each carry their own "interactive" and "hidpi" toggles; the
+    // host has one global toggle and knows the screen, so it hides theirs and drives them.
+    if (!dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        return;
+    }
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (hostDrivenOverlayParam(*it) == eHostDrivenOverlayParamNone) {
+            continue;
+        }
+        (*it)->setSecret(true);
+        (*it)->setSecretLocked(true);
+        (*it)->setIsPersistent(false);
+    }
+    refreshHostDrivenOverlayParams();
+}
+
+void
+Node::refreshHostDrivenOverlayParams()
+{
+    if (!dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        return;
+    }
+    const bool interactive = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
+    const bool hiDPI = appPTR->getScreenDevicePixelRatio() >= 1.5;
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const HostDrivenOverlayParamEnum role = hostDrivenOverlayParam(*it);
+        if (role == eHostDrivenOverlayParamNone) {
+            continue;
+        }
+        KnobBool* param = static_cast<KnobBool*>(it->get());
+        const bool value = (role == eHostDrivenOverlayParamInteractive) ? interactive : hiDPI;
+        if (param->getValue() != value) {
+            param->setValue(value);
+        }
+    }
+}
 
 KnobChannelSelectPtr
 Node::getUnPremultBySelector() const
@@ -3949,17 +4065,12 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
 
-    // Spec'd nodes put the whole footer under one separator; the generic one below would split
-    // (Un)premult by from the mask rows.
-    const StagedImageEffect* stagedEffect = dynamic_cast<const StagedImageEffect*>(_imp->effect.get());
-    if (stagedEffect) {
-        const bool hasMaskSelector = std::any_of(hasMaskChannelSelector.begin(), hasMaskChannelSelector.end(),
-                                                 [](const std::pair<bool, bool>& p) { return p.first; });
-        if (hasMaskSelector || stagedEffect->wantsHostUnPremultSelector() || stagedEffect->imagePipelineSpec().stages.has(Stage::MaskMix)) {
-            createStageFooterSeparator(mainPage);
-        }
-    }
+    // Native and OpenFX nodes share one footer below the line: Clamp Black and Clamp White on
+    // one row, (Un)premult by, the mask rows with Invert Mask, then Mix.
+    std::vector<KnobIPtr> footerKnobs = moveClampKnobsToFooter(mainPage);
     createUnPremultSelector(mainPage);
+    footerKnobs.push_back(_imp->unPremultBySelector.lock());
+    adoptHostDrivenOverlayParams();
 
     OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
     if (isOfxEffect && isOfxEffect->isMultiPlanar()) {
@@ -3989,41 +4100,13 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
             if (foundPluginDefaultKnobsToReorder[i].second->getParentKnob() == mainPage) {
                 mainPage->removeKnob( foundPluginDefaultKnobsToReorder[i].second.get() );
                 mainPage->addKnob(foundPluginDefaultKnobsToReorder[i].second);
+                footerKnobs.push_back(foundPluginDefaultKnobsToReorder[i].second);
             }
         }
     }
-
-    if (stagedEffect) {
-        lastKnobBeforeAdvancedOption.reset();
-    }
-
-    if (lastKnobBeforeAdvancedOption && mainPage) {
-
-        KnobsVec mainPageChildren = mainPage->getChildren();
-        int i = 0;
-        for (KnobsVec::iterator it = mainPageChildren.begin(); it != mainPageChildren.end(); ++it, ++i) {
-            if (*it == lastKnobBeforeAdvancedOption) {
-                if (i > 0) {
-                    int j = i - 1;
-                    KnobsVec::iterator prev = it;
-                    --prev;
-                    while (j >= 0 && (*prev)->getIsSecret()) {
-                        --j;
-                        --prev;
-                    }
-
-                    if ( j >= 0 && !dynamic_cast<KnobSeparator*>( prev->get() ) ) {
-                        KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
-                        sep->setName("advancedSep");
-                        mainPage->insertKnob(i, sep);
-                    }
-                }
-
-                break;
-            }
-        }
-    }
-
+    footerKnobs.push_back(lastKnobBeforeAdvancedOption);
+    footerKnobs.push_back(_imp->mixWithSource.lock());
+    createFooterSeparator(mainPage, footerKnobs);
 
     createNodePage(settingsPage);
 

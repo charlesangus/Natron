@@ -504,6 +504,14 @@ public:
         return 72;
     }
 
+    /**
+     * @brief The device pixel ratio of the screens the GUI draws on; 1 without a GUI.
+     **/
+    virtual double getScreenDevicePixelRatio() const
+    {
+        return 1.;
+    }
+
     template <typename T>
     void adjustSizeToDPI(T &x,
                          T &y) const

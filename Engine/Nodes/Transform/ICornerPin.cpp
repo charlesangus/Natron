@@ -112,7 +112,7 @@ ICornerPin::initializeKnobs()
         node->addCornerPinInteract(_op.from[0].lock(), _op.from[1].lock(), _op.from[2].lock(), _op.from[3].lock(),
                                    _op.to[0].lock(), _op.to[1].lock(), _op.to[2].lock(), _op.to[3].lock(),
                                    _op.enable[0].lock(), _op.enable[1].lock(), _op.enable[2].lock(), _op.enable[3].lock(),
-                                   _op.overlayPoints.lock(), _op.invert.lock(), _op.interactive.lock());
+                                   _op.overlayPoints.lock(), _op.invert.lock(), KnobBoolPtr());
     }
     declareMapLayerKnob();
 } // ICornerPin::initializeKnobs

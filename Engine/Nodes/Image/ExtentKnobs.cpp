@@ -225,24 +225,6 @@ ExtentKnobs::createKnobs(const KnobPagePtr& page)
     page->addKnob(size);
     _size = size;
 
-    KnobBoolPtr interactive = AppManager::createKnob<KnobBool>(_effect, EffectInstance::tr("Interactive Update"));
-    interactive->setName(kNativeGeneratorParamInteractive);
-    interactive->setHintToolTip(EffectInstance::tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
-    interactive->setDefaultValue(false);
-    interactive->setEvaluateOnChange(false);
-    page->addKnob(interactive);
-    _interactive = interactive;
-
-    // Kept for knob parity with the OpenFX plug-ins; the host overlay sizes itself.
-    KnobBoolPtr hiDPI = AppManager::createKnob<KnobBool>(_effect, EffectInstance::tr("HiDPI"));
-    hiDPI->setName(kNativeGeneratorParamHiDPI);
-    hiDPI->setHintToolTip(EffectInstance::tr("Should be checked when the display area is High-DPI (a.k.a Retina). Draws OpenGL overlays twice larger."));
-    hiDPI->setDefaultValue(false);
-    hiDPI->setAnimationEnabled(false);
-    hiDPI->setEvaluateOnChange(false);
-    page->addKnob(hiDPI);
-    _hiDPI = hiDPI;
-
     KnobIntPtr frameRange = AppManager::createKnob<KnobInt>(_effect, EffectInstance::tr("Frame Range"), 2);
     frameRange->setName(kNativeGeneratorParamFrameRange);
     frameRange->setHintToolTip(EffectInstance::tr("Time domain."));
@@ -270,10 +252,9 @@ ExtentKnobs::finishKnobs()
     NodePtr node = _effect->getNode();
     KnobDoublePtr bottomLeft = _bottomLeft.lock();
     KnobDoublePtr size = _size.lock();
-    KnobBoolPtr interactive = _interactive.lock();
     KnobBoolPtr rectangleEnable = _rectangleEnable.lock();
-    if (node && bottomLeft && size && interactive && rectangleEnable) {
-        node->addRectangleInteract(bottomLeft, size, interactive, rectangleEnable);
+    if (node && bottomLeft && size && rectangleEnable) {
+        node->addRectangleInteract(bottomLeft, size, KnobBoolPtr(), rectangleEnable);
     }
 }
 
@@ -308,8 +289,6 @@ ExtentKnobs::updateVisibility()
     setSecretAndDisabled(_size.lock(), !hasSize);
     setSecretAndDisabled(_recenter.lock(), !hasSize);
     setSecretAndDisabled(_bottomLeft.lock(), !hasSize);
-    setSecretAndDisabled(_interactive.lock(), !hasSize);
-    setSecretAndDisabled(_hiDPI.lock(), !hasSize);
 
     if (_policy.overlayFollowsExtent) {
         KnobBoolPtr rectangleEnable = _rectangleEnable.lock();

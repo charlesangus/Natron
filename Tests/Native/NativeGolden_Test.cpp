@@ -222,7 +222,7 @@ rotateAndScale(const GoldenGraph& g)
 bool
 keyerColorMode(const GoldenGraph& g)
 {
-    return choice(g, kKeyerParamMode, "color") && num(g, kKeyerParamKeyColor, { 0.1, 0.8, 0.2 });
+    return choice(g, kKeyerParamKeySource, "color") && num(g, kKeyerParamKeyColor, { 0.1, 0.8, 0.2 }) && num(g, kKeyerParamRange, { 0.1, 0.3, 0.7, 1.2 });
 }
 
 bool
@@ -891,25 +891,21 @@ TEST_F(NativeGoldenTest, MergeMultiply)
 TEST_F(NativeGoldenTest, Keyer)
 {
     GoldenNodeSpec spec = plainSpec("Keyer", PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER);
-    spec.maskInput = "InM";
-    spec.extraInputs.push_back("Bg");
+    spec.maskInput = "Mask";
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("color", keyerColorMode));
-    v.push_back(variant("screencomposite", [](const GoldenGraph& g) {
-        return choice(g, kKeyerParamMode, "screen") && num(g, kKeyerParamKeyColor, { 0.1, 0.8, 0.2 }) && choice(g, kKeyerParamShow, "composite") && choice(g, kKeyerParamSourceAlpha, "normal");
+    v.push_back(variant("hardedges", [](const GoldenGraph& g) {
+        return choice(g, kKeyerParamLuminanceMath, "rec709") && num(g, kKeyerParamRange, { 0.2, 0.2, 0.6, 0.6 });
     }));
-    v.push_back(variant("despill", [](const GoldenGraph& g) {
-        return keyerColorMode(g) && num(g, kKeyerParamDespill, { 1. }) && num(g, kKeyerParamDespillAngle, { 180. }) && choice(g, kKeyerParamShow, "unpremultiplied");
-    }));
-    v.push_back(maskVariant("insidemask", [](const GoldenGraph& g) { return keyerColorMode(g) && choice(g, kKeyerParamShow, "premultiplied"); }));
+    v.push_back(maskVariant("mask", keyerColorMode));
     run(spec, v);
 }
 
 TEST_F(NativeGoldenTest, ChromaKeyer)
 {
     GoldenNodeSpec spec = plainSpec("ChromaKeyer", PLUGINID_NATRON_CHROMAKEYER, PLUGIN_MAJOR_NATRON_CHROMAKEYER);
-    spec.maskInput = "InM";
+    spec.maskInput = "Mask";
     spec.extraInputs.push_back("Bg");
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
@@ -918,8 +914,10 @@ TEST_F(NativeGoldenTest, ChromaKeyer)
         return chromaKey(g) && num(g, kChromaKeyerParamAcceptanceAngle, { 60. }) && num(g, kChromaKeyerParamKeyGain, { 1.5 }) && choice(g, kChromaKeyerParamShow, "premultiplied") && choice(g, kChromaKeyerParamSourceAlpha, "normal");
     }));
     v.push_back(variant("composite", [](const GoldenGraph& g) {
-        return chromaKey(g) && num(g, kChromaKeyerParamLinear, { 1. }) && choice(g, kChromaKeyerParamColorspace, "rec2020") && choice(g, kChromaKeyerParamShow, "composite");
+        return chromaKey(g) && num(g, kChromaKeyerParamKeyLift, { 0.2 }) && choice(g, kChromaKeyerParamShow, "composite");
     }));
-    v.push_back(maskVariant("insidemask", [](const GoldenGraph& g) { return chromaKey(g) && choice(g, kChromaKeyerParamShow, "unpremultiplied"); }));
+    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) {
+        return chromaKey(g) && choice(g, kChromaKeyerParamShow, "unpremultiplied") && num(g, kOfxMixParamName, { 0.6 });
+    }));
     run(spec, v);
 }

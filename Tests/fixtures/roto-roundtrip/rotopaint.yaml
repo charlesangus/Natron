@@ -24,7 +24,6 @@ nodes:
       skewOrder: "XY"
       center: [0, 0]
       resetTransformCenter: ~
-      RotoTransformInteractive: true
       extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
       resetTransform: ~
     pages: ["General", "Shape", "Stroke", "Clone", "Transform", "Toolbar", "Node", "Info"]

@@ -271,15 +271,6 @@ CornerPinOp::createKnobs(KnobHolder* holder,
     page->addKnob(overlayKnob);
     overlayPoints = overlayKnob;
 
-    KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Interactive Update"));
-    interactiveKnob->setName(kCornerPinNodeParamInteractive);
-    interactiveKnob->setHintToolTip(EffectInstance::tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
-    interactiveKnob->setDefaultValue(true);
-    interactiveKnob->setAnimationEnabled(false);
-    interactiveKnob->setEvaluateOnChange(false);
-    page->addKnob(interactiveKnob);
-    interactive = interactiveKnob;
-
     KnobBoolPtr invertKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Invert"));
     invertKnob->setName(kCornerPinNodeParamInvert);
     invertKnob->setHintToolTip(EffectInstance::tr("Invert the transform, extra matrix included."));
@@ -753,7 +744,7 @@ CornerPinNode::initializeKnobs()
         node->addCornerPinInteract(o.from[0].lock(), o.from[1].lock(), o.from[2].lock(), o.from[3].lock(),
                                    o.to[0].lock(), o.to[1].lock(), o.to[2].lock(), o.to[3].lock(),
                                    o.enable[0].lock(), o.enable[1].lock(), o.enable[2].lock(), o.enable[3].lock(),
-                                   o.overlayPoints.lock(), o.invert.lock(), o.interactive.lock());
+                                   o.overlayPoints.lock(), o.invert.lock(), KnobBoolPtr());
     }
 } // CornerPinNode::initializeKnobs
 

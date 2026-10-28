@@ -368,7 +368,9 @@ TEST_F(NativeConstantTest, RectangleOverlayIsEnabledInSizeExtentOnly)
     EXPECT_TRUE(overlay->checkHostOverlayValid());
     EXPECT_EQ(node->getKnobByName(kNativeGeneratorParamBottomLeft), overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft));
     EXPECT_EQ(node->getKnobByName(kNativeGeneratorParamSize), overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationSize));
-    EXPECT_EQ(node->getKnobByName(kNativeGeneratorParamInteractive), overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive));
+    EXPECT_FALSE(bool(overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive)));
+    EXPECT_FALSE(bool(node->getKnobByName("interactive")));
+    EXPECT_FALSE(bool(node->getKnobByName("hidpi")));
 
     KnobBoolPtr enable = std::dynamic_pointer_cast<KnobBool>(overlay->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationEnable));
     ASSERT_TRUE(bool(enable));

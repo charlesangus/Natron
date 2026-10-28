@@ -2457,6 +2457,15 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _renderOnEditingFinished.get()) {
+        const AppInstanceVec& apps = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
+            NodesList nodes;
+            (*it)->getProject()->getNodes_recursive(nodes, false);
+            for (NodesList::const_iterator node = nodes.begin(); node != nodes.end(); ++node) {
+                (*node)->refreshHostDrivenOverlayParams();
+            }
+        }
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {

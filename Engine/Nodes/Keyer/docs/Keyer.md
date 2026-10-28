@@ -4,8 +4,8 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| Keyer | transcendental | `kKeyerTolerance` | |
+| Keyer | transcendental | `keyerTolerance()` | |
 
-- **Deliberate fix.** Keyer and ChromaKeyer with an RGB source treat alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX reads out of bounds, and neither mirrors OFX's output-premult preference.
+- **Redesign, no migration.** The key value is the source's luminance (by default the working space's luma weights) or its projection on the key colour; the alpha is the trapezoid A <= B <= C <= D over it, RGB passes through unpremultiplied, and the host mask and mix replace the InM, OutM and Bg inputs. Despill, the output and source-alpha modes and the Screen and None key modes are gone; projects saved with the old Keyer do not load its settings.
 
-Keyer holds its CPU class, transcendental, in every key, output and source alpha mode, with each of InM, OutM and Bg or none, partly covering the window, an RGB source and a channel subset; the host decides every threshold comparison and derives the key colour terms in double, and the device takes the distance to the key axis from the orthogonal part of the colour rather than the CPU's squared-norm difference, which float cannot hold near the axis (`Tests/Native/NativeKeyerGpu_Test.cpp`).
+Keyer holds its CPU class, transcendental, for every key source and luminance formula, hard and soft edges, the host mask, inverted mask and mix, and the alpha channel alone; the CPU and the device compute the key value and the ramps in float with the same roundings, and only the device's division differs (`Tests/Native/NativeKeyerGpu_Test.cpp`).

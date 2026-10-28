@@ -259,6 +259,8 @@ try:
     def steps():
         gt.section("object-select")
         app = NatronEngine.natron.getActiveInstance()
+        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", lambda: gt.viewer_up(), STARTUP_TIMEOUT_S)
         require(ok, "the main window and viewer are on screen")
 
@@ -267,8 +269,6 @@ try:
         still = os.path.join(work, "object.png")
         require(write_still(still), "wrote the still " + still)
 
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
-        require(viewer is not None, "a Viewer node exists")
         read = app.createReader(still)
         require(read is not None, "created a Read of the still")
         read.setPosition(0, 0)

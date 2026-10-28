@@ -281,13 +281,16 @@ routes a key by that prefix, in `OiioWriteSupport::applyMetadata()`:
   layout and a few excluded `oiio/`, `tiff/` and `dpx/` names are never written.
 - A key the target format does not take is dropped, with a debug log line.
 
-`Engine/Nodes/Metadata/` holds four nodes, grouped under Metadata: `ModifyMetadata`,
-`CopyMetadata`, `RemoveMetadata` and `ViewMetadata`.
+`Engine/Nodes/Metadata/` holds seven nodes, grouped under Metadata: `ModifyMetadata`,
+`CopyMetadata`, `RemoveMetadata`, `ViewMetadata`, `CompareMetadata`,
+`ContributeMetadata` and `TimeCodeMetadata`.
 
-All four derive from `NativeEffectBase` and override `isIdentity()` to return
-input 0, so the image is passed through without a render and costs nothing.
-The three editing nodes override `deriveOutputMetadata()`; `ViewMetadata` keeps
-the default pass-through. Key filters are
+All seven derive from `NativeEffectBase` and route to input 0, so the image is
+passed through without a render and costs nothing. The editing nodes override
+`deriveOutputMetadata()`; `ViewMetadata` keeps the default pass-through and
+`CompareMetadata` passes A's metadata through. The two display nodes build
+their text with `MetadataText` and write it through `PassiveKnobUpdate`, so a
+refresh is not an edit. Key filters are
 `MetadataKeyFilter`: comma- or newline-separated globs, `*` matching any
 characters including `/`, `?` one, an empty list matching every key.
 

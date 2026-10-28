@@ -25,113 +25,20 @@
 
 #include "ViewMetadata.h"
 
-#include <charconv>
 #include <sstream>
 #include <string>
-#include <variant>
-#include <vector>
 
 #include <QMetaObject>
-#include <QString>
 
 #include "Engine/AppInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataText.h"
+#include "Engine/Nodes/Metadata/PassiveKnobUpdate.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
-
-namespace {
-std::string
-escapeHtml(const std::string& text)
-{
-    QString escaped = QString::fromStdString(text).toHtmlEscaped();
-
-    escaped.replace(QLatin1Char('\n'), QString::fromUtf8("<br />"));
-
-    return escaped.toStdString();
-}
-
-std::string
-formatDouble(double value)
-{
-    char buffer[64];
-    const std::to_chars_result result = std::to_chars(buffer, buffer + sizeof(buffer), value);
-
-    return std::string(buffer, result.ptr);
-}
-
-template <typename T, typename Format>
-std::string
-joinValues(const std::vector<T>& values,
-           Format format)
-{
-    std::string joined;
-
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        if (i > 0) {
-            joined += ", ";
-        }
-        joined += format(values[i]);
-    }
-
-    return joined;
-}
-
-// Updating the display must not look like an edit: a plain setValue() would still run knobChanged,
-// the Python param-changed callback and a viewer redraw. Blocking the knob's value-change handlers
-// and discarding the evaluation when the bracket closes leaves only the new text.
-class PassiveKnobUpdate {
-public:
-    PassiveKnobUpdate(KnobHolder* holder,
-                      const KnobIPtr& knob)
-        : _holder(holder)
-        , _knob(knob)
-    {
-        _knob->blockValueChanges();
-        _holder->beginChanges();
-    }
-
-    ~PassiveKnobUpdate()
-    {
-        try {
-            _holder->endChanges(true);
-        } catch (...) {
-        }
-        _knob->unblockValueChanges();
-    }
-
-    PassiveKnobUpdate(const PassiveKnobUpdate&) = delete;
-    PassiveKnobUpdate& operator=(const PassiveKnobUpdate&) = delete;
-
-private:
-    KnobHolder* _holder;
-    KnobIPtr _knob;
-};
-
-std::string
-formatValue(const ImageMetadata::Value& value)
-{
-    switch (value.index()) {
-    case 0:
-
-        return std::to_string(std::get<int>(value));
-    case 1:
-
-        return formatDouble(std::get<double>(value));
-    case 2:
-
-        return std::get<std::string>(value);
-    case 3:
-
-        return joinValues(std::get<std::vector<int>>(value), [](int v) { return std::to_string(v); });
-    default:
-
-        return joinValues(std::get<std::vector<double>>(value), [](double v) { return formatDouble(v); });
-    }
-}
-} // namespace
 
 ViewMetadata::ViewMetadata(NodePtr node)
     : NativeEffectBase(node)
@@ -189,12 +96,12 @@ ViewMetadata::refreshMetadataDisplay(double time)
     std::ostringstream text;
 
     if (metadata.empty()) {
-        text << "<i>" << escapeHtml(tr("No metadata").toStdString()) << "</i>";
+        text << "<i>" << MetadataText::escapeHtml(tr("No metadata").toStdString()) << "</i>";
     } else {
         text << "<table cellspacing=\"4\">";
         for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
-            text << "<tr><td style=\"white-space:nowrap\"><b>" << escapeHtml(it->first) << "</b></td><td><font color=#c8c8c8>"
-                 << escapeHtml(formatValue(it->second)) << "</font></td></tr>";
+            text << "<tr><td style=\"white-space:nowrap\"><b>" << MetadataText::escapeHtml(it->first) << "</b></td><td><font color=#c8c8c8>"
+                 << MetadataText::formatValueHtml(it->second) << "</font></td></tr>";
         }
         text << "</table>";
     }

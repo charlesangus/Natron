@@ -137,13 +137,17 @@ recordFoldGpu(const GpuRenderArgs& args,
     if (!result || views.empty() || (blends.size() + 1 != views.size()) || args.outputRect.isNull()) {
         return eStatusFailed;
     }
+    // A null view keeps the default wrap view, whose empty bounds read zero.
     std::vector<gpu::GpuWrapView> wrapViews(views.size());
     for (std::size_t k = 0; k < views.size(); ++k) {
-        if (!views[k] || (views[k]->nComps != args.output.nComps) || !toWrapView(*views[k], &wrapViews[k])) {
+        if (views[k] && ((views[k]->nComps != args.output.nComps) || !toWrapView(*views[k], &wrapViews[k]))) {
             return eStatusFailed;
         }
     }
     if (views.size() == 1) {
+        if (!views[0]) {
+            return eStatusFailed;
+        }
         *result = *views[0];
 
         return eStatusOK;
@@ -211,7 +215,7 @@ recordGpu(const GpuRenderArgs& args,
           std::span<const double> weights)
 {
 #ifdef NATRON_HAVE_GPU
-    if (views.empty() || (views.size() != weights.size()) || args.outputRect.isNull() || !views[0]) {
+    if (views.empty() || (views.size() != weights.size()) || args.outputRect.isNull()) {
         return eStatusFailed;
     }
     const std::vector<float> blends = stepBlends(weights);
@@ -221,7 +225,7 @@ recordGpu(const GpuRenderArgs& args,
     }
     gpu::GpuWrap wrap;
     gpu::GpuWrapView foldedView;
-    if (!toWrapView(args.output, &wrap.dst) || !toWrapView(*views[0], &wrap.src) || !toWrapView(folded, &foldedView)) {
+    if (!toWrapView(args.output, &wrap.dst) || (views[0] && !toWrapView(*views[0], &wrap.src)) || !toWrapView(folded, &foldedView)) {
         return eStatusFailed;
     }
     wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };

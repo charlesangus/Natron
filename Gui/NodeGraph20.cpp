@@ -37,6 +37,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QMouseEvent>
+#include <QPolygonF>
 #include <QToolTip>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -398,7 +399,9 @@ NodeGraph::updateKissPreview()
 
     std::vector<KissInputTip> inputs;
     std::vector<KissOutput> outputs;
-    QRectF reachArea;
+    // A QRectF of one point is null, and uniting with a null rect drops it, so the reach area is
+    // the bounding rect of the points.
+    QPolygonF reachPoints;
     for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
         const NodeGuiPtr& gui = *it;
         NodePtr node = gui->getNode();
@@ -420,14 +423,14 @@ NodeGraph::updateKissPreview()
             }
             const QPointF tip = arrow->mapToScene(arrow->line().p2());
             inputs.push_back(KissInputTip(id, arrow->getInputNumber(), tip.x(), tip.y()));
-            reachArea |= QRectF(tip, tip);
+            reachPoints << tip;
         }
 
         if (feedingNodes.find(gui.get()) == feedingNodes.end()) {
             const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
             const QPointF output(body.center().x(), body.bottom());
             outputs.push_back(KissOutput(id, output.x(), output.y()));
-            reachArea |= QRectF(output, output);
+            reachPoints << output;
         }
     }
     if (inputs.empty() && outputs.empty()) {
@@ -439,7 +442,7 @@ NodeGraph::updateKissPreview()
     // Like an unconnected input's grab radius, the reach is kept in viewport pixels.
     const double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
     const double reach = TO_DPIX(18.) / zoomFactor;
-    reachArea.adjust(-reach, -reach, reach, reach);
+    const QRectF reachArea = reachPoints.boundingRect().adjusted(-reach, -reach, reach, reach);
 
     std::set<NodeGui*> nearbyNodes;
     getNodesWithinViewportRect(mapFromScene(reachArea).boundingRect().adjusted(-1, -1, 1, 1), &nearbyNodes);

@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 200
 SETTLE_MS = 400
-BLUR = "net.sf.cimg.CImgBlur"
+BLUR = "Blur"
 SIZE = "size"
 CROP = "cropToFormat"
 BUTTON = "m114Button"
@@ -243,9 +243,9 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("setup")
-        viewers = [n for n in app.getChildren() if n.getPluginID() == "fr.inria.built-in.Viewer"]
+        viewers = [n for n in app.getChildren() if n.getPluginID() == "Viewer"]
         if not viewers:
-            viewers = [create("fr.inria.built-in.Viewer", 0, 400)]
+            viewers = [create("Viewer", 0, 400)]
         gt.require(len(viewers) > 0 and viewers[0] is not None, "the project has a viewer")
         check(not undo_enabled(), "the history is empty before any edit")
 

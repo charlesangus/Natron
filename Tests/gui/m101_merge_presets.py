@@ -36,7 +36,6 @@ WATCHDOG_S = 280
 MERGE_ID = "Merge"
 MERGE_GROUPING = "Merge"
 PRESET_PROPERTY = "natronMergePreset"
-SUBLABEL_PARAM = "NatronOfxParamStringSublabelName"
 PRESETS = [
     ("Plus", "plus"),
     ("Matte", "matte"),
@@ -132,9 +131,13 @@ try:
         param = node.getParam("operation")
         return param.getOption(param.getValue()) if param is not None else None
 
+    # The node's label knob carries the sub-label as "<Natron>(text)</Natron>".
     def sublabel_of(node):
-        param = node.getParam(SUBLABEL_PARAM)
-        return param.getValue() if param is not None else None
+        param = node.getParam("userTextArea")
+        if param is None:
+            return None
+        match = re.search(r"<Natron>\((.*)\)</Natron>", param.getValue(), re.S)
+        return match.group(1) if match else None
 
     def enter_graph(view):
         centre = QPointF(view.rect().center())

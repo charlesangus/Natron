@@ -638,7 +638,7 @@ TEST_F(ProjectOCIODefaultsTest, ProbeOfMidGrayWrittenToAnEightBitPngEncodesToCod
     ASSERT_TRUE(tmp.isValid());
     const std::string path = (tmp.path() + QLatin1String("/probe.png")).toStdString();
 
-    CreateNodeArgs constantArgs(std::string("net.sf.openfx.ConstantPlugin"), project());
+    CreateNodeArgs constantArgs(std::string("Constant"), project());
     NodePtr constant = appPTR->getTopLevelInstance()->createNode(constantArgs);
     ASSERT_TRUE(bool(constant));
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());

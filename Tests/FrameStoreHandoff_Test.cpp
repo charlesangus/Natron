@@ -66,8 +66,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kConstantPluginID = "net.sf.openfx.ConstantPlugin";
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kConstantPluginID = "Constant";
+const char* const kGradePluginID = "Grade";
 
 const double kTime = 1.;
 const int kSize = 64;

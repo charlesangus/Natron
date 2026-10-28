@@ -39,7 +39,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPREMOVELAYERS "fr.natron.DeepRemoveLayers"
+#define PLUGINID_NATRON_DEEPREMOVELAYERS "DeepRemoveLayers"
 
 #define kDeepRemoveLayersParamOperation "operation"
 #define kDeepRemoveLayersParamChannels "channels"
@@ -168,7 +168,6 @@ private:
 
     KnobChoiceWPtr _operation;
     KnobChannelSetWPtr _channels;
-    KnobStringWPtr _subLabel;
 };
 
 NATRON_NAMESPACE_EXIT

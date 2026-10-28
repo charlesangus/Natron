@@ -41,7 +41,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWHOTPIXELS "fr.natron.RawHotPixels"
+#define PLUGINID_NATRON_RAWHOTPIXELS "RawHotPixels"
 #define PLUGIN_MAJOR_NATRON_RAWHOTPIXELS 1
 
 #define kRawHotPixelsParamThreshold "threshold"

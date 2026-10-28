@@ -205,7 +205,7 @@ protected:
         if (!reader) {
             return NodePtr();
         }
-        NodePtr invert = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+        NodePtr invert = createNode(QString::fromUtf8("Invert"));
         if (!invert) {
             return NodePtr();
         }
@@ -419,7 +419,7 @@ TEST_F(LayerKnobsRenderTest, GradeDefaultRowMasksAlphaThroughTheColorBits)
 {
     NodePtr reader = createReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
     ASSERT_TRUE(bool(grade));
     connectNodes(reader, grade, 0, true);
 
@@ -438,7 +438,7 @@ TEST_F(LayerKnobsRenderTest, TargetLayerSelectProducesTheChosenPlane)
 
     project->reset(false, true);
 
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr constant = createNode(QString::fromUtf8("Constant"));
     ASSERT_TRUE(bool(constant));
     KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(constant->getKnobByName(kNodeParamLayerSelect));
     ASSERT_TRUE(bool(layer));
@@ -541,7 +541,7 @@ TEST_F(LayerKnobsRenderTest, GradeDefaultRowKeepsAlphaByHostMasking)
 {
     NodePtr reader = createReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("Grade"));
     ASSERT_TRUE(bool(grade));
     connectNodes(reader, grade, 0, true);
 
@@ -567,7 +567,7 @@ TEST_F(LayerKnobsRenderTest, BlurOnOnePlaneRoutesEveryPlaneThrough)
 {
     NodePtr reader = createReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     connectNodes(reader, blur, 0, true);
 
@@ -599,7 +599,7 @@ TEST_F(LayerKnobsRenderTest, IdentityBlurPassesEveryPlaneThroughUnchanged)
 {
     NodePtr reader = createReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     connectNodes(reader, blur, 0, true);
 

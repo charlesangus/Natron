@@ -44,7 +44,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWCACORRECT "fr.natron.RawCACorrect"
+#define PLUGINID_NATRON_RAWCACORRECT "RawCACorrect"
 #define PLUGIN_MAJOR_NATRON_RAWCACORRECT 1
 
 #define kRawCACorrectParamIterations "iterations"

@@ -45,7 +45,7 @@
 #include "Engine/Nodes/Raw/RawColorMath.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWTEMPERATURE "fr.natron.RawTemperature"
+#define PLUGINID_NATRON_RAWTEMPERATURE "RawTemperature"
 #define PLUGIN_MAJOR_NATRON_RAWTEMPERATURE 1
 
 #define kRawTemperatureParamMode "mode"

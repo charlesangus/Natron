@@ -33,7 +33,7 @@ STARTUP_TIMEOUT_S = 60.0
 FIRST = 1
 LAST = 60
 DIALOG_NAME = "ForegroundTaskDialog"
-TRACKER_ID = "fr.inria.built-in.Tracker"
+TRACKER_ID = "Tracker"
 TRANSFORM_KNOBS = ("translate", "rotate", "scale", "center")
 
 try:
@@ -126,11 +126,11 @@ try:
         gt.section("setup")
         # V tracks to the end of the project range, so it ends where the Python calls do.
         app.getProjectParam("frameRange").set(FIRST, LAST)
-        checker = app.createNode("net.sf.openfx.CheckerBoardPlugin")
-        require(checker is not None, "create a CheckerBoard", gt.plugin_problem("net.sf.openfx.CheckerBoardPlugin"))
+        checker = app.createNode("CheckerBoard")
+        require(checker is not None, "create a CheckerBoard", gt.plugin_problem("CheckerBoard"))
         checker.setPosition(200, 100)
-        transform = app.createNode("net.sf.openfx.TransformPlugin")
-        require(transform is not None, "create a Transform", gt.plugin_problem("net.sf.openfx.TransformPlugin"))
+        transform = app.createNode("Transform")
+        require(transform is not None, "create a Transform", gt.plugin_problem("Transform"))
         transform.setPosition(200, 200)
         transform.connectInput(0, checker)
         translate = transform.getParam("translate")
@@ -142,7 +142,7 @@ try:
         require(tracker is not None, "create a Tracker", gt.plugin_problem(TRACKER_ID))
         tracker.setPosition(200, 300)
         tracker.connectInput(0, transform)
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         viewer.setPosition(500, 400)
         viewer.connectInput(0, tracker)
         context = tracker.getTrackerContext()
@@ -275,7 +275,7 @@ try:
         yield from tracking_section()
 
     if app.getNode("Viewer1") is None:
-        app.createNode("fr.inria.built-in.Viewer")
+        app.createNode("Viewer")
     gt.run(steps())
 except Exception:
     try:

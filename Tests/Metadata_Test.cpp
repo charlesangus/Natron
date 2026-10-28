@@ -49,6 +49,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
@@ -535,7 +536,7 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
 // host has to carry its keys across to that clip.
 TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const std::string pattern = (tmp.path() + QLatin1String("/downstreamReaderMetadata.####.exr")).toStdString();
@@ -841,11 +842,11 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
     Format small(0, 0, 64, 64, "metadataConcurrentFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(small);
 
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
     NodePtr print = createNode(QString::fromUtf8(kMetadataPrintID));
     NodePtr writer = createNativeWriter();
-    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_NATRON_CONSTANT;
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
     ASSERT_TRUE(bool(print)) << "node creation failed for " << kMetadataPrintID;
     ASSERT_TRUE(bool(writer)) << "node creation failed for " << _writePluginID.toStdString();
@@ -995,9 +996,9 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
 // a count at the project's rate cannot also be explained by the param.
 TEST_F(MetadataPluginFixture, MetadataTimeCodeAdvancesFrameByFrameAtTheHostFrameRate)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr timecode = createNode(QString::fromUtf8(kMetadataTimeCodeID));
-    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_NATRON_CONSTANT;
     ASSERT_TRUE(bool(timecode)) << "node creation failed for " << kMetadataTimeCodeID;
 
     connectNodes(generator, timecode, 0, true);

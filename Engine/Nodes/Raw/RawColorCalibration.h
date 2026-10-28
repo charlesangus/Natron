@@ -49,7 +49,7 @@
 #include "Engine/Nodes/Raw/RawColorCalibrationMath.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWCOLORCALIBRATION "fr.natron.RawColorCalibration"
+#define PLUGINID_NATRON_RAWCOLORCALIBRATION "RawColorCalibration"
 #define PLUGIN_MAJOR_NATRON_RAWCOLORCALIBRATION 1
 
 #define kRawColorCalibrationParamCatOverride "catOverride"

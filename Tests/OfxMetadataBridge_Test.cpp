@@ -368,7 +368,7 @@ TEST_F(BaseTest, OfxMetadataBridgeOfxKeysReachTheNativeNode)
 
 TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachAnOfxNodeThroughNativeNodes)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const std::string pattern = (tmp.path() + QLatin1String("/gateSource.####.exr")).toStdString();

@@ -59,10 +59,10 @@ EXEMPT_KNOB = "userTextArea"
 # Knobs a keystroke can edit, per plugin: (param, dimensions, base value). Values only need to
 # differ between consecutive edits.
 EDITABLE = {
-    "net.sf.openfx.GradePlugin": ("multiply", 4, 1.0),
-    "net.sf.cimg.CImgBlur": ("size", 2, 3.0),
-    "net.sf.openfx.ColorCorrectPlugin": ("MasterSaturation", 4, 1.0),
-    "net.sf.openfx.TransformPlugin": ("translate", 2, 0.25),
+    "Grade": ("multiply", 4, 1.0),
+    "Blur": ("size", 2, 3.0),
+    "ColorCorrect": ("MasterSaturation", 4, 1.0),
+    "Transform": ("translate", 2, 0.25),
     "Merge": ("mix", 1, 0.25),
 }
 
@@ -222,7 +222,7 @@ def measure(label, node, edit, control, by_name, reach):
 
 def build_roto(ns):
     make, grade = ns["make"], ns["grade"]
-    node = make("fr.inria.built-in.Roto")
+    node = make("Roto")
     ctx = node.getRotoContext()
     if ctx is None:
         raise RuntimeError("Roto node has no Python roto context")

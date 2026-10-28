@@ -61,7 +61,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kColorLookupID = PLUGINID_NATRON_COLORLOOKUP;
-const int kOfxColorLookupMajor = 1;
 const int kNativeColorLookupMajor = PLUGIN_MAJOR_NATRON_COLORLOOKUP;
 const double kTime = 1.;
 
@@ -444,7 +443,6 @@ TEST_F(NativeColorLookupTest, UnversionedRequestsGetTheNativeColorLookup)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeColorLookupMajor, unversioned->getMajorVersion());
-    EXPECT_FALSE(isPluginMajorRegistered(kColorLookupID, kOfxColorLookupMajor));
 }
 
 TEST_F(NativeColorLookupTest, RegisteredIdentity)

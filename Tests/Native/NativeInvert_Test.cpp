@@ -59,7 +59,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kInvertID = PLUGINID_NATRON_INVERT;
-const int kOfxInvertMajor = 2;
 const int kNativeInvertMajor = PLUGIN_MAJOR_NATRON_INVERT;
 
 const ParityTolerance kInvertTolerance = ParityTolerance::exact();
@@ -175,7 +174,7 @@ TEST_F(NativeInvertTest, InvertingTwiceRestoresTheSource)
     Format format(0, 0, 128, 96, "nativeInvertTwiceFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(format);
 
-    NodePtr checker = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+    NodePtr checker = createNode(QString::fromUtf8("CheckerBoard"));
     ASSERT_TRUE(bool(checker));
     NodePtr first = createNode(QString::fromUtf8(kInvertID));
     NodePtr second = createNode(QString::fromUtf8(kInvertID));
@@ -206,7 +205,7 @@ TEST_F(NativeInvertTest, ChainRendersTheSameInBothSchedulerModesWithNoUnplannedP
     Format format(0, 0, 128, 96, "nativeInvertChainFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(format);
 
-    NodePtr previous = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+    NodePtr previous = createNode(QString::fromUtf8("CheckerBoard"));
     ASSERT_TRUE(bool(previous));
     NodePtr last;
     for (int i = 0; i < 3; ++i) {
@@ -237,8 +236,6 @@ TEST_F(NativeInvertTest, UnversionedRequestsGetTheNativeInvert)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeInvertMajor, unversioned->getMajorVersion());
-
-    EXPECT_FALSE(isPluginMajorRegistered(kInvertID, kOfxInvertMajor));
 }
 
 TEST_F(NativeInvertTest, RegisteredIdentity)

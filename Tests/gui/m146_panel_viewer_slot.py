@@ -146,13 +146,13 @@ try:
         view = node_graph_view()
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 2400)
 
         gt.section("roto-panel")
-        roto = app.createNode("fr.inria.built-in.Roto")
-        require(roto is not None, "created a Roto node", gt.plugin_problem("fr.inria.built-in.Roto"))
+        roto = app.createNode("Roto")
+        require(roto is not None, "created a Roto node", gt.plugin_problem("Roto"))
         roto.setPosition(0, 0)
         open_panel(view, roto)
         ok = yield ("until", lambda: panel_of(roto) is not None, POLL_TIMEOUT_S)
@@ -164,8 +164,8 @@ try:
         gt.shot("m146-slot-roto.png")
 
         gt.section("rotopaint-takes-the-slot")
-        paint = app.createNode("fr.inria.built-in.RotoPaint")
-        require(paint is not None, "created a RotoPaint node", gt.plugin_problem("fr.inria.built-in.RotoPaint"))
+        paint = app.createNode("RotoPaint")
+        require(paint is not None, "created a RotoPaint node", gt.plugin_problem("RotoPaint"))
         paint.setPosition(300, 0)
         open_panel(view, paint)
         ok = yield ("until", lambda: panel_of(paint) is not None, POLL_TIMEOUT_S)

@@ -33,8 +33,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_CLAMP "net.sf.openfx.Clamp"
-#define PLUGIN_MAJOR_NATRON_CLAMP 3
+#define PLUGINID_NATRON_CLAMP "Clamp"
+#define PLUGIN_MAJOR_NATRON_CLAMP 1
 
 #define kClampParamMinimum "minimum"
 #define kClampParamMinimumEnable "minimumEnable"
@@ -94,7 +94,7 @@ struct ClampOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_CLAMP,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Clamp.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Clamp.png",
         .inputs = kClampInputs,
     };
 

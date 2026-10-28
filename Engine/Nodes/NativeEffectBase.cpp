@@ -186,6 +186,8 @@ NativeEffectBase::NativeEffectBase(NodePtr node)
     , _metadataGeneration(0)
     , _metadataCacheHash(0)
     , _sceneLayerMemo()
+    , _sublabelMutex()
+    , _sublabel()
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -257,6 +259,30 @@ int
 NativeEffectBase::getMinorVersion() const
 {
     return nodeSpec()->minorVersion;
+}
+
+std::string
+NativeEffectBase::getSublabel() const
+{
+    std::lock_guard<std::mutex> lock(_sublabelMutex);
+
+    return _sublabel;
+}
+
+void
+NativeEffectBase::setSublabel(const std::string& sublabel)
+{
+    {
+        std::lock_guard<std::mutex> lock(_sublabelMutex);
+        if (sublabel == _sublabel) {
+            return;
+        }
+        _sublabel = sublabel;
+    }
+    NodePtr node = getNode();
+    if (node) {
+        node->refreshSublabel();
+    }
 }
 
 bool

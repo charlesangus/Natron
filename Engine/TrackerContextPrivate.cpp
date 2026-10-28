@@ -42,6 +42,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -173,7 +174,7 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
 
         {
             QString transformName = fixedNamePrefix + QLatin1String("Transform");
-            CreateNodeArgs args(PLUGINID_OFX_TRANSFORM, isTrackerNode);
+            CreateNodeArgs args(PLUGINID_NATRON_TRANSFORM, isTrackerNode);
             args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
             args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
             args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, transformName.toStdString());

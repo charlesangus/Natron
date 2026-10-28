@@ -160,7 +160,7 @@ TEST_F(BaseTest, RGBPointGetsChannelSetSeededByItsQuad)
 
 TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
 {
-    NodePtr invert = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+    NodePtr invert = createNode(QString::fromUtf8("Invert"));
 
     ASSERT_TRUE(bool(invert));
 
@@ -186,8 +186,8 @@ TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
 // node into an identity at render time.
 TEST_F(BaseTest, AliasedChannelSetResolvesOnTheInnerNode)
 {
-    NodePtr invert = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
-    NodePtr container = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+    NodePtr invert = createNode(QString::fromUtf8("Invert"));
+    NodePtr container = createNode(QString::fromUtf8("Invert"));
 
     ASSERT_TRUE(bool(invert));
     ASSERT_TRUE(bool(container));
@@ -230,8 +230,8 @@ TEST_F(BaseTest, AliasedChannelSetResolvesOnTheInnerNode)
 
 TEST_F(BaseTest, AliasOfATargetLayerKnobReportsTheTargetRole)
 {
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
-    NodePtr container = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+    NodePtr constant = createNode(QString::fromUtf8("Constant"));
+    NodePtr container = createNode(QString::fromUtf8("Invert"));
 
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(container));
@@ -269,7 +269,7 @@ TEST_F(BaseTest, ConstantGetsTargetLayerSelectListingTheRegistry)
 
     project->reset(false, true);
 
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr constant = createNode(QString::fromUtf8("Constant"));
     ASSERT_TRUE(bool(constant));
 
     EXPECT_FALSE(bool(constant->getKnobByName(kNodeParamChannelSet)));
@@ -309,11 +309,11 @@ TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
         const char* seededChannels;
     };
     static const Case cases[] = {
-        { "net.sf.openfx.ConstantPlugin", false, "" },
+        { "Constant", false, "" },
         { "net.sf.openfx.Solid", false, "" },
         { "fr.natron.test.Generator", true, "" },
         { "fr.natron.test.RGBGenerator", true, "RGB" },
-        { "net.sf.openfx.CheckerBoardPlugin", false, "" },
+        { "CheckerBoard", false, "" },
         { "net.sf.openfx.ColorBars", false, "" },
         { "fr.inria.openfx.SeExpr", false, "" },
         { "net.fxarena.openfx.Text", false, "" }
@@ -356,7 +356,7 @@ TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
 
 TEST_F(BaseTest, BlurMaskChannelSelectDefaultsToColorAlpha)
 {
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
 
     ASSERT_TRUE(bool(blur));
 
@@ -494,7 +494,7 @@ TEST_F(BaseTest, ChannelSetListsPresentLayersOfPreferredInput)
 
     project->reset(false, true);
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(channels));
@@ -602,7 +602,7 @@ TEST_F(BaseTest, RotoAndRotoPaintGetTargetLayerSelectWithButtons)
 TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
 {
     const char* ids[] = {
-        "fr.natron.DeepMerge",
+        "DeepMerge",
         PLUGINID_NATRON_SHUFFLE,
         "fr.natron.test.MultiPlane"
     };

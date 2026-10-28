@@ -24,8 +24,8 @@ SETTLE_MS = 600
 POLL_TIMEOUT_S = 25.0
 ALL_SECTIONS = ("config-switch", "chain", "cdl-file", "retired-ids")
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_VIEWER = "Viewer"
 PLUGIN_COLORSPACE = "OCIOColorSpace"
 PLUGIN_DISPLAY = "OCIODisplay"
 PLUGIN_CDL = "OCIOCDLTransform"

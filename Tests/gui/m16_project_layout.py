@@ -30,11 +30,11 @@ POS_TOL = 0.01
 COLOR_TOL = 1e-3
 DRAG_TOL = 6.0
 
-VIEWER = "fr.inria.built-in.Viewer"
-BACKDROP = "fr.inria.built-in.BackDrop"
-GROUP = "fr.inria.built-in.Group"
-BLUR = "net.sf.cimg.CImgBlur"
-GRADE = "net.sf.openfx.GradePlugin"
+VIEWER = "Viewer"
+BACKDROP = "Backdrop"
+GROUP = "Group"
+BLUR = "Blur"
+GRADE = "Grade"
 
 BACKDROP_POS = (-420.0, -310.0)
 BACKDROP_SIZE = (610.0, 390.0)

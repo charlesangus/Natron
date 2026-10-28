@@ -44,6 +44,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/Timer.h" // gettimeofday()
@@ -812,7 +813,7 @@ TrackerContext::exportTrackDataFromExportOptions()
         pluginID = QString::fromUtf8(PLUGINID_NATRON_CORNERPIN);
         break;
     case eTrackerTransformNodeTransform:
-        pluginID = QString::fromUtf8(PLUGINID_OFX_TRANSFORM);
+        pluginID = QString::fromUtf8(PLUGINID_NATRON_TRANSFORM);
         break;
     }
 

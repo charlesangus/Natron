@@ -37,8 +37,8 @@
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/RectD.h"
 
-#define PLUGINID_NATRON_TRANSFORM "net.sf.openfx.TransformPlugin"
-#define PLUGIN_MAJOR_NATRON_TRANSFORM 2
+#define PLUGINID_NATRON_TRANSFORM "Transform"
+#define PLUGIN_MAJOR_NATRON_TRANSFORM 1
 #define PLUGINID_NATRON_TRANSFORMMASKED "net.sf.openfx.TransformMaskedPlugin"
 #define PLUGIN_MAJOR_NATRON_TRANSFORMMASKED 2
 
@@ -94,7 +94,7 @@ inline constexpr NodeSpec kTransformNodeSpec = {
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORM,
     .minorVersion = 0,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png",
+    .icon = NATRON_IMAGES_PATH "NativeNodes/Transform.png",
     .inputs = kTransformInputs,
 };
 

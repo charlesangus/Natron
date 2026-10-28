@@ -85,8 +85,8 @@ namespace {
 const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
 
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
-const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
+const char* const kGradePluginID = "Grade";
+const char* const kBlurPluginID = "Blur";
 const char* const kMergePluginID = "Merge";
 const char* const kIDistortPluginID = kNatronTestMatrixWarpPluginID;
 const char* const kPremultPluginID = kNatronTestMultiPlanePluginID;
@@ -803,9 +803,7 @@ TEST_F(ColorViewsRenderTest, NoUserFacingColor)
     in2->setLayer("specular");
     out2->setLayer("diffuse");
 
-    KnobStringPtr sublabel = std::dynamic_pointer_cast<KnobString>(shuffle->getKnobByName(kNatronOfxParamStringSublabelName));
-    ASSERT_TRUE(bool(sublabel));
-    expectNoUserFacingColor(sublabel->getValue());
+    expectNoUserFacingColor(shuffle->getSublabel());
 
     Natron::Python::Effect effect(shuffle);
     std::list<Natron::Python::ImageLayer> available = effect.getAvailableLayers(-1);

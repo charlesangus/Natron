@@ -57,9 +57,9 @@ PANEL_MS = 900
 PAINT_WINDOW_MS = 300
 PAINT_SETTLE_MS = 700
 
-GRADE_ID = "net.sf.openfx.GradePlugin"
-CC_ID = "net.sf.openfx.ColorCorrectPlugin"
-BLUR_ID = "net.sf.cimg.CImgBlur"
+GRADE_ID = "Grade"
+CC_ID = "ColorCorrect"
+BLUR_ID = "Blur"
 GAIN = "white"
 CC_GAIN = "MasterGain"
 

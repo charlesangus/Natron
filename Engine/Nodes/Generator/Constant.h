@@ -34,9 +34,9 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 
-#define PLUGINID_NATRON_CONSTANT "net.sf.openfx.ConstantPlugin"
+#define PLUGINID_NATRON_CONSTANT "Constant"
 #define PLUGINID_NATRON_SOLID "net.sf.openfx.Solid"
-#define PLUGIN_MAJOR_NATRON_CONSTANT 2
+#define PLUGIN_MAJOR_NATRON_CONSTANT 1
 
 #define kConstantParamColor "color"
 
@@ -61,7 +61,7 @@ struct ConstantOp {
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ConstantPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Constant.png",
     };
 
     static constexpr NodeSpec kSolidNodeSpec = {

@@ -376,15 +376,15 @@ try:
         # exposes 1 input before anything else is created; connecting to it and then adding one
         # more Input node gives the "one Input, then a second Input" shape under test.
         gt.section("a1-group-second-input")
-        group_a1 = create("fr.inria.built-in.Group", 0, 0)
-        const_a1 = create("net.sf.openfx.ConstantPlugin", -300, 0)
+        group_a1 = create("Group", 0, 0)
+        const_a1 = create("Constant", -300, 0)
         check(group_a1.getMaxInputCount() == 1, "a1: the Group starts with its built-in 1 input")
         connect(group_a1, 0, const_a1)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         check_pipe_persists(root_graph(), const_a1, group_a1, "a1: Constant -> Group before the 2nd Input")
-        create("fr.inria.built-in.Input", 0, 250, group=group_a1)
+        create("Input", 0, 250, group=group_a1)
         yield ("sleep", SETTLE_MS)
         check(group_a1.getMaxInputCount() >= 2, "a1: the Group now exposes >= 2 inputs")
         check_pipe_persists(root_graph(), const_a1, group_a1, "a1: Constant -> Group after the 2nd Input")
@@ -392,12 +392,12 @@ try:
 
         # ---- (a2) JoinViews gains a project view; its two existing input pipes must survive.
         gt.section("a2-joinviews-new-view")
-        join = create("fr.inria.built-in.JoinViews", 900, 0)
+        join = create("JoinViews", 900, 0)
         add_project_view("M55View2")
         yield ("sleep", SETTLE_MS)
         check(join.getMaxInputCount() >= 2, "a2: JoinViews exposes >= 2 inputs with 2 project views")
-        src_a2_0 = create("net.sf.openfx.ConstantPlugin", 600, -150)
-        src_a2_1 = create("net.sf.openfx.ConstantPlugin", 600, 150)
+        src_a2_0 = create("Constant", 600, -150)
+        src_a2_1 = create("Constant", 600, 150)
         connect(join, 0, src_a2_0)
         connect(join, 1, src_a2_1)
         app.clearSelection()
@@ -414,9 +414,9 @@ try:
 
         # ---- (b2) Copy a connected chain and paste it into a group graph.
         gt.section("b2-copy-paste-into-group")
-        group_b2 = create("fr.inria.built-in.Group", 1500, 0)
-        const_b2 = create("net.sf.openfx.ConstantPlugin", 1500, 400)
-        blur_b2 = create("net.sf.cimg.CImgBlur", 1500, 600)
+        group_b2 = create("Group", 1500, 0)
+        const_b2 = create("Constant", 1500, 400)
+        blur_b2 = create("Blur", 1500, 600)
         connect(blur_b2, 0, const_b2)
         app.setSelection([const_b2, blur_b2])
         QApplication.processEvents()
@@ -426,8 +426,8 @@ try:
         yield ("sleep", SETTLE_MS)
         pasted_b2 = [n for n in group_b2.getChildren() if n.getScriptName() not in before_b2]
         if check(len(pasted_b2) == 2, "b2: pasting the chain created 2 nodes inside the group"):
-            pasted_const = next((n for n in pasted_b2 if n.getPluginID() == "net.sf.openfx.ConstantPlugin"), None)
-            pasted_blur = next((n for n in pasted_b2 if n.getPluginID() == "net.sf.cimg.CImgBlur"), None)
+            pasted_const = next((n for n in pasted_b2 if n.getPluginID() == "Constant"), None)
+            pasted_blur = next((n for n in pasted_b2 if n.getPluginID() == "Blur"), None)
             if check(pasted_const is not None and pasted_blur is not None,
                      "b2: found the pasted Constant and Blur"):
                 sub_b2 = show_group_graph(group_b2)
@@ -440,9 +440,9 @@ try:
 
         # ---- (c1) Delete a node with both an input and an output connected, then undo.
         gt.section("c1-delete-undo")
-        src_c1 = create("net.sf.openfx.ConstantPlugin", 2100, 0)
-        mid_c1 = create("net.sf.cimg.CImgBlur", 2100, 250)
-        dst_c1 = create("net.sf.cimg.CImgBlur", 2100, 500)
+        src_c1 = create("Constant", 2100, 0)
+        mid_c1 = create("Blur", 2100, 250)
+        dst_c1 = create("Blur", 2100, 500)
         connect(mid_c1, 0, src_c1)
         connect(dst_c1, 0, mid_c1)
         app.clearSelection()
@@ -467,10 +467,10 @@ try:
 
         # ---- (c2) Same as (c1), but the chain lives inside a group.
         gt.section("c2-delete-undo-in-group")
-        group_c2 = create("fr.inria.built-in.Group", 2700, 0)
-        src_c2 = create("net.sf.openfx.ConstantPlugin", 0, 0, group=group_c2)
-        mid_c2 = create("net.sf.cimg.CImgBlur", 0, 250, group=group_c2)
-        dst_c2 = create("net.sf.cimg.CImgBlur", 0, 500, group=group_c2)
+        group_c2 = create("Group", 2700, 0)
+        src_c2 = create("Constant", 0, 0, group=group_c2)
+        mid_c2 = create("Blur", 0, 250, group=group_c2)
+        dst_c2 = create("Blur", 0, 500, group=group_c2)
         connect(mid_c2, 0, src_c2)
         connect(dst_c2, 0, mid_c2)
         sub_c2 = show_group_graph(group_c2)
@@ -495,8 +495,8 @@ try:
 
         # ---- (d) Overlapping nodes, then separated again: the pipe must come back with its arrow.
         gt.section("d-overlap-separate")
-        src_d = create("net.sf.openfx.ConstantPlugin", 3300, 0)
-        dst_d = create("net.sf.cimg.CImgBlur", 3300, 300)
+        src_d = create("Constant", 3300, 0)
+        dst_d = create("Blur", 3300, 300)
         connect(dst_d, 0, src_d)
         app.clearSelection()
         gt.close_all_panels()
@@ -519,8 +519,8 @@ try:
         b_idx = input_index(merge_e, "B")
         mask_idx = input_index(merge_e, "Mask")
         check(mask_idx is not None, "e: found Merge's Mask input")
-        src_a_e = create("net.sf.openfx.ConstantPlugin", 3600, -150)
-        src_b_e = create("net.sf.openfx.ConstantPlugin", 3600, 150)
+        src_a_e = create("Constant", 3600, -150)
+        src_b_e = create("Constant", 3600, 150)
         if a_idx is not None:
             connect(merge_e, a_idx, src_a_e)
         if b_idx is not None:
@@ -551,8 +551,8 @@ try:
         # setInputVisible()-style Python hiding is not exposed on Effect (Engine/PyNode.h has no
         # such method), so it is not exercised here.
         gt.section("controls-hide-inputs-knob")
-        src_ctrl = create("net.sf.openfx.ConstantPlugin", 4700, 0)
-        dst_ctrl = create("net.sf.cimg.CImgBlur", 4700, 300)
+        src_ctrl = create("Constant", 4700, 0)
+        dst_ctrl = create("Blur", 4700, 300)
         connect(dst_ctrl, 0, src_ctrl)
         hide_param = dst_ctrl.getParam("hideInputs")
         if check(hide_param is not None, "controls: found the per-node 'Hide inputs' knob"):
@@ -580,11 +580,11 @@ try:
         # Connects into the Group's own built-in Output (see a1's comment above) rather than
         # creating a second one, so the reloaded lookup by exact name below is unambiguous.
         gt.section("b1-save-close-reload-group")
-        group_b1 = create("fr.inria.built-in.Group", 0, 900)
-        const_b1 = create("net.sf.openfx.ConstantPlugin", 0, 900, group=group_b1)
-        blur_b1 = create("net.sf.cimg.CImgBlur", 0, 1100, group=group_b1)
+        group_b1 = create("Group", 0, 900)
+        const_b1 = create("Constant", 0, 900, group=group_b1)
+        blur_b1 = create("Blur", 0, 1100, group=group_b1)
         output_b1 = next((n for n in group_b1.getChildren()
-                           if n.getPluginID() == "fr.inria.built-in.Output"), None)
+                           if n.getPluginID() == "Output"), None)
         check(output_b1 is not None, "b1: found the Group's built-in Output")
         connect(blur_b1, 0, const_b1)
         # The built-in Output starts wired straight to the built-in Input as a pass-through;

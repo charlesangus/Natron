@@ -77,7 +77,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Source"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("Source")
     lastNode.setLabel("Source")
     lastNode.setPosition(1000, 67)
@@ -89,7 +89,7 @@ def createInstance(app,group):
     # End of node "Source"
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     lastNode.setPosition(1000, 497)
     lastNode.setSize(104, 34)
@@ -100,7 +100,7 @@ def createInstance(app,group):
     # End of node "Output1"
 
     # Start of node "Transform1"
-    lastNode = app.createNode("net.sf.openfx.TransformPlugin", 1, group)
+    lastNode = app.createNode("Transform", 1, group)
     lastNode.setScriptName("Transform1")
     lastNode.setLabel("Transform1")
     lastNode.setPosition(1000, 173)
@@ -133,7 +133,7 @@ def createInstance(app,group):
     # End of node "Transform1"
 
     # Start of node "Transform3"
-    lastNode = app.createNode("net.sf.openfx.TransformPlugin", 1, group)
+    lastNode = app.createNode("Transform", 1, group)
     lastNode.setScriptName("Transform3")
     lastNode.setLabel("Transform3")
     lastNode.setPosition(1000, 328)
@@ -171,7 +171,7 @@ def createInstance(app,group):
     # End of node "Transform3"
 
     # Start of node "Blur2"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 3, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("Blur2")
     lastNode.setLabel("Blur2")
     lastNode.setPosition(1000, 246)

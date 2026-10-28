@@ -46,7 +46,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWHIGHLIGHTS "fr.natron.RawHighlights"
+#define PLUGINID_NATRON_RAWHIGHLIGHTS "RawHighlights"
 #define PLUGIN_MAJOR_NATRON_RAWHIGHLIGHTS 1
 
 #define kRawHighlightsParamMode "mode"

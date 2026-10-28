@@ -130,13 +130,13 @@ try:
         os.makedirs(OUT_DIR, exist_ok=True)
         for stale in frames_written():
             os.remove(stale)
-        constant = app.createNode("net.sf.openfx.ConstantPlugin")
-        require(constant is not None, "create a Constant", gt.plugin_problem("net.sf.openfx.ConstantPlugin"))
+        constant = app.createNode("Constant")
+        require(constant is not None, "create a Constant", gt.plugin_problem("Constant"))
         constant.setPosition(200, 100)
         constant.getParam("color").set(GREEN[0], GREEN[1], GREEN[2], 1.0)
         # A slow node between the two keeps each frame long enough to pause after a few.
-        blur = app.createNode("net.sf.cimg.CImgBlur")
-        require(blur is not None, "create a Blur", gt.plugin_problem("net.sf.cimg.CImgBlur"))
+        blur = app.createNode("Blur")
+        require(blur is not None, "create a Blur", gt.plugin_problem("Blur"))
         blur.setPosition(200, 200)
         blur.connectInput(0, constant)
         if blur.getParam("size") is not None:
@@ -205,7 +205,7 @@ try:
         yield from render_section()
 
     if app.getNode("Viewer1") is None:
-        app.createNode("fr.inria.built-in.Viewer")
+        app.createNode("Viewer")
     gt.run(steps())
 except Exception:
     try:

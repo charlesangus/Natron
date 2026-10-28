@@ -39,7 +39,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 
-#define PLUGINID_NATRON_ADDLAYERS "fr.natron.AddLayers"
+#define PLUGINID_NATRON_ADDLAYERS "AddLayers"
 
 #define kAddLayersParamLayers "layers"
 
@@ -214,7 +214,6 @@ private:
     void refreshSubLabel();
 
     KnobChannelSetWPtr _layers;
-    KnobStringWPtr _subLabel;
     mutable std::mutex _registrySignatureMutex;
     std::string _registrySignature;
 };

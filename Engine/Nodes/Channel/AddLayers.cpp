@@ -50,7 +50,6 @@ NATRON_NAMESPACE_ENTER
 AddLayers::AddLayers(NodePtr node)
     : ChannelRouteEffect(node)
     , _layers()
-    , _subLabel()
     , _registrySignature()
 {
 }
@@ -87,15 +86,6 @@ AddLayers::initializeKnobs()
                               "row matches project layer names, e.g. spec.* for every layer starting with spec."));
     page->addKnob(layers);
     _layers = layers;
-
-    // Follows PrecompNode's kNatronOfxParamStringSublabelName precedent: Node.cpp wraps
-    // this knob's value in parentheses and shows it next to the node's label on its own.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    page->addKnob(sublabel);
-    _subLabel = sublabel;
 
     NodePtr node = getNode();
     if (node) {
@@ -308,11 +298,7 @@ AddLayers::buildSubLabel()
 void
 AddLayers::refreshSubLabel()
 {
-    KnobStringPtr sublabel = _subLabel.lock();
-
-    if (sublabel) {
-        sublabel->setValue(buildSubLabel());
-    }
+    setSublabel(buildSubLabel());
 }
 
 bool

@@ -110,7 +110,6 @@ Shuffle::Shuffle(NodePtr node)
     , _out2()
     , _mapping()
     , _bbox()
-    , _subLabel()
 {
 }
 
@@ -205,15 +204,6 @@ Shuffle::initializeKnobs()
         page->addKnob(bbox);
         _bbox = bbox;
     }
-
-    // Follows PrecompNode's kNatronOfxParamStringSublabelName precedent: Node.cpp wraps
-    // this knob's value in parentheses and shows it next to the node's label on its own.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    page->addKnob(sublabel);
-    _subLabel = sublabel;
 
     NodePtr node = getNode();
     if (node) {
@@ -585,11 +575,7 @@ Shuffle::buildSubLabel()
 void
 Shuffle::refreshSubLabel()
 {
-    KnobStringPtr sublabel = _subLabel.lock();
-
-    if (sublabel) {
-        sublabel->setValue(buildSubLabel());
-    }
+    setSublabel(buildSubLabel());
 }
 
 void

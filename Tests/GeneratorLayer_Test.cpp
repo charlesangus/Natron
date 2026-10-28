@@ -235,7 +235,7 @@ TEST_F(GeneratorLayerTest, ConstantWithoutSourceWritesDepthOnly)
     project->reset(false, true);
 
     KnobLayerSelectPtr layer;
-    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer);
+    NodePtr constant = createGenerator("Constant", &layer);
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(layer));
     EXPECT_TRUE(constant->isTargetLayerKnob(layer));
@@ -324,7 +324,7 @@ TEST_F(GeneratorLayerTest, ConstantWritesTwoChannelsOfColor)
     project->reset(false, true);
 
     KnobLayerSelectPtr layer;
-    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer);
+    NodePtr constant = createGenerator("Constant", &layer);
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(layer));
     EXPECT_FALSE(bool(constant->getKnobByName(kNatronOfxParamProcessR)));

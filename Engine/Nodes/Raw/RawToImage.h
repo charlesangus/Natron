@@ -33,7 +33,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_RAWTOIMAGE "fr.natron.RawToImage"
+#define PLUGINID_NATRON_RAWTOIMAGE "RawToImage"
 #define PLUGIN_MAJOR_NATRON_RAWTOIMAGE 1
 
 NATRON_NAMESPACE_ENTER

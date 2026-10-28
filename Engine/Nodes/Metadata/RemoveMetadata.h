@@ -31,7 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_REMOVEMETADATA "fr.natron.RemoveMetadata"
+#define PLUGINID_NATRON_REMOVEMETADATA "RemoveMetadata"
 
 NATRON_NAMESPACE_ENTER
 

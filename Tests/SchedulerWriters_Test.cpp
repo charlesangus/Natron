@@ -57,8 +57,10 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -72,7 +74,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 
 const int kFirstFrame = 1;
 const int kLastFrame = 3;
@@ -173,7 +175,7 @@ protected:
     NodePtr createGrade(const NodePtr& source,
                         double factor)
     {
-        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         EXPECT_TRUE(bool(grade));
         if (!grade) {
             return grade;
@@ -286,7 +288,7 @@ TEST_F(SchedulerWriters, WideTree)
 
 TEST_F(SchedulerWriters, Diamond)
 {
-    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     ASSERT_TRUE(bool(constant));
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
     ASSERT_TRUE(color != NULL);

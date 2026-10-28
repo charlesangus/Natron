@@ -53,11 +53,11 @@ def createInstance(app,group):
     yposition = selectedNodePosition[1] + selectedNodeSize[1] * 3.
     xposition = selectedNodePosition[0] + selectedNodeSize[0] / 2. - totalWidth / 2.
 
-    joinViewsNode = app.createNode("fr.inria.built-in.JoinViews")
+    joinViewsNode = app.createNode("JoinViews")
     joinViewsNode.setPosition(selectedNodePosition[0], yposition + selectedNodeSize[1] * 3.)
 
     for i, v in enumerate(views):
-        oneViewNode = app.createNode("fr.inria.built-in.OneView")
+        oneViewNode = app.createNode("OneView")
         oneViewNode.setLabel(v)
         oneViewNode.getParam("view").set(i)
         oneViewNode.setPosition(xposition,yposition)

@@ -60,7 +60,6 @@ NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
-const int kOfxColorMathMajor = 2;
 const int kNativeColorMathMajor = PLUGIN_MAJOR_NATRON_COLORMATH;
 const double kTime = 1.;
 
@@ -274,7 +273,6 @@ TEST_F(NativeColorMathTest, UnversionedRequestsGetTheNativeNodes)
         EXPECT_TRUE(isNative(unversioned)) << cases[i].label;
         EXPECT_EQ(kNativeColorMathMajor, unversioned->getMajorVersion()) << cases[i].label;
         EXPECT_EQ(std::string(cases[i].id), unversioned->getPluginID());
-        EXPECT_FALSE(isPluginMajorRegistered(cases[i].id, kOfxColorMathMajor)) << cases[i].label;
     }
 }
 

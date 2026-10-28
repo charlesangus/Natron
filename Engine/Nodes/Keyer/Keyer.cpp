@@ -95,7 +95,7 @@ constexpr NodeSpec kKeyerNodeSpec = {
     .grouping = PLUGIN_GROUP_KEYER,
     .majorVersion = PLUGIN_MAJOR_NATRON_KEYER,
     .minorVersion = 0,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.KeyerPlugin.png",
+    .icon = NATRON_IMAGES_PATH "NativeNodes/Keyer.png",
     .inputs = kKeyerInputs,
 };
 

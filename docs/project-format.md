@@ -194,8 +194,8 @@ layers:
 timeline: {current: 12}
 nodes:
   Blur1:
-    plugin: "net.sf.cimg.CImgBlur"
-    version: [4, 0]
+    plugin: "Blur"
+    version: [1, 0]
     label: "Soft blur"
     pos: [120, -40]
     knobs:
@@ -203,7 +203,7 @@ nodes:
     inputs: {Source: "Read1"}
     pages: ["Controls", "Node"]
   Group1:
-    plugin: "fr.inria.built-in.Group"
+    plugin: "Group"
     version: [1, 0]
     python: {module: "SoftGlow", version: 2}
     inputs: {Input1: "Blur1"}
@@ -241,26 +241,26 @@ nodes:
                   helps: ["", ""]
     children:
       Blur2:
-        plugin: "net.sf.cimg.CImgBlur"
-        version: [4, 0]
+        plugin: "Blur"
+        version: [1, 0]
         pos: [-35.5, 80]
         knobs:
           size: {expr: "thisGroup.amount.get() * 20", hasRet: false}
         inputs: {Source: "Input1"}
       Input1:
-        plugin: "fr.inria.built-in.Input"
+        plugin: "Input"
         version: [1, 0]
       Output1:
-        plugin: "fr.inria.built-in.Output"
+        plugin: "Output"
         version: [1, 0]
         inputs: {Source: "Blur2"}
   Read1:
-    plugin: "fr.inria.built-in.Read"
+    plugin: "Read"
     version: [1, 0]
     knobs:
       filename: "plates/shot010.####.exr"
   Viewer1:
-    plugin: "fr.inria.built-in.Viewer"
+    plugin: "Viewer"
     version: [1, 0]
     inputs: {"1": "Group1"}
 ```

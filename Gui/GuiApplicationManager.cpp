@@ -60,7 +60,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Settings.h"
@@ -1145,19 +1149,19 @@ GuiApplicationManager::onPluginLoaded(Plugin* plugin)
     bool hasShortcut = true;
 
     /*These are the plug-ins which have a default shortcut. Other plug-ins can have a user-assigned shortcut.*/
-    if ( pluginID == QString::fromUtf8(PLUGINID_OFX_TRANSFORM) ) {
+    if (pluginID == QString::fromUtf8(PLUGINID_NATRON_TRANSFORM)) {
         symbol = Qt::Key_T;
-    } else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTO) ) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTO)) {
         symbol = Qt::Key_O;
-    } else if ( pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT) ) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT)) {
         symbol = Qt::Key_P;
     } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE)) {
         symbol = Qt::Key_M;
-    } else if (pluginID == QString::fromUtf8(PLUGINID_OFX_GRADE)) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_GRADE)) {
         symbol = Qt::Key_G;
-    } else if (pluginID == QString::fromUtf8(PLUGINID_OFX_COLORCORRECT)) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_COLORCORRECT)) {
         symbol = Qt::Key_C;
-    } else if (pluginID == QString::fromUtf8(PLUGINID_OFX_BLURCIMG)) {
+    } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_BLUR)) {
         symbol = Qt::Key_B;
     } else if (pluginID == QString::fromUtf8(PLUGINID_NATRON_DOT)) {
         symbol = Qt::Key_Period;

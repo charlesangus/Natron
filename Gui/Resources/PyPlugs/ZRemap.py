@@ -196,7 +196,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(804, 20)
@@ -221,7 +221,7 @@ def createInstance(app,group):
     # End of node "Shuffle1"
 
     # Start of node "Grade1"
-    lastNode = app.createNode("net.sf.openfx.GradePlugin", 2, group)
+    lastNode = app.createNode("Grade", 1, group)
     lastNode.setScriptName("Grade1")
     lastNode.setLabel("Grade1")
     lastNode.setPosition(726, 92)
@@ -251,7 +251,7 @@ def createInstance(app,group):
     # End of node "Grade1"
 
     # Start of node "Invert1"
-    lastNode = app.createNode("net.sf.openfx.Invert", 2, group)
+    lastNode = app.createNode("Invert", 1, group)
     lastNode.setScriptName("Invert1")
     lastNode.setLabel("Invert1")
     lastNode.setPosition(726, 230)
@@ -263,7 +263,7 @@ def createInstance(app,group):
     # End of node "Invert1"
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     lastNode.setPosition(882, 496)
     lastNode.setSize(104, 34)
@@ -274,7 +274,7 @@ def createInstance(app,group):
     # End of node "Output1"
 
     # Start of node "InputSource"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("InputSource")
     lastNode.setLabel("InputSource")
     lastNode.setPosition(882, -40)

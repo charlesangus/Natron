@@ -50,7 +50,6 @@ RemoveLayers::RemoveLayers(NodePtr node)
     : ChannelRouteEffect(node)
     , _operation()
     , _channels()
-    , _subLabel()
 {
 }
 
@@ -99,15 +98,6 @@ RemoveLayers::initializeKnobs()
                                 "spec. A layer the input does not have is ignored."));
     page->addKnob(channels);
     _channels = channels;
-
-    // Follows PrecompNode's kNatronOfxParamStringSublabelName precedent: Node.cpp wraps
-    // this knob's value in parentheses and shows it next to the node's label on its own.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    page->addKnob(sublabel);
-    _subLabel = sublabel;
 
     NodePtr node = getNode();
     if (node) {
@@ -390,11 +380,7 @@ RemoveLayers::buildSubLabel()
 void
 RemoveLayers::refreshSubLabel()
 {
-    KnobStringPtr sublabel = _subLabel.lock();
-
-    if (sublabel) {
-        sublabel->setValue(buildSubLabel());
-    }
+    setSublabel(buildSubLabel());
 }
 
 bool

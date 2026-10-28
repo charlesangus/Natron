@@ -117,10 +117,10 @@ if DRY_RUN:
             return _Node(plugin_id)
 
         def createReader(self, path, *args):
-            return _Node("fr.inria.built-in.Read")
+            return _Node("Read")
 
         def createWriter(self, path, *args):
-            return _Node("fr.inria.built-in.Write")
+            return _Node("Write")
 
         def getProjectParam(self, name):
             return _Param()
@@ -166,7 +166,7 @@ if IMPL not in ("ofx", "native"):
 # plugin ID -> (OFX major, native major). A native node takes over its OFX ID at the next major, so
 # an unversioned request already resolves to it; only the benchmark needs to pick one explicitly.
 NATIVE_MAJORS = {
-    "net.sf.openfx.GradePlugin": (2, 3),
+    "Grade": (2, 1),
 }
 
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
@@ -248,7 +248,7 @@ def read(index):
         node = app.createReader(pattern)
     if node is None:
         raise RuntimeError("could not create a reader for " + pattern)
-    counts["fr.inria.built-in.Read"] = counts.get("fr.inria.built-in.Read", 0) + 1
+    counts["Read"] = counts.get("Read", 0) + 1
     for name in ("before", "after"):
         if node.getParam(name) is not None:
             set_choice(node, name, "loop")
@@ -264,7 +264,7 @@ def deep_read():
         raise RuntimeError("deepcomp renders frames 1-%d but %s has %d frames; DeepRead cannot loop, so "
                            "regenerate with BENCH_PLATE_FRAMES=%d or lower BENCH_FRAMES/BENCH_RANGE"
                            % (LAST_FRAME, pattern, n_frames, LAST_FRAME))
-    node = make("fr.natron.DeepRead")
+    node = make("DeepRead")
     param(node, "filename").set(pattern)
     plate_reads.append(frame_bytes)
     return node
@@ -272,7 +272,7 @@ def deep_read():
 
 def source(index):
     # Animated so that nothing downstream is treated as frame-invariant and cached once.
-    cb = make("net.sf.openfx.CheckerBoardPlugin")
+    cb = make("CheckerBoard")
     if RES == "tiny" or CUSTOM_SIZE:
         param(cb, "extent").set("Size")
         param(cb, "size").set(*SIZES[RES])
@@ -285,28 +285,28 @@ def source(index):
 
 
 def grade(inp, i):
-    n = make("net.sf.openfx.GradePlugin")
+    n = make("Grade")
     n.connectInput(0, inp)
     param(n, "multiply").set(1.0 + 0.0001 * (i % 7 + 1), 1.0, 1.0, 1.0)
     return n
 
 
 def colorcorrect(inp, i):
-    n = make("net.sf.openfx.ColorCorrectPlugin")
+    n = make("ColorCorrect")
     n.connectInput(0, inp)
     param(n, "MasterSaturation").set(1.0 + 0.001 * (i % 5 + 1), 1.0, 1.0, 1.0)
     return n
 
 
 def transform(inp, i):
-    n = make("net.sf.openfx.TransformPlugin")
+    n = make("Transform")
     n.connectInput(0, inp)
     param(n, "translate").set(0.25 + 0.01 * (i % 3), 0.0)
     return n
 
 
 def blur(inp, i):
-    n = make("net.sf.cimg.CImgBlur")
+    n = make("Blur")
     n.connectInput(0, inp)
     param(n, "size").set(BLUR_SIZE, BLUR_SIZE)
     if BLUR_FILTER:
@@ -330,7 +330,7 @@ def merge(a, b, mask=None):
 
 def moving(inp, i):
     # A small per-frame translate, like a stabilised plate drifting, so no frame repeats another.
-    n = make("net.sf.openfx.TransformPlugin")
+    n = make("Transform")
     n.connectInput(0, inp)
     t = param(n, "translate")
     for f in range(1, LAST_FRAME + 1):
@@ -340,7 +340,7 @@ def moving(inp, i):
 
 
 def roto(i):
-    n = make("fr.inria.built-in.Roto")
+    n = make("Roto")
     ctx = n.getRotoContext()
     if ctx is None:
         raise RuntimeError("Roto node has no Python roto context")
@@ -355,7 +355,7 @@ def roto(i):
 
 
 def dot(inp):
-    n = make("fr.inria.built-in.Dot")
+    n = make("Dot")
     n.connectInput(0, inp)
     return n
 
@@ -407,7 +407,7 @@ def build_mergesrcchain():
 
 
 def animated_transform(inp):
-    xf = make("net.sf.openfx.TransformPlugin")
+    xf = make("Transform")
     xf.connectInput(0, inp)
     w, h = SIZES[RES]
     param(xf, "center").set(w / 2.0, h / 2.0)
@@ -435,13 +435,13 @@ def erode(inp):
 
 
 def chromakeyer(inp):
-    n = make("net.sf.openfx.ChromaKeyerPlugin")
+    n = make("ChromaKeyer")
     n.connectInput(0, inp)
     return n
 
 
 def edgedetect(inp):
-    n = make("eu.cimg.EdgeDetect")
+    n = make("EdgeDetect")
     n.connectInput(0, inp)
     return n
 
@@ -543,11 +543,11 @@ def build_deepcomp():
     k = max(2, N // 2)
     out = deep_read()
     for _ in range(1, k):
-        m = make("fr.natron.DeepMerge")
+        m = make("DeepMerge")
         m.connectInput(0, deep_read())
         m.connectInput(1, out)
         out = m
-    flat = make("fr.natron.DeepToImage")
+    flat = make("DeepToImage")
     flat.connectInput(0, out)
     return merge(flat, read(0))
 

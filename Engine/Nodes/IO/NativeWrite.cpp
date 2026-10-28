@@ -923,15 +923,6 @@ NativeWrite::initializeKnobs()
     page->addKnob(lastFrame);
     _lastFrame = lastFrame;
 
-    // Node.cpp shows this knob's value, in parentheses, next to the node's label; it follows the
-    // file name there.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    sublabel->setEvaluateOnChange(false);
-    page->addKnob(sublabel);
-
     KnobIntPtr frameIncr = createKnob<KnobInt>(tr(kNatronWriteParamFrameStepLabel));
     frameIncr->setName(kNatronWriteParamFrameStep);
     frameIncr->setHintToolTip(tr(kNatronWriteParamFrameStepHint));
@@ -1101,6 +1092,20 @@ NativeWrite::onKnobsLoaded()
     const std::string saved = views ? views->getActiveEntry().id : std::string();
     _viewToKeep = saved == kNatronWriteViewsAll ? std::string() : saved;
     refreshOptions();
+    refreshSublabel();
+}
+
+void
+NativeWrite::refreshSublabel()
+{
+    KnobOutputFilePtr filename = _filename.lock();
+    std::string pattern = filename ? filename->getValue() : std::string();
+    const std::size_t slash = pattern.find_last_of('/');
+
+    if (slash != std::string::npos) {
+        pattern = pattern.substr(slash + 1);
+    }
+    setSublabel(pattern);
 }
 
 std::optional<std::string>
@@ -1760,6 +1765,7 @@ NativeWrite::knobChanged(KnobI* k,
     }
     if (filename && (k == filename.get())) {
         refreshOptions();
+        refreshSublabel();
         _outputSpace.sourceChanged();
         const std::string path = filename->getValue();
         if (path.empty() || !rejectUnsupportedFormat(path)) {

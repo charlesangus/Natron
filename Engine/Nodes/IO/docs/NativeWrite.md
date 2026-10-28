@@ -3,7 +3,7 @@
 Tolerance: none recorded.
 
 `NativeWrite` (`NativeWrite.h`) mirrors the Read. It is the only plug-in
-registered under `PLUGINID_NATRON_WRITE` (`fr.inria.built-in.Write`), at one
+registered under `PLUGINID_NATRON_WRITE` (`Write`), at one
 version, `PLUGIN_MAJOR_NATRON_WRITE`. There is no Write container and no OFX
 writer behind it: `WriteNode` is gone, and `OfxHost::loadOFXPlugins()` skips any
 OFX plug-in whose contexts include `kOfxImageEffectContextWriter`. Encoding

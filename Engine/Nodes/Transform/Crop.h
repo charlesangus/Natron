@@ -37,8 +37,8 @@
 #include "Engine/RectD.h"
 #include "Engine/ViewIdx.h"
 
-#define PLUGINID_NATRON_CROP "net.sf.openfx.CropPlugin"
-#define PLUGIN_MAJOR_NATRON_CROP 3
+#define PLUGINID_NATRON_CROP "Crop"
+#define PLUGIN_MAJOR_NATRON_CROP 1
 
 #define kCropParamSoftness "softness"
 #define kCropParamReformat "reformat"
@@ -76,7 +76,7 @@ struct CropOp {
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_CROP,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CropPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Crop.png",
         .inputs = kCropInputs,
     };
 

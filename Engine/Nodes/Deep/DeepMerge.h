@@ -33,7 +33,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPMERGE "fr.natron.DeepMerge"
+#define PLUGINID_NATRON_DEEPMERGE "DeepMerge"
 
 NATRON_NAMESPACE_ENTER
 

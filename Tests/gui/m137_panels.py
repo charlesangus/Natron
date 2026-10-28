@@ -13,13 +13,13 @@ POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
 
 NODES = [
-    ("Grade", "net.sf.openfx.GradePlugin"),
-    ("Saturation", "net.sf.openfx.SaturationPlugin"),
-    ("Blur", "net.sf.cimg.CImgBlur"),
+    ("Grade", "Grade"),
+    ("Saturation", "Saturation"),
+    ("Blur", "Blur"),
     ("ErodeDilate", "net.sf.cimg.CImgErode"),
-    ("Transform", "net.sf.openfx.TransformPlugin"),
-    ("Dissolve", "net.sf.openfx.DissolvePlugin"),
-    ("Switch", "fr.natron.Switch"),
+    ("Transform", "Transform"),
+    ("Dissolve", "Dissolve"),
+    ("Switch", "Switch"),
 ]
 FILTERS = ("Blur", "ErodeDilate", "Transform")
 

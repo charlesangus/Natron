@@ -34,7 +34,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_VIEWMETADATA "fr.natron.ViewMetadata"
+#define PLUGINID_NATRON_VIEWMETADATA "ViewMetadata"
 
 NATRON_NAMESPACE_ENTER
 

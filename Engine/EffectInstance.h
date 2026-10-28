@@ -59,13 +59,7 @@
 #define PLUGINID_OFX_READOIIO     "fr.inria.openfx.ReadOIIO"
 #define PLUGINID_OFX_WRITEOIIO    "fr.inria.openfx.WriteOIIO"
 #define PLUGINID_OFX_ROTO         "net.sf.openfx.RotoPlugin"
-#define CLIP_OFX_ROTO             "Roto" // The Roto input clip from the Roto plugin
-#define PLUGINID_OFX_TRANSFORM    "net.sf.openfx.TransformPlugin"
-#define PLUGINID_OFX_GRADE        "net.sf.openfx.GradePlugin"
-#define PLUGINID_OFX_COLORCORRECT "net.sf.openfx.ColorCorrectPlugin"
-#define PLUGINID_OFX_COLORLOOKUP  "net.sf.openfx.ColorLookupPlugin"
-#define PLUGINID_OFX_BLURCIMG "net.sf.cimg.CImgBlur"
-#define PLUGINID_OFX_CONSTANT     "net.sf.openfx.ConstantPlugin"
+#define CLIP_OFX_ROTO "Roto" // The Roto input clip from the Roto plugin
 #define PLUGINID_OFX_TIMEOFFSET   "net.sf.openfx.timeOffset"
 #define PLUGINID_OFX_FRAMEHOLD    "net.sf.openfx.FrameHold"
 #define PLUGINID_OFX_RETIME       "net.sf.openfx.Retime"
@@ -73,25 +67,25 @@
 #define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
 #define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
 
-#define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
-#define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
-#define PLUGINID_NATRON_DOT       (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Dot")
-#define PLUGINID_NATRON_READQT    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.ReadQt")
-#define PLUGINID_NATRON_WRITEQT   (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.WriteQt")
-#define PLUGINID_NATRON_GROUP     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Group")
-#define PLUGINID_NATRON_INPUT     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Input")
-#define PLUGINID_NATRON_OUTPUT    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Output")
-#define PLUGINID_NATRON_BACKDROP  (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.BackDrop") // DO NOT change the capitalization, even if it's wrong
-#define PLUGINID_NATRON_ROTOPAINT (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.RotoPaint")
-#define PLUGINID_NATRON_ROTO (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Roto")
-#define PLUGINID_NATRON_ROTOSMEAR (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.RotoSmear")
-#define PLUGINID_NATRON_PRECOMP     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Precomp")
-#define PLUGINID_NATRON_TRACKER   (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Tracker")
-#define PLUGINID_NATRON_JOINVIEWS     (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.JoinViews")
-#define PLUGINID_NATRON_READ    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Read")
-#define PLUGINID_NATRON_WRITE    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Write")
-#define PLUGINID_NATRON_MISSING_PLUGIN (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.MissingPlugin")
-#define PLUGINID_NATRON_ONEVIEW    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.OneView")
+#define PLUGINID_NATRON_VIEWER "Viewer"
+#define PLUGINID_NATRON_DISKCACHE "DiskCache"
+#define PLUGINID_NATRON_DOT "Dot"
+#define PLUGINID_NATRON_READQT "ReadQt"
+#define PLUGINID_NATRON_WRITEQT "WriteQt"
+#define PLUGINID_NATRON_GROUP "Group"
+#define PLUGINID_NATRON_INPUT "Input"
+#define PLUGINID_NATRON_OUTPUT "Output"
+#define PLUGINID_NATRON_BACKDROP "Backdrop"
+#define PLUGINID_NATRON_ROTOPAINT "RotoPaint"
+#define PLUGINID_NATRON_ROTO "Roto"
+#define PLUGINID_NATRON_ROTOSMEAR "RotoSmear"
+#define PLUGINID_NATRON_PRECOMP "Precomp"
+#define PLUGINID_NATRON_TRACKER "Tracker"
+#define PLUGINID_NATRON_JOINVIEWS "JoinViews"
+#define PLUGINID_NATRON_READ "Read"
+#define PLUGINID_NATRON_WRITE "Write"
+#define PLUGINID_NATRON_MISSING_PLUGIN "MissingPlugin"
+#define PLUGINID_NATRON_ONEVIEW "OneView"
 
 #define kReaderParamNameOriginalFrameRange "originalFrameRange"
 
@@ -755,6 +749,16 @@ public:
      * what you'll see displayed when the user clicks the '?' button on the node's panel in the user interface.
      **/
     virtual std::string getPluginDescription() const WARN_UNUSED_RETURN = 0;
+
+    /**
+     * @brief Text the node graph shows in parentheses after the node's name, empty for none.
+     * An effect that overrides it calls Node::refreshSublabel() whenever it changes. OpenFX
+     * plug-ins give theirs through the kNatronOfxParamStringSublabelName knob instead.
+     **/
+    virtual std::string getSublabel() const WARN_UNUSED_RETURN
+    {
+        return std::string();
+    }
 
     /**
      * @brief Returns whether the plugin  description is written in markdown or not

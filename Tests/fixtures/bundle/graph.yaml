@@ -9,38 +9,38 @@ layers:
 timeline: {current: 7}
 nodes:
   Blur1:
-    plugin: "net.sf.cimg.CImgBlur"
-    version: [5, 1]
+    plugin: "Blur"
+    version: [1, 1]
     knobs:
       size: [{expr: "Grade1.multiply.getValue(1) * 2", hasRet: false}, {value: 4, linkGroup: "Blur1.size.1"}]
     inputs: {Source: "Grade1"}
   Constant1:
-    plugin: "net.sf.openfx.ConstantPlugin"
-    version: [2, 0]
+    plugin: "Constant"
+    version: [1, 0]
     knobs:
       color: [0.25, 0.5, 0.75, 1]
   Grade1:
-    plugin: "net.sf.openfx.GradePlugin"
-    version: [3, 0]
+    plugin: "Grade"
+    version: [1, 0]
     knobs:
       multiply: [{curve: [L, 1, 1, 10, 2.5, X, 20, 0.75, 0.125, -0.25]}, 1.5, 1, 1]
     inputs: {Source: "Constant1"}
   Group1:
-    plugin: "fr.inria.built-in.Group"
+    plugin: "Group"
     version: [1, 0]
     # A group's input is labelled after its Input node, less a leading "Input".
     inputs: {"1": "Blur1"}
     children:
       Blur2:
-        plugin: "net.sf.cimg.CImgBlur"
-        version: [5, 1]
+        plugin: "Blur"
+        version: [1, 1]
         knobs:
           size: [{value: 4, linkGroup: "Blur1.size.1"}, 3]
         inputs: {Source: "Input1"}
       Input1:
-        plugin: "fr.inria.built-in.Input"
+        plugin: "Input"
         version: [1, 0]
       Output1:
-        plugin: "fr.inria.built-in.Output"
+        plugin: "Output"
         version: [1, 0]
         inputs: {Source: "Blur2"}

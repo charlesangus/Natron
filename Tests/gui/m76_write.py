@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 POLL_TIMEOUT_S = 30.0
 STARTUP_TIMEOUT_S = 60.0
-WRITE_ID = "fr.inria.built-in.Write"
-CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
+WRITE_ID = "Write"
+CONSTANT_ID = "Constant"
 
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, QTimer, Q_ARG
@@ -659,7 +659,7 @@ try:
         check(ok, "Render Selected wrote the file")
 
     # The viewer widget only exists once a Viewer node does, so it is created before waiting for it.
-    viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+    viewer = app.getNode("Viewer1") or app.createNode("Viewer")
     require(viewer is not None, "a Viewer node exists")
 
     def steps():

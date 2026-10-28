@@ -531,11 +531,10 @@ TEST_F(NativeMergeNodeTest, SubLabelShowsTheOperator)
 {
     NodePtr merge = createMerge();
     ASSERT_TRUE(bool(merge));
-    KnobStringPtr subLabel = merge->getEffectInstance()->getKnobByNameAndType<KnobString>(kNatronOfxParamStringSublabelName);
-    ASSERT_TRUE(bool(subLabel));
-    EXPECT_EQ("over", subLabel->getValue());
+    EXPECT_FALSE(bool(merge->getKnobByName(kNatronOfxParamStringSublabelName)));
+    EXPECT_EQ("over", merge->getSublabel());
     ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, "multiply"));
-    EXPECT_EQ("multiply", subLabel->getValue());
+    EXPECT_EQ("multiply", merge->getSublabel());
 }
 
 // A offset from B, so that it reads zero over part of B's window.

@@ -33,8 +33,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_INVERT "net.sf.openfx.Invert"
-#define PLUGIN_MAJOR_NATRON_INVERT 3
+#define PLUGINID_NATRON_INVERT "Invert"
+#define PLUGIN_MAJOR_NATRON_INVERT 1
 
 NATRON_NAMESPACE_ENTER
 
@@ -59,7 +59,7 @@ struct InvertOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_INVERT,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Invert.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Invert.png",
         .inputs = kInvertInputs,
     };
 

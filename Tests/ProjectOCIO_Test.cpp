@@ -577,7 +577,7 @@ namespace {
 NodePtr
 createConstantIntoNativeWriter(const std::string& path)
 {
-    NodePtr constant = createNode("net.sf.openfx.ConstantPlugin");
+    NodePtr constant = createNode("Constant");
     NodePtr writer = createNativeWrite();
     if (writer) {
         writer->setOutputFilesForWriter(path);

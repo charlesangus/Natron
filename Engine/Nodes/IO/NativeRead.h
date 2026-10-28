@@ -43,7 +43,7 @@
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGIN_MAJOR_NATRON_READ 2
+#define PLUGIN_MAJOR_NATRON_READ 1
 #define kNatronReadNodeOCIOParamInputSpace "ocioInputSpace"
 #define kNatronReadParamReload "reload"
 

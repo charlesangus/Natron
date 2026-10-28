@@ -333,7 +333,7 @@ def self_test(args):
         return {"plugin": plugin, "node": node, "deps": deps, "roiPixels": 1000000,
                 "estimatedBytes": 1000, "wallNs": ns}
     tasks = {0: task("A", "Blur", [], 100000000),
-             1: task("Write1", "fr.inria.built-in.Write", [0], 100000000),
+             1: task("Write1", "Write", [0], 100000000),
              2: task("B", "Blur", [1], 100000000)}
     heavy, regions, _, _ = find_regions(tasks, 20.0)
     assert regions == [{0}, {2}] or regions == [{2}, {0}], regions

@@ -476,12 +476,7 @@ NodeGui::initialize(NodeGraph* dag,
 
     //Refresh the merge operator icon
     if (internalNode->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE) {
-        KnobIPtr knob = internalNode->getKnobByName(kNatronOfxParamStringSublabelName);
-        assert(knob);
-        KnobString* strKnob = dynamic_cast<KnobString*>( knob.get() );
-        if (strKnob) {
-            refreshNodeText( QString::fromUtf8( strKnob->getValue().c_str() ) );
-        }
+        refreshNodeText(QString::fromUtf8(internalNode->getSublabel().c_str()));
     }
 
     if ( internalNode->makePreviewByDefault() ) {

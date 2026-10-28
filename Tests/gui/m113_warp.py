@@ -26,14 +26,14 @@ SOLVE_TIMEOUT_S = 40.0
 ALL_SECTIONS = ("stmap-layer", "idistort-layer", "cornerpin-overlay", "tracker-export")
 FALLBACK_SIZE = (1920.0, 1080.0)
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
-PLUGIN_SHUFFLE = "fr.natron.Shuffle"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_CONSTANT = "Constant"
+PLUGIN_SHUFFLE = "Shuffle"
 PLUGIN_STMAP = "STMap"
 PLUGIN_IDISTORT = "IDistort"
 PLUGIN_CORNERPIN = "CornerPin"
-PLUGIN_TRACKER = "fr.inria.built-in.Tracker"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_TRACKER = "Tracker"
+PLUGIN_VIEWER = "Viewer"
 
 # Checker box colours (linear), by quadrant around the image centre, and the viewer-side class of each.
 BOX_COLOURS = {

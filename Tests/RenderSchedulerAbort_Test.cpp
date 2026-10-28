@@ -82,7 +82,7 @@ const int kPoolSizes[] = { 1, 2, 4 };
 const int kLeaves = 64;
 const qint64 kLeafRenderMs = 200;
 const qint64 kAbortDeadlineMs = 2000;
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 
 class PoolSizeGuard {
 public:

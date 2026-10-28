@@ -173,7 +173,7 @@ try:
         set_project_format(spec, name)
         yield ("sleep", SETTLE_MS)
 
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         rect = app.createNode("net.sf.openfx.Rectangle", -1, None, props)

@@ -35,7 +35,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPREAD "fr.natron.DeepRead"
+#define PLUGINID_NATRON_DEEPREAD "DeepRead"
 
 NATRON_NAMESPACE_ENTER
 

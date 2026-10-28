@@ -35,8 +35,8 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_CHROMAKEYER "net.sf.openfx.ChromaKeyerPlugin"
-#define PLUGIN_MAJOR_NATRON_CHROMAKEYER 2
+#define PLUGINID_NATRON_CHROMAKEYER "ChromaKeyer"
+#define PLUGIN_MAJOR_NATRON_CHROMAKEYER 1
 
 #define kChromaKeyerParamKeyColor "keyColor"
 #define kChromaKeyerParamColorspace "colorspace"

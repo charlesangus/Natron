@@ -36,8 +36,8 @@
 #include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_COLORLOOKUP "net.sf.openfx.ColorLookupPlugin"
-#define PLUGIN_MAJOR_NATRON_COLORLOOKUP 2
+#define PLUGINID_NATRON_COLORLOOKUP "ColorLookup"
+#define PLUGIN_MAJOR_NATRON_COLORLOOKUP 1
 
 #define kColorLookupParamHasBackgroundInteract "hasBackgroundInteract"
 #define kColorLookupParamLookupTable "lookupTable"
@@ -122,7 +122,7 @@ struct ColorLookupOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORLOOKUP,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorLookupPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/ColorLookup.png",
         .inputs = kColorLookupInputs,
     };
 

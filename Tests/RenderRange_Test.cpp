@@ -43,6 +43,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -84,7 +85,7 @@ readExrFirstPixelRed(const std::string& path,
 // It does not exercise reader-side frame mapping: there is no reader in this graph.
 TEST_F(BaseTest, RenderFrameRangeProducesDistinctFramePixels)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(generator) && bool(writer));
 

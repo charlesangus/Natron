@@ -65,8 +65,8 @@ layers:
 timeline: {current: 12}
 nodes:
   Blur1:
-    plugin: "net.sf.cimg.CImgBlur"
-    version: [4, 0]
+    plugin: "Blur"
+    version: [1, 0]
     label: "Soft blur"
     pos: [120, -40]
     knobs:
@@ -74,7 +74,7 @@ nodes:
     inputs: {Source: "Read1"}
     pages: ["Controls", "Node"]
   Group1:
-    plugin: "fr.inria.built-in.Group"
+    plugin: "Group"
     version: [1, 0]
     python: {module: "SoftGlow", version: 2}
     inputs: {Input1: "Blur1"}
@@ -112,26 +112,26 @@ nodes:
                   helps: ["", ""]
     children:
       Blur2:
-        plugin: "net.sf.cimg.CImgBlur"
-        version: [4, 0]
+        plugin: "Blur"
+        version: [1, 0]
         pos: [-35.5, 80]
         knobs:
           size: {expr: "thisGroup.amount.get() * 20", hasRet: false}
         inputs: {Source: "Input1"}
       Input1:
-        plugin: "fr.inria.built-in.Input"
+        plugin: "Input"
         version: [1, 0]
       Output1:
-        plugin: "fr.inria.built-in.Output"
+        plugin: "Output"
         version: [1, 0]
         inputs: {Source: "Blur2"}
   Read1:
-    plugin: "fr.inria.built-in.Read"
+    plugin: "Read"
     version: [1, 0]
     knobs:
       filename: "plates/shot010.####.exr"
   Viewer1:
-    plugin: "fr.inria.built-in.Viewer"
+    plugin: "Viewer"
     version: [1, 0]
     inputs: {"1": "Group1"}
 )yaml";
@@ -232,7 +232,7 @@ exampleProject()
     project.layers.push_back(depth);
     project.timelineCurrentTime = 12;
 
-    NodeSerializationPtr blur = makeNode("Blur1", "net.sf.cimg.CImgBlur", 4, 0);
+    NodeSerializationPtr blur = makeNode("Blur1", "Blur", 1, 0);
     blur->label = "Soft blur";
     blur->knobs.push_back(valueKnob("size", "Double", { d(3.5), d(3.5) }));
     blur->knobs.back().dimensions.resize(1);
@@ -242,7 +242,7 @@ exampleProject()
     blur->layout.x = 120.;
     blur->layout.y = -40.;
 
-    NodeSerializationPtr group = makeNode("Group1", "fr.inria.built-in.Group", 1, 0);
+    NodeSerializationPtr group = makeNode("Group1", "Group", 1, 0);
     group->pythonModule = "SoftGlow";
     group->pythonModuleVersion = 2;
     group->inputs["Input1"] = "Blur1";
@@ -282,7 +282,7 @@ exampleProject()
     page.children.push_back(advanced);
     group->userPages.push_back(page);
 
-    NodeSerializationPtr innerBlur = makeNode("Blur2", "net.sf.cimg.CImgBlur", 4, 0);
+    NodeSerializationPtr innerBlur = makeNode("Blur2", "Blur", 1, 0);
     innerBlur->knobs.push_back(valueKnob("size", "Double", { d(10.), d(10.) }));
     innerBlur->knobs.back().dimensions.resize(1);
     innerBlur->knobs.back().dimensions[0].expression = "thisGroup.amount.get() * 20";
@@ -290,16 +290,16 @@ exampleProject()
     innerBlur->layout.hasPosition = true;
     innerBlur->layout.x = -35.5;
     innerBlur->layout.y = 80.;
-    NodeSerializationPtr input = makeNode("Input1", "fr.inria.built-in.Input", 1, 0);
-    NodeSerializationPtr output = makeNode("Output1", "fr.inria.built-in.Output", 1, 0);
+    NodeSerializationPtr input = makeNode("Input1", "Input", 1, 0);
+    NodeSerializationPtr output = makeNode("Output1", "Output", 1, 0);
     output->inputs["Source"] = "Blur2";
     group->children = { innerBlur, input, output };
 
-    NodeSerializationPtr read = makeNode("Read1", "fr.inria.built-in.Read", 1, 0);
+    NodeSerializationPtr read = makeNode("Read1", "Read", 1, 0);
     read->knobs.push_back(valueKnob("filename", "InputFile", { s("plates/shot010.####.exr") }));
     read->knobs.back().stringAnimation.emplace();
 
-    NodeSerializationPtr viewer = makeNode("Viewer1", "fr.inria.built-in.Viewer", 1, 0);
+    NodeSerializationPtr viewer = makeNode("Viewer1", "Viewer", 1, 0);
     viewer->inputs["1"] = "Group1";
 
     project.nodes.nodes = { blur, group, read, viewer };
@@ -455,7 +455,7 @@ TEST(ProjectYaml, RoundTripsAndReencodesByteIdentically)
 TEST(ProjectYaml, BackdropSizeAndColoursRoundTrip)
 {
     ProjectSerialization project = exampleProject();
-    NodeSerializationPtr backdrop = makeNode("BackDrop1", "fr.inria.built-in.BackDrop", 1, 0);
+    NodeSerializationPtr backdrop = makeNode("BackDrop1", "Backdrop", 1, 0);
     backdrop->layout.hasPosition = true;
     backdrop->layout.x = -300.25;
     backdrop->layout.y = 12.;
@@ -485,7 +485,7 @@ TEST(ProjectYaml, BackdropSizeAndColoursRoundTrip)
 
 TEST(ProjectYaml, RFVGroupFlagRoundTrips)
 {
-    NodeSerializationPtr setNode = makeNode("Set1", "fr.inria.built-in.Dot", 1, 0);
+    NodeSerializationPtr setNode = makeNode("Set1", "Dot", 1, 0);
     Serialization::GroupKnobSerialization page;
     page.name = "Variables";
     page.label = "Variables";
@@ -519,7 +519,7 @@ TEST(ProjectYaml, RFVGroupFlagRoundTrips)
 TEST(ProjectYaml, NodeWithoutLayoutWritesNoLayoutKeys)
 {
     ProjectSerialization project;
-    project.nodes.nodes = { makeNode("Read1", "fr.inria.built-in.Read", 1, 0) };
+    project.nodes.nodes = { makeNode("Read1", "Read", 1, 0) };
     Serialization::MemoryBlobStore blobs;
     const std::string text = Serialization::encodeProjectYaml(project, blobs);
     for (const char* key : { "pos:", "size:", "color:", "overlay:" }) {
@@ -575,7 +575,7 @@ TEST(ProjectYaml, DuplicateScriptNameIsAnError)
     expectDecodeError(replaced(kExampleProjectYaml, "      Input1:\n", "      Blur2:\n"), "duplicate key \"Blur2\"");
 
     ProjectSerialization project = exampleProject();
-    project.nodes.nodes.push_back(makeNode("Blur1", "net.sf.cimg.CImgBlur", 4, 0));
+    project.nodes.nodes.push_back(makeNode("Blur1", "Blur", 1, 0));
     Serialization::MemoryBlobStore blobs;
     try {
         Serialization::encodeProjectYaml(project, blobs);
@@ -611,7 +611,7 @@ TEST(ProjectYaml, RotoAndTrackerBlobsAreNamedAfterTheFullyQualifiedNode)
     NodeSerializationPtr group = *std::next(project.nodes.nodes.begin());
     ASSERT_EQ("Group1", group->scriptName);
 
-    NodeSerializationPtr rotoPaint = makeNode("RotoPaint1", "fr.inria.built-in.RotoPaint", 1, 0);
+    NodeSerializationPtr rotoPaint = makeNode("RotoPaint1", "RotoPaint", 1, 0);
     rotoPaint->hasRotoContext = true;
     rotoPaint->rotoContext.baseLayer.name = "Layer1";
     rotoPaint->rotoContext.baseLayer.label = "Layer1";
@@ -636,7 +636,7 @@ TEST(ProjectYaml, RotoAndTrackerBlobsAreNamedAfterTheFullyQualifiedNode)
     }
     rotoPaint->rotoContext.baseLayer.children.push_back(child);
 
-    NodeSerializationPtr tracker = makeNode("Tracker1", "fr.inria.built-in.Tracker", 1, 0);
+    NodeSerializationPtr tracker = makeNode("Tracker1", "Tracker", 1, 0);
     tracker->hasTrackerContext = true;
 
     group->children.push_back(rotoPaint);
@@ -646,7 +646,7 @@ TEST(ProjectYaml, RotoAndTrackerBlobsAreNamedAfterTheFullyQualifiedNode)
     const std::string text = Serialization::encodeProjectYaml(project, blobs);
     ASSERT_EQ(1u, blobs.members().size());
     EXPECT_EQ("blobs/Group1.RotoPaint1/Stroke1.stroke.bin", blobs.members().begin()->first);
-    EXPECT_NE(std::string::npos, text.find("      Tracker1:\n        plugin: \"fr.inria.built-in.Tracker\"\n        version: [1, 0]\n        tracker:\n          tracks: []\n")) << text;
+    EXPECT_NE(std::string::npos, text.find("      Tracker1:\n        plugin: \"Tracker\"\n        version: [1, 0]\n        tracker:\n          tracks: []\n")) << text;
 
     YamlWarnings warnings;
     const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);

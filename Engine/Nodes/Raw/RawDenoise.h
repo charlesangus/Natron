@@ -44,7 +44,7 @@
 #include "Engine/Nodes/Raw/RawKernels.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWDENOISE "fr.natron.RawDenoise"
+#define PLUGINID_NATRON_RAWDENOISE "RawDenoise"
 #define PLUGIN_MAJOR_NATRON_RAWDENOISE 1
 
 #define kRawDenoiseParamThreshold "threshold"

@@ -75,7 +75,7 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
                    "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_EDGEBLUR,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png",
+    .icon = NATRON_IMAGES_PATH "NativeNodes/Blur.png",
     .inputs = kEdgeBlurInputs,
 };
 

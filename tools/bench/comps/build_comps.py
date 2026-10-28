@@ -117,7 +117,7 @@ def single(plugin_id, name, src):
 
 
 def grade(name, src, mult=(1.0, 1.0, 1.0, 1.0), gamma=(1.0, 1.0, 1.0, 1.0), offset=(0.0, 0.0, 0.0, 0.0)):
-    n = single("net.sf.openfx.GradePlugin", name, src)
+    n = single("Grade", name, src)
     p(n, "multiply").set(*mult)
     p(n, "gamma").set(*gamma)
     p(n, "offset").set(*offset)
@@ -125,7 +125,7 @@ def grade(name, src, mult=(1.0, 1.0, 1.0, 1.0), gamma=(1.0, 1.0, 1.0, 1.0), offs
 
 
 def colorcorrect(name, src, sat=1.0, gain=1.0, gamma=1.0):
-    n = single("net.sf.openfx.ColorCorrectPlugin", name, src)
+    n = single("ColorCorrect", name, src)
     p(n, "MasterSaturation").set(sat, sat, sat, 1.0)
     p(n, "MasterGain").set(gain, gain, gain, 1.0)
     p(n, "MasterGamma").set(gamma, gamma, gamma, 1.0)
@@ -133,7 +133,7 @@ def colorcorrect(name, src, sat=1.0, gain=1.0, gamma=1.0):
 
 
 def blur(name, src, size, mask=None):
-    n = single("net.sf.cimg.CImgBlur", name, src)
+    n = single("Blur", name, src)
     p(n, "size").set(size, size)
     if mask is not None:
         n.connectInput(1, mask)
@@ -185,7 +185,7 @@ def radial(name, color, speed=0.01):
 
 
 def checker(name, boxes=40):
-    n = make("net.sf.openfx.CheckerBoardPlugin", name)
+    n = make("CheckerBoard", name)
     p(n, "boxSize").set(3840.0 / boxes, 3840.0 / boxes)
     animate(p(n, "color0"), [(f, 0.05 + 0.01 * f) for f in range(1, LAST_FRAME + 1)], 0)
     return n
@@ -228,10 +228,10 @@ def keying_grade():
     hair = rectangle("plate_hair", (0.2, 0.12, 0.08, 1.0), 1500, 1200, 700, 900, 0.5, -4.0)
     plate = merge("plate", "over", hair, merge("plate_sub", "over", subject, bg_ramp))
 
-    key = single("net.sf.openfx.KeyerPlugin", "keyer", plate)
+    key = single("Keyer", "keyer", plate)
     p(key, "keyColor").set(0.07, 0.65, 0.16, 1.0)
     choice(key, "mode", "screen")
-    chroma = single("net.sf.openfx.ChromaKeyerPlugin", "chromakey", plate)
+    chroma = single("ChromaKeyer", "chromakey", plate)
     p(chroma, "keyColor").set(0.07, 0.65, 0.16, 1.0)
     core = merge("matte_max", "max", chroma, key)
     eroded = single("net.sf.cimg.CImgErode", "matte_erode", core)
@@ -313,7 +313,7 @@ def defocus_retime():
     mid = blur("defocus_mid", rt, 100.0)
     mid = colorcorrect("defocus_mid_cc", mid, sat=1.1)
 
-    xf = single("net.sf.openfx.TransformPlugin", "xform_mb", mid)
+    xf = single("Transform", "xform_mb", mid)
     drift(p(xf, "translate"), (0.0, 0.0), (14.0, 6.0), 2)
     animate(p(xf, "rotate"), [(f, 0.8 * f) for f in range(1, LAST_FRAME + 1)])
     p(xf, "center").set(1920.0, 1080.0)

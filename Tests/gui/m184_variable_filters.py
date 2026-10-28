@@ -169,7 +169,7 @@ try:
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "node graph is up")
-        create("fr.inria.built-in.Viewer", 600, 700)
+        create("Viewer", 600, 700)
         ok = yield ("until", lambda: viewer_gl() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "the viewer is up")
         gt.close_all_panels()
@@ -180,9 +180,9 @@ try:
 
         # ---- (a) eye blur ---------------------------------------------------------------
         gt.section("eye-blur")
-        checker = create("net.sf.openfx.CheckerBoardPlugin", 0, 0)
+        checker = create("CheckerBoard", 0, 0)
         setp(checker, "boxSize", 48, 48)
-        roto = create("fr.inria.built-in.Roto", 300, 0)
+        roto = create("Roto", 300, 0)
         ctx = roto.getRotoContext()
         gt.require(ctx is not None, "the Roto node has a roto context")
         ellipse = ctx.createEllipse(960.0, 540.0, 440.0, True, 1.0)
@@ -219,7 +219,7 @@ try:
         gt.section("erode-dilate")
         disc = create("net.sf.openfx.Radial", 0, 500)
         setp(disc, "softness", 0.0)
-        small = create("net.sf.openfx.TransformPlugin", 150, 600)
+        small = create("Transform", 150, 600)
         setp(small, "center", 960.0, 540.0)
         setp(small, "scale", 0.5, 0.5)
         connect(small, 0, disc)

@@ -35,8 +35,8 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_KEYER "net.sf.openfx.KeyerPlugin"
-#define PLUGIN_MAJOR_NATRON_KEYER 2
+#define PLUGINID_NATRON_KEYER "Keyer"
+#define PLUGIN_MAJOR_NATRON_KEYER 1
 
 #define kKeyerParamKeyColor "keyColor"
 #define kKeyerParamMode "mode"

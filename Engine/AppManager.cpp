@@ -2389,12 +2389,9 @@ AppManager::getPluginBinary(const QString & pluginId,
         foundID = _imp->_plugins.end();
         for (PluginsMap::const_iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
             QString pID = QString::fromUtf8( it->first.c_str() );
-            if ( !pluginId.startsWith( QString::fromUtf8(NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.") ) ) {
-                QString lowerCase = pID.toLower();
-                if (lowerCase == pluginId) {
-                    foundID = it;
-                    break;
-                }
+            if (pID.toLower() == pluginId) {
+                foundID = it;
+                break;
             }
         }
     }

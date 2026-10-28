@@ -31,7 +31,7 @@ def main():
     if not out_path:
         raise AssertionError("READ_TIME_OFFSET_FIXTURE_PATH is not set")
 
-    reader = _require(app.createNode("fr.inria.built-in.Read"), "the native Read")
+    reader = _require(app.createNode("Read"), "the native Read")
     if reader.getScriptName() != "Read1":
         raise AssertionError("expected the Read to be named Read1, got %r"
                              % (reader.getScriptName(),))

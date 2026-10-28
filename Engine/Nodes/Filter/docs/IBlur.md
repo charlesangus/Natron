@@ -6,7 +6,7 @@ Tolerance:
 |---|---|---|---|
 | IBlur | measured | `kIBlurTolerance` (GPU) | no OFX reference; the CPU is held to its goldens, the GPU to the CPU at 1e-4 relative |
 
-The variable-size Blur: Blur's size, scaled per pixel by a Map input. Blur (`net.sf.cimg.CImgBlur`) is its base
+The variable-size Blur: Blur's size, scaled per pixel by a Map input. Blur (`Blur`) is its base
 node in the I-variant registry (`IBlur.reg.inc`); every knob they share has the same name.
 
 - **Map.** The Map input, from `MapInput` (`MapInput.h`), is an aux input: the host does not blend it, and the

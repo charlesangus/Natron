@@ -45,7 +45,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWPREPARE "fr.natron.RawPrepare"
+#define PLUGINID_NATRON_RAWPREPARE "RawPrepare"
 #define PLUGIN_MAJOR_NATRON_RAWPREPARE 1
 
 #define kRawPrepareParamBlackOverride "blackLevelsOverride"

@@ -36,8 +36,8 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 
-#define PLUGINID_NATRON_BLUR "net.sf.cimg.CImgBlur"
-#define PLUGIN_MAJOR_NATRON_BLUR 5
+#define PLUGINID_NATRON_BLUR "Blur"
+#define PLUGIN_MAJOR_NATRON_BLUR 1
 #define PLUGIN_MINOR_NATRON_BLUR 1
 
 #define kBlurParamSize "size"
@@ -117,7 +117,7 @@ struct BlurOp {
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_BLUR,
         .minorVersion = PLUGIN_MINOR_NATRON_BLUR,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Blur.png",
         .inputs = kBlurInputs,
     };
 

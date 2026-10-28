@@ -94,7 +94,7 @@
 #define kNatronWriteBitDepthAuto "auto"
 #define kNatronWriteCompressionDefault "default"
 
-#define PLUGIN_MAJOR_NATRON_WRITE 2
+#define PLUGIN_MAJOR_NATRON_WRITE 1
 
 NATRON_NAMESPACE_ENTER
 
@@ -313,6 +313,9 @@ private:
 
     // Menus and visibility follow the format of the file name and the chosen compression.
     void refreshOptions();
+
+    // The node graph shows the file name without its directory.
+    void refreshSublabel();
 
     bool rejectUnsupportedFormat(const std::string& path);
 

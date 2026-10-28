@@ -34,10 +34,10 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_ADD "net.sf.openfx.AddPlugin"
-#define PLUGINID_NATRON_MULTIPLY "net.sf.openfx.MultiplyPlugin"
-#define PLUGINID_NATRON_GAMMA "net.sf.openfx.GammaPlugin"
-#define PLUGIN_MAJOR_NATRON_COLORMATH 3
+#define PLUGINID_NATRON_ADD "Add"
+#define PLUGINID_NATRON_MULTIPLY "Multiply"
+#define PLUGINID_NATRON_GAMMA "Gamma"
+#define PLUGIN_MAJOR_NATRON_COLORMATH 1
 
 #define kColorMathParamValue "value"
 #define kColorMathParamInvert "invert"
@@ -63,19 +63,19 @@ colorMathNodeSpec(ColorMathOperationEnum operation)
     switch (operation) {
     case eColorMathOperationAdd:
         spec.id = PLUGINID_NATRON_ADD;
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.AddPlugin.png";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/Add.png";
         spec.label = "Add";
         spec.description = "Add a constant to the selected channels.";
         break;
     case eColorMathOperationMultiply:
         spec.id = PLUGINID_NATRON_MULTIPLY;
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MultiplyPlugin.png";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/Multiply.png";
         spec.label = "Multiply";
         spec.description = "Multiply the selected channels by a constant.";
         break;
     case eColorMathOperationGamma:
         spec.id = PLUGINID_NATRON_GAMMA;
-        spec.icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GammaPlugin.png";
+        spec.icon = NATRON_IMAGES_PATH "NativeNodes/Gamma.png";
         spec.label = "Gamma";
         spec.description = "Apply gamma function to the selected channels. The actual function is pow(x,1/max(1e-8,value)).";
         break;

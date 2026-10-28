@@ -255,7 +255,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(764, 180)
@@ -287,11 +287,6 @@ def createInstance(app,group):
     lastNode.setSize(104, 56)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupMerge1 = lastNode
-
-    param = lastNode.getParam("NatronOfxParamStringSublabelName")
-    if param is not None:
-        param.setValue("difference")
-        del param
 
     param = lastNode.getParam("operation")
     if param is not None:
@@ -331,7 +326,7 @@ def createInstance(app,group):
     # End of node "Solid1"
 
     # Start of node "Invert1"
-    lastNode = app.createNode("net.sf.openfx.Invert", 2, group)
+    lastNode = app.createNode("Invert", 1, group)
     lastNode.setScriptName("Invert1")
     lastNode.setLabel("Invert1")
     lastNode.setPosition(764, 546)
@@ -343,7 +338,7 @@ def createInstance(app,group):
     # End of node "Invert1"
 
     # Start of node "Clamp1"
-    lastNode = app.createNode("net.sf.openfx.Clamp", 2, group)
+    lastNode = app.createNode("Clamp", 1, group)
     lastNode.setScriptName("Clamp1")
     lastNode.setLabel("Clamp1")
     lastNode.setPosition(764, 455)
@@ -355,7 +350,7 @@ def createInstance(app,group):
     # End of node "Clamp1"
 
     # Start of node "ColorCorrect1"
-    lastNode = app.createNode("net.sf.openfx.ColorCorrectPlugin", 2, group)
+    lastNode = app.createNode("ColorCorrect", 1, group)
     lastNode.setScriptName("ColorCorrect1")
     lastNode.setLabel("ColorCorrect1")
     lastNode.setPosition(764, 344)
@@ -379,7 +374,7 @@ def createInstance(app,group):
     # End of node "ColorCorrect1"
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     lastNode.setPosition(764, 774)
     lastNode.setSize(104, 34)
@@ -390,7 +385,7 @@ def createInstance(app,group):
     # End of node "Output1"
 
     # Start of node "InputSource"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("InputSource")
     lastNode.setLabel("InputSource")
     lastNode.setPosition(506, 255)

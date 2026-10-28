@@ -869,22 +869,22 @@ try:
         # ---- wrap
         gt.section("wrap")
         graph = root_graph()
-        reference = create("net.sf.cimg.CImgBlur", -300, 0)
-        short = create("net.sf.cimg.CImgBlur", 0, 0, "Blur_abc")
-        mid = create("net.sf.cimg.CImgBlur", 300, 0, "Blur with a thirty char label!")
+        reference = create("Blur", -300, 0)
+        short = create("Blur", 0, 0, "Blur_abc")
+        mid = create("Blur", 300, 0, "Blur with a thirty char label!")
         long_name = "Blur_" + "".join("%d" % (i % 10) for i in range(75))
-        longn = create("net.sf.cimg.CImgBlur", 700, 0, long_name)
-        grade = create("net.sf.openfx.GradePlugin", 0, 300, "GradeWithUserLabel")
+        longn = create("Blur", 700, 0, long_name)
+        grade = create("Grade", 0, 300, "GradeWithUserLabel")
         user_text = grade.getParam("userTextArea")
         if check(user_text is not None, "Grade has a user label (userTextArea) param"):
             user_text.set("first line of a user label\nsecond, somewhat longer line of the user label")
         icon_node = create("IDistort", 300, 300, "IDistort with plugin icon label")
-        preview = create("net.sf.cimg.CImgBlur", 700, 300, "Blur with a preview, long label")
+        preview = create("Blur", 700, 300, "Blur with a preview, long label")
         prev_param = preview.getParam("enablePreview")
         if check(prev_param is not None, "Blur has the enablePreview param"):
             prev_param.set(True)
-        backdrop = create("fr.inria.built-in.BackDrop", 0, 700)
-        dot = create("fr.inria.built-in.Dot", 600, 700)
+        backdrop = create("Backdrop", 0, 700)
+        dot = create("Dot", 600, 700)
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         backdrop_size = backdrop.getSize()
@@ -958,7 +958,7 @@ try:
             crop_shot(toolbox, "icons-toolbox")
             compare_toolbox_with_baseline(os.path.join(gt.OUT, "icons-toolbox.png"))
 
-        viewer = create("fr.inria.built-in.Viewer", 0, 400)
+        viewer = create("Viewer", 0, 400)
         gt.close_all_panels()
         make_tab_current("pane1", "viewer")
         ok = yield ("until", lambda: any(w.isVisible() for w in gt.widgets_of("ViewerTab")), 15)
@@ -970,7 +970,7 @@ try:
             crop_shot(viewer_tab, "icons-viewer")
         viewer_ptrs = set(ptr(b) for b in (buttons_in(viewer_tab) if viewer_tab is not None else []))
 
-        grade = create("net.sf.openfx.GradePlugin", 300, 0)
+        grade = create("Grade", 300, 0)
         yield ("sleep", PANEL_MS)
         panel = panel_for(grade)
         if check(panel is not None, "Grade: settings panel is open"):
@@ -981,8 +981,8 @@ try:
         grade.destroy()
         gt.close_all_panels()
 
-        for plugin_id, area in (("fr.inria.built-in.RotoPaint", "RotoPaint viewer toolbar"),
-                                ("fr.inria.built-in.Tracker", "Tracker viewer toolbar")):
+        for plugin_id, area in (("RotoPaint", "RotoPaint viewer toolbar"),
+                                ("Tracker", "Tracker viewer toolbar")):
             gt.close_all_panels()
             node = create(plugin_id, 600, 0)
             viewer.connectInput(0, node)
@@ -997,7 +997,7 @@ try:
             yield ("sleep", SETTLE_MS)
         gt.close_all_panels()
 
-        anim = create("net.sf.cimg.CImgBlur", 0, 200, "AnimatedBlur")
+        anim = create("Blur", 0, 200, "AnimatedBlur")
         size = anim.getParam("size")
         if check(size is not None, "Blur has a size param to animate"):
             for frame, value in ((1, 0.0), (10, 8.0), (20, 3.0), (30, 12.0)):
@@ -1086,7 +1086,7 @@ try:
                 check_icons("split pane header", header_buttons)
             crop_shot(split_pane, "icons-split-pane-script-editor")
 
-        grade = create("net.sf.openfx.GradePlugin", 300, 0)
+        grade = create("Grade", 300, 0)
         yield ("sleep", PANEL_MS)
         scroll = next((w for w in QApplication.allWidgets()
                        if isinstance(w, QScrollArea) and w.objectName() == "Properties" and w.isVisible()), None)
@@ -1111,7 +1111,7 @@ try:
         if check(bool(headers), "found a pane header"):
             check_header_buttons("pane header", [b for h in headers for b in h.findChildren(QAbstractButton)])
 
-        grade = create("net.sf.openfx.GradePlugin", 300, 0)
+        grade = create("Grade", 300, 0)
         yield ("sleep", PANEL_MS)
         scroll = next((w for w in QApplication.allWidgets()
                        if isinstance(w, QScrollArea) and w.objectName() == "Properties" and w.isVisible()), None)
@@ -1237,7 +1237,7 @@ try:
 
         # ---- link cursor
         gt.section("cursor")
-        blur = create("net.sf.cimg.CImgBlur", 0, 0, "CursorBlur")
+        blur = create("Blur", 0, 0, "CursorBlur")
         yield ("sleep", PANEL_MS)
         panel = panel_for(blur)
         if check(panel is not None, "Blur: settings panel is open"):
@@ -1261,7 +1261,7 @@ try:
 
         # ---- density
         gt.section("density")
-        grade = create("net.sf.openfx.GradePlugin", 0, 0)
+        grade = create("Grade", 0, 0)
         merge = create("Merge", 300, 0)
         yield ("sleep", PANEL_MS)
         gt.shot("density-main-window.png")

@@ -35,9 +35,9 @@ EDIT_APPLIES_S = 2.0
 COLOUR_SLACK = 3
 GRID = 5
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
+PLUGIN_CHECKER = "CheckerBoard"
 PLUGIN_STMAP = "STMap"
-PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
+PLUGIN_CONSTANT = "Constant"
 STMAP_INPUT_UV = 0
 STMAP_INPUT_SOURCE = 1
 STMAP_INPUT_MAP = 3
@@ -181,7 +181,7 @@ try:
         require(stmap.connectInput(STMAP_INPUT_SOURCE, checker), "the CheckerBoard feeds the STMap's Source")
         require(stmap.connectInput(STMAP_INPUT_UV, uv), "the ramp feeds the STMap's UV")
         require(stmap.connectInput(STMAP_INPUT_MAP, mapping), "the Constant feeds the STMap's Map")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer exists")
         require(viewer.connectInput(0, stmap), "the Viewer shows the STMap")
         gt.close_all_panels()

@@ -33,8 +33,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_POSITION "net.sf.openfx.Position"
-#define PLUGIN_MAJOR_NATRON_POSITION 2
+#define PLUGINID_NATRON_POSITION "Position"
+#define PLUGIN_MAJOR_NATRON_POSITION 1
 
 #define kPositionParamTranslate "translate"
 #define kPositionParamInteractive "interactive"
@@ -68,7 +68,7 @@ struct PositionOp {
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_POSITION,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Position.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Position.png",
         .inputs = kPositionInputs,
     };
 

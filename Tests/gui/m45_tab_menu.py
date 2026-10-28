@@ -33,9 +33,9 @@ STARTUP_TIMEOUT_S = 60.0
 POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 280
 
-READ_ID = "fr.inria.built-in.Read"
-BLUR_ID = "net.sf.cimg.CImgBlur"
-GROUP_ID = "fr.inria.built-in.Group"
+READ_ID = "Read"
+BLUR_ID = "Blur"
+GROUP_ID = "Group"
 REMAPPED_SEARCH_MODES = "consecutive,anchored_fuzzy,non_anchored_fuzzy"
 
 try:

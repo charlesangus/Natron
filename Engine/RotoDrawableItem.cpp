@@ -38,6 +38,9 @@
 
 #include "Serialization/KnobSerialization.h"
 
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/RotoContextPrivate.h"
 
 #include "Engine/AppInstance.h"
@@ -192,17 +195,17 @@ RotoDrawableItem::createNodes(bool connectNodes)
 
     switch (type) {
     case eRotoStrokeTypeBlur:
-        pluginId = QString::fromUtf8(PLUGINID_OFX_BLURCIMG);
+        pluginId = QString::fromUtf8(PLUGINID_NATRON_BLUR);
         break;
     case eRotoStrokeTypeEraser:
-        pluginId = QString::fromUtf8(PLUGINID_OFX_CONSTANT);
+        pluginId = QString::fromUtf8(PLUGINID_NATRON_CONSTANT);
         break;
     case eRotoStrokeTypeSolid:
         pluginId = QString::fromUtf8(PLUGINID_OFX_ROTO);
         break;
     case eRotoStrokeTypeClone:
     case eRotoStrokeTypeReveal:
-        pluginId = QString::fromUtf8(PLUGINID_OFX_TRANSFORM);
+        pluginId = QString::fromUtf8(PLUGINID_NATRON_TRANSFORM);
         break;
     case eRotoStrokeTypeBurn:
     case eRotoStrokeTypeDodge:

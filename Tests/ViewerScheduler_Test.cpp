@@ -44,6 +44,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -54,7 +55,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 
 const int kFormatSize = 256;
 
@@ -151,7 +152,7 @@ protected:
     NodePtr createGrade(const NodePtr& source,
                         double factor)
     {
-        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         EXPECT_TRUE(bool(grade));
         if (!grade) {
             return grade;
@@ -178,7 +179,7 @@ TEST_F(ViewerScheduler, ViewerInputAcrossAGradeChainWithoutRenderScale)
     for (int i = 0; i < 20; ++i) {
         const double factor = (i % 2) ? 1.07 : 0.95;
         if (i == 10) {
-            RenderScaleDisabledGuard noRenderScale(PLUGINID_OFX_GRADE);
+            RenderScaleDisabledGuard noRenderScale(PLUGINID_NATRON_GRADE);
             ASSERT_TRUE(noRenderScale.valid());
             upstream = createGrade(upstream, factor);
             ASSERT_TRUE(bool(upstream));

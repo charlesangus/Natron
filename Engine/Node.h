@@ -1434,7 +1434,20 @@ public:
      **/
     void replaceCustomDataInlabel(const QString & data);
 
+    /**
+     * @brief Shows the effect's getSublabel() in the node's label, on the main thread.
+     **/
+    void refreshSublabel();
+
+    /**
+     * @brief The text shown in parentheses after the node's name: the
+     * kNatronOfxParamStringSublabelName knob's value if the node has one, otherwise the
+     * effect's getSublabel().
+     **/
+    std::string getSublabel() const;
+
 private:
+    void showSublabel(const QString& sublabel);
 
     void restoreSublabel();
 

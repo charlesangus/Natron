@@ -56,6 +56,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProcessHandler.h"
@@ -69,7 +70,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 const int kFirstFrame = 1;
 const int kLastFrame = 20;
 const int kActionFrame = 3;
@@ -98,7 +99,7 @@ protected:
     {
         _source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
         ASSERT_TRUE(bool(_source));
-        _grade = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+        _grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         ASSERT_TRUE(bool(_grade));
         _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
@@ -396,7 +397,7 @@ TEST_F(RenderIsolation, EditOutsideTheRenderGoesThrough)
     buildGraph(tmp);
     ASSERT_TRUE(bool(_writer));
 
-    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(loose));
     KnobColor* looseMultiply = dynamic_cast<KnobColor*>(loose->getKnobByName("multiply").get());
     ASSERT_TRUE(looseMultiply != NULL);
@@ -580,9 +581,9 @@ TEST_F(RenderIsolation, EditUpstreamOfMetadataSourceIsRefusedDuringWriteRender)
     ASSERT_TRUE(bool(_writer));
 
     // upstream -> metadataSource, outside the Write's inputs.
-    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(upstream));
-    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(metadataSource));
     connectNodes(upstream, metadataSource, 0, true);
 

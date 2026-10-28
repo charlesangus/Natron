@@ -31,8 +31,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 
-#define PLUGINID_NATRON_CHECKERBOARD "net.sf.openfx.CheckerBoardPlugin"
-#define PLUGIN_MAJOR_NATRON_CHECKERBOARD 2
+#define PLUGINID_NATRON_CHECKERBOARD "CheckerBoard"
+#define PLUGIN_MAJOR_NATRON_CHECKERBOARD 1
 
 #define kCheckerBoardParamBoxSize "boxSize"
 #define kCheckerBoardParamColor0 "color0"
@@ -146,7 +146,7 @@ struct CheckerBoardOp {
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CHECKERBOARD,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CheckerBoardPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/CheckerBoard.png",
     };
 
     static constexpr ImagePipelineSpec kPipeline = {

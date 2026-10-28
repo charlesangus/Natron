@@ -39,7 +39,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPADDLAYERS "fr.natron.DeepAddLayers"
+#define PLUGINID_NATRON_DEEPADDLAYERS "DeepAddLayers"
 
 #define kDeepAddLayersParamLayers "layers"
 
@@ -152,7 +152,6 @@ private:
     void refreshSubLabel();
 
     KnobChannelSetWPtr _layers;
-    KnobStringWPtr _subLabel;
     mutable std::mutex _registrySignatureMutex;
     std::string _registrySignature;
 };

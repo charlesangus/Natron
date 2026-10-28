@@ -457,10 +457,10 @@ try:
 
         # ---- splice-vertical: hover-with-highlight, drop, and a single-node one-step undo/redo.
         gt.section("splice-vertical")
-        src_v = create("net.sf.openfx.ConstantPlugin", 0, 0)
-        dst_v = create("net.sf.cimg.CImgBlur", 0, 300)
+        src_v = create("Constant", 0, 0)
+        dst_v = create("Blur", 0, 300)
         connect(dst_v, 0, src_v)
-        mover_v = create("net.sf.cimg.CImgBlur", 400, 150)
+        mover_v = create("Blur", 400, 150)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
@@ -515,10 +515,10 @@ try:
 
         # ---- splice-diagonal: the same hover-with-highlight check over a diagonal pipe.
         gt.section("splice-diagonal")
-        src_d = create("net.sf.openfx.ConstantPlugin", 900, 0)
-        dst_d = create("net.sf.cimg.CImgBlur", 1250, 350)
+        src_d = create("Constant", 900, 0)
+        dst_d = create("Blur", 1250, 350)
         connect(dst_d, 0, src_d)
-        mover_d = create("net.sf.cimg.CImgBlur", 900, 500)
+        mover_d = create("Blur", 900, 500)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
@@ -550,11 +550,11 @@ try:
 
         # ---- splice-chain: a selected 2-node chain splices with the top as entry, bottom as exit.
         gt.section("splice-chain")
-        src_c = create("net.sf.openfx.ConstantPlugin", 1800, 0)
-        dst_c = create("net.sf.cimg.CImgBlur", 1800, 500)
+        src_c = create("Constant", 1800, 0)
+        dst_c = create("Blur", 1800, 500)
         connect(dst_c, 0, src_c)
-        chain_entry = create("net.sf.cimg.CImgBlur", 2200, 150)
-        chain_exit = create("net.sf.cimg.CImgBlur", 2200, 300)
+        chain_entry = create("Blur", 2200, 150)
+        chain_exit = create("Blur", 2200, 300)
         connect(chain_exit, 0, chain_entry)
         app.clearSelection()
         gt.close_all_panels()
@@ -610,11 +610,11 @@ try:
         # ---- splice-no-splice-connected: an already-connected node dragged across another pipe
         # does not splice (its preferred input is already taken, so planSplice's entry count is 0).
         gt.section("splice-no-splice-connected")
-        src_n1 = create("net.sf.openfx.ConstantPlugin", 2800, 0)
-        mid_n = create("net.sf.cimg.CImgBlur", 2800, 200)
+        src_n1 = create("Constant", 2800, 0)
+        mid_n = create("Blur", 2800, 200)
         connect(mid_n, 0, src_n1)
-        src_n2 = create("net.sf.openfx.ConstantPlugin", 3100, 400)
-        dst_n2 = create("net.sf.cimg.CImgBlur", 3100, 700)
+        src_n2 = create("Constant", 3100, 400)
+        dst_n2 = create("Blur", 3100, 700)
         connect(dst_n2, 0, src_n2)
         app.clearSelection()
         gt.close_all_panels()
@@ -642,10 +642,10 @@ try:
         # ---- splice-ctrl-still-splices: Ctrl has no special meaning during a node drag anymore,
         # so a Ctrl-held drag over a pipe splices exactly like an unmodified one.
         gt.section("splice-ctrl-still-splices")
-        src_ctrl = create("net.sf.openfx.ConstantPlugin", 3800, 0)
-        dst_ctrl = create("net.sf.cimg.CImgBlur", 3800, 300)
+        src_ctrl = create("Constant", 3800, 0)
+        dst_ctrl = create("Blur", 3800, 300)
         connect(dst_ctrl, 0, src_ctrl)
-        mover_ctrl = create("net.sf.cimg.CImgBlur", 4200, 150)
+        mover_ctrl = create("Blur", 4200, 150)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
@@ -739,7 +739,7 @@ try:
         gt.section("render-background-custom")
         bg_path = os.path.join(gt.OUT, "render_bg.####.png")
         writer_bg = create_writer(bg_path, 5600, 600)
-        src_bg = create("net.sf.openfx.ConstantPlugin", 5300, 600)
+        src_bg = create("Constant", 5300, 600)
         connect(writer_bg, 0, src_bg)
         yield wait_for_render_button(writer_bg)
 
@@ -786,7 +786,7 @@ try:
         gt.section("render-foreground")
         fg_path = os.path.join(gt.OUT, "render_fg.####.png")
         writer_fg = create_writer(fg_path, 5600, 900)
-        src_fg = create("net.sf.openfx.ConstantPlugin", 5300, 900)
+        src_fg = create("Constant", 5300, 900)
         connect(writer_fg, 0, src_fg)
         yield wait_for_render_button(writer_fg)
         FG_FRAMES = 10
@@ -839,8 +839,8 @@ try:
         gt.section("render-foreground-cancel")
         cancel_path = os.path.join(gt.OUT, "render_cancel.####.png")
         writer_cancel = create_writer(cancel_path, 5600, 1200)
-        src_cancel = create("net.sf.cimg.CImgBlur", 5300, 1200)
-        src_cancel_upstream = create("net.sf.openfx.ConstantPlugin", 5000, 1200)
+        src_cancel = create("Blur", 5300, 1200)
+        src_cancel_upstream = create("Constant", 5000, 1200)
         connect(src_cancel, 0, src_cancel_upstream)
         connect(writer_cancel, 0, src_cancel)
         yield wait_for_render_button(writer_cancel)
@@ -906,7 +906,7 @@ try:
         gt.section("render-background-negative-range")
         neg_path = os.path.join(gt.OUT, "render_neg.####.png")
         writer_neg = create_writer(neg_path, 5600, 1500)
-        src_neg = create("net.sf.openfx.ConstantPlugin", 5300, 1500)
+        src_neg = create("Constant", 5300, 1500)
         connect(writer_neg, 0, src_neg)
         yield wait_for_render_button(writer_neg)
 

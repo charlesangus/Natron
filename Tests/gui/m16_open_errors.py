@@ -32,8 +32,8 @@ WATCHDOG_S = 240
 DIALOG_TIMEOUT_S = 20.0
 SETTLE_MS = 700
 LOAD_TIMEOUT_S = 60.0
-GRADE = "net.sf.openfx.GradePlugin"
-BLUR = "net.sf.cimg.CImgBlur"
+GRADE = "Grade"
+BLUR = "Blur"
 
 try:
     import NatronEngine

@@ -31,8 +31,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_DISSOLVE "net.sf.openfx.DissolvePlugin"
-#define PLUGIN_MAJOR_NATRON_DISSOLVE 2
+#define PLUGINID_NATRON_DISSOLVE "Dissolve"
+#define PLUGIN_MAJOR_NATRON_DISSOLVE 1
 
 #define kDissolveParamWhich "which"
 
@@ -79,7 +79,7 @@ struct DissolveOp {
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_DISSOLVE,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Dissolve.png",
         .inputs = kDissolveInputs,
     };
 

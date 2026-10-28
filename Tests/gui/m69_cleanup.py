@@ -565,7 +565,7 @@ try:
         yield ("sleep", SETTLE_MS)
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         _viewer["node"] = viewer
         yield ("sleep", SETTLE_MS)
@@ -573,7 +573,7 @@ try:
 
         # =====================================================================================
         gt.section("delete-with-active-undo-stack")
-        grade = create("net.sf.openfx.GradePlugin", 0, -2000)
+        grade = create("Grade", 0, -2000)
         yield ("sleep", SETTLE_MS)
         spins = panel_spinboxes()
         if check(len(spins) > 0, "the Grade's panel has a value box to edit"):
@@ -587,7 +587,7 @@ try:
         grade.destroy()
         yield ("sleep", SETTLE_MS)
         check(app.getNode(grade_name) is None, "the Grade was destroyed")
-        blur_p1 = create("net.sf.cimg.CImgBlur", 300, -2000)
+        blur_p1 = create("Blur", 300, -2000)
         yield ("sleep", SETTLE_MS)
         spins = panel_spinboxes()
         if check(len(spins) > 0, "the Blur's panel has a value box to edit"):
@@ -610,7 +610,7 @@ try:
         # =====================================================================================
         gt.section("stub-grab-radius")
         merge = create("Merge", 0, 0)
-        src = create("net.sf.openfx.ConstantPlugin", -400, -250)
+        src = create("Constant", -400, -250)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
@@ -650,10 +650,10 @@ try:
 
         # =====================================================================================
         gt.section("pick-up")
-        pb = create("net.sf.cimg.CImgBlur", 1500, 0)
-        pc = create("net.sf.openfx.ConstantPlugin", 1150, -300)
-        pk = create("net.sf.openfx.CheckerBoardPlugin", 1850, -300)
-        pb2 = create("net.sf.cimg.CImgBlur", 1850, 0)
+        pb = create("Blur", 1500, 0)
+        pc = create("Constant", 1150, -300)
+        pk = create("CheckerBoard", 1850, -300)
+        pb2 = create("Blur", 1850, 0)
         connect(pb2, 0, pk)
         app.clearSelection()
         gt.close_all_panels()
@@ -754,8 +754,8 @@ try:
         cancel_run("empty click on an unconnected stub", lambda p: click(vp, p))
         yield ("sleep", 100)
 
-        pp_src = create("net.sf.openfx.ConstantPlugin", 2200, -300)
-        pp_dst = create("net.sf.cimg.CImgBlur", 2200, 0)
+        pp_src = create("Constant", 2200, -300)
+        pp_dst = create("Blur", 2200, 0)
         pp_dst.connectInput(0, pp_src)
         pb2.connectInput(0, pk)
         gt.close_all_panels()
@@ -814,7 +814,7 @@ try:
         yield ("sleep", 100)
 
         bx0, by0 = pb.getPosition()
-        backdrop = create("fr.inria.built-in.BackDrop", bx0 - 230, by0 - 230)
+        backdrop = create("Backdrop", bx0 - 230, by0 - 230)
         backdrop.setSize(220, 120)
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
@@ -829,10 +829,10 @@ try:
         # end of the pipe nearest the click: the arrowhead end re-routes the source to another
         # node's preferred input, the source end re-routes the input to another source.
         gt.section("pipe-pick-up")
-        ep_src = create("net.sf.openfx.ConstantPlugin", 1500, -300)
-        ep_dst = create("net.sf.cimg.CImgBlur", 1500, 0)
-        ep_other_dst = create("net.sf.cimg.CImgBlur", 1850, 0)
-        ep_other_src = create("net.sf.openfx.CheckerBoardPlugin", 1850, -300)
+        ep_src = create("Constant", 1500, -300)
+        ep_dst = create("Blur", 1500, 0)
+        ep_other_dst = create("Blur", 1850, 0)
+        ep_other_src = create("CheckerBoard", 1850, -300)
         ep_nodes = [ep_src, ep_dst, ep_other_dst, ep_other_src]
         app.clearSelection()
         gt.close_all_panels()
@@ -1066,12 +1066,12 @@ try:
         # =====================================================================================
         gt.section("y-shift-y")
         graph = root_graph()
-        ys = create("net.sf.openfx.ConstantPlugin", 3000, -600)
+        ys = create("Constant", 3000, -600)
         ma = create("Merge", 3150, 0)
-        gb = create("net.sf.openfx.GradePlugin", 3000, -300)
-        gc = create("net.sf.openfx.GradePlugin", 3300, -300)
-        sa = create("net.sf.openfx.GradePlugin", 3600, -300)
-        sb = create("net.sf.openfx.GradePlugin", 3900, -300)
+        gb = create("Grade", 3000, -300)
+        gc = create("Grade", 3300, -300)
+        sa = create("Grade", 3600, -300)
+        sb = create("Grade", 3900, -300)
         sm = create("Merge", 3750, 0)
         for fed in (gb, gc, sa, sb):
             fed.connectInput(0, ys)
@@ -1142,7 +1142,7 @@ try:
 
         mask_slots = [i for i in range(ma.getMaxInputCount()) if ma.getInputLabel(i).lower() == "mask"]
         fill_order = merge_fill_order(ma)
-        y_grades = [create("net.sf.openfx.GradePlugin", 3000 + 300 * k, -900) for k in range(5)]
+        y_grades = [create("Grade", 3000 + 300 * k, -900) for k in range(5)]
         gt.close_all_panels()
         select_in_order([ma] + y_grades)
         graph_key(Qt.Key_Y)
@@ -1168,7 +1168,7 @@ try:
         yield ("sleep", 200)
         check(all(input_of(g, 0) is None for g in y_grades), "U: one undo removes every Grade connection")
 
-        mg = create("net.sf.openfx.GradePlugin", 3300, -600)
+        mg = create("Grade", 3300, -600)
         g_mask = [i for i in range(mg.getMaxInputCount()) if mg.getInputLabel(i).lower() == "mask"]
         g_main = [i for i in range(mg.getMaxInputCount()) if i not in g_mask]
         gt.close_all_panels()
@@ -1189,12 +1189,12 @@ try:
         # =====================================================================================
         gt.section("u-shift-u")
         graph = root_graph()
-        ux = create("net.sf.openfx.ConstantPlugin", 4200, -600)
-        ua = create("net.sf.openfx.GradePlugin", 4200, -300)
-        ub = create("net.sf.openfx.GradePlugin", 4500, -300)
-        uc = create("net.sf.openfx.GradePlugin", 4800, -300)
+        ux = create("Constant", 4200, -600)
+        ua = create("Grade", 4200, -300)
+        ub = create("Grade", 4500, -300)
+        uc = create("Grade", 4800, -300)
         um = create("Merge", 4500, 100)
-        ud = create("net.sf.openfx.GradePlugin", 4800, 100)
+        ud = create("Grade", 4800, 100)
         gt.close_all_panels()
         app.clearSelection()
         frame(graph, [ux, ua, ub, uc, um, ud], max_zoom=1.0)
@@ -1305,8 +1305,8 @@ try:
         gt.require(reader is not None, "create a Read of flat-rgba-only.exr")
         reader.setPosition(5000, 0)
         connect(viewer, 0, reader)
-        copy_blur = create("net.sf.cimg.CImgBlur", 5400, 0)
-        copy_grade = create("net.sf.openfx.GradePlugin", 5400, 200)
+        copy_blur = create("Blur", 5400, 0)
+        copy_grade = create("Grade", 5400, 200)
         connect(copy_grade, 0, copy_blur)
         gt.close_all_panels()
         graph = root_graph()
@@ -1360,7 +1360,7 @@ try:
             check(same(input_of(viewer, 0), reader), "chain: one undo restores Read -> Viewer")
             check(all(app.getNode(n.getScriptName()) is None for n in pasted), "chain: one undo removes both pasted nodes")
 
-        split_src = create("net.sf.cimg.CImgBlur", 6400, 0)
+        split_src = create("Blur", 6400, 0)
         connect(split_src, 0, reader)
         split_merge = create("Merge", 6400, 300)
         split_a = input_index(split_merge, "A")
@@ -1408,9 +1408,9 @@ try:
             check(input_of(pasted[0], 0) is None, "paste onto the Write: the Blur is unconnected")
             check(same(input_of(writer, 0), reader), "paste onto the Write: the Write still takes the Read")
 
-        gen_target = create("net.sf.cimg.CImgBlur", 6100, 0)
+        gen_target = create("Blur", 6100, 0)
         connect(gen_target, 0, reader)
-        gen_src = create("net.sf.openfx.ConstantPlugin", 6100, -300)
+        gen_src = create("Constant", 6100, -300)
         gt.close_all_panels()
         copy([gen_src])
         pasted = paste_onto([gen_target])
@@ -1426,8 +1426,8 @@ try:
         # =====================================================================================
         gt.section("paste-focus")
         graph = root_graph()
-        blur_one = create("net.sf.cimg.CImgBlur", 6500, 0)
-        blur_two = create("net.sf.cimg.CImgBlur", 6500, 250)
+        blur_one = create("Blur", 6500, 0)
+        blur_two = create("Blur", 6500, 250)
         gt.close_all_panels()
         pasted_here = []
         frame(graph, [blur_one, blur_two], max_zoom=1.0)
@@ -1622,7 +1622,7 @@ try:
         # =====================================================================================
         gt.section("curve-join")
         gt.close_all_panels()
-        cg = create("net.sf.openfx.GradePlugin", 7000, 0)
+        cg = create("Grade", 7000, 0)
         mix = cg.getParam("mix")
         smooth = NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeSmooth
         for t, v in ((1, 0.0), (11, 0.5), (21, 1.0)):
@@ -1769,7 +1769,7 @@ try:
         # =====================================================================================
         gt.section("folded-curve")
         gt.close_all_panels()
-        fg = create("net.sf.openfx.GradePlugin", 11200, 0)
+        fg = create("Grade", 11200, 0)
         gain_name = "gain" if fg.getParam("gain") is not None else "multiply"
         gain = fg.getParam(gain_name)
         n_dims = gain.getNumDimensions()
@@ -1936,9 +1936,9 @@ try:
         gt.close_all_panels()
         # The keys go in before any panel exists: keying X alone first makes X and Y differ for a
         # moment, which an open panel answers by expanding the knob.
-        eb = app.createNode("net.sf.cimg.CImgBlur", -1, None,
+        eb = app.createNode("Blur", -1, None,
                             {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)})
-        gt.require(eb is not None, "create net.sf.cimg.CImgBlur", gt.plugin_problem("net.sf.cimg.CImgBlur"))
+        gt.require(eb is not None, "create Blur", gt.plugin_problem("Blur"))
         eb.setPosition(11600, 0)
         size = eb.getParam("size")
         gt.require(size is not None and size.getNumDimensions() == 2, "the Blur has a two-component size knob")
@@ -2135,9 +2135,9 @@ try:
 
         # =====================================================================================
         gt.section("picker-in-out")
-        c25 = create("net.sf.openfx.ConstantPlugin", 8000, -300)
+        c25 = create("Constant", 8000, -300)
         set_rgba(c25.getParam("color"), (0.25, 0.25, 0.25, 1.0))
-        g2 = create("net.sf.openfx.GradePlugin", 8000, 0)
+        g2 = create("Grade", 8000, 0)
         set_all(g2.getParam("multiply"), 2.0)
         connect(g2, 0, c25)
         gt.close_all_panels()
@@ -2182,7 +2182,7 @@ try:
         gt.shot("picker-03-rect-alt-in.png")
 
         gt.close_all_panels()
-        eg = create("net.sf.openfx.GradePlugin", 8000, 300)
+        eg = create("Grade", 8000, 300)
         set_all(eg.getParam("multiply"), 2.0)
         connect(eg, 0, c25)
         yield ("sleep", SETTLE_MS)
@@ -2249,9 +2249,9 @@ try:
         view(g2)
         yield ("sleep", RENDER_MS)
 
-        mb = create("net.sf.openfx.ConstantPlugin", 8400, -300)
+        mb = create("Constant", 8400, -300)
         set_rgba(mb.getParam("color"), (0.25, 0.25, 0.25, 1.0))
-        ma = create("net.sf.openfx.ConstantPlugin", 8700, -300)
+        ma = create("Constant", 8700, -300)
         set_rgba(ma.getParam("color"), (0.75, 0.75, 0.75, 1.0))
         mm = create("Merge", 8550, 0)
         connect(mm, input_index(mm, "B"), mb)
@@ -2281,11 +2281,11 @@ try:
         gt.section("picker-scene-referred")
         settings = NatronEngine.natron.getSettings()
         check(settings.getParam("linearPickers") is None, "the 'Linear color pickers' preference is gone")
-        cs = create("net.sf.openfx.ConstantPlugin", 9200, -300)
+        cs = create("Constant", 9200, -300)
         want = (0.18, 2.0, 0.5, 1.0)
         set_rgba(cs.getParam("color"), want)
         gt.close_all_panels()
-        pick_grade = create("net.sf.openfx.GradePlugin", 9500, -300)
+        pick_grade = create("Grade", 9500, -300)
         yield ("sleep", SETTLE_MS)
         view(cs)
         yield ("sleep", RENDER_MS)
@@ -2362,7 +2362,7 @@ try:
 
         # =====================================================================================
         gt.section("roto-multi-feather")
-        roto = create("fr.inria.built-in.Roto", 10000, 0)
+        roto = create("Roto", 10000, 0)
         ctx = roto.getRotoContext()
         gt.require(ctx is not None, "the Roto node has a roto context")
         t = 1.0
@@ -2436,7 +2436,7 @@ try:
         # =====================================================================================
         gt.section("roto-broken-tangent")
         t = 1.0
-        roto2 = create("fr.inria.built-in.Roto", 10600, 0)
+        roto2 = create("Roto", 10600, 0)
         ctx2 = roto2.getRotoContext()
         gt.require(ctx2 is not None, "the second Roto node has a roto context")
         gl = viewer_gl()
@@ -2580,7 +2580,7 @@ try:
             yield ("sleep", SETTLE_MS)
             return opened
 
-        fb = create("net.sf.cimg.CImgBlur", 12400, 0)
+        fb = create("Blur", 12400, 0)
         fsize = fb.getParam("size")
         gt.require(fsize is not None and fsize.getNumDimensions() == 2, "the Blur has a two-component size knob")
         fsize_label = fsize.getLabel().strip().lower()
@@ -2596,7 +2596,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
-        fg = create("net.sf.openfx.GradePlugin", 12400, 300)
+        fg = create("Grade", 12400, 300)
         fgain = fg.getParam("gain") if fg.getParam("gain") is not None else fg.getParam("multiply")
         gt.require(fgain is not None and fgain.getNumDimensions() > 1, "the Grade has a multi-component gain knob")
         fgain_label = fgain.getLabel().strip().lower()
@@ -2648,7 +2648,7 @@ try:
         # =====================================================================================
         gt.section("header-button-sizes")
         gt.close_all_panels()
-        sized = create("net.sf.openfx.GradePlugin", 0, -2000)
+        sized = create("Grade", 0, -2000)
         yield ("sleep", SETTLE_MS)
 
         def named_buttons(name):

@@ -36,7 +36,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPEXPRESSION "fr.natron.DeepExpression"
+#define PLUGINID_NATRON_DEEPEXPRESSION "DeepExpression"
 
 #define kDeepExpressionParamLayer "layer"
 #define kDeepExpressionParamExpressionPrefix "expression"

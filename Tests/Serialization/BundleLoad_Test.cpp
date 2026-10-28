@@ -485,7 +485,7 @@ TEST_F(BundleLoadTest, UnknownKeysWarnAndAreIgnored)
     ASSERT_FALSE(graph.empty());
     std::string withUnknownKeys = replacedOnce(graph, "formatVersion: 1\n", "formatVersion: 1\nfutureTopLevelKey: {a: 1}\n");
     withUnknownKeys = replacedOnce(withUnknownKeys, "timeline: {current: 7}", "timeline: {current: 7, futureTimelineKey: true}");
-    withUnknownKeys = replacedOnce(withUnknownKeys, "    plugin: \"net.sf.openfx.ConstantPlugin\"\n", "    plugin: \"net.sf.openfx.ConstantPlugin\"\n    futureNodeKey: 3\n");
+    withUnknownKeys = replacedOnce(withUnknownKeys, "    plugin: \"Constant\"\n", "    plugin: \"Constant\"\n    futureNodeKey: 3\n");
     withUnknownKeys = replacedOnce(withUnknownKeys, "{value: 4, linkGroup: \"Blur1.size.1\"}", "{value: 4, linkGroup: \"Blur1.size.1\", futureLinkKey: 0}");
 
     QTemporaryDir tmp;

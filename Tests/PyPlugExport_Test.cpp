@@ -58,6 +58,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
 #include "Engine/PyNode.h"
 #include "Engine/PyParameter.h"
@@ -243,7 +245,7 @@ TEST_F(PyPlugExportTest, UserChannelSetAliasRoundTripsThroughPyPlugExport)
     NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
     ASSERT_TRUE(bool(collection));
 
-    CreateNodeArgs blurArgs(PLUGINID_OFX_BLURCIMG, collection);
+    CreateNodeArgs blurArgs(PLUGINID_NATRON_BLUR, collection);
     NodePtr blur = getApp()->createNode(blurArgs);
     ASSERT_TRUE(bool(blur));
     const std::string blurScriptName = blur->getScriptName();
@@ -792,9 +794,9 @@ TEST_F(PyPlugExportTest, GradeOnRGBLayerRowRoundTripsThroughPyPlugExport)
     NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
     ASSERT_TRUE(bool(collection));
 
-    CreateNodeArgs gradeArgs(PLUGINID_OFX_GRADE, collection);
+    CreateNodeArgs gradeArgs(PLUGINID_NATRON_GRADE, collection);
     NodePtr grade = getApp()->createNode(gradeArgs);
-    ASSERT_TRUE(bool(grade)) << "node creation failed for " << PLUGINID_OFX_GRADE;
+    ASSERT_TRUE(bool(grade)) << "node creation failed for " << PLUGINID_NATRON_GRADE;
     const std::string gradeScriptName = grade->getScriptName();
 
     KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));

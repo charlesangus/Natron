@@ -64,9 +64,11 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -84,7 +86,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 
 const int kFirstFrame = 1;
 const int kLastFrame = 3;
@@ -366,7 +368,7 @@ protected:
     NodePtr createGrade(const NodePtr& source,
                         double factor)
     {
-        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+        NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         EXPECT_TRUE(bool(grade));
         if (!grade) {
             return grade;
@@ -443,7 +445,7 @@ protected:
                             double tx,
                             double ty)
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_OFX_TRANSFORM));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM));
         EXPECT_TRUE(bool(node));
         if (!node) {
             return node;
@@ -964,7 +966,7 @@ TEST_F(SchedulerEquivalence, MipmapAcrossANodeWithoutRenderScale)
     ASSERT_TRUE(bool(upper));
     NodePtr fullScale;
     {
-        RenderScaleDisabledGuard noRenderScale(PLUGINID_OFX_GRADE);
+        RenderScaleDisabledGuard noRenderScale(PLUGINID_NATRON_GRADE);
         ASSERT_TRUE(noRenderScale.valid());
         fullScale = createGrade(upper, 1.15);
     }

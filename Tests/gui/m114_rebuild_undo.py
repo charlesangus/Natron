@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 200
 SETTLE_MS = 400
-BLUR = "net.sf.cimg.CImgBlur"
+BLUR = "Blur"
 CURVE_PARAM = "mix"
 TYPED_USER = "typedUser"
 KEYED_USER = "keyedUser"
@@ -293,9 +293,9 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("setup")
-        viewers = [n for n in app.getChildren() if n.getPluginID() == "fr.inria.built-in.Viewer"]
+        viewers = [n for n in app.getChildren() if n.getPluginID() == "Viewer"]
         if not viewers:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
             gt.require(viewer is not None, "created a viewer for the empty project")
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         node = app.createNode(BLUR, -1, None, props)

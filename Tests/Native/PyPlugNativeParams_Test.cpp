@@ -76,11 +76,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Every ID a native node has taken over from an OpenFX plug-in. NativePluginList_Test owns the
-// authoritative list of what resolves to a native version; this one only decides which
-// createNode() blocks of a PyPlug are audited.
+// The native nodes whose createNode() blocks in a PyPlug are audited.
 const std::set<std::string>&
-retiredIds()
+auditedIds()
 {
     static const std::set<std::string> ids = {
         PLUGINID_NATRON_GRADE,
@@ -236,7 +234,7 @@ isPluginLoaded(const char* pluginID)
 }
 
 // fr.inria.SplitAndJoin is left out for the reason PyPlugInstantiate_Test gives; it creates no
-// retired node anyway.
+// audited node anyway.
 const char* const kAuditedPyPlugs[] = {
     "AngleBlur",
     "DropShadow",
@@ -297,7 +295,7 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
         for (const auto& entry : audit.idOfNode) {
             const std::string& scriptName = entry.first;
             const std::string& expectedId = entry.second;
-            if (retiredIds().find(expectedId) == retiredIds().end()) {
+            if (auditedIds().find(expectedId) == auditedIds().end()) {
                 continue;
             }
             const std::map<std::string, NodePtr>::const_iterator nodeIt = innerByName.find(scriptName);
@@ -323,7 +321,7 @@ TEST_F(PyPlugNativeParamsTest, EveryParamAPyPlugSetsOnANativeNodeExistsOnIt)
         }
     }
 
-    EXPECT_GT(nChecked, 0) << "no parameter of a retired node was audited";
+    EXPECT_GT(nChecked, 0) << "no parameter of a native node was audited";
     EXPECT_EQ(0, nMissing) << "Params the bundled PyPlugs set on a native node that the node lacks:\n"
                            << findings.str();
 }

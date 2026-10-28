@@ -150,7 +150,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # #2-#3.
 #
 # This revision excludes the OFX Shuffle plugin, so Natron does not ship it
-# alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
+# alongside the native Shuffle and ShuffleCopy.
 #
 # It also has Grade, Premult/Unpremult, ColorCorrect, ColorSuppress,
 # ContactSheet and LayerContactSheet accept alpha-only (1-component) images,

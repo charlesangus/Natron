@@ -81,7 +81,7 @@ key(double time,
 NodeSerializationPtr
 rotoPaintWithHeavyStroke()
 {
-    NodeSerializationPtr node = makeNode("RotoPaint1", "fr.inria.built-in.RotoPaint");
+    NodeSerializationPtr node = makeNode("RotoPaint1", "RotoPaint");
     Serialization::KnobSerialization opacity;
     opacity.name = "opacity";
     opacity.typeName = "Double";
@@ -147,7 +147,7 @@ TEST(PresetYaml, RoundTripsARotoPaintWithAHeavyStrokeInOneSelfContainedDocument)
     ASSERT_EQ(1u, decoded.size());
     const NodeSerialization& result = *decoded.front();
     EXPECT_EQ("RotoPaint1", result.scriptName);
-    EXPECT_EQ("fr.inria.built-in.RotoPaint", result.pluginID);
+    EXPECT_EQ("RotoPaint", result.pluginID);
     ASSERT_TRUE(result.hasRotoContext);
     ASSERT_EQ(1u, result.rotoContext.baseLayer.children.size());
     const Serialization::RotoStrokeItemSerialization& stroke = result.rotoContext.baseLayer.children.front().stroke;
@@ -164,7 +164,7 @@ TEST(PresetYaml, RoundTripsARotoPaintWithAHeavyStrokeInOneSelfContainedDocument)
 
 TEST(PresetYaml, KeepsTheOrderOfAMultiInstanceNodeAndItsInstances)
 {
-    const NodeSerializationPtr tracker = makeNode("Tracker1", "fr.inria.built-in.Tracker");
+    const NodeSerializationPtr tracker = makeNode("Tracker1", "Tracker");
     const NodeSerializationPtr second = makeNode("Tracker1_b", "fr.inria.built-in.TrackerPM");
     const NodeSerializationPtr first = makeNode("Tracker1_a", "fr.inria.built-in.TrackerPM");
     const std::string text = Serialization::encodePresetYaml({ tracker, second, first });
@@ -185,7 +185,7 @@ TEST(PresetYaml, AnOldXmlPresetIsRecognisedAndRefusedWithoutCrashing)
                             "<NodesCount>1</NodesCount>\n";
     EXPECT_TRUE(Serialization::isXmlDocument(xml));
     EXPECT_TRUE(Serialization::isXmlDocument("\xEF\xBB\xBF  \n" + xml));
-    EXPECT_FALSE(Serialization::isXmlDocument(Serialization::encodePresetYaml({ makeNode("Blur1", "net.sf.cimg.CImgBlur") })));
+    EXPECT_FALSE(Serialization::isXmlDocument(Serialization::encodePresetYaml({ makeNode("Blur1", "Blur") })));
     EXPECT_THROW(Serialization::decodePresetYaml(xml), YamlError);
 }
 

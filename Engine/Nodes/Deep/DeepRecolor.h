@@ -38,7 +38,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPRECOLOR "fr.natron.DeepRecolor"
+#define PLUGINID_NATRON_DEEPRECOLOR "DeepRecolor"
 
 #define kDeepRecolorParamChannels "channels"
 

@@ -34,7 +34,7 @@
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
-#define PLUGINID_NATRON_DEEPREFORMAT "fr.natron.DeepReformat"
+#define PLUGINID_NATRON_DEEPREFORMAT "DeepReformat"
 
 NATRON_NAMESPACE_ENTER
 

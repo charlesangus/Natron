@@ -115,13 +115,13 @@ RAW = os.environ["RB_RAW"]
 OUT = os.environ["RB_OUT"]
 RESULT = os.environ["RB_RESULT"]
 CHAIN = (
-    "fr.natron.RawPrepare",
-    "fr.natron.RawHotPixels",
-    "fr.natron.RawDenoise",
-    "fr.natron.RawTemperature",
-    "fr.natron.RawHighlights",
-    "fr.natron.RawDemosaic",
-    "fr.natron.RawInputColor",
+    "RawPrepare",
+    "RawHotPixels",
+    "RawDenoise",
+    "RawTemperature",
+    "RawHighlights",
+    "RawDemosaic",
+    "RawInputColor",
 )
 stamps = []
 
@@ -153,9 +153,9 @@ for plugin_id in CHAIN:
     nodes[plugin_id] = node
     prev = node
 
-param(nodes["fr.natron.RawHighlights"], "mode").set(0)
-param(nodes["fr.natron.RawDemosaic"], "method").set(int(os.environ["RB_BAYER"]))
-param(nodes["fr.natron.RawDemosaic"], "xtransMethod").set(int(os.environ["RB_XTRANS"]))
+param(nodes["RawHighlights"], "mode").set(0)
+param(nodes["RawDemosaic"], "method").set(int(os.environ["RB_BAYER"]))
+param(nodes["RawDemosaic"], "xtransMethod").set(int(os.environ["RB_XTRANS"]))
 
 writer = app.createWriter(OUT)
 writer.connectInput(0, prev)

@@ -2,13 +2,13 @@ format: natron-project
 formatVersion: 1
 nodes:
   Blur1:
-    plugin: "net.sf.cimg.CImgBlur"
-    version: [5, 1]
+    plugin: "Blur"
+    version: [1, 1]
     inputs: {Source: "Missing1"}
   Constant1:
-    plugin: "net.sf.openfx.ConstantPlugin"
-    version: [2, 0]
+    plugin: "Constant"
+    version: [1, 0]
   Grade1:
-    plugin: "net.sf.openfx.GradePlugin"
-    version: [3, 0]
+    plugin: "Grade"
+    version: [1, 0]
     inputs: {Source: "Constant1"}

@@ -32,7 +32,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
 
-#define PLUGINID_NATRON_DEEPCROP "fr.natron.DeepCrop"
+#define PLUGINID_NATRON_DEEPCROP "DeepCrop"
 
 NATRON_NAMESPACE_ENTER
 

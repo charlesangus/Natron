@@ -395,21 +395,19 @@ TEST_F(AddLayersTest, SubLabelNamesTheAddedLayers)
 
     ASSERT_TRUE(bool(add));
     KnobChannelSetPtr layers = layersKnob(add);
-    KnobStringPtr sublabel = std::dynamic_pointer_cast<KnobString>(add->getKnobByName(kNatronOfxParamStringSublabelName));
+    EXPECT_FALSE(bool(add->getKnobByName(kNatronOfxParamStringSublabelName)));
     ASSERT_TRUE(bool(layers));
-    ASSERT_TRUE(bool(sublabel));
-    EXPECT_TRUE(sublabel->getIsSecret());
-    EXPECT_EQ(std::string(), sublabel->getValue());
+    EXPECT_EQ(std::string(), add->getSublabel());
 
     layers->setLayer(0, "diffuse", NULL);
     layers->addLayer("mask", NULL);
-    EXPECT_EQ(std::string("diffuse +1"), sublabel->getValue());
+    EXPECT_EQ(std::string("diffuse +1"), add->getSublabel());
 
     std::vector<ChannelSetRow> rows(1);
     rows[0].mode = ChannelSetRow::eModeLayer;
     rows[0].layerOrPattern = kNatronColorViewAlpha;
     layers->setRows(rows);
-    EXPECT_EQ(std::string("alpha"), sublabel->getValue());
+    EXPECT_EQ(std::string("alpha"), add->getSublabel());
 }
 
 TEST_F(AddLayersTest, SelectionSurvivesSaveResetLoad)

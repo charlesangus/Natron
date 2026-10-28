@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 400
 STARTUP_TIMEOUT_S = 60.0
-READ_ID = "fr.inria.built-in.Read"
+READ_ID = "Read"
 
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, QTimer, Q_ARG
@@ -154,7 +154,7 @@ try:
         """Runs action once the menu or dialog that the click in progress opened has been drawn."""
         QTimer.singleShot(1500, action)
 
-    viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+    viewer = app.getNode("Viewer1") or app.createNode("Viewer")
     require(viewer is not None, "a Viewer node exists")
     viewer.setPosition(400, 600)
     made = []

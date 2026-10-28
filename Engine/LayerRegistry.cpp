@@ -212,6 +212,15 @@ LayerRegistry::LayerRegistry()
         initial.push_back(e);
     }
 
+    {
+        // USDRender's shading normal from the delegates that render one, in camera space.
+        static const char* normalChannels[3] = { "X", "Y", "Z" };
+        LayerRegistryEntry e;
+        e.desc = ImageLayerDesc("normal", "normal", "", normalChannels, 3);
+        e.origin = LayerRegistryEntry::eOriginUser;
+        initial.push_back(e);
+    }
+
     _entries.reset(new std::vector<LayerRegistryEntry>(initial));
 }
 

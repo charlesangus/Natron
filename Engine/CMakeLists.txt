@@ -272,6 +272,13 @@ endif()
 if(NATRON_MOONRAY_PREFIX)
     set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/MoonRayRuntime.cpp APPEND PROPERTY COMPILE_DEFINITIONS
         NATRON_MOONRAY_PREFIX="${NATRON_MOONRAY_PREFIX}")
+    # MoonRay logs through log4cplus; linking the copy it loads lets a render take its log.
+    find_package(log4cplus CONFIG QUIET)
+    if(log4cplus_FOUND)
+        target_link_libraries(NatronEngine PRIVATE log4cplus::log4cplus)
+        set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/MoonRayAovs.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+            NATRON_HAVE_LOG4CPLUS=1)
+    endif()
 endif()
 target_compile_definitions(NatronEngine
     PRIVATE

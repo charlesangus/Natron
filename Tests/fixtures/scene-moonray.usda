@@ -1,0 +1,49 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    timeCodesPerSecond = 24
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Cube "Left"
+    {
+        double size = 1.5
+        double3 xformOp:translate = (0, 0, 1.2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        color3f[] primvars:displayColor = [(0.8, 0.2, 0.1)]
+    }
+
+    def Cube "Right"
+    {
+        double size = 1.5
+        double3 xformOp:translate = (0, 0, -1.2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        color3f[] primvars:displayColor = [(0.1, 0.3, 0.8)]
+    }
+
+    def Camera "Cam"
+    {
+        float focalLength = 18
+        float horizontalAperture = 20.955
+        float verticalAperture = 20.955
+        float2 clippingRange = (0.1, 100)
+        double3 xformOp:translate = (6, 0, 0)
+        float xformOp:rotateY = 90
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateY"]
+    }
+
+    def DistantLight "Key"
+    {
+        float inputs:intensity = 3
+        float xformOp:rotateY = 90
+        uniform token[] xformOpOrder = ["xformOp:rotateY"]
+    }
+
+    def DomeLight "Fill"
+    {
+        float inputs:intensity = 0.3
+    }
+}

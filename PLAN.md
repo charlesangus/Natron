@@ -179,7 +179,7 @@ future core work has solid ground to build on.
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
 | M248 | Render Delegate Selection | doing | M20 | bosley-native-nodes | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
 | M249 | Bundle Cycles Delegate | doing | M19, M248 | bosley-native-nodes | E9 | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
-| M250 | Bundle MoonRay Delegate | todo | M19 |  | E9 | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
+| M250 | Bundle MoonRay Delegate | doing | M19 | bosley-native-nodes | E9 | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
 | M251 | Cycles Rendering | todo | M248, M249 |  | E9 | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
 | M252 | MoonRay Rendering | todo | M248, M250 |  | E9 | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
 | M253 | Delegate Render Settings | todo | M251, M252 |  | E9 | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
@@ -245,8 +245,8 @@ future core work has solid ground to build on.
 | M145 | OFX Fork Plugin Purge | todo | M113, M121, M122, M123, M124, M125, M127, M128, M129, M130, M132, M140, M143 |  | E3 | [M145-ofx-fork-plugin-purge.md](PLAN/MILESTONES/M145-ofx-fork-plugin-purge.md) |
 | M146 | Roto Hosting For Any Node | done | M137 | bosley-native-nodes | E14 | [M146-roto-hosting-for-any-node.md](PLAN/MILESTONES/M146-roto-hosting-for-any-node.md) |
 | M147 | SplineWarp Node Core | doing | M146, M113, M120, M137 | bosley-native-nodes | E3 | [M147-splinewarp-node-core.md](PLAN/MILESTONES/M147-splinewarp-node-core.md) |
-| M148 | SplineWarp Viewer Tools | todo | M147 |  | E3 | [M148-splinewarp-viewer-tools.md](PLAN/MILESTONES/M148-splinewarp-viewer-tools.md) |
-| M149 | SplineWarp Mesh Solver | todo | M147 |  | E3 | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
+| M148 | SplineWarp Viewer Tools | doing | M147 | bosley-native-nodes | E3 | [M148-splinewarp-viewer-tools.md](PLAN/MILESTONES/M148-splinewarp-viewer-tools.md) |
+| M149 | SplineWarp Mesh Solver | doing | M147 | bosley-native-nodes | E3 | [M149-splinewarp-mesh-solver.md](PLAN/MILESTONES/M149-splinewarp-mesh-solver.md) |
 | M150 | SplineWarp GPU Kernel | todo | M147 |  | E3 | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
 | M151 | SplineWarp Motion Blur | todo | M147, M150 |  | E3 | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
 | M152 | Curve Track Links And Roto Copy | todo | M148 |  | E3 | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
@@ -290,7 +290,7 @@ future core work has solid ground to build on.
 | M192 | Reliable Pipe Pick-Up | done | - |  | E10 | [M192-reliable-pipe-pick-up.md](PLAN/MILESTONES/M192-reliable-pipe-pick-up.md) |
 | M193 | Pipe Hint Highlight Colour | doing | M176 | bosley-native-nodes | E10 | [M193-pipe-hint-highlight-colour.md](PLAN/MILESTONES/M193-pipe-hint-highlight-colour.md) |
 | M194 | Kiss Connections | doing | M192, M193 | bosley-native-nodes | E10 | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
-| M195 | Shake And Cut Disconnect | todo | M194 |  | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
+| M195 | Shake And Cut Disconnect | doing | M194 | bosley-native-nodes | E10 | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
 | M196 | Copy-Compute Contention | doing | M156 | gpu | E5 | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
 | M197 | Python Undo Step API | todo | M114 |  | E7 | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
 | M198 | RenderEngine On Node | todo | M177 |  | E14 | [M198-renderengine-on-node.md](PLAN/MILESTONES/M198-renderengine-on-node.md) |

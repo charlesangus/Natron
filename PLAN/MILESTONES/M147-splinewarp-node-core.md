@@ -220,6 +220,7 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`; re-check at promotion):
 
 ## Decisions
 
+- 2026-10-28: Phases 1–2 implemented (builds pending). Model: a start offset is a parameter on the destination curve (open destination: offset 0, direction only); links deleted on item removal, not structure change (drag between layers removes/re-inserts); single-point curves linkable; amount = static value + Curve. Phase 2: sample budget 1000 (provisional, confirm with the timing test); collinear points fall back to a least-squares affine; smoothness measured on unit-scaled point spread; links at amount 0 still pin; boundary weights use the Roto feather fall-off (masking exact per pixel, weight interpolated on the grid); field grid anchored to canonical coordinates (cache key: warp hash, time, scale, resolution, window). Known gaps: undo of a point removal doesn't restore correspondences; Python Layer.removeItem may skip the item-removed hook.
 - 2026-10-20 — **Reuse the Roto curve stack, generalised (user):** SplineWarp curves are Roto Beziers in a geometry-only context from M146 - Roto Hosting For Any Node, so animation, undo, the panel and serialization come for free.
 - 2026-10-20 — **Both solvers, user-selectable (user):** TPS here; the mesh solver is M149 - SplineWarp Mesh Solver.
 - 2026-10-20 — **Upstream concatenation only here (user):** downstream is the engine-wide M153 - Distortion Concatenation.

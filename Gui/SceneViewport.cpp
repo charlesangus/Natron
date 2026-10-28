@@ -53,6 +53,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -428,6 +429,7 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
+        CyclesAovs::registerSceneIndices();
         {
             TfErrorMark mark;
             engine.reset(new UsdImagingGLEngine(parameters));

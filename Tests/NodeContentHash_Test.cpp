@@ -424,6 +424,9 @@ TEST_F(NodeContentHashTest, ARangeEditDoesNotMarkANodeWhoseOnlyExpressionIsOnANo
     ASSERT_TRUE(bool(scratch));
     scratch->setIsPersistent(false);
     scratch->setEvaluateOnChange(false);
+    // An expression resolves thisParam as a Python attribute of the node, which a knob added after
+    // node creation lacks until the node redeclares its fields.
+    blur->declarePythonFields();
     ASSERT_FALSE(scratch->isRenderHashed());
     scratch->setExpression(0, "frame", false, true);
 

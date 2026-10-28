@@ -643,6 +643,85 @@ TEST_F(NativeRetouchTest, SourceDragKeysTheOffsetAndUndoes)
     EXPECT_DOUBLE_EQ(3., dy);
 }
 
+// Dragging the source of a selected shape, whose offset is keyed on the node's knob it is slaved
+// to, starts from that offset, moves it by the pen's motion, keeps the keys at other times, and
+// its undo step puts the offset back. Deselecting the shape keeps what the drag made.
+TEST_F(NativeRetouchTest, SourceDragOfASelectedShapeMovesTheNodeOffset)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    ASSERT_TRUE(bool(node));
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    context->setAutoKeyingEnabled(true);
+    ShapeSpec spec;
+    spec.algorithm = RC::eAlgorithmClone;
+    spec.sourceX = 40.;
+    spec.sourceY = 0.;
+    BezierPtr shape = RetouchTest::makeShape(node, spec, kTime);
+    ASSERT_TRUE(bool(shape));
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr nodeOffset = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kRetouchShapeParamSourceOffset));
+    ASSERT_TRUE(bool(nodeOffset));
+
+    // Keys set on the node's knob alone: the shape's own knob keeps (40, 0) and no keys.
+    const double later = kTime + 10.;
+    nodeOffset->setValueAtTime(kTime, 40., ViewSpec::all(), 0);
+    nodeOffset->setValueAtTime(kTime, 10., ViewSpec::all(), 1);
+    nodeOffset->setValueAtTime(later, 50., ViewSpec::all(), 0);
+    nodeOffset->setValueAtTime(later, 20., ViewSpec::all(), 1);
+    double dx = 0., dy = 0.;
+    Retouch::readShapeSourceOffset(shape, kTime, &dx, &dy);
+    ASSERT_DOUBLE_EQ(40., dx);
+    ASSERT_DOUBLE_EQ(10., dy);
+
+    // The source outline is the ellipse at (24, 24) moved by the offset: centred on (64, 34).
+    const RenderScale scale = RenderScale::identity;
+    const QPointF start(64., 34.);
+    const QPointF end(70., 37.);
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), start, start, 1., 0., ePenTypeLMB));
+    for (int i = 1; i <= 4; ++i) {
+        const double f = i / 4.;
+        const QPointF p(start.x() + f * (end.x() - start.x()), start.y() + f * (end.y() - start.y()));
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), p, p, 1., i));
+    }
+    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), end, end, 1., 5.));
+
+    Retouch::readShapeSourceOffset(shape, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(46., dx);
+    EXPECT_DOUBLE_EQ(13., dy);
+    EXPECT_DOUBLE_EQ(46., nodeOffset->getValueAtTime(kTime, 0));
+    EXPECT_DOUBLE_EQ(13., nodeOffset->getValueAtTime(kTime, 1));
+    Retouch::readShapeSourceOffset(shape, later, &dx, &dy);
+    EXPECT_DOUBLE_EQ(50., dx);
+    EXPECT_DOUBLE_EQ(20., dy);
+
+    const double before[2] = { 40., 10. };
+    const double after[2] = { 46., 13. };
+    UndoCommandPtr command = effect->makeSourceDragCommand(shape, kTime, before, after);
+    ASSERT_NE(nullptr, command.get());
+    command->undo();
+    Retouch::readShapeSourceOffset(shape, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(40., dx);
+    EXPECT_DOUBLE_EQ(10., dy);
+    Retouch::readShapeSourceOffset(shape, later, &dx, &dy);
+    EXPECT_DOUBLE_EQ(50., dx);
+    EXPECT_DOUBLE_EQ(20., dy);
+    command->redo();
+    Retouch::readShapeSourceOffset(shape, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(46., dx);
+    EXPECT_DOUBLE_EQ(13., dy);
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    Retouch::readShapeSourceOffset(shape, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(46., dx);
+    EXPECT_DOUBLE_EQ(13., dy);
+    Retouch::readShapeSourceOffset(shape, later, &dx, &dy);
+    EXPECT_DOUBLE_EQ(50., dx);
+    EXPECT_DOUBLE_EQ(20., dy);
+}
+
 // With no shapes, or shapes only on scales the node skips, the output is the input.
 TEST_F(NativeRetouchTest, NoShapesIsIdentity)
 {

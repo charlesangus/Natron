@@ -329,9 +329,12 @@ private:
     std::list<RotoDrawableItemWPtr> _newShapes;
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
-    QPointF _lastDragPos;
+    // The drag's offset is the offset at the press moved by the pen since the press; it is never read
+    // back from the knob mid-drag.
+    QPointF _dragPressPos;
     double _dragTime = 0.;
     double _dragStart[2] = { 0., 0. };
+    double _dragEnd[2] = { 0., 0. };
 };
 
 NATRON_NAMESPACE_EXIT

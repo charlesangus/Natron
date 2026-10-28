@@ -1,0 +1,1 @@
+slang_add_kernel(adjustbbox_nearest Kernels/adjustbbox.slang ENTRY adjustbbox_nearest REGISTRY NatronGpu)

@@ -1179,18 +1179,13 @@ def createInstance(app,group):
     # End of node "Premult2"
 
     # Start of node "DisableLuma"
-    lastNode = app.createNode("net.sf.openfx.switchPlugin", 1, group)
+    lastNode = app.createNode("fr.natron.Switch", 1, group)
     lastNode.setScriptName("DisableLuma")
     lastNode.setLabel("DisableLuma")
     lastNode.setPosition(1172, 380)
     lastNode.setSize(104, 34)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupDisableLuma = lastNode
-
-    param = lastNode.getParam("channels")
-    if param is not None:
-        param.setLayer("rgba")
-        del param
 
     param = lastNode.getParam("which")
     if param is not None:
@@ -1201,18 +1196,13 @@ def createInstance(app,group):
     # End of node "DisableLuma"
 
     # Start of node "DisableLuma1"
-    lastNode = app.createNode("net.sf.openfx.switchPlugin", 1, group)
+    lastNode = app.createNode("fr.natron.Switch", 1, group)
     lastNode.setScriptName("DisableLuma1")
     lastNode.setLabel("DisableLuma1")
     lastNode.setPosition(579, 319)
     lastNode.setSize(104, 34)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupDisableLuma1 = lastNode
-
-    param = lastNode.getParam("channels")
-    if param is not None:
-        param.setLayer("rgba")
-        del param
 
     param = lastNode.getParam("which")
     if param is not None:
@@ -1235,18 +1225,13 @@ def createInstance(app,group):
     # End of node "Dot1"
 
     # Start of node "ConstantColor"
-    lastNode = app.createNode("net.sf.openfx.switchPlugin", 1, group)
+    lastNode = app.createNode("fr.natron.Switch", 1, group)
     lastNode.setScriptName("ConstantColor")
     lastNode.setLabel("ConstantColor")
     lastNode.setPosition(758, 448)
     lastNode.setSize(104, 34)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupConstantColor = lastNode
-
-    param = lastNode.getParam("channels")
-    if param is not None:
-        param.setLayer("rgba")
-        del param
 
     param = lastNode.getParam("which")
     if param is not None:

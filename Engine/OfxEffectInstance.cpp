@@ -1377,7 +1377,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         // Transform and distortion
         "net.sf.openfx.DirBlur",
         "net.sf.openfx.Card3D",
-        "net.sf.openfx.AdjustRoDPlugin",
         "net.sf.openfx.SpriteSheet",
         "fr.inria.openfx.OIIOResize",
         "net.fxarena.openfx.Reflection",
@@ -1424,9 +1423,7 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.fxarena.openfx.Sketch",
         "net.fxarena.openfx.Morphology",
         // Routing
-        "net.sf.openfx.switchPlugin",
         "net.sf.openfx.TimeDissolvePlugin",
-        "net.sf.openfx.KeyMix",
         "net.sf.openfx.CopyRectanglePlugin",
         "net.sf.openfx.ContactSheetOFX",
         "net.sf.openfx.LayerContactSheetOFX",

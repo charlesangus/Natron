@@ -3704,12 +3704,11 @@ Node::createLabelKnob(const KnobPagePtr& settingsPage,
 void
 Node::adoptChannelQuad()
 {
-    // KeyMix's quad picks source A vs source B per channel, DenoiseSharpen's collapses R/G/B
-    // into a single "process chroma" flag, and ClipTest's ORs the selected channels into one
-    // zebra-stripe decision: none of the three is a per-channel output mask, so forcing the
-    // quad true and letting the host mask instead would silently change what they compute.
+    // DenoiseSharpen's quad collapses R/G/B into a single "process chroma" flag and ClipTest's
+    // ORs the selected channels into one zebra-stripe decision: neither is a per-channel output
+    // mask, so forcing the quad true and letting the host mask instead would silently change what
+    // they compute.
     static const std::set<std::string> pluginsOwningChannelMask = {
-        "net.sf.openfx.KeyMix",
         "net.sf.openfx.DenoiseSharpen",
         "net.sf.openfx.ClipTestPlugin"
     };

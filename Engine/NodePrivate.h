@@ -586,9 +586,9 @@ public:
     // as a result if we don't call glFinish() before calling the render action, the plug-in context might use textures that were not finished yet.
     bool requiresGLFinishBeforeRender;
 
-    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
-    // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
-    // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
+    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (DenoiseSharpen collapses
+    // R/G/B into one flag, ClipTest ORs the selection into a zebra decision): adoptChannelQuad()
+    // leaves their quad alone instead of forcing it.
     bool pluginOwnsChannelMask;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose

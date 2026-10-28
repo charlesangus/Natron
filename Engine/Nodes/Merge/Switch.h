@@ -64,7 +64,7 @@ struct SwitchOp {
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_SWITCH,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.switchPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Switch.png",
         .inputs = kSwitchInputs,
     };
 

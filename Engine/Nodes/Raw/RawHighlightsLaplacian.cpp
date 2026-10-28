@@ -51,6 +51,8 @@
 
 #include "RawKernels.h"
 
+#include "Engine/Nodes/Filter/EdgeAware/Wavelets.h"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -152,19 +154,6 @@ namespace {
         }
 
         return scale;
-    }
-
-    float
-    equivalentSigmaAtStep(float sigma,
-                          unsigned int s)
-    {
-        float radius = sigma;
-
-        for (unsigned int k = 1; k <= s; ++k) {
-            radius = std::sqrt(sqf(radius) + sqf(std::exp2((float)k) * sigma));
-        }
-
-        return radius;
     }
 
     // _interpolate_and_mask() for photosite (i, j): the bilinear RGB and norm divided by the white
@@ -394,55 +383,6 @@ namespace {
                 for (int c = 0; c < 4; ++c) {
                     outInterpolated[c] = bilinear(y, x, nw[c], ne[c], se[c], sw[c]);
                     outMask[c] = bilinear(y, x, maskPrev[x.prev * 4 + c], maskPrev[x.next * 4 + c], maskNext[x.next * 4 + c], maskNext[x.prev * 4 + c]);
-                }
-            }
-        });
-    }
-
-    inline void
-    sparseScalarProduct(const float* buf,
-                        const std::size_t indices[5],
-                        float* result)
-    {
-        static const float filter[5] = { 1.0f / 16.0f, 4.0f / 16.0f, 6.0f / 16.0f, 4.0f / 16.0f, 1.0f / 16.0f };
-
-        for (int c = 0; c < 4; ++c) {
-            const float v = filter[0] * buf[indices[0] + c] + filter[1] * buf[indices[1] + c] + filter[2] * buf[indices[2] + c] + filter[3] * buf[indices[3] + c] + filter[4] * buf[indices[4] + c];
-            result[c] = (0.0f > v) ? 0.0f : v;
-        }
-    }
-
-    // decompose_2D_Bspline(), negatives clipped.
-    void
-    decompose2DBspline(const float* in,
-                       float* HF,
-                       float* LF,
-                       std::size_t width,
-                       std::size_t height,
-                       int mult,
-                       const ParallelFor& parallel)
-    {
-        parallel((int)height, [&](int r) {
-            const std::size_t i = (std::size_t)r;
-            std::vector<float> temp(4 * width);
-            const std::size_t rows[5] = { 4 * width * (std::size_t)std::max((int)i - 2 * mult, 0),
-                                          4 * width * (std::size_t)std::max((int)i - mult, 0),
-                                          4 * width * i,
-                                          4 * width * std::min(i + (std::size_t)mult, height - 1),
-                                          4 * width * std::min(i + 2 * (std::size_t)mult, height - 1) };
-            for (std::size_t j = 0; j < width; ++j) {
-                sparseScalarProduct(in + j * 4, rows, &temp[j * 4]);
-            }
-            for (std::size_t j = 0; j < width; ++j) {
-                const std::size_t cols[5] = { 4 * (std::size_t)std::max((int)j - 2 * mult, 0),
-                                              4 * (std::size_t)std::max((int)j - mult, 0),
-                                              4 * j,
-                                              4 * std::min(j + (std::size_t)mult, width - 1),
-                                              4 * std::min(j + 2 * (std::size_t)mult, width - 1) };
-                const std::size_t index = 4 * (i * width + j);
-                sparseScalarProduct(temp.data(), cols, LF + index);
-                for (int c = 0; c < 4; ++c) {
-                    HF[index + c] = in[index + c] - LF[index + c];
                 }
             }
         });
@@ -707,10 +647,10 @@ namespace {
                 buffer_in = buffers.LF_even;
                 buffer_out = buffers.LF_odd;
             }
-            decompose2DBspline(buffer_in, buffers.HF, buffer_out, width, height, mult, parallel);
+            EdgeAware::decompose2DBspline(buffer_in, buffers.HF, buffer_out, (int)width, (int)height, mult, parallel);
 
             const unsigned int current_scale_type = scaleType(s, scales);
-            const float radius = sqf(equivalentSigmaAtStep(kBSplineSigma, (unsigned int)(s * kLaplacianDownsampling)));
+            const float radius = sqf(EdgeAware::equivalentSigmaAtStep(kBSplineSigma, (unsigned int)(s * kLaplacianDownsampling)));
             if (variant == eDiffuseRgb) {
                 guideLaplacians(buffers.HF, buffer_out, clipping_mask, reconstructed, width, height, mult, noise_level, salt, current_scale_type, radius, parallel);
             } else {

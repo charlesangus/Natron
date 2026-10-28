@@ -1454,6 +1454,52 @@ Node::setHashMarkTraceForTesting(const HashMarkTrace& trace)
     hashMarkTraceOn.store(bool(trace));
 }
 
+namespace {
+std::atomic<bool> inputEditHookOn(false);
+
+struct InputEditHookSlot {
+    std::mutex mutex;
+    Node::InputEditHook hook;
+};
+
+InputEditHookSlot&
+inputEditHookSlot()
+{
+    static InputEditHookSlot* slot = new InputEditHookSlot;
+
+    return *slot;
+}
+} // anonymous namespace
+
+void
+Node::setInputEditHookForTesting(const InputEditHook& hook)
+{
+    InputEditHookSlot& slot = inputEditHookSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+
+    slot.hook = hook;
+    inputEditHookOn.store(bool(hook));
+}
+
+std::unique_lock<QMutex>
+Node::Implementation::lockRenderStarts(bool* rendering)
+{
+    std::unique_lock<QMutex> renderStarts(nodeIsDequeuingMutex);
+    {
+        QMutexLocker k(&nodeIsRenderingMutex);
+        *rendering = nodeIsRendering > 0;
+    }
+    if (inputEditHookOn.load(std::memory_order_relaxed)) {
+        InputEditHookSlot& slot = inputEditHookSlot();
+        std::lock_guard<std::mutex> l(slot.mutex);
+        if (slot.hook) {
+            slot.hook(_publicInterface, *rendering);
+        }
+    }
+
+    return renderStarts;
+}
+
 void
 Node::flushHashDirtyMarksBeforeRead(const Node* reader)
 {
@@ -7880,20 +7926,18 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         }
     }
 
-    ///Wait for the main-thread to be done dequeuing the connect actions queue
-    if ( QThread::currentThread() != qApp->thread() ) {
-        QMutexLocker k(&_imp->nodeIsDequeuingMutex);
-        while ( _imp->nodeIsDequeuing && !aborted() ) {
-            _imp->nodeIsDequeuingCond.wait(k.mutex());
-        }
-    }
-
-    ///Increment the node is rendering counter
+    // The count goes up under the dequeuing lock, so dequeueActions either sees this render and
+    // defers, or finishes applying the queue before the render starts.
     {
+        QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+        if (QThread::currentThread() != qApp->thread()) {
+            while (_imp->nodeIsDequeuing && !aborted()) {
+                _imp->nodeIsDequeuingCond.wait(k.mutex());
+            }
+        }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
         ++_imp->nodeIsRendering;
     }
-
 
     ///mark this
     markedNodes.push_back( shared_from_this() );
@@ -7948,8 +7992,8 @@ Node::unsetNodeIsRendering()
         }
         nodeIsRendering = _imp->nodeIsRendering;
 
-
-        mustDequeue = nodeIsRendering == 0 && !appPTR->isBackground();
+        // Background renders dequeue too, or an edit queued during one would never apply.
+        mustDequeue = nodeIsRendering == 0;
     }
 
     if (mustDequeue) {
@@ -7966,15 +8010,46 @@ Node::isNodeRendering() const
 }
 
 void
+Node::notifyActionQueued()
+{
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+
+    _imp->actionsQueued = true;
+}
+
+void
 Node::dequeueActions()
 {
     assert( QThread::currentThread() == qApp->thread() );
 
-    ///Flag that the node is dequeuing.
+    // A render that started after mustDequeueActions was emitted still holds the node: its hash
+    // names the inputs it started with, so the queue waits. Its unsetNodeIsRendering emits again.
+    bool held;
+    bool abortHolders;
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
-        assert(!_imp->nodeIsDequeuing);
-        _imp->nodeIsDequeuing = true;
+        if (_imp->nodeIsDequeuing) {
+            return;
+        }
+        {
+            QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
+            held = _imp->nodeIsRendering > 0;
+        }
+        abortHolders = held && _imp->actionsQueued;
+        if (!held) {
+            _imp->nodeIsDequeuing = true;
+            _imp->actionsQueued = false;
+        }
+    }
+    if (held) {
+        // During playback the frames overlap and a new one may start before this slot runs, so
+        // without an abort a queued edit could wait until playback stops. The aborted renders end
+        // quickly, the last one emits again, and the edit's own render restarts playback.
+        if (abortHolders && _imp->effect) {
+            _imp->effect->abortViewerRendersForEdit();
+        }
+
+        return;
     }
     bool hasChanged = false;
     if (_imp->effect) {
@@ -7988,23 +8063,34 @@ Node::dequeueActions()
         _imp->curveContext->dequeueGuiActions();
     }
 
+    // The value changes above run callbacks on this thread, and a render started from one (a
+    // nested event loop can start a viewer render here) did not wait for the dequeue. It found the
+    // current inputs, so they stay queued until it ends; its unsetNodeIsRendering emits again.
     std::set<int> inputChanges;
     {
-        QMutexLocker k(&_imp->inputsMutex);
-        assert( _imp->guiInputs.size() == _imp->inputs.size() );
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        if (rendering) {
+            _imp->actionsQueued = true;
+        } else {
+            {
+                QMutexLocker k(&_imp->inputsMutex);
+                assert(_imp->guiInputs.size() == _imp->inputs.size());
 
-        for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
-            NodePtr inp = _imp->inputs[i].lock();
-            NodePtr guiInp = _imp->guiInputs[i].lock();
-            if (inp != guiInp) {
-                inputChanges.insert(i);
-                _imp->inputs[i] = guiInp;
+                for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
+                    NodePtr inp = _imp->inputs[i].lock();
+                    NodePtr guiInp = _imp->guiInputs[i].lock();
+                    if (inp != guiInp) {
+                        inputChanges.insert(i);
+                        _imp->inputs[i] = guiInp;
+                    }
+                }
+            }
+            {
+                QMutexLocker k(&_imp->outputsMutex);
+                _imp->outputs = _imp->guiOutputs;
             }
         }
-    }
-    {
-        QMutexLocker k(&_imp->outputsMutex);
-        _imp->outputs = _imp->guiOutputs;
     }
 
     if ( !inputChanges.empty() ) {

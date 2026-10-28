@@ -88,5 +88,6 @@ Scouted facts (2026-10-20, `main` at `8fdb5741f`):
 
 ## Decisions
 
+- 2026-10-28: Implemented (build pending). Track-link offsets are in the curve's own coordinates; only the track centre is used. Moving a linked point keys its stored curves; Unlink and Bake keys the whole curve. Menu knobs linkToTrack, unlinkTrack, unlinkTrackAndBake (unlink only when linked). Undo snapshots whole curves. Missing-track warning: "Control points follow tracks that cannot be found and stay where they last were:". Track chooser via a new AppInstance::chooseItemDialog (QInputDialog; −1 headless). Clipboard: roto YAML with blobs inlined as application/x-natron-curves; strokes dropped and counted outside paint hosts; SplineWarp boundaries/links carried only when all named curves were copied; clashing names get _copy, _copy2…; pasted items go on top in clipboard order. Known gaps: link/bake write curves on the main thread while a render may read them; the missing-track warning can flash during load and clearing it clears other persistent messages; nested layers re-added only at top level on redo (pre-existing).
 - 2026-10-20 — **Track links and Roto copy are in scope (user).**
 - 2026-10-20 — **Both live in the geometry base (planner):** Roto gets track-linked points and cross-node paste too, at no extra cost.

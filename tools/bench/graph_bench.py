@@ -636,7 +636,7 @@ def load_comp(path, render_dir):
     session_app = loaded if loaded is not None else app
     if CUSTOM_SIZE and CUSTOM_SIZE != "3840x2160":
         w, h = (int(v) for v in CUSTOM_SIZE.lower().split("x"))
-        session_app.addFormat("bench%dx%d %d %d 1" % (w, h, w, h))
+        session_app.addFormat("bench%dx%d %dx%d 1" % (w, h, w, h))
         session_app.getProjectParam("outputFormat").set("bench%dx%d" % (w, h))
     writer = session_app.getNode("Write")
     if writer is None:

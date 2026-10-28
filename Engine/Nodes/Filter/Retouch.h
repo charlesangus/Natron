@@ -183,6 +183,12 @@ public:
      **/
     void setShapeSourceOffset(const RotoDrawableItemPtr& item, double time, double dx, double dy);
 
+    /**
+     * @brief The undo step of a source drag of item at time from start to end, which the drag has
+     * already written; keyed as setShapeSourceOffset keys. Null when item has no source offset.
+     **/
+    UndoCommandPtr makeSourceDragCommand(const RotoDrawableItemPtr& item, double time, const double* start, const double* end) const WARN_UNUSED_RETURN;
+
     /// The current settings of a shape for a render at time, read from its knobs.
     static RetouchCore::ShapeSettings readShapeSettings(const RotoDrawableItemPtr& item, double time);
 

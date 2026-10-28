@@ -36,6 +36,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Curve.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -113,7 +114,9 @@ setItemKnobValue(const KnobIPtr& knob,
     }
     for (typename std::list<Knob<T>*>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
         if (keyframe) {
-            (*it)->setValueAtTime(time, value, ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited, NULL);
+            // setValueAtTime writes the new key through this pointer unchecked.
+            KeyFrame newKey;
+            (*it)->setValueAtTime(time, value, ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited, &newKey);
         } else {
             (*it)->setValue(value, ViewSpec::all(), dimension, true);
         }
@@ -796,6 +799,26 @@ Retouch::setShapeSourceOffset(const RotoDrawableItemPtr& item,
     }
 }
 
+UndoCommandPtr
+Retouch::makeSourceDragCommand(const RotoDrawableItemPtr& item,
+                               double time,
+                               const double* start,
+                               const double* end) const
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    KnobIPtr offset = item ? item->getKnobByName(kRetouchShapeParamSourceOffset) : KnobIPtr();
+    if (!context || !offset) {
+        return UndoCommandPtr();
+    }
+    bool keyframe[2];
+    for (int d = 0; d < 2; ++d) {
+        keyframe[d] = context->isAutoKeyingEnabled() || offset->isAnimated(d, ViewSpec::all())
+            || (offset->isSlave(d) && offset->getMaster(d).second && offset->getMaster(d).second->isAnimated(d, ViewSpec::all()));
+    }
+
+    return std::make_shared<RetouchSourceDragCommand>(context, item, time, start, end, keyframe);
+}
+
 std::string
 Retouch::shapeColumnText(int scale,
                          int algorithm,
@@ -1148,15 +1171,11 @@ Retouch::onOverlayPenUp(double /*time*/,
         _draggedSource.reset();
         double end[2];
         readShapeSourceOffset(dragged, _dragTime, &end[0], &end[1]);
-        RotoCurveContextPtr context = getNode()->getCurveContext();
-        KnobIPtr offset = dragged->getKnobByName(kRetouchShapeParamSourceOffset);
-        if (context && offset && ((end[0] != _dragStart[0]) || (end[1] != _dragStart[1]))) {
-            bool keyframe[2];
-            for (int d = 0; d < 2; ++d) {
-                keyframe[d] = context->isAutoKeyingEnabled() || offset->isAnimated(d, ViewSpec::all())
-                    || (offset->isSlave(d) && offset->getMaster(d).second && offset->getMaster(d).second->isAnimated(d, ViewSpec::all()));
+        if ((end[0] != _dragStart[0]) || (end[1] != _dragStart[1])) {
+            UndoCommandPtr command = makeSourceDragCommand(dragged, _dragTime, _dragStart, end);
+            if (command) {
+                pushUndoCommand(command);
             }
-            pushUndoCommand(new RetouchSourceDragCommand(context, dragged, _dragTime, _dragStart, end, keyframe));
         }
         redrawOverlayInteract();
 

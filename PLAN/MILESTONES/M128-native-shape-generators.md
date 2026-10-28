@@ -229,6 +229,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 
 ## Decisions
 
+- 2026-10-28: Phase 1 implemented. Falloffs: Linear, Smooth, EaseIn, EaseOut, Quadratic (PLinear/None dropped). Softness in canonical units, fading inward from the edge; softness 0 = hard edge antialiased over one pixel. Rounded box: distance to nearest side (mitred inner contours); corner radii capped at half the shorter side; approximate ellipse distance; helpers take pixel size in canonical units (render-scale independent). Ramp overlay: host RampInteract (points, dashed orthogonal lines), no trajectories. PM calls: p0 == p1 makes the whole plane colour1; since softness fades inward, the Rectangle's RoD is its extent (not extent + softness).
 - 2026-10-13 — **Three separate pure generators (user, native-node port grill):** Ramp, Radial and Rectangle stay separate nodes with no Source input; users Merge them over a plate.
 - 2026-10-13 — **Ramp keeps the current overlay (user):** two points, each with a dashed line orthogonal to the line between them. It becomes a host overlay because no two-point host overlay exists.
 - 2026-10-13 — **Only ColorWheel is ported from the test patterns, in linear mode only (user):** ColorBars stays OFX.

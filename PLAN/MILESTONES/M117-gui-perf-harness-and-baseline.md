@@ -70,7 +70,7 @@ Two kinds of numbers, never mixed:
 
 ## Phase 117.2: Baseline
 
-- [ ] M117.P2.T1 — Record the Xvfb baseline and its noise
+- [x] M117.P2.T1 — Record the Xvfb baseline and its noise
   - files: `tools/bench/gui/baselines/xvfb.jsonl` (new), `tools/bench/gui/BASELINE.md` (new)
   - approach: on a release build at this milestone's HEAD, in the container with nothing else running, run all four topologies at N=300/1000/3000, three times. If an op times out at 3000, record that, and add a 2000 point for it so a slope still exists. Commit the median-of-runs file as the baseline. In `BASELINE.md`, record per-op run-to-run spread, the compare tolerance chosen from it (at least twice the worst spread for that op class), the `--scaling` table, and the ranked superlinear list. That list is M118's target list.
   - verify: `compare.py baselines/xvfb.jsonl <each of the three runs>` exits 0 with the chosen tolerance. `BASELINE.md` names every op with a slope above 1.2.
@@ -90,6 +90,7 @@ Two kinds of numbers, never mixed:
 
 ## Decisions
 
+- 2026-10-28 — Provisional Xvfb baseline (run 1 full, run 2 partial; median spread ~6%, tol 1.0). Full baseline needs run 2 finished + run 3 in a quiet window (~6 h). Findings for M118: load/duplicate_100/paste_100 superlinear (slopes 1.4–1.8) and time out at N≥2000; hover times out at 2000–3000; **delete_1000 and undo/redo hang from ~60 nodes** (20 deletes pass, 30 hang) — a real hang, not slowness.
 - 2026-10-13 — Regression checks use local timings only, with no CI timing gate (user): GitHub runners are too noisy for wall-clock numbers. The bench runs at the gates of GUI/Engine-touching milestones per the board rule. The full rule is in `DECISIONS/2026-10-13-gui-bench-gate-rule.md`.
 - 2026-10-13 — Two kinds of numbers (user). Xvfb in the container is directionally right but much slower, so it's used only to catch regressions against its own baseline. Budgets are judged on the real host the user tests on, which the milestone does not name.
 - 2026-10-13 — Fixtures are synthetic and built in-process (user), with no committed `.ntp`, so M16 - Project Format Redesign can't break them. Load is measured by save-and-reload within a run.

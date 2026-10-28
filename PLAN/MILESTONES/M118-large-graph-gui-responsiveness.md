@@ -182,3 +182,5 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 - 2026-10-13 — Low-zoom level of detail is allowed, gated by the user signing off the screenshots (user).
 - 2026-10-13 — Long operations get no progress or cancel UI; they must scale linearly (user).
 - 2026-10-13 — Deps are M117 - GUI Perf Harness And Baseline (the baseline comes before any fix) and M56 - Visual And Menu Polish (it reworks node text layout in `NodeGui`). Epic E10 - UI Polish (user).
+
+- 2026-10-28 (from M117's baseline): delete of ~30+ nodes and its undo/redo hang (not just slow) from ~60 nodes; load, duplicate_100, paste_100 superlinear (slopes up to 1.8) and time out at N≥2000; hover times out at 2000–3000. Data: M117's tools/bench/gui/BASELINE.md.

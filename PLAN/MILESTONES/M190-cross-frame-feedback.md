@@ -67,7 +67,7 @@ Acceptance sketch:
   - approach: with loadFromCache on, a baked frame is read (`OiioReadSupport::readHeader` + read) before the RAM cache or the driver. A hash mismatch sets a persistent warning. Missing frames continue from the last baked frame.
   - verify: gtest: bake a 4-substep simulation over 1..12, clear the RAM cache; frame 12 renders with 0 body renders (counter) and bit-identical to the computed result. An upstream edit warns.
   - size: M
-- [ ] M190.P2.T3 — GUI check and docs
+- [x] M190.P2.T3 — GUI check and docs
   - files: `Tests/gui/m190_cross_frame.py`, `Engine/Nodes/Loop/docs/LoopEnd.md`
   - approach: under Xvfb: the knobs carry the labels above. Bake shows progress, then the trail plays back from the bake. Screenshots. Docs cover semantics, the budget/checkpoints, the bake and the stored window (LoopEnd's RoD).
   - verify: the script passes under the remote GUI runner; docs reviewed at the gate.

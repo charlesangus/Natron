@@ -1674,6 +1674,10 @@ RotoPanel::onItemChanged(QTreeWidgetItem* item,
 void
 RotoPanel::onItemLabelChanged(const RotoItemPtr& item)
 {
+    // A host column may show another item's label.
+    if (_imp->hostHook) {
+        onItemPanelColumnsChanged(RotoItemPtr());
+    }
     if (_imp->settingNameFromGui) {
         return;
     }
@@ -2313,6 +2317,7 @@ RotoPanel::showItemMenu(QTreeWidgetItem* item,
         RotoCurvePanelHook* hook = _imp->hostHook;
         for (std::size_t i = 0; i < hostActions.size(); ++i) {
             QAction* act = menu.addAction(QString::fromUtf8(hostActions[i].label.c_str()));
+            act->setEnabled(hostActions[i].enabled);
             const std::string actionId = hostActions[i].id;
             QObject::connect(act, &QAction::triggered, this, [hook, actionId, selection]() {
                 hook->onItemMenuActionTriggered(actionId, selection);

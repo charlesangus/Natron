@@ -305,6 +305,8 @@ private:
     void checkLinkable(const BezierPtr& curve, const char* what) const;
     void remapCurveParams(const BezierPtr& curve, const std::function<double(double)>& f);
     void warpDataChanged(bool evaluate);
+    // Tells the panel the Role and Linked To columns may have changed.
+    void rolesChanged();
 
     // The link's state, with the curves given by name. The caller holds the link's mutex.
     static void linkToSerialization(const SplineWarpLink& link,

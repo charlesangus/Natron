@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/Resampler.h"
@@ -38,6 +39,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -80,7 +82,7 @@ inline constexpr NodeSpec kSplineWarpNodeSpec = {
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_SPLINEWARP,
     .minorVersion = 0,
-    .internal = true,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/SplineWarp.png",
     .inputs = kSplineWarpInputs,
 };
 
@@ -113,6 +115,7 @@ public:
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The Source's region of definition; with the bbox knob at union, grown by where the
@@ -152,6 +155,15 @@ public:
     virtual void onInteractViewportSelectionCleared() OVERRIDE FINAL;
     virtual void onInteractViewportSelectionUpdated(const RectD& rectangle, bool onRelease) OVERRIDE FINAL;
 
+    // Draft renders are cached apart from full-quality ones.
+    virtual bool supportsRenderQuality() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    // The field steps of the cached coordinate fields, for tests.
+    std::vector<double> getCachedFieldResolutions() const;
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -164,6 +176,7 @@ private:
         bool clamp = false;
         bool blackOutside = true;
         bool bboxUnion = false;
+        bool warped = true;
     };
 
     // The solved warp at one time: its samples, the map, and whether it moves nothing.
@@ -215,7 +228,12 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    void readSettings(double time, ViewIdx view, Settings* settings) const;
+    // In draft, the curves are sampled half as finely, the field step is four times as coarse,
+    // and the filter is impulse.
+    void readSettings(double time, ViewIdx view, Settings* settings, bool draft = false) const;
+
+    // Whether the render this thread is in is a draft one.
+    bool isDraftRender() const;
 
     // Samples and solves the warp; false when the node has no SplineWarp curve context.
     bool computeWarp(double time, const Settings& settings, Warp* warp);
@@ -238,6 +256,9 @@ private:
     KnobChoiceWPtr _bbox;
 
     SplineWarpInteractPtr _ui;
+    std::unique_ptr<SplineWarpPanelHook> _panelHook;
+    // Whether a drag of the interact turned the viewer's draft render on.
+    bool _draftDrag;
 
     SplineWarpLruCache<SampleKey, SplineWarpSampleSet> _samples;
     SplineWarpTpsCache _maps;

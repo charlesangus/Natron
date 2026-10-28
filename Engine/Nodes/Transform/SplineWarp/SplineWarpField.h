@@ -174,6 +174,9 @@ public:
         _cache.clear();
     }
 
+    // The field steps of the cached fields, most recently used first.
+    std::vector<double> getResolutions() const;
+
 private:
     struct Key {
         U64 hash;

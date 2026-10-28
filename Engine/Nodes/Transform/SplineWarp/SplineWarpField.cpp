@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
 
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -452,6 +453,19 @@ SplineWarpField::getRow(int y,
         }
     }
 } // SplineWarpField::getRow
+
+std::vector<double>
+SplineWarpFieldCache::getResolutions() const
+{
+    std::vector<double> ret;
+    const std::list<Key> keys = _cache.getKeys();
+
+    for (std::list<Key>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        ret.push_back(it->resolution);
+    }
+
+    return ret;
+}
 
 SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,

@@ -668,6 +668,21 @@ protected:
     // Draws the paint tool cursor, after the curves.
     virtual void drawPaintToolOverlay(double /*screenPixelRatio*/, const std::pair<double, double>& /*viewportSize*/) { }
 
+    // Whether the overlay draws curve and lets the pointer pick it.
+    virtual bool isCurveShown(const BezierPtr& /*curve*/) const
+    {
+        return true;
+    }
+
+    // The colour the overlay draws an unlocked curve in.
+    virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const;
+
+    // Draws what the host adds over the curves, in the passive overlay too.
+    virtual void drawOverlayExtras(double /*time*/, double /*screenPixelRatio*/, const std::pair<double, double>& /*pixelScale*/) { }
+
+    // The nearest shown curve within tolerance of pos, as RotoCurveContext::isNearbyBezier() finds it.
+    BezierPtr nearbyShownBezier(const QPointF& pos, double tolerance, int* index, double* t, bool* feather) const;
+
     // Called first thing on pen down.
     virtual void onPenDownStarted(PenType /*pen*/) { }
 

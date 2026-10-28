@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -249,9 +250,11 @@ public:
 
     /**
      * @brief Returns a bezier curves nearby the point (x,y) and the parametric value
-     * which would be used to find the exact Bezier point lying on the curve.
+     * which would be used to find the exact Bezier point lying on the curve. When accept is
+     * given, curves it refuses are skipped.
      **/
-    BezierPtr isNearbyBezier(double x, double y, double acceptance, int* index, double* t, bool* feather) const;
+    BezierPtr isNearbyBezier(double x, double y, double acceptance, int* index, double* t, bool* feather,
+                             const std::function<bool(const BezierPtr&)>& accept = std::function<bool(const BezierPtr&)>()) const;
 
     /**
      * @brief Returns the region of definition of the shape unioned to the region of definition of the node

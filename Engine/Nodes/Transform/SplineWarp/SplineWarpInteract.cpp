@@ -35,11 +35,14 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpUndo.h"
+#include "Engine/RotoItem.h"
+#include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -121,6 +124,72 @@ SplineWarpInteract::getToolbarShortcuts(std::list<PluginActionShortcut>* shortcu
     shortcuts->push_back(PluginActionShortcut(kSplineWarpUIParamCorrespondenceTools, kSplineWarpUIParamCorrespondenceToolsLabel, Key_C));
 }
 
+void
+SplineWarpInteract::createDisplayKnobs(const KnobPagePtr& page)
+{
+    EffectInstance* host = getHost();
+
+    KnobChoicePtr show = AppManager::createKnob<KnobChoice>(host, tr(kSplineWarpUIParamShowLabel));
+    show->setName(kSplineWarpUIParamShow);
+    show->setHintToolTip(tr(kSplineWarpUIParamShowHint));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("source", tr("Source").toStdString(), tr("The source curves of the links.").toStdString()));
+        options.push_back(ChoiceOption("destination", tr("Destination").toStdString(), tr("The destination curves of the links.").toStdString()));
+        options.push_back(ChoiceOption("both", tr("Both").toStdString(), tr("Both curves of the links, and the lines between them.").toStdString()));
+        show->populateChoices(options);
+    }
+    show->setDefaultValue((int)eSplineWarpShowBoth);
+    show->setAnimationEnabled(false);
+    show->setEvaluateOnChange(false);
+    show->setIsPersistent(false);
+    show->setSecretByDefault(true);
+    show->setInViewerContextLabel(tr(kSplineWarpUIParamShowLabel));
+    page->addKnob(show);
+    host->addOverlaySlaveParam(show);
+    showChoice = show;
+
+    KnobButtonPtr output = AppManager::createKnob<KnobButton>(host, tr(kSplineWarpUIParamOutputWarpedLabel));
+    output->setName(kSplineWarpUIParamOutputWarped);
+    output->setHintToolTip(tr(kSplineWarpUIParamOutputWarpedHint));
+    output->setCheckable(true);
+    output->setDefaultValue(true);
+    // Evaluated, so it is in the render hash, but never saved.
+    output->setEvaluateOnChange(true);
+    output->setIsPersistent(false);
+    output->setSecretByDefault(true);
+    output->setInViewerContextCanHaveShortcut(true);
+    output->setIconLabel(NATRON_ICONS_PATH "lucide/spline.svg");
+    page->addKnob(output);
+    outputWarpedButton = output;
+
+    host->addKnobToViewerUI(show);
+    host->addKnobToViewerUI(output);
+}
+
+SplineWarpShowEnum
+SplineWarpInteract::getShow() const
+{
+    KnobChoicePtr show = showChoice.lock();
+    if (!show) {
+        return eSplineWarpShowBoth;
+    }
+    const int value = show->getValue();
+    if ((value < (int)eSplineWarpShowSource) || (value > (int)eSplineWarpShowBoth)) {
+        return eSplineWarpShowBoth;
+    }
+
+    return (SplineWarpShowEnum)value;
+}
+
+bool
+SplineWarpInteract::isOutputWarped() const
+{
+    KnobButtonPtr output = outputWarpedButton.lock();
+
+    return !output || output->getValue();
+}
+
 SplineWarpContextPtr
 SplineWarpInteract::getWarpContext() const
 {
@@ -165,6 +234,14 @@ SplineWarpInteract::onKnobChanged(KnobI* k,
 
         return true;
     }
+    KnobChoicePtr show = showChoice.lock();
+    if (show && (k == show.get())) {
+        deselectHiddenCurves();
+        redrawOverlays();
+        *ret = true;
+
+        return true;
+    }
 
     return RotoCurveInteract::onKnobChanged(k, time, ret);
 }
@@ -191,12 +268,13 @@ SplineWarpInteract::push(const UndoCommandPtr& command,
     }
 }
 
+namespace {
 std::list<BezierPtr>
-SplineWarpInteract::getSelectedBeziers() const
+beziersOf(const std::list<RotoItemPtr>& items)
 {
     std::list<BezierPtr> ret;
 
-    for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+    for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
         BezierPtr curve = std::dynamic_pointer_cast<Bezier>(*it);
         if (curve) {
             ret.push_back(curve);
@@ -206,7 +284,23 @@ SplineWarpInteract::getSelectedBeziers() const
     return ret;
 }
 
-namespace {
+// The links of curves, each once.
+std::vector<SplineWarpLinkPtr>
+linksOf(const SplineWarpContext& context,
+        const std::list<BezierPtr>& curves)
+{
+    std::vector<SplineWarpLinkPtr> links;
+
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        SplineWarpLinkPtr link = context.getLink(*it);
+        if (link && (std::find(links.begin(), links.end(), link) == links.end())) {
+            links.push_back(link);
+        }
+    }
+
+    return links;
+}
+
 QString
 curveName(const BezierPtr& curve)
 {
@@ -246,22 +340,27 @@ distanceTo(const Point& p,
 }
 } // anonymous namespace
 
+std::list<RotoItemPtr>
+SplineWarpInteract::getSelectedRotoItems() const
+{
+    return std::list<RotoItemPtr>(selectedItems.begin(), selectedItems.end());
+}
+
+std::list<BezierPtr>
+SplineWarpInteract::getSelectedBeziers() const
+{
+    return beziersOf(getSelectedRotoItems());
+}
+
 std::string
 SplineWarpInteract::duplicateAndLink(UndoCommandPtr* pushed)
 {
-    SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
+    const std::string refusal = getRefusal(eSplineWarpActionDuplicateAndLink, getSelectedRotoItems());
 
-    if (!context || (curves.size() != 1) || (selectedItems.size() != 1)) {
-        return refuse(tr("Duplicate and Link needs exactly one selected curve."));
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
     }
-    const BezierPtr& curve = curves.front();
-    if (context->getLink(curve)) {
-        return refuse(tr("Duplicate and Link: %1 is already linked.").arg(curveName(curve)));
-    }
-    if (context->isBoundary(curve)) {
-        return refuse(tr("Duplicate and Link: %1 is a boundary.").arg(curveName(curve)));
-    }
+    const BezierPtr curve = getSelectedBeziers().front();
     push(std::make_shared<SplineWarpDuplicateAndLinkUndoCommand>(shared_from_this(), curve), pushed);
 
     return std::string();
@@ -270,20 +369,13 @@ SplineWarpInteract::duplicateAndLink(UndoCommandPtr* pushed)
 std::string
 SplineWarpInteract::linkSelected(UndoCommandPtr* pushed)
 {
+    const std::string refusal = getRefusal(eSplineWarpActionLink, getSelectedRotoItems());
+
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
+    }
     SplineWarpContextPtr context = getWarpContext();
     std::list<BezierPtr> curves = getSelectedBeziers();
-
-    if (!context || (curves.size() != 2) || (selectedItems.size() != 2)) {
-        return refuse(tr("Link needs exactly two selected curves: the source, then the destination."));
-    }
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        if (context->getLink(*it)) {
-            return refuse(tr("Link: %1 is already linked.").arg(curveName(*it)));
-        }
-        if (context->isBoundary(*it)) {
-            return refuse(tr("Link: %1 is a boundary.").arg(curveName(*it)));
-        }
-    }
     const BezierPtr source = curves.front();
     const BezierPtr destination = curves.back();
     push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Link").toStdString(), [context, source, destination]() {
@@ -297,19 +389,13 @@ SplineWarpInteract::linkSelected(UndoCommandPtr* pushed)
 std::string
 SplineWarpInteract::unlinkSelected(UndoCommandPtr* pushed)
 {
-    SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
-    std::vector<SplineWarpLinkPtr> links;
+    const std::string refusal = getRefusal(eSplineWarpActionUnlink, getSelectedRotoItems());
 
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); context && it != curves.end(); ++it) {
-        SplineWarpLinkPtr link = context->getLink(*it);
-        if (link && (std::find(links.begin(), links.end(), link) == links.end())) {
-            links.push_back(link);
-        }
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
     }
-    if (links.empty()) {
-        return refuse(tr("Unlink: none of the selected curves is linked."));
-    }
+    SplineWarpContextPtr context = getWarpContext();
+    const std::vector<SplineWarpLinkPtr> links = linksOf(*context, getSelectedBeziers());
     push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Unlink").toStdString(), [context, links]() {
              for (std::size_t i = 0; i < links.size(); ++i) {
                  context->removeLink(links[i]);
@@ -323,19 +409,13 @@ SplineWarpInteract::unlinkSelected(UndoCommandPtr* pushed)
 std::string
 SplineWarpInteract::swapSelected(UndoCommandPtr* pushed)
 {
-    SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
-    std::vector<SplineWarpLinkPtr> links;
+    const std::string refusal = getRefusal(eSplineWarpActionSwap, getSelectedRotoItems());
 
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); context && it != curves.end(); ++it) {
-        SplineWarpLinkPtr link = context->getLink(*it);
-        if (link && (std::find(links.begin(), links.end(), link) == links.end())) {
-            links.push_back(link);
-        }
+    if (!refusal.empty()) {
+        return refuse(QString::fromUtf8(refusal.c_str()));
     }
-    if (links.empty()) {
-        return refuse(tr("Swap: none of the selected curves is linked."));
-    }
+    SplineWarpContextPtr context = getWarpContext();
+    const std::vector<SplineWarpLinkPtr> links = linksOf(*context, getSelectedBeziers());
     const double time = getCurrentTime();
     push(std::make_shared<SplineWarpStateUndoCommand>(shared_from_this(), tr("Swap Source/Destination").toStdString(), [context, links, time]() {
              for (std::size_t i = 0; i < links.size(); ++i) {
@@ -360,24 +440,81 @@ SplineWarpInteract::swapSelected(UndoCommandPtr* pushed)
 }
 
 std::string
-SplineWarpInteract::canToggleBoundary() const
+SplineWarpInteract::getRefusal(SplineWarpActionEnum action,
+                               const std::list<RotoItemPtr>& items) const
 {
     SplineWarpContextPtr context = getWarpContext();
-    std::list<BezierPtr> curves = getSelectedBeziers();
+    const std::list<BezierPtr> curves = beziersOf(items);
 
-    if (!context || curves.empty() || (curves.size() != selectedItems.size())) {
-        return tr("Toggle Boundary needs selected curves.").toStdString();
+    switch (action) {
+    case eSplineWarpActionDuplicateAndLink:
+    case eSplineWarpActionLink: {
+        const bool duplicate = (action == eSplineWarpActionDuplicateAndLink);
+        const std::size_t count = duplicate ? 1 : 2;
+        const QString name = duplicate ? tr("Duplicate and Link") : tr("Link");
+        if (!context || (curves.size() != count) || (items.size() != count)) {
+            return duplicate ? tr("Duplicate and Link needs exactly one selected curve.").toStdString()
+                             : tr("Link needs exactly two selected curves: the source, then the destination.").toStdString();
+        }
+        for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+            if (context->getLink(*it)) {
+                return tr("%1: %2 is already linked.").arg(name, curveName(*it)).toStdString();
+            }
+            if (context->isBoundary(*it)) {
+                return tr("%1: %2 is a boundary.").arg(name, curveName(*it)).toStdString();
+            }
+        }
+        break;
     }
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        if (context->getLink(*it)) {
-            return tr("Toggle Boundary: %1 is linked.").arg(curveName(*it)).toStdString();
+    case eSplineWarpActionUnlink:
+    case eSplineWarpActionSwap:
+        if (!context || linksOf(*context, curves).empty()) {
+            return (action == eSplineWarpActionUnlink) ? tr("Unlink: none of the selected curves is linked.").toStdString()
+                                                       : tr("Swap: none of the selected curves is linked.").toStdString();
         }
-        if (!SplineWarpCurveShape::isClosedCurve(**it)) {
-            return tr("Toggle Boundary: %1 is not closed.").arg(curveName(*it)).toStdString();
+        break;
+    case eSplineWarpActionToggleBoundary:
+        if (!context || curves.empty() || (curves.size() != items.size())) {
+            return tr("Toggle Boundary needs selected curves.").toStdString();
         }
+        for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+            if (context->getLink(*it)) {
+                return tr("Toggle Boundary: %1 is linked.").arg(curveName(*it)).toStdString();
+            }
+            if (!SplineWarpCurveShape::isClosedCurve(**it)) {
+                return tr("Toggle Boundary: %1 is not closed.").arg(curveName(*it)).toStdString();
+            }
+        }
+        break;
     }
 
     return std::string();
+}
+
+std::string
+SplineWarpInteract::runAction(SplineWarpActionEnum action,
+                              UndoCommandPtr* pushed)
+{
+    switch (action) {
+    case eSplineWarpActionDuplicateAndLink:
+        return duplicateAndLink(pushed);
+    case eSplineWarpActionLink:
+        return linkSelected(pushed);
+    case eSplineWarpActionUnlink:
+        return unlinkSelected(pushed);
+    case eSplineWarpActionSwap:
+        return swapSelected(pushed);
+    case eSplineWarpActionToggleBoundary:
+        return toggleBoundarySelected(pushed);
+    }
+
+    return std::string();
+}
+
+std::string
+SplineWarpInteract::canToggleBoundary() const
+{
+    return getRefusal(eSplineWarpActionToggleBoundary, getSelectedRotoItems());
 }
 
 std::string
@@ -482,11 +619,15 @@ SplineWarpInteract::pressCorrespondence(const QPointF& pos,
         const SplineWarpCurveShape shapes[2] = {
             SplineWarpCurveShape::fromBezier(*source, time), SplineWarpCurveShape::fromBezier(*destination, time)
         };
+        const bool shown[2] = { isCurveShown(source), isCurveShown(destination) };
         const int count = links[i]->getCorrespondenceCount();
         for (int k = 0; k < count; ++k) {
             double params[2] = { 0., 0. };
             links[i]->getCorrespondence(k, time, &params[0], &params[1]);
             for (int side = 0; side < 2; ++side) {
+                if (!shown[side]) {
+                    continue;
+                }
                 const double distance = distanceTo(shapes[side].pointAt(params[side]), pos);
                 if (distance <= bestEnd) {
                     bestEnd = distance;
@@ -497,7 +638,7 @@ SplineWarpInteract::pressCorrespondence(const QPointF& pos,
             }
         }
         for (int side = 0; side < 2; ++side) {
-            if (shapes[side].isEmpty()) {
+            if (!shown[side] || shapes[side].isEmpty()) {
                 continue;
             }
             double distance = std::numeric_limits<double>::infinity();
@@ -682,6 +823,197 @@ SplineWarpInteract::onPaintStatePenUp()
     }
 
     return releaseCorrespondence();
+}
+
+namespace {
+enum CurveSideEnum {
+    eCurveSideUnlinked,
+    eCurveSideSource,
+    eCurveSideDestination,
+    eCurveSideBoundary,
+};
+
+CurveSideEnum
+sideOf(const SplineWarpContext& context,
+       const BezierPtr& curve)
+{
+    if (context.isBoundary(curve)) {
+        return eCurveSideBoundary;
+    }
+    SplineWarpLinkPtr link = context.getLink(curve);
+    if (!link) {
+        return eCurveSideUnlinked;
+    }
+
+    return (link->getSource() == curve) ? eCurveSideSource : eCurveSideDestination;
+}
+
+// Nuke's convention: the source side red, the destination blue.
+const double kSourceColor[4] = { 1., 0.35, 0.35, 1. };
+const double kDestinationColor[4] = { 0.35, 0.6, 1., 1. };
+const double kBoundaryColor[4] = { 1., 0.85, 0.25, 1. };
+const double kUnlinkedColor[4] = { 0.55, 0.55, 0.55, 1. };
+const double kPairLineColor[4] = { 0.85, 0.85, 0.85, 0.5 };
+const double kCorrespondenceColor[4] = { 1., 0.6, 0.1, 1. };
+const double kSelectedCorrespondenceColor[4] = { 1., 1., 0.4, 1. };
+
+// Dashes of length dash, as GL_LINES vertices.
+void
+addDashes(const Point& a,
+          const Point& b,
+          double dash)
+{
+    const double length = std::hypot(b.x - a.x, b.y - a.y);
+    if ((length <= 0.) || (dash <= 0.)) {
+        return;
+    }
+    const int count = std::min(500, (int)std::ceil(length / (2. * dash)));
+    for (int i = 0; i < count; ++i) {
+        const double t0 = (2. * i * dash) / length;
+        const double t1 = std::min(1., ((2. * i + 1.) * dash) / length);
+        glVertex2d(a.x + t0 * (b.x - a.x), a.y + t0 * (b.y - a.y));
+        glVertex2d(a.x + t1 * (b.x - a.x), a.y + t1 * (b.y - a.y));
+    }
+}
+} // anonymous namespace
+
+bool
+SplineWarpInteract::isCurveShown(const BezierPtr& curve) const
+{
+    const SplineWarpShowEnum show = getShow();
+    SplineWarpContextPtr context = getWarpContext();
+    if ((show == eSplineWarpShowBoth) || !context || !curve) {
+        return true;
+    }
+
+    return sideOf(*context, curve) != ((show == eSplineWarpShowSource) ? eCurveSideDestination : eCurveSideSource);
+}
+
+void
+SplineWarpInteract::getCurveOverlayColor(const RotoDrawableItemPtr& item,
+                                         double color[4]) const
+{
+    BezierPtr curve = std::dynamic_pointer_cast<Bezier>(item);
+    SplineWarpContextPtr context = getWarpContext();
+    if (!curve || !context) {
+        RotoCurveInteract::getCurveOverlayColor(item, color);
+
+        return;
+    }
+    const double* c = kUnlinkedColor;
+    switch (sideOf(*context, curve)) {
+    case eCurveSideSource:
+        c = kSourceColor;
+        break;
+    case eCurveSideDestination:
+        c = kDestinationColor;
+        break;
+    case eCurveSideBoundary:
+        c = kBoundaryColor;
+        break;
+    case eCurveSideUnlinked:
+        break;
+    }
+    std::copy(c, c + 4, color);
+}
+
+void
+SplineWarpInteract::drawOverlayExtras(double time,
+                                      double screenPixelRatio,
+                                      const std::pair<double, double>& pixelScale)
+{
+    SplineWarpContextPtr context = getWarpContext();
+    if (!context) {
+        return;
+    }
+    const SplineWarpShowEnum show = getShow();
+    const bool both = show == eSplineWarpShowBoth;
+    const bool sideShown[2] = { show != eSplineWarpShowDestination, show != eSplineWarpShowSource };
+    const double dash = 4. * pixelScale.first;
+    SplineWarpLinkPtr selectedLink = _selectedLink.lock();
+    const std::vector<SplineWarpLinkPtr> links = context->getLinks();
+
+    glEnable(GL_POINT_SMOOTH);
+    for (std::size_t i = 0; i < links.size(); ++i) {
+        BezierPtr source = links[i]->getSource();
+        BezierPtr destination = links[i]->getDestination();
+        if (!source || !destination) {
+            continue;
+        }
+        // The curves as the viewer shows them, mid-drag included.
+        const SplineWarpCurveShape sourceShape = SplineWarpCurveShape::fromBezier(*source, time, false, true, true);
+        const SplineWarpCurveShape destinationShape = SplineWarpCurveShape::fromBezier(*destination, time, false, true, true);
+        if (sourceShape.isEmpty() || destinationShape.isEmpty()) {
+            continue;
+        }
+        const SplineWarpLinkSamplingInput input = samplingInputOf(*links[i], time, sourceShape, destinationShape);
+
+        glLineWidth(1. * screenPixelRatio);
+        if (both) {
+            // Each destination point to where it pairs on the source.
+            glColor4dv(kPairLineColor);
+            glBegin(GL_LINES);
+            for (int k = 0; k < destinationShape.getPointCount(); ++k) {
+                const double u = destinationShape.clampParam(k);
+                const double partner = sourceShape.clampParam(splineWarpPairedParam(input, false, u));
+                addDashes(destinationShape.pointAt(u), sourceShape.pointAt(partner), dash);
+            }
+            glEnd();
+        }
+
+        for (std::size_t k = 0; k < input.correspondences.size(); ++k) {
+            const bool selected = (links[i] == selectedLink) && ((int)k == _selectedIndex);
+            const Point ends[2] = {
+                sourceShape.pointAt(sourceShape.clampParam(input.correspondences[k].first)),
+                destinationShape.pointAt(destinationShape.clampParam(input.correspondences[k].second))
+            };
+            glColor4dv(selected ? kSelectedCorrespondenceColor : kCorrespondenceColor);
+            if (both) {
+                glLineWidth((selected ? 2. : 1.5) * screenPixelRatio);
+                glBegin(GL_LINES);
+                addDashes(ends[0], ends[1], dash);
+                glEnd();
+            }
+            glPointSize((selected ? 9.f : 7.f) * screenPixelRatio);
+            glBegin(GL_POINTS);
+            for (int side = 0; side < 2; ++side) {
+                if (sideShown[side]) {
+                    glVertex2d(ends[side].x, ends[side].y);
+                }
+            }
+            glEnd();
+        }
+    }
+    glCheckError();
+} // SplineWarpInteract::drawOverlayExtras
+
+void
+SplineWarpInteract::deselectHiddenCurves()
+{
+    std::list<BezierPtr> hidden;
+
+    for (SelectedItems::iterator it = selectedItems.begin(); it != selectedItems.end();) {
+        BezierPtr curve = std::dynamic_pointer_cast<Bezier>(*it);
+        if (curve && !isCurveShown(curve)) {
+            hidden.push_back(curve);
+            it = selectedItems.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (hidden.empty()) {
+        return;
+    }
+    for (SelectedCPs::iterator it = selectedCps.begin(); it != selectedCps.end();) {
+        BezierPtr curve = it->first ? it->first->getBezier() : BezierPtr();
+        if (curve && !isCurveShown(curve)) {
+            it = selectedCps.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    getCurveContext()->deselect(hidden, RotoItem::eSelectionReasonOverlayInteract);
+    computeSelectedCpsBBOX();
 }
 
 NATRON_NAMESPACE_EXIT

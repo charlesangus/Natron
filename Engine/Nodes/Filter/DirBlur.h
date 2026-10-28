@@ -34,6 +34,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/RectD.h"
@@ -75,6 +76,9 @@
 #define kDirBlurParamRampExponential "exponential"
 #define kDirBlurParamMax "max"
 #define kDirBlurParamHoldoutChannel "holdoutChannel"
+#define kDirBlurParamTintGroup "tint"
+#define kDirBlurParamTransformGroup "transform"
+#define kDirBlurParamHoldoutGroup "holdout"
 
 #define kDirBlurInputSource 0
 #define kDirBlurInputMask 1
@@ -118,6 +122,10 @@ struct DirBlurParams {
     double toColor[4] = { 1., 1., 1., 1. };
     DirBlurRampEnum ramp = eDirBlurRampLinear;
     bool max = false;
+    // How every copy is resampled, as the Transform node's Filter, Clamp and Black outside.
+    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    bool clamp = false;
+    bool blackOutside = true;
 };
 
 /**
@@ -215,12 +223,15 @@ public:
     /**
      * @brief The canonical region of the source the samples read for the canonical window,
      * grown by every sample's filter footprint at scale, and clipped to srcRoD unless it is null.
+     * Without blackOutside the samples beyond srcRoD read its edge pixels, so the region is
+     * clamped into srcRoD instead, keeping at least its nearest row or column of pixels.
      **/
     static RectD sourceRegion(const std::vector<DirBlurSample>& canonical,
                               const RectD& window,
                               const RenderScale& scale,
                               double par,
-                              const RectD& srcRoD) WARN_UNUSED_RETURN;
+                              const RectD& srcRoD,
+                              bool blackOutside = true) WARN_UNUSED_RETURN;
 
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -265,6 +276,11 @@ protected:
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    // Enables Clamp only for the filters that honour it.
+    void updateClampEnabled(double time, ViewIdx view);
+
     // Moves the centre to the middle of the source's region of definition, or of the project
     // format without one, changing Translate so that the transform's full amount keeps its place.
     void resetCenter(double time);
@@ -308,6 +324,9 @@ private:
     KnobChoiceWPtr _ramp;
     KnobBoolWPtr _max;
     KnobChannelSelectWPtr _holdoutChannel;
+    KnobChoiceWPtr _filter;
+    KnobBoolWPtr _clamp;
+    KnobBoolWPtr _blackOutside;
 };
 
 NATRON_NAMESPACE_EXIT

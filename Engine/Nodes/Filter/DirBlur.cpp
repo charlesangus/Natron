@@ -36,6 +36,7 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -49,6 +50,7 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -67,6 +69,8 @@ constexpr uint32_t kDirBlurGpuSourceValid = 1;
 constexpr uint32_t kDirBlurGpuMax = 2;
 constexpr uint32_t kDirBlurGpuHoldout = 4;
 constexpr uint32_t kDirBlurGpuHoldoutValid = 8;
+constexpr uint32_t kDirBlurGpuClamp = 16;
+constexpr uint32_t kDirBlurGpuBlackOutside = 32;
 #endif
 
 constexpr InputSpec kDirBlurInputs[] = {
@@ -84,11 +88,11 @@ constexpr NodeSpec kDirBlurNodeSpec = {
                    "\n"
                    "The transform (Translate, Rotate, Scale, Skew, about Center) is applied along the blur in every mode, as the God Rays node does: a copy at a fraction t of the blur is transformed by t times Transform Amount. With Length 0 it alone gives God Rays.\n"
                    "\n"
-                   "The result is the weighted average of Samples copies of the image, each moved by an even step along the blur and filtered bilinearly, or their maximum with Max. Falloff fades the copies out towards the end of the blur, and From Color and To Color tint them, from the start of the blur to its end, which gives God-rays-like light streaks in Zoom mode. The weights are normalised, so with the default white tints the blur keeps the image's energy.\n"
+                   "The result is the weighted average of Samples copies of the image, each moved by an even step along the blur and resampled with Filter, as the Transform node resamples, or their maximum with Max. Falloff fades the copies out towards the end of the blur, and From Color and To Color tint them, from the start of the blur to its end, which gives God-rays-like light streaks in Zoom mode. The weights are normalised, so with the default white tints the blur keeps the image's energy.\n"
                    "\n"
                    "Where the Holdout Channel of the Holdout input is 1 the source is left out of the average, and where it is between 0 and 1 it counts that much less.\n"
                    "\n"
-                   "Beyond the source's region of definition the image reads black.",
+                   "Beyond the source's region of definition the image reads black, or with Black outside off the source's edge pixels, extended outwards.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_DIRBLUR,
     .minorVersion = 0,
@@ -103,7 +107,7 @@ constexpr ImagePipelineSpec kDirBlurPipeline = {
 };
 
 // The source pixels a sample of a matrix with linear part (a b; d e) reads around its centre, at
-// most: the bilinear footprint and the supersampling of a minifying sample.
+// most: the widest (4-tap) filter's footprint and the supersampling of a minifying sample.
 double
 footprint(const Mat3& m,
           double par)
@@ -198,64 +202,6 @@ DirBlur::initializeKnobs()
     page->addKnob(lengthKnob);
     _length = lengthKnob;
 
-    KnobDoublePtr centerKnob = AppManager::createKnob<KnobDouble>(this, tr("Center"), 2);
-    centerKnob->setName(kDirBlurParamCenter);
-    centerKnob->setHintToolTip(tr("The centre of the Radial and Zoom blurs, of the transform, and the start of the Directional blur with Use Target. Can also be moved by dragging the transform handle in the Viewer."));
-    centerKnob->setSpatial(true);
-    centerKnob->setDefaultValuesAreNormalized(true);
-    centerKnob->disableSlider();
-    for (int d = 0; d < 2; ++d) {
-        centerKnob->setMinimum(-DBL_MAX, d);
-        centerKnob->setMaximum(DBL_MAX, d);
-        centerKnob->setDisplayMinimum(-10000., d);
-        centerKnob->setDisplayMaximum(10000., d);
-        centerKnob->setIncrement(1., d);
-        centerKnob->setDefaultValue(0.5, d);
-    }
-    page->addKnob(centerKnob);
-    _center = centerKnob;
-
-    KnobButtonPtr resetCenterKnob = AppManager::createKnob<KnobButton>(this, tr("Reset Center"));
-    resetCenterKnob->setName(kDirBlurParamResetCenter);
-    resetCenterKnob->setHintToolTip(tr("Move Center to the middle of the source's region of definition, changing Translate so that the transform at its full amount keeps its place."));
-    page->addKnob(resetCenterKnob);
-    _resetCenter = resetCenterKnob;
-
-    KnobDoublePtr directionKnob = AppManager::createKnob<KnobDouble>(this, tr("Direction"));
-    directionKnob->setName(kDirBlurParamDirection);
-    directionKnob->setHintToolTip(tr("The direction of the Directional blur, in degrees counter-clockwise from the x axis, when Use Target is off."));
-    directionKnob->setDisplayMinimum(-180.);
-    directionKnob->setDisplayMaximum(180.);
-    directionKnob->setDefaultValue(45.);
-    page->addKnob(directionKnob);
-    _direction = directionKnob;
-
-    KnobBoolPtr useTargetKnob = AppManager::createKnob<KnobBool>(this, tr("Use Target"));
-    useTargetKnob->setName(kDirBlurParamUseTarget);
-    useTargetKnob->setHintToolTip(tr("When checked the Directional blur runs from Center towards Target instead of along Direction. Length still sets its extent."));
-    useTargetKnob->setDefaultValue(false);
-    page->addKnob(useTargetKnob);
-    _useTarget = useTargetKnob;
-
-    KnobDoublePtr targetKnob = AppManager::createKnob<KnobDouble>(this, tr("Target"), 2);
-    targetKnob->setName(kDirBlurParamTarget);
-    targetKnob->setHintToolTip(tr("With Use Target, the point the Directional blur runs towards from Center. Can also be moved by dragging its handle in the Viewer."));
-    targetKnob->setSpatial(true);
-    targetKnob->setDefaultValuesAreNormalized(true);
-    targetKnob->disableSlider();
-    for (int d = 0; d < 2; ++d) {
-        targetKnob->setMinimum(-DBL_MAX, d);
-        targetKnob->setMaximum(DBL_MAX, d);
-        targetKnob->setDisplayMinimum(-10000., d);
-        targetKnob->setDisplayMaximum(10000., d);
-        targetKnob->setIncrement(1., d);
-    }
-    targetKnob->setDefaultValue(0.75, 0);
-    targetKnob->setDefaultValue(0.5, 1);
-    page->addKnob(targetKnob);
-    targetKnob->setHasHostOverlayHandle(true);
-    _target = targetKnob;
-
     KnobIntPtr samplesKnob = AppManager::createKnob<KnobInt>(this, tr("Samples"));
     samplesKnob->setName(kDirBlurParamSamples);
     samplesKnob->setHintToolTip(tr("How many copies of the image are averaged along the blur. More give a smoother blur and cost proportionally more; about one per pixel of blur avoids visible steps."));
@@ -284,6 +230,73 @@ DirBlur::initializeKnobs()
     page->addKnob(falloffKnob);
     _falloff = falloffKnob;
 
+    KnobBoolPtr maxKnob = AppManager::createKnob<KnobBool>(this, tr("Max"));
+    maxKnob->setName(kDirBlurParamMax);
+    maxKnob->setHintToolTip(tr("When checked each channel is the maximum of the tinted copies, each weighed by Falloff but not normalised, instead of their average. The maximum starts from 0."));
+    maxKnob->setDefaultValue(false);
+    page->addKnob(maxKnob);
+    _max = maxKnob;
+
+    KnobDoublePtr directionKnob = AppManager::createKnob<KnobDouble>(this, tr("Direction"));
+    directionKnob->setName(kDirBlurParamDirection);
+    directionKnob->setHintToolTip(tr("The direction of the Directional blur, in degrees counter-clockwise from the x axis, when Use Target is off."));
+    directionKnob->setDisplayMinimum(-180.);
+    directionKnob->setDisplayMaximum(180.);
+    directionKnob->setDefaultValue(45.);
+    page->addKnob(directionKnob);
+    _direction = directionKnob;
+
+    KnobBoolPtr useTargetKnob = AppManager::createKnob<KnobBool>(this, tr("Use Target"));
+    useTargetKnob->setName(kDirBlurParamUseTarget);
+    useTargetKnob->setHintToolTip(tr("When checked the Directional blur runs from Center towards Target instead of along Direction. Length still sets its extent."));
+    useTargetKnob->setDefaultValue(false);
+    useTargetKnob->setAddNewLine(false);
+    page->addKnob(useTargetKnob);
+    _useTarget = useTargetKnob;
+
+    KnobDoublePtr targetKnob = AppManager::createKnob<KnobDouble>(this, tr("Target"), 2);
+    targetKnob->setName(kDirBlurParamTarget);
+    targetKnob->setHintToolTip(tr("With Use Target, the point the Directional blur runs towards from Center. Can also be moved by dragging its handle in the Viewer."));
+    targetKnob->setSpatial(true);
+    targetKnob->setDefaultValuesAreNormalized(true);
+    targetKnob->disableSlider();
+    for (int d = 0; d < 2; ++d) {
+        targetKnob->setMinimum(-DBL_MAX, d);
+        targetKnob->setMaximum(DBL_MAX, d);
+        targetKnob->setDisplayMinimum(-10000., d);
+        targetKnob->setDisplayMaximum(10000., d);
+        targetKnob->setIncrement(1., d);
+    }
+    targetKnob->setDefaultValue(0.75, 0);
+    targetKnob->setDefaultValue(0.5, 1);
+    page->addKnob(targetKnob);
+    targetKnob->setHasHostOverlayHandle(true);
+    _target = targetKnob;
+
+    KnobDoublePtr centerKnob = AppManager::createKnob<KnobDouble>(this, tr("Center"), 2);
+    centerKnob->setName(kDirBlurParamCenter);
+    centerKnob->setHintToolTip(tr("The centre of the Radial and Zoom blurs, of the transform, and the start of the Directional blur with Use Target. Can also be moved by dragging the transform handle in the Viewer."));
+    centerKnob->setSpatial(true);
+    centerKnob->setDefaultValuesAreNormalized(true);
+    centerKnob->disableSlider();
+    for (int d = 0; d < 2; ++d) {
+        centerKnob->setMinimum(-DBL_MAX, d);
+        centerKnob->setMaximum(DBL_MAX, d);
+        centerKnob->setDisplayMinimum(-10000., d);
+        centerKnob->setDisplayMaximum(10000., d);
+        centerKnob->setIncrement(1., d);
+        centerKnob->setDefaultValue(0.5, d);
+    }
+    centerKnob->setAddNewLine(false);
+    page->addKnob(centerKnob);
+    _center = centerKnob;
+
+    KnobButtonPtr resetCenterKnob = AppManager::createKnob<KnobButton>(this, tr("Reset Center"));
+    resetCenterKnob->setName(kDirBlurParamResetCenter);
+    resetCenterKnob->setHintToolTip(tr("Move Center to the middle of the source's region of definition, changing Translate so that the transform at its full amount keeps its place."));
+    page->addKnob(resetCenterKnob);
+    _resetCenter = resetCenterKnob;
+
     KnobDoublePtr pixelOffsetKnob = AppManager::createKnob<KnobDouble>(this, tr("Pixel Offset"));
     pixelOffsetKnob->setName(kDirBlurParamPixelOffset);
     pixelOffsetKnob->setHintToolTip(tr("Zoom mode only: moves every copy this many pixels further along the blur at the corners of the format, offsetting the whole blur along its direction."));
@@ -292,6 +305,82 @@ DirBlur::initializeKnobs()
     pixelOffsetKnob->setDefaultValue(0.);
     page->addKnob(pixelOffsetKnob);
     _pixelOffset = pixelOffsetKnob;
+
+    KnobChoicePtr filterKnob = AppManager::createKnob<KnobChoice>(this, tr(kResamplerParamFilterTypeLabel));
+    filterKnob->setName(kResamplerParamFilterType);
+    filterKnob->setHintToolTip(tr(kResamplerParamFilterTypeHint));
+    {
+        const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+        std::vector<ChoiceOption> options;
+        for (std::size_t i = 0; i < filters.size(); ++i) {
+            options.push_back(ChoiceOption(filters[i].id, filters[i].label, filters[i].hint));
+        }
+        filterKnob->populateChoices(options);
+    }
+    filterKnob->setDefaultValue((int)Resampler::eFilterCubic);
+    filterKnob->setAddNewLine(false);
+    filterKnob->setSpacingBetweenItems(1);
+    page->addKnob(filterKnob);
+    _filter = filterKnob;
+
+    KnobBoolPtr clampKnob = AppManager::createKnob<KnobBool>(this, tr(kResamplerParamFilterClampLabel));
+    clampKnob->setName(kResamplerParamFilterClamp);
+    clampKnob->setHintToolTip(tr(kResamplerParamFilterClampHint));
+    clampKnob->setDefaultValue(false);
+    clampKnob->setAddNewLine(false);
+    clampKnob->setSpacingBetweenItems(1);
+    page->addKnob(clampKnob);
+    _clamp = clampKnob;
+
+    KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(this, tr(kResamplerParamFilterBlackOutsideLabel));
+    blackOutsideKnob->setName(kResamplerParamFilterBlackOutside);
+    blackOutsideKnob->setHintToolTip(tr("Fill the area outside the source image with black. Unchecked, the copies read the source's edge pixels beyond it, extended outwards. The Holdout input always reads 0 outside its own image."));
+    blackOutsideKnob->setDefaultValue(true);
+    page->addKnob(blackOutsideKnob);
+    _blackOutside = blackOutsideKnob;
+
+    KnobGroupPtr tintGroup = AppManager::createKnob<KnobGroup>(this, tr("Tint"));
+    tintGroup->setName(kDirBlurParamTintGroup);
+    tintGroup->setHintToolTip(tr("The tint of the copies along the blur."));
+    tintGroup->setDefaultValue(true);
+    page->addKnob(tintGroup);
+
+    KnobColorPtr fromColorKnob = AppManager::createKnob<KnobColor>(this, tr("From Color"), 4);
+    fromColorKnob->setName(kDirBlurParamFromColor);
+    fromColorKnob->setHintToolTip(tr("The tint of the copies at the start of the blur. The tint goes to To Color at its end, as Ramp says."));
+    for (int d = 0; d < 4; ++d) {
+        fromColorKnob->setDefaultValue(1., d);
+    }
+    tintGroup->addKnob(fromColorKnob);
+    _fromColor = fromColorKnob;
+
+    KnobColorPtr toColorKnob = AppManager::createKnob<KnobColor>(this, tr("To Color"), 4);
+    toColorKnob->setName(kDirBlurParamToColor);
+    toColorKnob->setHintToolTip(tr("The tint of the copies at the end of the blur."));
+    for (int d = 0; d < 4; ++d) {
+        toColorKnob->setDefaultValue(1., d);
+    }
+    tintGroup->addKnob(toColorKnob);
+    _toColor = toColorKnob;
+
+    KnobChoicePtr rampKnob = AppManager::createKnob<KnobChoice>(this, tr("Ramp"));
+    rampKnob->setName(kDirBlurParamRamp);
+    rampKnob->setHintToolTip(tr("How the tint goes from From Color to To Color along the blur."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kDirBlurParamRampLinear, tr("Linear").toStdString(), tr("In even steps.").toStdString()));
+        options.push_back(ChoiceOption(kDirBlurParamRampExponential, tr("Exponential").toStdString(), tr("By an even factor per step, as the God Rays node ramps; each colour is held to at least 0.001.").toStdString()));
+        rampKnob->populateChoices(options);
+    }
+    rampKnob->setDefaultValue((int)eDirBlurRampLinear);
+    tintGroup->addKnob(rampKnob);
+    _ramp = rampKnob;
+
+    KnobGroupPtr transformGroup = AppManager::createKnob<KnobGroup>(this, tr("Transform"));
+    transformGroup->setName(kDirBlurParamTransformGroup);
+    transformGroup->setHintToolTip(tr("The transform applied along the blur, about Center, in every mode."));
+    transformGroup->setDefaultValue(false);
+    page->addKnob(transformGroup);
 
     KnobDoublePtr translateKnob = AppManager::createKnob<KnobDouble>(this, tr("Translate"), 2);
     translateKnob->setName(kDirBlurParamTranslate);
@@ -307,7 +396,7 @@ DirBlur::initializeKnobs()
         translateKnob->setIncrement(10., d);
         translateKnob->setDefaultValue(0., d);
     }
-    page->addKnob(translateKnob);
+    transformGroup->addKnob(translateKnob);
     _translate = translateKnob;
 
     KnobDoublePtr rotateKnob = AppManager::createKnob<KnobDouble>(this, tr("Rotate"));
@@ -319,7 +408,7 @@ DirBlur::initializeKnobs()
     rotateKnob->setDisplayMaximum(180.);
     rotateKnob->setIncrement(0.1);
     rotateKnob->setDefaultValue(0.);
-    page->addKnob(rotateKnob);
+    transformGroup->addKnob(rotateKnob);
     _rotate = rotateKnob;
 
     KnobDoublePtr scaleKnob = AppManager::createKnob<KnobDouble>(this, tr("Scale"), 2);
@@ -336,14 +425,14 @@ DirBlur::initializeKnobs()
     }
     scaleKnob->setAddNewLine(false);
     scaleKnob->setSpacingBetweenItems(1);
-    page->addKnob(scaleKnob);
+    transformGroup->addKnob(scaleKnob);
     _scale = scaleKnob;
 
     KnobBoolPtr uniformKnob = AppManager::createKnob<KnobBool>(this, tr("Uniform"));
     uniformKnob->setName(kDirBlurParamUniform);
     uniformKnob->setHintToolTip(tr("Use the X scale for both directions."));
     uniformKnob->setDefaultValue(false);
-    page->addKnob(uniformKnob);
+    transformGroup->addKnob(uniformKnob);
     _uniform = uniformKnob;
 
     KnobDoublePtr skewXKnob = AppManager::createKnob<KnobDouble>(this, tr("Skew X"));
@@ -355,7 +444,7 @@ DirBlur::initializeKnobs()
     skewXKnob->setDisplayMaximum(1.);
     skewXKnob->setIncrement(0.01);
     skewXKnob->setDefaultValue(0.);
-    page->addKnob(skewXKnob);
+    transformGroup->addKnob(skewXKnob);
     _skewX = skewXKnob;
 
     KnobDoublePtr skewYKnob = AppManager::createKnob<KnobDouble>(this, tr("Skew Y"));
@@ -367,7 +456,7 @@ DirBlur::initializeKnobs()
     skewYKnob->setDisplayMaximum(1.);
     skewYKnob->setIncrement(0.01);
     skewYKnob->setDefaultValue(0.);
-    page->addKnob(skewYKnob);
+    transformGroup->addKnob(skewYKnob);
     _skewY = skewYKnob;
 
     KnobChoicePtr skewOrderKnob = AppManager::createKnob<KnobChoice>(this, tr("Skew Order"));
@@ -380,7 +469,7 @@ DirBlur::initializeKnobs()
         skewOrderKnob->populateChoices(options);
     }
     skewOrderKnob->setDefaultValue(0);
-    page->addKnob(skewOrderKnob);
+    transformGroup->addKnob(skewOrderKnob);
     _skewOrder = skewOrderKnob;
 
     KnobDoublePtr transformAmountKnob = AppManager::createKnob<KnobDouble>(this, tr("Transform Amount"));
@@ -392,14 +481,14 @@ DirBlur::initializeKnobs()
     transformAmountKnob->setDisplayMaximum(1.);
     transformAmountKnob->setIncrement(0.01);
     transformAmountKnob->setDefaultValue(1.);
-    page->addKnob(transformAmountKnob);
+    transformGroup->addKnob(transformAmountKnob);
     _transformAmount = transformAmountKnob;
 
     KnobBoolPtr invertKnob = AppManager::createKnob<KnobBool>(this, tr("Invert"));
     invertKnob->setName(kDirBlurParamInvert);
     invertKnob->setHintToolTip(tr("Invert the transform."));
     invertKnob->setDefaultValue(false);
-    page->addKnob(invertKnob);
+    transformGroup->addKnob(invertKnob);
     _invert = invertKnob;
 
     KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(this, tr("Interactive"));
@@ -407,56 +496,25 @@ DirBlur::initializeKnobs()
     interactiveKnob->setHintToolTip(tr("If checked, update the parameter values while dragging the transform handles in the Viewer, else when the pen is released."));
     interactiveKnob->setDefaultValue(true);
     interactiveKnob->setEvaluateOnChange(false);
-    page->addKnob(interactiveKnob);
+    transformGroup->addKnob(interactiveKnob);
     _interactive = interactiveKnob;
 
-    KnobColorPtr fromColorKnob = AppManager::createKnob<KnobColor>(this, tr("From Color"), 4);
-    fromColorKnob->setName(kDirBlurParamFromColor);
-    fromColorKnob->setHintToolTip(tr("The tint of the copies at the start of the blur. The tint goes to To Color at its end, as Ramp says."));
-    for (int d = 0; d < 4; ++d) {
-        fromColorKnob->setDefaultValue(1., d);
-    }
-    page->addKnob(fromColorKnob);
-    _fromColor = fromColorKnob;
-
-    KnobColorPtr toColorKnob = AppManager::createKnob<KnobColor>(this, tr("To Color"), 4);
-    toColorKnob->setName(kDirBlurParamToColor);
-    toColorKnob->setHintToolTip(tr("The tint of the copies at the end of the blur."));
-    for (int d = 0; d < 4; ++d) {
-        toColorKnob->setDefaultValue(1., d);
-    }
-    page->addKnob(toColorKnob);
-    _toColor = toColorKnob;
-
-    KnobChoicePtr rampKnob = AppManager::createKnob<KnobChoice>(this, tr("Ramp"));
-    rampKnob->setName(kDirBlurParamRamp);
-    rampKnob->setHintToolTip(tr("How the tint goes from From Color to To Color along the blur."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kDirBlurParamRampLinear, tr("Linear").toStdString(), tr("In even steps.").toStdString()));
-        options.push_back(ChoiceOption(kDirBlurParamRampExponential, tr("Exponential").toStdString(), tr("By an even factor per step, as the God Rays node ramps; each colour is held to at least 0.001.").toStdString()));
-        rampKnob->populateChoices(options);
-    }
-    rampKnob->setDefaultValue((int)eDirBlurRampLinear);
-    page->addKnob(rampKnob);
-    _ramp = rampKnob;
-
-    KnobBoolPtr maxKnob = AppManager::createKnob<KnobBool>(this, tr("Max"));
-    maxKnob->setName(kDirBlurParamMax);
-    maxKnob->setHintToolTip(tr("When checked each channel is the maximum of the tinted copies, each weighed by Falloff but not normalised, instead of their average. The maximum starts from 0."));
-    maxKnob->setDefaultValue(false);
-    page->addKnob(maxKnob);
-    _max = maxKnob;
+    KnobGroupPtr holdoutGroup = AppManager::createKnob<KnobGroup>(this, tr("Holdout"));
+    holdoutGroup->setName(kDirBlurParamHoldoutGroup);
+    holdoutGroup->setHintToolTip(tr("What the Holdout input keeps out of the blur."));
+    holdoutGroup->setDefaultValue(true);
+    page->addKnob(holdoutGroup);
 
     KnobChannelSelectPtr holdoutChannelKnob = AppManager::createKnob<KnobChannelSelect>(this, tr("Holdout Channel"));
     holdoutChannelKnob->setName(kDirBlurParamHoldoutChannel);
     holdoutChannelKnob->setAnimationEnabled(false);
     holdoutChannelKnob->setDefaultValue(holdoutChannelKnob->encode(std::string(kNatronColorViewRGBA) + ".A"));
     holdoutChannelKnob->setHintToolTip(tr("The channel of the Holdout input, in any of its layers, read where each copy comes from: the source counts (1 - holdout) as much there, and not at all where it is 1. Unused without a Holdout input; None turns it off."));
-    page->addKnob(holdoutChannelKnob);
+    holdoutGroup->addKnob(holdoutChannelKnob);
     _holdoutChannel = holdoutChannelKnob;
 
     addStageKnobs(page);
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -508,6 +566,10 @@ DirBlur::getParams(double time,
     }
     params.ramp = (reader.value(_ramp) == (int)eDirBlurRampExponential) ? eDirBlurRampExponential : eDirBlurRampLinear;
     params.max = reader.value(_max);
+    const int filter = reader.value(_filter);
+    params.filter = ((filter >= (int)Resampler::eFilterImpulse) && (filter <= (int)Resampler::eFilterNotch)) ? (Resampler::FilterEnum)filter : Resampler::eFilterCubic;
+    params.clamp = reader.value(_clamp);
+    params.blackOutside = reader.value(_blackOutside);
 
     return params;
 }
@@ -600,8 +662,32 @@ DirBlur::knobChanged(KnobI* k,
 
         return true;
     }
+    KnobChoicePtr filterKnob = _filter.lock();
+    if (filterKnob && (k == filterKnob.get())) {
+        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+
+        return true;
+    }
 
     return StagedImageEffect::knobChanged(k, reason, view, time, originatedFromMainThread);
+}
+
+void
+DirBlur::updateClampEnabled(double time,
+                            ViewIdx view)
+{
+    KnobChoicePtr filter = _filter.lock();
+    KnobBoolPtr clamp = _clamp.lock();
+    if (!filter || !clamp) {
+        return;
+    }
+    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+}
+
+void
+DirBlur::onKnobsLoaded()
+{
+    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -786,7 +872,8 @@ DirBlur::sourceRegion(const std::vector<DirBlurSample>& canonical,
                       const RectD& window,
                       const RenderScale& scale,
                       double par,
-                      const RectD& srcRoD)
+                      const RectD& srcRoD,
+                      bool blackOutside)
 {
     RectD region = nullRect();
     if (window.isNull()) {
@@ -806,6 +893,18 @@ DirBlur::sourceRegion(const std::vector<DirBlurSample>& canonical,
         r.y1 -= grow / sy;
         r.y2 += grow / sy;
         mergeInto(r, &region);
+    }
+    if (!srcRoD.isNull() && !region.isNull() && !blackOutside) {
+        // Edge repeat: a read beyond srcRoD lands on its nearest pixel row or column, so the
+        // region is clamped into srcRoD, reaching its edge wherever a read goes past it.
+        const double px = std::min(par / sx, srcRoD.width());
+        const double py = std::min(1. / sy, srcRoD.height());
+        region.x1 = std::max(srcRoD.x1, std::min(region.x1, srcRoD.x2 - px));
+        region.x2 = std::min(srcRoD.x2, std::max(region.x2, srcRoD.x1 + px));
+        region.y1 = std::max(srcRoD.y1, std::min(region.y1, srcRoD.y2 - py));
+        region.y2 = std::min(srcRoD.y2, std::max(region.y2, srcRoD.y1 + py));
+
+        return region;
     }
     if (!srcRoD.isNull() && !region.isNull()) {
         if (!region.intersects(srcRoD)) {
@@ -848,7 +947,7 @@ DirBlur::getRegionOfDefinition(U64 /*hash*/,
         mergeInto(r, &region);
     }
     if (!region.isNull()) {
-        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, true, &region);
+        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, params.blackOutside, &region);
     }
     if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
         mergeInto(srcRoD, &region);
@@ -884,7 +983,7 @@ DirBlur::getRegionsOfInterest(double time,
         // The window itself too, which the mask and mix blend with.
         RectD roi = renderWindow;
         if (moves) {
-            mergeInto(sourceRegion(canonical, renderWindow, scale, par, sourceRoD(time, view, scale)), &roi);
+            mergeInto(sourceRegion(canonical, renderWindow, scale, par, sourceRoD(time, view, scale), params.blackOutside), &roi);
         }
         (*ret)[source] = roi;
     }
@@ -919,7 +1018,8 @@ DirBlur::renderOp(const RenderActionArgs& args,
 {
     const DirBlurParams params = getParams(args.time, args.view);
     const std::vector<DirBlurSample> samples = pixelSamples(canonicalSamples(params, zoomReference(args.time, args.view)), args.time, args.mappedScale, outputPar(args.time, args.view));
-    const Resampler::FilterEnum filter = args.draftMode ? Resampler::eFilterImpulse : Resampler::eFilterBilinear;
+    const Resampler::FilterEnum filter = args.draftMode ? Resampler::eFilterImpulse : params.filter;
+    const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter);
 
     // The Holdout Channel as one float per pixel, locked here; the band threads only read it.
     ImageLayerDesc holdoutLayer;
@@ -1007,11 +1107,13 @@ DirBlur::renderOp(const RenderActionArgs& args,
                     rp.alphas = 0;
                     rp.count = 1;
                     rp.filter = filter;
-                    rp.clamp = false;
-                    rp.blackOutside = true;
+                    rp.clamp = clamp;
+                    rp.blackOutside = params.blackOutside;
                     rp.motionBlur = 0.;
                     Resampler::resampleRow(rp, source, io.y, io.x0, io.x0 + io.width, &tmp[0]);
                     if (holdoutSampled) {
+                        // The holdout holds nothing back outside its own image.
+                        rp.blackOutside = true;
                         Resampler::resampleRow(rp, holdoutSource, io.y, io.x0, io.x0 + io.width, &hold[0]);
                     }
                     for (int i = 0; i < io.width; ++i) {
@@ -1133,7 +1235,7 @@ DirBlur::getOpGpuInputRoI(int inputNb,
     const double sy = scale.toOfxPointD().y;
     const RectD window(outputRect.x1 * par / sx, outputRect.y1 / sy, outputRect.x2 * par / sx, outputRect.y2 / sy);
     const RectD clip = (inputNb == kDirBlurInputSource) ? sourceRoD(time, view, scale) : nullRect();
-    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, clip);
+    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, clip, params.blackOutside);
     RectI roi = outputRect;
     if (!read.isNull()) {
         roi.merge(read.toPixelEnclosing(scale, par));
@@ -1153,7 +1255,7 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     const StagePlan plan = resolveGpuPlan(query);
     const DirBlurParams params = getParams(query.time, query.view);
     const std::vector<DirBlurSample> samples = pixelSamples(canonicalSamples(params, zoomReference(query.time, query.view)), query.time, query.mappedScale, outputPar(query.time, query.view));
-    const Resampler::FilterEnum filter = query.draftMode ? Resampler::eFilterImpulse : Resampler::eFilterBilinear;
+    const Resampler::FilterEnum filter = query.draftMode ? Resampler::eFilterImpulse : params.filter;
 
     // The source cropped to its region of definition, as the CPU fetches it, is both sampled and
     // blended under the mask and mix.
@@ -1178,6 +1280,12 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     // (hi, lo) float pairs, the four factors and the weight.
     std::vector<uint32_t> words(kDirBlurGpuHeaderWords + samples.size() * kDirBlurGpuSampleWords, 0u);
     uint32_t flags = (hasSource ? kDirBlurGpuSourceValid : 0u) | (params.max ? kDirBlurGpuMax : 0u);
+    if (params.clamp && Resampler::filterHonoursClamp(filter)) {
+        flags |= kDirBlurGpuClamp;
+    }
+    if (params.blackOutside) {
+        flags |= kDirBlurGpuBlackOutside;
+    }
     if (holdoutOn) {
         flags |= kDirBlurGpuHoldout;
         const int component = holdoutView.buffer ? stageGpuMaskViewComponent(holdoutLayer, holdoutChannel, holdoutView.nComps) : -1;

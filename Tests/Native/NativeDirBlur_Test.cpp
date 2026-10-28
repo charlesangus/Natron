@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Filter/DirBlur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -213,7 +214,8 @@ protected:
         return node;
     }
 
-    // A DirBlur of source in mode, centred on the format's centre.
+    // A DirBlur of source in mode, centred on the format's centre, with the bilinear filter whose
+    // weights the smear tests count on.
     NodePtr makeDirBlur(const NodePtr& source,
                         const char* mode)
     {
@@ -227,6 +229,7 @@ protected:
         }
         EXPECT_TRUE(setKnobValue(node, kDirBlurParamMode, std::string(mode)));
         EXPECT_TRUE(setKnobValues(node, kDirBlurParamCenter, { kCenterX, kCenterY }));
+        EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
 
         return node;
     }
@@ -296,6 +299,12 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
         { kDirBlurParamRamp, "Ramp" },
         { kDirBlurParamMax, "Max" },
         { kDirBlurParamHoldoutChannel, "Holdout Channel" },
+        { kResamplerParamFilterType, "Filter" },
+        { kResamplerParamFilterClamp, "Clamp" },
+        { kResamplerParamFilterBlackOutside, "Black outside" },
+        { kDirBlurParamTintGroup, "Tint" },
+        { kDirBlurParamTransformGroup, "Transform" },
+        { kDirBlurParamHoldoutGroup, "Holdout" },
     };
     for (const auto& l : labels) {
         KnobIPtr knob = node->getKnobByName(l.name);
@@ -338,6 +347,51 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     KnobBoolPtr max = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kDirBlurParamMax));
     ASSERT_TRUE(bool(max));
     EXPECT_FALSE(max->getValue());
+
+    // The Transform node's filter knobs and defaults; Clamp is enabled only for a filter that honours it.
+    KnobChoicePtr filter = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kResamplerParamFilterType));
+    ASSERT_TRUE(bool(filter));
+    EXPECT_EQ((int)Resampler::eFilterCubic, filter->getValue());
+    EXPECT_EQ(Resampler::filterOptions().size(), filter->getEntries_mt_safe().size());
+    KnobBoolPtr clamp = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterClamp));
+    ASSERT_TRUE(bool(clamp));
+    EXPECT_FALSE(clamp->getValue());
+    EXPECT_FALSE(clamp->isEnabled(0));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
+    EXPECT_TRUE(clamp->isEnabled(0));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
+    EXPECT_FALSE(clamp->isEnabled(0));
+    KnobBoolPtr blackOutside = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterBlackOutside));
+    ASSERT_TRUE(bool(blackOutside));
+    EXPECT_TRUE(blackOutside->getValue());
+
+    // The tint, transform and holdout knobs sit in their own groups.
+    const struct {
+        const char* knob;
+        const char* group;
+    } grouped[] = {
+        { kDirBlurParamFromColor, kDirBlurParamTintGroup },
+        { kDirBlurParamToColor, kDirBlurParamTintGroup },
+        { kDirBlurParamRamp, kDirBlurParamTintGroup },
+        { kDirBlurParamTranslate, kDirBlurParamTransformGroup },
+        { kDirBlurParamRotate, kDirBlurParamTransformGroup },
+        { kDirBlurParamScale, kDirBlurParamTransformGroup },
+        { kDirBlurParamUniform, kDirBlurParamTransformGroup },
+        { kDirBlurParamSkewX, kDirBlurParamTransformGroup },
+        { kDirBlurParamSkewY, kDirBlurParamTransformGroup },
+        { kDirBlurParamSkewOrder, kDirBlurParamTransformGroup },
+        { kDirBlurParamTransformAmount, kDirBlurParamTransformGroup },
+        { kDirBlurParamInvert, kDirBlurParamTransformGroup },
+        { kDirBlurParamInteractive, kDirBlurParamTransformGroup },
+        { kDirBlurParamHoldoutChannel, kDirBlurParamHoldoutGroup },
+    };
+    for (const auto& g : grouped) {
+        KnobIPtr knob = node->getKnobByName(g.knob);
+        KnobIPtr group = node->getKnobByName(g.group);
+        ASSERT_TRUE(bool(knob)) << g.knob;
+        ASSERT_TRUE(bool(group)) << g.group;
+        EXPECT_TRUE(knob->getParentKnob() == group) << g.knob;
+    }
 }
 
 // Sample positions are midpoints of the blur, spread both ways when centred, and the factors of
@@ -833,19 +887,34 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
     NodePtr holdout = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(holdout));
     setParitySourceOrigin(holdout, 5, 3);
-    const std::vector<std::pair<const char*, bool>> cases = {
-        { kDirBlurParamModeDirectional, false },
-        { kDirBlurParamModeRadial, false },
-        { kDirBlurParamModeZoom, false },
-        { kDirBlurParamModeDirectional, true },
-        { kDirBlurParamModeRadial, true },
-        { kDirBlurParamModeZoom, true },
+    const struct {
+        const char* mode;
+        bool extras;
+        const char* filter;
+        bool clamp;
+        bool blackOutside;
+    } cases[] = {
+        { kDirBlurParamModeDirectional, false, "bilinear", false, true },
+        { kDirBlurParamModeRadial, false, "bilinear", false, true },
+        { kDirBlurParamModeZoom, false, "bilinear", false, true },
+        { kDirBlurParamModeDirectional, true, "bilinear", false, true },
+        { kDirBlurParamModeRadial, true, "bilinear", false, true },
+        { kDirBlurParamModeZoom, true, "bilinear", false, true },
+        { kDirBlurParamModeDirectional, false, "keys", true, true },
+        { kDirBlurParamModeRadial, true, "mitchell", false, false },
+        { kDirBlurParamModeZoom, false, "cubic", false, false },
+        { kDirBlurParamModeZoom, true, "impulse", false, false },
+        { kDirBlurParamModeDirectional, true, "notch", false, false },
+        { kDirBlurParamModeRadial, false, "simon", true, false },
     };
-    for (const std::pair<const char*, bool>& tc : cases) {
-        const char* mode = tc.first;
-        const bool extras = tc.second;
+    for (const auto& tc : cases) {
+        const char* mode = tc.mode;
+        const bool extras = tc.extras;
         NodePtr node = makeDirBlur(source, mode);
         ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(tc.filter)));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { tc.clamp ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { tc.blackOutside ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 12. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { 1. }));
@@ -873,12 +942,97 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
             for (int y = tile.y1; y < tile.y2; ++y) {
                 for (int x = tile.x1; x < tile.x2; ++x) {
                     for (int c = 0; c < 4; ++c) {
-                        ASSERT_EQ(at(whole, x, y, c), at(part, x, y, c)) << mode << (extras ? " with extras" : "") << " at (" << x << "," << y << ") channel " << c;
+                        ASSERT_EQ(at(whole, x, y, c), at(part, x, y, c)) << mode << (extras ? " with extras" : "") << ", " << tc.filter << (tc.clamp ? " clamped" : "") << (tc.blackOutside ? "" : " edge repeat") << " at (" << x << "," << y << ") channel " << c;
                     }
                 }
             }
         }
     }
+}
+
+// Without Black outside the copies read the source's edge pixels beyond it: a flat box stays flat
+// over the whole output, which is not grown by a pixel; with it the copies fade to black at the box.
+TEST_F(NativeDirBlurTest, BlackOutsideOffRepeatsTheEdges)
+{
+    resetProject();
+    const RectI box(16, 12, 48, 36);
+    NodePtr source = makeConstant(0.5, &box);
+    ASSERT_TRUE(bool(source));
+    for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
+        NodePtr node = makeDirBlur(source, mode);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("cubic")));
+        ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 10. }));
+        ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
+
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+        const RectI rodOff = pixelRoD(node);
+        ASSERT_FALSE(rodOff.isNull()) << mode;
+        RenderedPlane off;
+        ASSERT_TRUE(renderRGBA(node, rodOff, &off));
+        for (int y = rodOff.y1; y < rodOff.y2; ++y) {
+            for (int x = rodOff.x1; x < rodOff.x2; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    ASSERT_NEAR(0.5, at(off, x, y, c), 1e-5) << mode << " at (" << x << "," << y << ") channel " << c;
+                }
+                ASSERT_NEAR(1., at(off, x, y, 3), 1e-5) << mode << " at (" << x << "," << y << ")";
+            }
+        }
+
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+        const RectI rodOn = pixelRoD(node);
+        EXPECT_EQ(rodOff.x1 - 1, rodOn.x1) << mode;
+        EXPECT_EQ(rodOff.y1 - 1, rodOn.y1) << mode;
+        EXPECT_EQ(rodOff.x2 + 1, rodOn.x2) << mode;
+        EXPECT_EQ(rodOff.y2 + 1, rodOn.y2) << mode;
+        RenderedPlane on;
+        ASSERT_TRUE(renderRGBA(node, rodOff, &on));
+        float lowest = 1.f;
+        for (int y = rodOff.y1; y < rodOff.y2; ++y) {
+            for (int x = rodOff.x1; x < rodOff.x2; ++x) {
+                lowest = std::min(lowest, at(on, x, y, 0));
+            }
+        }
+        EXPECT_LT(lowest, 0.4f) << mode;
+    }
+}
+
+// Clamp keeps a Keys filter's overshoot at a hard edge within the neighbouring pixels' range.
+TEST_F(NativeDirBlurTest, ClampLimitsTheOvershoot)
+{
+    resetProject();
+    const RectI box(20, 10, 44, 38);
+    NodePtr source = makeConstant(1., &box);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 3. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 20. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 7. }));
+    const RectI rod = pixelRoD(node);
+    ASSERT_FALSE(rod.isNull());
+
+    const auto range = [&](float* lo, float* hi) {
+        RenderedPlane plane;
+        ASSERT_TRUE(renderRGBA(node, rod, &plane));
+        *lo = 1.f;
+        *hi = 0.f;
+        for (int y = rod.y1; y < rod.y2; ++y) {
+            for (int x = rod.x1; x < rod.x2; ++x) {
+                *lo = std::min(*lo, at(plane, x, y, 0));
+                *hi = std::max(*hi, at(plane, x, y, 0));
+            }
+        }
+    };
+    float lo = 0.f, hi = 0.f;
+    range(&lo, &hi);
+    EXPECT_GT(hi, 1.005f);
+    EXPECT_LT(lo, -0.005f);
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
+    range(&lo, &hi);
+    EXPECT_LE(hi, 1.f + 1e-6f);
+    EXPECT_GE(lo, -1e-6f);
 }
 
 // Legacy and task-graph renders agree bit for bit, in each mode, and with a mask and mix.
@@ -922,6 +1076,10 @@ TEST_F(NativeDirBlurTest, SameBothWays)
     setParitySourceOrigin(holdout, 3, 7);
     connectNodes(holdout, node, kDirBlurInputHoldout, true);
     expectSame("radial-transform-holdout");
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    expectSame("radial-keys-clamp-edge-repeat");
 
     NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     ASSERT_TRUE(bool(mask));
@@ -962,6 +1120,9 @@ TEST_F(NativeDirBlurTest, Golden)
     }));
     v.push_back(goldenVariant("directionalTarget", false, [](const GoldenGraph& g) {
         return setKnobValue(g.node, kDirBlurParamMode, std::string(kDirBlurParamModeDirectional)) && setKnobValues(g.node, kDirBlurParamLength, { 12. }) && setKnobValues(g.node, kDirBlurParamUseTarget, { 1. }) && setKnobValues(g.node, kDirBlurParamTranslate, { 4., 2. });
+    }));
+    v.push_back(goldenVariant("radialKeysClampEdgeRepeat", false, [](const GoldenGraph& g) {
+        return setKnobValue(g.node, kDirBlurParamMode, std::string(kDirBlurParamModeRadial)) && setKnobValues(g.node, kDirBlurParamLength, { 20. }) && setKnobValue(g.node, kResamplerParamFilterType, std::string("keys")) && setKnobValues(g.node, kResamplerParamFilterClamp, { 1. }) && setKnobValues(g.node, kResamplerParamFilterBlackOutside, { 0. });
     }));
     v.push_back(goldenVariant("maskmix", true, [](const GoldenGraph& g) {
         return setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

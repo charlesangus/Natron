@@ -6,7 +6,8 @@ import resamplecore;
 // Resampler::resampleRow() does for one affine matrix, each scaled by one minus the Holdout channel
 // resampled through the same matrix. The wrap's push block carries the Source, which is both the
 // image sampled and the image blended under the mask and mix; the Holdout view's pixels are in
-// holdoutBuf. The parameter block in wrapAux holds the filter, the flags, the sample count and the
+// holdoutBuf, read as black outside its own image. The parameter block in wrapAux holds the
+// filter, the flags (the clamp and black outside flags as the filter knobs), the sample count and the
 // Holdout view (offset, stride, x1, y1, x2, y2, components, component read), then per sample the
 // matrix's rows (h00 h01 h02) and (h10 h11 h12) as (hi, lo) float pairs, the four factors in
 // channel-bit order and the weight; DirBlur::renderOpGpu() writes it.
@@ -17,6 +18,8 @@ static const uint kDirBlurSourceValid = 1;
 static const uint kDirBlurMax = 2;
 static const uint kDirBlurHoldout = 4;
 static const uint kDirBlurHoldoutValid = 8;
+static const uint kDirBlurClamp = 16;
+static const uint kDirBlurBlackOutside = 32;
 static const uint kDirBlurHeaderWords = 12;
 static const uint kDirBlurSampleWords = 20;
 
@@ -37,7 +40,7 @@ ResampleSource dirblurSource(uint flags)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = (flags & kDirBlurSourceValid) != 0 && wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = true;
+    src.blackOutside = (flags & kDirBlurBlackOutside) != 0;
     return src;
 }
 
@@ -58,8 +61,8 @@ ResampleSource dirblurHoldout(uint flags)
 }
 
 // Resampler's samplePixel for an affine matrix: z is 1, the Jacobian is the matrix's linear part,
-// zeroed along both axes when the sample falls outside the source.
-float4 dirblurSample(ResampleSource src, uint filter, uint base, int2 p)
+// zeroed along each axis the sample falls outside the source on, and along both with blackOutside.
+float4 dirblurSample(ResampleSource src, uint filter, bool clampOn, uint base, int2 p)
 {
     const FF h00 = dirblurFF(base);
     const FF h01 = dirblurFF(base + 2);
@@ -75,19 +78,23 @@ float4 dirblurSample(ResampleSource src, uint filter, uint base, int2 p)
     float4 r;
     if (filter == kFilterImpulse)
     {
-        interpolate(src, filter, false, fx, fy, r);
+        interpolate(src, filter, clampOn, fx, fy, r);
         return r;
     }
     // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
-    const bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
-    const bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    const bool inside = xinside && yinside;
+    bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
+    bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
+    if (src.blackOutside && !(xinside && yinside))
+    {
+        xinside = false;
+        yinside = false;
+    }
     const FF zero = ffMake(0.0, 0.0);
-    const FF Jxx = inside ? h00 : zero;
-    const FF Jxy = inside ? h01 : zero;
-    const FF Jyx = inside ? h10 : zero;
-    const FF Jyy = inside ? h11 : zero;
-    return interpolateSuper(src, filter, false, fx, fy, Jxx, Jxy, Jyx, Jyy, jacobianStates(Jxx, Jxy, Jyx, Jyy), 0);
+    const FF Jxx = xinside ? h00 : zero;
+    const FF Jxy = xinside ? h01 : zero;
+    const FF Jyx = yinside ? h10 : zero;
+    const FF Jyy = yinside ? h11 : zero;
+    return interpolateSuper(src, filter, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy, jacobianStates(Jxx, Jxy, Jyx, Jyy), 0);
 }
 
 struct DirBlurOp : IPixelOp
@@ -111,6 +118,7 @@ struct DirBlurOp : IPixelOp
             return sum;
         const bool takeMax = (flags & kDirBlurMax) != 0;
         const bool holdoutOn = (flags & kDirBlurHoldout) != 0;
+        const bool clampOn = (flags & kDirBlurClamp) != 0;
         const ResampleSource holdout = dirblurHoldout(flags);
         const uint component = min(wrapAux[10], 3u);
         float weightSum = 0.0;
@@ -122,12 +130,12 @@ struct DirBlurOp : IPixelOp
             {
                 float h = 0.0;
                 if (holdout.valid)
-                    h = dirblurSample(holdout, filter, base, xy)[component];
+                    h = dirblurSample(holdout, filter, clampOn, base, xy)[component];
                 keep = 1.0 - min(1.0, max(0.0, h));
             }
             if (takeMax && keep <= 0.0)
                 continue;
-            float4 s = dirblurSample(src, filter, base, xy);
+            float4 s = dirblurSample(src, filter, clampOn, base, xy);
             // The sample in channel-bit order, a one-channel pixel being alpha.
             if (wrap.nComps == 1)
                 s = float4(0.0, 0.0, 0.0, s.x);

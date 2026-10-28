@@ -48,6 +48,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/DirBlur.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -207,22 +208,52 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
     EXPECT_GE(read.y2, rect.y2);
 
     for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
-        ASSERT_TRUE(setKnobValue(node, kDirBlurParamMode, std::string(mode)));
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const DirBlurParams params = effect->getParams(kTime, ViewIdx(0));
-            const double sx = scale.toOfxPointD().x;
-            const double sy = scale.toOfxPointD().y;
-            const RectD window(rect.x1 / sx, rect.y1 / sy, rect.x2 / sx, rect.y2 / sy);
-            RectD srcRoD;
-            EffectInstancePtr sourceEffect = source->getEffectInstance();
-            ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition(sourceEffect->getRenderHash(), kTime, scale, ViewIdx(0), &srcRoD));
-            const RectD region = DirBlur::sourceRegion(DirBlur::canonicalSamples(params, effect->zoomReference(kTime, ViewIdx(0))), window, scale, 1., srcRoD);
-            RectI expected = rect;
-            if (!region.isNull()) {
-                expected.merge(region.toPixelEnclosing(scale, 1.));
+        for (const bool blackOutside : { true, false }) {
+            ASSERT_TRUE(setKnobValue(node, kDirBlurParamMode, std::string(mode)));
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+                const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+                const DirBlurParams params = effect->getParams(kTime, ViewIdx(0));
+                const double sx = scale.toOfxPointD().x;
+                const double sy = scale.toOfxPointD().y;
+                const RectD window(rect.x1 / sx, rect.y1 / sy, rect.x2 / sx, rect.y2 / sy);
+                RectD srcRoD;
+                EffectInstancePtr sourceEffect = source->getEffectInstance();
+                ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition(sourceEffect->getRenderHash(), kTime, scale, ViewIdx(0), &srcRoD));
+                const RectD region = DirBlur::sourceRegion(DirBlur::canonicalSamples(params, effect->zoomReference(kTime, ViewIdx(0))), window, scale, 1., srcRoD, params.blackOutside);
+                RectI expected = rect;
+                if (!region.isNull()) {
+                    expected.merge(region.toPixelEnclosing(scale, 1.));
+                }
+                EXPECT_EQ(expected, effect->getGpuInputRoI(kDirBlurInputSource, kTime, ViewIdx(0), rect, scale)) << mode << " mipmap " << mipmapLevel << (blackOutside ? "" : " edge repeat");
             }
-            EXPECT_EQ(expected, effect->getGpuInputRoI(kDirBlurInputSource, kTime, ViewIdx(0), rect, scale)) << mode << " mipmap " << mipmapLevel;
+        }
+    }
+}
+
+// Every filter of the Transform node's set, with Clamp where the filter honours it, with and
+// without Black outside, in every mode, against the CPU render.
+TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderForEveryFilter)
+{
+    NodePtr source = makeParitySource(3, 5);
+    ASSERT_TRUE(bool(source));
+    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    for (std::size_t f = 0; f < filters.size(); ++f) {
+        const bool clamp = Resampler::filterHonoursClamp((Resampler::FilterEnum)f);
+        for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
+            for (const bool blackOutside : { true, false }) {
+                NodePtr node = makeDirBlur(source, mode);
+                ASSERT_TRUE(bool(node));
+                ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, filters[f].id));
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
+                ASSERT_TRUE(setKnobValues(node, kDirBlurParamScale, { 1.15, 1.15 }));
+                const std::string name = std::string(mode) + " " + filters[f].id + (clamp ? " clamped" : "") + (blackOutside ? "" : " edge repeat");
+                ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, name));
+            }
         }
     }
 }

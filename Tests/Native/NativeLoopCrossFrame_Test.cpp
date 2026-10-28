@@ -35,16 +35,22 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QtCore/QFileInfo>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QThreadPool>
 
 #include "BaseTest.h"
+#include "ContextTestEffects.h"
+#include "CountingTestEffect.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
@@ -54,6 +60,7 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopFrameBake.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -253,6 +260,88 @@ protected:
         std::shared_ptr<LoopEnd> effect = end ? std::dynamic_pointer_cast<LoopEnd>(end->getEffectInstance()) : std::shared_ptr<LoopEnd>();
 
         return effect ? effect->crossFrameCache() : 0;
+    }
+
+    static std::shared_ptr<LoopEnd> loopEndOf(const NodePtr& end)
+    {
+        return end ? std::dynamic_pointer_cast<LoopEnd>(end->getEffectInstance()) : std::shared_ptr<LoopEnd>();
+    }
+
+    static bool setCacheFile(const NodePtr& end,
+                             const QString& pattern)
+    {
+        KnobOutputFilePtr cacheFile = end ? std::dynamic_pointer_cast<KnobOutputFile>(end->getKnobByName(kLoopEndParamCacheFile)) : KnobOutputFilePtr();
+
+        if (!cacheFile) {
+            return false;
+        }
+        cacheFile->setValue(pattern.toStdString());
+
+        return true;
+    }
+
+    // The red value of the baked image at x,y, -1 outside it.
+    static float bakedRedAt(const ImagePtr& image,
+                            int x,
+                            int y)
+    {
+        if (!image || !image->getBounds().contains(x, y)) {
+            ADD_FAILURE() << "pixel " << x << "," << y << " is outside the baked frame";
+
+            return -1.f;
+        }
+        Image::ReadAccess access = image->getReadRights();
+        const float* pixel = (const float*)access.pixelAt(x, y);
+
+        return pixel ? pixel[0] : -1.f;
+    }
+
+    static void persistentMessageOf(const NodePtr& node,
+                                    QString* message,
+                                    int* type)
+    {
+        *type = 0;
+        node->getPersistentMessage(message, type, false);
+    }
+
+    // A dot near the right edge of the format, pushed past it by frames 2 to 4 and brought back by
+    // 5 to 7: a Feedback loop of one Transform, Cross Frame from frame 1.
+    struct Drift {
+        NodePtr end;
+        int right = 0;
+    };
+
+    Drift createDrift()
+    {
+        Drift d;
+        Format format;
+        getApp()->getProject()->getProjectDefaultFormat(&format);
+        d.right = format.x2;
+        const double shift = 40.;
+
+        NodePtr constant = createConstant(1.);
+        NodePtr dot = createDot(constant, 10., std::map<int, double>({ { 1, (double)(d.right - 8) } }));
+        NodePtr begin = createLoopBegin("drift", dot);
+        NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+        EXPECT_TRUE(constant && dot && begin && transform);
+        if (!transform) {
+            return d;
+        }
+        EXPECT_TRUE(setKnobValue(transform, kResamplerParamFilterType, std::string("impulse")));
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(transform->getKnobByName(kTransformNodeParamTranslate));
+        EXPECT_TRUE(bool(translate));
+        if (!translate) {
+            return d;
+        }
+        for (int frame = 1; frame <= 8; ++frame) {
+            const double x = (frame == 1) || (frame == 8) ? 0. : ((frame <= 4) ? shift : -shift);
+            translate->setValueAtTime((double)frame, x, ViewSpec::all(), 0);
+            translate->setValueAtTime((double)frame, 0., ViewSpec::all(), 1);
+        }
+        EXPECT_TRUE(transform->connectInput(begin, 0));
+        d.end = createLoopEnd(kLoopEndParamModeFeedback, 1, true, 1, transform);
+
+        return d;
     }
 
     // Each frame, the trail of the frame before at 0.9 under a dot 10 px further right.
@@ -458,29 +547,10 @@ TEST_F(NativeLoopCrossFrameTest, BeforeTheStartFrameTheInputPassesThrough)
 // The frames keep what leaves the format: a dot pushed past its right edge comes back.
 TEST_F(NativeLoopCrossFrameTest, ATrailLeavingTheFormatComesBack)
 {
-    Format format;
-    getApp()->getProject()->getProjectDefaultFormat(&format);
-    const int right = format.x2;
-    const double shift = 40.;
-
-    NodePtr constant = createConstant(1.);
-    NodePtr dot = createDot(constant, 10., std::map<int, double>({ { 1, (double)(right - 8) } }));
-    ASSERT_TRUE(constant && dot);
-    NodePtr begin = createLoopBegin("drift", dot);
-    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
-    ASSERT_TRUE(begin && transform);
-    ASSERT_TRUE(setKnobValue(transform, kResamplerParamFilterType, std::string("impulse")));
-    KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(transform->getKnobByName(kTransformNodeParamTranslate));
-    ASSERT_TRUE(bool(translate));
-    // Frames 2 to 4 push the dot right, 5 to 7 bring it back.
-    for (int frame = 1; frame <= 8; ++frame) {
-        const double x = (frame == 1) || (frame == 8) ? 0. : ((frame <= 4) ? shift : -shift);
-        translate->setValueAtTime((double)frame, x, ViewSpec::all(), 0);
-        translate->setValueAtTime((double)frame, 0., ViewSpec::all(), 1);
-    }
-    ASSERT_TRUE(transform->connectInput(begin, 0));
-    NodePtr end = createLoopEnd(kLoopEndParamModeFeedback, 1, true, 1, transform);
-    ASSERT_TRUE(bool(end));
+    Drift drift = createDrift();
+    ASSERT_TRUE(bool(drift.end));
+    const NodePtr& end = drift.end;
+    const int right = drift.right;
 
     const RectI inside(right - 16, 8, right, 16);
     const RectI outside(right + 100, 8, right + 132, 16);
@@ -497,5 +567,164 @@ TEST_F(NativeLoopCrossFrameTest, ATrailLeavingTheFormatComesBack)
         ASSERT_TRUE(renderAt(end, 7., inside, mode, true, &plane));
         EXPECT_EQ(1.f, redAt(plane, right - 6, 11)) << "frame 7, back in the format";
         EXPECT_EQ(0.f, redAt(plane, right - 12, 11)) << "frame 7, left of the dot";
+    }
+}
+
+// Bake writes each frame from the start frame to Bake End, stamped with the loop's hash, and
+// Clear Cache forgets the frames in RAM and leaves the files.
+TEST_F(NativeLoopCrossFrameTest, BakingWritesEachFrameWithTheLoopHash)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Trail t = createTrail(1);
+    ASSERT_TRUE(bool(t.end));
+    std::shared_ptr<LoopEnd> end = loopEndOf(t.end);
+    ASSERT_TRUE(bool(end));
+    ASSERT_TRUE(setCacheFile(t.end, dir.path() + QString::fromUtf8("/trail.####.exr")));
+    ASSERT_TRUE(setKnobValues(t.end, kLoopEndParamBakeEnd, { 6. }));
+
+    std::string error;
+    ASSERT_TRUE(end->bakeFrames(false, &error)) << error;
+    const U64 hash = end->simulationHash();
+    for (int frame = 1; frame <= 6; ++frame) {
+        const std::string path = end->bakedFramePath(frame);
+        ASSERT_TRUE(QFileInfo(QString::fromUtf8(path.c_str())).isFile()) << path;
+        LoopFrameBake::FrameInfo info;
+        ASSERT_TRUE(LoopFrameBake::readFrameInfo(path, &info, &error)) << error;
+        EXPECT_TRUE(info.hasHash) << "frame " << frame;
+        EXPECT_EQ(hash, info.hash) << "frame " << frame;
+        EXPECT_EQ(info.regionOfDefinition.toPixelEnclosing(0, 1.), info.bounds) << "frame " << frame;
+    }
+    EXPECT_FALSE(QFileInfo(QString::fromUtf8(end->bakedFramePath(7).c_str())).exists());
+
+    LoopFrameBake::FrameInfo info;
+    ImagePtr baked = LoopFrameBake::readFrame(end->bakedFramePath(6), ImageLayerDesc::getRGBAComponents(), &info, &error);
+    ASSERT_TRUE(bool(baked)) << error;
+    EXPECT_EQ(1.f, bakedRedAt(baked, 61, 11));
+    EXPECT_NEAR(0.9, bakedRedAt(baked, 51, 11), 1e-6);
+    EXPECT_NEAR(std::pow(0.9, 5), bakedRedAt(baked, 11, 11), 1e-5);
+
+    LoopFrameCache* cache = frameCacheOf(t.end);
+    ASSERT_TRUE(cache != 0);
+    EXPECT_LT(0u, cache->bytes());
+    KnobButtonPtr clearCache = std::dynamic_pointer_cast<KnobButton>(t.end->getKnobByName(kLoopEndParamClearCache));
+    ASSERT_TRUE(bool(clearCache));
+    clearCache->trigger();
+    EXPECT_EQ(0u, cache->bytes());
+    EXPECT_TRUE(QFileInfo(QString::fromUtf8(end->bakedFramePath(6).c_str())).isFile());
+}
+
+// A baked frame is stored whole: its data window reaches past the format where the frame does.
+TEST_F(NativeLoopCrossFrameTest, ABakedFrameKeepsWhatLeavesTheFormat)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Drift drift = createDrift();
+    ASSERT_TRUE(bool(drift.end));
+    std::shared_ptr<LoopEnd> end = loopEndOf(drift.end);
+    ASSERT_TRUE(bool(end));
+    ASSERT_TRUE(setCacheFile(drift.end, dir.path() + QString::fromUtf8("/drift.####.exr")));
+    ASSERT_TRUE(setKnobValues(drift.end, kLoopEndParamBakeEnd, { 4. }));
+
+    std::string error;
+    ASSERT_TRUE(end->bakeFrames(false, &error)) << error;
+    LoopFrameBake::FrameInfo info;
+    ImagePtr baked = LoopFrameBake::readFrame(end->bakedFramePath(4), ImageLayerDesc::getRGBAComponents(), &info, &error);
+    ASSERT_TRUE(bool(baked)) << error;
+    EXPECT_LE(drift.right + 116, info.bounds.x2);
+    EXPECT_EQ(1.f, bakedRedAt(baked, drift.right + 114, 11)) << "frame 4, past the format";
+    EXPECT_EQ(0.f, bakedRedAt(baked, drift.right - 6, 11)) << "frame 4, inside the format";
+}
+
+// With Load From Cache, a baked simulation renders none of its body up to the last frame baked,
+// and continues from it past the bake; after an upstream edit the frames still load, with a warning.
+TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    NodePtr constant = createConstant(0.25);
+    NodePtr begin = createLoopBegin("sim", constant);
+    NodePtr counting = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(constant && begin && counting);
+    ASSERT_TRUE(setKnobValues(counting, "value", { 0.5 }));
+    ASSERT_TRUE(counting->connectInput(begin, 0));
+    // Four substeps a frame, each adding 0.5.
+    NodePtr endNode = createLoopEnd(kLoopEndParamModeFeedback, 4, true, 1, counting);
+    ASSERT_TRUE(bool(endNode));
+    std::shared_ptr<LoopEnd> end = loopEndOf(endNode);
+    ASSERT_TRUE(bool(end));
+    const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
+
+    RenderedPlane computed;
+    ASSERT_TRUE(renderAt(endNode, 12., window, eRenderSchedulerModeLegacy, true, &computed));
+    EXPECT_EQ(24.25f, redAt(computed, 0, 0));
+
+    ASSERT_TRUE(setCacheFile(endNode, dir.path() + QString::fromUtf8("/sim.####.exr")));
+    ASSERT_TRUE(setKnobValues(endNode, kLoopEndParamBakeEnd, { 12. }));
+    std::string error;
+    ASSERT_TRUE(end->bakeFrames(false, &error)) << error;
+    LoopFrameCache* cache = frameCacheOf(endNode);
+    ASSERT_TRUE(cache != 0);
+    cache->clear();
+    ASSERT_TRUE(setKnobValues(endNode, kLoopEndParamLoadFromCache, { 1. }));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        cache->clear();
+        CountingTestRegistry::reset();
+        RenderedPlane loaded;
+        ASSERT_TRUE(renderAt(endNode, 12., window, mode, true, &loaded));
+        EXPECT_EQ(0, CountingTestRegistry::renders(counting)) << "mode " << (int)mode;
+        expectSamePixels(computed, loaded, 0.f, "frame 12 loaded");
+    }
+    QString message;
+    int type = 0;
+    persistentMessageOf(endNode, &message, &type);
+    EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+
+    // Past the bake: two frames of four substeps from the last frame baked.
+    CountingTestRegistry::reset();
+    RenderedPlane past;
+    ASSERT_TRUE(renderAt(endNode, 14., window, eRenderSchedulerModeLegacy, true, &past));
+    EXPECT_EQ(28.25f, redAt(past, 0, 0));
+    EXPECT_EQ(8, CountingTestRegistry::renders(counting));
+
+    ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { 0.5 }));
+    CountingTestRegistry::reset();
+    RenderedPlane edited;
+    ASSERT_TRUE(renderAt(endNode, 12., window, eRenderSchedulerModeLegacy, true, &edited));
+    EXPECT_EQ(0, CountingTestRegistry::renders(counting));
+    expectSamePixels(computed, edited, 0.f, "frame 12 loaded after an upstream edit");
+    persistentMessageOf(endNode, &message, &type);
+    EXPECT_FALSE(message.isEmpty());
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+}
+
+// A body node asking its LoopBegin for another frame than the one before fails the render at
+// once, with an error on the LoopEnd, instead of waiting for a frame that would never come.
+TEST_F(NativeLoopCrossFrameTest, ABodyAskingAnotherFrameOfItsLoopFailsAtOnce)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin("shifted", constant);
+    NodePtr shift = createNode(QString::fromUtf8(kTestPluginIDContextLoopFrameShift));
+    ASSERT_TRUE(constant && begin && shift);
+    ASSERT_TRUE(shift->connectInput(begin, 0));
+    NodePtr end = createLoopEnd(kLoopEndParamModeAccumulate, 1, true, 1, shift);
+    ASSERT_TRUE(bool(end));
+    const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
+
+    ThreadCountGuard threads(4);
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        LoopFrameCache* cache = frameCacheOf(end);
+        ASSERT_TRUE(cache != 0);
+        cache->clear();
+        end->clearPersistentMessage(false);
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        EXPECT_FALSE(renderNodePlanesInMode(end, 3., ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, true, &planes, &error)) << "mode " << (int)mode;
+        QString message;
+        int type = 0;
+        persistentMessageOf(end, &message, &type);
+        EXPECT_EQ((int)eMessageTypeError, type) << "mode " << (int)mode;
+        EXPECT_TRUE(message.contains(QString::fromUtf8("loops.shifted.frame"))) << message.toStdString();
     }
 }

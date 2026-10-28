@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -48,6 +49,7 @@
 #include <pxr/base/gf/vec2i.h>
 #include <pxr/base/gf/vec4d.h>
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/errorMark.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/garch/glApi.h>
@@ -72,6 +74,7 @@
 
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -84,6 +87,9 @@ namespace {
 // Storm renders a frame in passes until it converges; a rasterizer needs one.
 const int kMaxRenderPasses = 8;
 
+// How long a render of another delegate waits between its passes, polling for convergence.
+const std::chrono::milliseconds kConvergencePoll(10);
+
 // The GPU memory the engines may hold together by default.
 const std::size_t kDefaultMemoryBudget = (std::size_t)2 << 30;
 
@@ -94,6 +100,9 @@ std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
 
 struct EngineEntry {
+    // The render delegate the engine was made with, and the name its errors give it.
+    std::string renderer;
+    std::string rendererName;
     // The stage the engine shows, for the entry's whole life; each render syncs it to the
     // request's scene. Declared first so that the engine, which reads it, goes first.
     std::unique_ptr<SceneStage> stage;
@@ -227,17 +236,30 @@ setHeadlight(UsdImagingGLEngine* engine)
 }
 
 /**
- * The thread every render runs on, and what only it touches: the GL context, the engines and
- * the framebuffer Storm renders under. Never destroyed: at exit its thread is still waiting for
- * work, and the context and engines go with the process.
+ * A thread renders run on, and what only it touches: Storm's has the GL context, its engines and
+ * the framebuffer Storm renders under; the other delegates' has their engines and no GL. Never
+ * destroyed: at exit the thread is still waiting for work, and the context and engines go with
+ * the process.
  **/
 class RenderThread {
 public:
-    static RenderThread& instance()
+    static RenderThread& storm()
     {
-        static RenderThread* thread = new RenderThread;
+        static RenderThread* thread = new RenderThread(true);
 
         return *thread;
+    }
+
+    static RenderThread& cpu()
+    {
+        static RenderThread* thread = new RenderThread(false);
+
+        return *thread;
+    }
+
+    bool usesGl() const
+    {
+        return _gl;
     }
 
     // Queues job; starts the thread if it has not started and start is set. False if the
@@ -271,7 +293,8 @@ public:
      **/
     template <typename Fn>
     bool runAndWait(Fn job,
-                    std::string* error)
+                    std::string* error,
+                    const std::function<void()>& whileWaiting = std::function<void()>())
     {
         std::promise<std::string> done;
         std::future<std::string> finished = done.get_future();
@@ -287,6 +310,11 @@ public:
             done.set_value(failure);
         },
              true);
+        if (whileWaiting) {
+            while (finished.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
+                whileWaiting();
+            }
+        }
         const std::string failure = finished.get();
         if (failure.empty()) {
             return true;
@@ -357,7 +385,7 @@ public:
         if (found == _engines.end()) {
             return;
         }
-        if (!_context || !_context->makeCurrent()) {
+        if (_gl && (!_context || !_context->makeCurrent())) {
             // Its GL objects cannot be freed without the context; leak them with the engine.
             (void)found->second.engine.release();
         }
@@ -398,9 +426,11 @@ public:
     }
 
     // Renders request with its owner's engine, or reuses the engine's last render of the same
-    // request; null with *error set on failure.
-    EngineEntry* renderStorm(const HydraRender::Request& request,
-                             std::string* error);
+    // request; null with *error set on failure. cancel, when set, stops a render of a delegate
+    // other than Storm between its passes.
+    EngineEntry* renderEngine(const HydraRender::Request& request,
+                              const std::atomic<bool>* cancel,
+                              std::string* error);
 
     // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
     // when the context cannot pack.
@@ -440,12 +470,35 @@ private:
                   HydraRender::Result* result,
                   std::string* error);
 
+    // window of entry's render cut from cpuFrame()'s planes, as pack() would give it.
+    bool cpuWindow(EngineEntry& entry,
+                   const HydraRender::PlaneWindow& window,
+                   std::vector<float>* pixels,
+                   std::string* error);
+
     // The GL name of Storm's resolved texture of AOV name, or 0 with *error set.
     GLuint aovTexture(EngineEntry& entry,
                       const TfToken& name,
                       std::string* error);
 
-    RenderThread() = default;
+    explicit RenderThread(bool gl)
+        : _gl(gl)
+    {
+    }
+
+    // Lets a barrier write that is waiting for the running job through, then carries on: called by
+    // a long render between its passes, when it is not reading the scene's layers.
+    void yieldToBarrier()
+    {
+        std::unique_lock<std::mutex> l(_mutex);
+        if (!_paused) {
+            return;
+        }
+        _busy = false;
+        _idle.notify_all();
+        _wake.wait(l, [this]() { return !_paused; });
+        _busy = true;
+    }
 
     // The barrier's quiesce: waits for the running job and holds the queue until resume().
     void pause()
@@ -514,6 +567,8 @@ private:
         glViewport(0, 0, width, height);
     }
 
+    // Storm's thread, with the GL context; the other delegates' has none.
+    const bool _gl;
     std::once_flag _registered;
     std::mutex _mutex;
     std::condition_variable _wake;
@@ -554,28 +609,27 @@ private:
 // The AOV buffer of name, resolved and mapped, or null with *error set. Unmaps on destruction.
 class MappedAov {
 public:
-    MappedAov(UsdImagingGLEngine* engine,
+    MappedAov(const EngineEntry& entry,
               const TfToken& name,
-              int width,
-              int height,
               std::string* error)
     {
-        _buffer = engine->GetAovRenderBuffer(name);
+        const std::string& renderer = entry.rendererName;
+        _buffer = entry.engine->GetAovRenderBuffer(name);
         if (!_buffer) {
-            *error = "Storm rendered no " + name.GetString() + " AOV.";
+            *error = renderer + " rendered no " + name.GetString() + " AOV.";
 
             return;
         }
         _buffer->Resolve();
-        if (((int)_buffer->GetWidth() != width) || ((int)_buffer->GetHeight() != height)) {
-            *error = "Storm's " + name.GetString() + " AOV is not the size asked for.";
+        if (((int)_buffer->GetWidth() != entry.width) || ((int)_buffer->GetHeight() != entry.height)) {
+            *error = renderer + "'s " + name.GetString() + " AOV is not the size asked for.";
             _buffer = nullptr;
 
             return;
         }
         _data = static_cast<const unsigned char*>(_buffer->Map());
         if (!_data) {
-            *error = "Storm's " + name.GetString() + " AOV could not be read back.";
+            *error = renderer + "'s " + name.GetString() + " AOV could not be read back.";
             _buffer = nullptr;
 
             return;
@@ -655,18 +709,29 @@ readInt(const unsigned char* at)
 }
 
 EngineEntry*
-RenderThread::renderStorm(const HydraRender::Request& request,
-                          std::string* error)
+RenderThread::renderEngine(const HydraRender::Request& request,
+                           const std::atomic<bool>* cancel,
+                           std::string* error)
 {
-    if (!ensureContext(error)) {
+    if (_gl && !ensureContext(error)) {
         return nullptr;
     }
     const int width = request.width;
     const int height = request.height;
     const TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
+    const std::string renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
 
     EngineEntry& entry = _engines[request.owner];
     _engineCount = _engines.size();
+    if (entry.engine && (entry.renderer != renderer)) {
+        entry.engine.reset();
+        entry.rendered = false;
+    }
+    if (entry.renderer != renderer) {
+        RenderDelegates::Delegate delegate;
+        entry.renderer = renderer;
+        entry.rendererName = RenderDelegates::find(renderer, &delegate) ? delegate.displayName : renderer;
+    }
     if (!entry.stage) {
         entry.stage.reset(new SceneStage);
         if (!entry.stage->isValid()) {
@@ -689,13 +754,40 @@ RenderThread::renderStorm(const HydraRender::Request& request,
         entry.engine.reset();
         entry.rendered = false;
         UsdImagingGLEngine::Parameters parameters;
-        parameters.driver.name = HgiTokens->renderDriver;
-        parameters.driver.driver = VtValue(_hgi.get());
-        entry.engine.reset(new UsdImagingGLEngine(parameters));
-        ++gEngineBuilds;
+        if (_gl) {
+            parameters.driver.name = HgiTokens->renderDriver;
+            parameters.driver.driver = VtValue(_hgi.get());
+        } else {
+            // No Hgi is made without the GPU: the delegate's AOVs are host buffers, and nothing
+            // touches GL.
+            parameters.rendererPluginId = TfToken(renderer);
+            parameters.gpuEnabled = false;
+        }
+        std::string startError;
+        {
+            TfErrorMark mark;
+            entry.engine.reset(new UsdImagingGLEngine(parameters));
+            ++gEngineBuilds;
+            // The engine reports a delegate it could not start as coding errors and renders nothing.
+            if (!_gl && (entry.engine->GetCurrentRendererId() != TfToken(renderer))) {
+                for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+                    startError += (startError.empty() ? ": " : "; ") + it->GetCommentary();
+                }
+                mark.Clear();
+                startError = "The renderer " + entry.rendererName + " could not be started" + startError + ".";
+            }
+        }
+        if (!startError.empty()) {
+            *error = startError;
+            _engines.erase(request.owner);
+            _engineCount = _engines.size();
+
+            return nullptr;
+        }
         entry.engine->SetEnablePresentation(false);
         if (!entry.engine->SetRendererAovs(aovs)) {
-            *error = "Storm on " + contextDescription() + " offers no color, depth and primId AOVs.";
+            *error = _gl ? "Storm on " + contextDescription() + " offers no color, depth and primId AOVs."
+                         : entry.rendererName + " offers no color, depth, primId and instanceId AOVs.";
             _engines.erase(request.owner);
             _engineCount = _engines.size();
 
@@ -719,7 +811,9 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     entry.primId.clear();
     entry.primPaths.clear();
 
-    bindFramebuffer(width, height);
+    if (_gl) {
+        bindFramebuffer(width, height);
+    }
     engine->SetRenderBufferSize(GfVec2i(width, height));
     engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
     engine->SetCameraState(view, projection);
@@ -734,13 +828,35 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     // The colour AOV is read as Storm shades it, in the scene's linear space.
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
-    for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
-        engine->Render(stage->GetPseudoRoot(), params);
-        if (engine->IsConverged()) {
-            break;
+    if (_gl) {
+        for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
+            engine->Render(stage->GetPseudoRoot(), params);
+            if (engine->IsConverged()) {
+                break;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    } else {
+        // A path tracer renders on threads of its own and converges when it is done; each Render()
+        // syncs the stage's changes into it.
+        for (;;) {
+            engine->Render(stage->GetPseudoRoot(), params);
+            if (engine->IsConverged()) {
+                break;
+            }
+            if (cancel && cancel->load()) {
+                *error = "The " + entry.rendererName + " render was cancelled.";
+                // Its threads would go on rendering the cancelled frame; the next render makes
+                // the engine again.
+                entry.engine.reset();
+                entry.rendered = false;
+
+                return nullptr;
+            }
+            yieldToBarrier();
+            std::this_thread::sleep_for(kConvergencePoll);
         }
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     entry.rendered = true;
     entry.serial = ++_renderSerial;
@@ -751,6 +867,12 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     entry.width = width;
     entry.height = height;
 
+    if (!_gl) {
+        // Host memory, which the GPU budget does not count.
+        entry.bytes = 0;
+
+        return &entry;
+    }
     // Storm's own count of its buffers and textures, or failing that the AOVs alone (four of four
     // bytes or less a pixel).
     std::size_t bytes = (std::size_t)width * (std::size_t)height * 16;
@@ -764,21 +886,20 @@ RenderThread::renderStorm(const HydraRender::Request& request,
     enforceBudget(owner);
 
     return &_engines[owner];
-} // RenderThread::renderStorm
+} // RenderThread::renderEngine
 
 bool
 RenderThread::cpuFrame(EngineEntry& entry,
                        HydraRender::Result* result,
                        std::string* error)
 {
-    UsdImagingGLEngine* engine = entry.engine.get();
     const int width = entry.width;
     const int height = entry.height;
     const GfMatrix4d& projection = entry.projection;
     const std::size_t pixels = (std::size_t)width * (std::size_t)height;
 
     {
-        MappedAov color(engine, HdAovTokens->color, width, height, error);
+        MappedAov color(entry, HdAovTokens->color, error);
         if (!color.valid()) {
             return false;
         }
@@ -800,7 +921,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
     {
         // Storm's depth is the window depth in [0, 1]: back to the camera space, the inverse
         // projection gives the point's distance along the view axis.
-        MappedAov depth(engine, HdAovTokens->depth, width, height, error);
+        MappedAov depth(entry, HdAovTokens->depth, error);
         if (!depth.valid()) {
             return false;
         }
@@ -834,6 +955,46 @@ RenderThread::cpuFrame(EngineEntry& entry,
 } // RenderThread::cpuFrame
 
 bool
+RenderThread::cpuWindow(EngineEntry& entry,
+                        const HydraRender::PlaneWindow& window,
+                        std::vector<float>* pixels,
+                        std::string* error)
+{
+    HydraRender::Result frame;
+    if (!cpuFrame(entry, &frame, error)) {
+        return false;
+    }
+    const int width = entry.width;
+    const int height = entry.height;
+    const int nComps = window.nComps;
+    const int windowWidth = window.x2 - window.x1;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const bool inside = (x >= 0) && (y >= 0) && (x < width) && (y < height);
+            const std::size_t i = inside ? (std::size_t)y * (std::size_t)width + (std::size_t)x : 0;
+            float* out = pixels->data() + ((std::size_t)(y - window.y1) * (std::size_t)windowWidth + (std::size_t)(x - window.x1)) * (std::size_t)nComps;
+            for (int c = 0; c < nComps; ++c) {
+                switch (window.plane) {
+                case HydraRender::ePlaneColor: {
+                    const int channel = (nComps == 1) ? 3 : c;
+                    out[c] = (inside && (channel < 4)) ? frame.rgba[i * 4 + (std::size_t)channel] : 0.f;
+                    break;
+                }
+                case HydraRender::ePlaneDepth:
+                    out[c] = inside ? frame.depth[i] : std::numeric_limits<float>::infinity();
+                    break;
+                case HydraRender::ePlanePrimId:
+                    out[c] = inside ? frame.primId[i] : 0.f;
+                    break;
+                }
+            }
+        }
+    }
+
+    return true;
+} // RenderThread::cpuWindow
+
+bool
 RenderThread::decodeIds(EngineEntry& entry,
                         std::string* error)
 {
@@ -845,11 +1006,11 @@ RenderThread::decodeIds(EngineEntry& entry,
     const int height = entry.height;
     const std::size_t pixels = (std::size_t)width * (std::size_t)height;
     {
-        MappedAov primIds(engine, HdAovTokens->primId, width, height, error);
+        MappedAov primIds(entry, HdAovTokens->primId, error);
         if (!primIds.valid()) {
             return false;
         }
-        MappedAov instanceIds(engine, HdAovTokens->instanceId, width, height, error);
+        MappedAov instanceIds(entry, HdAovTokens->instanceId, error);
         if (!instanceIds.valid()) {
             return false;
         }
@@ -891,7 +1052,7 @@ RenderThread::frame(EngineEntry& entry,
                     std::string* error)
 {
     std::string packError;
-    if (!packAvailable(&packError)) {
+    if (!_gl || !packAvailable(&packError)) {
         return cpuFrame(entry, result, error);
     }
     HydraRender::PlaneWindow window;
@@ -1095,6 +1256,9 @@ RenderThread::readWindow(EngineEntry& entry,
     pixels->assign(count, 0.f);
     if (count == 0) {
         return true;
+    }
+    if (!_gl) {
+        return cpuWindow(entry, window, pixels, error);
     }
     if (!packAvailable(error)) {
         return false;
@@ -1300,6 +1464,47 @@ hashToFloat(std::uint32_t hash)
     return value;
 }
 
+namespace {
+    /**
+     * The thread of request's delegate, after dropping the owner's engine on the other one; null with
+     * *error naming the delegate when it is not installed or cannot render here, before any engine or
+     * GL work.
+     **/
+    RenderThread*
+    routeRequest(const Request& request,
+                 std::string* error)
+    {
+        const std::string renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
+        const std::string unavailable = RenderDelegates::unavailableMessage(renderer);
+
+        if (!unavailable.empty()) {
+            *error = unavailable;
+
+            return nullptr;
+        }
+        const bool storm = RenderDelegates::isStorm(renderer);
+        RenderThread& other = storm ? RenderThread::cpu() : RenderThread::storm();
+        const void* owner = request.owner;
+        (void)other.post([&other, owner]() { other.releaseEngine(owner); }, false);
+
+        return storm ? &RenderThread::storm() : &RenderThread::cpu();
+    }
+
+    // Waits for thread's queue to drain, then reads how many engines it holds.
+    std::size_t
+    drainedEngineCount(RenderThread& thread)
+    {
+        // Runs nothing if the thread never started, in which case there is no engine.
+        std::promise<void> drained;
+        std::future<void> done = drained.get_future();
+        if (thread.post([&drained]() { drained.set_value(); }, false)) {
+            done.wait();
+        }
+
+        return thread.engineCount();
+    }
+} // anon namespace
+
 bool
 render(const Request& request,
        Result* result,
@@ -1310,18 +1515,31 @@ render(const Request& request,
 
         return false;
     }
+    RenderThread* routed = routeRequest(request, error);
+    if (!routed) {
+        return false;
+    }
+    RenderThread& thread = *routed;
     bool ok = false;
-    RenderThread& thread = RenderThread::instance();
+    std::atomic<bool> cancel(false);
+    std::function<void()> whileWaiting;
+    if (request.aborted && !thread.usesGl()) {
+        whileWaiting = [&request, &cancel]() {
+            if (request.aborted()) {
+                cancel = true;
+            }
+        };
+    }
     const bool ran = thread.runAndWait([&]() {
         try {
-            EngineEntry* entry = thread.renderStorm(request, error);
+            EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             ok = entry && thread.frame(*entry, result, error);
         } catch (const std::exception& e) {
-            *error = std::string("Storm failed: ") + e.what();
+            *error = std::string("Hydra failed: ") + e.what();
             ok = false;
         }
     },
-                                       error);
+                                       error, whileWaiting);
 
     return ran && ok;
 }
@@ -1336,11 +1554,20 @@ withRender(const Request& request,
 
         return false;
     }
+    RenderThread* routed = routeRequest(request, error);
+    if (!routed) {
+        return false;
+    }
+    if (!routed->usesGl()) {
+        *error = "Only Storm renders into GL; " + request.renderer + "'s pixels are read back.";
+
+        return false;
+    }
     bool ok = false;
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& thread = *routed;
     const bool ran = thread.runAndWait([&]() {
         try {
-            EngineEntry* entry = thread.renderStorm(request, error);
+            EngineEntry* entry = thread.renderEngine(request, nullptr, error);
             if (entry) {
                 EntryAccess access(thread, *entry);
                 ok = job(access, error);
@@ -1360,7 +1587,7 @@ withContext(const std::function<void(const std::function<void*(const char*)>& ge
             std::string* error)
 {
     bool ok = false;
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& thread = RenderThread::storm();
 
     const bool ran = thread.runAndWait([&]() {
         if (thread.ensureContext(error)) {
@@ -1377,7 +1604,7 @@ withContext(const std::function<void(const std::function<void*(const char*)>& ge
 void
 postToContext(std::function<void(const std::function<void*(const char*)>* getProcAddress)> job)
 {
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& thread = RenderThread::storm();
 
     (void)thread.post([&thread, job]() {
         const std::function<void*(const char*)> getProcAddress = [&thread](const char* name) { return thread.getProcAddress(name); };
@@ -1398,11 +1625,24 @@ renderWindow(const Request& request,
 
         return false;
     }
+    RenderThread* routed = routeRequest(request, error);
+    if (!routed) {
+        return false;
+    }
+    RenderThread& thread = *routed;
     bool ok = false;
-    RenderThread& thread = RenderThread::instance();
+    std::atomic<bool> cancel(false);
+    std::function<void()> whileWaiting;
+    if (request.aborted && !thread.usesGl()) {
+        whileWaiting = [&request, &cancel]() {
+            if (request.aborted()) {
+                cancel = true;
+            }
+        };
+    }
     const bool ran = thread.runAndWait([&]() {
         try {
-            EngineEntry* entry = thread.renderStorm(request, error);
+            EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             if (!entry) {
                 return;
             }
@@ -1412,11 +1652,11 @@ renderWindow(const Request& request,
                 *primPaths = entry->primPaths;
             }
         } catch (const std::exception& e) {
-            *error = std::string("Storm failed: ") + e.what();
+            *error = std::string("Hydra failed: ") + e.what();
             ok = false;
         }
     },
-                                       error);
+                                       error, whileWaiting);
 
     return ran && ok;
 }
@@ -1425,7 +1665,7 @@ bool
 packsOnGpu()
 {
     bool ok = false;
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& thread = RenderThread::storm();
 
     const bool ran = thread.runAndWait([&]() {
         std::string error;
@@ -1439,15 +1679,25 @@ packsOnGpu()
 void
 release(const void* owner)
 {
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& storm = RenderThread::storm();
+    RenderThread& cpu = RenderThread::cpu();
 
-    (void)thread.post([&thread, owner]() { thread.releaseEngine(owner); }, false);
+    (void)storm.post([&storm, owner]() { storm.releaseEngine(owner); }, false);
+    (void)cpu.post([&cpu, owner]() { cpu.releaseEngine(owner); }, false);
 }
 
 void
 releaseAll()
 {
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& thread = RenderThread::storm();
+
+    (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+}
+
+void
+releaseAllCpuEngines()
+{
+    RenderThread& thread = RenderThread::cpu();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
 }
@@ -1467,16 +1717,13 @@ getMemoryBudget()
 std::size_t
 getEngineCount()
 {
-    RenderThread& thread = RenderThread::instance();
+    return drainedEngineCount(RenderThread::storm());
+}
 
-    // Runs nothing if the thread never started, in which case there is no engine.
-    std::promise<void> drained;
-    std::future<void> done = drained.get_future();
-    if (thread.post([&drained]() { drained.set_value(); }, false)) {
-        done.wait();
-    }
-
-    return thread.engineCount();
+std::size_t
+getCpuEngineCount()
+{
+    return drainedEngineCount(RenderThread::cpu());
 }
 
 std::uint64_t
@@ -1489,7 +1736,7 @@ std::string
 contextDescription(std::string* error)
 {
     std::string description;
-    RenderThread& thread = RenderThread::instance();
+    RenderThread& thread = RenderThread::storm();
 
     const bool ran = thread.runAndWait([&]() {
         if (thread.ensureContext(error)) {
@@ -1507,6 +1754,12 @@ void
 releaseRenderEngines()
 {
     HydraRender::releaseAll();
+}
+
+void
+releaseCpuRenderEngines()
+{
+    HydraRender::releaseAllCpuEngines();
 }
 } // namespace SceneCaches
 

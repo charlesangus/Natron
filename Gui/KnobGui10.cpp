@@ -562,16 +562,17 @@ KnobGui::setKnobKeyframe(const KnobIPtr& knob,
                          int dimension,
                          ViewSpec view)
 {
-    assert( knob->getHolder()->getApp() );
-
     bool keyAdded = knob->onKeyFrameSet(time, view, dimension);
     KnobGuiPtr gui = getLiveGui(knob);
     if (gui) {
         Q_EMIT gui->keyFrameSet();
     }
 
-    if ( !knob->getIsSecret() && keyAdded && knob->isDeclaredByPlugin() ) {
-        knob->getHolder()->getApp()->addKeyframeIndicator(time);
+    // Roto item knobs have no holder, hence no app to keep timeline indicators on.
+    KnobHolder* holder = knob->getHolder();
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    if (app && !knob->getIsSecret() && keyAdded && knob->isDeclaredByPlugin()) {
+        app->addKeyframeIndicator(time);
     }
 }
 
@@ -582,15 +583,15 @@ KnobGui::setKnobKeyframe(const KnobIPtr& knob,
                          int dimension,
                          ViewSpec view)
 {
-    assert( knob->getHolder()->getApp() );
-
     bool keyAdded = knob->onKeyFrameSet(time, view, key, dimension);
     KnobGuiPtr gui = getLiveGui(knob);
     if (gui) {
         Q_EMIT gui->keyFrameSet();
     }
-    if ( !knob->getIsSecret() && keyAdded && knob->isDeclaredByPlugin() ) {
-        knob->getHolder()->getApp()->addKeyframeIndicator(time);
+    KnobHolder* holder = knob->getHolder();
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    if (app && !knob->getIsSecret() && keyAdded && knob->isDeclaredByPlugin()) {
+        app->addKeyframeIndicator(time);
     }
 }
 
@@ -676,7 +677,6 @@ KnobGui::setKnobKeyframes(const KnobIPtr& knob,
                           int dimension,
                           ViewSpec view)
 {
-    assert( knob->getHolder()->getApp() );
     knob->beginChanges();
     std::list<SequenceTime> times;
     for (std::size_t i = 0; i < keys.size(); ++i) {
@@ -690,8 +690,10 @@ KnobGui::setKnobKeyframes(const KnobIPtr& knob,
     if (gui) {
         Q_EMIT gui->keyFrameSet();
     }
-    if ( !knob->getIsSecret() && knob->isDeclaredByPlugin() ) {
-        knob->getHolder()->getApp()->addMultipleKeyframeIndicatorsAdded(times, true);
+    KnobHolder* holder = knob->getHolder();
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    if (app && !knob->getIsSecret() && knob->isDeclaredByPlugin()) {
+        app->addMultipleKeyframeIndicatorsAdded(times, true);
     }
 }
 

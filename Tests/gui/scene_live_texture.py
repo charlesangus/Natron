@@ -38,7 +38,7 @@ try:
     card = make("USDCard", 0, 200)
     color = constant.getParam("color")
     require(color is not None, "Constant1 has a color parameter")
-    color.setValue(1.0, 0.0, 0.0, 1.0)
+    color.set(1.0, 0.0, 0.0, 1.0)
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
@@ -94,7 +94,7 @@ try:
         yield ("sleep", SETTLE_MS)
         save_shots("scene_live_texture_red")
 
-        color.setValue(0.0, 1.0, 0.0, 1.0)
+        color.set(0.0, 1.0, 0.0, 1.0)
         ok = yield ("until", lambda: scene_drawn() and dominated_by(1), POLL_TIMEOUT_S)
         v = view()
         error = v.property("natronSceneError") if v is not None else None

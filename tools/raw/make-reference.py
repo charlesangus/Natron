@@ -701,6 +701,8 @@ def write_cfa_dng(path, pattern, period, scene="disc", gain_maps=False, linear_r
 
 
 def run_job(job, out, scratch):
+    if getattr(job, "plate", None):
+        return run_retouch_job(job, out, scratch)
     xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
     write_xmp(xmp, job.entries, job.auto_presets_applied)
     image, log = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
@@ -737,10 +739,242 @@ def run_job(job, out, scratch):
     print("%s: %s" % (job.name, summary))
 
 
+# Retouch (darktable src/iop/retouch.c): clone, heal, blur and fill with circle, ellipse and path
+# forms that the XMP's masks history carries in a group, on the image, detail scales and the
+# residual. The plate is the tests' ParitySource (Tests/NativeParity.cpp) with its noise at time 1,
+# so NativeRetouch_Test renders the same pixels; each reference keeps the whole 64x48 result as a
+# half-float TIFF of about 15 KB.
+RETOUCH_WIDTH = 64
+RETOUCH_HEIGHT = 48
+RETOUCH_PLATE = "retouch-plate.tif"
+RETOUCH_TIME = 1.0
+DT_MASKS_CIRCLE = 1
+DT_MASKS_PATH = 2
+DT_MASKS_GROUP = 4
+DT_MASKS_CLONE = 8
+DT_MASKS_ELLIPSE = 32
+DT_MASKS_NON_CLONE = 128
+# use, show, union
+DT_MASKS_GROUP_STATE = 1 | 2 | 8
+# The control points as given, not recomputed.
+DT_MASKS_POINT_STATE_USER = 2
+DEVELOP_MASKS_VERSION = 6
+RETOUCH_ALGORITHMS = {"clone": 1, "heal": 2, "blur": 3, "fill": 4}
+RETOUCH_BLUR_TYPES = {"gaussian": 0, "bilateral": 1}
+RETOUCH_FILL_MODES = {"erase": 0, "color": 1}
+RETOUCH_NO_FORMS = 300
+RETOUCH_GROUP_ID = 1000
+# New forms' distortion mode (DT_IOP_RETOUCH_DISTORT_MODE).
+RETOUCH_DISTORT_MODE = 2
+
+# In Natron's canonical pixels, y up, as NativeRetouch_Test builds them: a circle and a rotated
+# ellipse (darktable's rotation turns clockwise on screen) given by centre and radii, a path by
+# (corner, left handle, right handle) per point. offset goes from the shape to its source; the
+# source of a path is its first corner's.
+RETOUCH_SHAPES = {
+    "circle": {"centre": (20.0, 30.0), "radii": (6.0, 6.0), "feather": 3.0, "opacity": 1.0,
+               "offset": (22.0, -8.0)},
+    "ellipse": {"centre": (42.0, 24.0), "radii": (9.0, 5.0), "rotation": 30.0, "feather": 2.0, "opacity": 0.6,
+                "offset": (-22.0, 8.0)},
+    "path": {"points": (((26.0, 8.0), (24.0, 9.0), (28.0, 7.0)),
+                        ((38.0, 10.0), (37.0, 8.0), (39.0, 12.0)),
+                        ((36.0, 20.0), (38.0, 19.0), (34.0, 21.0)),
+                        ((24.0, 18.0), (25.0, 20.0), (23.0, 16.0))),
+             "feather": 2.0, "opacity": 1.0, "offset": (16.0, 20.0)},
+}
+
+
+def retouch_point(x, y):
+    """Natron canonical (pixel centres at +0.5, y up) to darktable's normalised image position."""
+    return ((x - 0.5) / RETOUCH_WIDTH, (RETOUCH_HEIGHT - y - 0.5) / RETOUCH_HEIGHT)
+
+
+def retouch_length(d):
+    return d / min(RETOUCH_WIDTH, RETOUCH_HEIGHT)
+
+
+def retouch_form(kind, formid, clone):
+    """(mask type, points blob, point count, source blob) of one masks_history entry."""
+    shape = RETOUCH_SHAPES[kind]
+    ox, oy = shape["offset"]
+    if kind == "path":
+        points = b"".join(struct.pack("<8fi", *retouch_point(*corner), *retouch_point(*left),
+                                      *retouch_point(*right), retouch_length(shape["feather"]),
+                                      retouch_length(shape["feather"]), DT_MASKS_POINT_STATE_USER)
+                          for corner, left, right in shape["points"])
+        count = len(shape["points"])
+        origin = shape["points"][0][0]
+        mask_type = DT_MASKS_PATH
+    else:
+        centre = retouch_point(*shape["centre"])
+        if kind == "circle":
+            points = struct.pack("<4f", *centre, retouch_length(shape["radii"][0]), retouch_length(shape["feather"]))
+            mask_type = DT_MASKS_CIRCLE
+        else:
+            # Equidistant feather (flags 0).
+            points = struct.pack("<6fi", *centre, *(retouch_length(r) for r in shape["radii"]), shape["rotation"],
+                                 retouch_length(shape["feather"]), 0)
+            mask_type = DT_MASKS_ELLIPSE
+        count = 1
+        origin = shape["centre"]
+    source = struct.pack("<2f", *retouch_point(origin[0] + ox, origin[1] + oy)) if clone else struct.pack("<2f", 0.0, 0.0)
+    return mask_type | (DT_MASKS_CLONE if clone else DT_MASKS_NON_CLONE), points, count, source
+
+
+def retouch_mask_entry(num, formid, mask_type, name, points, count, source):
+    return ("     <rdf:li\n"
+            "      darktable:mask_num=\"%d\"\n"
+            "      darktable:mask_id=\"%d\"\n"
+            "      darktable:mask_type=\"%d\"\n"
+            "      darktable:mask_name=\"%s\"\n"
+            "      darktable:mask_version=\"%d\"\n"
+            "      darktable:mask_points=\"%s\"\n"
+            "      darktable:mask_nb=\"%d\"\n"
+            "      darktable:mask_src=\"%s\"/>\n") % (num, formid, mask_type, name, DEVELOP_MASKS_VERSION, points.hex(),
+                                                   count, source.hex())
+
+
+def retouch_params(forms, num_scales, merge_from_scale=0):
+    """dt_iop_retouch_params_t, version 3. forms: (formid, settings) with settings a dict of
+    scale, algorithm and the blur and fill settings."""
+    packed = b""
+    for formid, s in forms:
+        packed += struct.pack("<Iiiifi3ffi", formid, s["scale"], RETOUCH_ALGORITHMS[s["algorithm"]],
+                              RETOUCH_BLUR_TYPES[s.get("blur_type", "gaussian")], s.get("blur_radius", 10.0),
+                              RETOUCH_FILL_MODES[s.get("fill_mode", "erase")], *s.get("fill_color", (0.0, 0.0, 0.0)),
+                              s.get("fill_brightness", 0.0), RETOUCH_DISTORT_MODE)
+    packed += b"\0" * (44 * (RETOUCH_NO_FORMS - len(forms)))
+    # Globals: the default algorithm, scales, current scale, merge from, preview levels, the
+    # default blur and fill settings and max_heal_iter (darktable's defaults).
+    packed += struct.pack("<iiii3fifi3ffi", RETOUCH_ALGORITHMS["heal"], num_scales, 0, merge_from_scale,
+                          -3.0, 0.0, 3.0, 0, 10.0, 0, 0.0, 0.0, 0.0, 0.0, 2000)
+    if len(packed) != 13260:
+        raise RuntimeError("retouch params are %d bytes" % len(packed))
+    return packed
+
+
+def retouch_blend_params():
+    """BLEND_PARAMS with mask_id, at offset 24 of dt_develop_blend_params_t, set to the group."""
+    import base64
+    import zlib
+    blob = bytearray(zlib.decompress(base64.b64decode(BLEND_PARAMS[4:])))
+    struct.pack_into("<i", blob, 24, RETOUCH_GROUP_ID)
+    return bytes(blob).hex()
+
+
+class RetouchJob(Job):
+    """A retouch of the synthetic plate; shapes is a list of (kind, settings)."""
+
+    def __init__(self, name, shapes, num_scales, merge_from_scale=0):
+        self.shapes = shapes
+        forms = [(RETOUCH_GROUP_ID + 1 + i, s) for i, (kind, s) in enumerate(shapes)]
+        entries = [
+            ("colorin", 1, 7, colorin_params(DT_COLORSPACE_LIN_REC709)),
+            ("colorout", 1, 5, colorout_params()),
+            ("retouch", 1, 3, retouch_params(forms, num_scales, merge_from_scale)),
+        ]
+        what = "retouch %d scales, merge from %d: %s" % (num_scales, merge_from_scale, "; ".join(
+            "%s %s on scale %d" % (s["algorithm"], kind, s["scale"]) for kind, s in shapes))
+        super().__init__(name, RETOUCH_PLATE, entries, what)
+        self.plate = RETOUCH_PLATE
+        num = len(entries) - 1
+        group = b""
+        masks = ""
+        for (formid, s), (kind, _) in zip(forms, shapes):
+            mask_type, points, count, source = retouch_form(kind, formid, s["algorithm"] in ("clone", "heal"))
+            masks += retouch_mask_entry(num, formid, mask_type, "%s %d" % (kind, formid), points, count, source)
+            group += struct.pack("<iiif", formid, RETOUCH_GROUP_ID, DT_MASKS_GROUP_STATE, RETOUCH_SHAPES[kind]["opacity"])
+        masks += retouch_mask_entry(num, RETOUCH_GROUP_ID, DT_MASKS_GROUP, "grp retouch", group, len(forms), b"\0" * 8)
+        self.masks = masks
+        self.blend = retouch_blend_params()
+
+
+def write_retouch_xmp(path, job):
+    write_xmp(path, job.entries, job.auto_presets_applied)
+    with open(path) as f:
+        xmp = f.read()
+    xmp = xmp.replace("    <rdf:Seq/>\n", "    <rdf:Seq>\n%s    </rdf:Seq>\n" % job.masks, 1)
+    xmp = xmp.replace(BLEND_PARAMS, job.blend)
+    with open(path, "w") as f:
+        f.write(xmp)
+
+
+def parity_source_noise(channel, x, y):
+    mask = 0xffffffff
+    h = ((x * 0x8da6b343) ^ (y * 0xd8163841) ^ (channel * 0xcb1ab31f) ^ 0x9e3779b9) & mask
+    h ^= h >> 16
+    h = (h * 0x7feb352d) & mask
+    h ^= h >> 15
+    h = (h * 0x846ca68b) & mask
+    h ^= h >> 16
+    return np.float32(h >> 8) * np.float32(1.0 / 16777216.0) - np.float32(0.5)
+
+
+def write_retouch_plate(path):
+    """Tests/NativeParity.cpp's ParitySource colour at RETOUCH_TIME with noise, rows top down."""
+    import math
+    image = np.zeros((RETOUCH_HEIGHT, RETOUCH_WIDTH, 3), dtype=np.float32)
+    offset = 0.01 * RETOUCH_TIME
+    for cy in range(RETOUCH_HEIGHT):
+        v = (cy + 0.5) / RETOUCH_HEIGHT
+        for cx in range(RETOUCH_WIDTH):
+            u = (cx + 0.5) / RETOUCH_WIDTH
+            values = (-0.25 + 2.0 * u + 0.15 * math.sin(6.1 * v + 0.3) + offset,
+                      -0.25 + 2.0 * v + 0.15 * math.sin(4.3 * u + 1.1) + offset,
+                      -0.25 + (u + v) + 0.15 * math.sin(9.7 * u * v + 2.0) + offset)
+            for c in range(3):
+                image[RETOUCH_HEIGHT - 1 - cy, cx, c] = (np.float32(values[c])
+                                                         + np.float32(0.1) * parity_source_noise(c, cx, cy))
+    tifffile.imwrite(path, image, photometric="rgb", metadata=None)
+
+
+def run_retouch_job(job, out, scratch):
+    xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
+    write_retouch_xmp(xmp, job)
+    image, _ = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
+                             job.workflow)
+    if image.shape[:2] != (RETOUCH_HEIGHT, RETOUCH_WIDTH):
+        raise RuntimeError("%s: developed %s" % (job.name, image.shape))
+    description = "darktable %s, ParitySource plate with noise at time %g, %s, whole image, linear Rec. 709" % (
+        os.environ.get("DARKTABLE_REF", "?"), RETOUCH_TIME, job.what)
+    tifffile.imwrite(os.path.join(out, job.name), np.ascontiguousarray(image, dtype=np.float16), photometric="rgb",
+                     compression="zlib", description=description, metadata=None)
+    print("%s: mean %s max %s" % (job.name, image.mean(axis=(0, 1)), image.max()))
+
+
+def retouch_jobs():
+    """Each algorithm on each kind of shape: the circle (feathered) on scale 1, the ellipse (opacity
+    0.6) on scale 2 and the path on the residual of two scales; then the image scale, the bilateral
+    blur, the colour fill and a mix of shapes with merged scales."""
+    settings = {
+        "clone": {},
+        "heal": {},
+        "blur": {"blur_radius": 4.0},
+        "fill": {"fill_brightness": 0.05},
+    }
+    scales = {"circle": 1, "ellipse": 2, "path": 3}
+    jobs = []
+    for algorithm in ("clone", "heal", "blur", "fill"):
+        for kind in ("circle", "ellipse", "path"):
+            s = dict(settings[algorithm], algorithm=algorithm, scale=scales[kind])
+            jobs.append(RetouchJob("retouch-%s-%s.tif" % (algorithm, kind), [(kind, s)], 2))
+    jobs.append(RetouchJob("retouch-heal-circle-image.tif", [("circle", {"algorithm": "heal", "scale": 0})], 2))
+    jobs.append(RetouchJob("retouch-blur-bilateral-circle.tif",
+                           [("circle", {"algorithm": "blur", "scale": 1, "blur_type": "bilateral", "blur_radius": 6.0})], 2))
+    jobs.append(RetouchJob("retouch-fill-color-ellipse.tif",
+                           [("ellipse", {"algorithm": "fill", "scale": 0, "fill_mode": "color",
+                                         "fill_color": (0.8, 0.2, 0.1), "fill_brightness": 0.1})], 2))
+    jobs.append(RetouchJob("retouch-mixed-merge.tif",
+                           [("circle", {"algorithm": "heal", "scale": 1}),
+                            ("ellipse", {"algorithm": "clone", "scale": 2}),
+                            ("path", {"algorithm": "fill", "scale": 4, "fill_brightness": 0.05})], 3, 2))
+    return jobs
+
+
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + denoiseprofile_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs))
+            + colour_calibration_jobs(coeffs) + retouch_jobs())
 
 
 def main():
@@ -763,16 +997,19 @@ def main():
 
     if args.dry_run:
         for job in jobs:
-            write_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job.entries, job.auto_presets_applied)
+            if getattr(job, "plate", None):
+                write_retouch_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job)
+            else:
+                write_xmp(os.path.join(args.scratch, job.name[:-4] + ".xmp"), job.entries, job.auto_presets_applied)
             print("%s <- %s, workflow %s%s: %s" % (job.name, job.source, job.workflow,
                                                      ", -d %s" % job.debug if job.debug else "", job.what))
         print("%d jobs, %d XMPs in %s" % (len(jobs), len(jobs), args.scratch))
         return
 
-    for fixture in sorted({job.source for job in jobs if job.mosaic is None}):
+    for fixture in sorted({job.source for job in jobs if job.source in CAMERA_FIXTURES}):
         with open(os.path.join(args.fixtures, fixture), "rb") as src, open(os.path.join(args.scratch, fixture), "wb") as dst:
             dst.write(src.read())
-    coeffs = {f: probe_coefficients(f, args.scratch) for f in sorted({job.source for job in jobs if job.mosaic is None})}
+    coeffs = {f: probe_coefficients(f, args.scratch) for f in sorted({job.source for job in jobs if job.source in CAMERA_FIXTURES})}
     for f in CAMERA_FIXTURES:
         coeffs.setdefault(f, PLACEHOLDER_COEFFS)
     jobs = [job for job in all_jobs(coeffs) if job.name in names]
@@ -783,6 +1020,8 @@ def main():
         write_cfa_dng(path, pattern, period, scene, gain_maps, limit)
         with open(path, "rb") as src, open(os.path.join(args.scratch, dng), "wb") as dst:
             dst.write(src.read())
+    if any(getattr(job, "plate", None) for job in jobs):
+        write_retouch_plate(os.path.join(args.scratch, RETOUCH_PLATE))
     for job in jobs:
         run_job(job, args.out, args.scratch)
 

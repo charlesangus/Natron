@@ -507,6 +507,24 @@ getValueTypeName(const AttributeKnob& knob)
     return PXR_NS::SdfSchema::GetInstance().FindType(knob.typeName);
 }
 
+bool
+describeValueType(const std::string& typeName,
+                  AttributeKnob* knob)
+{
+    const PXR_NS::SdfValueTypeName type = PXR_NS::SdfSchema::GetInstance().FindType(typeName);
+    KnobKindEnum kind;
+    int dimension;
+
+    if (!mapType(type, false, &kind, &dimension)) {
+        return false;
+    }
+    knob->typeName = type.GetAsToken().GetString();
+    knob->kind = kind;
+    knob->dimension = dimension;
+
+    return true;
+}
+
 PXR_NS::VtValue
 getValue(const AttributeKnob& knob,
          const KnobIPtr& valueKnob,

@@ -1083,6 +1083,17 @@ reparentRoots(const SceneReparentArgs& args,
     return true;
 } // reparentRoots
 
+PXR_NS::SdfLayerRefPtr
+createStackLayer(const ScenePayload& input,
+                 const std::string& tag)
+{
+    if (input.isEmpty()) {
+        return PXR_NS::SdfLayerRefPtr();
+    }
+
+    return createWrapper(input, tag);
+}
+
 } // namespace SceneOps
 
 struct SceneLayerMemo::Implementation {
@@ -1168,6 +1179,8 @@ SceneLayerMemo::produce(const Key& key,
     edit.metersPerUnit = key.metersPerUnit;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
+    std::shared_ptr<const SceneLayerDependencies> dependencies;
+    edit.dependencies = &dependencies;
     if (!edit.layer) {
         if (errorMessage) {
             *errorMessage = "Could not create a layer for " + layerTag;
@@ -1193,6 +1206,7 @@ SceneLayerMemo::produce(const Key& key,
     SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
     links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
     entry.links = shareLinks(std::move(links));
+    entry.dependencies = dependencies;
     _imp->output = SceneOps::appendEntry(upstream, entry);
     _imp->layerHash = layerHash;
     _imp->valid = true;

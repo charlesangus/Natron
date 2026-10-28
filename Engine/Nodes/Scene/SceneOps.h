@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,9 @@ struct SceneLayerEdit {
     // Links out of their root that layer composes from the layers it sublayers, which the scan of
     // layer itself does not reach: an author sublayering a file records the file's here.
     SceneLinkIndex* sublayerLinks = nullptr;
+    // What layer composes from outside the stack, such as the stack layer of another input it
+    // references (createStackLayer()): the author sets it, and the layer's entry holds it.
+    std::shared_ptr<const SceneLayerDependencies>* dependencies = nullptr;
 };
 
 /**
@@ -197,6 +201,17 @@ bool reparentRoots(const SceneReparentArgs& args,
                    std::vector<SceneRootGraft>* grafts,
                    std::vector<SceneUnmappedLink>* unmappedLinks,
                    std::string* errorMessage);
+
+/**
+ * @brief An anonymous, read-only layer sublayering input's stack, strongest first, and carrying
+ * the stage metadata its layers author: a layer of one node's stack can reference or load as a
+ * payload a prim of another input's composed scene through it, every layer of that input
+ * included. Whatever holds a layer referencing it must hold it and input too
+ * (SceneLayerEdit::dependencies), as nothing else keeps an anonymous layer alive. Null when input
+ * is empty or the layer cannot be created.
+ **/
+PXR_NS::SdfLayerRefPtr createStackLayer(const ScenePayload& input,
+                                        const std::string& tag);
 
 /**
  * @brief The payload's layers, weakest first.

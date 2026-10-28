@@ -152,6 +152,14 @@ PXR_NS::VtValue getValue(const AttributeKnob& knob,
 
 // The Sdf type of knob's attribute.
 PXR_NS::SdfValueTypeName getValueTypeName(const AttributeKnob& knob);
+
+/**
+ * @brief Sets knob's typeName, kind and dimension for an attribute of the Sdf value type typeName
+ * (float3, color3f, token...), a token always mapping to a string. Returns false, leaving knob as
+ * it is, when typeName names no type or a type no knob maps.
+ **/
+bool describeValueType(const std::string& typeName,
+                       AttributeKnob* knob);
 } // namespace SchemaKnobMapper
 
 NATRON_NAMESPACE_EXIT

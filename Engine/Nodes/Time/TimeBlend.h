@@ -63,6 +63,82 @@ bool renderCpu(const ImagePtr& dst, const RectI& roi, std::span<const ImagePtr> 
  * without it.
  **/
 StatusEnum recordGpu(const GpuRenderArgs& args, std::span<const GpuImageView* const> views, std::span<const double> weights);
+
+// How a fold combines images. Integer values are the option indices of FrameBlend's Operation knob.
+enum Operation {
+    eOperationAverage = 0,
+    eOperationMin,
+    eOperationMax,
+    eOperationSum,
+    eOperationProduct,
+    eOperationOver,
+};
+
+/**
+ * @brief One step of a fold of images: r, the result so far over nComps channels, takes in the
+ * next image's pixel in. Average is the running mean, (in - r) * blend + r. The others first scale
+ * r by factor, the decay between the two images: Min, Max, Sum and Product then take the minimum,
+ * maximum, sum or product with in, and Over puts in over it, in + (1 - a) * r, a being channel 3 of four, the only
+ * channel of one, and 1 otherwise. Each multiply and add rounds to float on its own.
+ **/
+inline void
+foldPixel(Operation op,
+          float factor,
+          float blend,
+          int nComps,
+          const float* in,
+          float* r)
+{
+    if (op == eOperationAverage) {
+        for (int c = 0; c < nComps; ++c) {
+            const float d = in[c] - r[c];
+            const float s = d * blend;
+            r[c] = s + r[c];
+        }
+
+        return;
+    }
+    const float a = (nComps == 4) ? in[3] : ((nComps == 1) ? in[0] : 1.f);
+    const float keep = 1.f - a;
+    for (int c = 0; c < nComps; ++c) {
+        const float decayed = r[c] * factor;
+        switch (op) {
+        case eOperationMin:
+            r[c] = (in[c] < decayed) ? in[c] : decayed;
+            break;
+        case eOperationMax:
+            r[c] = (in[c] > decayed) ? in[c] : decayed;
+            break;
+        case eOperationSum:
+            r[c] = in[c] + decayed;
+            break;
+        case eOperationProduct:
+            r[c] = in[c] * decayed;
+            break;
+        case eOperationOver: {
+            const float under = keep * decayed;
+            r[c] = in[c] + under;
+            break;
+        }
+        case eOperationAverage:
+            break;
+        }
+    }
+}
+
+/**
+ * @brief Records the fold of views over args.outputRect, each step a foldPixel() of op with
+ * factor and blends[k - 1] taking in views[k], into a scratch view of the output's component
+ * count, set in *result. With one view *result is that view and nothing is recorded. The steps are
+ * ordered before any later work by a compute barrier. Views have the output's component count and
+ * read zero outside their bounds. Needs NATRON_HAVE_GPU; fails without it.
+ **/
+StatusEnum recordFoldGpu(const GpuRenderArgs& args,
+                         std::span<const GpuImageView* const> views,
+                         Operation op,
+                         float factor,
+                         std::span<const float> blends,
+                         GpuImageView* result);
 } // namespace TimeBlend
 
 NATRON_NAMESPACE_EXIT

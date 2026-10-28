@@ -157,7 +157,7 @@ test -n "$boost_python"
 # 1.87 removed; its POSIX-socket variant is selected instead.
 # CMAKE_CUDA_COMPILER=NOTFOUND stops the top-level check_language(CUDA) from enabling CUDA because
 # the image happens to carry a toolkit.
-cmake -S "$src" -B "$build" -G Ninja \
+cmake -S "$src" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_INSTALL_PREFIX="$prefix" \

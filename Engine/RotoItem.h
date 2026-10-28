@@ -52,6 +52,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 #define kRotoOpenBezierBaseName "Pencil"
 #define kRotoEllipseBaseName "Ellipse"
 #define kRotoRectangleBaseName "Rectangle"
+#define kRotoPointBaseName "Point"
 #define kRotoPaintBrushBaseName "Brush"
 #define kRotoPaintEraserBaseName "Eraser"
 #define kRotoPaintBlurBaseName "Blur"

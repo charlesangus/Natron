@@ -37,6 +37,7 @@
 #include <QEvent>
 #include <QMutex>
 #include <QSettings>
+#include <QStatusBar>
 #include <QTimer>
 #include <QWindow>
 
@@ -1240,6 +1241,16 @@ GuiAppInstance::updateProjectLoadStatus(const QString& str)
         return;
     }
     _imp->loadProjectSplash->updateText(str);
+}
+
+void
+GuiAppInstance::showStatusMessage(const QString& message)
+{
+    Gui* gui = getGui();
+
+    if (gui && gui->statusBar()) {
+        gui->statusBar()->showMessage(message, 5000);
+    }
 }
 
 void

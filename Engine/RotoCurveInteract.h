@@ -128,6 +128,14 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonActionLabel "Rectangle Tool"
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
 
+#define kRotoUIParamOpenBezierToolButtonAction "OpenBezierTool"
+#define kRotoUIParamOpenBezierToolButtonActionLabel "Open Bezier Tool"
+#define kRotoUIParamOpenBezierToolButtonActionHint "Draw an open Bezier. Press Escape or pick another tool to end it"
+
+#define kRotoUIParamPointToolButtonAction "PointTool"
+#define kRotoUIParamPointToolButtonActionLabel "Point Tool"
+#define kRotoUIParamPointToolButtonActionHint "Each click makes a curve of a single point"
+
 // The right click menu
 #define kRotoUIParamRightClickMenu kNatronOfxParamRightClickMenu
 
@@ -239,6 +247,7 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    eEventStateDraggingCorrespondence,
 };
 
 enum HoverStateEnum {
@@ -266,7 +275,8 @@ enum RotoRoleEnum {
     eRotoRolePaintBrush,
     eRotoRoleCloneBrush,
     eRotoRoleEffectBrush,
-    eRotoRoleMergeBrush
+    eRotoRoleMergeBrush,
+    eRotoRoleCorrespondence
 };
 
 enum RotoToolEnum {
@@ -299,7 +309,10 @@ enum RotoToolEnum {
     eRotoToolSmear,
 
     eRotoToolDodge,
-    eRotoToolBurn
+    eRotoToolBurn,
+
+    eRotoToolDrawPoint,
+    eRotoToolCorrespondence
 };
 
 // The curve tool groups RotoCurveInteract::createToolbarKnobs() can create, as a bitmask.
@@ -307,7 +320,10 @@ enum RotoCurveToolSetEnum {
     eRotoCurveToolSetSelection = 0x1,
     eRotoCurveToolSetPointsEdition = 0x2,
     eRotoCurveToolSetShapesDrawing = 0x4,
-    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing
+    eRotoCurveToolSetAll = eRotoCurveToolSetSelection | eRotoCurveToolSetPointsEdition | eRotoCurveToolSetShapesDrawing,
+    // Extra tools of the Shapes Drawing group, which eRotoCurveToolSetAll leaves out.
+    eRotoCurveToolSetOpenBezier = 0x8,
+    eRotoCurveToolSetPoint = 0x10
 };
 
 /**
@@ -372,6 +388,8 @@ public:
     KnobButtonWPtr drawBezierAction;
     KnobButtonWPtr drawEllipseAction;
     KnobButtonWPtr drawRectangleAction;
+    KnobButtonWPtr drawOpenBezierAction;
+    KnobButtonWPtr drawPointAction;
 
     //////Right click menu
     KnobChoiceWPtr rightClickMenuKnob;
@@ -574,6 +592,12 @@ public:
 
     void setBuiltBezier(const BezierPtr& curve);
 
+    /**
+     * @brief What the point tool does on a click: makes a finished open curve of one control
+     * point at (x, y), selects it, and pushes the undo command.
+     **/
+    BezierPtr makePointCurve(double x, double y, double time);
+
     BezierPtr getBezierBeingBuild() const;
 
     bool smoothSelectedCurve();
@@ -621,6 +645,21 @@ protected:
 
     // Draws the paint tool cursor, after the curves.
     virtual void drawPaintToolOverlay(double /*screenPixelRatio*/, const std::pair<double, double>& /*viewportSize*/) { }
+
+    // Whether the overlay draws curve and lets the pointer pick it.
+    virtual bool isCurveShown(const BezierPtr& /*curve*/) const
+    {
+        return true;
+    }
+
+    // The colour the overlay draws an unlocked curve in.
+    virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const;
+
+    // Draws what the host adds over the curves, in the passive overlay too.
+    virtual void drawOverlayExtras(double /*time*/, double /*screenPixelRatio*/, const std::pair<double, double>& /*pixelScale*/) { }
+
+    // The nearest shown curve within tolerance of pos, as RotoCurveContext::isNearbyBezier() finds it.
+    BezierPtr nearbyShownBezier(const QPointF& pos, double tolerance, int* index, double* t, bool* feather) const;
 
     // Called first thing on pen down.
     virtual void onPenDownStarted(PenType /*pen*/) { }

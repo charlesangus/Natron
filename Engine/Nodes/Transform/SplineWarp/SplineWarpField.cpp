@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <list>
 
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
@@ -578,6 +579,19 @@ SplineWarpField::getGpuTables(std::vector<uint32_t>* words,
         }
     }
 } // SplineWarpField::getGpuTables
+
+std::vector<double>
+SplineWarpFieldCache::getResolutions() const
+{
+    std::vector<double> ret;
+    const std::list<Key> keys = _cache.getKeys();
+
+    for (std::list<Key>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        ret.push_back(it->resolution);
+    }
+
+    return ret;
+}
 
 SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,

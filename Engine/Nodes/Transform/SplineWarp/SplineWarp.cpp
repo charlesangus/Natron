@@ -49,6 +49,7 @@
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
@@ -133,6 +134,11 @@ mergePoint(RectD* r,
 
 SplineWarp::SplineWarp(NodePtr node)
     : StagedImageEffect(node)
+    // Built here, as RotoPaint's is: Node::load() ends the knob bracket with endChanges(), which
+    // already calls knobChanged() and so forwards to the interact.
+    , _ui(SplineWarpInteract::create(this))
+    , _panelHook(new SplineWarpPanelHook(_ui))
+    , _draftDrag(false)
     , _samples(kTimeCacheSize)
     , _maps(kTimeCacheSize)
     , _forwardMaps(kTimeCacheSize)
@@ -178,6 +184,12 @@ RotoCurveContextPtr
 SplineWarp::createGeometryCurveContext(const NodePtr& node) const
 {
     return SplineWarpContext::create(node);
+}
+
+RotoCurvePanelHook*
+SplineWarp::getCurvePanelHook() const
+{
+    return _panelHook.get();
 }
 
 void
@@ -371,6 +383,13 @@ SplineWarp::initializeKnobs()
 
     addStageKnobs(page);
 
+    // The node's curve context exists by now (Node::createRotoContextConditionnally()).
+    _ui->connectToCurveContext();
+    _ui->createViewerButtonKnobs(page);
+    _ui->createDisplayKnobs(page);
+    _ui->createToolbar();
+    _ui->createRightClickMenuKnobs(page);
+
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
 } // SplineWarp::initializeKnobs
@@ -405,6 +424,11 @@ SplineWarp::onKnobsLoaded()
 {
     updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
+
+    KnobButtonPtr defaultAction = _ui->selectAllAction.lock();
+    _ui->setCurrentTool(defaultAction);
+    _ui->onRoleChangedInternal(_ui->selectToolGroup.lock());
+    _ui->onToolChangedInternal(defaultAction);
 }
 
 bool
@@ -428,13 +452,167 @@ SplineWarp::knobChanged(KnobI* k,
         return true;
     }
 
+    bool ret = false;
+    if (k && _ui->onKnobChanged(k, time, &ret)) {
+        return ret;
+    }
+
     return false;
+}
+
+void
+SplineWarp::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
+    SplineWarpInteract::getToolbarShortcuts(shortcuts);
+    RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+}
+
+void
+SplineWarp::refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                              double time)
+{
+    StagedImageEffect::refreshExtraStateAfterTimeChanged(isPlayback, time);
+    _ui->refreshAfterTimeChanged(time);
+}
+
+void
+SplineWarp::drawOverlay(double time,
+                        const RenderScale& /*renderScale*/,
+                        ViewIdx /*view*/)
+{
+    _ui->drawOverlay(time);
+}
+
+bool
+SplineWarp::onOverlayPenDown(double time,
+                             const RenderScale& /*renderScale*/,
+                             ViewIdx /*view*/,
+                             const QPointF& /*viewportPos*/,
+                             const QPointF& pos,
+                             double pressure,
+                             double timestamp,
+                             PenType pen)
+{
+    return _ui->onOverlayPenDown(time, pos, pressure, timestamp, pen);
+}
+
+bool
+SplineWarp::onOverlayPenMotion(double time,
+                               const RenderScale& /*renderScale*/,
+                               ViewIdx /*view*/,
+                               const QPointF& /*viewportPos*/,
+                               const QPointF& pos,
+                               double pressure,
+                               double timestamp)
+{
+    // A drag renders in draft until the pen is up.
+    if (!_draftDrag && (_ui->state != eEventStateNone)) {
+        AppInstancePtr app = getApp();
+        if (app && !app->isDraftRenderEnabled()) {
+            app->setDraftRenderEnabled(true);
+            _draftDrag = true;
+        }
+    }
+
+    return _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
+}
+
+bool
+SplineWarp::onOverlayPenUp(double /*time*/,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           const QPointF& /*viewportPos*/,
+                           const QPointF& /*pos*/,
+                           double /*pressure*/,
+                           double /*timestamp*/)
+{
+    if (_draftDrag) {
+        _draftDrag = false;
+        getApp()->setDraftRenderEnabled(false);
+        // The full-quality render supersedes the draft one, even with nothing left to change.
+        _ui->evaluateOnPenUp = true;
+    }
+
+    return _ui->onOverlayPenUp();
+}
+
+bool
+SplineWarp::onOverlayPenDoubleClicked(double /*time*/,
+                                      const RenderScale& /*renderScale*/,
+                                      ViewIdx /*view*/,
+                                      const QPointF& /*viewportPos*/,
+                                      const QPointF& pos)
+{
+    return _ui->onOverlayPenDoubleClicked(pos);
+}
+
+bool
+SplineWarp::onOverlayKeyDown(double /*time*/,
+                             const RenderScale& /*renderScale*/,
+                             ViewIdx /*view*/,
+                             Key key,
+                             KeyboardModifiers /*modifiers*/)
+{
+    return _ui->onKeyDown(key);
+}
+
+bool
+SplineWarp::onOverlayKeyUp(double /*time*/,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           Key key,
+                           KeyboardModifiers /*modifiers*/)
+{
+    return _ui->onOverlayKeyUp(key);
+}
+
+bool
+SplineWarp::onOverlayFocusLost(double /*time*/,
+                               const RenderScale& /*renderScale*/,
+                               ViewIdx /*view*/)
+{
+    if (_draftDrag) {
+        _draftDrag = false;
+        getApp()->setDraftRenderEnabled(false);
+        incrHashAndEvaluate(true, false);
+    }
+
+    return _ui->onOverlayFocusLost();
+}
+
+void
+SplineWarp::onInteractViewportSelectionCleared()
+{
+    _ui->onViewportSelectionCleared();
+}
+
+void
+SplineWarp::onInteractViewportSelectionUpdated(const RectD& rectangle,
+                                               bool onRelease)
+{
+    _ui->onViewportSelectionUpdated(rectangle, onRelease);
+}
+
+std::vector<double>
+SplineWarp::getCachedFieldResolutions() const
+{
+    return _fields.getResolutions();
+}
+
+bool
+SplineWarp::isDraftRender() const
+{
+    ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->draftMode;
 }
 
 void
 SplineWarp::readSettings(double time,
                          ViewIdx view,
-                         Settings* settings) const
+                         Settings* settings,
+                         bool draft) const
 {
     readWarpSettings(time, view, settings);
     KnobChoicePtr solver = _solver.lock();
@@ -486,6 +664,12 @@ SplineWarp::readSettings(double time,
     KnobDoublePtr shutterCustomOffset = _shutterCustomOffset.lock();
     if (shutterCustomOffset) {
         settings->shutterCustomOffset = shutterCustomOffset->getValueAtTime(time, 0, view);
+    }
+    settings->warped = !_ui || _ui->isOutputWarped();
+    if (draft) {
+        settings->curveResolution *= 2.;
+        settings->fieldResolution *= 4.;
+        settings->filter = Resampler::eFilterImpulse;
     }
 } // SplineWarp::readSettings
 
@@ -566,7 +750,7 @@ SplineWarp::computeWarp(double time,
                         Warp* warp)
 {
     *warp = Warp();
-    if (settings.amount == 0.) {
+    if ((settings.amount == 0.) || !settings.warped) {
         return (bool)splineWarpContext(*this);
     }
     warp->samples = sampleWarp(time, settings);
@@ -858,7 +1042,7 @@ SplineWarp::getRegionsOfInterest(double time,
         return;
     }
     Settings settings;
-    readSettings(time, view, &settings);
+    readSettings(time, view, &settings, isDraftRender());
     const double par = getOutputPixelAspectRatio(time, view);
     const OfxPointD s = scale.toOfxPointD();
 
@@ -898,8 +1082,9 @@ SplineWarp::isOpIdentity(double time,
     if (!getInput(kSplineWarpInputSource)) {
         return true;
     }
+    // A draft identity is cached under the drag's hash, which the full render after it changes.
     Settings settings;
-    readSettings(time, view, &settings);
+    readSettings(time, view, &settings, isDraftRender());
     std::vector<TimedWarp> warps;
     if (!computeShutterWarps(time, view, settings, &warps)) {
         return true;
@@ -922,10 +1107,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     const bool passThrough = plan.stages.has(Stage::PassThroughUnprocessed);
     const int sourceInput = plan.sourceInput;
     Settings settings;
-    readSettings(args.time, args.view, &settings);
-    if (args.draftMode) {
-        settings.filter = Resampler::eFilterImpulse;
-    }
+    readSettings(args.time, args.view, &settings, args.draftMode);
     const bool impulse = settings.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double par = getOutputPixelAspectRatio(args.time, args.view);
@@ -1249,10 +1431,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     Settings settings;
-    readSettings(query.time, query.view, &settings);
-    if (query.draftMode) {
-        settings.filter = Resampler::eFilterImpulse;
-    }
+    readSettings(query.time, query.view, &settings, query.draftMode);
     const OfxPointD s = query.mappedScale.toOfxPointD();
     const double par = getOutputPixelAspectRatio(query.time, query.view);
 

@@ -131,7 +131,8 @@ struct RenderedPlane {
 // On failure `out` is empty and `error`, when given, says why. With `byPassCache`, the render
 // bypasses the cache for the whole tree, not just for `node`: every node upstream drops the entry
 // it finds and renders again, and the caches are emptied before and after. A test of cache reuse
-// passes false, which also leaves the caches as they are.
+// passes false, which also leaves the caches as they are. With `draftMode`, the render is a draft
+// one, as the viewer's during a drag.
 bool renderNodePlanesDirect(const NodePtr& node,
                             double time,
                             ViewIdx view,
@@ -140,7 +141,8 @@ bool renderNodePlanesDirect(const NodePtr& node,
                             const std::list<ImageLayerDesc>& layers,
                             std::vector<RenderedPlane>* out,
                             std::string* error = 0,
-                            bool byPassCache = true);
+                            bool byPassCache = true,
+                            bool draftMode = false);
 
 // Renders `node` over `roi` the way `mode` renders a frame, and reads every plane back as
 // renderNodePlanesDirect() does. Legacy renders the planes in `layers` (RGBA when it is empty) in

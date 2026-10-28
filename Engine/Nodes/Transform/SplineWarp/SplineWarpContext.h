@@ -226,6 +226,13 @@ public:
     void setLinkAlignment(const SplineWarpLinkPtr& link, double startOffset, bool reversed);
 
     /**
+     * @brief Makes link's destination its source and the reverse, swaps the two ends of every
+     * correspondence, keys included, and sets the alignment on the new destination. Throws
+     * std::invalid_argument when startOffset is outside that curve's parameter range.
+     **/
+    void swapLinkCurves(const SplineWarpLinkPtr& link, double startOffset, bool reversed);
+
+    /**
      * @brief See SplineWarpAnimatedValue::setValue(). amount is clamped to [0, 1].
      **/
     void setLinkAmount(const SplineWarpLinkPtr& link, double amount, double time);
@@ -282,6 +289,8 @@ private:
     void checkLinkable(const BezierPtr& curve, const char* what) const;
     void remapCurveParams(const BezierPtr& curve, const std::function<double(double)>& f);
     void warpDataChanged(bool evaluate);
+    // Tells the panel the Role and Linked To columns may have changed.
+    void rolesChanged();
 
     mutable std::mutex _warpMutex;
     std::vector<SplineWarpLinkPtr> _links;

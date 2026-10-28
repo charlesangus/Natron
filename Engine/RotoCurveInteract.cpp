@@ -152,6 +152,25 @@ RotoCurveInteract::redrawOverlays()
     _host->redrawOverlayInteract();
 }
 
+void
+RotoCurveInteract::getCurveOverlayColor(const RotoDrawableItemPtr& item,
+                                        double color[4]) const
+{
+    item->getOverlayColor(color);
+}
+
+BezierPtr
+RotoCurveInteract::nearbyShownBezier(const QPointF& pos,
+                                     double tolerance,
+                                     int* index,
+                                     double* t,
+                                     bool* feather) const
+{
+    return getCurveContext()->isNearbyBezier(pos.x(), pos.y(), tolerance, index, t, feather, [this](const BezierPtr& curve) {
+        return isCurveShown(curve);
+    });
+}
+
 bool
 RotoCurveInteract::isFeatherVisible() const
 {
@@ -612,6 +631,10 @@ RotoCurveInteract::getToolForAction(const KnobButtonPtr& k,
         *tool = eRotoToolDrawEllipse;
     } else if (k == drawRectangleAction.lock()) {
         *tool = eRotoToolDrawRectangle;
+    } else if (k == drawOpenBezierAction.lock()) {
+        *tool = eRotoToolOpenBezier;
+    } else if (k == drawPointAction.lock()) {
+        *tool = eRotoToolDrawPoint;
     } else {
         ret = false;
     }
@@ -907,6 +930,34 @@ RotoCurveInteract::createToolbarKnobs(int toolSet)
             tool->setIsPersistent(false);
             editBezierToolButton->addKnob(tool);
             drawRectangleAction = tool;
+        }
+
+        if (toolSet & eRotoCurveToolSetOpenBezier) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamOpenBezierToolButtonActionLabel));
+            tool->setName(kRotoUIParamOpenBezierToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamOpenBezierToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/spline.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawOpenBezierAction = tool;
+        }
+
+        if (toolSet & eRotoCurveToolSetPoint) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamPointToolButtonActionLabel));
+            tool->setName(kRotoUIParamPointToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamPointToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/locate-fixed.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawPointAction = tool;
         }
     }
 
@@ -1331,6 +1382,10 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         if (selectedItems.empty()) {
             std::list<RotoDrawableItemPtr> bez = ctx->getCurvesByRenderOrder();
             for (std::list<RotoDrawableItemPtr>::const_iterator it = bez.begin(); it != bez.end(); ++it) {
+                BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
+                if (isBezier && !isCurveShown(isBezier)) {
+                    continue;
+                }
                 ctx->select(*it, RotoItem::eSelectionReasonOverlayInteract);
                 selectedItems.push_back(*it);
             }
@@ -2059,6 +2114,18 @@ RotoCurveInteract::getBezierBeingBuild() const
     return builtBezier;
 }
 
+BezierPtr
+RotoCurveInteract::makePointCurve(double x,
+                                  double y,
+                                  double time)
+{
+    // Held here: without a GUI the push runs redo() and drops the command.
+    std::shared_ptr<MakePointCurveUndoCommand> cmd = std::make_shared<MakePointCurveUndoCommand>(shared_from_this(), x, y, time);
+    _host->pushUndoCommand(cmd);
+
+    return cmd->getCurve();
+}
+
 bool
 RotoCurveInteract::smoothSelectedCurve()
 {
@@ -2341,7 +2408,7 @@ RotoCurveInteract::drawOverlay(double time)
                 bool locked = (*it)->isLockedRecursive();
                 double curveColor[4];
                 if (!locked) {
-                    (*it)->getOverlayColor(curveColor);
+                    getCurveOverlayColor(*it, curveColor);
                 } else {
                     curveColor[0] = 0.8;
                     curveColor[1] = 0.8;
@@ -2359,6 +2426,9 @@ RotoCurveInteract::drawOverlay(double time)
                     glEnd();
                 }
             } else if (isBezier) {
+                if (!isCurveShown(std::static_pointer_cast<Bezier>(*it))) {
+                    continue;
+                }
                 /// draw the bezier
                 // check if the bbox is visible
                 // if the bbox is visible, compute the polygon and draw it.
@@ -2386,7 +2456,7 @@ RotoCurveInteract::drawOverlay(double time)
                 bool locked = (*it)->isLockedRecursive();
                 double curveColor[4];
                 if (!locked) {
-                    (*it)->getOverlayColor(curveColor);
+                    getCurveOverlayColor(*it, curveColor);
                 } else {
                     curveColor[0] = 0.8;
                     curveColor[1] = 0.8;
@@ -2647,6 +2717,8 @@ RotoCurveInteract::drawOverlay(double time)
             glCheckError();
         } // for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
 
+        drawOverlayExtras(time, screenPixelRatio, pixelScale);
+
         if (!_host->isDrawingPassiveOverlay()) {
             drawPaintToolOverlay(screenPixelRatio, viewportSize);
         }
@@ -2706,7 +2778,7 @@ RotoCurveInteract::onViewportSelectionUpdated(const RectD& rectangle,
     std::list<RotoDrawableItemPtr> curves = ctx->getCurvesByRenderOrder();
     for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if ((*it)->isLockedRecursive()) {
+        if ((*it)->isLockedRecursive() || (isBezier && !isCurveShown(isBezier))) {
             continue;
         }
 
@@ -2757,7 +2829,7 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
         double nearbyBezierT;
         int nearbyBezierCPIndex;
         bool isFeather;
-        BezierPtr nearbyBezier = getCurveContext()->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+        BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
 
         if (nearbyBezier) {
             /// If the bezier is already selected and we re-click on it, change the transform mode
@@ -2812,7 +2884,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     double nearbyBezierT;
     int nearbyBezierCPIndex;
     bool isFeather;
-    BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+    BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
     std::pair<BezierCPPtr, BezierCPPtr> nearbyCP;
     int nearbyCpIndex = -1;
     if (nearbyBezier) {
@@ -3140,6 +3212,11 @@ RotoCurveInteract::onOverlayPenDown(double time,
     case eRotoToolDrawBSpline:
 
         break;
+    case eRotoToolDrawPoint:
+        makePointCurve(pos.x(), pos.y(), time);
+        evaluateOnPenUp = true;
+        didSomething = true;
+        break;
     case eRotoToolDrawEllipse: {
         click = pos;
         pushUndoCommand(new MakeEllipseUndoCommand(shared_from_this(), true, false, false, pos.x(), pos.y(), pos.x(), pos.y(), time));
@@ -3248,7 +3325,7 @@ RotoCurveInteract::onOverlayPenMotion(double time,
             double nearbyBezierT;
             int nearbyBezierCPIndex;
             bool isFeather;
-            BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+            BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
             if (isFeather && !featherVisible) {
                 nearbyBezier.reset();
             }

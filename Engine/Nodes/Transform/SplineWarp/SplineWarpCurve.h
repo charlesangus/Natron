@@ -110,6 +110,11 @@ public:
     double arcLengthAtParam(double u) const;
     double paramAtArcLength(double s) const;
 
+    /**
+     * @brief The parameter of the curve point nearest (x, y), and that point's distance to it.
+     **/
+    double nearestParam(double x, double y, double* distance) const;
+
 private:
     void buildArcLengthTable();
 

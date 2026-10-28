@@ -737,4 +737,88 @@ sampleSplineWarp(const SplineWarpContext& context,
     return sampleSplineWarp(links, boundaries, settings);
 }
 
+namespace {
+double
+paramAtWalk(const Walk& walk,
+            double w)
+{
+    if (!(walk.length > 0.)) {
+        return 0.;
+    }
+
+    return walk.shape->paramAtArcLength(walk.wrap(walk.reversed ? walk.startArc - w : walk.startArc + w));
+}
+} // anonymous namespace
+
+double
+splineWarpPairedParam(const SplineWarpLinkSamplingInput& link,
+                      bool fromSource,
+                      double param)
+{
+    const LinkPlan plan = planLink(link, 1.);
+    const Walk& from = fromSource ? plan.source : plan.destination;
+    const Walk& to = fromSource ? plan.destination : plan.source;
+    const double w = from.walkOfParam(param);
+
+    if (plan.spans.empty()) {
+        return paramAtWalk(to, 0.);
+    }
+    for (std::size_t i = 0; i < plan.spans.size(); ++i) {
+        const SpanPlan& span = plan.spans[i];
+        const double a = fromSource ? span.from.source : span.from.destination;
+        const double b = fromSource ? span.to.source : span.to.destination;
+        const double oa = fromSource ? span.from.destination : span.from.source;
+        const double ob = fromSource ? span.to.destination : span.to.source;
+        if ((w >= std::min(a, b)) && (w <= std::max(a, b))) {
+            const double f = (b != a) ? (w - a) / (b - a) : 0.;
+
+            return paramAtWalk(to, oa + f * (ob - oa));
+        }
+    }
+
+    // Past the last anchor: only when the spans run backward on this curve.
+    return paramAtWalk(to, (w <= 0.) ? 0. : to.length);
+}
+
+double
+splineWarpClampCorrespondenceParam(const SplineWarpLinkSamplingInput& link,
+                                   int index,
+                                   bool onSource,
+                                   double param)
+{
+    if ((index < 0) || (index >= (int)link.correspondences.size())) {
+        return param;
+    }
+    const LinkPlan plan = planLink(link, 1.);
+    const Walk& walk = onSource ? plan.source : plan.destination;
+    if (!(walk.length > 0.)) {
+        return param;
+    }
+
+    // Neighbours by where their source ends sit, ties broken by index; the walk's ends bound the rest.
+    const double own = plan.source.walkOfParam(link.correspondences[index].first);
+    double lo = 0.;
+    double hi = walk.length;
+    for (int i = 0; i < (int)link.correspondences.size(); ++i) {
+        if (i == index) {
+            continue;
+        }
+        const double ws = plan.source.walkOfParam(link.correspondences[i].first);
+        const double w = onSource ? ws : plan.destination.walkOfParam(link.correspondences[i].second);
+        if ((ws < own) || ((ws == own) && (i < index))) {
+            lo = std::max(lo, w);
+        } else {
+            hi = std::min(hi, w);
+        }
+    }
+    if (lo > hi) {
+        // The neighbours already cross on this curve: nothing to keep between.
+        return param;
+    }
+    const double margin = std::min(1e-4 * walk.length, (hi - lo) / 2.);
+    const double w = std::max(lo + margin, std::min(walk.walkOfParam(param), hi - margin));
+
+    return paramAtWalk(walk, w);
+}
+
 NATRON_NAMESPACE_EXIT

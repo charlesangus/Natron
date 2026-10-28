@@ -230,6 +230,19 @@ SplineWarpSampleSet sampleSplineWarp(const SplineWarpContext& context,
  **/
 std::vector<Point> splineWarpPolyline(const SplineWarpCurveShape& shape, int perSegment);
 
+/**
+ * @brief The parameter on the other curve of link that its pairing, the arc-length spans between
+ * its correspondences, puts with param: on the destination when fromSource, on the source otherwise.
+ **/
+double splineWarpPairedParam(const SplineWarpLinkSamplingInput& link, bool fromSource, double param);
+
+/**
+ * @brief param, on the source curve of link when onSource and on its destination otherwise, moved
+ * along that curve's walk to lie strictly between the ends of the correspondences next to
+ * correspondence index, in source order, so no span inverts.
+ **/
+double splineWarpClampCorrespondenceParam(const SplineWarpLinkSamplingInput& link, int index, bool onSource, double param);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Transform_SplineWarp_SplineWarpSampling_h

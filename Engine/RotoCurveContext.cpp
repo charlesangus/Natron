@@ -570,7 +570,8 @@ RotoCurveContext::isNearbyBezier(double x,
                                  double acceptance,
                                  int* index,
                                  double* t,
-                                 bool* feather) const
+                                 bool* feather,
+                                 const std::function<bool(const BezierPtr&)>& accept) const
 {
     /// MT-safe: only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
@@ -581,7 +582,7 @@ RotoCurveContext::isNearbyBezier(double x,
         const RotoItems& items = (*it)->getItems();
         for (RotoItems::const_iterator it2 = items.begin(); it2 != items.end(); ++it2) {
             BezierPtr b = std::dynamic_pointer_cast<Bezier>(*it2);
-            if (b && !b->isLockedRecursive()) {
+            if (b && !b->isLockedRecursive() && (!accept || accept(b))) {
                 double param;
                 int i = b->isPointOnCurve(x, y, acceptance, &param, feather);
                 if (i != -1) {

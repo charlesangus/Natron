@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <list>
 
 #include "Engine/Bezier.h"
@@ -268,6 +269,59 @@ SplineWarpCurveShape::paramAtArcLength(double s) const
     const double f = (span > 0.) ? (s - _cumulative[lo]) / span : 0.;
 
     return (lo + f) / kSubdivisions;
+}
+
+double
+SplineWarpCurveShape::nearestParam(double x,
+                                   double y,
+                                   double* distance) const
+{
+    const auto distanceAt = [&](double u) {
+        const Point p = pointAt(u);
+
+        return std::sqrt((p.x - x) * (p.x - x) + (p.y - y) * (p.y - y));
+    };
+
+    if (_segments.empty()) {
+        *distance = (_pointCount > 0) ? distanceAt(0.) : std::numeric_limits<double>::infinity();
+
+        return 0.;
+    }
+
+    // Coarse scan, then a ternary search around the best sample: a cubic segment piece this
+    // short has a single nearest point.
+    const int steps = (int)_segments.size() * kSubdivisions;
+    double best = 0.;
+    double bestDistance = distanceAt(0.);
+    for (int k = 1; k <= steps; ++k) {
+        const double u = (double)k / kSubdivisions;
+        const double d = distanceAt(u);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = u;
+        }
+    }
+    const double step = 1. / kSubdivisions;
+    double lo = std::max(0., best - step);
+    double hi = std::min((double)_segments.size(), best + step);
+    for (int i = 0; i < 48; ++i) {
+        const double a = lo + (hi - lo) / 3.;
+        const double b = hi - (hi - lo) / 3.;
+        if (distanceAt(a) < distanceAt(b)) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    const double u = (lo + hi) / 2.;
+    const double d = distanceAt(u);
+    if (d < bestDistance) {
+        best = u;
+        bestDistance = d;
+    }
+    *distance = bestDistance;
+
+    return best;
 }
 
 NATRON_NAMESPACE_EXIT

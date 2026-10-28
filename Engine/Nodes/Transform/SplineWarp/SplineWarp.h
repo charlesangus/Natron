@@ -39,6 +39,8 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCache.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
 
@@ -87,7 +89,7 @@ inline constexpr NodeSpec kSplineWarpNodeSpec = {
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_SPLINEWARP,
     .minorVersion = 0,
-    .internal = true,
+    .icon = NATRON_IMAGES_PATH "NativeNodes/SplineWarp.png",
     .inputs = kSplineWarpInputs,
 };
 
@@ -120,6 +122,7 @@ public:
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The Source's region of definition; with the bbox knob at union, grown by where the
@@ -142,6 +145,37 @@ public:
      * sub-frame, the one time whose warp it renders.
      **/
     std::vector<double> getRenderTimes(double time, ViewIdx view);
+    const SplineWarpInteractPtr& getInteract() const
+    {
+        return _ui;
+    }
+
+    virtual bool hasOverlay() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL;
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
+    virtual void drawOverlay(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
+    virtual bool onOverlayPenDown(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp, PenType pen) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayPenMotion(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayPenUp(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayPenDoubleClicked(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool onOverlayKeyDown(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
+    virtual bool onOverlayKeyUp(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
+    virtual bool onOverlayFocusLost(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
+    virtual void onInteractViewportSelectionCleared() OVERRIDE FINAL;
+    virtual void onInteractViewportSelectionUpdated(const RectD& rectangle, bool onRelease) OVERRIDE FINAL;
+
+    // Draft renders are cached apart from full-quality ones.
+    virtual bool supportsRenderQuality() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    // The field steps of the cached coordinate fields, for tests.
+    std::vector<double> getCachedFieldResolutions() const;
 
 private:
     // The knob values a render reads, at one time and view.
@@ -160,6 +194,7 @@ private:
         double shutter = 0.5;
         Resampler::ShutterOffsetEnum shutterOffset = Resampler::eShutterOffsetStart;
         double shutterCustomOffset = 0.;
+        bool warped = true;
     };
 
     // The solved warp at one time: its samples, the map of the chosen solver, and whether it moves
@@ -257,9 +292,14 @@ private:
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    void readSettings(double time, ViewIdx view, Settings* settings) const;
+    // In draft, the curves are sampled half as finely, the field step is four times as coarse,
+    // and the filter is impulse.
+    void readSettings(double time, ViewIdx view, Settings* settings, bool draft = false) const;
     // Only the knobs the warp is solved from, which a sub-frame reads at its own time.
     void readWarpSettings(double time, ViewIdx view, Settings* settings) const;
+
+    // Whether the render this thread is in is a draft one.
+    bool isDraftRender() const;
 
     // Samples and solves the warp; false when the node has no SplineWarp curve context.
     // The pairs sampled from the curves at time, cached by the curves' hash and the settings
@@ -303,6 +343,11 @@ private:
     KnobDoubleWPtr _shutter;
     KnobChoiceWPtr _shutterOffset;
     KnobDoubleWPtr _shutterCustomOffset;
+
+    SplineWarpInteractPtr _ui;
+    std::unique_ptr<SplineWarpPanelHook> _panelHook;
+    // Whether a drag of the interact turned the viewer's draft render on.
+    bool _draftDrag;
 
     SplineWarpLruCache<SampleKey, SplineWarpSampleSet> _samples;
     SplineWarpTpsCache _maps;

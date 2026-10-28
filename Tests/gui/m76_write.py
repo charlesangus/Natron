@@ -397,12 +397,12 @@ try:
         require(panel is not None, "the Write's panel is open")
         rows = panel_rows(panel)
         report("NOTE panel labels top to bottom: %r" % rows)
-        order = ["File", "Overwrite", "Format Type", "Clip To RoD", "Frame Range", "First Frame", "Last Frame",
+        order = ["File", "Overwrite", "Clip To RoD", "Frame Range", "First Frame", "Last Frame",
                  "Frame Increment", "Output Colorspace", "OCIO Context", "Compression", "Write Metadata",
                  "Read back file"]
         ys = [first_y(rows, n) for n in order]
         check(all(y is not None for y in ys) and ys == sorted(ys),
-              "the Controls page runs file, overwrite, format, range, increment, channels, colourspace, context, options, metadata, read back (%r)" % list(zip(order, ys)))
+              "the Controls page runs file, overwrite, clip to RoD, range, increment, channels, colourspace, context, options, metadata, read back (%r)" % list(zip(order, ys)))
         sliders = [w for w in panel.findChildren(QWidget) if gt.class_name(w) == "ScaleSliderQt" and w.isVisible()]
         fy, ly = first_y(rows, "First Frame"), first_y(rows, "Last Frame")
         near = [w for w in sliders if fy is not None and ly is not None and fy - 10 <= w.mapTo(panel, w.rect().topLeft()).y() <= ly + 30]

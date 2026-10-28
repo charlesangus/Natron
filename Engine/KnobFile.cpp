@@ -57,11 +57,12 @@ NATRON_NAMESPACE_ENTER
 /***********************************KnobFile*****************************************/
 
 KnobFile::KnobFile(KnobHolder* holder,
-                   const std::string &description,
+                   const std::string& description,
                    int dimension,
                    bool declaredByPlugin)
     : AnimatingKnobStringHelper(holder, description, dimension, declaredByPlugin)
     , _isInputImage(false)
+    , _showsReloadButton(true)
 {
 }
 

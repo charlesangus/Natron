@@ -96,6 +96,20 @@ public:
         return _fileExtensions;
     }
 
+    /**
+     * @brief Whether the knob shows its own reload icon. Nodes with a Reload button of their own
+     * turn it off, so their panel has one reload.
+     **/
+    void setShowsReloadButton(bool shows)
+    {
+        _showsReloadButton = shows;
+    }
+
+    bool showsReloadButton() const
+    {
+        return _showsReloadButton;
+    }
+
     void open_file()
     {
         Q_EMIT openFile();
@@ -159,6 +173,7 @@ private:
     virtual const std::string & typeName() const OVERRIDE FINAL;
     static const std::string _typeNameStr;
     int _isInputImage;
+    bool _showsReloadButton;
     std::vector<std::string> _fileExtensions;
 };
 

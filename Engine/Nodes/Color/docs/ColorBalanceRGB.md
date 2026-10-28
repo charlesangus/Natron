@@ -6,7 +6,7 @@ Tolerance:
 |---|---|---|---|
 | ColorBalanceRGB | darktable reference | `kReferenceMean` 2e-4, `kReferenceMax` 5e-3 | mean and largest absolute error over the crop, relative to the reference's mean level, each sample's beyond the half float reference's rounding (`RawReference::halfFloatError`), against darktable-cli renders (`NativeColorBalanceRGB_Test.cpp`, `MatchesDarktable`). Provisional until the references are rendered |
 | ColorBalanceRGB | identity | 2e-4 relative | defaults on low-chroma colours, both formulas (`DefaultsKeepLowChromaColours`) |
-| ColorBalanceRGB | gpu | `ParityTolerance::make(0., 1e-4)` | kernel against the CPU row, both formulas, every control, mask outputs and presets (`NativeColorBalanceRGBGpu_Test.cpp`) |
+| ColorBalanceRGB | gpu | `ParityTolerance::make(0., 1e-4)`, JzAzBz `1e-3` | kernel against the CPU row, both formulas, every control, mask outputs and presets (`NativeColorBalanceRGBGpu_Test.cpp`). JzAzBz's PQ curve amplifies float rounding: a float round trip drifts up to 2.6e-4 (CPU) and 2.8e-4 (lavapipe) from its input, and the two disagree by up to 3.75e-4 |
 
 The node ports darktable's color balance rgb (`src/iop/colorbalancergb.c` and
 `data/kernels/colorbalancergb.cl`, release-5.6.2) with every parameter of
@@ -64,4 +64,5 @@ presets; Apply writes every control, resetting the ones a preset does not name.
 
 The kernel (`Engine/Gpu/Kernels/colorbalancergb.slang`) follows the CPU statement for statement
 and reads the same gamut LUT. It runs only in a matrix working space; an OCIO working space keeps
-the node on the CPU.
+the node on the CPU. Its JzAzBz conversions use their own pow(), since a Vulkan pow() may carry a log2
+error that the PQ exponent of 134 amplifies 134-fold.

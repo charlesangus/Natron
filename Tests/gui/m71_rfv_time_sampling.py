@@ -33,7 +33,7 @@ POLL_TIMEOUT_S = 25.0
 
 PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
 PLUGIN_TRANSFORM = "net.sf.openfx.TransformPlugin"
-PLUGIN_TIMEBLUR = "net.sf.openfx.TimeBlur"
+PLUGIN_TIMEBLUR = "TimeBlur"
 PLUGIN_SET = "ReverseFlowVariableSet"
 PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
 

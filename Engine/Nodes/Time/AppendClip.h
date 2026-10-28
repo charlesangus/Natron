@@ -120,6 +120,23 @@ int appendClipLastFrame(std::span<const std::optional<AppendClipRange>> clips,
                         const AppendClipSettings& settings);
 
 /**
+ * @brief Where one connected input of AppendClip plays: its frames from first on, at the output
+ * frames [outFirst, outLast].
+ **/
+struct AppendClipPlacement {
+    int input = -1;
+    int first = 0;
+    int outFirst = 0;
+    int outLast = 0;
+};
+
+/**
+ * @brief The placement of each connected input on AppendClip's timeline, in input order.
+ **/
+std::vector<AppendClipPlacement> appendClipPlacements(std::span<const std::optional<AppendClipRange>> clips,
+                                                      const AppendClipSettings& settings);
+
+/**
  * @brief AppendClip: a route to the one clip shown at full weight, black when nothing is, and
  * otherwise the weighted sum of the clips shown, faded against black, through the shared time
  * blend on the CPU or the GPU.
@@ -157,6 +174,8 @@ public:
     // [firstFrame, appendClipLastFrame()], or the default range without a connected input.
     virtual void getFrameRange(double* first,
                                double* last) OVERRIDE FINAL;
+
+    std::vector<AppendClipPlacement> placements() const WARN_UNUSED_RETURN;
 
 private:
     // The inputs shown and their weights, then the weight of black.

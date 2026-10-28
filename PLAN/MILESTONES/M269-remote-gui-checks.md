@@ -11,12 +11,12 @@ Run the Xvfb GUI check scripts (Tests/gui/*.py) on GitHub Actions instead of the
 
 ## Phase 269.1
 
-- [ ] M269.P1.T1 — GUI job and inputs in remote-build.yml
+- [x] M269.P1.T1 — GUI job and inputs in remote-build.yml
   - files: .github/workflows/remote-build.yml
   - approach: inputs `gui_scripts` (space-separated paths under Tests/gui) and `from_run` (run id); build job skipped when from_run is set; `gui` job matrix from the script list, downloads the AppImage (this run or from_run via run-id + github-token), runs run-gui-test.sh with GUI_TEST_SCREEN_SIZE=1920x1080, uploads NATRON_GUI_TEST_OUT as `gui-<name>-<sha>` even on failure.
   - verify: dispatch on the M269 branch with from_run = a green release run and one existing script.
   - size: L
-- [ ] M269.P1.T2 — build.sh --gui / --from-run
+- [x] M269.P1.T2 — build.sh --gui / --from-run
   - files: tools/ci/remote/build.sh, tools/ci/remote/README.md
   - approach: pass the inputs, download every gui-* artifact, print a per-script pass/fail summary.
   - verify: `tools/ci/remote/build.sh release --from-run <id> --gui "Tests/gui/m55_node_graph.py"` downloads screenshots.
@@ -24,4 +24,5 @@ Run the Xvfb GUI check scripts (Tests/gui/*.py) on GitHub Actions instead of the
 
 ## Decisions
 
+- 2026-10-27: first dispatch (run 40625390115, from M215's run 40620856879) ran 3 scripts in parallel in ~4 min; Xvfb/GL works on hosted runners (m215 87/87, m55 148/148; m214 1 real failure). Code d6762db96. The GUI backlog of 17 milestones is dispatched from this branch with from_run.
 - 2026-10-27: user asked to run the container-queue GUI work on Actions in parallel instead of waiting on the local container. Benches stay local.

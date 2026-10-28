@@ -92,7 +92,7 @@ public:
     };
 
     // How many children one fetchMore() adds.
-    static const int kFetchBatchSize = 1000;
+    static constexpr int kFetchBatchSize = 1000;
 
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();

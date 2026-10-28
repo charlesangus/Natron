@@ -30,6 +30,7 @@ Scouted facts (2026-10-25): no shake detection, cut line or dedicated disconnect
 
 ## Decisions
 
+- 2026-10-28: Implemented (build pending). Shake = 3 reversals on one axis within 500 ms, each swing ≥40 scene px; re-arms only on a fresh shake (thresholds to tune at sign-off). Cuts join M194's per-drag undo command (KissConnectCommand also disconnects). Ctrl + left press on empty canvas starts a cut line (dashed, Selection colour); Ctrl-click without drag no longer deselects; Escape or focus loss cancels. Alt at release after a shake snaps back; Escape undoes shakes as well as kisses; no shakes after Escape in the same drag. Ctrl+Alt+Left pans on Linux and never cuts. Fixed: a null-source ConnectCommand disconnected the first input fed by that source rather than its own; highlighted pipes draw in the Selection colour even when their node is selected.
 - 2026-10-25 — shake-effect: disconnects all the node's pipes (inputs and output), detected by three fast reversals in about 500 ms.
 - 2026-10-25 — cut-gesture: Ctrl+drag on empty canvas, with live highlight of the pipes to be cut; chosen over Alt-drag (mapped to middle-click) and a held key.
 

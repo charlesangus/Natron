@@ -25,127 +25,24 @@
 
 #include "USDRead.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cmath>
-#include <cstdint>
-#include <mutex>
 #include <string>
-#include <vector>
 
-#include <QFileInfo>
 #include <QString>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ContentHasher.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-// The commentary of every error posted since mark, one per line, and clears them so USD does not
-// also report them on its own.
-std::string
-takeUsdErrors(PXR_NS::TfErrorMark& mark)
-{
-    std::string text;
-
-    for (PXR_NS::TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
-        if (!text.empty()) {
-            text += '\n';
-        }
-        text += it->GetCommentary();
-    }
-    mark.Clear();
-
-    return text;
-}
-
-// What a USD stage would read as the layer's time codes per second.
-double
-getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer)
-{
-    if (layer->HasTimeCodesPerSecond()) {
-        return layer->GetTimeCodesPerSecond();
-    }
-    if (layer->HasFramesPerSecond()) {
-        return layer->GetFramesPerSecond();
-    }
-
-    return layer->GetTimeCodesPerSecond();
-}
-
-QString
-upAxisName(SceneMetadata::UpAxisEnum upAxis)
-{
-    return (upAxis == SceneMetadata::eUpAxisZ) ? QString::fromUtf8("Z") : QString::fromUtf8("Y");
-}
-} // anonymous namespace
-
 struct USDRead::Implementation {
-    mutable std::mutex fileLayerMutex;
-    // The file's layer the current layer sublayers, held so it stays open until the next
-    // authoring replaces it: a stage composed meanwhile finds it rather than reading the file.
-    PXR_NS::SdfLayerRefPtr fileLayer;
-    // Every file layer the file brings in, the file's own first, as of the last authoring or
-    // Reload: what Reload reloads.
-    std::vector<PXR_NS::SdfLayerRefPtr> closure;
-    // Their files on disk, in the same order.
-    std::vector<std::string> closurePaths;
-    // The links out of their root the file's layer stack authors, as of the closure's walk.
-    SceneLinkIndex links;
-    // SceneOps::getFileLayerReloadCount() when closure was walked: authoring skips the walk,
-    // which visits every spec of every layer, while closure starts with the layer it sublayers
-    // and no reload has run since. Reload walks afresh, which also finds files that were missing.
-    std::uint64_t closureReloadCount;
-    // The stamps of closurePaths as of the last purge, 0 before any: keys the node, so a Reload
-    // that read a changed file again, however deep, re-authors the layer. Taken only when the
-    // files are read again, never by an evaluation, so an evaluation cannot re-key the node
-    // while the layers still hold what was read before.
-    std::atomic<U64> closureDigest;
-
-    Implementation()
-        : closureReloadCount(0)
-        , closureDigest(0)
-    {
-    }
-
-    void setClosure(const PXR_NS::SdfLayerRefPtr& layer)
-    {
-        // Read before the walk, so a reload during it leaves the result marked stale.
-        const std::uint64_t reloadCount = SceneOps::getFileLayerReloadCount();
-        std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer) : std::vector<PXR_NS::SdfLayerRefPtr>();
-        std::vector<std::string> paths;
-        paths.reserve(layers.size());
-        for (const PXR_NS::SdfLayerRefPtr& l : layers) {
-            paths.push_back(l->GetRealPath());
-        }
-        SceneLinkIndex fileLinks = SceneOps::findLayerStackLinks(layer);
-        std::lock_guard<std::mutex> lock(fileLayerMutex);
-        closure.swap(layers);
-        closurePaths.swap(paths);
-        links.swap(fileLinks);
-        closureReloadCount = reloadCount;
-    }
-
-    // Walks layer's closure unless the last walk was of layer and no reload has run since: file
-    // layers are never edited, so only a reload changes what they bring in.
-    void updateClosure(const PXR_NS::SdfLayerRefPtr& layer)
-    {
-        {
-            std::lock_guard<std::mutex> lock(fileLayerMutex);
-            if (!closure.empty() && (closure.front() == layer) && (closureReloadCount == SceneOps::getFileLayerReloadCount())) {
-                return;
-            }
-        }
-        setClosure(layer);
-    }
+    SceneFileSource source;
 };
 
 USDRead::USDRead(NodePtr node)
@@ -214,30 +111,13 @@ USDRead::knobChanged(KnobI* k,
     if (!reload || (k != reload.get())) {
         return false;
     }
-    // The layers to read again: those the last authoring found, or, if this node has not
-    // authored yet, those of the file's layer if another consumer has it open.
-    std::vector<PXR_NS::SdfLayerRefPtr> layers;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        layers = _imp->closure;
-    }
     KnobFilePtr filename = _filename.lock();
-    if (layers.empty() && filename) {
-        const std::string path = filename->getSingleFilePath();
-        PXR_NS::SdfLayerHandle open = path.empty() ? PXR_NS::SdfLayerHandle() : PXR_NS::SdfLayer::Find(path);
-        if (open) {
-            layers = SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open));
-        }
-    }
     std::string error;
-    if (!layers.empty() && !SceneOps::reloadFileLayers(layers, &error)) {
+    if (!_imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), &error)) {
         setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
     } else {
         clearPersistentMessage(false);
     }
-    // A reload can change what the file brings in. The file's layer is the same object, reloaded
-    // in place.
-    _imp->setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
     purgeCaches();
     // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
     // hash inputs.
@@ -262,23 +142,7 @@ USDRead::purgeCaches()
     if (filename) {
         filename->invalidateFileStamp();
     }
-    std::vector<std::string> paths;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        paths = _imp->closurePaths;
-    }
-    FileStampRegistry& stamps = FileStampRegistry::instance();
-    for (const std::string& path : paths) {
-        if (!path.empty()) {
-            stamps.invalidate(path);
-        }
-    }
-    ContentHasher h;
-    h.appendU64(paths.size());
-    for (const std::string& path : paths) {
-        h.appendU64(path.empty() ? 0 : stamps.stamp(path));
-    }
-    _imp->closureDigest = h.finalize();
+    _imp->source.purgeStamps();
     invalidateSceneLayer();
     clearActionsCache();
 } // USDRead::purgeCaches
@@ -287,7 +151,7 @@ void
 USDRead::appendNodeContentHash(ContentHasher& h) const
 {
     // The file's own stamp is in the File knob's hash; this covers every file it brings in.
-    h.appendU64(_imp->closureDigest.load());
+    h.appendU64(_imp->source.getDigest());
 }
 
 bool
@@ -299,23 +163,8 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     // One layer per file, shared with every other consumer through USD's layer registry, and
     // never edited here: Reload reloads it in place behind SceneWriteBarrier, and every stage
     // composing it follows.
-    PXR_NS::SdfLayerRefPtr fileLayer;
-    std::string diagnostic;
-    {
-        PXR_NS::TfErrorMark mark;
-        fileLayer = PXR_NS::SdfLayer::FindOrOpen(path);
-        diagnostic = takeUsdErrors(mark);
-    }
+    PXR_NS::SdfLayerRefPtr fileLayer = SceneFileSource::openLayer(path, errorMessage);
     if (!fileLayer) {
-        // USD posts nothing for a file that is not there.
-        if (!diagnostic.empty()) {
-            *errorMessage = diagnostic;
-        } else if (!QFileInfo::exists(QString::fromStdString(path))) {
-            *errorMessage = tr("%1 does not exist.").arg(QString::fromStdString(path)).toStdString();
-        } else {
-            *errorMessage = tr("USD could not read %1.").arg(QString::fromStdString(path)).toStdString();
-        }
-
         return false;
     }
 
@@ -336,7 +185,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     }
     // The same rate as the file, so USD applies no rate conversion across the sublayer arc and
     // the offset below is the whole time mapping.
-    const double timeCodesPerSecond = getTimeCodesPerSecond(fileLayer);
+    const double timeCodesPerSecond = SceneFileSource::getTimeCodesPerSecond(fileLayer);
     layer->SetTimeCodesPerSecond(timeCodesPerSecond);
 
     // A stage time t reads the sublayer at t - offset, so (f + frameOffset) in project frames is
@@ -345,14 +194,9 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     layer->InsertSubLayerPath(fileLayer->GetIdentifier());
     layer->SetSubLayerOffset(PXR_NS::SdfLayerOffset(-frameOffset * timeCodesPerSecond / framesPerSecond), 0);
 
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        _imp->fileLayer = fileLayer;
-    }
-    _imp->updateClosure(fileLayer);
+    _imp->source.hold(fileLayer);
     if (edit.sublayerLinks) {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        *edit.sublayerLinks = _imp->links;
+        *edit.sublayerLinks = _imp->source.getLinks();
     }
 
     return true;
@@ -394,21 +238,11 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
     const SceneMetadata& file = outputScene->getMetadata();
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    if (project) {
-        const SceneMetadata::UpAxisEnum projectUpAxis = project->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
-        const double projectMetersPerUnit = project->getProjectMetersPerUnit();
-        const bool sameMetersPerUnit = std::abs(file.metersPerUnit - projectMetersPerUnit) <= 1e-9 * std::max(std::abs(file.metersPerUnit), std::abs(projectMetersPerUnit));
-        if ((file.upAxis != projectUpAxis) || !sameMetersPerUnit) {
-            setPersistentMessage(eMessageTypeWarning,
-                                 tr("The file's up axis is %1 and meters per unit %2; the project's are %3 and %4. The scene is not converted.")
-                                     .arg(upAxisName(file.upAxis))
-                                     .arg(file.metersPerUnit)
-                                     .arg(upAxisName(projectUpAxis))
-                                     .arg(projectMetersPerUnit)
-                                     .toStdString());
+    const std::string warning = getSceneUnitsWarning(file, project);
+    if (!warning.empty()) {
+        setPersistentMessage(eMessageTypeWarning, warning);
 
-            return eStatusOK;
-        }
+        return eStatusOK;
     }
     clearPersistentMessage(false);
 

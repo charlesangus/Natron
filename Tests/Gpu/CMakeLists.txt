@@ -35,6 +35,7 @@ set(GpuTests_SOURCES
     GpuKernel_Test.cpp
     GpuKernelRegistry_Test.cpp
     GpuPipelineCache_Test.cpp
+    GpuQueuePlan_Test.cpp
     GpuRuntime_Test.cpp
     GpuRuntimeShader_Test.cpp
     GpuShaderCompiler_Test.cpp

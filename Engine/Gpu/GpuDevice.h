@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace gpu {
@@ -139,6 +140,27 @@ struct GpuAutoPick {
 // never picked. A CPU-type device is picked when nothing better qualifies; refusing it in auto mode is the caller's
 // policy. Empty when no candidate qualifies.
 std::optional<GpuAutoPick> pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates);
+
+// The queues a device opens and the one each QueueKind submits to; the fields match GpuDeviceInfo's.
+struct GpuQueuePlan {
+    uint32_t computeFamily = 0;
+    uint32_t transferFamily = 0;
+    uint32_t computeQueueIndex = 0;
+    uint32_t uploadQueueIndex = 0;
+    uint32_t downloadQueueIndex = 0;
+    // Queues to open in each family. transferQueues is 0 when transferFamily is computeFamily.
+    uint32_t computeQueues = 0;
+    uint32_t transferQueues = 0;
+    bool transferSharesComputeQueue = false;
+};
+
+// Routes uploads and downloads to the first transfer-only family when there is one, else to extra queues of the
+// compute family, which itself is the first one without graphics, else the first with compute. Empty when no family
+// has compute.
+std::optional<GpuQueuePlan> planQueues(std::span<const VkQueueFamilyProperties> families);
+
+// A RADV_PERFTEST-style list (current may be null) with token appended, unless it already holds token.
+std::string withPerftestToken(const char* current, std::string_view token);
 
 class GpuDevice {
 public:

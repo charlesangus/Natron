@@ -151,6 +151,33 @@ public:
                               double radiusY) WARN_UNUSED_RETURN;
 
     /**
+     * @brief The levels a textured kernel's weights are rounded to for the defocus gather. A
+     * texture gives nearly every pixel its own weight, so that a row would be one run per pixel;
+     * rounded, a row is about one run per level its profile crosses, at any radius. Rounding moves
+     * each weight by at most half a level, 1/64 of the peak weight; the renormalisation after it
+     * scales every weight by the rounding's net change in the sum, a fraction of a level more.
+     **/
+    static constexpr int kTextureLevels = 32;
+
+    /// Whether shape's texture makes the weights of shaped() vary inside the shape.
+    static bool isTextured(const BokehShapeParams& shape) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief shaped() as the defocus filters gather it: a textured kernel quantised() to
+     * kTextureLevels, any other exactly shaped().
+     **/
+    static BokehKernel gatherKernel(const BokehShapeParams& shape,
+                                    double radiusX,
+                                    double radiusY) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief This kernel with each weight rounded to the nearest multiple of its peak weight over
+     * levels, then normalised to sum to 1 again; equal weights stay equal. A weight below half a
+     * level becomes 0.
+     **/
+    BokehKernel quantised(int levels) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The kernel of an image of width x height values, row 0 at the bottom, its longer side
      * stretched over the diameter and centred, each weight the area average of the values its
      * pixel covers, then normalised to sum to 1. Negative and non-finite values count as 0. An

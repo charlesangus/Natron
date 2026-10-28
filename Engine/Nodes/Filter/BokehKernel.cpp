@@ -514,6 +514,53 @@ BokehKernel::shaped(const BokehShapeParams& shape,
     return kernel;
 } // BokehKernel::shaped
 
+bool
+BokehKernel::isTextured(const BokehShapeParams& shape)
+{
+    if (shape.shape == BokehShape::Image) {
+        return false;
+    }
+    const Texture tex = makeTexture(shape);
+
+    return tex.active || tex.gaussian;
+}
+
+BokehKernel
+BokehKernel::gatherKernel(const BokehShapeParams& shape,
+                          double radiusX,
+                          double radiusY)
+{
+    const BokehKernel kernel = shaped(shape, radiusX, radiusY);
+
+    return isTextured(shape) ? kernel.quantised(kTextureLevels) : kernel;
+}
+
+BokehKernel
+BokehKernel::quantised(int levels) const
+{
+    if ((levels < 1) || isIdentity()) {
+        return *this;
+    }
+    float peak = 0.f;
+    for (float w : _weights) {
+        peak = std::max(peak, w);
+    }
+    if (!(peak > 0.f)) {
+        return *this;
+    }
+    const double step = (double)peak / levels;
+    std::vector<float> weights(_weights.size());
+    for (std::size_t i = 0; i < weights.size(); ++i) {
+        weights[i] = (float)(std::round(_weights[i] / step) * step);
+    }
+    BokehKernel kernel(_haloX, _haloY, std::move(weights));
+    if (!kernel.normalise()) {
+        return *this;
+    }
+
+    return kernel;
+}
+
 BokehKernel
 BokehKernel::fromImage(const float* values,
                        int width,

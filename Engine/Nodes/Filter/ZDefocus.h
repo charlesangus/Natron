@@ -36,7 +36,9 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/BokehKernel.h"
+#include "Engine/Nodes/Filter/BokehKnobs.h"
 #include "Engine/Nodes/Filter/DepthOfField.h"
+#include "Engine/Nodes/Filter/LensAberration.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
@@ -87,11 +89,14 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct DefocusKernelImage;
+
 struct ZDefocusParams {
     DepthOfFieldParams dof;
     int layers = 16;
     double aspectRatio = 1.;
     BokehShapeParams shape;
+    LensAberrationParams lens;
     BokehHighlight highlight;
     bool focalPlaneOutput = false;
 };
@@ -132,6 +137,17 @@ public:
     static void radii(const ZDefocusParams& params,
                       const PassContext& context,
                       double coc,
+                      double* radiusX,
+                      double* radiusY);
+
+    /**
+     * @brief radii() for a channel whose circle of confusion is scale times coc, clamped on its
+     * own to params' Max Size; a scale of 1 is radii() exactly.
+     **/
+    static void radii(const ZDefocusParams& params,
+                      const PassContext& context,
+                      double coc,
+                      double scale,
                       double* radiusX,
                       double* radiusY);
 
@@ -261,6 +277,13 @@ private:
                             std::vector<std::shared_ptr<const BokehKernel>>* kernels,
                             bool* empty);
 
+    /**
+     * @brief The Image kernel for a render with lens aberrations, null when it is missing, empty
+     * or black, which also sets the kernel warning.
+     **/
+    StatusEnum readLensKernelImage(const RenderActionArgs& args,
+                                   std::shared_ptr<const DefocusKernelImage>* image);
+
     /// Sets the Focal Plane to the depth under the Focal Point, rendered on this thread.
     void sampleFocalPoint(double time);
 
@@ -289,9 +312,11 @@ private:
     KnobDoubleWPtr _highlightThreshold;
     KnobDoubleWPtr _highlightGain;
     KnobChoiceWPtr _output;
+    BokehKnobs _bokehKnobs;
 
     struct KernelCache;
     std::unique_ptr<KernelCache> _kernelCache;
+    std::shared_ptr<BokehRunCache> _runCache;
 };
 
 NATRON_NAMESPACE_EXIT

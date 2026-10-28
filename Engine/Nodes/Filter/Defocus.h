@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <memory>
 #include <optional>
@@ -36,6 +37,8 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/BokehKernel.h"
+#include "Engine/Nodes/Filter/BokehKnobs.h"
+#include "Engine/Nodes/Filter/LensAberration.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
@@ -69,6 +72,14 @@ struct DefocusParams {
     double aspectRatio = 1.;
     BokehShapeParams shape;
     BokehHighlight highlight;
+    LensAberrationParams lens;
+};
+
+/// An Image kernel's channel, width x height floats.
+struct DefocusKernelImage {
+    std::vector<float> values;
+    int width = 0;
+    int height = 0;
 };
 
 class Defocus
@@ -98,11 +109,18 @@ public:
                       double* radiusX,
                       double* radiusY);
 
+    /// The radii of a channel whose circle of confusion chromatic aberration scales by scale.
+    static void radii(const DefocusParams& params,
+                      const PassContext& context,
+                      double scale,
+                      double* radiusX,
+                      double* radiusY);
+
     /**
      * @brief The passes for params at context's scale gathering with kernel over window, the
      * render window; kernel's halo must not exceed the radii's extent. With no kernel, the passes
-     * have no work and only carry the halo and growth, as the region actions need. No pass at all
-     * for an identity radius.
+     * have no work and only carry the halo and growth, as the region actions need, the halo of the
+     * largest channel's radii under the lens aberrations. No pass at all for an identity radius.
      **/
     static PassList passes(const DefocusParams& params,
                            const PassContext& context,
@@ -110,8 +128,19 @@ public:
                            const RectI& window) WARN_UNUSED_RETURN;
 
     /**
+     * @brief The passes for params at context's scale over window with the lens aberrations of
+     * lens: per channel group and cell of lens's grid, the runs kernel() gives for that group's
+     * index and the cell's clip, built a row of cells at a time.
+     **/
+    static PassList lensPasses(const DefocusParams& params,
+                               const PassContext& context,
+                               const LensAberration& lens,
+                               const std::function<BokehRunCache::Runs(int group, const BokehClip& clip)>& kernel,
+                               const RectI& window) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Whether the GPU records passes(): an analytic kernel whose halo is within the GPU
-     * kernels' cap.
+     * kernels' cap, without lens aberrations.
      **/
     static bool fitsGpu(const DefocusParams& params, const PassList& passes) WARN_UNUSED_RETURN;
 
@@ -190,7 +219,8 @@ private:
     /**
      * @brief The kernel of params at scale: the analytic shape, or the Image kernel read from the
      * Kernel input's channel over its region of definition. *empty is set when the Kernel image
-     * is empty or black, giving the single tap.
+     * is empty or black, giving the single tap. With image set, an Image kernel's image is also
+     * returned there, so that the lens aberrations can shape it again; null when it has none.
      **/
     StatusEnum buildKernel(const DefocusParams& params,
                            const PassContext& context,
@@ -198,7 +228,8 @@ private:
                            ViewIdx view,
                            const RenderScale& scale,
                            std::shared_ptr<const BokehKernel>* kernel,
-                           bool* empty);
+                           bool* empty,
+                           std::shared_ptr<const DefocusKernelImage>* image = nullptr);
 
     // Posts message, or takes back either warning of ours when it is empty.
     void setKernelWarning(const std::string& message);
@@ -215,8 +246,11 @@ private:
     KnobDoubleWPtr _highlightThreshold;
     KnobDoubleWPtr _highlightGain;
 
+    BokehKnobs _bokehKnobs;
+
     struct ShapeCache;
     std::unique_ptr<ShapeCache> _shapeCache;
+    std::shared_ptr<BokehRunCache> _runCache;
 };
 
 NATRON_NAMESPACE_EXIT

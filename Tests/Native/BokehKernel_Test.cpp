@@ -781,3 +781,74 @@ TEST(BokehKernel, TexturedClippedKernelsSumToOne)
         }
     }
 }
+
+TEST(BokehKernel, GatherKernelOfAnUntexturedShapeIsTheShape)
+{
+    const BokehShapeParams shapes[] = { BokehShapeParams(), blades(5, 20., 0.3), clipped(BokehShapeParams(), clipAt(0.5, 0., 1.)) };
+
+    for (const BokehShapeParams& shape : shapes) {
+        EXPECT_FALSE(BokehKernel::isTextured(shape));
+        const BokehKernel exact = BokehKernel::shaped(shape, 17.3, 9.6);
+        const BokehKernel gather = BokehKernel::gatherKernel(shape, 17.3, 9.6);
+        EXPECT_EQ(exact.weights(), gather.weights());
+    }
+}
+
+TEST(BokehKernel, QuantisedTextureStaysNearTheTexture)
+{
+    std::vector<BokehShapeParams> shapes(4);
+    shapes[0].sphericalAberration = 1.;
+    shapes[1].filterShape = 0.;
+    shapes[2].innerSize = 0.5;
+    shapes[2].innerBrightness = 0.2;
+    shapes[3].filterShape = 0.3;
+    shapes[3].sphericalAberration = -0.7;
+    shapes[3].catadioptric = true;
+
+    for (const BokehShapeParams& shape : shapes) {
+        ASSERT_TRUE(BokehKernel::isTextured(shape));
+        for (double r : { 3., 20., 60. }) {
+            const BokehKernel exact = BokehKernel::shaped(shape, r, r);
+            const BokehKernel gather = BokehKernel::gatherKernel(shape, r, r);
+            ASSERT_EQ(exact.weights().size(), gather.weights().size());
+            const float peak = *std::max_element(exact.weights().begin(), exact.weights().end());
+            double maxError = 0.;
+            for (std::size_t i = 0; i < exact.weights().size(); ++i) {
+                maxError = std::max(maxError, (double)std::fabs(exact.weights()[i] - gather.weights()[i]));
+            }
+            EXPECT_LE(maxError, peak / BokehKernel::kTextureLevels) << "radius " << r;
+            EXPECT_NEAR(kernelSum(gather), 1., 1e-5);
+        }
+    }
+}
+
+// Unquantised, a textured row is a run per pixel and the gather O(r^2) per pixel.
+TEST(BokehKernel, TexturedRunsStayBounded)
+{
+    std::vector<BokehShapeParams> shapes(5);
+    shapes[0].sphericalAberration = 1.;
+    shapes[1].sphericalAberration = -1.;
+    shapes[2].filterShape = 0.;
+    shapes[3].innerSize = 0.5;
+    shapes[3].innerBrightness = 0.2;
+    shapes[4] = clipped(blades(5, 0., 0.), clipAt(0.4, 0., 1.));
+    shapes[4].innerBrightness = 0.3;
+    shapes[4].innerFeather = 0.8;
+    shapes[4].sphericalAberration = 0.5;
+    shapes[4].filterShape = 0.6;
+    shapes[4].catadioptric = true;
+
+    const std::size_t perRow = 3 * BokehKernel::kTextureLevels;
+    for (const BokehShapeParams& shape : shapes) {
+        for (double r : { 100., 250. }) {
+            const BokehKernel kernel = BokehKernel::gatherKernel(shape, r, r);
+            const std::vector<BokehRun> runs = kernel.runs();
+            std::vector<std::size_t> rows(kernel.height(), 0);
+            for (const BokehRun& run : runs) {
+                ++rows[run.dy + kernel.haloY()];
+            }
+            EXPECT_LE(*std::max_element(rows.begin(), rows.end()), perRow) << "radius " << r;
+            EXPECT_LE(runs.size(), (std::size_t)kernel.height() * (2 * BokehKernel::kTextureLevels + 8)) << "radius " << r;
+        }
+    }
+}

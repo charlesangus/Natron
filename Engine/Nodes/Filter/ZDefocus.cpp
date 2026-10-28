@@ -151,6 +151,16 @@ struct ZDefocusState {
     BokehHighlight highlight;
     RectI window;
 
+    // With lens aberrations: whether slice k leaves channel group g sharp, groupSharp[k][g]; the runs
+    // of slice k's kernel for a group and a cell's clip; those of the band being composited; and a
+    // coverage per group, one after another, so that each channel is divided by its own.
+    std::shared_ptr<const LensAberration> lens;
+    std::vector<std::vector<unsigned char>> groupSharp;
+    std::function<BokehRunCache::Runs(int, int, const BokehClip&)> kernel;
+    LensBandRuns band;
+    int coverageGroups = 1;
+    std::size_t lensTaps = 1;
+
     std::mutex mutex;
     std::unique_ptr<double[]> tables;
     std::size_t capacity = 0;
@@ -170,7 +180,7 @@ struct ZDefocusState {
             tables.reset(new double[size]);
             capacity = size;
         }
-        const std::size_t pixels = (std::size_t)scratch.width * (std::size_t)scratch.height;
+        const std::size_t pixels = (std::size_t)scratch.width * (std::size_t)scratch.height * (std::size_t)coverageGroups;
         if (coverageCapacity < pixels) {
             coverage.reset(new float[pixels]);
             coverageCapacity = pixels;
@@ -199,6 +209,9 @@ struct ZDefocusState {
 };
 
 using ZDefocusStatePtr = std::shared_ptr<ZDefocusState>;
+
+// The fewest rows of a band of lens cells, so that a small cell grid still gathers in parallel.
+const int kMinBandRows = 32;
 using Worker = std::function<PassRowFn(const PassScratch&)>;
 
 /// Slot 1, every pixel of every plane: slot 0 with its highlights boosted.
@@ -235,16 +248,20 @@ clearWorker(const ZDefocusStatePtr& state)
     return [state](const PassScratch& scratch) -> PassRowFn {
         state->reserve(scratch);
         float* const coverage = state->coverage.get();
+        const int groups = state->coverageGroups;
         const PassScratch* buffers = &scratch;
 
-        return [coverage, buffers](int y) {
+        return [coverage, groups, buffers](int y) {
             const int width = buffers->width;
             const std::size_t row = (std::size_t)y * width;
+            const std::size_t stride = (std::size_t)width * (std::size_t)buffers->height;
             for (int p = 0; p < buffers->nPlanes; ++p) {
                 float* const dst = buffers->plane(2, p) + row;
                 std::fill(dst, dst + width, 0.f);
             }
-            std::fill(coverage + row, coverage + row + width, 0.f);
+            for (int g = 0; g < groups; ++g) {
+                std::fill(coverage + g * stride + row, coverage + g * stride + row + width, 0.f);
+            }
         };
     };
 }
@@ -362,18 +379,133 @@ finishWorker(const ZDefocusStatePtr& state)
         const int y1 = s->window.y1 - scratch.rect.y1;
         const int y2 = s->window.y2 - scratch.rect.y1;
         const BokehHighlight highlight = s->highlight;
+        const LensAberration* const lens = s->lens.get();
 
-        return [coverage, buffers, x1, x2, y1, y2, highlight](int y) {
+        return [coverage, buffers, x1, x2, y1, y2, highlight, lens](int y) {
             if ((y < y1) || (y >= y2)) {
                 return;
             }
             const std::size_t row = (std::size_t)y * buffers->width;
-            const float* const cov = coverage + row;
+            const std::size_t stride = (std::size_t)buffers->width * (std::size_t)buffers->height;
             for (int p = 0; p < buffers->nPlanes; ++p) {
+                const int group = lens ? lens->groupOf(buffers->channelBits[p]) : 0;
+                const float* const cov = coverage + (std::size_t)group * stride + row;
                 float* const dst = buffers->plane(2, p) + row;
                 for (int x = x1; x < x2; ++x) {
                     const float v = (cov[x] > 0.f) ? dst[x] / cov[x] : 0.f;
                     dst[x] = highlight.isActive() ? highlight.unboost(v) : v;
+                }
+            }
+        };
+    };
+}
+
+/// Slice k's kernels for band b, spread over the lines, replacing the band before.
+Worker
+lensBuildWorker(const ZDefocusStatePtr& state,
+                int k,
+                const LensBand& b)
+{
+    return [state, k, b](const PassScratch& scratch) -> PassRowFn {
+        ZDefocusState* s = state.get();
+        const int nLines = scratch.height;
+
+        return [s, k, b, nLines](int line) {
+            std::size_t first = 0;
+            std::size_t end = 0;
+            spreadItems(line, nLines, s->band.size(b), &first, &end);
+            for (std::size_t item = first; item < end; ++item) {
+                int group = 0;
+                int i = 0;
+                int j = 0;
+                s->band.item(b, item, &group, &i, &j);
+                s->band.runs[item] = s->groupSharp[k][group] ? BokehRunCache::Runs() : s->kernel(k, group, s->lens->clip(i, j));
+            }
+        };
+    };
+}
+
+/**
+ * @brief compositeWorker() over band b's rows of the render window with lens aberrations: each
+ * channel group gathers with its own kernel, cell by cell, and lays its coverage over its own.
+ **/
+Worker
+lensCompositeWorker(const ZDefocusStatePtr& state,
+                    int k,
+                    const LensBand& b)
+{
+    return [state, k, b](const PassScratch& scratch) -> PassRowFn {
+        state->reserve(scratch);
+        const ZDefocusState* s = state.get();
+        const double* const tables = s->tables.get();
+        float* const coverage = state->coverage.get();
+        const std::size_t planeSize = ZDefocusState::tablePlaneSize(scratch);
+        const PassScratch* buffers = &scratch;
+        const int x1 = std::clamp(s->window.x1 - scratch.rect.x1, 0, scratch.width);
+        const int x2 = std::clamp(s->window.x2 - scratch.rect.x1, x1, scratch.width);
+        const int y1 = std::clamp(std::max(b.y1, s->window.y1) - scratch.rect.y1, 0, scratch.height);
+        const int y2 = std::clamp(std::min(b.y2, s->window.y2) - scratch.rect.y1, y1, scratch.height);
+        const int groups = s->lens->groupCount();
+        const std::size_t n = (std::size_t)std::max(1, x2 - x1);
+        std::shared_ptr<std::vector<double>> acc = std::make_shared<std::vector<double>>(n);
+        std::shared_ptr<std::vector<float>> rows = std::make_shared<std::vector<float>>((std::size_t)(groups + 1) * n + (std::size_t)scratch.width);
+
+        return [s, k, b, tables, coverage, planeSize, buffers, x1, x2, y1, y2, groups, n, acc, rows](int line) {
+            if (x1 == x2) {
+                return;
+            }
+            const int width = buffers->width;
+            const int height = buffers->height;
+            const int nPlanes = buffers->nPlanes;
+            const LensAberration& lens = *s->lens;
+            const std::vector<unsigned char>& sharp = s->groupSharp[k];
+            const std::size_t stride = (std::size_t)width * (std::size_t)height;
+            const int rx1 = buffers->rect.x1;
+            float* const c = rows->data() + (std::size_t)groups * n;
+            float* const w = c + n;
+            std::size_t first = 0;
+            std::size_t end = 0;
+            spreadItems(line, height, (std::size_t)(y2 - y1), &first, &end);
+            for (std::size_t item = first; item < end; ++item) {
+                const int y = y1 + (int)item;
+                const int j = lens.rowOf(buffers->rect.y1 + y);
+                const std::size_t row = (std::size_t)y * width;
+                // Each group's coverage of the slice, gathered from its weights.
+                s->weightRow(*buffers, k, y, w);
+                for (int g = 0; g < groups; ++g) {
+                    float* const a = rows->data() + (std::size_t)g * n;
+                    if (sharp[g]) {
+                        std::copy(w + x1, w + x2, a);
+                        continue;
+                    }
+                    lens.forEachSegment(rx1 + x1, rx1 + x2, [&](int xa, int xb, int i) {
+                        bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, acc->data(), a + (xa - rx1 - x1));
+                    });
+                }
+                for (int p = 0; p < nPlanes; ++p) {
+                    const int g = lens.groupOf(buffers->channelBits[p]);
+                    const float* const a = rows->data() + (std::size_t)g * n;
+                    if (sharp[g]) {
+                        const float* const src = buffers->plane(1, p) + row + x1;
+                        for (int x = 0; x < x2 - x1; ++x) {
+                            c[x] = a[x] * src[x];
+                        }
+                    } else {
+                        lens.forEachSegment(rx1 + x1, rx1 + x2, [&](int xa, int xb, int i) {
+                            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, acc->data(), c + (xa - rx1 - x1));
+                        });
+                    }
+                    float* const dst = buffers->plane(2, p) + row + x1;
+                    for (int x = 0; x < x2 - x1; ++x) {
+                        dst[x] = c[x] + std::max(0.f, 1.f - a[x]) * dst[x];
+                    }
+                }
+                for (int g = 0; g < groups; ++g) {
+                    const float* const a = rows->data() + (std::size_t)g * n;
+                    float* const cov = coverage + (std::size_t)g * stride + row + x1;
+                    for (int x = 0; x < x2 - x1; ++x) {
+                        cov[x] = a[x] + std::max(0.f, 1.f - a[x]) * cov[x];
+                    }
                 }
             }
         };
@@ -428,6 +560,31 @@ focalPlanePasses(const ZDefocusStatePtr& state)
 }
 
 /**
+ * @brief Slice k's composite with lens aberrations, a band of cells at a time so that only the
+ * band's kernels are held: each band's kernels built, then gathered.
+ **/
+void
+appendLensComposite(const ZDefocusStatePtr& state,
+                    int k,
+                    PassList* list)
+{
+    const std::vector<LensBand> bands = state->lens->bands(state->window, kMinBandRows);
+    if (state->band.runs.empty()) {
+        state->band.reserve(bands);
+    }
+    for (const LensBand& b : bands) {
+        Pass build = Pass::point(false, lensBuildWorker(state, k, b));
+        build.slot = 2;
+        list->passes.push_back(build);
+
+        Pass composite = Pass::point(false, lensCompositeWorker(state, k, b));
+        composite.slot = 2;
+        composite.tapsPerSample = state->lensTaps;
+        list->passes.push_back(composite);
+    }
+}
+
+/**
  * @brief The passes of a Result render, with no work when state is null. The first carries the
  * whole halo, so that the region actions see it once whatever the slices.
  **/
@@ -471,6 +628,10 @@ resultPasses(int haloX,
             Pass prefix = Pass::point(false, prefixWorker(state, k));
             prefix.slot = 2;
             list.passes.push_back(prefix);
+        }
+        if (state->lens) {
+            appendLensComposite(state, k, &list);
+            continue;
         }
         Pass composite = Pass::point(false, compositeWorker(state, k));
         composite.slot = 2;
@@ -629,7 +790,9 @@ ZDefocus::ZDefocus(NodePtr node)
     , _highlightThreshold()
     , _highlightGain()
     , _output()
+    , _bokehKnobs()
     , _kernelCache(new KernelCache)
+    , _runCache(std::make_shared<BokehRunCache>())
 {
 }
 
@@ -894,6 +1057,8 @@ ZDefocus::initializeKnobs()
     page->addKnob(roundnessKnob);
     _roundness = roundnessKnob;
 
+    _bokehKnobs.addTextureKnobs(this, page);
+
     KnobChannelSelectPtr channelKnob = AppManager::createKnob<KnobChannelSelect>(this, tr("Kernel Channel"));
     channelKnob->setName(kZDefocusParamKernelChannel);
     channelKnob->setAnimationEnabled(false);
@@ -901,6 +1066,8 @@ ZDefocus::initializeKnobs()
     channelKnob->setHintToolTip(tr("Image kernel only: the channel of the Kernel input, in any of its layers, that holds the bokeh. A channel the input does not have, or None, reads 0."));
     page->addKnob(channelKnob);
     _kernelChannel = channelKnob;
+
+    _bokehKnobs.addLensKnobs(this, page);
 
     KnobDoublePtr thresholdKnob = AppManager::createKnob<KnobDouble>(this, tr("Highlight Threshold"));
     thresholdKnob->setName(kZDefocusParamHighlightThreshold);
@@ -976,6 +1143,8 @@ ZDefocus::getParams(double time,
     params.shape.blades = std::max(3, (int)reader.value(_blades));
     params.shape.rotation = reader.value(_rotation);
     params.shape.roundness = reader.value(_roundness);
+    _bokehKnobs.readTexture(reader, &params.shape);
+    params.lens = _bokehKnobs.readLens(reader);
     params.highlight.threshold = (float)std::max(0., reader.value(_highlightThreshold));
     params.highlight.gain = (float)std::max(1., reader.value(_highlightGain));
     if (!std::isfinite(params.highlight.threshold) || !std::isfinite(params.highlight.gain)) {
@@ -1001,6 +1170,24 @@ ZDefocus::radii(const ZDefocusParams& params,
     *radiusY = std::min(kMaxRadius, rs.y * size / 2.);
 }
 
+void
+ZDefocus::radii(const ZDefocusParams& params,
+                const PassContext& context,
+                double coc,
+                double scale,
+                double* radiusX,
+                double* radiusY)
+{
+    if (scale == 1.) {
+        radii(params, context, coc, radiusX, radiusY);
+
+        return;
+    }
+    const double maxSize = std::max(0., params.dof.maxSize);
+
+    radii(params, context, std::min(maxSize, std::abs(coc) * scale), radiusX, radiusY);
+}
+
 std::vector<ZDefocusSlice>
 ZDefocus::slices(const ZDefocusParams& params,
                  const PassContext& context)
@@ -1012,9 +1199,11 @@ ZDefocus::slices(const ZDefocusParams& params,
     double rx = 0.;
     double ry = 0.;
 
-    radii(params, context, front, &rx, &ry);
+    // A side blurs when its most scaled channel does.
+    const double scale = params.lens.maxScale();
+    radii(params, context, front, scale, &rx, &ry);
     const bool frontBlurs = !BokehKernel::isIdentityRadius(rx, ry);
-    radii(params, context, back, &rx, &ry);
+    radii(params, context, back, scale, &rx, &ry);
     const bool backBlurs = !BokehKernel::isIdentityRadius(rx, ry);
     if (!frontBlurs && !backBlurs) {
         return result;
@@ -1060,7 +1249,7 @@ ZDefocus::pixelCoc(const ZDefocusParams& params,
     double rx = 0.;
     double ry = 0.;
 
-    radii(params, context, coc, &rx, &ry);
+    radii(params, context, coc, params.lens.maxScale(), &rx, &ry);
 
     return BokehKernel::isIdentityRadius(rx, ry) ? 0.f : (float)coc;
 }
@@ -1077,11 +1266,16 @@ ZDefocus::halo(const ZDefocusParams& params,
     if (params.focalPlaneOutput) {
         return;
     }
+    const double scale = params.lens.maxScale();
     for (const ZDefocusSlice& slice : slices) {
-        *haloX = std::max(*haloX, BokehKernel::extent(slice.radiusX));
-        *haloY = std::max(*haloY, BokehKernel::extent(slice.radiusY));
+        double rx = slice.radiusX;
+        double ry = slice.radiusY;
+        if (scale != 1.) {
+            radii(params, context, slice.coc, scale, &rx, &ry);
+        }
+        *haloX = std::max(*haloX, BokehKernel::extent(rx));
+        *haloY = std::max(*haloY, BokehKernel::extent(ry));
     }
-    Q_UNUSED(context);
 }
 
 bool
@@ -1092,7 +1286,7 @@ ZDefocus::fitsGpu(const ZDefocusParams& params,
     if (params.focalPlaneOutput) {
         return true;
     }
-    if (params.shape.shape == BokehShape::Image) {
+    if ((params.shape.shape == BokehShape::Image) || params.lens.isActive()) {
         return false;
     }
     const std::vector<ZDefocusSlice> sliceList = slices(params, context);
@@ -1153,7 +1347,7 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
         sliceList = slices(params, context);
         bool anyBlur = false;
         for (const ZDefocusSlice& slice : sliceList) {
-            kernels.push_back(BokehKernel::shaped(params.shape, slice.radiusX, slice.radiusY));
+            kernels.push_back(BokehKernel::gatherKernel(params.shape, slice.radiusX, slice.radiusY));
             anyBlur = anyBlur || !kernels.back().isIdentity();
         }
         if (!anyBlur) {
@@ -1580,13 +1774,11 @@ ZDefocus::buildKernels(const ZDefocusParams& params,
     if (params.shape.shape != BokehShape::Image) {
         KernelCache& cache = *_kernelCache;
         const std::lock_guard<std::mutex> lock(cache.mutex);
-        const BokehShapeParams& s = cache.shape;
-        const bool hit = !cache.kernels.empty() && (cache.radii == radiiList) && (s.shape == params.shape.shape) && (s.blades == params.shape.blades)
-            && (s.rotation == params.shape.rotation) && (s.roundness == params.shape.roundness);
+        const bool hit = !cache.kernels.empty() && (cache.radii == radiiList) && (cache.shape == params.shape);
         if (!hit) {
             cache.kernels.clear();
             for (const std::pair<double, double>& r : radiiList) {
-                cache.kernels.push_back(std::make_shared<const BokehKernel>(BokehKernel::shaped(params.shape, r.first, r.second)));
+                cache.kernels.push_back(std::make_shared<const BokehKernel>(BokehKernel::gatherKernel(params.shape, r.first, r.second)));
             }
             cache.shape = params.shape;
             cache.radii = radiiList;
@@ -1619,6 +1811,113 @@ ZDefocus::buildKernels(const ZDefocusParams& params,
 } // ZDefocus::buildKernels
 
 StatusEnum
+ZDefocus::readLensKernelImage(const RenderActionArgs& args,
+                              std::shared_ptr<const DefocusKernelImage>* image)
+{
+    std::vector<float> read;
+    int width = 0;
+    int height = 0;
+    bool noImage = true;
+    image->reset();
+    const StatusEnum status = readKernelImage(args.time, args.view, args.mappedScale, &read, &width, &height, &noImage);
+    if (status != eStatusOK) {
+        return status;
+    }
+    bool black = true;
+    for (float v : read) {
+        if (std::isfinite(v) && (v > 0.f)) {
+            black = false;
+            break;
+        }
+    }
+    const bool empty = (noImage && (bool)getInput(kZDefocusInputKernel)) || (!noImage && black);
+    setKernelWarning(empty ? Defocus::kernelEmptyMessage() : std::string());
+    if (noImage || black) {
+        return eStatusOK;
+    }
+    std::shared_ptr<DefocusKernelImage> result = std::make_shared<DefocusKernelImage>();
+    result->values = std::move(read);
+    result->width = width;
+    result->height = height;
+    *image = result;
+
+    return eStatusOK;
+}
+
+namespace {
+
+/**
+ * @brief For a Result render with lens aberrations, the layers of state, each sharp only when
+ * every channel group's kernel is, and its lens, its kernels per slice, group and cell clip, and
+ * a coverage per group; no layers when no slice blurs. image is the Image kernel's, else null.
+ **/
+void
+setUpLens(const ZDefocusParams& params,
+          const PassContext& context,
+          const std::vector<ZDefocusSlice>& sliceList,
+          const RectI& format,
+          const RectI& window,
+          const std::shared_ptr<BokehRunCache>& cache,
+          const std::shared_ptr<const DefocusKernelImage>& image,
+          ZDefocusState* state)
+{
+    const OfxPointD rs = context.scale.toOfxPointD();
+    std::shared_ptr<const LensAberration> lens = std::make_shared<const LensAberration>(params.lens, format, context.pixelAspectRatio, rs.x, rs.y);
+    const int groups = lens->groupCount();
+    // Each slice's radii per group: the group's circle of confusion clamps to Max Size on its own.
+    std::vector<std::vector<std::pair<double, double>>> sliceRadii(sliceList.size(), std::vector<std::pair<double, double>>(groups));
+    std::vector<std::vector<unsigned char>> groupSharp(sliceList.size(), std::vector<unsigned char>(groups, 1));
+    bool anyBlur = false;
+    int haloY = 0;
+    for (std::size_t k = 0; k < sliceList.size(); ++k) {
+        ZDefocusLayer layer;
+        for (int g = 0; g < groups; ++g) {
+            std::pair<double, double>& r = sliceRadii[k][g];
+            ZDefocus::radii(params, context, sliceList[k].coc, lens->groupScale(g), &r.first, &r.second);
+            groupSharp[k][g] = BokehKernel::isIdentityRadius(r.first, r.second);
+            layer.sharp = layer.sharp && groupSharp[k][g];
+            if (!groupSharp[k][g]) {
+                haloY = std::max(haloY, BokehKernel::extent(r.second));
+            }
+        }
+        anyBlur = anyBlur || !layer.sharp;
+        state->layers.push_back(layer);
+    }
+    if (!anyBlur) {
+        state->layers.clear();
+
+        return;
+    }
+
+    if (image) {
+        state->kernel = [image, sliceRadii](int k, int group, const BokehClip& clip) -> BokehRunCache::Runs {
+            const std::pair<double, double>& r = sliceRadii[k][group];
+            const BokehKernel kernel = BokehKernel::fromImage(image->values.data(), image->width, image->height, r.first, r.second, nullptr, clip);
+
+            return std::make_shared<const std::vector<BokehRun>>(kernel.runs());
+        };
+    } else {
+        const BokehShapeParams shape = params.shape;
+        state->kernel = [cache, shape, sliceRadii](int k, int group, const BokehClip& clip) -> BokehRunCache::Runs {
+            BokehShapeParams clipped = shape;
+            clipped.clip = clip;
+            const std::pair<double, double>& r = sliceRadii[k][group];
+
+            return cache->runs(clipped, r.first, r.second);
+        };
+    }
+    state->lens = lens;
+    state->groupSharp = std::move(groupSharp);
+    state->band.cells = lens->cells(window);
+    state->band.groups = groups;
+    state->coverageGroups = groups;
+    // Two table reads per kernel row, for the weights and for each plane, per group.
+    state->lensTaps = (std::size_t)(2 * (2 * haloY + 1)) * (std::size_t)groups;
+} // setUpLens
+
+} // anon namespace
+
+StatusEnum
 ZDefocus::renderOp(const RenderActionArgs& args,
                    const StagePlan& plan)
 {
@@ -1634,6 +1933,24 @@ ZDefocus::renderOp(const RenderActionArgs& args,
 
     if (params.focalPlaneOutput) {
         state->cocRect = args.roi;
+    } else if (params.lens.isActive()) {
+        sliceList = slices(params, context);
+        std::shared_ptr<const DefocusKernelImage> image;
+        if (params.shape.shape == BokehShape::Image) {
+            const StatusEnum status = readLensKernelImage(args, &image);
+            if ((status != eStatusOK) || !image) {
+                return (status != eStatusOK) ? status : runPassesCpu(*this, plan, args, PassList());
+            }
+        }
+        NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+        const RectI format = metadata ? metadata->getOutputFormat() : RectI();
+        setUpLens(params, context, sliceList, format, args.roi, _runCache, image, state.get());
+        if (state->layers.empty()) {
+            return runPassesCpu(*this, plan, args, PassList());
+        }
+        state->cocRect = passListSourceRoI(args.roi, full);
+        state->highlight = params.highlight;
+        state->window = args.roi;
     } else {
         sliceList = slices(params, context);
         std::vector<std::shared_ptr<const BokehKernel>> kernels;

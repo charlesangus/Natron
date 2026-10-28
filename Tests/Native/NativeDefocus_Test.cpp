@@ -50,6 +50,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/BokehKernel.h"
 #include "Engine/Nodes/Filter/Defocus.h"
+#include "Engine/Nodes/Filter/LensAberration.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -426,6 +427,114 @@ TEST_F(NativeDefocusTest, RegionIndependence)
     RenderedPlane full;
     ASSERT_TRUE(renderRGBA(defocus, kWindow, &full));
     const RectI windows[] = { RectI(10, 7, 37, 29), RectI(0, 0, 9, 48), RectI(50, 40, 64, 48), RectI(31, 23, 32, 24) };
+    for (const RectI& window : windows) {
+        RenderedPlane part;
+        ASSERT_TRUE(renderRGBA(defocus, window, &part));
+        std::size_t differing = 0;
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    if (pixelAt(part, x, y, c) != pixelAt(full, x, y, c)) {
+                        ++differing;
+                    }
+                }
+            }
+        }
+        EXPECT_EQ(0u, differing) << window.x1 << "," << window.y1 << " " << window.x2 << "," << window.y2;
+    }
+}
+
+// The clip LensAberration gives pixel (x, y)'s cell for lens over the project format at scale 1.
+BokehClip
+lensClipAt(const LensAberrationParams& lens,
+           int x,
+           int y)
+{
+    const LensAberration aberration(lens, kWindow, 1., 1., 1.);
+
+    return aberration.clip(aberration.cellColumn(x), aberration.cellRow(y));
+}
+
+// The centre cell's point spreads into the unclipped disc; a corner cell's into the disc clipped
+// by a second aperture offset towards the frame's centre, squeezed with the kernel's aspect.
+TEST_F(NativeDefocusTest, CatEyeClipsTowardsTheCentre)
+{
+    LensAberrationParams lens;
+    lens.catEye = 1.;
+    for (double aspect : { 1., 0.5 }) {
+        // The centre, and a corner whose spread stays inside its cell.
+        const int points[2][2] = { { 32, 24 }, { 6, 3 } };
+        for (const auto& point : points) {
+            NodePtr source = makeBoxOverBlack(RectI(point[0], point[1], point[0] + 1, point[1] + 1), { 1., 1., 1., 1. });
+            NodePtr defocus = makeDefocus(source, NodePtr(), 7.);
+            ASSERT_TRUE(bool(source) && bool(defocus));
+            ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { lens.catEye }));
+            ASSERT_TRUE(setKnobValues(defocus, kDefocusParamAspectRatio, { aspect }));
+            BokehShapeParams shape;
+            shape.clip = lensClipAt(lens, point[0], point[1]);
+            EXPECT_EQ(point[0] == 32, shape.clip == BokehClip());
+            expectPointSpreadsInto(defocus, point[0], point[1], BokehKernel::gatherKernel(shape, 3.5 * aspect, 3.5));
+        }
+    }
+}
+
+// The tangential cat-eye clips a corner across the radius, not towards the centre.
+TEST_F(NativeDefocusTest, CatEyeSwirls)
+{
+    LensAberrationParams lens;
+    lens.catEye = 0.6;
+    lens.catEyeOrientation = CatEyeOrientation::Tangential;
+    NodePtr source = makeBoxOverBlack(RectI(6, 3, 7, 4), { 1., 1., 1., 1. });
+    NodePtr defocus = makeDefocus(source, NodePtr(), 7.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { lens.catEye }));
+    ASSERT_TRUE(setKnobValue(defocus, kBokehParamCatEyeOrientation, std::string(kBokehParamCatEyeOrientationTangential)));
+    BokehShapeParams shape;
+    shape.clip = lensClipAt(lens, 6, 3);
+    LensAberrationParams radial = lens;
+    radial.catEyeOrientation = CatEyeOrientation::Radial;
+    ASSERT_TRUE(shape.clip != lensClipAt(radial, 6, 3));
+    expectPointSpreadsInto(defocus, 6, 3, BokehKernel::gatherKernel(shape, 3.5, 3.5));
+}
+
+// Chromatic aberration scales each colour channel's kernel on its own; the alpha keeps green's.
+TEST_F(NativeDefocusTest, ChromaticAberrationScalesEachChannel)
+{
+    const int cx = 32;
+    const int cy = 24;
+    NodePtr source = makeBoxOverBlack(RectI(cx, cy, cx + 1, cy + 1), { 1., 1., 1., 1. });
+    NodePtr defocus = makeDefocus(source, NodePtr(), 8.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamChromaticAberration, { 0.5 }));
+    // The default offsets: red grows by half, blue shrinks by half.
+    const double radius[4] = { 6., 4., 2., 4. };
+    RenderedPlane actual;
+    ASSERT_TRUE(renderRGBA(defocus, kWindow, &actual));
+    for (int c = 0; c < 4; ++c) {
+        const BokehKernel expected = BokehKernel::gatherKernel(BokehShapeParams(), radius[c], radius[c]);
+        double worst = 0.;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                worst = std::max(worst, std::fabs((double)pixelAt(actual, x, y, c) - expected.at(x - cx, y - cy)));
+            }
+        }
+        EXPECT_LE(worst, 1e-6) << "channel " << c;
+    }
+}
+
+// The cells are the format's, so that any window renders the full render's pixels.
+TEST_F(NativeDefocusTest, LensRegionIndependence)
+{
+    NodePtr source = makeParitySource();
+    NodePtr defocus = makeDefocus(source, NodePtr(), 13.);
+    ASSERT_TRUE(bool(source) && bool(defocus));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamCatEye, { 0.8 }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamChromaticAberration, { 0.3 }));
+    ASSERT_TRUE(setKnobValues(defocus, kBokehParamSphericalAberration, { 0.5 }));
+
+    RenderedPlane full;
+    ASSERT_TRUE(renderRGBA(defocus, kWindow, &full));
+    const RectI windows[] = { RectI(10, 7, 37, 29), RectI(0, 0, 9, 48), RectI(50, 40, 64, 48), RectI(15, 7, 17, 9) };
     for (const RectI& window : windows) {
         RenderedPlane part;
         ASSERT_TRUE(renderRGBA(defocus, window, &part));

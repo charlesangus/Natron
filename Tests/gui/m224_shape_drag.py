@@ -29,11 +29,12 @@ PEN_INTERVAL_MS = 16
 DRAG_STEPS = 10
 SQUARE_X, SQUARE_Y, SQUARE_SIZE = 760.0, 340.0, 400.0
 MODES = {"adaptive": 0, "live": 1, "onRelease": 2}
+T = 1.0
 
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt
-    from PySide6.QtGui import QGuiApplication, QMouseEvent
+    from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     import guitest as gt
@@ -76,6 +77,16 @@ try:
 
     def release(widget, pos):
         send_mouse(widget, QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
+
+    def send_key(widget, key):
+        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier))
+        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, Qt.NoModifier))
+        QApplication.processEvents()
+
+    def select_tool(gl):
+        # Roto starts in the Bezier drawing tool, where a press on the corner starts a new shape.
+        send_key(gl, Qt.Key_Escape)
+        send_key(gl, Qt.Key_Q)
 
     class Grab(object):
         """The screen under widget, read in widget coordinates. A widget grab of the GL viewer can
@@ -148,6 +159,8 @@ try:
         inside = QPointF((x0 + x1) * 0.5, (y0 + y1) * 0.5)
         check(is_dark(Grab(gl).colour(probe)), "%s: the probe pixel is dark before the drag" % mode)
 
+        select_tool(gl)
+        corner_x = _keep["shape"].getControlPointPosition(1, T)[0]
         corner = QPointF(x1, y0)
         press(gl, corner)
         for i in range(1, DRAG_STEPS + 1):
@@ -162,6 +175,8 @@ try:
         release(gl, QPointF(x1 + d, y0))
         yield ("sleep", RENDER_MS)
         after = Grab(gl).colour(probe)
+        moved = _keep["shape"].getControlPointPosition(1, T)[0] - corner_x
+        check(moved > 0, "%s: the drag moved the square's top-right corner (by %.1f)" % (mode, moved))
 
         if mode == "onRelease":
             check(is_dark(before), "onRelease: the probe pixel stays dark until the release (%s)" % (before,))

@@ -3545,6 +3545,9 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
+    if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        return true;
+    }
     if (e->type() == QEvent::ToolTip) {
         // The deep sample list lives in the info bar label's tooltip, which can never be
         // hovered while probing: pop the same list up over the pixel being probed instead.

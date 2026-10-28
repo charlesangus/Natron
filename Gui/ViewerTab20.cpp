@@ -585,10 +585,11 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
     return didSomething;
 } // ViewerTab::notifyOverlaysPenUp
 
-bool
-ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
-                                           Qt::Key qKey,
-                                           const Qt::KeyboardModifiers& mods)
+KnobIPtr
+ViewerTab::findNodeViewerContextShortcut(const NodePtr& node,
+                                         Qt::Key qKey,
+                                         const Qt::KeyboardModifiers& mods,
+                                         NodeViewerContextPtr* contextOut)
 {
     // Intercept plug-in defined shortcuts
     NodeViewerContextPtr context;
@@ -606,7 +607,7 @@ ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
 
     // This is not an active node on the viewer ui, don't trigger any shortcuts
     if (!context) {
-        return false;
+        return KnobIPtr();
     }
 
     EffectInstancePtr effect = node->getEffectInstance();
@@ -620,33 +621,85 @@ ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
             }
             if ( isKeybind(pluginShortcutGroup, (*it)->getName(), mods, qKey) ) {
                 // This only works for groups and buttons, as defined in the spec
-                KnobButton* isButton = dynamic_cast<KnobButton*>( it->get() );
-                KnobGroup* isGrp = dynamic_cast<KnobGroup*>( it->get() );
-                bool ret = false;
-
-                if (isButton) {
-                    if ( isButton->getIsCheckable() ) {
-                        isButton->setValue(!isButton->getValue(), ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
-
-                        //Refresh the button state, because the setValue with reason eValueChangedReasonUserEdited will skip refreshing the UI
-                        isButton->getSignalSlotHandler()->s_valueChanged(ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited);
-                        ret = true;
-                    } else {
-                        ret = isButton->trigger();
-                    }
-                } else if (isGrp) {
-                    // This can only be a toolbutton, notify the NodeViewerContext
-                    context->onToolButtonShortcutPressed( QString::fromUtf8( isGrp->getName().c_str() ) );
-                    ret = true;
+                if (!dynamic_cast<KnobButton*>(it->get()) && !dynamic_cast<KnobGroup*>(it->get())) {
+                    return KnobIPtr();
+                }
+                if (contextOut) {
+                    *contextOut = context;
                 }
 
-                return ret;
+                return *it;
             }
         }
     }
 
-    return false;
+    return KnobIPtr();
+}
+
+bool
+ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
+                                           Qt::Key qKey,
+                                           const Qt::KeyboardModifiers& mods)
+{
+    NodeViewerContextPtr context;
+    KnobIPtr knob = findNodeViewerContextShortcut(node, qKey, mods, &context);
+
+    if (!knob) {
+        return false;
+    }
+    KnobButton* isButton = dynamic_cast<KnobButton*>(knob.get());
+    KnobGroup* isGrp = dynamic_cast<KnobGroup*>(knob.get());
+    bool ret = false;
+
+    if (isButton) {
+        if (isButton->getIsCheckable()) {
+            isButton->setValue(!isButton->getValue(), ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
+
+            // Refresh the button state, because the setValue with reason eValueChangedReasonUserEdited will skip refreshing the UI
+            isButton->getSignalSlotHandler()->s_valueChanged(ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited);
+            ret = true;
+        } else {
+            ret = isButton->trigger();
+        }
+    } else if (isGrp) {
+        // This can only be a toolbutton, notify the NodeViewerContext
+        context->onToolButtonShortcutPressed(QString::fromUtf8(isGrp->getName().c_str()));
+        ret = true;
+    }
+
+    return ret;
 } // ViewerTab::checkNodeViewerContextShortcuts
+
+bool
+ViewerTab::claimShortcutOverride(QKeyEvent* e)
+{
+    Gui* gui = getGui();
+    if (!gui) {
+        return false;
+    }
+    GuiAppInstancePtr app = gui->getApp();
+    if (!app || app->isClosing()) {
+        return false;
+    }
+    // A key bound to an active interact (Roto's S cycles its tool group) goes to the viewer's
+    // keyPressEvent rather than to a global action on the same key.
+    Qt::Key qKey = (Qt::Key)e->key();
+    Qt::KeyboardModifiers qMods = e->modifiers();
+    NodesList nodes;
+    gui->getNodesEntitledForOverlays(nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (_imp->hasInactiveNodeViewerContext(*it)) {
+            continue;
+        }
+        if (findNodeViewerContextShortcut(*it, qKey, qMods, 0)) {
+            e->accept();
+
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool
 ViewerTab::notifyOverlaysKeyDown_internal(const NodePtr& node,

@@ -642,6 +642,10 @@ AutoStraighten::initializeKnobs()
     _ui->connectToCurveContext();
 
     const KnobPagePtr page = createControlsPage();
+    // The panel opens on its first page and host handles draw only on the current page, so the
+    // Rectangle corners would be hidden behind the curve context's General page.
+    removeKnobFromList(page.get());
+    insertKnob(0, page);
     _ui->createViewerButtonKnobs(page);
     {
         // Guide lines are selected and their end points moved with the curve tools, and drawn with

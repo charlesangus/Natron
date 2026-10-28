@@ -42,6 +42,7 @@ PLUGIN_CORNERPIN = "CornerPin"
 TILT_DEGREES = 4.0
 ROTATION_TOLERANCE = 0.3
 PIXEL_DIFF_MIN = 60
+IMAGE_FILL_MIN = 0.8
 CHANGED_PIXELS_MIN = 150
 DRAG_PIXELS = (60, 40)
 # The CornerPin pulls each top corner in by this fraction of the width.
@@ -248,15 +249,19 @@ try:
         if img is None or img.width() < 2 or img.height() < 2:
             return None
         bg = img.pixelColor(0, 0)
-        xs, ys = [], []
+        cols, rows = {}, {}
         for y in range(0, img.height(), stride):
             for x in range(0, img.width(), stride):
                 c = img.pixelColor(x, y)
                 if abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue()) > PIXEL_DIFF_MIN:
-                    xs.append(x)
-                    ys.append(y)
-        if not xs:
+                    cols[x] = cols.get(x, 0) + 1
+                    rows[y] = rows.get(y, 0) + 1
+        if not cols:
             return None
+        # The format labels ("HD", "1922,1082") and the dotted region-of-definition frame differ
+        # from the background too, but fill only a fraction of a row or column.
+        xs = [x for x, n in cols.items() if n >= IMAGE_FILL_MIN * max(cols.values())]
+        ys = [y for y, n in rows.items() if n >= IMAGE_FILL_MIN * max(rows.values())]
         return min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
 
     def changed_pixels(a, b, stride=2):
@@ -291,6 +296,25 @@ try:
             send_mouse(widget, QEvent.MouseMove, start + (end - start) * (i / float(steps)), Qt.NoButton, Qt.LeftButton)
         send_mouse(widget, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
 
+    def locate_source(viewer, checker, straighten):
+        """The checker's on-screen rectangle, then the viewer on straighten in the same layout.
+
+        The checker fills the format, so its rectangle maps canonical to widget pixels. It is
+        measured with the AutoStraighten panel already open: opening it shrinks the viewer and
+        re-framing then moves and scales the image.
+        """
+        yield from show(viewer, checker)
+        measured_in = geometry_key()
+        rect = image_rect(viewer_grab())
+        gt.require(rect is not None, "the source image can be located in the viewer")
+        report("NOTE source image at %r in viewer geometry %r" % (rect, measured_in))
+        yield from show(viewer, straighten)
+        gt.require(visible_viewer() is not None, "the viewer is visible")
+        gt.require(geometry_key() == measured_in,
+                   "the viewer keeps its geometry between locating the source and the test (%r, %r)"
+                   % (measured_in, geometry_key()))
+        return rect
+
     # ---- sections ------------------------------------------------------------------------
 
     def section_panel():
@@ -324,19 +348,14 @@ try:
         gt.section("lines")
         viewer = viewer_node()
         checker, pin, w, h = keystoned_plate()
-        # The checker fills the format, so its on-screen rectangle maps canonical to widget pixels.
-        yield from show(viewer, checker)
-        rect = image_rect(viewer_grab())
-        gt.require(rect is not None, "the source image can be located in the viewer")
-        rx, ry, rw, rh = rect
+        straighten = create(PLUGIN_STRAIGHTEN, 0, 240, panel=True)
+        connect(straighten, 0, pin)
+        check(param(straighten, "structure").get() == 0, "the structure defaults to Drawn Lines")
+        rx, ry, rw, rh = yield from locate_source(viewer, checker, straighten)
 
         def to_widget(x, y):
             return QPointF(rx + x / w * rw, ry + (h - y) / h * rh)
 
-        straighten = create(PLUGIN_STRAIGHTEN, 0, 240, panel=True)
-        connect(straighten, 0, pin)
-        check(param(straighten, "structure").get() == 0, "the structure defaults to Drawn Lines")
-        yield from show(viewer, straighten)
         gl = visible_viewer()
         gt.require(gl is not None, "the viewer is visible")
         before = viewer_grab()
@@ -415,16 +434,10 @@ try:
         gt.section("drag")
         viewer = viewer_node()
         checker, transform, w, h = tilted_plate()
-        # The checker fills the format, so its on-screen rectangle maps canonical to widget pixels.
-        yield from show(viewer, checker)
-        rect = image_rect(viewer_grab())
-        gt.require(rect is not None, "the source image can be located in the viewer")
-        rx, ry, rw, rh = rect
-
         straighten = create(PLUGIN_STRAIGHTEN, 0, 240, panel=True)
         connect(straighten, 0, transform)
         param(straighten, "structure").set("Rectangle")
-        yield from show(viewer, straighten)
+        rx, ry, rw, rh = yield from locate_source(viewer, checker, straighten)
         gl = visible_viewer()
         gt.require(gl is not None, "the viewer is visible")
         corner = param(straighten, "topLeft")

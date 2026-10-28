@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,17 +38,21 @@
 // clang-format off
 CLANG_DIAG_OFF(unknown-pragmas)
 CLANG_DIAG_OFF(tautological-undefined-compare)
+#include <ofxhClip.h>
 #include <ofxhPluginCache.h>
 #include <ofxhImageEffectAPI.h>
 CLANG_DIAG_ON(tautological-undefined-compare)
 CLANG_DIAG_ON(unknown-pragmas)
 // clang-format on
 
+#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "BaseTest.h"
+#include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+#include "OfxTestPlugins/natronTestMetadata/NatronTestMetadataPluginIDs.h"
 #include "RenderBothWays.h"
 #include "TestOfxPluginPath.h"
 
@@ -61,6 +66,12 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/ViewMetadata.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/OfxClipInstance.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxImageEffectInstance.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -89,6 +100,9 @@ const TestPluginVersion kTestPlugins[] = {
     { kNatronTestMatrixWarpPluginID, kNatronTestMatrixWarpMajor },
     { kNatronTestFrameWindowPluginID, kNatronTestFrameWindowMajor },
     { kNatronTestOCIOConfigPluginID, kNatronTestOCIOConfigMajor },
+    { kNatronTestMetadataContributePluginID, kNatronTestMetadataContributeMajor },
+    { kNatronTestMetadataPrintPluginID, kNatronTestMetadataPrintMajor },
+    { kNatronTestMetadataTimeCodePluginID, kNatronTestMetadataTimeCodeMajor },
 };
 
 const int kWindowSize = 4;
@@ -669,4 +683,235 @@ TEST_F(OfxTestPluginTest, ProjectPushesItsOCIOConfigIntoTheFixture)
     EXPECT_EQ(source, configFile->getValue());
     EXPECT_TRUE(configFile->getIsSecret());
     EXPECT_EQ(space, workingSpace->getValue());
+}
+
+namespace {
+
+const std::string kContributePrefix(kNatronTestMetadataContributeKeyPrefix);
+
+// The output clip metadata of an OpenFX node at one time, released however the scope is left.
+class OutputMetadata {
+public:
+    OutputMetadata(const NodePtr& node,
+                   OfxTime time)
+        : _set(nullptr)
+    {
+        OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
+        OFX::Host::ImageEffect::ClipInstance* clip = (ofxEffect && ofxEffect->effectInstance()) ? ofxEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName) : nullptr;
+        if (clip) {
+            _set = OfxClipInstance::getCurrentMetadata(clip, time);
+        }
+    }
+
+    ~OutputMetadata()
+    {
+        if (_set) {
+            _set->releaseReference();
+        }
+    }
+
+    OutputMetadata(const OutputMetadata&) = delete;
+    OutputMetadata& operator=(const OutputMetadata&) = delete;
+
+    OFX::Host::ImageEffect::MetadataSet* get() const
+    {
+        return _set;
+    }
+
+private:
+    OFX::Host::ImageEffect::MetadataSet* _set;
+};
+
+void
+expectKey(const OFX::Host::ImageEffect::MetadataSet& set,
+          const std::string& key,
+          OFX::Host::Property::TypeEnum type,
+          int dimension)
+{
+    OFX::Host::Property::Property* property = set.fetchProperty(key);
+    ASSERT_TRUE(property != nullptr) << key << " is missing";
+    EXPECT_EQ(type, property->getType()) << key;
+    EXPECT_EQ(dimension, property->getDimension()) << key;
+}
+
+} // anonymous namespace
+
+class OfxMetadataTestPluginTest
+    : public OfxTestPluginTest {
+protected:
+    // A native metadata source carrying ofx/sampletype and an ofx/framerate of `rate` (none when
+    // rate is 0), with `pluginID` under it and a ViewMetadata under that.
+    void buildChain(const char* pluginID,
+                    int major,
+                    double rate)
+    {
+        source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+        node = createNode(QString::fromUtf8(pluginID), major);
+        viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWMETADATA));
+        ASSERT_TRUE(source && node && viewer);
+        MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
+        ASSERT_TRUE(sourceEffect != nullptr);
+        ImageMetadata extra;
+        extra.setString(kOfxMetadataKeySampleType, "float");
+        if (rate > 0.) {
+            extra.setDouble(kOfxMetadataKeyFrameRate, rate);
+        }
+        sourceEffect->setExtraMetadata(extra);
+        connectNodes(source, node, 0, true);
+        connectNodes(node, viewer, 0, true);
+        ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get()) != nullptr);
+    }
+
+    ImageMetadata downstream(double time)
+    {
+        NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(viewer->getEffectInstance().get());
+        EXPECT_TRUE(effect != nullptr);
+
+        return effect ? effect->getOutputMetadata(time, ViewIdx(0)) : ImageMetadata();
+    }
+
+    template <typename KnobT>
+    KnobT* knob(const char* name)
+    {
+        KnobT* found = dynamic_cast<KnobT*>(node->getKnobByName(name).get());
+        EXPECT_TRUE(found != nullptr) << name;
+
+        return found;
+    }
+
+    NodePtr source;
+    NodePtr node;
+    NodePtr viewer;
+};
+
+// Print reads its source's metadata while rendering and copies the pixels through.
+TEST_F(OfxMetadataTestPluginTest, PrintRendersItsSourceThrough)
+{
+    NodePtr constant = createConstant(kColorA);
+    NodePtr print = createNode(QString::fromUtf8(kNatronTestMetadataPrintPluginID), kNatronTestMetadataPrintMajor);
+    ASSERT_TRUE(constant && print);
+    connectNodes(constant, print, 0, true);
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderRGBA(print, RectI(0, 0, kWindowSize, kWindowSize), &plane));
+    expectEverywhere(plane, kColorA, "metadataPrint");
+}
+
+// One key through each of the metadata suite's six setters, plus ofx/framerate.
+TEST_F(OfxMetadataTestPluginTest, ContributePublishesEveryKeyWithItsTypeAndDimension)
+{
+    buildChain(kNatronTestMetadataContributePluginID, kNatronTestMetadataContributeMajor, 24.);
+    ASSERT_FALSE(HasFatalFailure());
+    KnobString* note = knob<KnobString>(kNatronTestMetadataContributeParamNote);
+    ASSERT_TRUE(note != nullptr);
+    note->setValue(std::string("hello"));
+
+    OutputMetadata set(node, 1.);
+    ASSERT_TRUE(set.get() != nullptr);
+    expectKey(*set.get(), kContributePrefix + "note", OFX::Host::Property::eString, 1);
+    expectKey(*set.get(), kContributePrefix + "revision", OFX::Host::Property::eInt, 1);
+    expectKey(*set.get(), kContributePrefix + "quality", OFX::Host::Property::eDouble, 1);
+    expectKey(*set.get(), kContributePrefix + "tags", OFX::Host::Property::eString, 2);
+    expectKey(*set.get(), kContributePrefix + "renderRegion", OFX::Host::Property::eInt, 4);
+    expectKey(*set.get(), kContributePrefix + "weights", OFX::Host::Property::eDouble, 3);
+    expectKey(*set.get(), kOfxMetadataKeyFrameRate, OFX::Host::Property::eDouble, 1);
+    if (HasFailure()) {
+        return;
+    }
+    EXPECT_EQ(std::string("hello"), set.get()->getStringProperty(kContributePrefix + "note"));
+    EXPECT_EQ(1, set.get()->getIntProperty(kContributePrefix + "revision"));
+    EXPECT_DOUBLE_EQ(0.75, set.get()->getDoubleProperty(kContributePrefix + "quality"));
+    EXPECT_EQ(std::string("reviewed"), set.get()->getStringProperty(kContributePrefix + "tags", 0));
+    EXPECT_EQ(std::string("approved"), set.get()->getStringProperty(kContributePrefix + "tags", 1));
+    EXPECT_EQ(720, set.get()->getIntProperty(kContributePrefix + "renderRegion", 3));
+    EXPECT_DOUBLE_EQ(0.25, set.get()->getDoubleProperty(kContributePrefix + "weights", 2));
+    EXPECT_DOUBLE_EQ(kNatronTestMetadataContributeFrameRate, set.get()->getDoubleProperty(kOfxMetadataKeyFrameRate));
+}
+
+// The mode decides what is inherited from Source; the plug-in's own keys are there in every mode.
+TEST_F(OfxMetadataTestPluginTest, ContributeModeChangesWhatDownstreamInherits)
+{
+    buildChain(kNatronTestMetadataContributePluginID, kNatronTestMetadataContributeMajor, 24.);
+    ASSERT_FALSE(HasFatalFailure());
+    KnobChoice* mode = knob<KnobChoice>(kNatronTestMetadataContributeParamMode);
+    ASSERT_TRUE(mode != nullptr);
+
+    ImageMetadata m = downstream(1.);
+    EXPECT_EQ(std::optional<std::string>("float"), m.getString(kOfxMetadataKeySampleType)) << "inherit all";
+    EXPECT_EQ(std::optional<std::string>("source"), m.getString("exr/origin")) << "inherit all";
+    EXPECT_EQ(std::optional<int>(1), m.getInt(kContributePrefix + "revision")) << "inherit all";
+    EXPECT_EQ(std::optional<double>(kNatronTestMetadataContributeFrameRate), m.getDouble(kOfxMetadataKeyFrameRate)) << "inherit all";
+
+    mode->setValue(kNatronTestMetadataContributeModeDropOneKey, ViewSpec::all(), 0);
+    m = downstream(1.);
+    EXPECT_FALSE(m.contains(kOfxMetadataKeySampleType)) << "drop one key drops its default key";
+    EXPECT_EQ(std::optional<std::string>("source"), m.getString("exr/origin")) << "drop one key keeps the rest";
+    EXPECT_EQ(std::optional<int>(1), m.getInt(kContributePrefix + "revision")) << "drop one key";
+
+    mode->setValue(kNatronTestMetadataContributeModeInheritNothing, ViewSpec::all(), 0);
+    m = downstream(1.);
+    EXPECT_FALSE(m.contains(kOfxMetadataKeySampleType)) << "inherit nothing";
+    EXPECT_FALSE(m.contains("exr/origin")) << "inherit nothing";
+    EXPECT_EQ(std::optional<int>(1), m.getInt(kContributePrefix + "revision")) << "inherit nothing";
+    EXPECT_EQ(std::optional<double>(kNatronTestMetadataContributeFrameRate), m.getDouble(kOfxMetadataKeyFrameRate)) << "inherit nothing";
+}
+
+// Counted from 01:00:00:00 at frame 1, the frames field rolls into the seconds at the counted rate + 1.
+TEST_F(OfxMetadataTestPluginTest, TimeCodeCountsAcrossTheSecondRollover)
+{
+    buildChain(kNatronTestMetadataTimeCodePluginID, kNatronTestMetadataTimeCodeMajor, 24.);
+    ASSERT_FALSE(HasFatalFailure());
+    KnobBool* rateFromMetadata = knob<KnobBool>(kNatronTestMetadataTimeCodeParamRateFromMetadata);
+    KnobDouble* rate = knob<KnobDouble>(kNatronTestMetadataTimeCodeParamRate);
+    KnobBool* useStartFrame = knob<KnobBool>(kNatronTestMetadataTimeCodeParamUseStartFrame);
+    KnobInt* startFrame = knob<KnobInt>(kNatronTestMetadataTimeCodeParamStartFrame);
+    ASSERT_TRUE(rateFromMetadata && rate && useStartFrame && startFrame);
+
+    struct Expected {
+        double time;
+        const char* timecode;
+    };
+
+    const auto expectAt = [this](const Expected& expected, double frameRate, const std::string& what) {
+        OutputMetadata set(node, expected.time);
+        ASSERT_TRUE(set.get() != nullptr) << what;
+        ASSERT_TRUE(set.get()->fetchProperty(kOfxMetadataKeyTimecode) != nullptr) << what;
+        EXPECT_EQ(std::string(expected.timecode), set.get()->getStringProperty(kOfxMetadataKeyTimecode)) << what << " at " << expected.time;
+        EXPECT_DOUBLE_EQ(frameRate, set.get()->getDoubleProperty(kOfxMetadataKeyFrameRate)) << what << " at " << expected.time;
+    };
+
+    // Rate from Source's ofx/framerate of 24.
+    for (const Expected& e : { Expected { 1., "01:00:00:00" }, Expected { 24., "01:00:00:23" }, Expected { 25., "01:00:01:00" }, Expected { 26., "01:00:01:01" } }) {
+        expectAt(e, 24., "rate from metadata");
+    }
+
+    // Rate from the param.
+    rateFromMetadata->setValue(false);
+    rate->setValue(30.);
+    for (const Expected& e : { Expected { 30., "01:00:00:29" }, Expected { 31., "01:00:01:00" } }) {
+        expectAt(e, 30., "rate param");
+    }
+
+    // The origin moved to frame 11; frames before it count back through the start code.
+    useStartFrame->setValue(true);
+    startFrame->setValue(11);
+    for (const Expected& e : { Expected { 11., "01:00:00:00" }, Expected { 10., "00:59:59:29" } }) {
+        expectAt(e, 30., "start frame 11");
+    }
+}
+
+// With no ofx/framerate on Source, the rate falls back to the param.
+TEST_F(OfxMetadataTestPluginTest, TimeCodeFallsBackToTheRateParam)
+{
+    buildChain(kNatronTestMetadataTimeCodePluginID, kNatronTestMetadataTimeCodeMajor, 0.);
+    ASSERT_FALSE(HasFatalFailure());
+    KnobDouble* rate = knob<KnobDouble>(kNatronTestMetadataTimeCodeParamRate);
+    ASSERT_TRUE(rate != nullptr);
+    rate->setValue(25.);
+
+    OutputMetadata set(node, 26.);
+    ASSERT_TRUE(set.get() != nullptr);
+    ASSERT_TRUE(set.get()->fetchProperty(kOfxMetadataKeyTimecode) != nullptr);
+    EXPECT_EQ(std::string("01:00:01:00"), set.get()->getStringProperty(kOfxMetadataKeyTimecode));
+    EXPECT_DOUBLE_EQ(25., set.get()->getDoubleProperty(kOfxMetadataKeyFrameRate));
 }

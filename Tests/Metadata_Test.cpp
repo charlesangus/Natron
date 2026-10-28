@@ -41,6 +41,7 @@
 
 #include "BaseTest.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+#include "OfxTestPlugins/natronTestMetadata/NatronTestMetadataPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -67,9 +68,9 @@ struct MetadataPluginFixture
     : public BaseTest {
 };
 
-const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
-const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
-const char kMetadataTimeCodeID[] = "org.openfx.examples.metadataTimeCode";
+const char kMetadataContributeID[] = kNatronTestMetadataContributePluginID;
+const char kMetadataPrintID[] = kNatronTestMetadataPrintPluginID;
+const char kMetadataTimeCodeID[] = kNatronTestMetadataTimeCodePluginID;
 
 // A generator and a colour plug-in from the test OpenFX bundle: the cases that read an OpenFX clip of either
 // end of a connection use these. PointMatrix does not trap the get metadata action, so its output
@@ -865,8 +866,8 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
     ASSERT_TRUE(writerEffect != NULL);
 
     // Raised last, after every input and knob change: Node::refreshDynamicProperties() puts the
-    // plug-in's own level back and both of those run it. The example plug-ins never call
-    // setRenderThreadSafety(), so they take the OFX default of instance safe, and their render
+    // plug-in's own level back and both of those run it. The metadata test plug-ins declare no
+    // render thread safety, so they take the OFX default of instance safe, and their render
     // bodies -- a per window pixel copy of images the host hands them, plus a read of metadata
     // the host owns -- meet fully safe. The generator declares fully safe for itself and
     // is left alone.

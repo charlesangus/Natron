@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <list>
 #include <map>
 #include <set>
 #include <string>
@@ -48,9 +50,12 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Metadata/CompareMetadata.h"
+#include "Engine/Nodes/Metadata/ContributeMetadata.h"
 #include "Engine/Nodes/Metadata/CopyMetadata.h"
 #include "Engine/Nodes/Metadata/ModifyMetadata.h"
 #include "Engine/Nodes/Metadata/RemoveMetadata.h"
+#include "Engine/Nodes/Metadata/TimeCodeMetadata.h"
 #include "Engine/Nodes/Metadata/ViewMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
@@ -244,6 +249,9 @@ TEST_F(NativePluginListTest, MetadataNodesAreGroupedAndDescribed)
         PLUGINID_NATRON_COPYMETADATA,
         PLUGINID_NATRON_REMOVEMETADATA,
         PLUGINID_NATRON_VIEWMETADATA,
+        PLUGINID_NATRON_COMPAREMETADATA,
+        PLUGINID_NATRON_CONTRIBUTEMETADATA,
+        PLUGINID_NATRON_TIMECODEMETADATA,
     };
     const PluginsMap& plugins = appPTR->getPluginsList();
 
@@ -262,25 +270,18 @@ TEST_F(NativePluginListTest, MetadataNodesAreGroupedAndDescribed)
     }
 }
 
-TEST_F(NativePluginListTest, OfxMetadataNodesAreGroupedWithTheNativeOnes)
+// CompareMetadata, ContributeMetadata and TimeCodeMetadata replaced these OpenFX examples.
+TEST_F(NativePluginListTest, ReplacedOfxMetadataExamplesAreNotRegistered)
 {
     const char* const ids[] = {
         "org.openfx.examples.metadataCompare",
         "org.openfx.examples.metadataContribute",
         "org.openfx.examples.metadataTimeCode",
     };
-    const PluginsMap& plugins = appPTR->getPluginsList();
+    const std::list<std::string> registered = appPTR->getPluginIDs();
 
     for (const char* id : ids) {
-        const PluginsMap::const_iterator it = plugins.find(id);
-        if (it == plugins.end()) {
-            ADD_FAILURE() << id << " is not loaded; it is bundled in build/assets/Plugins";
-            continue;
-        }
-        ASSERT_FALSE(it->second.empty()) << id;
-        const QStringList grouping = (*it->second.begin())->getGrouping();
-        ASSERT_EQ(1, grouping.size()) << id;
-        EXPECT_EQ(QString::fromUtf8(PLUGIN_GROUP_METADATA), grouping.front()) << id;
+        EXPECT_TRUE(std::find(registered.begin(), registered.end(), std::string(id)) == registered.end()) << id;
     }
 }
 

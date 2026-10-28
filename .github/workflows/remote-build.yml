@@ -152,7 +152,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/onnxruntime
@@ -192,7 +191,7 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_RENDER_SCHEDULER: legacy
           NATRON_GOLDEN_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-golden
-          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
+          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins
         working-directory: build/${{ env.PRESET }}
         run: |
           set -o pipefail
@@ -324,7 +323,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/onnxruntime

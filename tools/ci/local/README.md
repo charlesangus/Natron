@@ -144,14 +144,11 @@ and `Arena.ofx` -- along with the dependency libraries (lcms2, libzip,
 ImageMagick) `Arena.ofx` needs. Idempotent -- a second run is instant, it
 skips anything already present and matching the pins.
 
-It also builds OpenFX metadata example plug-ins. `metadataCompare`,
-`metadataContribute` and `metadataTimeCode` have no native equivalent and
-ship in `build/assets/Plugins/`. `metadataPrint` is a test fixture only: it
-goes to `build/assets/TestPlugins/`, which `test.sh ctest` appends to
-`OFX_PLUGIN_PATH`, while `test.sh smoke` and the release bundle see
-`build/assets/Plugins/` alone. Running a test binary by hand with
-`OFX_PLUGIN_PATH=build/assets/Plugins` leaves the Print-based metadata cases
-without their fixture; append `:build/assets/TestPlugins`.
+The OFX plug-ins the metadata tests drive are built with Natron itself, into
+`Tests/TestPlugins` under the build directory, which the test binaries add to
+`OFX_PLUGIN_PATH` on their own. The script deletes the OpenFX metadata example
+bundles, and the `build/assets/TestPlugins/` directory, that older assets
+directories and caches still hold.
 
 ```
 tools/ci/local/fetch-assets.sh

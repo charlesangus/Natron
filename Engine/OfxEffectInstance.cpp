@@ -1531,9 +1531,6 @@ ofxExtractAllPartsOfGrouping(const QString & pluginIdentifier,
     } else if ( ( pluginIdentifier == QString::fromUtf8("uk.co.thefoundry.noisetools.denoise") ) ||
                 pluginIdentifier.startsWith( QString::fromUtf8("com.rubbermonkey:FilmConvert") ) ) {
         s = QString::fromUtf8(PLUGIN_GROUP_FILTER);
-    } else if ((stdIdentifier == "org.openfx.examples.metadataCompare") || (stdIdentifier == "org.openfx.examples.metadataContribute") || (stdIdentifier == "org.openfx.examples.metadataTimeCode")) {
-        // The examples declare their own grouping; the native metadata nodes share this folder.
-        s = QString::fromUtf8(PLUGIN_GROUP_METADATA);
     } else if (pluginIdentifier.startsWith(QString::fromUtf8("com.NewBlue.Titler"))) {
         s = QString::fromUtf8(PLUGIN_GROUP_PAINT);
     } else if (pluginIdentifier.startsWith(QString::fromUtf8("com.FXHOME.HitFilm"))) {

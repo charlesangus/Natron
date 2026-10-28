@@ -196,21 +196,8 @@ if [[ ! -d "${OFX_PLUGIN_PATH}" || -z "$(ls -A "${OFX_PLUGIN_PATH}" 2>/dev/null)
     exit 1
 fi
 
-# Plug-ins only the tests load. ctest gets them on its path; the smoke test
-# does not, as it asserts OFX_PLUGIN_PATH holds exactly the shipped set.
+# Plug-ins built at refs other than the ones fetch-assets.sh pins would test something else.
 "${SCRIPT_DIR}/fetch-assets.sh" --check-pins || exit 1
-
-TEST_PLUGINS_DIR="${ASSETS_DIR}/TestPlugins"
-
-if [[ "${SUBCOMMAND}" == "ctest" ]]; then
-    if [[ ! -d "${TEST_PLUGINS_DIR}" || -z "$(ls -A "${TEST_PLUGINS_DIR}" 2>/dev/null)" ]]; then
-        echo "test.sh: ERROR: build/assets is missing or incomplete." >&2
-        echo "Expected a non-empty ${TEST_PLUGINS_DIR}." >&2
-        echo "Run tools/ci/local/fetch-assets.sh first." >&2
-        exit 1
-    fi
-    OFX_PLUGIN_PATH="${OFX_PLUGIN_PATH}:${TEST_PLUGINS_DIR}"
-fi
 
 export OFX_PLUGIN_PATH
 

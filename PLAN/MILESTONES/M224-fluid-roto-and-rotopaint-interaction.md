@@ -104,5 +104,34 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Decisions
 
+- 2026-10-28: **P4.T1 gesture parity audit (awaiting user approval of the adopt list).** Source: Nuke 17 hotkeys (Roto/RotoPaint), "Using the Bezier tools", "Transforming", "Ellipse and Rectangle tools", "Rippling keyframes". Natron side: `RotoCurveInteract` toolbar/menu shortcuts, pen and key handlers; `RotoPaintInteract` pen-down.
+
+  | Nuke | Natron before P4 | Status | Proposal |
+  |---|---|---|---|
+  | Backspace / Delete: delete points or shapes | Backspace "Remove points" (Delete matches) | present | keep |
+  | C clone/reveal; N brush/eraser; X blur/sharpen/smear; V Bezier tools; Z smooth; Shift+Z cusp; Shift+E remove feather; Ctrl+A select all; Return close shape; T transform box/jack | same keys | present | keep |
+  | D dodge/burn | D = points-edition tools; E = dodge/burn | conflicting | **adopt**: D = dodge/burn group; the points-edition group has no default key (rebindable) |
+  | E increase feather on selected points | E = dodge/burn | conflicting | **adopt**: E = "Increase Feather" menu action (one step outwards along each point's feather direction) |
+  | Esc back to the current Select tool | Esc only closes a Bezier being drawn | partial | **adopt**: Esc closes an open build, then returns to the last-used select tool |
+  | S cycle the current tool's modes | none (Natron: repeat the group key) | missing | **adopt**: S cycles the active toolbar group |
+  | I pick colour | none | missing | not copied now: needs a viewer colour pick into the roto colour knob; a separate feature |
+  | T (clone) onion-skin source with jack | no onion skin | missing | not copied: onion skin is a feature, out of scope |
+  | Ctrl+LMB Bezier tool: sketch | none | missing | **adopt** (T3) |
+  | Shift+LMB Bezier tool: sharp exit on the previous point | none | missing | **adopt** (T3) |
+  | Bezier tool drag: Shift both handles, Ctrl break | drag is always symmetric | partial | **adopt** (T3): Ctrl breaks (only the exit handle moves) |
+  | Click the first point to close, then drag its tangents | closes, no drag | partial | **adopt** (T3) |
+  | Shift+drag a tangent: both handles together | moves one (other keeps angle) | missing | **adopt** (T3) |
+  | Ctrl+drag a tangent / Ctrl+LMB a point: break | Ctrl+drag breaks; Ctrl+click no-op | partial | **adopt** (T3): Ctrl+click breaks the point's handles |
+  | Ctrl+drag jack centre: move pivot | host transform jack | present | keep |
+  | Ctrl+drag transform-box centre: move pivot | none (pivot = box centre) | missing | **adopt** (T3); the pivot resets when the selection changes |
+  | Ctrl+Shift+drag transform-box corner: corner pin | none | missing | not copied now: needs a per-point projective mapping in TransformUndoCommand; follow-up |
+  | Shift+LMB add to transform box | same | present | keep |
+  | Ctrl+Alt+LMB add point | same | present | keep |
+  | Ellipse/Rectangle: Shift square, Ctrl+Shift from centre | Shift square, Ctrl from centre | conflicting | **adopt** Nuke mapping |
+  | Shift+drag brush size; Ctrl+drag clone offset | same | present | keep |
+  | Ctrl+Shift+drag B-spline tension | no B-spline tool | n/a | — |
+  | Ripple: all / from start / to end / range, red viewer border | ripple toggle, all keys only, no border | partial | **adopt** (T2) |
+  | Natron-only: Q select group, keypad nudge, Shift+L lock, Ctrl toggles box rotate/scale | — | extra | keep (no Nuke conflict) |
+
 - 2026-10-28: Phases 224.2–224.3 implemented (builds pending). Preview: brush-faithful dabs into a destination-alpha mask; eraser/clone/smear show a 35% white footprint; the preview stays until the neat frame is displayed (1000 ms fallback if the frame never shows). One stroke render in flight (StrokeRenderCoalescer). Pen-up waits on no thread; a pen-down during a neat render is queued and replayed. Shape drags: preference "Roto Shape Drag Render" (Adaptive default, Always Live, On Release); Adaptive falls back to on-release above 100 ms per render; playback drags act as On Release. One undo entry per gesture (snapshot at start, delta per motion, exact redo from captured end state). Overlay: per-Bezier polygon cache keyed on time, content generation, GUI edit counter and transform; clip-space culling, selected shapes never culled.
 - 2026-10-27 — **User:** preview under the pen = brush-faithful dabs (size, hardness, opacity, pressure). Live render while dragging shapes = a **preference** (Adaptive default: live with latest-wins abort, falling back to render-on-release when a frame exceeds a threshold; plus Always Live and On Release). Shortcuts: adopt **Nuke's Roto/RotoPaint map wholesale**. Latency budget: preview within **1 display frame p95**, real render converging within **100 ms**. Bench records keep the op's main cost in `median_ms` with a `headline` field (PM).

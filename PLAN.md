@@ -174,10 +174,10 @@ future core work has solid ground to build on.
 | M242 | Cache Invalidation Audit | done | M178, M185 | bosley-native-nodes | E14 | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
 | M243 | Startup Pane Paint On NVIDIA | todo | - |  | E10 | [M243-startup-pane-paint-on-nvidia.md](PLAN/MILESTONES/M243-startup-pane-paint-on-nvidia.md) |
 | M244 | NVIDIA Test Fixes | todo | M239 |  | E5 | [M244-nvidia-test-fixes.md](PLAN/MILESTONES/M244-nvidia-test-fixes.md) |
-| M245 | Write Path Variables | todo | - |  | E3 | [M245-write-path-variables.md](PLAN/MILESTONES/M245-write-path-variables.md) |
+| M245 | Write Path Variables | doing | - | bosley-native-nodes | E3 | [M245-write-path-variables.md](PLAN/MILESTONES/M245-write-path-variables.md) |
 | M246 | Vulkan Inference Provider | todo | M203, M204 |  | E16 | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
-| M248 | Render Delegate Selection | todo | M20 |  | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
+| M248 | Render Delegate Selection | doing | M20 | bosley-native-nodes | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
 | M249 | Bundle Cycles Delegate | todo | M19 |  | E9 | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
 | M250 | Bundle MoonRay Delegate | todo | M19 |  | E9 | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
 | M251 | Cycles Rendering | todo | M248, M249 |  | E9 | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
@@ -222,10 +222,10 @@ future core work has solid ground to build on.
 | M125 | Native Multi-Frame Nodes | todo | M124 |  | E3 | [M125-native-multi-frame-nodes.md](PLAN/MILESTONES/M125-native-multi-frame-nodes.md) |
 | M126 | Runtime GPU Shaders | done | M85 | gpu | E5 | [M126-runtime-gpu-shaders.md](PLAN/MILESTONES/M126-runtime-gpu-shaders.md) |
 | M127 | Native OCIO Nodes | done | M120, M126, M107 |  | E3 | [M127-native-ocio-nodes.md](PLAN/MILESTONES/M127-native-ocio-nodes.md) |
-| M128 | Native Shape Generators | todo | M120 |  | E3 | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
+| M128 | Native Shape Generators | doing | M120 | bosley-native-nodes | E3 | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
 | M129 | Clean-Sheet Noise Node | done | M120 |  | E3 | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
-| M130 | Native Edge-Preserving And Directional Filters | todo | M120 |  | E3 | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
-| M131 | Native Defocus Family | todo | M120 |  | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
+| M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
+| M131 | Native Defocus Family | doing | M120 | bosley-native-nodes | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |
 | M133 | ZDefocus Lens Aberrations | todo | M131 |  | E3 | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
 | M117 | GUI Perf Harness And Baseline | doing | - | bosley-native-nodes | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |

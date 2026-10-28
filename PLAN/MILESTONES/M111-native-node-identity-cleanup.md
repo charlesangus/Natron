@@ -191,4 +191,5 @@ Scouted facts (2026-10-12, read-only audit on `milestone/m45-native-tab-menu`; r
 
 ## Decisions
 
+- 2026-10-28: Phase 1 implemented (build pending). README policies rewritten (own knobs/maths, plain IDs at major 1, one node per feature, regression fixtures). Parity harness replays recorded references only (ParityPair without ofx/live; makeParityPair(app, id, nativeMajor, maskInputLabel)). Fixture dirs stay keyed by plugin ID (git mv when Phase 2 renames IDs; no LFS cost). Kept ParityPair/setKnobOnBoth names (mechanical rename later). Merge-order note: branches calling makeParityPair with an OFX major or using pair.ofx/.live/forceReplay/expectKnobParity (M121, M128 and other native lanes) need the third argument dropped when they meet M111.
 - 2026-10-25 — **The I-variants fold too (user):** whatever merges Erode and Dilate into one node also merges IErode and IDilate into one IErodeDilate.

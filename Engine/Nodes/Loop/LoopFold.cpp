@@ -26,7 +26,14 @@
 #include "LoopFold.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
+
+#include "Engine/Nodes/Image/GpuRender.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -109,6 +116,153 @@ finishRow(OperationEnum operation,
         acc[i] = acc[i] / divisor;
     }
 }
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+    // Mirrors LoopFoldParams in Engine/Gpu/Kernels/loopfold.slang.
+    struct LoopFoldGpuParams {
+        uint32_t width;
+        uint32_t height;
+        uint32_t dstOffset;
+        uint32_t dstStride;
+        uint32_t nComps;
+        uint32_t hasPrev;
+        uint32_t prevOffset;
+        uint32_t prevStride;
+        uint32_t srcOffset;
+        uint32_t srcStride;
+        uint32_t srcComps;
+        uint32_t validX1;
+        uint32_t validY1;
+        uint32_t validX2;
+        uint32_t validY2;
+        int32_t alphaIndex;
+        float initial;
+        float divisor;
+    };
+    static_assert(sizeof(LoopFoldGpuParams) == 72, "must match LoopFoldParams in loopfold.slang");
+
+    // The float index of pixel (x, y) of view, false when the view is malformed or does not hold its
+    // whole bounds within 32-bit indexing.
+    bool
+    foldViewIndex(const GpuImageView& view,
+                  int x,
+                  int y,
+                  uint32_t* index)
+    {
+        if (!view.buffer || ((view.byteOffset % sizeof(float)) != 0) || (view.nComps < 1) || (view.rowStrideFloats < view.bounds.width() * view.nComps)) {
+            return false;
+        }
+        const uint64_t base = view.byteOffset / sizeof(float);
+        if ((base + (uint64_t)view.bounds.height() * (uint64_t)view.rowStrideFloats) > UINT32_MAX) {
+            return false;
+        }
+        *index = (uint32_t)(base + (uint64_t)(y - view.bounds.y1) * (uint64_t)view.rowStrideFloats + (uint64_t)(x - view.bounds.x1) * (uint64_t)view.nComps);
+
+        return true;
+    }
+
+    uint32_t
+    clampedThreads(int64_t v,
+                   uint32_t n)
+    {
+        return (uint32_t)std::clamp<int64_t>(v, 0, (int64_t)n);
+    }
+
+    gpu::GpuKernelId
+    foldKernel(std::optional<OperationEnum> operation)
+    {
+        if (!operation) {
+            return gpu::GpuKernelId::loopfold_copy;
+        }
+        switch (*operation) {
+        case eOperationMean:
+            return gpu::GpuKernelId::loopfold_mean;
+        case eOperationSum:
+            return gpu::GpuKernelId::loopfold_sum;
+        case eOperationMin:
+            return gpu::GpuKernelId::loopfold_min;
+        case eOperationMax:
+            return gpu::GpuKernelId::loopfold_max;
+        case eOperationOver:
+            return gpu::GpuKernelId::loopfold_over;
+        case eOperationUnder:
+            break;
+        }
+
+        return gpu::GpuKernelId::loopfold_under;
+    }
+} // anonymous namespace
+#endif // NATRON_HAVE_GPU
+
+bool
+recordGpu(std::optional<OperationEnum> operation,
+          const GpuRenderArgs& args,
+          const GpuImageView* previous,
+          const GpuImageView* source,
+          int alphaIndex,
+          int divisor)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuImageView& dst = args.output;
+    const RectI& rect = args.outputRect;
+    const int nComps = args.query.nComps;
+    if (rect.isNull() || (nComps < 1) || (nComps > 4) || (dst.nComps != nComps) || !dst.bounds.contains(rect)) {
+        return false;
+    }
+    LoopFoldGpuParams p {};
+    p.width = (uint32_t)rect.width();
+    p.height = (uint32_t)rect.height();
+    p.dstStride = (uint32_t)dst.rowStrideFloats;
+    p.nComps = (uint32_t)nComps;
+    p.alphaIndex = alphaIndex;
+    p.initial = operation ? initialValue(*operation) : 0.f;
+    p.divisor = (operation && (*operation == eOperationMean) && (divisor > 1)) ? (float)divisor : 0.f;
+    if (!foldViewIndex(dst, rect.x1, rect.y1, &p.dstOffset)) {
+        return false;
+    }
+
+    const gpu::GpuBuffer* prevBuffer = dst.buffer;
+    if (previous) {
+        if ((previous->nComps != nComps) || !previous->bounds.contains(rect) || !foldViewIndex(*previous, rect.x1, rect.y1, &p.prevOffset)) {
+            return false;
+        }
+        p.hasPrev = 1;
+        p.prevStride = (uint32_t)previous->rowStrideFloats;
+        prevBuffer = previous->buffer;
+    }
+
+    // The kernel still binds a source buffer when there is none; it reads nothing of it.
+    const gpu::GpuBuffer* srcBuffer = dst.buffer;
+    if (source && source->buffer && !source->bounds.isNull()) {
+        p.srcComps = (uint32_t)source->nComps;
+        p.srcStride = (uint32_t)source->rowStrideFloats;
+        p.validX1 = clampedThreads((int64_t)source->bounds.x1 - rect.x1, p.width);
+        p.validX2 = clampedThreads((int64_t)source->bounds.x2 - rect.x1, p.width);
+        p.validY1 = clampedThreads((int64_t)source->bounds.y1 - rect.y1, p.height);
+        p.validY2 = clampedThreads((int64_t)source->bounds.y2 - rect.y1, p.height);
+        if ((p.validX1 < p.validX2) && (p.validY1 < p.validY2)) {
+            if (!foldViewIndex(*source, rect.x1 + (int)p.validX1, rect.y1 + (int)p.validY1, &p.srcOffset)) {
+                return false;
+            }
+            srcBuffer = source->buffer;
+        } else {
+            p.validX1 = p.validX2 = p.validY1 = p.validY2 = 0;
+        }
+    }
+
+    return bool(args.context.dispatch(foldKernel(operation), { prevBuffer, srcBuffer, dst.buffer }, p, { p.width, p.height, 1 }));
+#else
+    (void)operation;
+    (void)args;
+    (void)previous;
+    (void)source;
+    (void)alphaIndex;
+    (void)divisor;
+
+    return false;
+#endif
+} // recordGpu
 
 } // namespace LoopFold
 

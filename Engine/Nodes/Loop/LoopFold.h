@@ -29,8 +29,12 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <optional>
 
 NATRON_NAMESPACE_ENTER
+
+struct GpuImageView;
+struct GpuRenderArgs;
 
 /**
  * @brief The per-pixel arithmetic of LoopEnd's Accumulate. The accumulator is float, the depth
@@ -77,6 +81,21 @@ void finishRow(OperationEnum operation,
                int count,
                float* acc,
                std::size_t n);
+
+/**
+ * @brief Records the fold of source into previous over args.outputRect into args.output, with the
+ * arithmetic of foldRow(), then finishRow() when divisor is not 0: count for the last step of a
+ * Mean. previous null starts from initialValue(); source null, or outside its bounds, folds in
+ * zeros, as a missing image does on the CPU. With no operation the source is copied as it is, zero
+ * outside its bounds. previous and the output hold args.query.nComps components; source's are
+ * folded by index. False when the views cannot be indexed or the dispatch fails.
+ **/
+bool recordGpu(std::optional<OperationEnum> operation,
+               const GpuRenderArgs& args,
+               const GpuImageView* previous,
+               const GpuImageView* source,
+               int alphaIndex,
+               int divisor) WARN_UNUSED_RETURN;
 
 } // namespace LoopFold
 

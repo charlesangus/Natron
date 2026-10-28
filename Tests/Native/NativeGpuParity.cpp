@@ -649,6 +649,10 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();
+        result.cpuFallbackReasons = run.stats->getCpuFallbackReasons();
+#ifdef NATRON_HAVE_GPU
+        result.poolPeakBytes = appPTR->getGpuContext()->runtime()->pool().stats().peakBytes;
+#endif
     }
 
     appPTR->clearAllCaches();

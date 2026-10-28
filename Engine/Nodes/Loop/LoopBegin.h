@@ -152,6 +152,31 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return OpKind::Point;
+    }
+
+    // Only a Feedback iteration after the first, on the task-graph scheduler: the iteration before
+    // is then an output this node requests under a context, which a region hands over on the device.
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The iteration before in plane, so a tail of other components keeps render()'s conform on
+    // the CPU. Input 0 is not read under a Feedback iteration after the first.
+    virtual bool getGpuInputLayer(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // Copies the iteration before, zero outside it.
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
     virtual void appendExtraHashSources(std::vector<NodePtr>* sources) const OVERRIDE FINAL;

@@ -30,13 +30,16 @@
 #include <QtCore/QString>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopFold.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
@@ -452,6 +455,73 @@ LoopBegin::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // LoopBegin::render
+
+bool
+LoopBegin::canRenderOnGpu(const GpuQuery& query) const
+{
+    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
+        return false;
+    }
+    if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
+        return false;
+    }
+    if ((query.nComps < 1) || (query.nComps > 4) || (query.plane.getNumComponents() != query.nComps)) {
+        return false;
+    }
+    const std::shared_ptr<LoopEnd> end = LoopEnd::feedbackEndOf(getNode());
+    LoopEnd::FeedbackStep previous;
+
+    return end && end->feedbackStepBefore(getCurrentRenderContext(), query.time, &previous) && previous.tail && previous.tail->getEffectInstance();
+}
+
+bool
+LoopBegin::getGpuInputLayer(int inputNb,
+                            const ImageLayerDesc& plane,
+                            double /*time*/,
+                            ViewIdx /*view*/,
+                            ImageLayerDesc* layer) const
+{
+    if ((inputNb != 0) && (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb)) {
+        return false;
+    }
+    *layer = plane;
+
+    return true;
+}
+
+bool
+LoopBegin::readsGpuInput(int inputNb,
+                         const ImageLayerDesc& /*plane*/,
+                         double /*time*/,
+                         ViewIdx /*view*/) const
+{
+    return inputNb == FrameViewRequest::TaskEdge::kContextRequestInputNb;
+}
+
+StatusEnum
+LoopBegin::renderGpu(const GpuRenderArgs& args)
+{
+    if (!canRenderOnGpu(args.query) || !LoopEnd::feedbackUsesFrameStore()) {
+        return eStatusFailed;
+    }
+    // The tail at the iteration before is the one output this node requests under a context.
+    const GpuImageView* source = nullptr;
+    for (const GpuContextInput& input : args.contextInputs) {
+        if (input.view.buffer) {
+            source = &input.view;
+            break;
+        }
+    }
+    if (!source || (source->nComps != args.query.nComps)) {
+        return eStatusFailed;
+    }
+    if (!LoopFold::recordGpu(std::nullopt, args, nullptr, source, -1, 0)) {
+        return eStatusFailed;
+    }
+    refreshConformMessage(std::string());
+
+    return eStatusOK;
+}
 
 void
 LoopBegin::appendNodeContentHash(ContentHasher& h) const

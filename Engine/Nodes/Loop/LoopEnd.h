@@ -346,6 +346,24 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return OpKind::Point;
+    }
+
+    // Only a fold step task of the task-graph scheduler, which reads step k - 1 from the device.
+    virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The iteration on input 0 and step k - 1 under a context, both in plane.
+    virtual bool getGpuInputLayer(int inputNb,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // One loopfold dispatch folding the iteration into step k - 1, finishing a Mean at the last step.
+    virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     // The loop as its knobs and graph define it, every iteration folded.
     Resolved resolve() const WARN_UNUSED_RETURN;
 

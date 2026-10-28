@@ -45,6 +45,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PyRFV.h"
@@ -1561,6 +1562,79 @@ LoopEnd::pullsInputInRender(int inputNb,
     const Resolved resolved = resolveAt(time);
 
     return resolved.message.empty() && drivesFeedbackChain(resolved);
+}
+
+bool
+LoopEnd::canRenderOnGpu(const GpuQuery& query) const
+{
+    // Elsewhere one render folds every iteration, which no single dispatch reads.
+    if (!foldsAsTasks()) {
+        return false;
+    }
+    if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
+        return false;
+    }
+    if ((query.nComps < 1) || (query.nComps > 4) || (query.plane.getNumComponents() != query.nComps)) {
+        return false;
+    }
+    const Resolved resolved = resolveAt(query.time);
+
+    return resolved.message.empty() && (resolved.folded > 0);
+}
+
+bool
+LoopEnd::getGpuInputLayer(int inputNb,
+                          const ImageLayerDesc& plane,
+                          double /*time*/,
+                          ViewIdx /*view*/,
+                          ImageLayerDesc* layer) const
+{
+    if ((inputNb != 0) && (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb)) {
+        return false;
+    }
+    *layer = plane;
+
+    return true;
+}
+
+StatusEnum
+LoopEnd::renderGpu(const GpuRenderArgs& args)
+{
+    const GpuQuery& query = args.query;
+
+    if (!canRenderOnGpu(query)) {
+        return eStatusFailed;
+    }
+    const Resolved resolved = resolveAt(query.time);
+    if (drivesFeedbackChain(resolved)) {
+        return eStatusFailed;
+    }
+    const int count = resolved.folded;
+    const int step = foldStepOf(getCurrentRenderContext(), count);
+    KnobChoicePtr operationKnob = _operation.lock();
+    // As render(): a single iteration summed onto black is that iteration.
+    const LoopFold::OperationEnum operation = (resolved.singlePass >= 0) ? LoopFold::eOperationSum
+        : operationKnob                                                  ? (LoopFold::OperationEnum)operationKnob->getValue()
+                                                                         : LoopFold::eOperationMean;
+
+    // The only output this node requests under a context is its own step k - 1, without which
+    // the steps before cannot be refolded here as render() does.
+    const GpuImageView* previous = nullptr;
+    if (step > 0) {
+        for (const GpuContextInput& input : args.contextInputs) {
+            if (input.view.buffer) {
+                previous = &input.view;
+                break;
+            }
+        }
+        if (!previous) {
+            return eStatusFailed;
+        }
+    }
+    const GpuImageView* source = (!args.inputs.empty() && args.inputs[0].buffer) ? &args.inputs[0] : nullptr;
+    const int divisor = (step == count - 1) ? count : 0;
+
+    return LoopFold::recordGpu(operation, args, previous, source, alphaIndexOf(query.plane), divisor) ? eStatusOK : eStatusFailed;
 }
 
 StatusEnum

@@ -12,14 +12,26 @@ The camera comes from the Camera input, read where it is wired. Camera lists tha
 scene's cameras; until one is chosen the first is used. A chosen camera the scene
 does not have, or no camera at all, is a node error. The camera is stored as values
 (a matrix per frame when it moves), so the material keeps projecting where the
-camera was wherever it is grafted. The projection is fixed in world space: moving
-the geometry slides it through the projection.
+camera was wherever it is grafted.
+
+The image's format fills the camera's frame. Data beyond the format (overscan) is
+in the texture too: it shows past the frame's edges when Crop is off.
 
 Controls:
 
+- Projection Space: World fixes the projection where the camera is, so geometry
+  moving after it slides through the image. Geometry fixes it to the geometry as
+  the geometry node it is the material of places it: transforms after that node
+  carry the image along. With Use Frame Hold on, the geometry is also taken at
+  Frame Hold, so the image sticks to the geometry's own animation too, as Nuke's
+  Project3D with a held camera does. Only the primitive nodes (USDCard, USDCube,
+  USDSphere, USDCylinder) place a projection; bound any other way, a Geometry
+  projection takes the camera in the geometry's own coordinates.
 - Project On: Both, Front (faces facing the camera) or Back.
-- Crop: beyond the camera's frame the surface shows Outside. Off, the image's edge
-  pixels extend beyond it.
+- Crop: beyond the camera's frame the surface shows Outside, and inside it, where the
+  image has no data, black. Off, the image's data beyond its format shows there, and
+  its edge pixels extend beyond that. A baked export cannot crop, so it shows the
+  overscan, with a warning.
 - Clip Near Far: nearer than the camera's near plane or beyond its far one, the
   surface shows Outside.
 - Outside: Black, or Transparent (not drawn). Behind the camera is always Outside.

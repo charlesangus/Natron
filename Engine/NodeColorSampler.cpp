@@ -87,6 +87,31 @@ isMainThread()
     return app && (QThread::currentThread() == app->thread());
 }
 
+// A generator's infinite region becomes the project format.
+void
+clipInfiniteSides(const NodePtr& node,
+                  RectD* rod)
+{
+    if (!rod->isInfinite()) {
+        return;
+    }
+    Format format;
+    node->getApp()->getProject()->getProjectDefaultFormat(&format);
+    const RectD formatRect = format.toCanonicalFormat();
+    if (rod->x1 <= kOfxFlagInfiniteMin) {
+        rod->x1 = formatRect.x1;
+    }
+    if (rod->y1 <= kOfxFlagInfiniteMin) {
+        rod->y1 = formatRect.y1;
+    }
+    if (rod->x2 >= kOfxFlagInfiniteMax) {
+        rod->x2 = formatRect.x2;
+    }
+    if (rod->y2 >= kOfxFlagInfiniteMax) {
+        rod->y2 = formatRect.y2;
+    }
+}
+
 bool
 renderLayer(const NodePtr& node,
             const AbortableRenderInfoPtr& abortInfo,
@@ -276,6 +301,30 @@ renderNodeImageOverFormat(const NodePtr& node,
     *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, true, format, renderedRect, &rendered);
 
     return rendered;
+}
+
+bool
+getNodeDefinitionPixelRect(const NodePtr& node,
+                           double time,
+                           ViewIdx view,
+                           RectI* rect)
+{
+    const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (!effect) {
+        return false;
+    }
+    RectD rod;
+    bool isProjectFormat = false;
+    if (effect->getRegionOfDefinition_public(effect->getHash(), time, RenderScale::identity, view, &rod, &isProjectFormat) != eStatusOK) {
+        return false;
+    }
+    const NodeMetadataConstPtr metadata = effect->getMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    clipInfiniteSides(node, &rod);
+    *rect = rod.toPixelEnclosing(0, (par > 0.) ? par : 1.);
+
+    return !rect->isNull();
 }
 
 bool

@@ -2,7 +2,8 @@
 
 //
 // Natron's camera projection surface for Storm: the plate, sampled where the
-// fragment's world position projects through a camera, shown unlit.
+// fragment's world position, or in Geometry space its position on the object,
+// projects through a camera, shown unlit.
 //
 
 -- configuration
@@ -18,6 +19,21 @@
                         0.0, 0.0, 1.0, 0.0,
                         0.0, 0.0, 0.0, 1.0],
             "documentation": "World to the camera's clip space, with x and y mapped from -1..1 to 0..1 (row vectors, as GfMatrix4d)."
+        },
+        "plateTransform": {
+            "default": [1.0, 1.0, 0.0, 0.0],
+            "documentation": "Where the image's format lies in the plate texture, which covers its region of definition: texture coordinates are the frame's 0..1 coordinates times xy plus zw."
+        },
+        "projectionSpace": {
+            "default": 0,
+            "documentation": "0 World: the projection stays where the camera is. 1 Geometry: positions are taken on the object and carried through geometryFrame, so the projection moves with the object."
+        },
+        "geometryFrame": {
+            "default": [1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0, 1.0],
+            "documentation": "In Geometry space, the object's local to world transform where the projection was set up (row vectors, as GfMatrix4d)."
         },
         "projectorOrigin": {
             "default": [0.0, 0.0, 0.0, 1.0],
@@ -63,6 +79,7 @@ displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord)
 -- glsl NatronProject3D.Surface
 
 FORWARD_DECL(bool IsFlipped());
+FORWARD_DECL(MAT4 ApplyInstanceTransformInverse(MAT4 m));
 
 vec4
 natronProject3DOutside()
@@ -84,9 +101,19 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
 
     vec4 Pworld = vec4(mat4(GetWorldToViewInverseMatrix()) * vec4(Peye.xyz, 1.0));
 
+    // The space the camera values are in: the world, or the world as it was around the object
+    // where the projection was set up, however the object has moved since.
+    mat4 worldToReference = mat4(1.0);
+    if (HdGet_projectionSpace() == 1) {
+        worldToReference = mat4(HdGet_geometryFrame())
+            * mat4(ApplyInstanceTransformInverse(HdGet_transformInverse()));
+    }
+    vec4 Preference = worldToReference * Pworld;
+
     int projectOn = HdGet_projectOn();
     if (projectOn != 0) {
-        vec4 origin = vec4(mat4(GetWorldToViewMatrix()) * HdGet_projectorOrigin());
+        vec4 origin = vec4(mat4(GetWorldToViewMatrix()) * inverse(worldToReference)
+                           * HdGet_projectorOrigin());
         vec3 toProjector = origin.xyz - Peye.xyz * origin.w;
         bool facing = dot(outward, toProjector) > 0.0;
         if (facing != (projectOn == 1)) {
@@ -94,7 +121,7 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
         }
     }
 
-    vec4 c = vec4(mat4(HdGet_worldToProjector()) * Pworld);
+    vec4 c = vec4(mat4(HdGet_worldToProjector()) * Preference);
     // Behind the camera nothing projects.
     if (c.w <= 0.0) {
         return natronProject3DOutside();
@@ -103,12 +130,20 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     if (HdGet_clip() != 0 && (ndc.z < -1.0 || ndc.z > 1.0)) {
         return natronProject3DOutside();
     }
+    // 0..1 across the format; the texture covers the region of definition, which may reach
+    // beyond the format or fall short of it.
     vec2 uv = ndc.xy;
-    if (HdGet_crop() != 0) {
-        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-            return natronProject3DOutside();
+    bool crop = HdGet_crop() != 0;
+    if (crop && (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))) {
+        return natronProject3DOutside();
+    }
+    vec4 window = HdGet_plateTransform();
+    uv = uv * window.xy + window.zw;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+        if (crop) {
+            // Inside the format but outside the image's data.
+            return ApplyColorOverrides(vec4(0.0));
         }
-    } else {
         uv = clamp(uv, vec2(0.0), vec2(1.0));
     }
 

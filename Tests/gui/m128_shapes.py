@@ -493,7 +493,8 @@ try:
         show(rect)
         img = yield from render()
         gt.shot("m128-rectangle.png")
-        inside, outside = luma(sample(img, cx, cy)), luma(sample(img, cx + 450, cy))
+        # Off the centre: the viewer's centre cross overlay is drawn over the box centre and darkens a patch there.
+        inside, outside = luma(sample(img, cx + 120, cy + 90)), luma(sample(img, cx + 450, cy))
         near_edge, corner = luma(sample(img, cx + 380, cy)), luma(sample(img, cx + 385, cy + 285))
         report("NOTE rectangle: inside %.0f, outside %.0f, near the edge %.0f, corner %.0f" % (inside, outside, near_edge, corner))
         check(inside > outside + 100, "inside is Color 1 and outside Color 0 (%.0f vs %.0f)" % (inside, outside))
@@ -505,7 +506,7 @@ try:
         gt.shot("m128-rectangle-soft.png")
         soft_edge = luma(sample(soft_img, cx + 380, cy))
         check(soft_edge < near_edge - BRIGHT_MARGIN, "Softness darkens the inside near the edge (%.0f vs %.0f)" % (soft_edge, near_edge))
-        check(luma(sample(soft_img, cx, cy)) > soft_edge + BRIGHT_MARGIN, "the soft rectangle's centre stays brighter than its edge")
+        check(luma(sample(soft_img, cx + 120, cy + 90)) > soft_edge + BRIGHT_MARGIN, "the soft rectangle's centre stays brighter than its edge")
         set_checked(rect, "softness", 0.0)
 
         param(rect, "cornerRadius").set(150.0, 150.0)

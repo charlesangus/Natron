@@ -113,13 +113,10 @@ if grep -q '102 -> 103' "${usd_prefix}/include/pxr/imaging/hd/version.h"; then
     done
 fi
 
-# Both plug-ins declare priority 99, which would make MoonRay USD's default renderer
-# (HdRendererPluginRegistry::GetDefaultPluginId) for every engine built without an explicit id,
-# Natron's viewer included. Below Storm's 0 it is only used when asked for by id.
+# USD sorts render delegates by ascending priority and defaults to the first that loads, so
+# upstream's 99 keeps MoonRay behind Storm (0); it is only used when asked for by id.
 for plugin in hd_moonray hd_moonray_debug; do
-    file="${src}/moonray/hydra/hdMoonray/plugin/${plugin}/plugInfo.json.in"
-    grep -q '"priority": 99' "$file"
-    sed -i 's/"priority": 99/"priority": -1/' "$file"
+    grep -q '"priority": 99' "${src}/moonray/hydra/hdMoonray/plugin/${plugin}/plugInfo.json.in"
 done
 
 # The image's pxrConfig.cmake still names the Conan build tree for each dependency's <Pkg>_DIR;
@@ -183,7 +180,7 @@ for file in plugin/hd_moonray.so plugin/hd_moonray_debug.so plugin/pxr/plugInfo.
     fi
 done
 grep -q '"HdMoonrayRendererPlugin"' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
-grep -q '"priority": -1' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
+grep -q '"priority": 99' "${prefix}/plugin/pxr/hd_moonray/plugInfo.json"
 dso_count="$(find "${prefix}/rdl2dso" -maxdepth 1 -name '*.so' | wc -l)"
 proxy_count="$(find "${prefix}/rdl2dso" -maxdepth 1 -name '*.so.proxy' | wc -l)"
 if [ "$dso_count" -eq 0 ] || [ "$proxy_count" -eq 0 ]; then

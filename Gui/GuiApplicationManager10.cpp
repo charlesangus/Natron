@@ -587,8 +587,10 @@ GuiApplicationManager::matchesKeybind(const std::string & stdgroup,
 
     for (std::list<Qt::KeyboardModifiers>::const_iterator it = keybind->modifiers.begin(); it != keybind->modifiers.end(); ++it, ++kit) {
         if ( matchesModifers(onlyCAS, *it, keybind->ignoreMask) ) {
-            // modifiers are equal, now test symbol
-            return matchesKey( (Qt::Key)symbol, *kit );
+            // modifiers are equal, now test symbol; other bindings of the same action may still match
+            if (matchesKey((Qt::Key)symbol, *kit)) {
+                return true;
+            }
         }
     }
 

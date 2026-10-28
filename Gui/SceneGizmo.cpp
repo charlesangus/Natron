@@ -42,7 +42,7 @@ namespace {
     const double kArrowHead = 0.1;
     const double kRingRadius = 0.7;
     const double kBoxCentre = 0.5;
-    const double kBoxHalfSide = 0.04;
+    const double kBoxHalfSide = 0.09;
     const int kRingSegments = 64;
 
     GfVec3d

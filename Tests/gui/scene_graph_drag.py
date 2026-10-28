@@ -62,9 +62,17 @@ try:
     prune.setPosition(0, 100)
     viewer.setPosition(0, 200)
 
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
-        return views[0] if views else None
+        return hold(views[0]) if views else None
 
     def scene_drawn():
         v = view()
@@ -73,23 +81,33 @@ try:
 
     def panel():
         panels = widgets_of("SceneGraphPanel")
-        return panels[0] if panels else None
+        return hold(panels[0]) if panels else None
 
     def tree():
         p = panel()
-        return p.findChild(QTreeView, "sceneGraphTree") if p is not None else None
+        try:
+            return hold(p.findChild(QTreeView, "sceneGraphTree")) if p is not None else None
+        except RuntimeError:
+            return None
 
     def model():
         t = tree()
-        return t.model() if t is not None else None
+        try:
+            return hold(t.model()) if t is not None else None
+        except RuntimeError:
+            return None
 
     def rows(parent=QModelIndex()):
+        """parent's child rows; none while the tree is being rebuilt."""
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
-            m.fetchMore(parent)
-        return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
+        try:
+            while m.canFetchMore(parent):
+                m.fetchMore(parent)
+            return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
+        except RuntimeError:
+            return []
 
     def path_of(index):
         return str(index.data(PATH_ROLE))
@@ -105,10 +123,15 @@ try:
         return sorted(path_of(i) for i in rows(world)) if world.isValid() else []
 
     def field_showing(text):
-        """The KnobLineEdit showing text in an open settings panel."""
-        for w in widgets_of("KnobLineEdit"):
-            if w.isVisible() and w.text() == text:
-                return w
+        """The line edit showing text in an open settings panel.
+
+        KnobLineEdit has no Q_OBJECT, so its meta-object class name is its base's; match any QLineEdit."""
+        for w in QApplication.allWidgets():
+            try:
+                if w.inherits("QLineEdit") and w.isVisible() and w.text() == text:
+                    return hold(w)
+            except RuntimeError:
+                continue
         return None
 
     def main_window():

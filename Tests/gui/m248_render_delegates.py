@@ -24,12 +24,12 @@ STARTUP_TIMEOUT_S = 60.0
 STORM_ID = "HdStormRendererPlugin"
 
 try:
-    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 
-    from guitest import check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+    from guitest import check, close_all_panels, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     cube = app.createNode("USDCube")
     require(cube is not None, "create USDCube", plugin_problem("USDCube"))
@@ -89,6 +89,63 @@ try:
             QTest.keyClick(p, Qt.Key_Escape)
             QApplication.processEvents()
 
+    _held = []
+
+    def main_gui():
+        guis = [w for w in widgets_of("Gui") if w.isVisible()]
+        if guis:
+            _held.append(guis[0])
+            return guis[0]
+        return None
+
+    def graph_view():
+        views = [v for v in widgets_of("NodeGraph") if v.isVisible()]
+        return views[0] if views else None
+
+    def activate_main_window():
+        gui = main_gui()
+        if gui is not None:
+            gui.activateWindow()
+            gui.raise_()
+        QApplication.processEvents()
+
+    def node_panel(node):
+        label = node.getLabel()
+        for panel in widgets_of("NodeSettingsPanel"):
+            if not panel.isVisible():
+                continue
+            for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                try:
+                    if w.text() == label:
+                        _held.append(panel)
+                        return panel
+                except RuntimeError:
+                    continue
+            if label in (panel.windowTitle() or ""):
+                _held.append(panel)
+                return panel
+        return None
+
+    def open_panel(node):
+        """Steps that open node's settings panel on its own, retrying once; returns whether it opened.
+        showSelectedNodeSettingsPanel does nothing unless node is the only selected node."""
+        for attempt in range(2):
+            close_all_panels()
+            yield ("sleep", 300)
+            app.clearSelection()
+            activate_main_window()
+            app.selectNode(node, True)
+            QApplication.processEvents()
+            gv = graph_view()
+            invoked = gv is not None and QMetaObject.invokeMethod(gv, "showSelectedNodeSettingsPanel")
+            if not invoked:
+                report("NOTE showSelectedNodeSettingsPanel was not invoked (attempt %d)" % (attempt + 1))
+            ok = yield ("until", lambda: node_panel(node) is not None, POLL_TIMEOUT_S / 2)
+            if ok:
+                return True
+            report("NOTE %s's settings panel did not open (attempt %d)" % (node.getScriptName(), attempt + 1))
+        return False
+
     def steps():
         require(viewer.connectInput(0, cube), "connect the Viewer to the USDCube")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -146,8 +203,10 @@ try:
         if STORM_ID in options:
             check(knob.getOption(knob.get()) == STORM_ID, "the USDRender Renderer defaults to Storm (index %r)" % (knob.get(),))
         yield ("sleep", SETTLE_MS)
+        opened = yield from open_panel(render)
+        yield ("sleep", SETTLE_MS)
         panels = [p for p in widgets_of("NodeSettingsPanel") if p.isVisible()]
-        check(bool(panels), "the USDRender panel is open (%d visible node panels)" % len(panels))
+        check(opened and bool(panels), "the USDRender panel is open (%d visible node panels)" % len(panels))
         shot("m248-usdrender-panel.png")
 
         # A delegate other than Storm, when the build has one.

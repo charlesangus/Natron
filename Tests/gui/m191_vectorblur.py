@@ -47,6 +47,7 @@ POINT_LEFT, POINT_BOTTOM, POINT_SIZE = 952, 532, 16
 VECTOR_PX = 60.0
 NEAR_LEFT, NEAR_BOTTOM, NEAR_SIZE = 940, 520, 40
 OCCLUSION_SHARP_TOL = 10
+COLOUR_LAYER = "uk.co.thefoundry.OfxImagePlaneColour"  # rgba
 MOTION_LAYER = "uk.co.thefoundry.OfxImagePlaneForwardMotionVector"  # the built-in Forward layer (U, V); VectorBlur Auto picks it
 EXTENT_MIN = 20  # sampled viewer pixels (stride 2 => 40 px)
 
@@ -341,14 +342,30 @@ try:
                 "the vector constant is (%r, %r) (read back %r, %r)" % (vx, vy, got.r, got.g))
 
     def route_motion(shuffle):
-        """Writes input 1's R and G into the built-in Forward motion layer's U and V."""
+        """Out 1 = Forward (U, V from input 1's R, G); Out 2 = rgba copied from input 2 (the main input, the box).
+
+        In ShuffleCopy slot 1 reads input 1 and slot 2 reads input 2; only the layers named by Out 1 / Out 2
+        are written, so the box's rgba has to be re-written through Out 2 to survive next to Forward."""
         out1 = param(shuffle, "out1")
         out1.setLayer(MOTION_LAYER)
         require(out1.getLayer() == MOTION_LAYER, "%s's Out 1 is the Forward motion layer (read back %r)" % (
             shuffle.getLabel(), out1.getLayer()))
+        in1 = param(shuffle, "in1")
+        in1.setLayer(COLOUR_LAYER)
+        in2 = param(shuffle, "in2")
+        in2.setLayer(COLOUR_LAYER)
+        out2 = param(shuffle, "out2")
+        out2.setLayer(COLOUR_LAYER)
+        require(out2.getLayer() == COLOUR_LAYER, "%s's Out 2 is the colour layer (read back %r)" % (
+            shuffle.getLabel(), out2.getLayer()))
         mapping = param(shuffle, "mapping")
         mapping.connect("in1.#0", "out1.#0")
         mapping.connect("in1.#1", "out1.#1")
+        for c in range(4):
+            mapping.connect("in2.#%d" % c, "out2.#%d" % c)
+        report("NOTE %s mapping: %r; in1=%r in2=%r out1=%r out2=%r" % (
+            shuffle.getLabel(), dict(mapping.getConnections()), in1.getLayer(), in2.getLayer(),
+            out1.getLayer(), out2.getLayer()))
 
     def lit_extent(image, stride=2):
         """(min x, max x, min y, max y, count, sum x) of the lit pixels, or None."""

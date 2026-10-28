@@ -775,14 +775,16 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (!entry.engine || (headlight != entry.headlight) || (settings != entry.settings)) {
         entry.engine.reset();
         entry.rendered = false;
+        // Named even for Storm: with no id the engine takes USD's default delegate, the first by
+        // plugInfo priority that loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
+        parameters.rendererPluginId = TfToken(renderer);
         if (_gl) {
             parameters.driver.name = HgiTokens->renderDriver;
             parameters.driver.driver = VtValue(_hgi.get());
         } else {
             // No Hgi is made without the GPU: the delegate's AOVs are host buffers, and nothing
             // touches GL.
-            parameters.rendererPluginId = TfToken(renderer);
             parameters.gpuEnabled = false;
         }
         std::string startError;
@@ -791,7 +793,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             entry.engine.reset(new UsdImagingGLEngine(parameters));
             ++gEngineBuilds;
             // The engine reports a delegate it could not start as coding errors and renders nothing.
-            if (!_gl && (entry.engine->GetCurrentRendererId() != TfToken(renderer))) {
+            if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
                 for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
                     startError += (startError.empty() ? ": " : "; ") + it->GetCommentary();
                 }

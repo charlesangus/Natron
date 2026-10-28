@@ -105,3 +105,28 @@ TEST(CyclesDelegate, CreatesHeadlessRenderDelegate)
     EXPECT_TRUE(std::find(rprims.begin(), rprims.end(), PXR_NS::HdPrimTypeTokens->mesh) != rprims.end());
     EXPECT_FALSE(delegate->GetRenderSettingDescriptors().empty());
 }
+
+// USD's default delegate (HdRendererPluginRegistry::GetDefaultPluginId) is the first of these
+// descriptors, sorted by ascending plugInfo priority then type name, that loads and is supported.
+// Storm has to come before Cycles; at equal priority HdCyclesPlugin sorts first.
+TEST(CyclesDelegate, StormIsTheDefaultRendererWithCyclesInstalled)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    PXR_NS::HfPluginDescVector descs;
+    PXR_NS::HdRendererPluginRegistry::GetInstance().GetPluginDescs(&descs);
+    const auto indexOf = [&descs](const char* id) {
+        const auto it = std::find_if(descs.begin(), descs.end(), [id](const PXR_NS::HfPluginDesc& desc) {
+            return desc.id == PXR_NS::TfToken(id);
+        });
+
+        return it - descs.begin();
+    };
+    const auto storm = indexOf("HdStormRendererPlugin");
+    const auto cycles = indexOf(kCyclesPluginId);
+    ASSERT_LT(storm, static_cast<decltype(storm)>(descs.size()));
+    ASSERT_LT(cycles, static_cast<decltype(cycles)>(descs.size()));
+    EXPECT_LT(storm, cycles) << "Storm priority " << descs[storm].priority << ", Cycles priority " << descs[cycles].priority;
+    EXPECT_GT(descs[cycles].priority, descs[storm].priority);
+}

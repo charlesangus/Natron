@@ -3368,6 +3368,8 @@ ViewerGL::disconnectViewer()
     }
     //resetWipeControls();
     clearViewer();
+    // Failed renders land here rather than in disconnectInputTexture; the line may hold the previous graph's frames.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 }
 
 /* The dataWindow of the currentFrame(BBOX) in canonical coordinates */

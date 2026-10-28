@@ -4007,7 +4007,7 @@ EffectInstance::isViewerRender() const
 {
     const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
 
-    return args && args->isRenderResponseToUserInteraction;
+    return args && args->treeRoot && args->treeRoot->isEffectViewer();
 }
 
 bool

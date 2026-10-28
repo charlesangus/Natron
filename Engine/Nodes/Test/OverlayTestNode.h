@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Tests_Native_OverlayTestNode_h
-#define Tests_Native_OverlayTestNode_h
+#ifndef Engine_Nodes_Test_OverlayTestNode_h
+#define Engine_Nodes_Test_OverlayTestNode_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -33,12 +33,14 @@
 
 #define kTestPluginIDOverlay "test.natron.built-in.Overlay"
 #define kOverlayTestParamCenter "center"
+#define kNatronGuiTestNodesEnvVar "NATRON_GUI_TEST_NODES"
 
 NATRON_NAMESPACE_ENTER
 
 /**
  * @brief A pass-through node whose overlay draw list holds one of every primitive type around
- * its center knob, with a square handle on the center that drags the knob.
+ * its center knob, with a square handle on the center that drags the knob. For tests only: the
+ * app registers it only when NATRON_GUI_TEST_NODES=1 (the GUI checks set it), the gtests always.
  **/
 class OverlayTestNode
     : public NativeEffectBase {
@@ -95,4 +97,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Tests_Native_OverlayTestNode_h
+#endif // Engine_Nodes_Test_OverlayTestNode_h

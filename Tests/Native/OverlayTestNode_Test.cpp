@@ -35,7 +35,7 @@
 #include <QString>
 
 #include "BaseTest.h"
-#include "Native/OverlayTestNode.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"

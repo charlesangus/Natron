@@ -2506,9 +2506,9 @@ public:
     OverlayDrawState getOverlayDrawState() const;
 
     /**
-     * @brief True when the render running on this thread was made in response to a user
-     * interaction, the viewer's current-frame renders among them. Viewer playback and writers
-     * render with it false. Outside a render it is false.
+     * @brief True when the tree of the render running on this thread is rooted at a viewer,
+     * current-frame renders and playback alike. Writer and analysis renders are not viewer
+     * renders. Outside a render it is false.
      **/
     bool isViewerRender() const;
 

@@ -234,19 +234,30 @@ protected:
     }
 };
 
-TEST_F(OverlayViewerRenderFlag, FollowsTheRenderArgs)
+TEST_F(OverlayViewerRenderFlag, FollowsTheTreeRoot)
 {
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
     ASSERT_TRUE(bool(node));
+    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+    ASSERT_TRUE(bool(viewer));
     EffectInstancePtr effect = node->getEffectInstance();
     ASSERT_TRUE(bool(effect));
 
     EXPECT_FALSE(effect->isViewerRender());
 
-    effect->setParallelRenderArgsTLS(makeFrameArgs(node, true));
+    // Interactive and playback renders of a viewer tree both count.
+    effect->setParallelRenderArgsTLS(makeFrameArgs(viewer, true));
     EXPECT_TRUE(effect->isViewerRender());
     effect->invalidateParallelRenderArgsTLS();
     EXPECT_FALSE(effect->isViewerRender());
+
+    effect->setParallelRenderArgsTLS(makeFrameArgs(viewer, false));
+    EXPECT_TRUE(effect->isViewerRender());
+    effect->invalidateParallelRenderArgsTLS();
+
+    effect->setParallelRenderArgsTLS(makeFrameArgs(node, true));
+    EXPECT_FALSE(effect->isViewerRender());
+    effect->invalidateParallelRenderArgsTLS();
 
     effect->setParallelRenderArgsTLS(makeFrameArgs(node, false));
     EXPECT_FALSE(effect->isViewerRender());

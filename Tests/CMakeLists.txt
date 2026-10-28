@@ -181,7 +181,6 @@ set(Tests_SOURCES
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp
     OverlayDrawList_Test.cpp
-    Native/OverlayTestNode.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on

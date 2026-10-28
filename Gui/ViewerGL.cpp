@@ -531,6 +531,17 @@ ViewerGL::paintGL()
         }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
+
+    // GUI test scripts map canonical coordinates to widget pixels with this: widget origin of the
+    // canonical origin, then widget pixels per canonical unit in x and y (negative y: y points up).
+    {
+        const QPointF origin = toWidgetCoordinates(QPointF(0., 0.));
+        const QPointF unit = toWidgetCoordinates(QPointF(1., 1.));
+        const QVariantList canonicalToWidget { origin.x(), origin.y(), unit.x() - origin.x(), unit.y() - origin.y() };
+        if (property("natronCanonicalToWidget").toList() != canonicalToWidget) {
+            setProperty("natronCanonicalToWidget", canonicalToWidget);
+        }
+    }
 } // paintGL
 
 void

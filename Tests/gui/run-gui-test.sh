@@ -218,6 +218,8 @@ else
     export DISPLAY=":$DISPLAY_NUM" LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa
 fi
 export NATRON_GUI_TEST_ROOT="$ROOT" NATRON_GUI_TEST_OUT="$OUT" GUI_TEST_SCREEN_SIZE="$SCREEN_SIZE"
+# Registers the test-only nodes (Engine/Nodes/Test/) that GUI scripts create; a normal session never has them.
+export NATRON_GUI_TEST_NODES=1
 
 # A script that needs startup scripts (init.py, initGui.py) keeps them in <script>.natronpath/
 # beside it: they must be on the search path before Natron starts, long before the script runs.

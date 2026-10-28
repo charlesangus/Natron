@@ -20,11 +20,11 @@
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 #include "Native/GlHostWrapTestEffect.h"
-#include "Native/OverlayTestNode.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
@@ -206,7 +206,10 @@ registerNativeParityTestPlugins()
 void
 registerOverlayTestPlugins()
 {
-    registerTestBuiltInPlugin<OverlayTestNode>();
+    // The app already registered it when NATRON_GUI_TEST_NODES=1 is set.
+    if (!appPTR->getPluginBinary(QString::fromUtf8(kTestPluginIDOverlay), -1, -1, false)) {
+        registerTestBuiltInPlugin<OverlayTestNode>();
+    }
 }
 
 void

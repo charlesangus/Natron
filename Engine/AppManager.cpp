@@ -148,6 +148,7 @@
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -1718,6 +1719,10 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 
 #include "NativeRegistryAll.inc"
+
+    if (qgetenv(kNatronGuiTestNodesEnvVar) == "1") {
+        registerNativePlugin<OverlayTestNode>();
+    }
 
     if ( !isBackground() ) {
         registerBuiltInPlugin<ViewerInstance>(QString::fromUtf8(NATRON_IMAGES_PATH "viewer_icon.png"), false, false);

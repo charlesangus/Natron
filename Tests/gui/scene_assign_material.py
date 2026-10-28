@@ -76,7 +76,7 @@ try:
     read.getParam("filename").setValue(asset_path)
     red = make("USDMaterial", 250, 0)
     red.getParam("primPath").setValue("/Red")
-    red.getParam("diffuseColor").set(0.8, 0.1, 0.1)
+    red.getParam("diffuseColor").set(0.8, 0.1, 0.1, 1.0)
     assign = make("USDAssignMaterial", 0, 120)
     assign.getParam("primPattern").setValue("/Asset")
     material_path = assign.getParam("materialPath")

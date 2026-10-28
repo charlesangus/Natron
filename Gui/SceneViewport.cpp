@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
@@ -35,17 +36,23 @@
 #include <QActionGroup>
 #include <QContextMenuEvent>
 #include <QDateTime>
+#include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSpinBox>
+#include <QTimer>
 #include <QWheelEvent>
+#include <QWidgetAction>
 #include <QtCore/QDebug>
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -254,6 +261,25 @@ struct SceneViewportRenderer::Implementation {
     int dragHandle = SceneGizmo::kNoHandle;
     SceneGizmo::Frame dragFrame;
     GfVec2d dragPressPixel;
+
+    // The progressive render of a delegate other than Storm, and what it was last told.
+    mutable std::mutex refineListenerMutex;
+    std::function<void()> refineListener;
+    int maxSamples = 0;
+    std::string refineRenderer;
+    // The texture and framebuffer its frames are drawn from, the buffer holding their depth, and
+    // the frame they hold: GL objects of the context of render().
+    GLuint refineTexture = 0;
+    GLuint refineFramebuffer = 0;
+    GLuint refineDepthBuffer = 0;
+    int refineWidth = 0;
+    int refineHeight = 0;
+    U64 refineSerial = 0;
+    int drawnSamples = -1;
+    double uploadMs = -1.;
+    int uploadPixels = 0;
+    // Last, so that its worker, which reads the stage, is joined before the stage goes.
+    std::unique_ptr<HydraRender::ProgressiveRender> progressive;
 
     Implementation()
         : shown(false)
@@ -632,12 +658,25 @@ SceneViewportRenderer::SceneViewportRenderer()
     std::mutex* stageMutex = &_imp->stageMutex;
     _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
                                                                [stageMutex]() { stageMutex->unlock(); });
+    Implementation* imp = _imp.get();
+    _imp->progressive.reset(new HydraRender::ProgressiveRender(stageMutex, [imp]() { return imp->currentStage(); }, [imp]() {
+        std::function<void()> listener;
+        {
+            std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
+            listener = imp->refineListener;
+        }
+        if (listener) {
+            listener();
+        } }, kBackgroundLinear));
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
+    if (_imp->refineTexture || _imp->refineFramebuffer || _imp->refineDepthBuffer) {
+        qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its refinement texture";
+    }
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
@@ -673,7 +712,9 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
 
         return false;
     }
-    _imp->sceneStage->sync(payload);
+    if (_imp->sceneStage->sync(payload)) {
+        _imp->progressive->invalidate();
+    }
     const SceneMetadata& metadata = payload.getMetadata();
     _imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
     _imp->metersPerUnit = metadata.metersPerUnit;
@@ -1022,7 +1063,7 @@ SceneViewportRenderer::render(unsigned int fbo,
 {
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
 
-    return renderLocked(fbo, width, height);
+    return renderLocked(fbo, width, height) == eRenderStatusDone;
 }
 
 SceneViewportRenderer::RenderStatusEnum
@@ -1036,16 +1077,19 @@ SceneViewportRenderer::renderIfIdle(unsigned int fbo,
         return eRenderStatusBusy;
     }
 
-    return renderLocked(fbo, width, height) ? eRenderStatusDone : eRenderStatusRefining;
+    return renderLocked(fbo, width, height);
 }
 
-bool
+SceneViewportRenderer::RenderStatusEnum
 SceneViewportRenderer::renderLocked(unsigned int fbo,
                                     int width,
                                     int height)
 {
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
-        return true;
+        return eRenderStatusDone;
+    }
+    if (_imp->rendererId != kRenderDelegateStormId) {
+        return renderProgressive(fbo, width, height);
     }
     StormGLStateGuard guard;
 
@@ -1059,7 +1103,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     glClearDepth(1.);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!_imp->ensureEngine()) {
-        return true;
+        return eRenderStatusDone;
     }
 
     const UsdStageRefPtr stage = _imp->currentStage();
@@ -1086,8 +1130,137 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         _imp->drawTransformHandles(frustum, width, height);
     }
 
-    return converged;
+    return converged ? eRenderStatusDone : eRenderStatusRefining;
 } // renderLocked
+
+SceneViewportRenderer::RenderStatusEnum
+SceneViewportRenderer::renderProgressive(unsigned int fbo,
+                                         int width,
+                                         int height)
+{
+    StormGLStateGuard guard;
+    HydraRender::ProgressiveRender& progressive = *_imp->progressive;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glClearColor(kBackgroundDisplay, kBackgroundDisplay, kBackgroundDisplay, 1.f);
+    glClearDepth(1.);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    if (_imp->rendererError.empty()) {
+        _imp->rendererError = RenderDelegates::unavailableMessage(_imp->rendererId);
+    }
+    const UsdStageRefPtr stage = _imp->currentStage();
+    if (!_imp->rendererError.empty() || !stage) {
+        progressive.setRenderer(std::string());
+        _imp->refineRenderer.clear();
+
+        return eRenderStatusDone;
+    }
+    if (_imp->refineRenderer != _imp->rendererId) {
+        // Within the scheduler's budget, less a core for the interface.
+        progressive.setThreads(std::max(1, appPTR->getNCPUsAvailableForEffect() - 1));
+        progressive.setRenderer(_imp->rendererId);
+        _imp->refineRenderer = _imp->rendererId;
+    }
+    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    HydraRender::ProgressiveRender::View view;
+    view.frustum = frustum;
+    view.width = width;
+    view.height = height;
+    view.time = UsdTimeCode(_imp->timeCode());
+    progressive.setMaxSamples(_imp->maxSamples);
+    progressive.setView(view);
+
+    const HydraRender::ProgressiveRender::Status status = progressive.getStatus();
+    if (!status.error.empty()) {
+        _imp->rendererError = status.error;
+
+        return eRenderStatusDone;
+    }
+    const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = progressive.getFrame();
+    if (frame && (frame->width > 0) && (frame->height > 0)) {
+        const GLsizei frameWidth = frame->width;
+        const GLsizei frameHeight = frame->height;
+        if (!_imp->refineTexture) {
+            glGenTextures(1, &_imp->refineTexture);
+            glGenFramebuffers(1, &_imp->refineFramebuffer);
+            glGenBuffers(1, &_imp->refineDepthBuffer);
+        }
+        if (frame->serial != _imp->refineSerial) {
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            if ((frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight)) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
+                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                _imp->refineWidth = frameWidth;
+                _imp->refineHeight = frameHeight;
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+            }
+            // The depth stays in a buffer of the GPU's, for the paints that draw the grid over the
+            // frame again before the next one.
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)(frame->depth.size() * sizeof(float)), frame->depth.data(), GL_STREAM_DRAW);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            _imp->uploadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            _imp->uploadPixels = frameWidth * frameHeight;
+            _imp->refineSerial = frame->serial;
+        }
+        // A frame of another size, while the one of this size renders, is stretched to the view.
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+        glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        if ((_imp->showGrid || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
+            // The frame's depth, so that the grid hides behind what it shows.
+            glUseProgram(0);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_ALWAYS);
+            glWindowPos2i(0, 0);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glDrawPixels(frameWidth, frameHeight, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glDepthFunc(GL_LESS);
+            glDisable(GL_DEPTH_TEST);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        }
+        _imp->drawnSamples = frame->samples;
+    } else {
+        _imp->drawnSamples = -1;
+    }
+
+    if (_imp->showGrid || _imp->hasHandles) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        if (_imp->showGrid) {
+            _imp->drawGrid(frustum);
+        }
+        _imp->drawTransformHandles(frustum, width, height);
+    }
+
+    const bool finished = status.converged && frame && frame->converged && (frame->restart == status.restarts);
+
+    return finished ? eRenderStatusDone : eRenderStatusWaiting;
+} // renderProgressive
 
 std::string
 SceneViewportRenderer::pick(int x,
@@ -1097,6 +1270,18 @@ SceneViewportRenderer::pick(int x,
 {
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return std::string();
+    }
+    if (_imp->rendererId != kRenderDelegateStormId) {
+        // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
+        // viewer lock itself.
+        const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
+        if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
+            return std::string();
+        }
+        const int fx = (int)((x + 0.5) * frame->width / width);
+        const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
+
+        return _imp->progressive->pick(fx, fy);
     }
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
@@ -1128,6 +1313,17 @@ SceneViewportRenderer::releaseGL()
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
 
     _imp->engine.reset();
+    if (_imp->refineTexture) {
+        glDeleteTextures(1, &_imp->refineTexture);
+        glDeleteFramebuffers(1, &_imp->refineFramebuffer);
+        glDeleteBuffers(1, &_imp->refineDepthBuffer);
+        _imp->refineTexture = 0;
+        _imp->refineFramebuffer = 0;
+        _imp->refineDepthBuffer = 0;
+    }
+    _imp->refineWidth = 0;
+    _imp->refineHeight = 0;
+    _imp->refineSerial = 0;
 }
 
 void
@@ -1143,6 +1339,12 @@ SceneViewportRenderer::setRendererId(const std::string& id)
     }
     _imp->rendererId = renderer;
     _imp->engine.reset();
+    // The last delegate's refinement engine goes; another has its own default cap, and starts
+    // refining.
+    _imp->progressive->setRenderer(std::string());
+    _imp->refineRenderer.clear();
+    _imp->maxSamples = 0;
+    _imp->progressive->resume();
 }
 
 const std::string&
@@ -1169,6 +1371,77 @@ void
 SceneViewportRenderer::getBackgroundColor(float rgb[3])
 {
     rgb[0] = rgb[1] = rgb[2] = kBackgroundDisplay;
+}
+
+void
+SceneViewportRenderer::setMaxSamples(int samples)
+{
+    _imp->maxSamples = std::max(0, samples);
+    _imp->progressive->setMaxSamples(_imp->maxSamples);
+}
+
+int
+SceneViewportRenderer::getMaxSamples() const
+{
+    return _imp->progressive->getMaxSamples();
+}
+
+void
+SceneViewportRenderer::stopRefinement()
+{
+    _imp->progressive->stop();
+}
+
+void
+SceneViewportRenderer::resumeRefinement()
+{
+    _imp->progressive->resume();
+}
+
+SceneViewportRenderer::RefineStatus
+SceneViewportRenderer::getRefineStatus() const
+{
+    const HydraRender::ProgressiveRender::Status status = _imp->progressive->getStatus();
+    RefineStatus result;
+
+    result.active = status.active && (_imp->rendererId != kRenderDelegateStormId);
+    result.stopped = status.stopped;
+    result.converged = status.converged;
+    result.samples = status.samples;
+    result.maxSamples = status.maxSamples;
+    result.restarts = status.restarts;
+    result.frames = status.frames;
+    result.drawnSamples = _imp->drawnSamples;
+
+    return result;
+}
+
+void
+SceneViewportRenderer::setRefineListener(const std::function<void()>& listener)
+{
+    std::lock_guard<std::mutex> lock(_imp->refineListenerMutex);
+
+    _imp->refineListener = listener;
+}
+
+void
+SceneViewportRenderer::releaseRefinement()
+{
+    _imp->progressive->setRenderer(std::string());
+    _imp->progressive->resume();
+    _imp->refineRenderer.clear();
+}
+
+double
+SceneViewportRenderer::getLastUploadMs() const
+{
+    return _imp->uploadMs;
+}
+
+int
+SceneViewportRenderer::getLastUploadPixels() const
+{
+    return _imp->uploadPixels;
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,11 +1540,16 @@ SceneViewport::SceneViewport(QWidget* parent)
             QMetaObject::invokeMethod(this, [this, serial, ok, qerror]() { onSynced(serial, ok, qerror); }, Qt::QueuedConnection);
         }
     });
+    // A progressive render's new frame repaints.
+    _imp->renderer.setRefineListener([this]() {
+        QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
+    });
     publishState();
 }
 
 SceneViewport::~SceneViewport()
 {
+    _imp->renderer.setRefineListener(std::function<void()>());
     {
         std::lock_guard<std::mutex> lock(_imp->queueMutex);
         _imp->quit = true;
@@ -1374,6 +1652,24 @@ SceneViewport::publishState()
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
     setProperty("natronSceneRenderer", QString::fromStdString(_imp->renderer.getRendererId()));
     setProperty("natronSceneRendererError", QString::fromStdString(_imp->renderer.getRendererError()));
+    publishRefineState();
+}
+
+void
+SceneViewport::publishRefineState()
+{
+    const SceneViewportRenderer::RefineStatus status = _imp->renderer.getRefineStatus();
+
+    setProperty("natronSceneRefining", status.active && !status.stopped && !status.converged);
+    setProperty("natronSceneRefinementStopped", status.stopped);
+    setProperty("natronSceneRefineConverged", status.converged);
+    setProperty("natronSceneSamples", status.active ? status.samples : -1);
+    setProperty("natronSceneDrawnSamples", status.active ? status.drawnSamples : -1);
+    setProperty("natronSceneMaxSamples", _imp->renderer.getMaxSamples());
+    setProperty("natronSceneRestartCount", QVariant::fromValue<qulonglong>(status.restarts));
+    setProperty("natronSceneRefineFrames", QVariant::fromValue<qulonglong>(status.frames));
+    setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
+    setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
 }
 
 const QString&
@@ -1403,6 +1699,30 @@ SceneViewport::setRendererId(const QString& id)
     _imp->renderer.setRendererId(id.toStdString());
     doneCurrent();
     publishState();
+    update();
+}
+
+void
+SceneViewport::setMaxSamples(int samples)
+{
+    _imp->renderer.setMaxSamples(samples);
+    publishRefineState();
+    update();
+}
+
+void
+SceneViewport::stopRefinement()
+{
+    _imp->renderer.stopRefinement();
+    publishRefineState();
+    update();
+}
+
+void
+SceneViewport::resumeRefinement()
+{
+    _imp->renderer.resumeRefinement();
+    publishRefineState();
     update();
 }
 
@@ -1513,6 +1833,7 @@ SceneViewport::releaseEngine()
         _imp->renderer.releaseGL();
         doneCurrent();
     }
+    _imp->renderer.releaseRefinement();
     publishState();
     // A hidden view makes its engine when it is next shown.
     update();
@@ -1549,10 +1870,18 @@ SceneViewport::paintGL()
     }
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
-        // The worker is syncing; it asks for a repaint when it is done.
+        // The worker is syncing; it asks for a repaint when it is done. A background render
+        // passing holds the lock too, and asks for one only once it has a frame: this paint's
+        // camera or size must still reach it.
+        if (_imp->renderer.getRendererId() != kRenderDelegateStormId) {
+            QTimer::singleShot(10, this, [this]() { update(); });
+        }
+
         return;
     }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
+    publishRefineState();
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
@@ -1582,6 +1911,18 @@ SceneViewport::paintGL()
                           .arg(mode)
                           .arg(camera.empty() ? tr("Free camera") : QString::fromStdString(camera))
                           .arg(_imp->renderer.getTimeCode(), 0, 'g', 6);
+        if (refine.active) {
+            // The samples of the frame shown, against the cap.
+            const QString drawn = (refine.drawnSamples >= 0) ? QString::number(refine.drawnSamples) : QString::fromUtf8("-");
+            if (refine.maxSamples > 0) {
+                hud += tr(" | %1 / %2 samples").arg(drawn).arg(refine.maxSamples);
+            } else {
+                hud += tr(" | %1 samples").arg(drawn);
+            }
+            if (refine.stopped) {
+                hud += tr(" (stopped)");
+            }
+        }
         const std::string& selected = _imp->renderer.getSelectedPrim();
         if (!selected.empty()) {
             hud += tr(" | %1").arg(QString::fromStdString(selected));
@@ -1593,9 +1934,10 @@ SceneViewport::paintGL()
     if (converged) {
         // When the last finished frame was drawn, for benchmarks and scripts.
         setProperty("natronSceneLastPaintMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
-    } else {
+    } else if (status == SceneViewportRenderer::eRenderStatusRefining) {
         update();
     }
+    // eRenderStatusWaiting: the background render's listener asks for the next paint.
 } // paintGL
 
 void
@@ -1851,6 +2193,40 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
         const QString id = QString::fromStdString(delegate.id);
         QObject::connect(action, &QAction::triggered, this, [this, id]() {
             setRendererId(id);
+        });
+    }
+    if (rendererId != kRenderDelegateStormId) {
+        // The progressive render's controls.
+        renderers->addSeparator();
+        const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
+        QWidget* samplesRow = new QWidget(renderers);
+        QHBoxLayout* samplesLayout = new QHBoxLayout(samplesRow);
+        samplesLayout->setContentsMargins(8, 2, 8, 2);
+        QLabel* samplesLabel = new QLabel(tr("Max Samples"), samplesRow);
+        QSpinBox* samples = new QSpinBox(samplesRow);
+        samples->setObjectName(QString::fromUtf8("maxSamples"));
+        samples->setRange(1, 1 << 20);
+        samples->setValue(std::max(1, _imp->renderer.getMaxSamples()));
+        samples->setToolTip(tr("The samples per pixel the renderer refines the view to; a change restarts the render."));
+        samplesLayout->addWidget(samplesLabel);
+        samplesLayout->addWidget(samples);
+        QWidgetAction* samplesAction = new QWidgetAction(renderers);
+        samplesAction->setDefaultWidget(samplesRow);
+        renderers->addAction(samplesAction);
+        QObject::connect(samples, &QSpinBox::editingFinished, this, [this, samples]() {
+            if (samples->value() != _imp->renderer.getMaxSamples()) {
+                setMaxSamples(samples->value());
+            }
+        });
+        QAction* stop = renderers->addAction(tr("Stop"));
+        stop->setEnabled(refine.active && !refine.stopped);
+        QObject::connect(stop, &QAction::triggered, this, [this]() {
+            stopRefinement();
+        });
+        QAction* resume = renderers->addAction(tr("Resume"));
+        resume->setEnabled(refine.stopped);
+        QObject::connect(resume, &QAction::triggered, this, [this]() {
+            resumeRefinement();
         });
     }
 

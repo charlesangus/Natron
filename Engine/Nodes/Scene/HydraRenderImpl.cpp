@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +41,10 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #ifdef emit
 #define NATRON_HYDRARENDER_RESTORE_EMIT
@@ -633,29 +638,17 @@ public:
               const TfToken& name,
               std::string* error)
     {
-        const std::string& renderer = entry.rendererName;
-        _buffer = entry.engine->GetAovRenderBuffer(name);
-        if (!_buffer) {
-            *error = renderer + " rendered no " + name.GetString() + " AOV.";
+        map(entry.engine.get(), entry.rendererName, entry.width, entry.height, name, error);
+    }
 
-            return;
-        }
-        _buffer->Resolve();
-        if (((int)_buffer->GetWidth() != entry.width) || ((int)_buffer->GetHeight() != entry.height)) {
-            *error = renderer + "'s " + name.GetString() + " AOV is not the size asked for.";
-            _buffer = nullptr;
-
-            return;
-        }
-        _data = static_cast<const unsigned char*>(_buffer->Map());
-        if (!_data) {
-            *error = renderer + "'s " + name.GetString() + " AOV could not be read back.";
-            _buffer = nullptr;
-
-            return;
-        }
-        _format = _buffer->GetFormat();
-        _stride = HdDataSizeOfFormat(_format);
+    MappedAov(UsdImagingGLEngine* engine,
+              const std::string& rendererName,
+              int width,
+              int height,
+              const TfToken& name,
+              std::string* error)
+    {
+        map(engine, rendererName, width, height, name, error);
     }
 
     ~MappedAov()
@@ -681,6 +674,37 @@ public:
     }
 
 private:
+    void map(UsdImagingGLEngine* engine,
+             const std::string& renderer,
+             int width,
+             int height,
+             const TfToken& name,
+             std::string* error)
+    {
+        _buffer = engine->GetAovRenderBuffer(name);
+        if (!_buffer) {
+            *error = renderer + " rendered no " + name.GetString() + " AOV.";
+
+            return;
+        }
+        _buffer->Resolve();
+        if (((int)_buffer->GetWidth() != width) || ((int)_buffer->GetHeight() != height)) {
+            *error = renderer + "'s " + name.GetString() + " AOV is not the size asked for.";
+            _buffer = nullptr;
+
+            return;
+        }
+        _data = static_cast<const unsigned char*>(_buffer->Map());
+        if (!_data) {
+            *error = renderer + "'s " + name.GetString() + " AOV could not be read back.";
+            _buffer = nullptr;
+
+            return;
+        }
+        _format = _buffer->GetFormat();
+        _stride = HdDataSizeOfFormat(_format);
+    }
+
     HdRenderBuffer* _buffer = nullptr;
     const unsigned char* _data = nullptr;
     HdFormat _format = HdFormatInvalid;
@@ -1849,6 +1873,785 @@ contextDescription(std::string* error)
                                        error);
 
     return ran ? description : std::string();
+}
+
+bool
+ProgressiveRender::View::operator==(const View& other) const
+{
+    return (width == other.width) && (height == other.height) && (time == other.time) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix());
+}
+
+namespace {
+    // How often the worker reads a refining delegate's progress, and publishes its pixels if they
+    // gained samples.
+    const std::chrono::milliseconds kRefinePoll(50);
+    // A restart waits for this long without an edit, but no longer than kRestartMaxWait after the
+    // first edit it waits on.
+    const std::chrono::milliseconds kRestartQuiet(20);
+    const std::chrono::milliseconds kRestartMaxWait(100);
+    // How long a delegate whose progress shows no restart may keep showing its pixels from before one.
+    const std::chrono::milliseconds kRestartUnseen(500);
+    // How long a converged delegate may hold a sample count short of the cap: an adaptive sampler
+    // stops early.
+    const std::chrono::milliseconds kConvergedStall(1000);
+    // The niceness of the worker, which the threads the delegate starts from it inherit.
+    const int kRefineNice = 10;
+
+    std::atomic<int> gProgressiveLive(0);
+
+    int
+    intOf(const VtValue& value,
+          int fallback)
+    {
+        if (value.IsHolding<int>()) {
+            return value.UncheckedGet<int>();
+        }
+        if (value.IsHolding<unsigned int>()) {
+            return (int)value.UncheckedGet<unsigned int>();
+        }
+        if (value.IsHolding<long>()) {
+            return (int)value.UncheckedGet<long>();
+        }
+        if (value.IsHolding<long long>()) {
+            return (int)value.UncheckedGet<long long>();
+        }
+        if (value.IsHolding<double>()) {
+            return (int)value.UncheckedGet<double>();
+        }
+        if (value.IsHolding<float>()) {
+            return (int)value.UncheckedGet<float>();
+        }
+
+        return fallback;
+    }
+
+    // The delegate's setting of its samples per pixel: Hydra's generic one, or one of its own ending
+    // in "samples".
+    TfToken
+    samplesSettingKey(const UsdImagingGLRendererSettingsList& settings)
+    {
+        for (const UsdImagingGLRendererSetting& setting : settings) {
+            if (setting.key == HdRenderSettingsTokens->convergedSamplesPerPixel) {
+                return setting.key;
+            }
+        }
+        for (const UsdImagingGLRendererSetting& setting : settings) {
+            const std::string& key = setting.key.GetString();
+            const std::string suffix = ":samples";
+            if ((setting.type == UsdImagingGLRendererSetting::TYPE_INT) && ((key == "samples") || ((key.size() > suffix.size()) && (key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0)))) {
+                return setting.key;
+            }
+        }
+
+        return TfToken();
+    }
+
+    // The samples per pixel the delegate reports rendered, -1 if it reports none: Cycles' annotation
+    // carries "Sample N/M", "Sample N" when uncapped.
+    int
+    samplesOf(const VtDictionary& stats,
+              int cap)
+    {
+        const VtDictionary::const_iterator annotation = stats.find("renderProgressAnnotation");
+        if ((annotation != stats.end()) && annotation->second.IsHolding<std::string>()) {
+            const std::string& text = annotation->second.UncheckedGet<std::string>();
+            const std::string::size_type at = text.find("Sample ");
+            if (at != std::string::npos) {
+                int samples = -1;
+                if (std::sscanf(text.c_str() + at + 7, "%d", &samples) == 1) {
+                    return samples;
+                }
+            }
+        }
+        const VtDictionary::const_iterator fraction = stats.find("fractionDone");
+        if ((cap > 0) && (fraction != stats.end()) && fraction->second.IsHolding<double>()) {
+            return (int)std::floor(fraction->second.UncheckedGet<double>() * cap + 1e-6);
+        }
+
+        return -1;
+    }
+
+    // The seconds since the delegate's render began, -1 if it reports none.
+    double
+    clockOf(const VtDictionary& stats)
+    {
+        const VtDictionary::const_iterator clock = stats.find("totalClockTime");
+        if ((clock != stats.end()) && clock->second.IsHolding<double>()) {
+            return clock->second.UncheckedGet<double>();
+        }
+
+        return -1.;
+    }
+
+    void
+    lowerThreadPriority()
+    {
+        (void)setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), kRefineNice);
+    }
+
+    // Linear [0, 1] to 8-bit sRGB, by 4096 steps.
+    const std::vector<unsigned char>&
+    srgbTable()
+    {
+        static const std::vector<unsigned char> table = []() {
+            std::vector<unsigned char> t(4096);
+            for (int i = 0; i < 4096; ++i) {
+                const double v = i / 4095.;
+                const double s = (v <= 0.0031308) ? (v * 12.92) : (1.055 * std::pow(v, 1. / 2.4) - 0.055);
+                t[i] = (unsigned char)std::lround(std::min(1., std::max(0., s)) * 255.);
+            }
+
+            return t;
+        }();
+
+        return table;
+    }
+} // anon namespace
+
+struct ProgressiveRender::Implementation {
+    typedef std::chrono::steady_clock Clock;
+
+    std::mutex* const stageLock;
+    const std::function<UsdStageRefPtr()> stageOf;
+    const std::function<void()> listener;
+    const float background;
+
+    // Guards the requests, the status and the frame; never held while taking stageLock.
+    mutable std::mutex mutex;
+    std::condition_variable wake;
+    std::string renderer;
+    int threads = 0;
+    View view;
+    bool hasView = false;
+    int maxSamples = 0;
+    bool stopped = false;
+    bool quit = false;
+    // Bumped by each edit; a pass begun under another is not published.
+    std::uint64_t generation = 0;
+    bool pending = false;
+    Clock::time_point firstPending;
+    Clock::time_point lastPending;
+    Status status;
+    std::shared_ptr<const Frame> frame;
+    int defaultMaxSamples = 0;
+
+    // The worker's; engineMutex guards the engine against pick().
+    std::mutex engineMutex;
+    std::unique_ptr<UsdImagingGLEngine> engine;
+    std::string engineRenderer;
+    std::string rendererName;
+    std::string failedRenderer;
+    TfToken samplesKey;
+    int appliedCap = 0;
+    bool paused = false;
+    View engineView;
+    bool engineHasView = false;
+
+    std::thread worker;
+
+    Implementation(std::mutex* stageLock_,
+                   const std::function<UsdStageRefPtr()>& stage_,
+                   const std::function<void()>& listener_,
+                   float background_)
+        : stageLock(stageLock_)
+        , stageOf(stage_)
+        , listener(listener_)
+        , background(background_)
+    {
+    }
+
+    // Under mutex.
+    void edited()
+    {
+        ++generation;
+        const Clock::time_point now = Clock::now();
+        if (!pending) {
+            firstPending = now;
+        }
+        pending = true;
+        lastPending = now;
+        wake.notify_all();
+    }
+
+    void dropEngine()
+    {
+        std::lock_guard<std::mutex> l(engineMutex);
+        if (engine && paused) {
+            (void)engine->ResumeRenderer();
+        }
+        engine.reset();
+        engineRenderer.clear();
+        samplesKey = TfToken();
+        appliedCap = 0;
+        paused = false;
+        engineHasView = false;
+    }
+
+    // Makes the engine of id, on the worker; false with *error set if the delegate cannot start.
+    bool makeEngine(const std::string& id,
+                    int budget,
+                    int* defaultCap,
+                    std::string* error)
+    {
+        RenderDelegates::Delegate delegate;
+        const std::string name = RenderDelegates::find(id, &delegate) ? delegate.displayName : id;
+        UsdImagingGLEngine::Parameters parameters;
+        parameters.rendererPluginId = TfToken(id);
+        parameters.gpuEnabled = false;
+        std::unique_ptr<UsdImagingGLEngine> made;
+        const std::function<void()> make = [&]() {
+            TfErrorMark mark;
+            made.reset(new UsdImagingGLEngine(parameters));
+            ++gEngineBuilds;
+            if (made->GetCurrentRendererId() != TfToken(id)) {
+                std::string reasons;
+                for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+                    reasons += (reasons.empty() ? ": " : "; ") + it->GetCommentary();
+                }
+                mark.Clear();
+                *error = "The renderer " + name + " could not be started" + reasons + ".";
+            }
+        };
+        if (CyclesAovs::isCycles(id)) {
+            CyclesAovs::withThreadBudget(budget, make);
+        } else {
+            make();
+        }
+        if (!error->empty()) {
+            return false;
+        }
+        made->SetEnablePresentation(false);
+        if (CyclesAovs::isCycles(id)) {
+            CyclesAovs::configureEngine(made.get());
+        }
+        const RendererSettings settings = rendererSettings(id);
+        for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
+            made->SetRendererSetting(TfToken(it->first), it->second);
+        }
+        const TfTokenVector aovs = { HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId };
+        if (!made->SetRendererAovs(aovs)) {
+            *error = name + " offers no color, depth, primId and instanceId AOVs.";
+
+            return false;
+        }
+        const UsdImagingGLRendererSettingsList list = made->GetRendererSettingsList();
+        const TfToken key = samplesSettingKey(list);
+        int cap = 0;
+        if (!key.IsEmpty()) {
+            cap = intOf(made->GetRendererSetting(key), 0);
+            for (const UsdImagingGLRendererSetting& setting : list) {
+                if ((cap <= 0) && (setting.key == key)) {
+                    cap = intOf(setting.defValue, 0);
+                }
+            }
+        }
+        std::lock_guard<std::mutex> l(engineMutex);
+        engine = std::move(made);
+        engineRenderer = id;
+        rendererName = name;
+        samplesKey = key;
+        appliedCap = cap;
+        paused = false;
+        engineHasView = false;
+        *defaultCap = cap;
+
+        return true;
+    } // makeEngine
+
+    // The pixels of the engine's colour and depth AOVs, as a frame of view. Under engineMutex.
+    bool readFrame(const View& v,
+                   Frame* out,
+                   std::string* error)
+    {
+        const int width = v.width;
+        const int height = v.height;
+        const std::size_t pixels = (std::size_t)width * (std::size_t)height;
+        const std::vector<unsigned char>& table = srgbTable();
+        out->width = width;
+        out->height = height;
+        {
+            MappedAov color(engine.get(), rendererName, width, height, HdAovTokens->color, error);
+            if (!color.valid()) {
+                return false;
+            }
+            const HdFormat componentFormat = HdGetComponentFormat(color.format());
+            const std::size_t components = HdGetComponentCount(color.format());
+            const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
+            out->rgba.resize(pixels * 4);
+            for (std::size_t i = 0; i < pixels; ++i) {
+                const unsigned char* at = color.pixel(i);
+                float c[4] = { 0.f, 0.f, 0.f, 1.f };
+                for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
+                    c[k] = componentToFloat(componentFormat, at + k * componentSize);
+                }
+                // Premultiplied: over the background, then encoded.
+                const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
+                for (int k = 0; k < 3; ++k) {
+                    const float value = std::min(1.f, std::max(0.f, c[k] + under));
+                    out->rgba[i * 4 + k] = table[(std::size_t)(value * 4095.f + 0.5f)];
+                }
+                out->rgba[i * 4 + 3] = 255;
+            }
+        }
+        {
+            MappedAov depth(engine.get(), rendererName, width, height, HdAovTokens->depth, error);
+            if (!depth.valid()) {
+                return false;
+            }
+            const HdFormat componentFormat = HdGetComponentFormat(depth.format());
+            out->depth.assign(pixels, 1.f);
+            if (CyclesAovs::isCycles(engineRenderer)) {
+                // Cycles' depth is the distance along the view axis: through the projection to the
+                // window depth.
+                const GfMatrix4d projection = v.frustum.ComputeProjectionMatrix();
+                for (std::size_t i = 0; i < pixels; ++i) {
+                    const double distance = CyclesAovs::depthToDistance(componentToFloat(componentFormat, depth.pixel(i)));
+                    if (!std::isfinite(distance)) {
+                        continue;
+                    }
+                    const double z = -distance;
+                    const double clipZ = z * projection[2][2] + projection[3][2];
+                    const double clipW = z * projection[2][3] + projection[3][3];
+                    if (clipW == 0.) {
+                        continue;
+                    }
+                    const double window = (clipZ / clipW + 1.) * 0.5;
+                    out->depth[i] = (float)std::min(1., std::max(0., window));
+                }
+            } else {
+                for (std::size_t i = 0; i < pixels; ++i) {
+                    out->depth[i] = std::min(1.f, std::max(0.f, componentToFloat(componentFormat, depth.pixel(i))));
+                }
+            }
+        }
+
+        return true;
+    } // readFrame
+
+    void run();
+};
+
+void
+ProgressiveRender::Implementation::run()
+{
+    lowerThreadPriority();
+    std::unique_lock<std::mutex> lock(mutex);
+    // The delegate's progress just before the first pass of the last restart, and whether it has
+    // shown since that it began rendering again: until it does, its buffers may hold the pixels
+    // of before (Cycles resets its session on its own thread, after the pass that edits it).
+    int lastSamples = -1;
+    int samplesAtRestart = -1;
+    double clockAtRestart = -1.;
+    bool restartSeen = true;
+    bool firstPass = false;
+    bool engineFresh = false;
+    Clock::time_point restartTime = Clock::now();
+    Clock::time_point stallSince = restartTime;
+    bool done = false;
+    bool needRestart = true;
+
+    while (!quit) {
+        const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !stageOf;
+        if (idle || (renderer != engineRenderer)) {
+            if (engine) {
+                lock.unlock();
+                dropEngine();
+                lock.lock();
+                continue;
+            }
+            status.active = false;
+            status.converged = false;
+            status.samples = -1;
+            if (renderer != failedRenderer) {
+                status.error.clear();
+            }
+            if (idle || (renderer == failedRenderer)) {
+                wake.wait(lock);
+                continue;
+            }
+            const std::string id = renderer;
+            const int budget = threads;
+            lock.unlock();
+            std::string error;
+            int cap = 0;
+            const bool made = makeEngine(id, budget, &cap, &error);
+            lock.lock();
+            if (!made) {
+                failedRenderer = id;
+                status.error = error;
+                continue;
+            }
+            failedRenderer.clear();
+            status.error.clear();
+            defaultMaxSamples = cap;
+            frame.reset();
+            lastSamples = -1;
+            engineFresh = true;
+            needRestart = true;
+            continue;
+        }
+        status.active = true;
+
+        if (stopped) {
+            if (!paused) {
+                lock.unlock();
+                {
+                    std::lock_guard<std::mutex> l(engineMutex);
+                    if (engine->IsPauseRendererSupported()) {
+                        (void)engine->PauseRenderer();
+                    }
+                    paused = true;
+                }
+                lock.lock();
+                continue;
+            }
+            status.stopped = true;
+            wake.wait(lock);
+            continue;
+        }
+        status.stopped = false;
+        if (paused) {
+            lock.unlock();
+            {
+                std::lock_guard<std::mutex> l(engineMutex);
+                if (engine->IsPauseRendererSupported()) {
+                    (void)engine->ResumeRenderer();
+                }
+                paused = false;
+            }
+            lock.lock();
+            stallSince = Clock::now();
+            continue;
+        }
+
+        if (pending) {
+            const Clock::time_point now = Clock::now();
+            const Clock::time_point due = std::min(lastPending + kRestartQuiet, firstPending + kRestartMaxWait);
+            if (now < due) {
+                wake.wait_until(lock, due);
+                continue;
+            }
+            pending = false;
+            needRestart = true;
+        }
+        if (needRestart) {
+            needRestart = false;
+            done = false;
+            ++status.restarts;
+            restartTime = Clock::now();
+            stallSince = restartTime;
+            firstPass = true;
+            // An engine that has not rendered has no pixels to mistake for the new render's.
+            restartSeen = engineFresh;
+            engineFresh = false;
+        }
+        if (done) {
+            wake.wait(lock);
+            continue;
+        }
+
+        const View v = view;
+        const int cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
+        const std::uint64_t passGeneration = generation;
+        const std::uint64_t restartIndex = status.restarts;
+        lock.unlock();
+
+        const bool readsRestart = firstPass;
+        bool rendered = false;
+        bool converged = false;
+        VtDictionary before;
+        VtDictionary stats;
+        std::string error;
+        std::shared_ptr<Frame> read;
+        {
+            std::unique_lock<std::mutex> stageGuard(*stageLock);
+            const UsdStageRefPtr stage = stageOf();
+            if (stage) {
+                std::lock_guard<std::mutex> l(engineMutex);
+                if (!samplesKey.IsEmpty() && (cap > 0) && (cap != appliedCap)) {
+                    // A change of a setting restarts the delegate's render.
+                    engine->SetRendererSetting(samplesKey, VtValue(cap));
+                    appliedCap = cap;
+                }
+                if (!engineHasView || (engineView != v)) {
+                    engine->SetRenderBufferSize(GfVec2i(v.width, v.height));
+                    engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), v.width, v.height)));
+                    engine->SetCameraState(v.frustum.ComputeViewMatrix(), v.frustum.ComputeProjectionMatrix());
+                    engineView = v;
+                    engineHasView = true;
+                }
+                UsdImagingGLRenderParams params;
+                params.frame = v.time;
+                params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
+                params.enableLighting = true;
+                params.enableSceneLights = true;
+                params.enableSceneMaterials = true;
+                params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
+                params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
+                params.highlight = false;
+                if (readsRestart) {
+                    before = engine->GetRenderStats();
+                }
+                engine->Render(stage->GetPseudoRoot(), params);
+                rendered = true;
+                converged = engine->IsConverged();
+                stats = engine->GetRenderStats();
+            }
+        }
+        const int samples = samplesOf(stats, cap);
+        const double clock = clockOf(stats);
+        lock.lock();
+        if (quit) {
+            break;
+        }
+        if (generation != passGeneration) {
+            // Edited during the pass: what it rendered is stale.
+            continue;
+        }
+        if (!rendered) {
+            // No stage yet: the sync that brings one edits it, and restarts.
+            wake.wait(lock);
+            continue;
+        }
+        if (readsRestart) {
+            firstPass = false;
+            samplesAtRestart = samplesOf(before, cap);
+            clockAtRestart = clockOf(before);
+        }
+        const Clock::time_point now = Clock::now();
+        if (!restartSeen) {
+            const bool samplesFell = (samples >= 0) && (samplesAtRestart >= 0) && (samples < samplesAtRestart);
+            const bool clockFell = (clock >= 0.) && (clockAtRestart >= 0.) && (clock < clockAtRestart);
+            const bool blind = (samples < 0) && (clock < 0.);
+            restartSeen = samplesFell || clockFell || blind || (now - restartTime >= kRestartUnseen);
+        }
+        const bool changed = (samples != lastSamples) || (converged != status.converged);
+        if (samples != lastSamples) {
+            stallSince = now;
+        }
+        lastSamples = samples;
+        status.samples = samples;
+        status.maxSamples = cap;
+        status.converged = converged;
+        bool publish = restartSeen && (samples != 0) && (changed || (samples < 0) || !frame || (frame->restart != restartIndex));
+        if (publish) {
+            lock.unlock();
+            read.reset(new Frame);
+            {
+                std::lock_guard<std::mutex> l(engineMutex);
+                publish = engine && readFrame(v, read.get(), &error);
+            }
+            lock.lock();
+            if (quit) {
+                break;
+            }
+            if (generation != passGeneration) {
+                continue;
+            }
+        }
+        if (publish) {
+            read->samples = samples;
+            read->maxSamples = cap;
+            read->converged = converged;
+            read->restart = restartIndex;
+            read->serial = ++status.frames;
+            frame = read;
+        }
+        // Done at the cap; or, for a delegate counting no samples, or one whose adaptive sampling
+        // stopped short of the cap, once it converged and held still.
+        const bool atCap = (cap > 0) && (samples >= cap);
+        done = restartSeen && converged && (frame && (frame->restart == restartIndex)) && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
+        if (publish && listener) {
+            lock.unlock();
+            listener();
+            lock.lock();
+        }
+        if (!done) {
+            wake.wait_for(lock, kRefinePoll);
+        }
+    }
+    lock.unlock();
+    dropEngine();
+} // ProgressiveRender::Implementation::run
+
+ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
+                                     const std::function<UsdStageRefPtr()>& stage,
+                                     const std::function<void()>& listener,
+                                     float background)
+    : _imp(new Implementation(stageLock, stage, listener, background))
+{
+    ++gProgressiveLive;
+    _imp->worker = std::thread([this]() { _imp->run(); });
+}
+
+ProgressiveRender::~ProgressiveRender()
+{
+    {
+        std::lock_guard<std::mutex> l(_imp->mutex);
+        _imp->quit = true;
+        _imp->wake.notify_all();
+    }
+    if (_imp->worker.joinable()) {
+        _imp->worker.join();
+    }
+    --gProgressiveLive;
+}
+
+void
+ProgressiveRender::setRenderer(const std::string& id)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (id == _imp->renderer) {
+        return;
+    }
+    _imp->renderer = id;
+    _imp->defaultMaxSamples = 0;
+    _imp->failedRenderer.clear();
+    _imp->status = Status();
+    _imp->frame.reset();
+    _imp->edited();
+}
+
+void
+ProgressiveRender::setThreads(int threads)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->threads = threads;
+}
+
+void
+ProgressiveRender::setView(const View& view)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (_imp->hasView && (_imp->view == view)) {
+        return;
+    }
+    _imp->view = view;
+    _imp->hasView = (view.width > 0) && (view.height > 0);
+    _imp->edited();
+}
+
+void
+ProgressiveRender::invalidate()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->edited();
+}
+
+void
+ProgressiveRender::setMaxSamples(int samples)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    samples = std::max(0, samples);
+    if (samples == _imp->maxSamples) {
+        return;
+    }
+    _imp->maxSamples = samples;
+    _imp->edited();
+}
+
+int
+ProgressiveRender::getMaxSamples() const
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    return (_imp->maxSamples > 0) ? _imp->maxSamples : _imp->defaultMaxSamples;
+}
+
+void
+ProgressiveRender::stop()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->stopped = true;
+    _imp->wake.notify_all();
+}
+
+void
+ProgressiveRender::resume()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->stopped = false;
+    _imp->wake.notify_all();
+}
+
+ProgressiveRender::Status
+ProgressiveRender::getStatus() const
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+    Status status = _imp->status;
+
+    status.stopped = _imp->stopped;
+    status.maxSamples = (_imp->maxSamples > 0) ? _imp->maxSamples : _imp->defaultMaxSamples;
+
+    return status;
+}
+
+std::shared_ptr<const ProgressiveRender::Frame>
+ProgressiveRender::getFrame() const
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    return _imp->frame;
+}
+
+std::uint64_t
+ProgressiveRender::getRestartCount() const
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    return _imp->status.restarts;
+}
+
+std::string
+ProgressiveRender::pick(int x,
+                        int y)
+{
+    std::lock_guard<std::mutex> stageGuard(*_imp->stageLock);
+    std::lock_guard<std::mutex> l(_imp->engineMutex);
+    UsdImagingGLEngine* engine = _imp->engine.get();
+
+    if (!engine || !_imp->engineHasView) {
+        return std::string();
+    }
+    const int width = _imp->engineView.width;
+    const int height = _imp->engineView.height;
+    if ((x < 0) || (y < 0) || (x >= width) || (y >= height)) {
+        return std::string();
+    }
+    std::string error;
+    MappedAov primIds(engine, _imp->rendererName, width, height, HdAovTokens->primId, &error);
+    if (!primIds.valid()) {
+        return std::string();
+    }
+    MappedAov instanceIds(engine, _imp->rendererName, width, height, HdAovTokens->instanceId, &error);
+    if (!instanceIds.valid()) {
+        return std::string();
+    }
+    const std::size_t i = (std::size_t)y * (std::size_t)width + (std::size_t)x;
+    const std::int32_t prim = readInt(primIds.pixel(i));
+    if (prim < 0) {
+        return std::string();
+    }
+    const std::int32_t instance = readInt(instanceIds.pixel(i));
+    SdfPath path;
+    if (!engine->DecodeIntersection(prim, CyclesAovs::isCycles(_imp->engineRenderer) ? CyclesAovs::instanceIndex(instance) : instance, &path)) {
+        return std::string();
+    }
+
+    return path.IsEmpty() ? std::string() : path.GetString();
+}
+
+int
+ProgressiveRender::getLiveCount()
+{
+    return gProgressiveLive.load();
 }
 } // namespace HydraRender
 

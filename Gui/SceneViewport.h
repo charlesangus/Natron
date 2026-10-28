@@ -57,6 +57,11 @@ NATRON_NAMESPACE_ENTER
  * context current when its methods run, with a ground grid and an op's transform handles over it,
  * and picks prims at pixels.
  *
+ * Another delegate, such as a path tracer, renders progressively in the background
+ * (HydraRender::ProgressiveRender): each edit of the stage, the view or Max Samples restarts it, it
+ * refines until it converges, reaches Max Samples or is stopped, and render() draws its latest
+ * frame, uploaded to a texture, under the grid and handles.
+ *
  * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the
  * changed prims alone. The engine is made
@@ -94,7 +99,24 @@ public:
     enum RenderStatusEnum {
         eRenderStatusDone = 0, // the image is final
         eRenderStatusRefining, // Storm has not converged; another render would refine the image
-        eRenderStatusBusy // a sync holds the viewer lock: nothing was drawn
+        eRenderStatusBusy, // a sync holds the viewer lock: nothing was drawn
+        eRenderStatusWaiting // a background render refines the image and calls the refine listener when it has more
+    };
+
+    // The progressive render of a delegate other than Storm.
+    struct RefineStatus {
+        // A delegate other than Storm is chosen and its engine is rendering, or has rendered.
+        bool active = false;
+        bool stopped = false;
+        bool converged = false;
+        // The samples per pixel rendered, -1 if the delegate reports none, and the cap.
+        int samples = -1;
+        int maxSamples = 0;
+        // The renders started and the frames published since the delegate was chosen.
+        U64 restarts = 0;
+        U64 frames = 0;
+        // The samples per pixel of the frame drawn last, -1 if unknown or none was.
+        int drawnSamples = -1;
     };
 
     /**
@@ -262,8 +284,39 @@ public:
     // The background colour render() clears to.
     static void getBackgroundColor(float rgb[3]);
 
+    /**
+     * @brief The cap on the samples per pixel of a progressive render; <= 0 for the delegate's
+     * default. A change restarts the render. Choosing another delegate resets it.
+     **/
+    void setMaxSamples(int samples);
+
+    // The cap in force: the one set, or the delegate's default once known, else 0.
+    int getMaxSamples() const;
+
+    // Pauses a progressive render, keeping its samples; resumeRefinement() continues from them.
+    void stopRefinement();
+    void resumeRefinement();
+
+    RefineStatus getRefineStatus() const;
+
+    /**
+     * @brief Called on the background render's thread whenever it has a new frame for render() to
+     * draw. Empty for none.
+     **/
+    void setRefineListener(const std::function<void()>& listener);
+
+    // Ends a progressive render and frees its engine and threads; the next render() starts another.
+    void releaseRefinement();
+
+    // How long the last upload of a progressive frame to its texture took, in milliseconds, and how
+    // many pixels it had; -1 and 0 before the first.
+    double getLastUploadMs() const;
+    int getLastUploadPixels() const;
+
 private:
-    bool renderLocked(unsigned int fbo, int width, int height);
+    RenderStatusEnum renderLocked(unsigned int fbo, int width, int height);
+
+    RenderStatusEnum renderProgressive(unsigned int fbo, int width, int height);
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
@@ -314,6 +367,13 @@ public:
     // Renders with the Hydra render delegate id, whatever any USDRender node renders with.
     void setRendererId(const QString& id);
 
+    // The progressive render's cap on samples per pixel, <= 0 for the delegate's default.
+    Q_INVOKABLE void setMaxSamples(int samples);
+
+    Q_INVOKABLE void stopRefinement();
+
+    Q_INVOKABLE void resumeRefinement();
+
     void setLookThroughCamera(const QString& path);
 
     void frameScene();
@@ -362,8 +422,12 @@ private:
     // engines the renderer made, whether it holds one, its delegate and that delegate's error into
     // the natronSceneError, natronSceneShown, natronSceneSynced, natronSceneEngineCount,
     // natronSceneEngineHeld, natronSceneRenderer and natronSceneRendererError
-    // properties.
+    // properties, and the progressive render's state into natronSceneSamples,
+    // natronSceneMaxSamples, natronSceneRefining, natronSceneRefinementStopped,
+    // natronSceneRefineConverged, natronSceneRestartCount and natronSceneUploadMs.
     void publishState();
+
+    void publishRefineState();
 
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there.
     bool beginHandleDrag(const QPoint& pos);

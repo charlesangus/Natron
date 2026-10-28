@@ -216,15 +216,18 @@ try:
     def shapes(roto):
         """The Beziers the tool made, depth first."""
         found = []
+        ctx = roto.getRotoContext()
 
         def walk(layer):
-            for item in layer.getChildren():
+            for child in layer.getChildren():
+                # Layer.getChildren yields plain ItemBase wrappers; getItemByName returns the Layer/BezierCurve.
+                item = ctx.getItemByName(child.getScriptName()) or child
                 if hasattr(item, "getChildren"):
                     walk(item)
                 elif item.getScriptName().startswith("Object"):
                     found.append(item)
 
-        walk(roto.getRotoContext().getBaseLayer())
+        walk(ctx.getBaseLayer())
         return found
 
     def polygon(curve, time, samples=16):

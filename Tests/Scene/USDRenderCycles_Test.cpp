@@ -318,7 +318,7 @@ protected:
                               HydraRender::Request* request)
     {
         std::string error;
-        if (reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &request->scene, &error) != eRenderRoIRetCodeOk) {
+        if (reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &request->scene, &error) != EffectInstance::eRenderRoIRetCodeOk) {
             ADD_FAILURE() << error;
 
             return false;

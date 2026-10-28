@@ -480,6 +480,8 @@ expectedCurveToolbar()
         "EditBezierToolButton/DrawBezierTool",
         "EditBezierToolButton/DrawEllipseTool",
         "EditBezierToolButton/DrawRectangleTool",
+        "ObjectSelectToolButton",
+        "ObjectSelectToolButton/ObjectSelectTool",
         "PaintBrushToolButton",
         "PaintBrushToolButton/PaintSolidTool",
         "PaintBrushToolButton/PencilTool",

@@ -25,8 +25,11 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/base/tf/diagnosticMgr.h>
+
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +38,8 @@
 #include <iostream>
 #include <limits>
 #include <list>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -44,15 +49,23 @@
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
+#include <QDir>
+#include <QFileInfo>
 #include <QString>
 
 #include "BaseTest.h"
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -63,11 +76,13 @@
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "SceneTestEffect.h"
@@ -86,6 +101,10 @@ const char* const kRenderCamera = "/World/Rig/RenderCam";
 const char* const kGoldenGroup = "USDRender";
 const char* const kGoldenCase = "StormReference";
 const char* const kGoldenCasePrimitives = "StormPrimitives";
+// Crops, not the whole frame: <dir>/USDRender/<case>.exr, half float, zip.
+const char* const kGoldenCaseProject3DWorld = "StormProject3DWorld";
+const char* const kGoldenCaseProject3DGeometryHeld = "StormProject3DGeometryHeld";
+const char* const kGoldenCaseProject3DOverscan = "StormProject3DOverscan";
 
 /**
  * How far the colour may drift from the reference: GL drivers rasterise and shade with their own
@@ -256,6 +275,337 @@ checkAgainstReference(const RenderedPlane& rgba,
     EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from " << path << "; " << where;
     EXPECT_LE(mean, kMeanTolerance) << "mean difference from " << path << "; " << where;
 } // checkAgainstReference
+
+// Records the crop of the colour plane under NATRON_GOLDEN_RECORD_DIR as a half-float, zip
+// compressed EXR, or compares it with the committed one within the tolerances above. Rows are
+// kept in the plane's order, bottom first, both ways.
+void
+checkCropAgainstReference(const RenderedPlane& rgba,
+                          const RectI& crop,
+                          const char* goldenCase)
+{
+    const int nComps = (int)rgba.channels.size();
+    const int width = crop.width();
+    const int height = crop.height();
+    ASSERT_EQ(4, nComps);
+    ASSERT_TRUE((crop.x1 >= rgba.window.x1) && (crop.y1 >= rgba.window.y1) && (crop.x2 <= rgba.window.x2) && (crop.y2 <= rgba.window.y2));
+    ASSERT_LE(width, 256);
+    ASSERT_LE(height, 256);
+    std::vector<float> pixels;
+    pixels.reserve((std::size_t)width * (std::size_t)height * (std::size_t)nComps);
+    for (int y = crop.y1; y < crop.y2; ++y) {
+        const std::size_t row = (std::size_t)(y - rgba.window.y1) * (std::size_t)rgba.window.width();
+        for (int x = crop.x1; x < crop.x2; ++x) {
+            const std::size_t i = (row + (std::size_t)(x - rgba.window.x1)) * (std::size_t)nComps;
+            pixels.insert(pixels.end(), rgba.pixels.begin() + i, rgba.pixels.begin() + i + nComps);
+        }
+    }
+
+    const std::string name = std::string(kGoldenGroup) + "/" + goldenCase + ".exr";
+    const std::string recordDir = goldenRecordDir();
+    if (!recordDir.empty()) {
+        const QString path = QDir(QString::fromStdString(recordDir)).filePath(QString::fromStdString(name));
+        ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath())) << path.toStdString();
+        std::unique_ptr<OIIO::ImageOutput> out = OIIO::ImageOutput::create(path.toStdString());
+        ASSERT_TRUE(out != nullptr) << OIIO::geterror();
+        OIIO::ImageSpec spec(width, height, nComps, OIIO::TypeDesc::HALF);
+        spec.attribute("compression", "zip");
+        ASSERT_TRUE(out->open(path.toStdString(), spec)) << out->geterror();
+        EXPECT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
+        EXPECT_TRUE(out->close()) << out->geterror();
+        std::cout << "[ golden ] recorded " << path.toStdString() << std::endl;
+
+        return;
+    }
+
+    const std::string path = goldenReferenceDir() + "/" + name;
+    std::unique_ptr<OIIO::ImageInput> in = OIIO::ImageInput::open(path);
+    if (!in) {
+        ADD_FAILURE() << goldenCase << ": no golden reference " << path << " (" << OIIO::geterror() << "). Record it from a build that renders the scene "
+                      << "with NATRON_GOLDEN_RECORD_DIR set.";
+
+        return;
+    }
+    const OIIO::ImageSpec& spec = in->spec();
+    ASSERT_EQ(width, spec.width) << path;
+    ASSERT_EQ(height, spec.height) << path;
+    ASSERT_EQ(nComps, spec.nchannels) << path;
+    std::vector<float> reference(pixels.size());
+    ASSERT_TRUE(in->read_image(0, 0, 0, nComps, OIIO::TypeDesc::FLOAT, reference.data())) << in->geterror();
+    in->close();
+
+    std::size_t differing = 0;
+    double sum = 0.;
+    float worst = 0.;
+    for (std::size_t p = 0; p < pixels.size() / (std::size_t)nComps; ++p) {
+        bool differs = false;
+        for (int k = 0; k < nComps; ++k) {
+            const float d = std::fabs(pixels[p * nComps + k] - reference[p * nComps + k]);
+            sum += d;
+            worst = std::max(worst, d);
+            differs = differs || (d > kChannelTolerance);
+        }
+        differing += differs ? 1 : 0;
+    }
+    EXPECT_LE((double)differing, kDifferingFraction * (double)(pixels.size() / (std::size_t)nComps)) << goldenCase << ": worst difference " << worst;
+    EXPECT_LT(sum / (double)pixels.size(), kMeanTolerance) << goldenCase << ": worst difference " << worst;
+} // checkCropAgainstReference
+
+/**
+ * Collects what USD reports while it is installed: Storm reports a shader that fails to compile or
+ * link, or a glslfx it cannot read, as a warning or an error and draws the fallback surface
+ * instead, so the render itself succeeds.
+ **/
+class USDDiagnostics
+    : public PXR_NS::TfDiagnosticMgr::Delegate {
+public:
+    USDDiagnostics()
+    {
+        PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this);
+    }
+
+    virtual ~USDDiagnostics()
+    {
+        PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this);
+    }
+
+    virtual void IssueStatus(const PXR_NS::TfStatus& /*status*/) OVERRIDE FINAL
+    {
+    }
+
+    virtual void IssueWarning(const PXR_NS::TfWarning& warning) OVERRIDE FINAL
+    {
+        record("warning", warning.GetSourceFunction(), warning.GetCommentary());
+    }
+
+    virtual void IssueError(const PXR_NS::TfError& error) OVERRIDE FINAL
+    {
+        record("error", error.GetSourceFunction(), error.GetCommentary());
+    }
+
+    virtual void IssueFatalError(const PXR_NS::TfCallContext& /*context*/,
+                                 const std::string& message) OVERRIDE FINAL
+    {
+        std::cerr << "USD fatal error: " << message << std::endl;
+        _UnhandledAbort();
+    }
+
+    // Every report naming a shader, a glslfx, or a compile or link, one per line; all reports are
+    // printed as they come.
+    std::string shaderProblems() const
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        std::string problems;
+        for (const std::string& message : _messages) {
+            std::string lower = message;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            if ((lower.find("shader") != std::string::npos) || (lower.find("glslfx") != std::string::npos) || (lower.find("compil") != std::string::npos)
+                || (lower.find("link") != std::string::npos)) {
+                problems += message + "\n";
+            }
+        }
+
+        return problems;
+    }
+
+private:
+    void record(const char* kind,
+                const std::string& function,
+                const std::string& commentary)
+    {
+        const std::string message = std::string("USD ") + kind + " in " + function + ": " + commentary;
+        std::cout << message << std::endl;
+        std::lock_guard<std::mutex> lock(_mutex);
+        _messages.push_back(message);
+    }
+
+    mutable std::mutex _mutex;
+    std::vector<std::string> _messages;
+};
+
+/**
+ * The projection scenes: the render camera at (0, 0, 10) and the projector at (0, 0, 5), both
+ * looking down -Z with a 2:1 frame as wide as twice their distance, so the render's 200 x 100
+ * pixels span 20 x 10 units on the z = 0 plane and the projector's frame 10 x 5 there. The plate is
+ * a 200 x 100 checker of 25 pixel squares centred on its format, red where the squares' indices
+ * sum to an even number and blue elsewhere; the card, 16 x 8 units, is unlit and Crop shows
+ * black around the frame.
+ **/
+const double kRenderCameraZ = 10.;
+const double kProjectorZ = 5.;
+const double kPlateBox = 25.;
+const double kCardWidth = 16.;
+const double kCardHeight = 8.;
+
+// The z = 0 point render pixel (x, y)'s centre sees, rows counted from the bottom.
+void
+renderPixelToPlane(int x,
+                   int y,
+                   double* X,
+                   double* Y)
+{
+    const double unitsPerPixel = 2. * kRenderCameraZ / kWidth;
+
+    *X = (x + 0.5 - kWidth / 2.) * unitsPerPixel;
+    *Y = (y + 0.5 - kHeight / 2.) * unitsPerPixel;
+}
+
+// Where the projector puts the z = 0 point (X, Y) on the plate, in the format's pixels.
+void
+planeToPlate(double X,
+             double Y,
+             double* u,
+             double* v)
+{
+    const double pixelsPerUnit = kWidth / (2. * kProjectorZ);
+
+    *u = kWidth / 2. + X * pixelsPerUnit;
+    *v = kHeight / 2. + Y * pixelsPerUnit;
+}
+
+enum ProjectedColourEnum {
+    eProjectedUnsure = 0,
+    eProjectedRed,
+    eProjectedBlue,
+    eProjectedBlack
+};
+
+// What the projection shows at plate pixel (u, v) with Crop on: unsure within margin of an edge.
+ProjectedColourEnum
+expectedProjection(double u,
+                   double v,
+                   double margin)
+{
+    const bool outside = (u < -margin) || (u > kWidth + margin) || (v < -margin) || (v > kHeight + margin);
+    const bool inside = (u > margin) && (u < kWidth - margin) && (v > margin) && (v < kHeight - margin);
+    if (outside) {
+        return eProjectedBlack;
+    }
+    if (!inside) {
+        return eProjectedUnsure;
+    }
+    const double bu = (u - kWidth / 2.) / kPlateBox;
+    const double bv = (v - kHeight / 2.) / kPlateBox;
+    const double edge = margin / kPlateBox;
+    if ((std::fabs(bu - std::round(bu)) < edge) || (std::fabs(bv - std::round(bv)) < edge)) {
+        return eProjectedUnsure;
+    }
+    const long sum = (long)std::floor(bu) + (long)std::floor(bv);
+
+    return (sum % 2 == 0) ? eProjectedRed : eProjectedBlue;
+}
+
+ProjectedColourEnum
+classifyColour(const float* rgba)
+{
+    const float r = rgba[0], g = rgba[1], b = rgba[2];
+    if ((r > 0.1f) && (r > 4.f * g) && (r > 4.f * b)) {
+        return eProjectedRed;
+    }
+    if ((b > 0.1f) && (b > 4.f * r) && (b > 4.f * g)) {
+        return eProjectedBlue;
+    }
+    if ((std::max(r, std::max(g, b)) < 0.02f) && (rgba[3] > 0.5f)) {
+        return eProjectedBlack;
+    }
+
+    return eProjectedUnsure;
+}
+
+const char*
+colourName(ProjectedColourEnum c)
+{
+    switch (c) {
+    case eProjectedRed:
+        return "red";
+    case eProjectedBlue:
+        return "blue";
+    case eProjectedBlack:
+        return "black";
+    case eProjectedUnsure:
+        break;
+    }
+
+    return "neither red, blue nor black";
+}
+
+/**
+ * Checks every card pixel away from the card's, the frame's and the squares' edges against where the
+ * projection puts the checker, the card having moved by cardShift along X since the projection was
+ * set up (0 in World space or without movement).
+ **/
+void
+checkProjectedChecker(const std::vector<RenderedPlane>& planes,
+                      double cardShift,
+                      const char* what)
+{
+    ASSERT_EQ(3u, planes.size()) << what;
+    const std::vector<float>& rgba = planes[0].pixels;
+    const std::vector<float>& primId = planes[2].pixels;
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, rgba.size()) << what;
+    ASSERT_EQ((std::size_t)kWidth * kHeight, primId.size()) << what;
+    const std::uint32_t cardId = bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/Card")));
+    // Two render pixels: rasterisation and texture filtering stay within that of an edge.
+    const double margin = 4.;
+    const double cardMargin = 0.5;
+
+    int counts[4] = { 0, 0, 0, 0 };
+    int checked = 0;
+    int wrong = 0;
+    double cardRgb[3] = { 0., 0., 0. };
+    int cardPixels = 0;
+    std::string firstWrong;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            double X = 0., Y = 0.;
+            renderPixelToPlane(x, y, &X, &Y);
+            const double localX = X - cardShift;
+            if ((std::fabs(localX) > kCardWidth / 2. - cardMargin) || (std::fabs(Y) > kCardHeight / 2. - cardMargin)) {
+                continue;
+            }
+            const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+            if (bitsOf(primId[i]) != cardId) {
+                ++wrong;
+                if (firstWrong.empty()) {
+                    firstWrong = "(" + std::to_string(x) + ", " + std::to_string(y) + ") is not the card";
+                }
+                continue;
+            }
+            for (int k = 0; k < 3; ++k) {
+                cardRgb[k] += rgba[i * 4 + k];
+            }
+            ++cardPixels;
+            double u = 0., v = 0.;
+            planeToPlate(localX, Y, &u, &v);
+            const ProjectedColourEnum expected = expectedProjection(u, v, margin);
+            if (expected == eProjectedUnsure) {
+                continue;
+            }
+            ++checked;
+            const ProjectedColourEnum got = classifyColour(&rgba[i * 4]);
+            if (got == expected) {
+                ++counts[expected];
+                continue;
+            }
+            ++wrong;
+            if (firstWrong.empty()) {
+                firstWrong = "(" + std::to_string(x) + ", " + std::to_string(y) + ") on plate (" + std::to_string(u) + ", " + std::to_string(v) + ") is "
+                    + colourName(got) + " (" + std::to_string(rgba[i * 4]) + ", " + std::to_string(rgba[i * 4 + 1]) + ", " + std::to_string(rgba[i * 4 + 2])
+                    + ", " + std::to_string(rgba[i * 4 + 3]) + "), not " + colourName(expected);
+            }
+        }
+    }
+    ASSERT_GT(cardPixels, 0) << what << ": the card is not in the render";
+    // Storm draws its fallback surface, lit grey, when the projection shader does not compile.
+    EXPECT_GT(counts[eProjectedRed] + counts[eProjectedBlue], 0) << what << ": no checker on the card, whose mean colour is (" << cardRgb[0] / cardPixels << ", "
+                                                                 << cardRgb[1] / cardPixels << ", " << cardRgb[2] / cardPixels
+                                                                 << "): the projection shader did not run";
+    // The frame spans 100 x 50 render pixels and the card around it 160 x 80.
+    EXPECT_GT(counts[eProjectedRed], 800) << what;
+    EXPECT_GT(counts[eProjectedBlue], 800) << what;
+    EXPECT_GT(counts[eProjectedBlack], 2000) << what;
+    EXPECT_LE(wrong, checked / 200) << what << ": " << wrong << " of " << checked << " checked pixels are wrong, first " << firstWrong;
+} // checkProjectedChecker
 
 class USDRenderStormTest
     : public BaseTest {
@@ -520,6 +870,149 @@ protected:
         return coverageOf("/Card", planes[0].pixels, planes[1].pixels, planes[2].pixels);
     }
 
+    // Every plane of render at frame, rendered off the main thread as renderCard does.
+    static bool renderOffMainThread(const NodePtr& render,
+                                    double frame,
+                                    std::vector<RenderedPlane>* planes,
+                                    std::string* error)
+    {
+        bool rendered = false;
+
+        std::thread worker([&]() {
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), planes, error);
+        });
+        worker.join();
+
+        return rendered;
+    }
+
+    /**
+     * The projection scene described above kRenderCameraZ: a CheckerBoard projected by a
+     * USDProject3D through a camera at (0, 0, kProjectorZ), the material of a 16 x 8 USDCard at
+     * /Card, rendered through /Cam at (0, 0, kRenderCameraZ). The project format, and so the plate's,
+     * is kWidth x kHeight. Sets *plate and *projector and returns the USDRender, null after a gtest
+     * failure.
+     **/
+    NodePtr createProjectionGraph(NodePtr* plate,
+                                  NodePtr* projector,
+                                  NodePtr* card)
+    {
+        ProjectPtr project = getApp()->getProject();
+        project->setAutoSetProjectFormatEnabled(true);
+        project->setOrAddProjectFormat(Format(0, 0, kWidth, kHeight, "projection2to1", 1.));
+
+        NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        NodePtr projectorCamera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr project3D = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+        NodePtr geometry = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!checker || !projectorCamera || !project3D || !geometry || !camera || !merge || !render) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return NodePtr();
+        }
+
+        KnobDouble* boxSize = knob<KnobDouble>(checker, kCheckerBoardParamBoxSize);
+        KnobDouble* centerlineWidth = knob<KnobDouble>(checker, kCheckerBoardParamCenterLineWidth);
+        KnobDouble* lineWidth = knob<KnobDouble>(checker, kCheckerBoardParamLineWidth);
+        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
+        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+        if (!boxSize || !centerlineWidth || !lineWidth || !renderCamera || !size || !par) {
+            return NodePtr();
+        }
+        boxSize->setValue(kPlateBox, ViewSpec::all(), 0);
+        boxSize->setValue(kPlateBox, ViewSpec::all(), 1);
+        centerlineWidth->setValue(0.);
+        lineWidth->setValue(0.);
+        const char* const colours[4] = { kCheckerBoardParamColor0, kCheckerBoardParamColor1, kCheckerBoardParamColor2, kCheckerBoardParamColor3 };
+        for (int c = 0; c < 4; ++c) {
+            KnobColor* colour = knob<KnobColor>(checker, colours[c]);
+            if (!colour) {
+                return NodePtr();
+            }
+            // Colours 0 and 2 fill the squares whose indices sum to an even number.
+            const bool red = (c % 2) == 0;
+            colour->setValue(red ? 0.9 : 0.05, ViewSpec::all(), 0);
+            colour->setValue(0.05, ViewSpec::all(), 1);
+            colour->setValue(red ? 0.05 : 0.9, ViewSpec::all(), 2);
+            colour->setValue(1., ViewSpec::all(), 3);
+        }
+
+        bool ok = true;
+        for (const NodePtr& cam : { projectorCamera, camera }) {
+            KnobDouble* focal = knob<KnobDouble>(cam, kUSDCameraParamFocalLength);
+            KnobDouble* horizontal = knob<KnobDouble>(cam, kUSDCameraParamHorizontalAperture);
+            KnobDouble* vertical = knob<KnobDouble>(cam, kUSDCameraParamVerticalAperture);
+            if (!focal || !horizontal || !vertical) {
+                return NodePtr();
+            }
+            // The frame is as wide as twice the distance.
+            focal->setValue(18.);
+            horizontal->setValue(36.);
+            vertical->setValue(18.);
+        }
+        ok = ok && setString(projectorCamera, kSceneParamPrimPath, "/Projector");
+        ok = ok && setTriple(projectorCamera, kSceneParamTranslate, 0., 0., kProjectorZ);
+        ok = ok && setString(geometry, kSceneParamPrimPath, "/Card");
+        ok = ok && setTriple(geometry, kSceneParamScale, kCardWidth, kCardHeight, 1.);
+        ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
+        ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., kRenderCameraZ);
+        if (!ok) {
+            return NodePtr();
+        }
+
+        connectNodes(checker, project3D, kUSDProject3DInputImage, true);
+        connectNodes(projectorCamera, project3D, kUSDProject3DInputCamera, true);
+        connectNodes(project3D, geometry, 0, true);
+        connectNodes(geometry, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(merge, render, 0, true);
+
+        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+        size->setValue(kWidth, ViewSpec::all(), 0);
+        size->setValue(kHeight, ViewSpec::all(), 1);
+        par->setValue(1.);
+        *plate = checker;
+        *projector = project3D;
+        *card = geometry;
+
+        return render;
+    } // createProjectionGraph
+
+    // Renders the projection scene at frame, failing on a render error, a node message or a shader
+    // Storm reports it could not build, and checks the checker lands where it should.
+    static void renderProjection(const NodePtr& render,
+                                 const NodePtr& projector,
+                                 double frame,
+                                 double cardShift,
+                                 const RectI& goldenCrop,
+                                 const char* goldenCase)
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        bool rendered = false;
+        std::string shaderProblems;
+        {
+            USDDiagnostics diagnostics;
+            rendered = renderOffMainThread(render, frame, &planes, &error);
+            shaderProblems = diagnostics.shaderProblems();
+        }
+        EXPECT_TRUE(shaderProblems.empty()) << goldenCase << ": Storm could not build the projection shader:\n"
+                                            << shaderProblems;
+        ASSERT_TRUE(rendered) << goldenCase << ": " << error;
+        EXPECT_FALSE(render->hasPersistentMessage()) << goldenCase;
+        EXPECT_FALSE(projector->hasPersistentMessage()) << goldenCase;
+        checkProjectedChecker(planes, cardShift, goldenCase);
+        if (goldenCrop.isNull()) {
+            return;
+        }
+        ASSERT_EQ(3u, planes.size());
+        checkCropAgainstReference(planes[0], goldenCrop, goldenCase);
+    }
+
     static std::list<ImageLayerDesc> allPlanes()
     {
         std::list<ImageLayerDesc> layers;
@@ -740,4 +1233,74 @@ TEST_F(USDRenderStormTest, AnAnimatedLiveTextureFollowsTheFrame)
     ASSERT_GT(tenth.count, 500);
     EXPECT_GT(first.rgb[0], 5. * first.rgb[1]) << "frame 1 " << first.rgb[0] << ", " << first.rgb[1] << ", " << first.rgb[2];
     EXPECT_GT(tenth.rgb[1], 5. * tenth.rgb[0]) << "frame 10 " << tenth.rgb[0] << ", " << tenth.rgb[1] << ", " << tenth.rgb[2];
+}
+
+TEST_F(USDRenderStormTest, StormProject3DWorld)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+
+    // The card covers render pixels 20..180 by 10..90.
+    renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DWorld);
+}
+
+// In Geometry space with the camera held, the projection is taken where the card is at the hold
+// frame and goes with it after: two units right at frame 11, the checker is there too.
+TEST_F(USDRenderStormTest, StormProject3DGeometryHeld)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    KnobChoice* space = knob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(projector, kUSDProject3DParamFrameHold);
+    KnobDouble* translate = knob<KnobDouble>(card, kSceneParamTranslate);
+    ASSERT_TRUE(space && useHold && hold && translate);
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    const double shift = 2.;
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., shift, ViewSpec::all(), 0);
+
+    renderProjection(render, projector, 1., 0., RectI(), kGoldenCaseProject3DGeometryHeld);
+    // The card covers render pixels 40..200 by 10..90; World space would leave the checker
+    // 40 plate pixels, 1.6 squares, behind.
+    renderProjection(render, projector, 11., shift, RectI(36, 6, 200, 94), kGoldenCaseProject3DGeometryHeld);
+}
+
+// The plate's data reaches 50 pixels beyond its format on every side; its format still fills the
+// projector's frame, and Crop keeps the rest off the card.
+TEST_F(USDRenderStormTest, StormProject3DOverscan)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    KnobChoice* extent = knob<KnobChoice>(plate, kNativeGeneratorParamExtent);
+    KnobDouble* bottomLeft = knob<KnobDouble>(plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(plate, kNativeGeneratorParamSize);
+    KnobBool* crop = knob<KnobBool>(projector, kUSDProject3DParamCrop);
+    ASSERT_TRUE(extent && bottomLeft && size && crop);
+    extent->setValue((int)ExtentKnobs::eExtentSize);
+    bottomLeft->setValue(-50., ViewSpec::all(), 0);
+    bottomLeft->setValue(-25., ViewSpec::all(), 1);
+    size->setValue(kWidth + 100., ViewSpec::all(), 0);
+    size->setValue(kHeight + 50., ViewSpec::all(), 1);
+    crop->setValue(true);
+
+    renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DOverscan);
 }

@@ -125,6 +125,15 @@ find_package(rawspeed CONFIG REQUIRED PATHS "${NATRON_RAWSPEED_ROOT}" NO_DEFAULT
 # fetch-assets.sh rewrites the config when the pin moves; rawspeed_REF must follow it.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NATRON_RAWSPEED_ROOT}/lib/cmake/rawspeed/rawspeedConfig.cmake")
 
+# lensfun is built and installed by tools/ci/local/fetch-assets.sh the same way, and found here for
+# the same reason.
+set(NATRON_LENSFUN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/build/assets/lensfun" CACHE PATH "The lensfun install fetch-assets.sh produces")
+if(NOT EXISTS "${NATRON_LENSFUN_ROOT}/lib/cmake/lensfun/lensfunConfig.cmake")
+    message(FATAL_ERROR "lensfun is not installed at ${NATRON_LENSFUN_ROOT}. Run tools/ci/local/fetch-assets.sh first.")
+endif()
+find_package(lensfun CONFIG REQUIRED PATHS "${NATRON_LENSFUN_ROOT}" NO_DEFAULT_PATH)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NATRON_LENSFUN_ROOT}/lib/cmake/lensfun/lensfunConfig.cmake")
+
 # ONNX Runtime is unpacked by tools/ci/local/fetch-assets.sh. Only its C API headers are used at
 # build time: Engine/Ai dlopen()s the library, which tools/release/stage-bundle.sh ships.
 set(NATRON_ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/build/assets/onnxruntime" CACHE PATH "The ONNX Runtime release fetch-assets.sh unpacks")

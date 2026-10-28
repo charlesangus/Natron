@@ -147,6 +147,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
@@ -302,6 +303,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 

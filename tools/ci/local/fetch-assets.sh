@@ -21,13 +21,17 @@
 #                                           for openfx-arena)
 #   build/assets/rawspeed/                 (rawspeed, linked statically into
 #                                           Natron itself, with cameras.xml)
+#   build/assets/lensfun/                  (lensfun, linked statically into
+#                                           Natron itself, with its lens
+#                                           database)
 #   build/assets/onnxruntime/              (the official ONNX Runtime CPU
 #                                           release: headers for the build,
 #                                           the library for the bundle)
 #
 # A second run does no network or compile work if the plugin bundles already look
-# complete and the plugin stamp matches the pins below, and rawspeed's install
-# and the ONNX Runtime unpack are complete and their own stamps match their pins.
+# complete and the plugin stamp matches the pins below, and rawspeed's and
+# lensfun's installs and the ONNX Runtime unpack are complete and their own
+# stamps match their pins.
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
 #
@@ -264,6 +268,15 @@ RAWSPEED_REF="c835b05aecfacb7343f7c424abd620aa12116c3f"
 DARKTABLE_REPO="https://github.com/darktable-org/darktable.git"
 DARKTABLE_REF="20891f6c6fa7be995e5bf9dff9d1ee5062051773"
 
+# LENSFUN_REF: lensfun/lensfun master, the 0.3.99 development line, which
+# darktable's lens module supports through its LF_0395 API path. Not the image's
+# own lensfun: aswf/ci-vfxall ships the 0.3.4 release, whose bundled database
+# (format version 1, timestamped 2022-02) predates every recent camera body,
+# while master carries the maintained format-version-2 database. Linked
+# statically like rawspeed, with its own stamp, into a directory CI caches.
+LENSFUN_REPO="https://github.com/lensfun/lensfun.git"
+LENSFUN_REF="052c3ec6380aaa172caa6d7ea3a5eaafe0b052da"
+
 # ONNXRUNTIME_VERSION: microsoft/onnxruntime's official Linux x64 CPU release,
 # downloaded prebuilt and checked against the sha256 below. Natron never links
 # it: Engine/Ai includes onnxruntime_c_api.h and dlopen()s the library at run
@@ -290,6 +303,10 @@ RAWSPEED_STAMP="${RAWSPEED_PREFIX}/.natron-rawspeed-pin"
 # rebuilds even though the ref did not move.
 RAWSPEED_WANT="rawspeed=${RAWSPEED_REF} recipe=1"
 
+LENSFUN_PREFIX="${ASSETS_DIR}/lensfun"
+LENSFUN_STAMP="${LENSFUN_PREFIX}/.natron-lensfun-pin"
+LENSFUN_WANT="lensfun=${LENSFUN_REF} recipe=1"
+
 ONNXRUNTIME_PREFIX="${ASSETS_DIR}/onnxruntime"
 ONNXRUNTIME_STAMP="${ONNXRUNTIME_PREFIX}/.natron-onnxruntime-pin"
 ONNXRUNTIME_WANT="onnxruntime=${ONNXRUNTIME_VERSION} sha256=${ONNXRUNTIME_SHA256}"
@@ -306,6 +323,12 @@ if [[ "${CHECK_PINS}" -eq 1 ]]; then
         echo "fetch-assets.sh: ${RAWSPEED_PREFIX} was not built at the pinned ref." >&2
         echo "  built:  $(cat "${RAWSPEED_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
         echo "  pinned: ${RAWSPEED_WANT}" >&2
+        pins_ok=0
+    fi
+    if [ ! -f "${LENSFUN_STAMP}" ] || [ "$(cat "${LENSFUN_STAMP}")" != "${LENSFUN_WANT}" ]; then
+        echo "fetch-assets.sh: ${LENSFUN_PREFIX} was not built at the pinned ref." >&2
+        echo "  built:  $(cat "${LENSFUN_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
+        echo "  pinned: ${LENSFUN_WANT}" >&2
         pins_ok=0
     fi
     if [ ! -f "${ONNXRUNTIME_STAMP}" ] || [ "$(cat "${ONNXRUNTIME_STAMP}")" != "${ONNXRUNTIME_WANT}" ]; then
@@ -823,6 +846,105 @@ CONFIG
     rm -rf "${RAWSPEED_PREFIX}"
     mv "${RAWSPEED_STAGE}" "${RAWSPEED_PREFIX}"
     echo "[rawspeed] done -> ${RAWSPEED_PREFIX}"
+fi
+
+# ---------------------------------------------------------------------------
+# lensfun (built from source, linked statically into Natron's Engine)
+# ---------------------------------------------------------------------------
+#
+# Static for the same reason as rawspeed. Its one dependency, glib-2.0, is the
+# image's system library, which Qt already links and the bundle's excludelist
+# leaves to the host. The headers are installed under include/lensfun and that
+# directory is the include root, so `#include <lensfun.h>` can never pick up the
+# image's older /usr/local/include/lensfun/lensfun.h.
+#
+# Flags:
+#   BUILD_STATIC=ON                  -- liblensfun.a, compiled with
+#                                       CONF_LENSFUN_STATIC, which consumers
+#                                       must define too.
+#   CMAKE_POSITION_INDEPENDENT_CODE  -- linkable into any Natron target.
+#   BUILD_TESTS/LENSTOOL/DOC=OFF,
+#   INSTALL_PYTHON_MODULE/HELPER_SCRIPTS=OFF -- only the library, its header
+#                                       and the database are needed.
+#   CMAKE_INSTALL_LIBDIR=lib         -- not lib64, so the config below can name
+#                                       one fixed path.
+#
+# The database lands in share/lensfun/version_2; Engine/CMakeLists.txt copies
+# it to Resources/lensfun beside every executable.
+LENSFUN_LIB="${LENSFUN_PREFIX}/lib/liblensfun.a"
+LENSFUN_HEADER="${LENSFUN_PREFIX}/include/lensfun/lensfun.h"
+LENSFUN_DB_DIR="${LENSFUN_PREFIX}/share/lensfun/version_2"
+LENSFUN_CONFIG="${LENSFUN_PREFIX}/lib/cmake/lensfun/lensfunConfig.cmake"
+LENSFUN_DEP_GLIB="/usr/lib64/libglib-2.0.so"
+
+if [ -f "${LENSFUN_STAMP}" ] && [ "$(cat "${LENSFUN_STAMP}")" = "${LENSFUN_WANT}" ] \
+    && [ -f "${LENSFUN_LIB}" ] && [ -f "${LENSFUN_HEADER}" ] && [ -d "${LENSFUN_DB_DIR}" ] && [ -f "${LENSFUN_CONFIG}" ]; then
+    echo "[lensfun] already built at the pinned ref -- skipping."
+    echo "[lensfun]   ${LENSFUN_WANT}"
+else
+    echo "[lensfun] building lensfun from source..."
+    echo "[lensfun]   ${LENSFUN_WANT}"
+
+    if [ ! -f "${LENSFUN_DEP_GLIB}" ] || ! pkg-config --exists glib-2.0; then
+        echo "[lensfun] ERROR: glib-2.0 (${LENSFUN_DEP_GLIB} and its pkg-config file) is missing from this image; lensfun needs it." >&2
+        exit 1
+    fi
+
+    mkdir -p "${PLUGINS_SRC_DIR}"
+    LENSFUN_SRC="${PLUGINS_SRC_DIR}/lensfun"
+    LENSFUN_BUILD="${PLUGINS_SRC_DIR}/lensfun-build"
+    LENSFUN_STAGE="${LENSFUN_PREFIX}.partial"
+    clone_at_ref "${LENSFUN_REPO}" "${LENSFUN_REF}" "${LENSFUN_SRC}"
+
+    rm -rf "${LENSFUN_BUILD}"
+    cmake -S "${LENSFUN_SRC}" -B "${LENSFUN_BUILD}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_INSTALL_DATAROOTDIR=share \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_STATIC=ON \
+        -DBUILD_TESTS=OFF \
+        -DBUILD_LENSTOOL=OFF \
+        -DBUILD_DOC=OFF \
+        -DINSTALL_PYTHON_MODULE=OFF \
+        -DINSTALL_HELPER_SCRIPTS=OFF \
+        > /dev/null
+    cmake --build "${LENSFUN_BUILD}" --target lensfun -j "$(nproc)"
+
+    rm -rf "${LENSFUN_STAGE}"
+    cmake --install "${LENSFUN_BUILD}" --prefix "${LENSFUN_STAGE}" > /dev/null
+    for installed in lib/liblensfun.a include/lensfun/lensfun.h share/lensfun/version_2/timestamp.txt; do
+        if [ ! -f "${LENSFUN_STAGE}/${installed}" ]; then
+            echo "[lensfun] ERROR: the install produced no ${installed}" >&2
+            exit 1
+        fi
+    done
+    if ! compgen -G "${LENSFUN_STAGE}/share/lensfun/version_2/*.xml" > /dev/null; then
+        echo "[lensfun] ERROR: the install produced no database XML under share/lensfun/version_2" >&2
+        exit 1
+    fi
+    mkdir -p "${LENSFUN_STAGE}/lib/cmake/lensfun"
+
+    cat > "${LENSFUN_STAGE}/lib/cmake/lensfun/lensfunConfig.cmake" <<CONFIG
+# Generated by tools/ci/local/fetch-assets.sh. Do not edit.
+get_filename_component(_lensfun_prefix "\${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(lensfun_REF "${LENSFUN_REF}")
+set(lensfun_DATABASE_DIR "\${_lensfun_prefix}/share/lensfun/version_2")
+if(NOT TARGET lensfun::lensfun)
+    add_library(lensfun::lensfun STATIC IMPORTED)
+    set_target_properties(lensfun::lensfun PROPERTIES
+        IMPORTED_LOCATION "\${_lensfun_prefix}/lib/liblensfun.a"
+        INTERFACE_INCLUDE_DIRECTORIES "\${_lensfun_prefix}/include/lensfun"
+        INTERFACE_COMPILE_DEFINITIONS CONF_LENSFUN_STATIC
+        INTERFACE_LINK_LIBRARIES "${LENSFUN_DEP_GLIB}")
+endif()
+unset(_lensfun_prefix)
+CONFIG
+
+    echo "${LENSFUN_WANT}" > "${LENSFUN_STAGE}/.natron-lensfun-pin"
+    rm -rf "${LENSFUN_PREFIX}"
+    mv "${LENSFUN_STAGE}" "${LENSFUN_PREFIX}"
+    echo "[lensfun] done -> ${LENSFUN_PREFIX}"
 fi
 
 # ---------------------------------------------------------------------------

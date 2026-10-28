@@ -243,6 +243,61 @@ namespace {
         return std::nullopt;
     }
 
+    // EXIF 2.3 LensModel, which rawspeed's TiffTag does not name.
+    const rawspeed::TiffTag kExifLensModel = static_cast<rawspeed::TiffTag>(0xA434);
+
+    // The file's own spelling of the camera and lens, not rawspeed's canonical names: what lensfun
+    // and the EXIF of a JPEG from the same camera both use. FocalLength, FNumber and
+    // SubjectDistance are left out when zero, EXIF's "unknown".
+    void
+    setLensExif(rawspeed::RawDecoder& decoder,
+                ImageMetadata* metadata)
+    {
+        const rawspeed::TiffIFD* root = nullptr;
+        try {
+            root = decoder.getRootIFD();
+        } catch (const std::exception&) {
+        }
+        if (!root) {
+            return;
+        }
+        const auto setText = [&](rawspeed::TiffTag tag, const char* key) {
+            try {
+                const rawspeed::TiffEntry* entry = root->getEntryRecursive(tag);
+                if (!entry || !entry->isString()) {
+                    return;
+                }
+                std::string value = entry->getString();
+                const std::size_t end = value.find_last_not_of(' ');
+                value.erase(end == std::string::npos ? 0 : end + 1);
+                if (!value.empty()) {
+                    metadata->setString(key, value);
+                }
+            } catch (const std::exception&) {
+            }
+        };
+        const auto setNumber = [&](rawspeed::TiffTag tag, const char* key) {
+            try {
+                const rawspeed::TiffEntry* entry = root->getEntryRecursive(tag);
+                if (!entry || entry->count < 1) {
+                    return;
+                }
+                const double value = entry->getFloat();
+                if (std::isfinite(value) && value > 0.) {
+                    metadata->setDouble(key, value);
+                }
+            } catch (const std::exception&) {
+            }
+        };
+
+        setText(rawspeed::TiffTag::MAKE, kExifMetadataMake);
+        setText(rawspeed::TiffTag::MODEL, kExifMetadataModel);
+        setText(kExifLensModel, kExifMetadataLensModel);
+        setNumber(rawspeed::TiffTag::FOCALLENGTH, kExifMetadataFocalLength);
+        setNumber(rawspeed::TiffTag::FNUMBER, kExifMetadataFNumber);
+        setNumber(rawspeed::TiffTag::SUBJECTDISTANCE, kExifMetadataSubjectDistance);
+    }
+
     // rawspeed never applies GainMap opcodes, so the OpcodeList2 bytes are parsed here. A list that
     // does not parse leaves the key out.
     std::vector<DngGainMap>
@@ -608,6 +663,7 @@ namespace {
         }
         RawMetadata::setMake(&metadata, header->make);
         RawMetadata::setModel(&metadata, header->model);
+        setLensExif(decoder, &metadata);
         if (const std::optional<double> limit = linearResponseLimit(decoder)) {
             RawMetadata::setLinearResponseLimit(&metadata, *limit);
         }

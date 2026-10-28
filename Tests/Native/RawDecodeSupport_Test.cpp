@@ -279,6 +279,41 @@ TEST_F(RawDecodeSupportTest, CameraNamesAreRawspeedsCanonicalNames)
     EXPECT_FALSE(RawMetadata::getModel(dng->metadata).value_or("").empty());
 }
 
+// The values exiv2 reports for each fixture. None of them records a SubjectDistance.
+TEST_F(RawDecodeSupportTest, LensExifKeysComeFromTheFilesExif)
+{
+    struct Expected {
+        const RawFixture* fixture;
+        const char* make;
+        const char* model;
+        const char* lensModel;
+        double focalLength;
+        double fNumber;
+    };
+    const Expected expected[] = {
+        { &bayerFixture(), "Canon", "Canon EOS 5D Mark III", "EF70-200mm f/2.8L IS II USM", 70., 2.8 },
+        { &xtransFixture(), "FUJIFILM", "X-Pro2", "XF50mmF2 R WR", 50., 2. },
+        { &linearFixture(), "Canon", "Canon EOS 5D Mark III", "EF70-200mm f/2.8L IS II USM", 70., 2.8 },
+    };
+
+    for (const Expected& e : expected) {
+        SCOPED_TRACE(e.fixture->file);
+        std::string error;
+        const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(e.fixture->path(), &error);
+        ASSERT_TRUE(bool(header)) << error;
+        const ImageMetadata& metadata = header->metadata;
+
+        EXPECT_EQ(std::optional<std::string>(e.make), metadata.getString(kExifMetadataMake));
+        EXPECT_EQ(std::optional<std::string>(e.model), metadata.getString(kExifMetadataModel));
+        EXPECT_EQ(std::optional<std::string>(e.lensModel), metadata.getString(kExifMetadataLensModel));
+        ASSERT_TRUE(metadata.getDouble(kExifMetadataFocalLength).has_value());
+        EXPECT_NEAR(e.focalLength, *metadata.getDouble(kExifMetadataFocalLength), 1e-6);
+        ASSERT_TRUE(metadata.getDouble(kExifMetadataFNumber).has_value());
+        EXPECT_NEAR(e.fNumber, *metadata.getDouble(kExifMetadataFNumber), 1e-6);
+        EXPECT_FALSE(metadata.contains(kExifMetadataSubjectDistance));
+    }
+}
+
 TEST_F(RawDecodeSupportTest, CameraFilesHaveNoDngMatrixAndALinearResponseLimitOfOne)
 {
     for (const RawFixture* fixture : { &bayerFixture(), &xtransFixture() }) {

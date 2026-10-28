@@ -217,6 +217,7 @@ target_link_libraries(NatronEngine
         openMVG
         tess
         rawspeed::rawspeed
+        lensfun::lensfun
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
@@ -226,6 +227,12 @@ target_link_libraries(NatronEngine
 # there in the bundle.
 configure_file(${rawspeed_CAMERAS_XML} ${CMAKE_BINARY_DIR}/Resources/rawspeed/cameras.xml COPYONLY)
 install(FILES ${rawspeed_CAMERAS_XML} DESTINATION Resources/rawspeed)
+
+# lensfun's lens database, read at run time from <bin>/../Resources/lensfun the same way.
+file(GLOB NatronEngine_LENSFUN_DATABASE CONFIGURE_DEPENDS ${lensfun_DATABASE_DIR}/*.xml)
+file(REMOVE_RECURSE ${CMAKE_BINARY_DIR}/Resources/lensfun)
+file(COPY ${NatronEngine_LENSFUN_DATABASE} DESTINATION ${CMAKE_BINARY_DIR}/Resources/lensfun)
+install(FILES ${NatronEngine_LENSFUN_DATABASE} DESTINATION Resources/lensfun)
 
 # darktable's white balance presets, read at run time by RawTemperature from
 # <bin>/../Resources/darktable, the same way.
@@ -274,5 +281,6 @@ target_compile_definitions(NatronEngine
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"
         NATRON_BUILD_NUMBER=0
         NATRON_RAWSPEED_VERSION="${rawspeed_REF}"
+        NATRON_LENSFUN_VERSION="${lensfun_REF}"
         QT_NO_KEYWORDS
 )

@@ -146,6 +146,9 @@ jobs:
       # headers, cameras.xml) the Natron build links, built by its own
       # stamped step, so a hit skips that compile too.
       #
+      # build/assets/lensfun is the same for lensfun (static library,
+      # header, lens database).
+      #
       # build/assets/onnxruntime is the unpacked ONNX Runtime CPU release
       # whose headers the build includes and whose library the bundle ships.
       - name: Cache test assets
@@ -156,6 +159,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
@@ -266,6 +270,7 @@ jobs:
             build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 

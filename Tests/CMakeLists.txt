@@ -205,6 +205,7 @@ target_link_libraries(Tests
         Python3::Python
         openMVG
         rawspeed::rawspeed
+        lensfun::lensfun
         # The scene tests inspect payloads through USD directly; NatronEngine links it privately.
         ${NATRON_USD_ENGINE_LIBRARIES}
 )

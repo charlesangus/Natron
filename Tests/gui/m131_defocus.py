@@ -145,9 +145,20 @@ try:
         require("size" in options, "the Crop's extent menu has a Size entry (%r)" % (options,))
         extent.setValue(options.index("size"))
         param(crop, "reformat").setValue(False)
-        param(crop, "bottomLeft").setValue(left, bottom)
-        param(crop, "size").setValue(width, height)
+        param(crop, "bottomLeft").set(left, bottom)
+        param(crop, "size").set(width, height)
+        got = param(crop, "size").get()
+        require((got.x, got.y) == (width, height), "%s's size is %rx%r (%rx%r)" % (crop.getLabel(), width, height, got.x, got.y))
+        got = param(crop, "bottomLeft").get()
+        require((got.x, got.y) == (left, bottom), "%s's bottom left is %r,%r (%r,%r)" % (crop.getLabel(), left, bottom, got.x, got.y))
         return crop
+
+    def set_checked(node, name, value):
+        """Sets a single-value knob and fails loudly if the value read back differs."""
+        p = param(node, name)
+        p.setValue(value)
+        got = p.get()
+        require(abs(float(got) - float(value)) < 1e-6, "%s's %s is %r (read back %r)" % (node.getLabel(), name, value, got))
 
     def viewer_node():
         if not _viewer:
@@ -295,59 +306,45 @@ try:
         source = point_source()
         node = create(PLUGIN_DEFOCUS, 0, 250)
         connect(node, 0, source)
-        param(node, "size").setValue(0.0)
+        set_checked(node, "size", 0.0)
         show(node)
         yield ("sleep", RENDER_MS)
         check(choose_view(), "the viewer's View menu is set to " + VIEW_NAME)
         yield from panel_fit(node, "m131-defocus-panel.png")
         base = yield from render_and_count()
         report("NOTE size 0 lit pixels: %d" % base)
-        param(node, "size").setValue(40.0)
+        set_checked(node, "size", 40.0)
         small = yield from render_and_count()
         gt.shot("m131-defocus.png")
-        param(node, "size").setValue(100.0)
+        set_checked(node, "size", 100.0)
         large = yield from render_and_count()
         report("NOTE lit pixels: size 0 -> %d, size 40 -> %d, size 100 -> %d" % (base, small, large))
         check(small > base * GROWTH_MIN, "Size 40 spreads the point into a disc (%d lit vs %d unblurred)" % (small, base))
         check(large > small * GROWTH_MIN, "Size 100 lights more than twice the pixels of Size 40 (%d vs %d)" % (large, small))
 
-        param(node, "size").setValue(40.0)
+        set_checked(node, "size", 40.0)
         yield ("sleep", RENDER_MS)
         disc = viewer_crop()
         kind = param(node, "kernelType")
         i = find_option(kind, "blades")
         require(i >= 0, "the Kernel Type menu has Blades (%r)" % ([str(o) for o in kind.getOptions()],))
         kind.setValue(i)
-        param(node, "blades").setValue(3)
+        set_checked(node, "blades", 3)
         yield ("sleep", RENDER_MS)
         blades = viewer_crop()
         gt.shot("m131-defocus-blades.png")
         n = changed_pixels(disc, blades)
         check(n >= CHANGED_PIXELS_MIN, "a 3-blade kernel changes the output against the disc (%d sampled pixels differ)" % n)
-        param(node, "rotation").setValue(60.0)
+        set_checked(node, "rotation", 60.0)
         yield ("sleep", RENDER_MS)
         n = changed_pixels(blades, viewer_crop())
         check(n >= CHANGED_PIXELS_MIN, "rotating the blades by 60 degrees changes the output (%d sampled pixels differ)" % n)
 
     def set_depth_channel(node):
         depth = param(node, "depth")
-        try:
-            options = [str(o) for o in depth.getOptions()]
-        except Exception:
-            options = []
-        report("NOTE Depth options: %r" % (options,))
-        wanted = [i for i, o in enumerate(options) if o.lower().replace(" ", "") in ("rgba.g", "rgba.green", "g", "green")]
-        try:
-            if wanted:
-                depth.setValue(wanted[0])
-            else:
-                depth.setValue("rgba.G")
-        except Exception as e:
-            report("NOTE could not set the Depth channel: %r" % (e,))
-        try:
-            report("NOTE Depth now %r" % (depth.getValue(),))
-        except Exception:
-            pass
+        depth.set("rgba.G")
+        got = depth.get()
+        require(got == "rgba.G", "%s's Depth channel is rgba.G (read back %r)" % (node.getLabel(), got))
 
     def section_zdefocus():
         gt.section("zdefocus")
@@ -355,15 +352,15 @@ try:
         node = create(PLUGIN_ZDEFOCUS, 300, 250)
         connect(node, 0, source)
         set_depth_channel(node)
-        param(node, "size").setValue(40.0)
-        param(node, "maxSize").setValue(50.0)
-        param(node, "focalPlane").setValue(1.0)
+        set_checked(node, "size", 40.0)
+        set_checked(node, "maxSize", 50.0)
+        set_checked(node, "focalPlane", 1.0)
         show(node)
         yield ("sleep", RENDER_MS)
         yield from panel_fit(node, "m131-zdefocus-panel.png")
         sharp = yield from render_and_count()
         gt.shot("m131-zdefocus.png")
-        param(node, "focalPlane").setValue(0.1)
+        set_checked(node, "focalPlane", 0.1)
         blurred = yield from render_and_count()
         report("NOTE lit pixels: Focal Plane 1 -> %d, Focal Plane 0.1 -> %d" % (sharp, blurred))
         check(blurred > sharp * GROWTH_MIN,

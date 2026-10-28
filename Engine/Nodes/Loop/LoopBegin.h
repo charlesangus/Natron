@@ -123,6 +123,10 @@ private:
 
     virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL;
 
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

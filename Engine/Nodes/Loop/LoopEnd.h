@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,7 +37,9 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Loop/LoopFold.h"
+#include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/RectD.h"
 #include "Engine/RenderContext.h"
 
 #define PLUGINID_NATRON_LOOPEND "fr.natron.LoopEnd"
@@ -66,6 +70,8 @@
 #define kLoopEndParamReverseOrder "reverseOrder"
 #define kLoopEndParamMaxIterations "maxIterations"
 #define kLoopEndParamDrivenKnobs "drivenKnobs"
+#define kLoopEndParamCrossFrame "crossFrame"
+#define kLoopEndParamStartFrame "startFrame"
 
 #define kLoopEndDefaultMaxIterations 1024
 
@@ -111,7 +117,19 @@ public:
     static std::shared_ptr<LoopEnd> feedbackEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Appends the LoopBegins of the Feedback loops whose iterations render node.
+     * @brief The LoopEnd that pairs with begin when Cross Frame is on, else null.
+     **/
+    static std::shared_ptr<LoopEnd> crossFrameEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopEnd that pairs with begin when it is in Feedback mode or Cross Frame is on:
+     * when begin may output something other than its input. Else null.
+     **/
+    static std::shared_ptr<LoopEnd> chainingEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Appends the LoopBegins of the Feedback and Cross Frame loops whose iterations render
+     * node.
      **/
     static void appendFeedbackBeginsOf(const NodePtr& node,
                                        std::vector<NodePtr>* begins);
@@ -144,6 +162,62 @@ public:
     void appendFeedbackKnobsHash(ContentHasher& h) const;
 
     /**
+     * @brief What a Cross Frame LoopBegin outputs: this loop's output at frame, under base.
+     **/
+    struct CrossFrameStep {
+        // The context the loop renders under, without its own variables or a fold step,
+        // restricted to what this node reads.
+        RenderContextPtr base;
+        int frame = 0;
+    };
+
+    /**
+     * @brief The frame of this loop's output the LoopBegin rendering at time under context outputs
+     * under Cross Frame: the frame before the one the loop renders, ceil(f) - 1 at a fractional
+     * frame f. False when the loop renders at Start Frame or before it, when context is outside the
+     * loop, under a Feedback iteration after the first, or when Cross Frame is off.
+     **/
+    bool crossFrameStepBefore(const RenderContextPtr& context,
+                              double time,
+                              CrossFrameStep* previous) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Appends the knobs, besides those appendFeedbackKnobsHash() appends, that the output
+     * at one frame folds into the next under Cross Frame.
+     **/
+    void appendCrossFrameKnobsHash(ContentHasher& h) const;
+
+    /**
+     * @brief The loop's output at frame under base, Cross Frame: from the frame cache, else the
+     * frames after the latest one cached (Start Frame when none is) rendered in order up to it,
+     * each over the whole of its region of definition and stored. One render drives a simulation
+     * at a time; the others wait for it. Fails at a frame before Start Frame.
+     **/
+    EffectInstance::RenderRoIRetCode crossFrameImage(const EffectInstance* consumer,
+                                                     const RenderContextPtr& base,
+                                                     int frame,
+                                                     ViewIdx view,
+                                                     const RenderScale& scale,
+                                                     bool byPassCache,
+                                                     ImagePtr* image) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The region of definition of the loop's output at frame under base, Cross Frame: the
+     * window crossFrameImage() stores. The regions of the frames before it are asked from the
+     * earliest not known yet up, so each ask goes one body deep.
+     **/
+    StatusEnum crossFrameRegion(const RenderContextPtr& base,
+                                int frame,
+                                const RenderScale& scale,
+                                ViewIdx view,
+                                RectD* rod) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The frames Cross Frame has rendered.
+     **/
+    LoopFrameCache* crossFrameCache() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief True inside a task of the task-graph scheduler, whose frame store chains the
      * Feedback iterations; elsewhere feedbackImage() does.
      **/
@@ -154,13 +228,15 @@ public:
      * store: the iterations up to step.iteration not rendered yet in the render consumer belongs
      * to are rendered in order, each at the region the request pass planned for it, each once per
      * render, and only the last one rendered is kept. image is null where the tail is empty.
+     * With wholeRegion, each iteration is rendered over its whole region of definition instead.
      **/
     EffectInstance::RenderRoIRetCode feedbackImage(const EffectInstance* consumer,
                                                    const FeedbackStep& step,
                                                    ViewIdx view,
                                                    const RenderScale& scale,
                                                    bool byPassCache,
-                                                   ImagePtr* image) WARN_UNUSED_RETURN;
+                                                   ImagePtr* image,
+                                                   bool wholeRegion = false) WARN_UNUSED_RETURN;
 
     /**
      * @brief The loop variables of iteration k of count, as LoopEnd sets them under loop.* and
@@ -351,6 +427,37 @@ private:
 
     bool isFeedback() const WARN_UNUSED_RETURN;
 
+    bool isCrossFrame() const WARN_UNUSED_RETURN;
+
+    int crossFrameStart() const WARN_UNUSED_RETURN;
+
+    // The LoopEnd paired with begin, whatever its mode.
+    static std::shared_ptr<LoopEnd> pairedEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
+
+    // Under Cross Frame at a whole frame from Start Frame on: the output is the frame
+    // crossFrameImage() renders, and the body is not requested at time.
+    bool crossFrameDriven(double time) const WARN_UNUSED_RETURN;
+
+    // context without the loop's own variables or a fold step, restricted to what this node
+    // reads, the empty context rather than null; its hash in contextKey.
+    RenderContextPtr crossFrameBase(const RenderContextPtr& context,
+                                    const std::string& loopName,
+                                    U64* contextKey) const WARN_UNUSED_RETURN;
+
+    // render() under Cross Frame: the frame crossFrameImage() renders, over the render window.
+    StatusEnum renderCrossFrameOutput(const RenderActionArgs& args,
+                                      const RenderContextPtr& context,
+                                      const std::string& loopName) WARN_UNUSED_RETURN;
+
+    // The fold of the loop at frame under base, over its whole region of definition.
+    EffectInstance::RenderRoIRetCode renderCrossFrame(const EffectInstance* consumer,
+                                                      const RenderContextPtr& base,
+                                                      int frame,
+                                                      ViewIdx view,
+                                                      const RenderScale& scale,
+                                                      bool byPassCache,
+                                                      ImagePtr* image) WARN_UNUSED_RETURN;
+
     // resolve(), with the iterations the stop condition leaves at time. Under Feedback, the
     // output iteration alone, as singlePass.
     Resolved resolveAt(double time) const WARN_UNUSED_RETURN;
@@ -415,6 +522,8 @@ private:
     KnobIntWPtr _frameEnd;
     KnobIntWPtr _frameStep;
     KnobStringWPtr _stopCondition;
+    KnobBoolWPtr _crossFrame;
+    KnobIntWPtr _startFrame;
 
     mutable QMutex _messageMutex;
     std::string _postedMessage;
@@ -439,6 +548,25 @@ private:
 
     mutable QMutex _feedbackMutex;
     std::vector<std::shared_ptr<FeedbackChain>> _feedbackChains;
+
+    struct CrossFrameChain {
+        LoopFrameSeries series;
+        // Held while frames are rendered, so a simulation is rendered once.
+        QMutex driving;
+        // The rest under _crossFrameMutex.
+        QThread* driver = 0;
+        AbortableRenderInfoWPtr render;
+        // The frame before the one being rendered, held for the LoopBegin until it is stored.
+        int frame = 0;
+        ImagePtr image;
+    };
+
+    const std::unique_ptr<LoopFrameCache> _frameCache;
+    mutable QMutex _crossFrameMutex;
+    std::vector<std::shared_ptr<CrossFrameChain>> _crossFrameChains;
+    // The regions crossFrameRegion() found, of the generation _regionsHash.
+    std::map<LoopFrameSeries, std::map<int, RectD>> _crossFrameRegions;
+    U64 _regionsHash = 0;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -37,6 +37,7 @@
 #include <list>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -51,6 +52,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -444,6 +446,80 @@ protected:
         return render;
     } // createPrimitivesGraph
 
+    /**
+     * A card at the origin facing the camera at (0, 0, 10), its material's Diffuse Color input
+     * fed by a Constant, lit head on. Sets *constant to the Constant and returns the USDRender,
+     * kWidth x kHeight, null after a gtest failure.
+     **/
+    NodePtr createLiveTextureGraph(NodePtr* constant)
+    {
+        NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!source || !material || !card || !camera || !light || !merge || !render) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return NodePtr();
+        }
+        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
+        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+        if (!renderCamera || !size || !par) {
+            return NodePtr();
+        }
+        bool ok = true;
+        ok = ok && setString(material, kSceneParamPrimPath, "/Live");
+        ok = ok && setString(card, kSceneParamPrimPath, "/Card");
+        ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
+        ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., 10.);
+        ok = ok && setString(light, kSceneParamPrimPath, "/Key");
+        if (!ok) {
+            return NodePtr();
+        }
+        connectNodes(source, material, kUSDMaterialInputDiffuseColor, true);
+        connectNodes(material, card, 0, true);
+        connectNodes(card, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(light, merge, 2, true);
+        connectNodes(merge, render, 0, true);
+        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+        size->setValue(kWidth, ViewSpec::all(), 0);
+        size->setValue(kHeight, ViewSpec::all(), 1);
+        par->setValue(1.);
+        *constant = source;
+
+        return render;
+    } // createLiveTextureGraph
+
+    // The card's mean colour in render at frame, through the live texture graph. Rendered off the
+    // main thread, where renders run outside the tests: LiveTextureStore::prepare does nothing on
+    // the main thread, and the textures cannot be prepared beforehand because the render empties
+    // the caches, the store included.
+    static Coverage renderCard(const NodePtr& render,
+                               double frame)
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        bool rendered = false;
+
+        std::thread worker([&]() {
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error);
+        });
+        worker.join();
+        EXPECT_TRUE(rendered) << error;
+        if (planes.size() != 3u) {
+            ADD_FAILURE() << "frame " << frame << " rendered " << planes.size() << " planes";
+
+            return Coverage();
+        }
+
+        return coverageOf("/Card", planes[0].pixels, planes[1].pixels, planes[2].pixels);
+    }
+
     static std::list<ImageLayerDesc> allPlanes()
     {
         std::list<ImageLayerDesc> layers;
@@ -614,3 +690,54 @@ TEST_F(USDRenderStormTest, PrimitivesRenderWhereTheirTransformsPlaceThem)
     }
     EXPECT_EQ(2u, ids.size());
 } // TEST_F
+
+TEST_F(USDRenderStormTest, ALiveTextureColoursTheCardWithTheImageConnected)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant);
+    ASSERT_TRUE(render != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage card = renderCard(render, 1.);
+    ASSERT_GT(card.count, 500);
+    EXPECT_FALSE(render->hasPersistentMessage());
+    // Red, not Storm's grey fallback.
+    EXPECT_GT(card.rgb[0], 0.1) << "card colour " << card.rgb[0] << ", " << card.rgb[1] << ", " << card.rgb[2];
+    EXPECT_GT(card.rgb[0], 5. * card.rgb[1]);
+    EXPECT_GT(card.rgb[0], 5. * card.rgb[2]);
+}
+
+// The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test
+// binary may not load, and an animated colour exercises the same per-frame URIs.
+TEST_F(USDRenderStormTest, AnAnimatedLiveTextureFollowsTheFrame)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant);
+    ASSERT_TRUE(render != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    color->setValueAtTime(1., 1., ViewSpec::all(), 0);
+    color->setValueAtTime(10., 0., ViewSpec::all(), 0);
+    color->setValueAtTime(1., 0., ViewSpec::all(), 1);
+    color->setValueAtTime(10., 1., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+
+    const Coverage first = renderCard(render, 1.);
+    const Coverage tenth = renderCard(render, 10.);
+    ASSERT_GT(first.count, 500);
+    ASSERT_GT(tenth.count, 500);
+    EXPECT_GT(first.rgb[0], 5. * first.rgb[1]) << "frame 1 " << first.rgb[0] << ", " << first.rgb[1] << ", " << first.rgb[2];
+    EXPECT_GT(tenth.rgb[1], 5. * tenth.rgb[0]) << "frame 10 " << tenth.rgb[0] << ", " << tenth.rgb[1] << ", " << tenth.rgb[2];
+}

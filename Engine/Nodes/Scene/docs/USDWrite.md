@@ -37,11 +37,22 @@ file knobs name made absolute (a relative one against the project's directory,
 or the working directory for an unsaved project), so a relative path in the
 written file resolves from the file's own folder.
 
+Export Live Textures (on by default) writes the images USDMaterial's image
+inputs feed the scene (its `natron://` live textures, which only the running
+Natron session can read) to OpenEXR files in a `name_textures` folder beside
+`name.usda`, and points the texture paths at them, following Asset Paths. Each
+is `<node>_<layer>.exr` for an image that does not change over time, and
+`<node>_<layer>.####.exr`, one per frame of the range with its frame number, for
+one that does, the path time-sampled per frame. The files are half-float RGBA,
+ZIP-compressed. Off, the `natron://` paths are written as they are, and the node
+warns that the file is not portable.
+
 A layer already open on a written file, such as a USDRead of it, is reloaded in
 place, so every viewer and node reading it shows the new content.
 
 The node sets an error, and the render fails, when File is empty or does not end
-in a USD extension, when the input scene fails, or when Layered mode would
-overwrite a file the scene reads.
+in a USD extension, when the input scene fails, when Layered mode would
+overwrite a file the scene reads, or when a live texture cannot be rendered or
+written.
 
 Tolerance: none recorded.

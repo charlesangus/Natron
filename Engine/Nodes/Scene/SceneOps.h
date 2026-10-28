@@ -62,6 +62,9 @@ struct SceneLayerEdit {
     // What layer composes from outside the stack, such as the stack layer of another input it
     // references (createStackLayer()): the author sets it, and the layer's entry holds it.
     std::shared_ptr<const SceneLayerDependencies>* dependencies = nullptr;
+    // The live textures the author authors (SceneNodeAuthoring::recordLiveTexture), kept with the
+    // layer. Null where a layer cannot record any.
+    LiveTextureSourceList* liveTextures = nullptr;
 };
 
 /**
@@ -217,6 +220,12 @@ PXR_NS::SdfLayerRefPtr createStackLayer(const ScenePayload& input,
  * @brief The payload's layers, weakest first.
  **/
 std::vector<SceneLayerEntry> getLayers(const ScenePayload& payload);
+
+/**
+ * @brief Every live texture the payload's layers record, those of the stacks they compose from
+ * (a grafted material's) included, each layer's once.
+ **/
+LiveTextureSourceList getLiveTextures(const ScenePayload& payload);
 
 /**
  * @brief The stage-level metadata layer authors on its pseudo-root, over weaker for whatever it

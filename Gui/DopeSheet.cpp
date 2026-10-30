@@ -26,6 +26,7 @@
 #include "DopeSheet.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -39,8 +40,12 @@
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -254,9 +259,9 @@ DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
         NodePtr output = it->lock();
         std::string pluginID = output->getPluginID();
 
-        if ( (pluginID == PLUGINID_OFX_RETIME)
-             || ( pluginID == PLUGINID_OFX_TIMEOFFSET)
-             || ( pluginID == PLUGINID_OFX_FRAMERANGE) ) {
+        if ((pluginID == PLUGINID_NATRON_RETIME)
+            || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
+            || (pluginID == PLUGINID_NATRON_FRAMERANGE)) {
             return output.get();
         } else {
             Node* ret =  getNearestTimeFromOutputs_recursive(output.get(), markedNodes);
@@ -364,11 +369,11 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
         nodeType = eDopeSheetItemTypeReader;
     } else if (effectInstance->getPluginID() == PLUGINID_NATRON_GROUP) {
         nodeType = eDopeSheetItemTypeGroup;
-    } else if (pluginID == PLUGINID_OFX_RETIME) {
+    } else if (pluginID == PLUGINID_NATRON_RETIME) {
         nodeType = eDopeSheetItemTypeRetime;
-    } else if (pluginID == PLUGINID_OFX_TIMEOFFSET) {
+    } else if (pluginID == PLUGINID_NATRON_TIMEOFFSET) {
         nodeType = eDopeSheetItemTypeTimeOffset;
-    } else if (pluginID == PLUGINID_OFX_FRAMERANGE) {
+    } else if (pluginID == PLUGINID_NATRON_FRAMERANGE) {
         nodeType = eDopeSheetItemTypeFrameRange;
     }
 
@@ -796,6 +801,31 @@ DopeSheet::trimReaderRight(const DSNodePtr &reader,
     }
 
     DSRightTrimReaderCommand* cmd = new DSRightTrimReaderCommand(reader, lastFrame, newLastFrame, _imp->editor);
+    cmd->setGestureKey(_imp->editGesture.key());
+    _imp->pushUndoCommand(cmd, scopeForNode(node));
+}
+
+void
+DopeSheet::trimFrameRange(const DSNodePtr& frameRange,
+                          bool lastEnd,
+                          double newFrame)
+{
+    NodePtr node = frameRange->getInternalNode();
+    KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamFirstFrame));
+    KnobIntPtr lastFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamLastFrame));
+    if (!firstFrameKnob || !lastFrameKnob) {
+        return;
+    }
+    const int first = firstFrameKnob->getValue();
+    const int last = lastFrameKnob->getValue();
+    const int oldFrame = lastEnd ? last : first;
+    int frame = (int)std::floor(newFrame + 0.5);
+    frame = lastEnd ? std::max(frame, first) : std::min(frame, last);
+    if (frame == oldFrame) {
+        return;
+    }
+
+    DSTrimFrameRangeCommand* cmd = new DSTrimFrameRangeCommand(frameRange, lastEnd, oldFrame, frame);
     cmd->setGestureKey(_imp->editGesture.key());
     _imp->pushUndoCommand(cmd, scopeForNode(node));
 }

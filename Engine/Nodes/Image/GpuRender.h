@@ -51,6 +51,24 @@ class GpuRecordContext;
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief Most (input, time) views a GPU render can read beyond one per input at the rendered time,
+ * which bounds what a region keeps resident for a node reading its inputs at several times.
+ **/
+inline constexpr int kGpuMaxInputTimes = 8;
+
+// The times one input is read at.
+struct GpuInputTimes {
+    int inputNb;
+    std::vector<double> times;
+
+    GpuInputTimes()
+        : inputNb(-1)
+        , times()
+    {
+    }
+};
+
+/**
  * @brief What a node is asked to render, enough for it to say whether the GPU path can take it.
  **/
 struct GpuQuery {
@@ -84,6 +102,10 @@ struct GpuQuery {
     // Whether the frame renders in draft quality.
     bool draftMode;
 
+    // The times getFramesNeeded() declares for each input that it reads at a time other than
+    // time, or at several; an input read only at time has no entry.
+    std::vector<GpuInputTimes> inputTimes;
+
     GpuQuery()
         : time(0.)
         , view(0)
@@ -98,6 +120,7 @@ struct GpuQuery {
         , unPremultInPlane(false)
         , hasConcatenatedInput(false)
         , draftMode(false)
+        , inputTimes()
     {
         for (int i = 0; i < 4; ++i) {
             processChannels[i] = true;
@@ -241,15 +264,34 @@ struct GpuLayerInput {
     }
 };
 
+// An input read at another time than the rendered one.
+struct GpuTimedInput {
+    int inputNb;
+    double time;
+    GpuImageView view;
+
+    GpuTimedInput()
+        : inputNb(-1)
+        , time(0.)
+        , view()
+    {
+    }
+};
+
 struct GpuRenderArgs {
     GpuQuery query;
     RectI outputRect;
 
-    // Indexed by input number; an input that is not connected has a null buffer.
+    // Indexed by input number, at query.time; an input that is not connected, or that is read
+    // only at other times, has a null buffer.
     std::vector<GpuImageView> inputs;
 
-    // The layers of getGpuExtraInputLayers(), one entry per input and layer.
+    // The layers of getGpuExtraInputLayers(), one entry per input and layer, at query.time.
     std::vector<GpuLayerInput> layerInputs;
+
+    // The inputs at the other times query.inputTimes lists, one entry per input and time, in the
+    // layer getGpuInputLayer() names.
+    std::vector<GpuTimedInput> timedInputs;
     GpuImageView output;
     gpu::GpuRecordContext& context;
 
@@ -258,9 +300,29 @@ struct GpuRenderArgs {
         , outputRect()
         , inputs()
         , layerInputs()
+        , timedInputs()
         , output()
         , context(ctx)
     {
+    }
+
+    /**
+     * @brief The view of input inputNb at time, which is inputs[inputNb] at query.time; null
+     * when the region holds none.
+     **/
+    const GpuImageView* inputAt(int inputNb,
+                                double time) const
+    {
+        for (const GpuTimedInput& timed : timedInputs) {
+            if ((timed.inputNb == inputNb) && (timed.time == time)) {
+                return &timed.view;
+            }
+        }
+        if ((time == query.time) && (inputNb >= 0) && (inputNb < (int)inputs.size()) && inputs[inputNb].buffer) {
+            return &inputs[inputNb];
+        }
+
+        return nullptr;
     }
 };
 

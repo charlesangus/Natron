@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -36,6 +37,7 @@
 #include "NativeGolden.h"
 #include "NativeParity.h"
 
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
@@ -73,6 +75,12 @@
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Time/FrameHold.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
+#include "Engine/Nodes/Time/TimeRounding.h"
+#include "Engine/Nodes/Time/TimeWarp.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
@@ -851,6 +859,87 @@ TEST_F(NativeGoldenTest, Dissolve)
     v.push_back(variant("which1", [](const GoldenGraph& g) { return num(g, kDissolveParamWhich, { 1. }); }));
     v.push_back(maskVariant("mask", [](const GoldenGraph& g) { return num(g, kDissolveParamWhich, { 0.4 }); }));
     run(spec, v);
+}
+
+// The golden graphs render at frame 1 from a source that brightens with time, so each case reads
+// a different source frame.
+TEST_F(NativeGoldenTest, TimeOffset)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("offset3", [](const GoldenGraph& g) { return num(g, kTimeOffsetParamTimeOffset, { 3. }); }));
+    v.push_back(variant("fractional", [](const GoldenGraph& g) {
+        return num(g, kTimeOffsetParamTimeOffset, { 0.5 }) && choice(g, kTimeOffsetParamRoundingMode, kTimeRoundingFractional);
+    }));
+    run(plainSpec("TimeOffset", PLUGINID_NATRON_TIMEOFFSET, PLUGIN_MAJOR_NATRON_TIMEOFFSET), v);
+}
+
+TEST_F(NativeGoldenTest, FrameHold)
+{
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("first7", [](const GoldenGraph& g) { return num(g, kFrameHoldParamFirstFrame, { 7. }); }));
+    v.push_back(variant("increment", [](const GoldenGraph& g) { return num(g, kFrameHoldParamFirstFrame, { -3. }) && num(g, kFrameHoldParamIncrement, { 3 }); }));
+    v.push_back(variant("fractional", [](const GoldenGraph& g) {
+        return num(g, kFrameHoldParamFirstFrame, { 2.5 }) && choice(g, kFrameHoldParamRoundingMode, kTimeRoundingFractional);
+    }));
+    run(plainSpec("FrameHold", PLUGINID_NATRON_FRAMEHOLD, PLUGIN_MAJOR_NATRON_FRAMEHOLD), v);
+}
+
+TEST_F(NativeGoldenTest, FrameRange)
+{
+    // Frame 1 lies before the range [5, 9].
+    const Apply range = [](const GoldenGraph& g) { return num(g, kFrameRangeParamFirstFrame, { 5 }) && num(g, kFrameRangeParamLastFrame, { 9 }); };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    // Black renders an empty output, which has no golden; NativeFrameRangeTest.BlackIsEmptyOutsideTheRange covers it.
+    const char* const modes[] = { kFrameRangeOriginal, kFrameRangeHold, kFrameRangeLoop, kFrameRangeBounce };
+    for (const char* mode : modes) {
+        const std::string id(mode);
+        v.push_back(variant(std::string("before") + id, [range, id](const GoldenGraph& g) { return range(g) && choice(g, kFrameRangeParamBefore, id); }));
+    }
+    run(plainSpec("FrameRange", PLUGINID_NATRON_FRAMERANGE, PLUGIN_MAJOR_NATRON_FRAMERANGE), v);
+}
+
+TEST_F(NativeGoldenTest, Retime)
+{
+    // Input frame 1 lands on -2 and plays at a quarter speed, so frame 1 reads input frame 1.75.
+    const Apply quarter = [](const GoldenGraph& g) {
+        return num(g, kRetimeParamOriginalIn, { 1. }) && num(g, kRetimeParamNewIn, { -2. }) && num(g, kRetimeParamSpeed, { 0.25 });
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("blend", quarter));
+    v.push_back(variant("nearest", [quarter](const GoldenGraph& g) { return quarter(g) && choice(g, kRetimeParamFilter, kRetimeFilterNearest); }));
+    v.push_back(variant("fractional", [quarter](const GoldenGraph& g) { return quarter(g) && choice(g, kRetimeParamFilter, kRetimeFilterFractional); }));
+    v.push_back(variant("reverse", [](const GoldenGraph& g) { return num(g, kRetimeParamReverse, { 1. }); }));
+    run(plainSpec("Retime", PLUGINID_NATRON_RETIME, PLUGIN_MAJOR_NATRON_RETIME), v);
+}
+
+TEST_F(NativeGoldenTest, TimeWarp)
+{
+    // Frame 1 looks up input frame 1.75 on a curve of slope 0.25.
+    const Apply quarter = [](const GoldenGraph& g) {
+        KnobDoublePtr lookup = std::dynamic_pointer_cast<KnobDouble>(g.node->getKnobByName(kTimeWarpParamLookup));
+        if (!lookup) {
+            return false;
+        }
+        lookup->removeAnimation(ViewSpec::all(), 0);
+        for (const std::pair<double, double>& key : { std::make_pair(1., 1.75), std::make_pair(5., 2.75) }) {
+            lookup->setValueAtTime(key.first, key.second, ViewSpec::all(), 0);
+            KeyFrame k;
+            if (!lookup->setInterpolationAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, key.first, eKeyframeTypeLinear, &k)) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("default"));
+    v.push_back(variant("blend", quarter));
+    v.push_back(variant("box", [quarter](const GoldenGraph& g) { return quarter(g) && choice(g, kTimeWarpParamFilter, kTimeSampleFilterBox) && num(g, kTimeWarpParamShutter, { 2. }); }));
+    run(plainSpec("TimeWarp", PLUGINID_NATRON_TIMEWARP, PLUGIN_MAJOR_NATRON_TIMEWARP), v);
 }
 
 TEST_F(NativeGoldenTest, MergeOver)

@@ -952,7 +952,10 @@ overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
 `Params` and a `RouteContext` (the time, the view and which inputs are
 connected). Any op kind may also have `route()`: the host asks it first and an
 answer other than `None` makes the node an identity of that input (Dissolve at
-an integer `which`).
+an integer `which`), and its frames needed are then that input at the time the
+route names, or none for `Black`. A route at another time than the one asked
+is how a node remaps time: the scheduler plans an identity task on the input at
+that time, and GPU placement keeps the region going through it.
 
 **Resample** has two forms, and an op has exactly one.
 
@@ -1247,6 +1250,21 @@ declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, matching the OpenFX conditions so identities become
 identity tasks. No node here touches deep data or GL.
+
+A node that reads an input at another time than the one rendered declares the
+times in `getFramesNeeded()` and fetches them with
+`NativeEffectBase::fetchInputAt(inputNb, time, args, layer, mapToClipPrefs,
+roiPixel)`, never with `getImage()` at a time of its own. `fetchInputAt()`
+checks the time against the declaration: a time that is not one of the frames
+a declared range plans (its min, then each whole frame up to its max) posts an
+error naming it and returns null, and the render fails instead of pulling an
+unplanned frame. The scheduler prefetches at most
+`NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING` (4) frames per declared range, so a
+node needing scattered times declares one range per time; frames beyond the
+cap of one range are still fetched, but as unplanned pulls. On the GPU, the
+same declaration reaches `GpuQuery::inputTimes`, and `GpuRenderArgs` hands an
+op an input at another time than the one rendered through `inputAt(inputNb,
+time)`.
 
 ### Threading
 

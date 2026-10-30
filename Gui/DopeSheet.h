@@ -47,11 +47,6 @@ CLANG_DIAG_ON(uninitialized)
 #define kReaderParamNameStartingTime "startingTime"
 #define kReaderParamNameTimeOffset "timeOffset"
 
-#define kRetimeParamNameSpeed "speed"
-#define kFrameRangeParamNameFrameRange "frameRange"
-#define kTimeOffsetParamNameTimeOffset "timeOffset"
-
-
 NATRON_NAMESPACE_ENTER
 
 class DopeSheetPrivate;
@@ -378,6 +373,12 @@ public:
     void moveSelectedKeysAndNodes(double dt);
     void trimReaderLeft(const DSNodePtr &reader, double newFirstFrame);
     void trimReaderRight(const DSNodePtr &reader, double newLastFrame);
+
+    /**
+     * @brief Moves the first (or with lastEnd the last) frame of a FrameRange to newFrame, kept on
+     * its side of the other end.
+     */
+    void trimFrameRange(const DSNodePtr& frameRange, bool lastEnd, double newFrame);
 
     bool canSlipReader(const DSNodePtr &reader) const;
 

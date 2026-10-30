@@ -78,6 +78,7 @@
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Time/TimeWarp.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/ICornerPin.h"
@@ -158,6 +159,7 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_TIMEWARP,
     };
 
     return ids;

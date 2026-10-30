@@ -80,13 +80,14 @@ public:
      * Each state, except esNoEditingState, corresponds to  an user
      * interaction.
      */
-    enum EventStateEnum
-    {
+    enum EventStateEnum {
         esNoEditingState,
         esPickKeyframe,
         esReaderLeftTrim,
         esReaderRightTrim,
         esReaderSlip,
+        esFrameRangeLeftTrim,
+        esFrameRangeRightTrim,
         esSelectionByRect,
         esMoveKeyframeSelection,
         esMoveCurrentFrameIndicator,
@@ -194,6 +195,12 @@ public Q_SLOTS:
     void onTimeLineBoundariesChanged(int, int);
 
     /**
+     * @brief Redraws when a viewer's inputs change, since keys are drawn at the frame the active
+     * viewer shows them.
+     **/
+    void onViewersChanged();
+
+    /**
      * @brief Handles 'dsNode' for the next refreshes of the view.
      *
      * If its a range-based node, a new pair describing this range
@@ -229,6 +236,7 @@ public Q_SLOTS:
      * specific knob.
      */
     void onRangeNodeChanged(ViewSpec, int, int);
+    void onRangeNodeCurveChanged();
 
     /**
      * @brief Computes the bounding rect of the selected keyframes and the ranges

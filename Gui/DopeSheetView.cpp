@@ -27,6 +27,7 @@
 
 #include <algorithm> // min, max
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <stdexcept>
 
@@ -44,11 +45,18 @@
 // Natron includes
 #include "Engine/Curve.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Time/FrameHold.h"
+#include "Engine/Nodes/Time/FrameRange.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/TimeOffset.h"
+#include "Engine/Nodes/Time/TimeWarp.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Global/Enums.h"
 
@@ -92,7 +100,7 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 // Typedefs
 typedef std::set<double> TimeSet;
-typedef std::pair<double, double> FrameRange;
+typedef std::pair<double, double> ClipRange;
 typedef std::map<KnobIWPtr, KnobGui *> KnobsAndGuis;
 
 
@@ -276,6 +284,9 @@ public:
 
     void updateCurveWidgetFrameRange();
 
+    void refreshKeyTimeOffsets();
+    double keyTimeOffset(const DSKnobPtr& dsKnob) const;
+
     /* attributes */
     DopeSheetView *q_ptr;
     DopeSheet *model;
@@ -286,9 +297,13 @@ public:
     TimeLinePtr timeline;
 
     //
-    std::map<DSNode *, FrameRange > nodeRanges;
+    std::map<DSNode*, ClipRange> nodeRanges;
     std::list<DSNode*> nodeRangesBeingComputed; // to avoid recursion in groups
     int rangeComputationRecursion;
+
+    // Keys of a node upstream of the active viewer are drawn at the frame the viewer shows them:
+    // their own time plus the constant shifts of the TimeOffsets between them and the viewer.
+    std::map<const Node*, double> keyTimeOffsets;
 
     // for rendering
     double _screenPixelRatio;
@@ -518,13 +533,13 @@ DopeSheetViewPrivate::getCursorDuringHover(const QPointF &widgetCoords) const
     DSTreeItemNodeMap nodes = model->getItemNodeMap();
     for (DSTreeItemNodeMap::iterator it = nodes.begin(); it != nodes.end(); ++it) {
         if ( it->second->isRangeDrawingEnabled() ) {
-            std::map<DSNode *, FrameRange >::const_iterator foundRange = nodeRanges.find( it->second.get() );
+            std::map<DSNode*, ClipRange>::const_iterator foundRange = nodeRanges.find(it->second.get());
             if ( foundRange == nodeRanges.end() ) {
                 continue;
             }
 
             QRectF treeItemRect = hierarchyView->visualItemRect(it->first);
-            const FrameRange& range = foundRange->second;
+            const ClipRange& range = foundRange->second;
             RectD nodeClipRect;
             nodeClipRect.x1 = range.first;
             nodeClipRect.x2 = range.second;
@@ -532,6 +547,13 @@ DopeSheetViewPrivate::getCursorDuringHover(const QPointF &widgetCoords) const
             nodeClipRect.y1 = zoomContext.toZoomCoordinates( 0, treeItemRect.bottom() ).y();
 
             DopeSheetItemType nodeType = it->second->getItemType();
+            if (nodeType == eDopeSheetItemTypeFrameRange) {
+                if (isNearByClipRectLeft(clickZoomCoords, nodeClipRect)) {
+                    return getCursorForEventState(DopeSheetView::esFrameRangeLeftTrim);
+                } else if (isNearByClipRectRight(clickZoomCoords, nodeClipRect)) {
+                    return getCursorForEventState(DopeSheetView::esFrameRangeRightTrim);
+                }
+            }
             if ( nodeClipRect.contains( clickZoomCoords.x(), clickZoomCoords.y() ) ) {
                 if ( (nodeType == eDopeSheetItemTypeGroup) ||
                      ( nodeType == eDopeSheetItemTypeReader) ||
@@ -600,6 +622,8 @@ DopeSheetViewPrivate::getCursorForEventState(DopeSheetView::EventStateEnum es) c
         cursorShape = Qt::SplitHCursor;
         break;
     case DopeSheetView::esReaderRightTrim:
+    case DopeSheetView::esFrameRangeLeftTrim:
+    case DopeSheetView::esFrameRangeRightTrim:
         cursorShape = Qt::SplitHCursor;
         break;
     case DopeSheetView::esReaderSlip:
@@ -717,6 +741,7 @@ std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(const DSKnobPtr
         startDim = dim;
         endDim = dim + 1;
     }
+    const double offset = keyTimeOffset(dsKnob);
 
     for (int i = startDim; i < endDim; ++i) {
         KeyFrameSet keyframes = knob->getCurve(ViewIdx(0), i)->getKeyFrames_mt_safe();
@@ -725,7 +750,7 @@ std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(const DSKnobPtr
              kIt != keyframes.end();
              ++kIt) {
             KeyFrame kf = (*kIt);
-            QPointF keyframeWidgetPos = zoomContext.toWidgetCoordinates(kf.getTime(), 0);
+            QPointF keyframeWidgetPos = zoomContext.toWidgetCoordinates(kf.getTime() + offset, 0);
 
             if (std::abs( widgetCoords.x() - keyframeWidgetPos.x() ) < DISTANCE_ACCEPTANCE_FROM_KEYFRAME) {
                 DSKnobPtr context;
@@ -760,13 +785,14 @@ std::vector<DopeSheetKey> DopeSheetViewPrivate::isNearByKeyframe(DSNodePtr dsNod
             continue;
         }
 
+        const double offset = keyTimeOffset(dsKnob);
         KeyFrameSet keyframes = knobGui->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
 
         for (KeyFrameSet::const_iterator kIt = keyframes.begin();
              kIt != keyframes.end();
              ++kIt) {
             KeyFrame kf = (*kIt);
-            QPointF keyframeWidgetPos = zoomContext.toWidgetCoordinates(kf.getTime(), 0);
+            QPointF keyframeWidgetPos = zoomContext.toWidgetCoordinates(kf.getTime() + offset, 0);
 
             if (std::abs( widgetCoords.x() - keyframeWidgetPos.x() ) < DISTANCE_ACCEPTANCE_FROM_KEYFRAME) {
                 ret.push_back( DopeSheetKey(dsKnob, kf) );
@@ -1160,13 +1186,12 @@ DopeSheetViewPrivate::drawRange(const DSNodePtr &dsNode) const
 {
     // Draw the clip
     {
-        std::map<DSNode *, FrameRange >::const_iterator foundRange = nodeRanges.find( dsNode.get() );
+        std::map<DSNode*, ClipRange>::const_iterator foundRange = nodeRanges.find(dsNode.get());
         if ( foundRange == nodeRanges.end() ) {
             return;
         }
 
-
-        const FrameRange& range = foundRange->second;
+        const ClipRange& range = foundRange->second;
         QRectF treeItemRect = hierarchyView->visualItemRect( dsNode->getTreeItem() );
         QPointF treeRectTopLeft = treeItemRect.topLeft();
         treeRectTopLeft = zoomContext.toZoomCoordinates( treeRectTopLeft.x(), treeRectTopLeft.y() );
@@ -1327,13 +1352,14 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                 continue;
             }
 
+            const double offset = keyTimeOffset(dsKnob);
             KeyFrameSet keyframes = dsKnob->getKnobGui()->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
 
             for (KeyFrameSet::const_iterator kIt = keyframes.begin();
                  kIt != keyframes.end();
                  ++kIt) {
                 KeyFrame kf = (*kIt);
-                double keyTime = kf.getTime();
+                double keyTime = kf.getTime() + offset;
 
                 // Clip keyframes horizontally //TODO Clip vertically too
                 if ( ( keyTime < zoomContext.left() ) || ( keyTime > zoomContext.right() ) ) {
@@ -1353,7 +1379,7 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
 
                     if (texType != DopeSheetViewPrivate::kfTextureNone) {
                         drawTexturedKeyframe(texType, hasSingleKfTimeSelected && kfSelected,
-                                             kfTimeSelected, selectionColor, zoomKfRect);
+                                             keyTime, selectionColor, zoomKfRect);
                     }
                 }
 
@@ -1414,7 +1440,7 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                                                                         : DopeSheetViewPrivate::kfTextureMaster;
 
                     drawTexturedKeyframe(textureType, hasSingleKfTimeSelected && drawSelected,
-                                         kfTimeSelected, selectionColor, zoomKfRect);
+                                         time, selectionColor, zoomKfRect);
                 }
             }
         }
@@ -1436,7 +1462,7 @@ DopeSheetViewPrivate::drawKeyframes(const DSNodePtr &dsNode) const
                                                                     : DopeSheetViewPrivate::kfTextureMaster;
 
                 drawTexturedKeyframe(textureType, hasSingleKfTimeSelected && drawSelected,
-                                     kfTimeSelected, selectionColor, zoomKfRect);
+                                     time, selectionColor, zoomKfRect);
             }
         }
     }
@@ -1496,7 +1522,7 @@ DopeSheetViewPrivate::drawGroupOverlay(const DSNodePtr &dsNode,
     QRectF nameItemRect = hierarchyView->visualItemRect( dsNode->getTreeItem() );
 
     assert( nodeRanges.find( group.get() ) != nodeRanges.end() );
-    FrameRange groupRange = nodeRanges.find( group.get() )->second; // map::at() is C++11
+    ClipRange groupRange = nodeRanges.find(group.get())->second; // map::at() is C++11
     RectD overlayRect;
     overlayRect.x1 = groupRange.first;
     overlayRect.x2 = groupRange.second;
@@ -1793,6 +1819,7 @@ DopeSheetViewPrivate::computeSelectedKeysBRect()
     std::vector<DSNodePtr> selectedNodes;
 
     model->getSelectionModel()->getCurrentSelection(&selectedKeyframes, &selectedNodes);
+    refreshKeyTimeOffsets();
 
     if ( ( (selectedKeyframes.size() <= 1) && selectedNodes.empty() ) ||
          ( selectedKeyframes.empty() && ( selectedNodes.size() <= 1) ) ) {
@@ -1810,7 +1837,7 @@ DopeSheetViewPrivate::computeSelectedKeysBRect()
         assert(knobContext);
 
         QTreeWidgetItem *keyItem = knobContext->getTreeItem();
-        double time = (*it)->key.getTime();
+        double time = (*it)->key.getTime() + keyTimeOffset(knobContext);
 
         //x1,x2 are in zoom coords
         selectedKeysBRect.x1 = std::min(time, selectedKeysBRect.x1);
@@ -1828,11 +1855,11 @@ DopeSheetViewPrivate::computeSelectedKeysBRect()
     }
 
     for (std::vector<DSNodePtr>::iterator it = selectedNodes.begin(); it != selectedNodes.end(); ++it) {
-        std::map<DSNode *, FrameRange >::const_iterator foundRange = nodeRanges.find( it->get() );
+        std::map<DSNode*, ClipRange>::const_iterator foundRange = nodeRanges.find(it->get());
         if ( foundRange == nodeRanges.end() ) {
             continue;
         }
-        const FrameRange& range = foundRange->second;
+        const ClipRange& range = foundRange->second;
 
         //x1,x2 are in zoom coords
         selectedKeysBRect.x1 = std::min(range.first, selectedKeysBRect.x1);
@@ -1940,8 +1967,8 @@ DopeSheetViewPrivate::computeReaderRange(DSNode *reader)
     int startingTimeValue = startingTimeKnob->getValue();
     int firstFrameValue = firstFrameKnob->getValue();
     int lastFrameValue = lastFrameKnob->getValue();
-    FrameRange range(startingTimeValue,
-                     startingTimeValue + (lastFrameValue - firstFrameValue) + 1);
+    ClipRange range(startingTimeValue,
+                    startingTimeValue + (lastFrameValue - firstFrameValue) + 1);
 
     nodeRanges[reader] = range;
 
@@ -1974,68 +2001,16 @@ DopeSheetViewPrivate::computeRetimeRange(DSNode *retimer)
     nodeRangesBeingComputed.push_back(retimer);
     ++rangeComputationRecursion;
 
+    ClipRange range;
     NodePtr node = retimer->getInternalNode();
-    if (!node) {
-        return;
+    if (node && node->getInput(0)) {
+        // The output range, whose ends the knobs resolve from the input's range, locks and speed.
+        double first, last;
+        node->getEffectInstance()->getFrameRange_public(node->getHashValue(), &first, &last, true);
+        range.first = first;
+        range.second = last + 1;
     }
-    NodePtr input = node->getInput(0);
-    if (input) {
-        U64 nodeHash = node->getHashValue();
-        double inputFirst, inputLast;
-        input->getEffectInstance()->getFrameRange_public(input->getHashValue(), &inputFirst, &inputLast);
-
-        FramesNeededMap framesFirst = node->getEffectInstance()->getFramesNeeded_public(nodeHash, inputFirst, ViewIdx(0), 0);
-        FramesNeededMap framesLast = node->getEffectInstance()->getFramesNeeded_public(nodeHash, inputLast, ViewIdx(0), 0);
-        assert( !framesFirst.empty() && !framesLast.empty() );
-        if ( framesFirst.empty() || framesLast.empty() ) {
-            return;
-        }
-
-        FrameRange range;
-#ifdef DEBUG
-//#pragma message WARN("only considering first view")
-#endif
-        {
-            const FrameRangesMap& rangeFirst = framesFirst[0];
-            assert( !rangeFirst.empty() );
-            if ( rangeFirst.empty() ) {
-                return;
-            }
-            FrameRangesMap::const_iterator it = rangeFirst.find( ViewIdx(0) );
-            assert( it != rangeFirst.end() );
-            if ( it == rangeFirst.end() ) {
-                return;
-            }
-            const std::vector<OfxRangeD>& frames = it->second;
-            assert( !frames.empty() );
-            if ( frames.empty() ) {
-                return;
-            }
-            range.first = (frames.front().min);
-        }
-        {
-            FrameRangesMap& rangeLast = framesLast[0];
-            assert( !rangeLast.empty() );
-            if ( rangeLast.empty() ) {
-                return;
-            }
-            FrameRangesMap::const_iterator it = rangeLast.find( ViewIdx(0) );
-            assert( it != rangeLast.end() );
-            if ( it == rangeLast.end() ) {
-                return;
-            }
-            const std::vector<OfxRangeD>& frames = it->second;
-            assert( !frames.empty() );
-            if ( frames.empty() ) {
-                return;
-            }
-            range.second = (frames.front().min);
-        }
-
-        nodeRanges[retimer] = range;
-    } else {
-        nodeRanges[retimer] = FrameRange();
-    }
+    nodeRanges[retimer] = range;
 
     --rangeComputationRecursion;
     std::list<DSNode*>::iterator found = std::find(nodeRangesBeingComputed.begin(), nodeRangesBeingComputed.end(), retimer);
@@ -2055,23 +2030,21 @@ DopeSheetViewPrivate::computeTimeOffsetRange(DSNode *timeOffset)
     nodeRangesBeingComputed.push_back(timeOffset);
     ++rangeComputationRecursion;
 
-    FrameRange range(0, 0);
+    ClipRange range(0, 0);
 
     // Retrieve nearest reader useful values
     {
         DSNodePtr nearestReader = model->findDSNode( model->getNearestReader(timeOffset) );
         if (nearestReader) {
             assert( nodeRanges.find( nearestReader.get() ) != nodeRanges.end() );
-            FrameRange nearestReaderRange = nodeRanges.find( nearestReader.get() )->second; // map::at() is C++11
+            ClipRange nearestReaderRange = nodeRanges.find(nearestReader.get())->second; // map::at() is C++11
 
-            // Retrieve the time offset values
-            KnobIntBase *timeOffsetKnob = dynamic_cast<KnobIntBase *>( timeOffset->getInternalNode()->getKnobByName(kReaderParamNameTimeOffset).get() );
-            assert(timeOffsetKnob);
-
-            int timeOffsetValue = timeOffsetKnob->getValue();
-
-            range.first = nearestReaderRange.first + timeOffsetValue;
-            range.second = nearestReaderRange.second + timeOffsetValue;
+            // With an animated offset each end of the clip is the output frame showing that end of the reader's.
+            KnobDoublePtr timeOffsetKnob = std::dynamic_pointer_cast<KnobDouble>(timeOffset->getInternalNode()->getKnobByName(kTimeOffsetParamTimeOffset));
+            if (timeOffsetKnob) {
+                range.first = timeOffsetOutputTime(timeOffsetKnob, nearestReaderRange.first);
+                range.second = timeOffsetOutputTime(timeOffsetKnob, nearestReaderRange.second);
+            }
         }
     }
 
@@ -2095,12 +2068,14 @@ DopeSheetViewPrivate::computeFRRange(DSNode *frameRange)
 
     NodePtr node = frameRange->getInternalNode();
 
-    KnobIntBase *frameRangeKnob = dynamic_cast<KnobIntBase *>( node->getKnobByName("frameRange").get() );
-    assert(frameRangeKnob);
-
-    FrameRange range;
-    range.first = frameRangeKnob->getValue(0);
-    range.second = frameRangeKnob->getValue(1);
+    ClipRange range;
+    KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamFirstFrame));
+    KnobIntPtr lastFrameKnob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kFrameRangeParamLastFrame));
+    if (firstFrameKnob && lastFrameKnob) {
+        const int first = firstFrameKnob->getValue();
+        range.first = first;
+        range.second = std::max(first, lastFrameKnob->getValue()) + 1;
+    }
 
     nodeRanges[frameRange] = range;
 
@@ -2123,7 +2098,7 @@ DopeSheetViewPrivate::computeGroupRange(DSNode *group)
         throw std::logic_error("DopeSheetViewPrivate::computeGroupRange: node is NULL");
     }
 
-    FrameRange range;
+    ClipRange range;
     std::set<double> times;
     NodeGroup* nodegroup = node->isEffectGroup();
     assert(nodegroup);
@@ -2153,7 +2128,7 @@ DopeSheetViewPrivate::computeGroupRange(DSNode *group)
 
         computeNodeRange( dsNode.get() );
 
-        std::map<DSNode *, FrameRange >::iterator found = nodeRanges.find( dsNode.get() );
+        std::map<DSNode*, ClipRange>::iterator found = nodeRanges.find(dsNode.get());
         if ( found != nodeRanges.end() ) {
             times.insert(found->second.first);
             times.insert(found->second.second);
@@ -2254,7 +2229,28 @@ DopeSheetViewPrivate::onMouseLeftButtonDrag(QMouseEvent *e)
             sx *= ratio;
         }
 
-        Transform::Matrix3x3 transform = Transform::matTransformCanonical( tx, ty, sx, sy, 0, 0, true, 0, center.x(), center.y() );
+        // The box is drawn at the keys' shifted times; the keys themselves scale about the
+        // unshifted centre, which is well defined when every selected key has the same shift.
+        double centerX = center.x();
+        {
+            DopeSheetKeyPtrList selectedKeys;
+            std::vector<DSNodePtr> selectedNodes;
+            model->getSelectionModel()->getCurrentSelection(&selectedKeys, &selectedNodes);
+            if (!selectedKeys.empty()) {
+                const double shift = keyTimeOffset(selectedKeys.front()->context.lock());
+                bool sameShift = true;
+                for (DopeSheetKeyPtrList::const_iterator it = selectedKeys.begin(); it != selectedKeys.end(); ++it) {
+                    if (keyTimeOffset((*it)->context.lock()) != shift) {
+                        sameShift = false;
+                        break;
+                    }
+                }
+                if (sameShift) {
+                    centerX -= shift;
+                }
+            }
+        }
+        Transform::Matrix3x3 transform = Transform::matTransformCanonical(tx, ty, sx, sy, 0, 0, true, 0, centerX, center.y());
         model->transformSelectedKeys(transform);
         break;
     }
@@ -2305,6 +2301,22 @@ DopeSheetViewPrivate::onMouseLeftButtonDrag(QMouseEvent *e)
 
         break;
     }
+    case DopeSheetView::esFrameRangeLeftTrim:
+    case DopeSheetView::esFrameRangeRightTrim: {
+        if (currentEditedReader && ((dt >= 1.0f) || (dt <= -1.0f))) {
+            if (gui) {
+                gui->setDraftRenderEnabled(true);
+            }
+            // The clip covers [first, last + 1), so its right end sits one frame past Last.
+            if (eventState == DopeSheetView::esFrameRangeLeftTrim) {
+                model->trimFrameRange(currentEditedReader, false, currentTime);
+            } else {
+                model->trimFrameRange(currentEditedReader, true, currentTime - 1.);
+            }
+        }
+
+        break;
+    }
     case DopeSheetView::esReaderSlip: {
         if ( (dt >= 1.0f) || (dt <= -1.0f) ) {
             if (gui) {
@@ -2343,6 +2355,7 @@ DopeSheetViewPrivate::createSelectionFromRect(const RectD &zoomCoordsRect,
                 continue;
             }
 
+            const double offset = keyTimeOffset(dsKnob);
             KeyFrameSet keyframes = dsKnob->getKnobGui()->getCurve(ViewIdx(0), dim)->getKeyFrames_mt_safe();
 
             for (KeyFrameSet::const_iterator kIt = keyframes.begin();
@@ -2350,7 +2363,7 @@ DopeSheetViewPrivate::createSelectionFromRect(const RectD &zoomCoordsRect,
                  ++kIt) {
                 KeyFrame kf = (*kIt);
                 double y = hierarchyView->visualItemRect( dsKnob->getTreeItem() ).center().y();
-                RectD zoomKfRect = getKeyFrameBoundingRectZoomCoords(kf.getTime(), y);
+                RectD zoomKfRect = getKeyFrameBoundingRectZoomCoords(kf.getTime() + offset, y);
 
                 if ( zoomCoordsRect.intersects(zoomKfRect) ) {
                     result->push_back( DopeSheetKey(dsKnob, kf) );
@@ -2358,7 +2371,7 @@ DopeSheetViewPrivate::createSelectionFromRect(const RectD &zoomCoordsRect,
             }
         }
 
-        std::map<DSNode *, FrameRange >::const_iterator foundRange = nodeRanges.find( dsNode.get() );
+        std::map<DSNode*, ClipRange>::const_iterator foundRange = nodeRanges.find(dsNode.get());
         if ( foundRange != nodeRanges.end() ) {
             QPoint visualRectCenter = hierarchyView->visualItemRect( dsNode->getTreeItem() ).center();
             QPointF center = zoomContext.toZoomCoordinates( visualRectCenter.x(), visualRectCenter.y() );
@@ -2580,6 +2593,81 @@ DopeSheetViewPrivate::createContextMenu()
     viewMenu->addAction(frameSelectionAction);
 } // DopeSheetViewPrivate::createContextMenu
 
+// Walks upstream from the active viewer's A and B inputs, or the first viewer's until one is
+// clicked. A TimeOffset with a constant shift adds
+// it for everything above it; FrameRange is the identity inside its range; the other time remaps
+// have no single shift, so nothing above them is moved. A node reached along several paths keeps
+// the shift of the shortest one.
+void
+DopeSheetViewPrivate::refreshKeyTimeOffsets()
+{
+    keyTimeOffsets.clear();
+    ViewerTab* viewerTab = gui ? gui->getActiveViewer() : 0;
+    if (!viewerTab && gui && !gui->getViewersList().empty()) {
+        viewerTab = gui->getViewersList().front();
+    }
+    ViewerInstance* viewer = viewerTab ? viewerTab->getInternalNode() : 0;
+    if (!viewer) {
+        return;
+    }
+    int activeInputs[2] = { -1, -1 };
+    viewer->getActiveInputs(activeInputs[0], activeInputs[1]);
+    const std::vector<NodeWPtr>& viewerInputs = viewer->getNode()->getGuiInputs();
+
+    std::deque<std::pair<Node*, double>> pending;
+    for (int inputNb : activeInputs) {
+        if ((inputNb >= 0) && (inputNb < (int)viewerInputs.size())) {
+            NodePtr input = viewerInputs[inputNb].lock();
+            if (input) {
+                pending.push_back(std::make_pair(input.get(), 0.));
+            }
+        }
+    }
+    while (!pending.empty()) {
+        Node* node = pending.front().first;
+        double offset = pending.front().second;
+        pending.pop_front();
+        if (!keyTimeOffsets.insert(std::make_pair(node, offset)).second) {
+            continue;
+        }
+        const std::string pluginID = node->getPluginID();
+        if ((pluginID == PLUGINID_NATRON_FRAMEHOLD) || (pluginID == PLUGINID_NATRON_RETIME) || (pluginID == PLUGINID_NATRON_TIMEWARP)) {
+            continue;
+        }
+        if (pluginID == PLUGINID_NATRON_TIMEOFFSET) {
+            TimeOffset* timeOffset = dynamic_cast<TimeOffset*>(node->getEffectInstance().get());
+            double shift = 0.;
+            if (!timeOffset || !timeOffset->getConstantShift(&shift)) {
+                continue;
+            }
+            offset += shift;
+        }
+        const std::vector<NodeWPtr>& inputs = node->getGuiInputs();
+        for (std::vector<NodeWPtr>::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
+            NodePtr input = it->lock();
+            if (input) {
+                pending.push_back(std::make_pair(input.get(), offset));
+            }
+        }
+    }
+}
+
+double
+DopeSheetViewPrivate::keyTimeOffset(const DSKnobPtr& dsKnob) const
+{
+    if (!dsKnob || keyTimeOffsets.empty()) {
+        return 0.;
+    }
+    KnobIPtr knob = dsKnob->getInternalKnob();
+    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : 0;
+    if (!effect) {
+        return 0.;
+    }
+    std::map<const Node*, double>::const_iterator found = keyTimeOffsets.find(effect->getNode().get());
+
+    return (found == keyTimeOffsets.end()) ? 0. : found->second;
+}
+
 void
 DopeSheetViewPrivate::updateCurveWidgetFrameRange()
 {
@@ -2628,6 +2716,12 @@ DopeSheetView::DopeSheetView(DopeSheet *model,
         project->getFrameRange(&left, &right);
         onTimeLineBoundariesChanged(left, right);
     }
+
+    if (gui) {
+        connect(gui, SIGNAL(viewersChanged()), this, SLOT(onViewersChanged()));
+        connect(gui, SIGNAL(activeViewerChanged()), this, SLOT(update()));
+        onViewersChanged();
+    }
 }
 
 /**
@@ -2661,6 +2755,7 @@ std::pair<double, double> DopeSheetView::getKeyframeRange() const
     std::pair<double, double> ret;
     std::vector<double> dimFirstKeys;
     std::vector<double> dimLastKeys;
+    _imp->refreshKeyTimeOffsets();
     DSTreeItemNodeMap dsNodeItems = _imp->model->getItemNodeMap();
 
     for (DSTreeItemNodeMap::const_iterator it = dsNodeItems.begin(); it != dsNodeItems.end(); ++it) {
@@ -2685,15 +2780,16 @@ std::pair<double, double> DopeSheetView::getKeyframeRange() const
                     continue;
                 }
 
-                dimFirstKeys.push_back( keyframes.begin()->getTime() );
-                dimLastKeys.push_back( keyframes.rbegin()->getTime() );
+                const double offset = _imp->keyTimeOffset(dsKnob);
+                dimFirstKeys.push_back(keyframes.begin()->getTime() + offset);
+                dimLastKeys.push_back(keyframes.rbegin()->getTime() + offset);
             }
         }
 
         // Also append the range of the clip if this is a Reader/Group/Time node
-        std::map<DSNode *, FrameRange >::const_iterator foundRange = _imp->nodeRanges.find( dsNode.get() );
+        std::map<DSNode*, ClipRange>::const_iterator foundRange = _imp->nodeRanges.find(dsNode.get());
         if ( foundRange != _imp->nodeRanges.end() ) {
-            const FrameRange& range = foundRange->second;
+            const ClipRange& range = foundRange->second;
             if ( !dimFirstKeys.empty() ) {
                 dimFirstKeys[0] = range.first;
             } else {
@@ -2879,7 +2975,7 @@ DopeSheetView::centerOnSelection()
         return;
     }
 
-    FrameRange range;
+    ClipRange range;
 
     // frame on project bounds
     if (!selectedKeyframesCount) {
@@ -3027,6 +3123,22 @@ DopeSheetView::onTimeLineBoundariesChanged(int,
 }
 
 void
+DopeSheetView::onViewersChanged()
+{
+    const std::list<ViewerTab*>& viewers = _imp->gui->getViewersList();
+    for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+        ViewerInstance* viewer = (*it)->getInternalNode();
+        NodePtr viewerNode = viewer ? viewer->getNode() : NodePtr();
+        if (viewerNode) {
+            connect(viewerNode.get(), SIGNAL(inputChanged(int)), this, SLOT(update()), Qt::UniqueConnection);
+            connect(viewerNode.get(), SIGNAL(activeInputsChanged()), this, SLOT(update()), Qt::UniqueConnection);
+            connect(viewerNode.get(), SIGNAL(refreshOptionalState()), this, SLOT(update()), Qt::UniqueConnection);
+        }
+    }
+    update();
+}
+
+void
 DopeSheetView::onNodeAdded(DSNode *dsNode)
 {
     DopeSheetItemType nodeType = dsNode->getItemType();
@@ -3073,24 +3185,43 @@ DopeSheetView::onNodeAdded(DSNode *dsNode)
         // We don't make the connection for the first frame knob, because the
         // starting time is updated when it's modified. Thus we avoid two
         // refreshes of the view.
-    } else if (nodeType == eDopeSheetItemTypeRetime) {
-        KnobSignalSlotHandlerPtr speedKnob =  node->getKnobByName(kRetimeParamNameSpeed)->getSignalSlotHandler();
-        assert(speedKnob);
-
-        connect( speedKnob.get(), SIGNAL(valueChanged(ViewSpec,int,int)),
-                 this, SLOT(onRangeNodeChanged(ViewSpec,int,int)) );
-    } else if (nodeType == eDopeSheetItemTypeTimeOffset) {
-        KnobSignalSlotHandlerPtr timeOffsetKnob =  node->getKnobByName(kReaderParamNameTimeOffset)->getSignalSlotHandler();
-        assert(timeOffsetKnob);
-
-        connect( timeOffsetKnob.get(), SIGNAL(valueChanged(ViewSpec,int,int)),
-                 this, SLOT(onRangeNodeChanged(ViewSpec,int,int)) );
-    } else if (nodeType == eDopeSheetItemTypeFrameRange) {
-        KnobSignalSlotHandlerPtr frameRangeKnob =  node->getKnobByName(kFrameRangeParamNameFrameRange)->getSignalSlotHandler();
-        assert(frameRangeKnob);
-
-        connect( frameRangeKnob.get(), SIGNAL(valueChanged(ViewSpec,int,int)),
-                 this, SLOT(onRangeNodeChanged(ViewSpec,int,int)) );
+    } else if ((nodeType == eDopeSheetItemTypeRetime) || (nodeType == eDopeSheetItemTypeTimeOffset) || (nodeType == eDopeSheetItemTypeFrameRange)) {
+        static const char* const retimeKnobs[] = {
+            kRetimeParamOriginalIn, kRetimeParamNewIn, kRetimeParamUseInMapping,
+            kRetimeParamOriginalOut, kRetimeParamNewOut, kRetimeParamUseOutMapping,
+            kRetimeParamSpeed, 0
+        };
+        static const char* const timeOffsetKnobs[] = { kTimeOffsetParamTimeOffset, kTimeOffsetParamReverseInput, 0 };
+        static const char* const frameRangeKnobs[] = { kFrameRangeParamFirstFrame, kFrameRangeParamLastFrame, 0 };
+        const char* const* rangeKnobs = (nodeType == eDopeSheetItemTypeRetime) ? retimeKnobs
+            : (nodeType == eDopeSheetItemTypeTimeOffset)                       ? timeOffsetKnobs
+                                                                               : frameRangeKnobs;
+        for (const char* const* name = rangeKnobs; *name; ++name) {
+            KnobIPtr knob = node->getKnobByName(*name);
+            if (!knob) {
+                continue;
+            }
+            KnobSignalSlotHandler* handler = knob->getSignalSlotHandler().get();
+            connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                    this, SLOT(onRangeNodeChanged(ViewSpec, int, int)));
+            // An animated offset or speed moves the clip when its curve changes.
+            connect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(multipleKeyFramesSet(std::list<double>, ViewSpec, int, int)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(multipleKeyFramesRemoved(std::list<double>, ViewSpec, int, int)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+            connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                    this, SLOT(onRangeNodeCurveChanged()));
+        }
     }
 
     if (mustComputeNodeRange) {
@@ -3115,7 +3246,7 @@ DopeSheetView::onNodeAboutToBeRemoved(DSNode *dsNode)
         }
     }
 
-    std::map<DSNode *, FrameRange>::iterator toRemove = _imp->nodeRanges.find(dsNode);
+    std::map<DSNode*, ClipRange>::iterator toRemove = _imp->nodeRanges.find(dsNode);
 
     if ( toRemove != _imp->nodeRanges.end() ) {
         _imp->nodeRanges.erase(toRemove);
@@ -3160,6 +3291,12 @@ void
 DopeSheetView::onRangeNodeChanged(ViewSpec /*view*/,
                                   int /*dimension*/,
                                   int /*reason*/)
+{
+    onRangeNodeCurveChanged();
+}
+
+void
+DopeSheetView::onRangeNodeCurveChanged()
 {
     QObject *signalSender = sender();
     DSNodePtr dsNode;
@@ -3326,6 +3463,8 @@ DopeSheetView::paintGL()
     zoomBottom = _imp->zoomContext.bottom();
     zoomTop = _imp->zoomContext.top();
 
+    _imp->refreshKeyTimeOffsets();
+
     // Retrieve the appropriate settings for drawing
     SettingsPtr settings = appPTR->getCurrentSettings();
     double bgR, bgG, bgB;
@@ -3378,6 +3517,7 @@ DopeSheetView::mousePressEvent(QMouseEvent *e)
 
     _imp->model->getEditor()->onInputEventCalled();
     _imp->model->beginEditGesture();
+    _imp->refreshKeyTimeOffsets();
 
     bool didSomething = false;
 
@@ -3433,13 +3573,13 @@ DopeSheetView::mousePressEvent(QMouseEvent *e)
             DSTreeItemNodeMap nodes = _imp->model->getItemNodeMap();
             for (DSTreeItemNodeMap::iterator it = nodes.begin(); it != nodes.end(); ++it) {
                 if ( it->second->isRangeDrawingEnabled() ) {
-                    std::map<DSNode *, FrameRange >::const_iterator foundRange = _imp->nodeRanges.find( it->second.get() );
+                    std::map<DSNode*, ClipRange>::const_iterator foundRange = _imp->nodeRanges.find(it->second.get());
                     if ( foundRange == _imp->nodeRanges.end() ) {
                         continue;
                     }
 
                     QRectF treeItemRect = _imp->hierarchyView->visualItemRect(it->first);
-                    const FrameRange& range = foundRange->second;
+                    const ClipRange& range = foundRange->second;
                     RectD nodeClipRect;
                     nodeClipRect.x1 = range.first;
                     nodeClipRect.x2 = range.second;
@@ -3447,6 +3587,21 @@ DopeSheetView::mousePressEvent(QMouseEvent *e)
                     nodeClipRect.y1 = _imp->zoomContext.toZoomCoordinates( 0, treeItemRect.bottom() ).y();
 
                     DopeSheetItemType nodeType = it->second->getItemType();
+
+                    if (nodeType == eDopeSheetItemTypeFrameRange) {
+                        const bool left = _imp->isNearByClipRectLeft(clickZoomCoords, nodeClipRect);
+                        if (left || _imp->isNearByClipRectRight(clickZoomCoords, nodeClipRect)) {
+                            std::vector<DopeSheetKey> keysUnderMouse;
+                            std::vector<DSNodePtr> selectedNodes;
+                            selectedNodes.push_back(it->second);
+
+                            _imp->model->getSelectionModel()->makeSelection(keysUnderMouse, selectedNodes, sFlags);
+                            _imp->currentEditedReader = it->second;
+                            _imp->eventState = left ? DopeSheetView::esFrameRangeLeftTrim : DopeSheetView::esFrameRangeRightTrim;
+                            didSomething = true;
+                            break;
+                        }
+                    }
 
                     if ( nodeClipRect.contains( clickZoomCoords.x(), clickZoomCoords.y() ) ) {
                         std::vector<DopeSheetKey> keysUnderMouse;
@@ -3649,12 +3804,7 @@ DopeSheetView::mouseReleaseEvent(QMouseEvent *e)
                 _imp->gui->renderAllViewers(true);
             }
         }
-    } else if ( (_imp->eventState == DopeSheetView::esMoveKeyframeSelection) ||
-                ( _imp->eventState == DopeSheetView::esReaderLeftTrim) ||
-                ( _imp->eventState == DopeSheetView::esReaderRightTrim) ||
-                ( _imp->eventState == DopeSheetView::esReaderSlip) ||
-                ( _imp->eventState == DopeSheetView::esTransformingKeyframesMiddleLeft) ||
-                ( _imp->eventState == DopeSheetView::esTransformingKeyframesMiddleRight) ) {
+    } else if ((_imp->eventState == DopeSheetView::esMoveKeyframeSelection) || (_imp->eventState == DopeSheetView::esReaderLeftTrim) || (_imp->eventState == DopeSheetView::esReaderRightTrim) || (_imp->eventState == DopeSheetView::esReaderSlip) || (_imp->eventState == DopeSheetView::esFrameRangeLeftTrim) || (_imp->eventState == DopeSheetView::esFrameRangeRightTrim) || (_imp->eventState == DopeSheetView::esTransformingKeyframesMiddleLeft) || (_imp->eventState == DopeSheetView::esTransformingKeyframesMiddleRight)) {
         if ( _imp->gui->isDraftRenderEnabled() ) {
             _imp->gui->setDraftRenderEnabled(false);
             bool autoProxyEnabled = appPTR->getCurrentSettings()->isAutoProxyEnabled();
@@ -3686,7 +3836,9 @@ DopeSheetView::mouseDoubleClickEvent(QMouseEvent *e)
         DSKnobPtr dsKnob = _imp->hierarchyView->getDSKnobAt( e->pos().y() );
         if (dsKnob) {
             std::vector<DopeSheetKey> toPaste;
-            double keyframeTime = std::floor(_imp->zoomContext.toZoomCoordinates(e->pos().x(), 0).x() + 0.5);
+            double displayTime = std::floor(_imp->zoomContext.toZoomCoordinates(e->pos().x(), 0).x() + 0.5);
+            _imp->refreshKeyTimeOffsets();
+            double keyframeTime = displayTime - _imp->keyTimeOffset(dsKnob);
             int dim = dsKnob->getDimension();
             KnobIPtr knob = dsKnob->getInternalKnob();
             bool hasKeyframe = false;
@@ -3701,14 +3853,14 @@ DopeSheetView::mouseDoubleClickEvent(QMouseEvent *e)
                 }
             }
             if (!hasKeyframe) {
-                _imp->timeline->seekFrame(SequenceTime(keyframeTime), false, 0,
+                _imp->timeline->seekFrame(SequenceTime(displayTime), false, 0,
                                           eTimelineChangeReasonDopeSheetEditorSeek);
 
                 KeyFrame k(keyframeTime, 0);
                 DopeSheetKey key(dsKnob, k);
                 toPaste.push_back(key);
                 DSPasteKeysCommand::setKeyValueFromKnob(knob, keyframeTime, &k);
-                _imp->model->pasteKeys(toPaste, true);
+                _imp->model->pasteKeys(toPaste, false);
             }
         }
     }

@@ -43,6 +43,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Filter/DenoiseProfiled.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
@@ -142,10 +143,16 @@ buildChain(const NodePtr& read)
     read->getPosition(&readX, &readY);
     read->getSize(&readW, &readH);
 
-    const char* const ids[] = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, PLUGINID_NATRON_RAWDEMOSAIC, PLUGINID_NATRON_RAWINPUTCOLOR, PLUGINID_NATRON_RAWCOLORCALIBRATION };
-    NodePtr* const slots[] = { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor, &chain.colorCalibration };
-    static_assert(sizeof(ids) / sizeof(ids[0]) == sizeof(slots) / sizeof(slots[0]), "one slot per node");
-    const int count = (int)(sizeof(ids) / sizeof(ids[0]));
+    std::vector<const char*> ids = { PLUGINID_NATRON_RAWPREPARE, PLUGINID_NATRON_RAWTEMPERATURE, PLUGINID_NATRON_RAWHIGHLIGHTS, PLUGINID_NATRON_RAWDEMOSAIC };
+    std::vector<NodePtr*> slots = { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic };
+    // darktable's pipe runs denoise (profiled) on camera RGB, after demosaic and before colorin.
+    if (appPTR->getCurrentSettings()->isDevelopRawDenoiseEnabled()) {
+        ids.push_back(PLUGINID_NATRON_DENOISEPROFILED);
+        slots.push_back(&chain.denoise);
+    }
+    ids.insert(ids.end(), { PLUGINID_NATRON_RAWINPUTCOLOR, PLUGINID_NATRON_RAWCOLORCALIBRATION });
+    slots.insert(slots.end(), { &chain.inputColor, &chain.colorCalibration });
+    const int count = (int)ids.size();
     // Each node's size is known once it exists, so the chain is created, then laid out.
     std::vector<NodeSize> sizes;
     bool ok = true;
@@ -181,7 +188,7 @@ buildChain(const NodePtr& read)
     }
 
     if (!chain.complete()) {
-        for (NodePtr* slot : { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.inputColor, &chain.colorCalibration, &chain.backdrop }) {
+        for (NodePtr* slot : { &chain.prepare, &chain.temperature, &chain.highlights, &chain.demosaic, &chain.denoise, &chain.inputColor, &chain.colorCalibration, &chain.backdrop }) {
             if (*slot) {
                 (*slot)->destroyNode(false, false);
             }
@@ -190,7 +197,11 @@ buildChain(const NodePtr& read)
         return Chain();
     }
     if (NodeGraphI* graph = group->getNodeGraph()) {
-        graph->addNodesToCreationOf(read, { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.colorCalibration, chain.backdrop });
+        NodesList created = { chain.prepare, chain.temperature, chain.highlights, chain.demosaic, chain.inputColor, chain.colorCalibration, chain.backdrop };
+        if (chain.denoise) {
+            created.push_back(chain.denoise);
+        }
+        graph->addNodesToCreationOf(read, created);
     }
 
     return chain;

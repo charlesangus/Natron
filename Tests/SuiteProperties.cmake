@@ -22,6 +22,11 @@ set(_natron_long_suite_timeouts
     # Debug: about 250 s legacy and 350 s task-graph, almost all of it the 100 MP whole-frame
     # renders the suite exists to bound.
     RawLargeTest 1080
+    # Release: about 180 s per site (Bayer, X-Trans), each case a full-frame darktable-parity
+    # denoise; debug runs several times slower.
+    NativeDenoiseProfiledReferenceTest 1800
+    # Debug llvmpipe: about 153 s serial, but over 300 s under ctest -j contention.
+    NativeDenoiseProfiledGpuTest 900
 )
 
 set(_natron_long_suites "")

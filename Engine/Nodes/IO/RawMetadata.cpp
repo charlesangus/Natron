@@ -466,6 +466,19 @@ setLinearResponseLimit(ImageMetadata* metadata,
     metadata->setDouble(kRawMetadataLinearResponseLimit, limit);
 }
 
+std::optional<double>
+getHighlightPreservation(const ImageMetadata& metadata)
+{
+    return metadata.getDouble(kRawMetadataHighlightPreservation);
+}
+
+void
+setHighlightPreservation(ImageMetadata* metadata,
+                         double ev)
+{
+    metadata->setDouble(kRawMetadataHighlightPreservation, ev);
+}
+
 std::optional<std::array<double, 9>>
 getDngD65Matrix(const ImageMetadata& metadata)
 {

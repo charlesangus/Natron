@@ -51,6 +51,7 @@
 #include "Engine/RenderScale.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -686,6 +687,13 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
     }
     const ParallelRenderArgsPtr frameArgs = context.getArgs(node);
     query->draftMode = frameArgs && frameArgs->draftMode;
+#ifdef NATRON_HAVE_GPU
+    GpuContext* gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
+    gpu::GpuRuntime* runtime = gpuContext ? gpuContext->runtime() : nullptr;
+    if (runtime) {
+        query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(runtime->device().info().maxStorageBufferRange);
+    }
+#endif
 
     query->unPremultChannel = stages.divisorChannel;
     query->unPremultInPlane = (stages.divisorChannel >= 0) && (Node::getUnPremultSkipChannel(plane, stages.divisorLayer, stages.divisorChannel) >= 0);

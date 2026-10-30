@@ -25,6 +25,8 @@ set(_natron_long_suite_timeouts
     # Release: about 180 s per site (Bayer, X-Trans), each case a full-frame darktable-parity
     # denoise; debug runs several times slower.
     NativeDenoiseProfiledReferenceTest 1800
+    # Debug llvmpipe: about 153 s serial, but over 300 s under ctest -j contention.
+    NativeDenoiseProfiledGpuTest 900
 )
 
 set(_natron_long_suites "")

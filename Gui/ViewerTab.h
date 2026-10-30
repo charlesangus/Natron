@@ -101,6 +101,8 @@ public:
 
     bool notifyOverlaysPenUp(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
+    bool notifyOverlaysWheel(const RenderScale& renderScale, const QPointF& viewportPos, const QPointF& pos, double delta, const Qt::KeyboardModifiers& mods);
+
     bool notifyOverlaysKeyDown(const RenderScale & renderScale, QKeyEvent* e);
 
     bool notifyOverlaysKeyUp(const RenderScale & renderScale, QKeyEvent* e);

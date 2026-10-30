@@ -89,6 +89,8 @@ input profile is the standard matrix (the embedded one for the DNG).
 | `{cr2,raf}-colorcal-gray-normalize-{on,off}.tif` | D 4500 K CAT16, gray 0.4, 0.6, 0.3, normalize on and off | RCD, Markesteijn |
 | `dng-colorcal-camera.tif` | CAT16, as shot in camera, embedded matrix | RCD |
 | `{cr2,raf,dng}-scene-referred-default.tif` | `scene-referred (sigmoid)` workflow with its automatic presets, sigmoid, exposure and sharpen off: darktable's default temperature (as shot to reference) and color calibration | RCD, Markesteijn, RCD |
+| `toneequal-source.tif` | Synthetic 128x96 linear Rec. 709 RGB half float source of the toneequal jobs, written by `make-reference.py` (`toneequal_scene()`): -10 EV to +1 EV left to right with ripples, hard-edged patches and texture, three tints by row band | (source) |
+| `toneequal-{bands,details-*,estimator-*,compensations-*,smoothing-diffusion,quantization}.tif` | toneequal on the source, whole frame, RGB half float (~50 KB); colorin (input and working profile linear Rec. 709) and colorout (linear Rec. 709) are identities around it. Every job sets the bands to 1.2, 0.9, 0.6, 0.3, 0, -0.2, -0.5, -0.8, -1 EV; `bands` is darktable's defaults otherwise (EIGF, euclidean norm, smoothing diameter 5 %, curve smoothing sqrt 2); `details-*` each preserve details mode, `estimator-*` each luminance estimator; `compensations-guided` guided filter with mask exposure 1.5 EV and contrast 0.8 EV, `compensations-eigf` -0.5 EV and 0.6 EV; `smoothing-diffusion` curve smoothing 2^0.75, 3 iterations, feathering 20, diameter 10 %; `quantization` mask quantization 0.5 | ToneEqualizer |
 
 ### darktable settings
 
@@ -378,6 +380,24 @@ SHA-256 of every file in `reference/`:
 | `hotpixels-bayer.dng` | 4576 | `a27b9cdea99db628f3f2f371db18d404685d7fbfd8113c9ee6d0b0dcccf0ff66` |
 | `linear-response-limit-bayer-clip.tif` | 942 | `d7edbf16d584c342e0d9d311857f7b247d6f98ea0981ff09d13804e8b0cc1ee0` |
 | `linear-response-limit-bayer.dng` | 4592 | `2e05131eebdfb1450c65036ab5004e603054f8eb1d587095d1f492e7d01f0b45` |
+| `toneequal-bands.tif` | 51823 | `7da86f6c49dca3c1f3ccf91ef9501325d0d08ddd2519d700612c0abe93d3b2fa` |
+| `toneequal-compensations-eigf.tif` | 51038 | `120a0d0f39169d47c3d2803df5480bf1d6f51e1c14190e19c55a520b43610c94` |
+| `toneequal-compensations-guided.tif` | 51471 | `7b505824cd81394d6bd1eac6691709a34a19a03698ffaf6668e74314decc5d65` |
+| `toneequal-details-averaged-eigf.tif` | 51690 | `875ce9fe8a9484ae5a2fcfc5a1a2f923c060e089acf1552bd2c2262d8235c9d7` |
+| `toneequal-details-averaged-guided.tif` | 51559 | `627fadb53ea7bcc480c5c13e1c73e392bfec6d42b8ca0eed61443c064eab8f4c` |
+| `toneequal-details-eigf.tif` | 51823 | `f39e2511eed0685e95398619f14dfa993f83a6b3d20050c87879c0790c2dbb6b` |
+| `toneequal-details-guided.tif` | 51679 | `cc991ac4a3ad49882f98e5c450f1e671b536cdad5120668755cf10238b07686c` |
+| `toneequal-details-none.tif` | 50847 | `8a7b2c19f77a1db25a6d8723537f4e9d7d6ba5d2ecfe07486053988233b776ba` |
+| `toneequal-estimator-geomean.tif` | 51548 | `d53f5d6cb873ed441df68ca0e5d1cb8baf6eb8ae7ad1f2b4355706306d35c2b0` |
+| `toneequal-estimator-lightness.tif` | 51560 | `8f09c506aeab1ec3bdf6ee6d9ff156cee80280138c34616dfa51701f12f321e9` |
+| `toneequal-estimator-mean.tif` | 51534 | `78c098dc083bc815cc84d0cdae24cf3ae42068110fa9e156bd1824db102156a8` |
+| `toneequal-estimator-norm1.tif` | 51825 | `142d2d851a5b85b596e8d3727e5ebc4fc495f72f433512eafff9875d4e55a404` |
+| `toneequal-estimator-norm2.tif` | 51823 | `b52c0acee829290957a5a5fdfbb38c4f73a31af0eb495fe7a93021c4d9f0095f` |
+| `toneequal-estimator-power-norm.tif` | 51623 | `6d9b8f9f837b4a19555c7bdd140c61a49da5ad0793291a95c5ce7fce10650319` |
+| `toneequal-estimator-value.tif` | 51750 | `34ca0592505885de88d2d583d7936841409a7237a1e8db6301fb00050f690173` |
+| `toneequal-quantization.tif` | 51711 | `eb8fda09c62af5e5f058416ac66e51931ad9dae5f91501490d3be5153486b08c` |
+| `toneequal-smoothing-diffusion.tif` | 51556 | `0db1a456c5cb7037a2cadda57ee9568543e9ec87d01073916a7cf80721b6cad9` |
+| `toneequal-source.tif` | 52179 | `a25ae407d7295a922e3d65877af73146aa001e55a6d59a2bc043f83773150b9f` |
 
 ### Tolerances
 
@@ -435,6 +455,13 @@ guided laplacians (float sums and iterated wavelets), 1e-3 for reconstruct color
 LinearResponseLimit clip, the GainMap flat field and hot pixels, which multiply or replace
 photosites. Against the unclipped mosaic, clip changes 97 (Bayer) and 84 (X-Trans) photosites
 by up to 1, opposed 104 and 115 by up to 0.74, LCh 173 and 134 by up to 0.54.
+
+`NativeToneEqualizerReferenceTest` compares ToneEqualizer's whole frame on `toneequal-source.tif`
+with each `toneequal-*.tif`, relative to the reference's mean level as the crops are, each
+sample's error beyond the half float reference's rounding: a mean of 0.1 % and a max of 1 %, no
+pixel over it, except `quantization`, which may put 100 pixels (0.8 %) over it. The mask's estimate and its guided or EIGF filter are float sums that the port keeps in
+darktable's order; quantization snaps the mask to steps, so a
+pixel within rounding of a step boundary lands on the next step.
 
 ## Memory bounds on the 100 MP mosaic
 

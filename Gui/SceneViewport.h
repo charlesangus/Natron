@@ -37,7 +37,9 @@
 
 #include <QOpenGLWidget>
 #include <QtCore/QPoint>
+#include <QtCore/QRect>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ScenePayload.h"
@@ -51,6 +53,8 @@ class QMouseEvent;
 class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
+
+class UndoHistory;
 
 /**
  * @brief Draws a scene with Storm (UsdImagingGLEngine on HgiGL) into a framebuffer of the GL
@@ -77,14 +81,52 @@ public:
         eDrawModeWireframe
     };
 
+    // How the free camera looks at its pivot: in perspective, or orthographic along an axis of
+    // the stage. Front looks along -Z on a Y-up stage and along +Y on a Z-up one, Right along -X,
+    // and Top down the up axis.
+    enum ViewModeEnum {
+        eViewModePerspective = 0,
+        eViewModeFront,
+        eViewModeBack,
+        eViewModeRight,
+        eViewModeLeft,
+        eViewModeTop,
+        eViewModeBottom
+    };
+
     // The camera that is not a prim of the stage: it orbits pivot at distance, azimuth and
     // elevation in degrees about the stage's up axis, with a vertical field of view of fovY degrees.
+    // An orthographic view shows the height the perspective one shows at the pivot.
     struct FreeCamera {
         double pivot[3] = { 0., 0., 0. };
         double distance = 10.;
         double azimuth = 0.;
         double elevation = 0.;
         double fovY = 45.;
+        ViewModeEnum viewMode = eViewModePerspective;
+    };
+
+    // The free camera's near and far clip distances, from its eye. Automatic ones follow the
+    // camera's distance to its pivot.
+    struct ClipPlanes {
+        bool automatic = true;
+        double nearClip = 0.1;
+        double farClip = 10000.;
+    };
+
+    // Where a camera is and what it sees, as Gf (row-vector) matrices in row-major order: its
+    // camera-to-world and its parent's local-to-world transforms, the height of its view at unit
+    // depth (perspective) or in scene units (orthographic), its width over its height, its clip
+    // distances, and the depth ahead of it that navigation turns about.
+    struct CameraPose {
+        double cameraToWorld[16];
+        double parentToWorld[16];
+        double viewHeight = 1.;
+        double aspect = 1.;
+        bool orthographic = false;
+        double nearClip = 0.1;
+        double farClip = 10000.;
+        double pivotDepth = 1.;
     };
 
     SceneViewportRenderer();
@@ -134,6 +176,9 @@ public:
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
 
+    // Whether the shown stage's up axis is Z rather than Y.
+    bool isUpAxisZ() const;
+
     void setDrawMode(DrawModeEnum mode);
 
     DrawModeEnum getDrawMode() const;
@@ -147,10 +192,38 @@ public:
 
     const FreeCamera& getFreeCamera() const;
 
+    // Looks through the free camera in mode. An orthographic mode faces its axis; perspective
+    // keeps the current angles.
+    void setViewMode(ViewModeEnum mode);
+
+    ViewModeEnum getViewMode() const;
+
+    void setClipPlanes(const ClipPlanes& planes);
+
+    const ClipPlanes& getClipPlanes() const;
+
+    // The near and far distances the free camera draws with.
+    void getFreeCameraClipRange(double* nearClip, double* farClip) const;
+
+    /**
+     * @brief What a width x height view shows: through the camera looked through, or through the
+     * free camera, whose pivotDepth is its distance. For a stage camera, cameraToWorld is the
+     * prim's own transform (with any scale), parentToWorld its parent's, and pivotDepth the depth
+     * of the scene's centre ahead of it. False only for a stage camera that cannot be read.
+     **/
+    bool getViewPose(int width, int height, CameraPose* pose) const;
+
     // Frames the free camera on the bounds of the scene at the shown time, and looks through it.
     void frameScene();
 
-    // Turns the free camera by degrees.
+    /**
+     * @brief Frames the free camera on the union of the selected prims' bounds at the shown time,
+     * and looks through it. A prim without extent counts as its world origin, and a selection
+     * without extent is framed with a radius of one unit. Frames the scene if nothing is selected.
+     **/
+    void frameSelection();
+
+    // Turns the free camera by degrees, in perspective.
     void tumble(double azimuthDegrees, double elevationDegrees);
 
     // Slides the free camera's pivot in the view plane by a pixel delta of a view height pixels high.
@@ -170,10 +243,22 @@ public:
 
     const std::string& getLookThroughCamera() const;
 
-    // The highlighted prim, empty for none.
-    void setSelectedPrim(const std::string& path);
+    /**
+     * @brief Draws the camera looked through from cameraToWorld (a Gf row-major matrix) in place of
+     * its prim's transform, until clearLookThroughTransform() or another camera is looked through.
+     * Lets a move of the camera show at once, before its edit reaches the stage.
+     **/
+    void setLookThroughTransform(const double cameraToWorld[16]);
 
-    const std::string& getSelectedPrim() const;
+    void clearLookThroughTransform();
+
+    // Whether the camera looked through is drawn from setLookThroughTransform().
+    bool hasLookThroughTransform() const;
+
+    // The highlighted prims, in selection order: the last is the current one.
+    void setSelectedPrims(const std::vector<std::string>& paths);
+
+    const std::vector<std::string>& getSelectedPrims() const;
 
     // The values of an op whose handles the viewer draws over the scene: a translate, rotate
     // (degrees, in rotateOrder, a SceneRotateOrderEnum) and pivot, authored as opName on primPath.
@@ -242,6 +327,13 @@ public:
      **/
     std::string pick(int x, int y, int width, int height);
 
+    /**
+     * @brief The paths of the prims drawn in the rectangle with corners (x0, y0) and (x1, y1),
+     * pixels of a width x height view counted from the top left, sorted. Needs the context of
+     * render() current.
+     **/
+    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height);
+
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
@@ -301,12 +393,27 @@ public:
 
     void frameScene();
 
-    // Picks the prim drawn at pos (widget coordinates) and selects it, or clears the selection.
+    void frameSelection();
+
+    // The prim drawn at pos (widget coordinates), empty for none.
     QString pickPrimAt(const QPoint& pos);
 
-    void setSelectedPrim(const QString& path);
+    // The prims drawn in rect (widget coordinates).
+    QStringList pickPrimsIn(const QRect& rect);
 
-    QString getSelectedPrim() const;
+    // How a click or marquee combines its prims with the selection.
+    enum SelectionModeEnum {
+        eSelectionModeReplace,
+        eSelectionModeAdd,
+        eSelectionModeToggle
+    };
+
+    void select(const QStringList& paths, SelectionModeEnum mode);
+
+    // The selected prims, the current one last.
+    void setSelection(const QStringList& paths);
+
+    QStringList getSelection() const;
 
     /**
      * @brief Sets the function that names the node whose transform handles are drawn: a
@@ -314,6 +421,38 @@ public:
      * node's Translate, Rotate or Scale, one undoable edit per drag.
      **/
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
+
+    // The node whose scene is shown: new cameras are placed near it, in its group.
+    void setViewedNodeProvider(const std::function<NodePtr()>& provider);
+
+    // The Camera node that made the camera prim at a path of the shown scene, null for none.
+    void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
+
+    // Where moves of a locked camera's node are undone.
+    void setUndoHistory(UndoHistory* history);
+
+    void setViewMode(SceneViewportRenderer::ViewModeEnum mode);
+
+    void setClipPlanes(const SceneViewportRenderer::ClipPlanes& planes);
+
+    // While locked, navigating through a stage camera moves it, and the end of each move writes
+    // its node's knobs.
+    void setLockView(bool locked);
+
+    bool isLockView() const;
+
+    /**
+     * @brief Locks the view to the camera looked through. From the free camera, it looks through
+     * the stage's only camera and locks to it, or offers a menu of the stage's cameras to pick
+     * from; with none, the HUD says so and the view stays unlocked.
+     **/
+    void lockViewToCamera();
+
+    // Looks through the camera at path and locks the view to it.
+    void lockViewToCamera(const QString& path);
+
+    // Makes an unconnected Camera node, near the viewed node, that sees what the view shows.
+    NodePtr createCameraFromView();
 
     // Reads the handles of the provided node's op from its knobs, at the shown frame.
     void refreshTransformHandles();
@@ -327,7 +466,7 @@ public:
 
 Q_SIGNALS:
 
-    void selectedPrimChanged(const QString& path);
+    void selectionChanged(const QStringList& paths);
 
 protected:
     void initializeGL() override;
@@ -337,7 +476,10 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    bool event(QEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
+    void focusOutEvent(QFocusEvent* e) override;
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
@@ -355,6 +497,26 @@ private:
     void endHandleDrag();
 
     void highlightHandleAt(const QPoint& pos);
+
+    // Forgets the mouse gesture under way.
+    void clearGesture();
+
+    // Whether navigation moves the camera looked through, not the free camera.
+    bool navigatesLockedCamera() const;
+
+    // Starts moving the locked camera's node. False, with the HUD saying why, when it has none.
+    bool beginCameraLock();
+
+    // Applies a tumble or pan drag of delta pixels, or a dolly by dollyFactor, to the locked camera.
+    void moveLockedCamera(int navigation, const QPoint& delta, double dollyFactor);
+
+    // Writes the move to the camera's node as one undo step.
+    void endCameraLock();
+
+    void showContextMenu(const QPoint& globalPos);
+
+    // A menu of the cameras at paths, under the pointer: the one picked is looked through, locked.
+    void showLockCameraMenu(const std::vector<std::string>& paths);
 
     // Queues payload for the worker; the error shown once it is synced.
     void requestSync(const ScenePayload& payload, const QString& error);

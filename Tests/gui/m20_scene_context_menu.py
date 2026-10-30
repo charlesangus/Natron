@@ -5,8 +5,9 @@ Graph: USDRead(scene-reference.usda) into Viewer1. Once the scene is drawn, the 
 right press and a context-menu event to the SceneViewport (synthesized events through the window
 system do not reach Natron's widgets under Xvfb), waits for the menu, presses Esc, then sends
 button-less mouse moves. The free camera, read from the view's natronSceneFreeCamera property,
-must be unchanged. A second case presses Alt+right, which starts a dolly, and then moves with no
-button held, as when the release went to another window: the camera must not move either.
+must be unchanged. A second case presses Alt+right, which starts a dolly under the Maya navigation
+preset the script selects, and then moves with no button held, as when the release went to another
+window: the camera must not move either.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -22,6 +23,7 @@ SETTLE_MS = 500
 STARTUP_TIMEOUT_S = 60.0
 
 try:
+    import NatronEngine
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QMouseEvent
     from PySide6.QtTest import QTest
@@ -31,6 +33,11 @@ try:
 
     scene_path = os.path.join(FIXTURES, "scene-reference.usda")
     require(os.path.isfile(scene_path), "fixture exists: " + scene_path)
+
+    navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
+    require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+    original_navigation = navigation.getValue()
+    navigation.setValue(1)  # Maya: Alt+right dollies.
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
@@ -136,6 +143,7 @@ try:
         check(dollied is not None and before is not None and abs(dollied[3] - before[3]) > 1e-6,
               "an Alt+right drag still dollies the camera")
         shot("m20-scene-after-dolly.png")
+        navigation.setValue(original_navigation)
 
     run(steps())
 except Exception:

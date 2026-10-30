@@ -306,6 +306,31 @@ TEST(SceneGizmo, RotateOrdersComposeAsUsdRotateOps)
     }
 }
 
+TEST(SceneGizmo, RotationsDecomposeBackToTheirRotateValues)
+{
+    const PXR_NS::GfVec3d values[] = {
+        PXR_NS::GfVec3d(30., -45., 60.),
+        PXR_NS::GfVec3d(-170., 20., 95.),
+        PXR_NS::GfVec3d(10., 90., -25.), // gimbal lock for the orders whose middle axis is Y
+        PXR_NS::GfVec3d(0., 0., 0.),
+    };
+
+    for (SceneRotateOrderEnum order : kAllRotateOrders) {
+        for (const PXR_NS::GfVec3d& rotate : values) {
+            const PXR_NS::GfMatrix4d rotation = SceneNodeAuthoring::composeRotationMatrix(rotate, order);
+            const PXR_NS::GfVec3d decomposed = SceneNodeAuthoring::decomposeRotationMatrix(rotation, order, rotate);
+            EXPECT_TRUE(PXR_NS::GfIsClose(rotation, SceneNodeAuthoring::composeRotationMatrix(decomposed, order), 1e-9))
+                << "order " << (int)order << " rotate " << rotate[0] << " " << rotate[1] << " " << rotate[2];
+        }
+        // Away from gimbal lock the values closest to the hint are the values composed.
+        const PXR_NS::GfVec3d rotate(30., -45., 60.);
+        expectVecNear(rotate, SceneNodeAuthoring::decomposeRotationMatrix(SceneNodeAuthoring::composeRotationMatrix(rotate, order), order, rotate), 1e-7);
+        // A hint a full turn away on X keeps the value near it rather than in -180..180.
+        const PXR_NS::GfVec3d turned(390., -45., 60.);
+        expectVecNear(turned, SceneNodeAuthoring::decomposeRotationMatrix(SceneNodeAuthoring::composeRotationMatrix(rotate, order), order, PXR_NS::GfVec3d(385., -40., 62.)), 1e-7);
+    }
+}
+
 TEST(SceneGizmo, EachRingTurnsThePrimAboutItselfThroughItsOwnAngle)
 {
     // A quarter turn about Y in XYZ order carries the X angle's axis to -Z: the X ring faces Z.

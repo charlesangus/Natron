@@ -146,29 +146,6 @@ keybindToString(const Qt::KeyboardModifiers & modifiers,
     return makeKeySequence(modifiers, key).toString(QKeySequence::NativeText);
 }
 
-static QString
-mouseShortcutToString(const Qt::KeyboardModifiers & modifiers,
-                      Qt::MouseButton button)
-{
-    QString ret = makeKeySequence(modifiers, (Qt::Key)0).toString(QKeySequence::NativeText);
-
-    switch (button) {
-    case Qt::LeftButton:
-        ret.append( QCoreApplication::translate("ShortCutEditor", "LeftButton") );
-        break;
-    case Qt::MiddleButton:
-        ret.append( QCoreApplication::translate("ShortCutEditor", "MiddleButton") );
-        break;
-    case Qt::RightButton:
-        ret.append( QCoreApplication::translate("ShortCutEditor", "RightButton") );
-        break;
-    default:
-        break;
-    }
-
-    return ret;
-}
-
 typedef std::list<GuiShortCutGroup> GuiAppShorcuts;
 
 ///A small hack to the QTreeWidget class to make 2 functions public so we can use them in the ShortcutDelegate class
@@ -231,24 +208,16 @@ makeItemShortCutText(const BoundAction* action,
             }
         }
     } else if (ma) {
-        if (useDefault) {
-            if ( !ma->defaultModifiers.empty() ) {
-                std::list<Qt::KeyboardModifiers>::const_iterator mit = ma->defaultModifiers.begin();
-                *shortcutStr = mouseShortcutToString(*mit, ma->button);
-                if (ma->defaultModifiers.size() > 1) {
-                    ++mit;
-                    *altShortcutStr = mouseShortcutToString(*mit, ma->button);
-                }
-            }
-        } else {
-            if ( !ma->modifiers.empty() ) {
-                std::list<Qt::KeyboardModifiers>::const_iterator mit = ma->modifiers.begin();
-                *shortcutStr = mouseShortcutToString(*mit, ma->button);
-                if (ma->modifiers.size() > 1) {
-                    ++mit;
-                    *altShortcutStr = mouseShortcutToString(*mit, ma->button);
-                }
-            }
+        const std::list<Qt::KeyboardModifiers>& mods = useDefault ? ma->defaultModifiers : ma->modifiers;
+        const std::list<Qt::MouseButton>& buttons = useDefault ? ma->defaultButtons : ma->buttons;
+        const bool wheel = (ma->gesture == eMouseGestureWheel);
+        std::list<Qt::KeyboardModifiers>::const_iterator mit = mods.begin();
+        std::list<Qt::MouseButton>::const_iterator bit = buttons.begin();
+        for (int i = 0; i < 2 && mit != mods.end(); ++i, ++mit) {
+            MouseBinding b;
+            b.modifiers = *mit;
+            b.button = (bit != buttons.end()) ? *bit++ : Qt::NoButton;
+            *(i == 0 ? shortcutStr : altShortcutStr) = mouseBindingToString(b, wheel);
         }
     } else {
         assert(false);
@@ -396,7 +365,107 @@ public:
     GuiAppShorcuts::iterator buildShortcutsGroupHierarchy(QString grouping);
 
     void makeGuiActionForShortcut(GuiAppShorcuts::iterator guiGroupIterator, BoundAction* action);
+
+    // Puts an action's current (or default) bindings in the two editors, in the mode its kind needs.
+    void showActionInEditors(const BoundAction* action, bool useDefault)
+    {
+        const MouseAction* ma = dynamic_cast<const MouseAction*>(action);
+        const bool wheel = ma && (ma->gesture == eMouseGestureWheel);
+        shortcutEditor->setMouseMode(ma != 0, wheel);
+        altShortcutEditor->setMouseMode(ma != 0, wheel);
+        shortcutEditor->setPlaceholderText(!ma ? tr("Type to set shortcut") : wheel ? tr("Turn the wheel with modifiers held to set the binding")
+                                                                                    : tr("Click with modifiers (or Space) held to set the binding"));
+        altShortcutEditor->setPlaceholderText(!ma ? tr("Type to set an alternative shortcut") : wheel ? tr("Turn the wheel to set an alternative binding")
+                                                                                                      : tr("Click to set an alternative binding"));
+        if (ma) {
+            const std::list<Qt::KeyboardModifiers>& mods = useDefault ? ma->defaultModifiers : ma->modifiers;
+            const std::list<Qt::MouseButton>& buttons = useDefault ? ma->defaultButtons : ma->buttons;
+            std::list<Qt::KeyboardModifiers>::const_iterator mit = mods.begin();
+            std::list<Qt::MouseButton>::const_iterator bit = buttons.begin();
+            KeybindRecorder* editors[2] = { shortcutEditor, altShortcutEditor };
+            for (int i = 0; i < 2; ++i) {
+                if (mit != mods.end()) {
+                    Qt::MouseButton button = (bit != buttons.end()) ? *bit++ : Qt::NoButton;
+                    editors[i]->setMouseBinding(true, *mit++, button);
+                } else {
+                    editors[i]->setMouseBinding(false, Qt::NoModifier, Qt::NoButton);
+                }
+            }
+
+            return;
+        }
+        QString sc, altSc;
+        makeItemShortCutText(action, useDefault, &sc, &altSc);
+        shortcutEditor->setText(sc);
+        altShortcutEditor->setText(altSc);
+    }
+
+    void refreshShortcutTexts()
+    {
+        for (GuiAppShorcuts::const_iterator it = appShortcuts.begin(); it != appShortcuts.end(); ++it) {
+            for (std::list<GuiBoundAction>::const_iterator it2 = it->actions.begin(); it2 != it->actions.end(); ++it2) {
+                setItemShortCutText(it2->item, it2->action, false);
+            }
+        }
+    }
+
+    // A hand-edited binding of the 3D viewer no longer follows a preset.
+    void onViewer3DBindingEdited(const MouseAction* action)
+    {
+        if (action->grouping == QString::fromUtf8(kShortcutGroupViewer3D)) {
+            appPTR->getCurrentSettings()->setViewer3DNavigation(Settings::eViewer3DNavigationCustom);
+        }
+    }
+
+    void validateMouseAction(QTreeWidgetItem* selection, QTreeWidgetItem* topLevel, MouseAction* ma);
 };
+
+void
+PreferencesPanelPrivate::validateMouseAction(QTreeWidgetItem* selection,
+                                             QTreeWidgetItem* topLevel,
+                                             MouseAction* ma)
+{
+    std::vector<MouseBinding> bindings;
+    KeybindRecorder* editors[2] = { shortcutEditor, altShortcutEditor };
+    for (int i = 0; i < 2; ++i) {
+        if (editors[i]->hasMouseBinding()) {
+            MouseBinding b;
+            b.modifiers = editors[i]->getMouseModifiers();
+            b.button = editors[i]->getMouseButton();
+            bindings.push_back(b);
+        }
+    }
+
+    const bool wheel = (ma->gesture == eMouseGestureWheel);
+    for (GuiAppShorcuts::iterator it = appShortcuts.begin(); it != appShortcuts.end(); ++it) {
+        if (it->item->text(0) != topLevel->text(0)) {
+            continue;
+        }
+        for (std::list<GuiBoundAction>::iterator it2 = it->actions.begin(); it2 != it->actions.end(); ++it2) {
+            const MouseAction* other = dynamic_cast<const MouseAction*>(it2->action);
+            if (!other || (other == ma) || !mouseGesturesOverlap(ma->gesture, other->gesture)) {
+                continue;
+            }
+            std::vector<MouseBinding> otherBindings = other->getBindings();
+            for (std::size_t i = 0; i < bindings.size(); ++i) {
+                for (std::size_t j = 0; j < otherBindings.size(); ++j) {
+                    if ((bindings[i].modifiers == otherBindings[j].modifiers) && (wheel || (bindings[i].button == otherBindings[j].button))) {
+                        QString err = tr("Cannot bind %1 because the following action is already using it: %2")
+                                          .arg(mouseBindingToString(bindings[i], wheel))
+                                          .arg(it2->item->text(0));
+                        Dialogs::errorDialog(tr("Shortcuts Editor").toStdString(), err.toStdString());
+
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    ma->setBindings(bindings);
+    setItemShortCutText(selection, ma, false);
+    onViewer3DBindingEdited(ma);
+}
 
 PreferencesPanel::PreferencesPanel(Gui* parent)
     : QWidget(parent)
@@ -1122,6 +1191,16 @@ PreferencesPanel::onPageLabelChanged(const KnobPageGuiPtr& page)
 void
 PreferencesPanel::onSettingChanged(KnobI* knob)
 {
+    if (appPTR->getCurrentSettings()->isViewer3DNavigationKnob(knob)) {
+        _imp->refreshShortcutTexts();
+        QList<QTreeWidgetItem*> items = _imp->shortcutsTree->selectedItems();
+        if (items.size() == 1) {
+            BoundAction* action = _imp->getActionForTreeItem(items.front());
+            if (action) {
+                _imp->showActionInEditors(action, false);
+            }
+        }
+    }
     for (U32 i = 0; i < _imp->changedKnobs.size(); ++i) {
         if (_imp->changedKnobs[i] == knob) {
             return;
@@ -1323,32 +1402,8 @@ PreferencesPanelPrivate::makeGuiActionForShortcut(GuiAppShorcuts::iterator guiGr
     guiAction.action = action;
     guiAction.item = new QTreeWidgetItem(guiGroupIterator->item);
     guiAction.item->setText(0, guiAction.action->description);
-    const KeyBoundAction* ka = dynamic_cast<const KeyBoundAction*>(action);
-    const MouseAction* ma = dynamic_cast<const MouseAction*>(action);
     QString shortcutStr, altShortcutStr;
-    if (ka) {
-        if ( !ka->modifiers.empty() ) {
-            std::list<Qt::KeyboardModifiers>::const_iterator mit = ka->modifiers.begin();
-            std::list<Qt::Key>::const_iterator sit = ka->currentShortcut.begin();
-            shortcutStr = keybindToString(*mit, *sit);
-            if (ka->modifiers.size() > 1) {
-                ++mit;
-                ++sit;
-                altShortcutStr = keybindToString(*mit, *sit);
-            }
-        }
-    } else if (ma) {
-        if ( !ma->modifiers.empty() ) {
-            std::list<Qt::KeyboardModifiers>::const_iterator mit = ma->modifiers.begin();
-            shortcutStr = mouseShortcutToString(*mit, ma->button);
-            if (ma->modifiers.size() > 1) {
-                ++mit;
-                altShortcutStr = mouseShortcutToString(*mit, ma->button);
-            }
-        }
-    } else {
-        assert(false);
-    }
+    makeItemShortCutText(action, false, &shortcutStr, &altShortcutStr);
     if (!action->editable) {
         guiAction.item->setToolTip( 0, tr("This action is standard and its shortcut cannot be edited.") );
         guiAction.item->setToolTip( 1, tr("This action is standard and its shortcut cannot be edited.") );
@@ -1417,6 +1472,12 @@ ShortcutDelegate::paint(QPainter * painter,
 
 KeybindRecorder::KeybindRecorder(QWidget* parent)
     : LineEdit(parent)
+    , _mouseMode(false)
+    , _wheel(false)
+    , _spaceHeld(false)
+    , _hasBinding(false)
+    , _modifiers(Qt::NoModifier)
+    , _button(Qt::NoButton)
 {
 }
 
@@ -1425,9 +1486,143 @@ KeybindRecorder::~KeybindRecorder()
 }
 
 void
+KeybindRecorder::setMouseMode(bool mouse,
+                              bool wheel)
+{
+    _mouseMode = mouse;
+    _wheel = mouse && wheel;
+    _spaceHeld = false;
+    _hasBinding = false;
+}
+
+void
+KeybindRecorder::setMouseBinding(bool hasBinding,
+                                 Qt::KeyboardModifiers modifiers,
+                                 Qt::MouseButton button)
+{
+    _hasBinding = hasBinding;
+    _modifiers = modifiers;
+    _button = button;
+    if (hasBinding) {
+        MouseBinding b;
+        b.modifiers = modifiers;
+        b.button = button;
+        setText(mouseBindingToString(b, _wheel));
+    } else {
+        setText(QString());
+    }
+}
+
+void
+KeybindRecorder::recordMouseBinding(Qt::KeyboardModifiers modifiers,
+                                    Qt::MouseButton button)
+{
+    setMouseBinding(true, mouseBindingModifiers(modifiers, _spaceHeld), button);
+}
+
+void
+KeybindRecorder::keyReleaseEvent(QKeyEvent* e)
+{
+    if (_mouseMode && (e->key() == Qt::Key_Space) && !e->isAutoRepeat()) {
+        _spaceHeld = false;
+    }
+    LineEdit::keyReleaseEvent(e);
+}
+
+void
+KeybindRecorder::focusOutEvent(QFocusEvent* e)
+{
+    _spaceHeld = false;
+    LineEdit::focusOutEvent(e);
+}
+
+void
+KeybindRecorder::mousePressEvent(QMouseEvent* e)
+{
+    if (!_mouseMode) {
+        LineEdit::mousePressEvent(e);
+
+        return;
+    }
+    if (!hasFocus()) {
+        setFocus(Qt::MouseFocusReason);
+    }
+    if (!_wheel && isEnabled() && !isReadOnly()) {
+        recordMouseBinding(e->modifiers(), e->button());
+    }
+    e->accept();
+}
+
+void
+KeybindRecorder::mouseMoveEvent(QMouseEvent* e)
+{
+    if (!_mouseMode) {
+        LineEdit::mouseMoveEvent(e);
+
+        return;
+    }
+    e->accept();
+}
+
+void
+KeybindRecorder::mouseReleaseEvent(QMouseEvent* e)
+{
+    if (!_mouseMode) {
+        LineEdit::mouseReleaseEvent(e);
+
+        return;
+    }
+    e->accept();
+}
+
+void
+KeybindRecorder::mouseDoubleClickEvent(QMouseEvent* e)
+{
+    if (!_mouseMode) {
+        LineEdit::mouseDoubleClickEvent(e);
+
+        return;
+    }
+    mousePressEvent(e);
+}
+
+void
+KeybindRecorder::wheelEvent(QWheelEvent* e)
+{
+    if (!_wheel || !isEnabled() || isReadOnly()) {
+        LineEdit::wheelEvent(e);
+
+        return;
+    }
+    recordMouseBinding(e->modifiers(), Qt::NoButton);
+    e->accept();
+}
+
+void
+KeybindRecorder::contextMenuEvent(QContextMenuEvent* e)
+{
+    // A right click is a binding being recorded, not a request for the edit menu.
+    if (_mouseMode) {
+        e->accept();
+
+        return;
+    }
+    LineEdit::contextMenuEvent(e);
+}
+
+void
 KeybindRecorder::keyPressEvent(QKeyEvent* e)
 {
     if ( !isEnabled() || isReadOnly() ) {
+        return;
+    }
+    if (_mouseMode) {
+        if (e->key() == Qt::Key_Space) {
+            _spaceHeld = true;
+        } else if ((e->key() == Qt::Key_Backspace) || (e->key() == Qt::Key_Delete)) {
+            setMouseBinding(false, Qt::NoModifier, Qt::NoButton);
+        }
+
         return;
     }
 
@@ -1489,10 +1684,7 @@ PreferencesPanel::onShortcutsSelectionChanged()
 
     BoundAction* action = _imp->getActionForTreeItem(selection);
     assert(action);
-    QString sc, altSc;
-    makeItemShortCutText(action, false, &sc, &altSc);
-    _imp->shortcutEditor->setText(sc);
-    _imp->altShortcutEditor->setText(altSc);
+    _imp->showActionInEditors(action, false);
 }
 
 void
@@ -1520,7 +1712,14 @@ PreferencesPanel::onValidateShortcutButtonClicked()
     }
     assert(parent);
 
-    //only keybinds can be edited...
+    MouseAction* ma = dynamic_cast<MouseAction*>(action);
+    if (ma) {
+        if (ma->editable) {
+            _imp->validateMouseAction(selection, parent, ma);
+        }
+
+        return;
+    }
     KeyBoundAction* ka = dynamic_cast<KeyBoundAction*>(action);
     assert(ka);
     if (!ka) {
@@ -1593,13 +1792,18 @@ PreferencesPanel::onClearShortcutButtonClicked()
     MouseAction* ma = dynamic_cast<MouseAction*>(action);
     KeyBoundAction* ka = dynamic_cast<KeyBoundAction*>(action);
     if (ma) {
-        ma->button = Qt::NoButton;
+        ma->setBindings(std::vector<MouseBinding>());
+        _imp->onViewer3DBindingEdited(ma);
+        _imp->shortcutEditor->setMouseBinding(false, Qt::NoModifier, Qt::NoButton);
+        _imp->altShortcutEditor->setMouseBinding(false, Qt::NoModifier, Qt::NoButton);
     } else if (ka) {
         ka->currentShortcut.clear();
     }
 
     selection->setText( 1, QString() );
+    selection->setText(2, QString());
     _imp->shortcutEditor->setText( QString() );
+    _imp->altShortcutEditor->setText(QString());
     _imp->shortcutEditor->setFocus();
 }
 
@@ -1624,16 +1828,16 @@ PreferencesPanel::onResetShortcutButtonClicked()
     assert(action);
     action->modifiers = action->defaultModifiers;
     KeyBoundAction* ka = dynamic_cast<KeyBoundAction*>(action);
+    MouseAction* ma = dynamic_cast<MouseAction*>(action);
     if (ka) {
         ka->currentShortcut = ka->defaultShortcut;
         appPTR->notifyShortcutChanged(ka);
+    } else if (ma) {
+        ma->buttons = ma->defaultButtons;
+        _imp->onViewer3DBindingEdited(ma);
     }
     setItemShortCutText(selection, action, true);
-
-    QString sc, altsc;
-    makeItemShortCutText(action, true, &sc, &altsc);
-    _imp->shortcutEditor->setText(sc);
-    _imp->altShortcutEditor->setText(altsc);
+    _imp->showActionInEditors(action, true);
 }
 
 void
@@ -1645,11 +1849,7 @@ PreferencesPanel::onRestoreDefaultShortcutsButtonClicked()
 
     if (reply == eStandardButtonYes) {
         appPTR->restoreDefaultShortcuts();
-        for (GuiAppShorcuts::const_iterator it = _imp->appShortcuts.begin(); it != _imp->appShortcuts.end(); ++it) {
-            for (std::list<GuiBoundAction>::const_iterator it2 = it->actions.begin(); it2 != it->actions.end(); ++it2) {
-                setItemShortCutText(it2->item, it2->action, true);
-            }
-        }
+        _imp->refreshShortcutTexts();
         _imp->shortcutsTree->clearSelection();
     }
 }

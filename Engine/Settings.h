@@ -68,6 +68,16 @@ public:
         eColorTrackballWheelWidthFifth
     };
 
+    // The mouse bindings of the 3D viewer's navigation and selection, named after the
+    // application whose scheme they follow. Custom is whatever the shortcut editor made of them.
+    enum Viewer3DNavigationEnum {
+        eViewer3DNavigationNuke = 0,
+        eViewer3DNavigationMaya,
+        eViewer3DNavigationBlender,
+        eViewer3DNavigationHoudini,
+        eViewer3DNavigationCustom
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -323,6 +333,13 @@ public:
     bool isAutoProxyEnabled() const;
     unsigned int getAutoProxyMipmapLevel() const;
     int getMaxOpenedNodesViewerContext() const;
+
+    Viewer3DNavigationEnum getViewer3DNavigation() const;
+
+    // Sets the preference, which applies a preset's bindings to the 3D viewer's shortcuts.
+    void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
+
+    bool isViewer3DNavigationKnob(const KnobI* knob) const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
     ///////////////////////////////////////////////////////
@@ -621,6 +638,7 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobChoicePtr _viewer3DNavigation;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

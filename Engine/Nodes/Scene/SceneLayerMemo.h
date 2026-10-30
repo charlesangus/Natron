@@ -78,10 +78,23 @@ public:
         bool readsFrameRange = true;
         SceneMetadata::UpAxisEnum upAxis = SceneMetadata::eUpAxisY;
         double metersPerUnit = 1.;
+
+        bool operator==(const Key& other) const
+        {
+            return (nodeDigest == other.nodeDigest) && (firstFrame == other.firstFrame) && (lastFrame == other.lastFrame) && (framesPerSecond == other.framesPerSecond) && (upstreamRead == other.upstreamRead) && (factsDigest == other.factsDigest) && (readsFrameRange == other.readsFrameRange) && (upAxis == other.upAxis) && (metersPerUnit == other.metersPerUnit);
+        }
+
+        bool operator!=(const Key& other) const
+        {
+            return !(*this == other);
+        }
     };
 
     // Authors the node's edits into edit.layer. Returns false and sets the message on failure.
     typedef std::function<bool(const SceneLayerEdit& edit, std::string* errorMessage)> AuthorFunc;
+
+    // True if key still describes what the node would author now.
+    typedef std::function<bool(const Key& key)> KeyCheckFunc;
 
     SceneLayerMemo();
 
@@ -93,13 +106,18 @@ public:
      * says the node reads it, the same upstream. On failure
      * returns false with *errorMessage set and keeps the previous layer memoized. layerTag names
      * a newly authored layer, for debugging.
+     *
+     * The author reads the node's knobs as they are while it runs, so an edit landing meanwhile
+     * may be in the layer while key predates it. When keyStillValid is set and says key no longer
+     * holds after authoring, the layer is returned but not memoized, and the previous one stays.
      **/
     bool produce(const Key& key,
                  const ScenePayload& upstream,
                  const std::string& layerTag,
                  const AuthorFunc& author,
                  ScenePayload* output,
-                 std::string* errorMessage);
+                 std::string* errorMessage,
+                 const KeyCheckFunc& keyStillValid = KeyCheckFunc());
 
     /**
      * @brief Forgets the memoized layer, so the next produce() authors a new one. For a change the

@@ -296,20 +296,6 @@ NodeCollection::quitAnyProcessingForAllNodes_non_blocking()
 }
 
 bool
-NodeCollection::isCacheIDAlreadyTaken(const std::string& name) const
-{
-    QMutexLocker k(&_imp->nodesMutex);
-
-    for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-        if ( (*it)->getCacheID() == name ) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool
 NodeCollection::hasNodeRendering() const
 {
     QMutexLocker k(&_imp->nodesMutex);
@@ -1290,6 +1276,7 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
         QMutexLocker k(&_imp->nodesLock);
         GroupInput* isInput = dynamic_cast<GroupInput*>( node->getEffectInstance().get() );
         if (isInput) {
+            bool found = false;
             for (U32 i = 0; i < _imp->inputs.size(); ++i) {
                 NodePtr input = _imp->inputs[i].lock();
                 if (node == input) {
@@ -1300,12 +1287,13 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
 
                     _imp->inputs.erase(_imp->inputs.begin() + i);
                     thisNode->initializeInputs();
-
-                    return;
+                    found = true;
+                    break;
                 }
             }
             ///The input must have been tracked before
-            assert(false);
+            assert(found);
+            (void)found;
         }
         GroupOutput* isOutput = dynamic_cast<GroupOutput*>( node->getEffectInstance().get() );
         if (isOutput) {

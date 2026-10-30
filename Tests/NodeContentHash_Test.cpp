@@ -33,12 +33,16 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -275,6 +279,41 @@ TEST_F(NodeContentHashTest, RenamingWithAnExpressionChangesHash)
     EXPECT_NE(before, blur->getContentHash());
 }
 
+// The parser cannot see a node looked up by a computed name; the read the expression makes is
+// recorded while it runs instead.
+TEST_F(NodeContentHashTest, AnExpressionReadingANodeFoundByGetattrDependsOnIt)
+{
+    NodePtr x = createBlur();
+    NodePtr y = createBlur();
+    ASSERT_TRUE(x && y);
+    KnobDoublePtr xSize = blurSize(x);
+    KnobDoublePtr ySize = blurSize(y);
+    ASSERT_TRUE(xSize && ySize);
+
+    const std::string name = y->getScriptName();
+    ASSERT_GE(name.size(), 2u);
+    const std::string expression = "getattr(getattr(thisGroup, \"" + name.substr(0, 2) + "\" + \"" + name.substr(2) + "\").size, \"get\" + \"Value\")(0)";
+    ASSERT_NO_THROW(xSize->setExpression(0, expression, false, true));
+    std::list<std::pair<KnobIWPtr, int>> dependencies;
+    ASSERT_TRUE(xSize->getExpressionDependencies(0, dependencies));
+    bool found = false;
+    for (const std::pair<KnobIWPtr, int>& dependency : dependencies) {
+        found = found || (dependency.first.lock() == ySize);
+    }
+    EXPECT_TRUE(found) << "the size read by getattr is a dependency";
+
+    refreshHashes({ y, x });
+    const U64 before = x->getContentHash();
+    const double original = ySize->getValue(0);
+    ySize->setValue(original + 5., ViewSpec::all(), 0);
+    refreshHashes({ y, x });
+    EXPECT_NE(before, x->getContentHash());
+
+    ySize->setValue(original, ViewSpec::all(), 0);
+    refreshHashes({ y, x });
+    EXPECT_EQ(before, x->getContentHash());
+}
+
 TEST_F(NodeContentHashTest, ExpressionDependencyOutsideTheGraphChangesHash)
 {
     NodePtr x = createBlur();
@@ -345,4 +384,94 @@ TEST_F(NodeContentHashTest, CyclicExpressionsHashTerminates)
 
     refreshHashes({ x, y });
     EXPECT_NE(U64(0), x->getContentHash());
+}
+
+// A rename replaces the old name only where it names that node, and an expression that named the
+// new name becomes valid.
+TEST_F(NodeContentHashTest, RenameRewritesOnlyTheRenamedNodeInExpressions)
+{
+    NodePtr source = createBlur();
+    NodePtr longer = createBlur();
+    NodePtr reader = createBlur();
+    ASSERT_TRUE(source && longer && reader);
+    source->setScriptName("renameSource");
+    longer->setScriptName("renameSource0");
+    ASSERT_EQ(std::string("renameSource"), source->getScriptName());
+    ASSERT_EQ(std::string("renameSource0"), longer->getScriptName());
+    KnobDoublePtr size = blurSize(reader);
+    ASSERT_TRUE(bool(size));
+
+    ASSERT_NO_THROW(size->setExpression(0, "renameSource.size.getValue(0) + renameSource0.size.getValue(0)", false, true));
+    ASSERT_NO_THROW(size->setExpression(1, "renamedSource.size.getValue(0)", false, false));
+    EXPECT_FALSE(size->isExpressionValid(1, 0));
+
+    source->setScriptName("renamedSource");
+    EXPECT_EQ(std::string("renamedSource.size.getValue(0) + renameSource0.size.getValue(0)"), size->getExpression(0));
+    EXPECT_EQ(std::string("renamedSource.size.getValue(0)"), size->getExpression(1));
+    EXPECT_TRUE(size->isExpressionValid(1, 0)) << "the expression naming the new name stayed invalid";
+
+    longer->setScriptName("renamedLonger");
+    EXPECT_EQ(std::string("renamedSource.size.getValue(0) + renamedLonger.size.getValue(0)"), size->getExpression(0));
+}
+
+// An expression only on a knob that keys no render leaves the frame range out of the hash, so a
+// range edit must not mark the node either. Node::dependsOnProjectFrameRange() is what marks.
+TEST_F(NodeContentHashTest, ARangeEditDoesNotMarkANodeWhoseOnlyExpressionIsOnANonHashedKnob)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr scratch = AppManager::createKnob<KnobDouble>(blur->getEffectInstance().get(), std::string("scratch"), 1, false);
+    ASSERT_TRUE(bool(scratch));
+    scratch->setIsPersistent(false);
+    scratch->setEvaluateOnChange(false);
+    // An expression resolves thisParam as a Python attribute of the node, which a knob added after
+    // node creation lacks until the node redeclares its fields.
+    blur->declarePythonFields();
+    ASSERT_FALSE(scratch->isRenderHashed());
+    scratch->setExpression(0, "frame", false, true);
+
+    KnobIntPtr range = std::dynamic_pointer_cast<KnobInt>(getApp()->getProject()->getKnobByName("frameRange"));
+    ASSERT_TRUE(bool(range));
+    EXPECT_FALSE(blur->dependsOnProjectFrameRange());
+    blur->refreshHashNow();
+    const U64 before = blur->getContentHash();
+    range->setValue(range->getValue(1) + 7, ViewSpec::all(), 1);
+    EXPECT_EQ(before, blur->getContentHash());
+
+    KnobDoublePtr size = blurSize(blur);
+    ASSERT_TRUE(bool(size));
+    size->setExpression(0, "frame", false, true);
+    EXPECT_TRUE(blur->dependsOnProjectFrameRange());
+    blur->refreshHashNow();
+    const U64 folded = blur->getContentHash();
+    range->setValue(range->getValue(1) + 3, ViewSpec::all(), 1);
+    EXPECT_NE(folded, blur->getContentHash());
+}
+
+// A Settings knob that changes what renders produce re-keys every node through the project
+// digest; one that does not leaves the digest alone.
+TEST_F(NodeContentHashTest, ARenderAffectingSettingMovesTheProjectDigest)
+{
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    ASSERT_TRUE(bool(settings));
+    ProjectPtr project = getApp()->getProject();
+    ASSERT_TRUE(bool(project));
+    KnobBoolPtr concatenation = std::dynamic_pointer_cast<KnobBool>(settings->getKnobByName("transformCatSupport"));
+    KnobBoolPtr queueRenders = std::dynamic_pointer_cast<KnobBool>(settings->getKnobByName("queueRenders"));
+    ASSERT_TRUE(bool(concatenation));
+    ASSERT_TRUE(bool(queueRenders));
+    EXPECT_TRUE(settings->isRenderAffecting(concatenation.get()));
+    EXPECT_FALSE(settings->isRenderAffecting(queueRenders.get()));
+
+    const U64 before = project->getContentDigest();
+    const bool queued = queueRenders->getValue();
+    queueRenders->setValue(!queued);
+    EXPECT_EQ(before, project->getContentDigest());
+    queueRenders->setValue(queued);
+
+    const bool concatenates = concatenation->getValue();
+    concatenation->setValue(!concatenates);
+    EXPECT_NE(before, project->getContentDigest());
+    concatenation->setValue(concatenates);
+    EXPECT_EQ(before, project->getContentDigest());
 }

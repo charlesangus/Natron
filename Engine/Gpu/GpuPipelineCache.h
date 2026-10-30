@@ -60,6 +60,8 @@ public:
     Stats stats() const;
 
     const std::string& directory() const { return directory_; }
+    // Vendor, device and driver: what a compile result depends on besides the source.
+    const std::string& deviceTag() const { return deviceTag_; }
 
 private:
     struct Result {

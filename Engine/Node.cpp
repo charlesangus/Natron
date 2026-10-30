@@ -52,6 +52,7 @@
 #include <QFile>
 #include <QReadWriteLock>
 #include <QTextStream>
+#include <QUuid>
 #include <QWaitCondition>
 
 #include <SequenceParsing.h>
@@ -218,12 +219,43 @@ isSkippedByHashInputs(const Node& node)
 }
 } // anonymous namespace
 
+namespace {
+// Cache IDs held by live nodes of every project in the process: the caches are shared.
+std::mutex liveCacheIDsMutex;
+std::set<std::string> liveCacheIDs;
+} // anon namespace
+
+bool
+Node::claimCacheID(const std::string& cacheID)
+{
+    if (cacheID.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> l(liveCacheIDsMutex);
+
+    return liveCacheIDs.insert(cacheID).second;
+}
+
+void
+Node::releaseCacheID(const std::string& cacheID)
+{
+    if (cacheID.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> l(liveCacheIDsMutex);
+    liveCacheIDs.erase(cacheID);
+}
+
 Node::Node(const AppInstancePtr& app,
            const NodeCollectionPtr& group,
            Plugin* plugin)
     : QObject()
     , _imp( new Implementation(this, app, group, plugin) )
 {
+    do {
+        _imp->cacheID = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    } while (!claimCacheID(_imp->cacheID));
+    _imp->cacheIDClaimed = true;
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
@@ -836,6 +868,40 @@ Node::getHashValueIfUpToDate(U64* hash) const
     return true;
 }
 
+void
+Node::adoptSerializedCacheID(const std::string& cacheID)
+{
+    // A paste or a second open of the same project keeps the fresh ID.
+    if (!claimCacheID(cacheID)) {
+        return;
+    }
+    std::string previous;
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        if (_imp->cacheIDClaimed) {
+            previous = _imp->cacheID;
+        }
+        _imp->cacheID = cacheID;
+        _imp->cacheIDClaimed = true;
+    }
+    releaseCacheID(previous);
+}
+
+void
+Node::releaseOwnCacheID()
+{
+    std::string id;
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        if (!_imp->cacheIDClaimed) {
+            return;
+        }
+        id = _imp->cacheID;
+        _imp->cacheIDClaimed = false;
+    }
+    releaseCacheID(id);
+}
+
 std::string
 Node::getCacheID() const
 {
@@ -1056,19 +1122,12 @@ Node::dependsOnProjectFrameRange() const
     if (_imp->effect->dependsOnProjectFrameRange()) {
         return true;
     }
-    const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        if (!*it) {
-            continue;
-        }
-        for (int d = 0; d < (*it)->getDimension(); ++d) {
-            if (!(*it)->getExpression(d).empty()) {
-                return true;
-            }
-        }
-    }
+    // The predicate computeContentHash() folds the range under: an expression on a knob that
+    // does not key renders cannot change one.
+    bool hasExpression = false;
+    (void)getKnobsContentDigest(&hasExpression);
 
-    return false;
+    return hasExpression;
 }
 
 void
@@ -1908,6 +1967,8 @@ Node::onMetadataChangedUnderSameHash()
         if (effect) {
             effect->dropCachedOutputMetadata();
             effect->dropCachedMetadata();
+            // RoD, identity and the other action results are keyed by the unmoved hash too.
+            effect->clearActionsCache();
         }
         output->_imp->metadataRevision.fetch_add(1);
         output->refreshMetadataReaders(true);
@@ -1915,6 +1976,7 @@ Node::onMetadataChangedUnderSameHash()
     }
     if (_imp->effect) {
         _imp->effect->dropCachedMetadata();
+        _imp->effect->clearActionsCache();
     }
     _imp->metadataRevision.fetch_add(1);
     refreshMetadataReaders(true);
@@ -2984,6 +3046,7 @@ std::map<const Node*, NodeWPtr> channelSelectorOwners;
 Node::~Node()
 {
     destroyNode(true, false);
+    releaseOwnCacheID();
 
     QMutexLocker k(&channelSelectorOwnersMutex);
     channelSelectorOwners.erase(this);
@@ -5870,7 +5933,7 @@ Node::purgeAllInstancesCaches()
     ///Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->effect);
-    _imp->effect->purgeCaches();
+    _imp->effect->purgeCachesKeepingFileStamps();
     // Native effects leave purgeCaches() empty, and their ActionsCache is keyed by content hash
     // and never dropped on a hash change, so the only thing that empties it is this.
     _imp->effect->clearActionsCache();
@@ -5882,7 +5945,7 @@ Node::purgeAllInstancesCaches()
         for (NodesList::const_iterator it = tree.begin(); it != tree.end(); ++it) {
             const EffectInstancePtr treeEffect = (*it)->getEffectInstance();
             if (treeEffect) {
-                treeEffect->purgeCaches();
+                treeEffect->purgeCachesKeepingFileStamps();
                 treeEffect->clearActionsCache();
             }
         }
@@ -8052,8 +8115,9 @@ Node::dequeueActions()
         return;
     }
     bool hasChanged = false;
+    bool valuesChanged = false;
     if (_imp->effect) {
-        hasChanged |= _imp->effect->dequeueValuesSet();
+        valuesChanged |= _imp->effect->dequeueValuesSet();
         NodeGroup* isGroup = dynamic_cast<NodeGroup*>( _imp->effect.get() );
         if (isGroup) {
             isGroup->dequeueConnexions();
@@ -8090,6 +8154,10 @@ Node::dequeueActions()
                 QMutexLocker k(&_imp->outputsMutex);
                 _imp->outputs = _imp->guiOutputs;
             }
+            // Before a render can start, as in connectInput().
+            if (!inputChanges.empty()) {
+                markHashDirty();
+            }
         }
     }
 
@@ -8101,8 +8169,10 @@ Node::dequeueActions()
         }
         endInputEdition(true);
     }
-    if (hasChanged) {
+    if (valuesChanged) {
         computeHash();
+    }
+    if (hasChanged || valuesChanged) {
         refreshIdentityState();
     }
 

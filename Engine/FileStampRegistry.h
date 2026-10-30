@@ -39,6 +39,40 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief What a stat of a file says about it: whether it exists, and its modification time (ns),
+ * size and inode. Two identities are equal when the file was not rewritten or replaced between
+ * the two stats.
+ **/
+struct FileIdentity {
+    bool exists = false;
+    std::int64_t mtimeSec = 0;
+    std::int64_t mtimeNsec = 0;
+    std::uint64_t size = 0;
+    std::uint64_t inode = 0;
+
+    bool operator==(const FileIdentity& other) const
+    {
+        return (exists == other.exists) && (mtimeSec == other.mtimeSec) && (mtimeNsec == other.mtimeNsec) && (size == other.size) && (inode == other.inode);
+    }
+
+    bool operator!=(const FileIdentity& other) const
+    {
+        return !(*this == other);
+    }
+};
+
+/**
+ * @brief Which version of a file a reader reads. eStamp pins it to the identity recorded with the
+ * file's stamp, the one its node hash was taken under, and fails once the file on disk is another
+ * one; only invalidating the stamp (Reload) lets the new file in. eDisk reads the file as it is on
+ * disk now, for readers whose results are not keyed by the stamp.
+ **/
+enum class FilePin {
+    eStamp,
+    eDisk
+};
+
+/**
  * @brief Process-wide, thread-safe source of file identity stamps. A stamp hashes the path with
  * the file's modification time (ns), size and inode, so a file changed on disk gets a new stamp.
  * A file or sequence is looked at on disk once, the first time its stamp is asked for, and the
@@ -57,14 +91,38 @@ public:
     U64 stamp(const std::string& path);
 
     /**
+     * @brief Identity of the file at path as recorded with its stamp: looked at on disk the first
+     * time either is asked for, then kept until invalidate(). stamp() hashes this same record.
+     **/
+    FileIdentity identity(const std::string& path);
+
+    /**
+     * @brief True if the file at path is, on disk now, the one its recorded identity describes.
+     * Records the identity first if none is. A reader pinned to the stamp fails rather than read a
+     * file this rejects. The stat made here is not counted by diskAccessCount().
+     **/
+    bool matchesDisk(const std::string& path, FileIdentity* recorded = nullptr);
+
+    /**
+     * @brief Stats path now, recording nothing.
+     **/
+    static FileIdentity statNow(const std::string& path);
+
+    /**
+     * @brief The error a reader pinned to the stamp reports for a file that changed on disk.
+     **/
+    static std::string changedOnDiskMessage(const std::string& path);
+
+    /**
      * @brief Stamp of the frame sequence named by pattern: the stamps of every file on disk that
-     * matches it, in frame then view order. Never 0.
+     * matches it, in frame then view order. Records the identity of each of those files as
+     * identity() would. Never 0.
      **/
     U64 sequenceStamp(const std::string& pattern);
 
     /**
-     * @brief Drops the stamp of the file or sequence pattern at path, so that the next request
-     * looks at the disk again. Also drops every sequence in the directory holding path and, for a
+     * @brief Drops the stamp and identity of the file or sequence pattern at path, so that the
+     * next request looks at the disk again. Also drops every sequence in the directory holding path and, for a
      * pattern, every single file in that directory, since those stamps cover the same files.
      **/
     void invalidate(const std::string& path);
@@ -82,21 +140,28 @@ public:
     static bool coversSameFiles(const std::string& a, const std::string& b);
 
     /**
-     * @brief Number of stat calls and directory scans made so far, for tests counting disk
-     * accesses.
+     * @brief Number of stat calls and directory scans made so far to stamp files, for tests
+     * counting disk accesses.
      **/
     std::uint64_t diskAccessCount() const;
 
 private:
     FileStampRegistry() { }
 
+    struct Entry {
+        FileIdentity identity;
+        U64 stamp;
+    };
+
     struct SequenceEntry {
         U64 stamp;
         std::string directory;
     };
 
+    Entry entry(const std::string& path);
+
     std::mutex _mutex;
-    std::map<std::string, U64> _entries;
+    std::map<std::string, Entry> _entries;
     std::map<std::string, SequenceEntry> _sequences;
     // Bumped by every invalidation, so a stat or scan that raced one is not kept.
     std::uint64_t _generation = 0;

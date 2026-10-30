@@ -19,18 +19,18 @@ knob edit, an input change, or a file changed on disk.
 
 | Cache | Owner | Key | Edit | Input | Disk |
 | --- | --- | --- | --- | --- | --- |
-| `SceneLayerMemo` (authored USD layer) | Nodes/Scene/SceneLayerMemo.h:40-110, `produce` Nodes/Scene/SceneOps.cpp:357-440 | `layerHash`: `nodeDigest`, upstream-read mode, the upstream stack hash or `factsDigest`, frame range if read, fps (:365-385) | yes, during authoring (N1) | no; facts mode is as right as each node's `factsDigest` | via the stamp model (USDRead N2) |
+| `SceneLayerMemo` (authored USD layer) | Nodes/Scene/SceneLayerMemo.h:40-110, `produce` Nodes/Scene/SceneOps.cpp:357-440 | `layerHash`: `nodeDigest`, upstream-read mode, the upstream stack hash or `factsDigest`, frame range if read, fps (:365-385) | no: a layer whose key moved during authoring is not memoized (N1, fixed in M260) | no; facts mode is as right as each node's `factsDigest` | via the stamp model (USDRead N2, fixed in M260) |
 | `CurveTablesCache` | Nodes/Image/CurveSnapshot.h:384-424; users ColorCorrect.h:161, HueCorrect.h:167, ColorLookup.h:157 | `knob.getContentHash()`, stored only when the hash is unchanged after the build | only through E1 | n/a | n/a |
 | `StageGpuShaderGate` | Nodes/Image/StagePlan.h:415-427, member Nodes/Image/StagedImageEffect.h:543 | entry + source (Nodes/Image/StagePlan.cpp:1639-1644) | no | no | n/a; ignores the device (G2) |
 | AddLayers registry signature | Nodes/Channel/AddLayers.h:218, Nodes/Deep/DeepAddLayers.h:156 | layer registry signature, folded into `appendNodeContentHash` (AddLayers.cpp:360-379) with `markHashDirty` on change | no | no | n/a |
 | NativeRead frame listings | `_listing`, `_proxyListing` Nodes/IO/NativeRead.h:260-262, built NativeRead.cpp:528-591 | canonical pattern, with an invalidation-counter guard | no (cleared on filename/proxy edits :829, :987) | n/a | until Reload (`purgeCaches` :609-650), same as the stamp |
-| USDRead file layer and closure | `Implementation` Nodes/Scene/USDRead.cpp:81-100 | `closureDigest` (stamps of every file brought in) in `appendNodeContentHash` (:273-277) | no | n/a | yes in a first session (N2) |
+| USDRead file layer and closure | `Implementation` Nodes/Scene/USDRead.cpp:81-100 | `closureDigest` (stamps of every file brought in) in `appendNodeContentHash` (:273-277) | no | n/a | no: stamped when the node is created or loaded and when File changes (N2, fixed in M260) |
 | NativeWrite read-back files | `_readBackFiles` Nodes/IO/NativeWrite.h:347-349, NativeWrite.cpp:1425-1470, purge :1564-1590 | output path, validated against the stored output hash (:1430) | no | no | until purge |
 | USDTransform matches memo | Nodes/Scene/USDTransform.cpp:142-157 | (matched stack hash, pattern, op name) | no | no | n/a |
 | RawDemosaic capture and green memos | Nodes/Raw/RawDemosaic.h:265, RawDemosaic.cpp:980-1004, :1072-1080 | `RawNodeSupport::frameKey(getRenderHash(), time, view)`, stored only if not cancelled | no | no | as the decode cache (N3) |
 | IErodeDilate half widths | `static thread_local` Nodes/Filter/IErodeDilate.cpp:585, class :85-110 | (rx, ry); memo of a pure function | no | no | n/a |
-| OIIO header cache | Nodes/IO/OiioReadSupport.cpp:63-80, :145-221 | (path, mtime, size) with an eviction counter; `evictHeaders` :213 | no | n/a | refreshes itself while the hash does not (N3) |
-| Raw decode caches | Nodes/IO/RawDecodeSupport.cpp:78-131, :730-760 | `FileKey` (path, mtime, size) :80-88; `evict` :906 | no | n/a | as OIIO (N3) |
+| OIIO header cache | Nodes/IO/OiioReadSupport.cpp:63-80, :145-221 | (path, `FileIdentity`) with an eviction counter; `evictHeaders` | no | n/a | pinned to the stamp's identity until Reload (N3, fixed in M260) |
+| Raw decode caches | Nodes/IO/RawDecodeSupport.cpp:78-131, :730-760 | `FileKey` (path, `FileIdentity`); `evict` | no | n/a | as OIIO (N3, fixed in M260) |
 | DeepRead layers memo | Nodes/Deep/DeepRead.cpp:190-229 | filename; cleared on `purgeCaches` | no | n/a | until Reload, same as the stamp |
 | Hydra render engines | Nodes/Scene/HydraRenderImpl.cpp:99, :671-680 | per node; the stage is synced every render | no | no | n/a |
 | NativeEffectBase output metadata | Nodes/NativeEffectBase.h:640-643 | see A3 in [actions-and-metadata.md](actions-and-metadata.md) | fixed by M202 | | |
@@ -88,44 +88,64 @@ members (RawColorCalibration.h:509-511; knob UI state used in `knobChanged`, Raw
 
 ## Not invalidated by
 
-- A file changed on disk without Reload, by design (the stamp model). N3 is where a node-private
-  cache does not follow that design.
+- A file changed on disk without Reload, by design (the stamp model). The OIIO and Raw readers
+  then fail on the changed file rather than read it (N3).
 - A device switch, for `StageGpuShaderGate` (G2).
 
 ## Covered by tests
 
 - Scene layer memo: `Tests/Scene/SceneLayerMemo_Test.cpp:93-171` (reuse, changed key, changed
   upstream, failed authoring, invalidate) and the chain tests at :357-577 (re-authoring only the
-  edited layer, facts-reading ops). No test edits a knob while a layer is being authored.
+  edited layer, facts-reading ops). `SceneLayerMemoTest.ALayerWhoseKeyMovedWhileAuthoringIsNotMemoized`,
+  `SceneLayerChainTest.AKnobEditDuringAuthoringIsNotServedAfterUndo` and
+  `CacheStressConcurrentTest.SceneKnobEditDuringAuthoring` edit a knob while a layer is being
+  authored (N1).
 - Reload: `Tests/Native/NativeReadReload_Test.cpp`.
-- No test changes a sublayer on disk before the first Reload, or rewrites a file read by OIIO or
-  Raw without Reload.
+- A file read by OIIO or Raw rewritten without Reload: the N3 tests above.
+- A sublayer changed while the application was closed (N2):
+  `USDReadTest.ASublayerRewrittenWhileClosedKeysTheReaderAnew` and
+  `USDReadTest.USDReadSublayerChangedWhileClosed`.
 
 ## M202 and M71
 
-- M202 gates the image and viewer cache stores. It does not touch `SceneLayerMemo`, so N1 stays.
-  N3's images are stored under an unchanged hash, which M202's snapshot does not catch.
+- M202 gates the image and viewer cache stores. It does not touch `SceneLayerMemo`; M260 fixes N1.
 - M71 does not change these caches. `RawDemosaic` keys by `getRenderHash()`, which carries the
   context key.
 
 ## Suspected holes
 
-- **N1 Scene layer stored under the key taken before authoring.** `produce` computes `layerHash`
-  before calling `author` (SceneOps.cpp:365-385), and authors read knobs live (USDPrim.cpp:156-158).
-  Nothing rechecks the key after authoring, unlike `CurveTablesCache`. An edit landing during
-  authoring stores the newer layer under the older hash; undoing the edit then serves it.
-  **Not fixed by M202.**
-- **N2 USDRead sublayers changed while the application was closed.** `closureDigest` is 0 until the
-  first `purgeCaches` (USDRead.cpp:95-99, :243-271). The main file is stamped by its File knob, but
-  sublayers and references are not in the hash in a first session. A persisted DiskCache entry
-  downstream can then hit content from before the change. **Not fixed by M202.**
-- **N3 Reader caches refresh while the hash does not.** The OIIO header cache and the Raw decode
-  caches stat the file on each lookup (OiioReadSupport.cpp:146-147, RawDecodeSupport.cpp:153-155)
-  and re-read a changed file. The node hash keeps the stamp from first use until Reload
-  (FileStampRegistry.h:40-47). New tiles of a changed file are stored beside old ones under one
-  hash and mix until Reload. Their keys also omit the inode, which the stamp includes.
-  **Not fixed by M202. Deferred from M242:** keying the reader caches on the stamp alone would leave
-  an old header beside pixels read live from the changed file, which is worse. A fix needs a
-  decision between the reader pinning the file to its stamp (refusing or re-stamping on a change)
-  and the node noticing the change and moving its hash. On the follow-up list.
-- **G2** (shader gate ignores the device) is recorded in [gpu.md](gpu.md).
+- **N1 Scene layer stored under the key taken before authoring. Fixed in M260.** `produce`
+  computes `layerHash` before calling `author`, and authors read knobs live, so an edit landing
+  during authoring stored the newer layer under the older hash and undoing the edit served it.
+  `produce` now takes a `keyStillValid` check, which `NativeEffectBase::emitSceneLayer` passes:
+  it takes the node's key again after authoring. A layer whose key moved is returned to this
+  evaluation, under a stack hash of its own, and never memoized, as `CurveTablesCache` does.
+- **N2 USDRead sublayers changed while the application was closed. Fixed in M260.**
+  `closureDigest` used to be 0 until the first Reload, so sublayers and references were not in
+  the hash in a first session, and a persisted DiskCache entry downstream could hit content from
+  before the change. The reader now opens its file, walks the files it brings in and stamps them
+  (`stampClosure`) when the node is created or loaded (`onEffectCreated`) and when File changes,
+  then marks its hash dirty. That is outside any render; evaluations still never re-key the node.
+  Reload stamps them again after reloading the layers.
+- **N3 Reader caches refreshed while the hash did not. Fixed in M260.** The OIIO header cache and
+  the Raw decode caches used to stat the file on each lookup and re-read a changed file, while the
+  node hash kept the stamp from first use until Reload, so tiles of two versions mixed under one
+  hash. Natron never watches files: a Read pins to the file as last loaded or reloaded. The
+  registry records each file's `FileIdentity` (mtime in ns, size, inode) with its stamp, and both
+  readers key their caches on it. A reader whose file no longer matches the recorded identity
+  fails with "<path> changed on disk since it was loaded, Reload to read it" and never parses or
+  decodes it; images already cached under the unchanged hash keep answering. Decodes stat the file
+  before opening it and after reading it, so a rewrite during a read fails instead of mixing
+  versions. Reload (`NativeRead::purgeCaches`) invalidates the stamp and evicts the header and
+  decode, the only way a new version comes in. NativeWrite's read-back of its own output and the
+  deep-file sniff in `AppManager` read with `FilePin::eDisk`, unpinned. Emptying every cache
+  (`AppManager::clearAllCaches`) drops what the Reads decoded but keeps their stamps
+  (`purgeCachesKeepingFileStamps`), so a file changed since fails until Reload. Tests: `FileStamp.*Identity*`, `FileStamp.*MatchesDisk`,
+  `FileStamp.OiioReaderFailsOnARewrittenFileUntilReload`,
+  `RawDecodeSupportTest.ARewrittenFileFailsWithoutADecodeUntilReload`,
+  `CacheStressTest.ReadPinnedUntilReload` and `CacheStressTest.RawReadPinnedUntilReload`.
+- **G2** (shader gate ignores the device) is recorded in [gpu.md](gpu.md); fixed in M260.
+- **K5 audit (M260).** AddLayers reads the project layer registry, which only grows; a layer it
+  names is resolved when the row is set, so a later registration changes no output it has
+  rendered. No node needed a new `appendNodeContentHash` override. Test:
+  `CacheStressTest.AddLayersRegistryChange`.

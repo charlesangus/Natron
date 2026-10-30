@@ -39,6 +39,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QTemporaryDir>
 #include <QThread>
@@ -67,6 +68,8 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/OCIO/OCIOFileTransform.h"
 #include "Engine/Nodes/OCIO/OcioFileKnobs.h"
 #include "Engine/Nodes/Transform/STMap.h"
@@ -77,6 +80,12 @@
 #include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuPipelineCache.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Gpu/GpuShaderCompiler.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -672,3 +681,130 @@ TEST_F(CacheStressGpuTest, LutSwapsReachTheGpuFrame)
     EXPECT_EQ(std::string(), runScripted(getApp(), builder, edits, &counts));
     EXPECT_FALSE(counts.empty()) << "no task ran on the GPU, so nothing was tested";
 }
+
+// Images a DiskCache node serves are mapped files, which the GPU import cache never hears freed.
+// Clearing the disk cache unmaps them, and the next entries can be mapped at the same addresses:
+// an import cached by address would then upload the old pixels.
+TEST_F(CacheStressGpuTest, DiskCacheSourcesAreNotImportedByAddress)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const GraphBuilder builder = [](const AppInstancePtr& app, StressGraph* g, std::string* error) {
+        setFormat(app);
+        const NodeCollectionPtr root = app->getProject();
+        const int source = addNode(g, createConstantIn(app, root, kWindow, { 0.2, 0.4, 0.6, 1. }));
+        const int disk = addNode(g, createIn(app, root, PLUGINID_NATRON_DISKCACHE, 1));
+        const int grade = addNode(g, createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE));
+        const int blur = addNode(g, createIn(app, root, PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR));
+        if ((source < 0) || (disk < 0) || (grade < 0) || (blur < 0)) {
+            return fail(error, "could not create the nodes");
+        }
+        if (!connect(*g, source, disk, 0) || !connect(*g, disk, grade, 0) || !connect(*g, grade, blur, 0)) {
+            return fail(error, "could not connect the chain");
+        }
+        if (!setKnobValues(g->nodes[blur], kBlurParamSize, std::vector<double>(1, 2.))) {
+            return fail(error, "could not set the blur size");
+        }
+        g->probe = blur;
+        g->window = kWindow;
+
+        return true;
+    };
+    const int source = 0;
+    const int grade = 2;
+    auto setColor = [source](double r, double gr, double b) {
+        return Edit([source, r, gr, b](const StressGraph& g, std::string* error) {
+            return setKnobValues(g.nodes[source], kConstantParamColor, { r, gr, b, 1. }) || fail(error, "could not set the colour");
+        });
+    };
+    const Edit clearDisk = [](const StressGraph&, std::string*) {
+        appPTR->clearDiskCache();
+
+        return true;
+    };
+    std::vector<std::pair<std::string, Edit>> edits;
+    edits.push_back(std::make_pair(std::string("disk cache cleared"), clearDisk));
+    edits.push_back(std::make_pair(std::string("source to (0.7, 0.1, 0.3)"), setColor(0.7, 0.1, 0.3)));
+    edits.push_back(std::make_pair(std::string("disk cache cleared"), clearDisk));
+    edits.push_back(std::make_pair(std::string("source to (0.05, 0.9, 0.5)"), setColor(0.05, 0.9, 0.5)));
+    edits.push_back(std::make_pair(std::string("grade white to 0.5"), Edit([grade](const StressGraph& g, std::string* error) {
+                                       return setKnobValues(g.nodes[grade], kGradeParamWhite, std::vector<double>(1, 0.5)) || fail(error, "could not set white");
+                                   })));
+    edits.push_back(std::make_pair(std::string("disk cache cleared"), clearDisk));
+    edits.push_back(std::make_pair(std::string("source back to (0.2, 0.4, 0.6)"), setColor(0.2, 0.4, 0.6)));
+    GpuTaskCounts counts;
+    EXPECT_EQ(std::string(), runScripted(getApp(), builder, edits, &counts));
+    EXPECT_FALSE(counts.empty()) << "no task ran on the GPU, so nothing was tested";
+}
+
+#ifdef NATRON_HAVE_GPU
+
+// A shader one device rejects is rejected for that device only: after a switch to another device
+// it is built again, and back on the first one it is not.
+TEST_F(CacheStressGpuTest, DeviceSwitchRetriesRejectedShader)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    GpuRuntimeShader shader;
+    shader.source = "#version 460\n// rejected per device " + std::to_string((long long)QCoreApplication::applicationPid()) + "\n"
+                                                                                                                              "layout(local_size_x = 8) in;\n"
+                                                                                                                              "void main() { undeclared = 1; }\n";
+    StageGpuShaderGate gate;
+
+    auto deviceTag = []() {
+        GpuContext* context = appPTR->getGpuContext();
+        gpu::GpuRuntime* runtime = (context && context->isAvailable()) ? context->runtime() : nullptr;
+
+        return runtime ? runtime->pipelines().deviceTag() : std::string();
+    };
+    const std::string first = deviceTag();
+    ASSERT_FALSE(first.empty());
+
+    std::size_t compiles = gpu::glslCompileCountForTesting();
+    EXPECT_FALSE(gate.accept(shader, NodePtr()));
+    EXPECT_EQ(compiles + 1, gpu::glslCompileCountForTesting());
+    EXPECT_TRUE(gate.isRejected(first, shader));
+    EXPECT_FALSE(gate.isRejected(first + " other driver", shader)) << "the rejection is not keyed by device";
+    compiles = gpu::glslCompileCountForTesting();
+    EXPECT_FALSE(gate.accept(shader, NodePtr()));
+    EXPECT_EQ(compiles, gpu::glslCompileCountForTesting()) << "a rejected shader was built again on the same device";
+
+    // A second Vulkan device, if the host has one; lavapipe next to a GPU is enough.
+    GpuContextOptions options;
+    options.mode = GpuResolvedMode::Force;
+    options.infoLog = [](const std::string&) { };
+    std::unique_ptr<GpuContext> other;
+    std::string second;
+    for (int index = 0; index < 8; ++index) {
+        options.device = std::to_string(index);
+        other.reset(new GpuContext(options));
+        if (!other->waitForInit(std::chrono::seconds(60)) || !other->isAvailable()) {
+            continue;
+        }
+        const std::string tag = other->runtime()->pipelines().deviceTag();
+        if (tag != first) {
+            second = tag;
+            break;
+        }
+    }
+    if (second.empty()) {
+        std::printf("[  SKIPPED ] the device switch: one Vulkan device only\n");
+
+        return;
+    }
+    std::unique_ptr<GpuContext> previous = appPTR->swapGpuContextForTests(std::move(other));
+    compiles = gpu::glslCompileCountForTesting();
+    EXPECT_FALSE(gate.accept(shader, NodePtr()));
+    EXPECT_EQ(compiles + 1, gpu::glslCompileCountForTesting()) << "the other device did not try the shader";
+    EXPECT_TRUE(gate.isRejected(second, shader));
+
+    other = appPTR->swapGpuContextForTests(std::move(previous));
+    other.reset();
+    compiles = gpu::glslCompileCountForTesting();
+    EXPECT_FALSE(gate.accept(shader, NodePtr()));
+    EXPECT_EQ(compiles, gpu::glslCompileCountForTesting()) << "the first device built its rejected shader again";
+}
+
+#endif // NATRON_HAVE_GPU

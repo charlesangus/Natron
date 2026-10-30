@@ -49,8 +49,10 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -72,6 +74,15 @@ namespace {
         // The expression primitive in force per (knob target, dimension); absent means none.
         std::map<std::pair<int, int>, Primitive> expressions;
         unsigned mipmap = 0;
+        // A file was rewritten and no Reload has happened since.
+        bool stale = false;
+        // The Settings knob dimensions a step set, with their values before the first such step.
+        std::map<std::pair<std::string, int>, double> settings;
+
+        Runtime() = default;
+        Runtime(const Runtime&) = delete;
+        Runtime& operator=(const Runtime&) = delete;
+        ~Runtime();
     };
 
     double
@@ -108,6 +119,20 @@ namespace {
         }
 
         return true;
+    }
+
+    Runtime::~Runtime()
+    {
+        if (settings.empty() || !appPTR) {
+            return;
+        }
+        SettingsPtr current = appPTR->getCurrentSettings();
+        for (std::map<std::pair<std::string, int>, double>::const_iterator it = settings.begin(); it != settings.end(); ++it) {
+            KnobIPtr knob = current ? current->getKnobByName(it->first.first) : KnobIPtr();
+            if (knob) {
+                knobSetValue(knob, it->first.second, it->second);
+            }
+        }
     }
 
     bool
@@ -252,6 +277,14 @@ namespace {
         }
         const KnobTarget& src = rt.graph.knobs[p.exprSourceKnob];
         std::ostringstream os;
+        if (p.exprDynamic) {
+            const std::string name = nodeName(rt, src.node);
+            const std::size_t half = name.size() / 2;
+            os << "getattr(getattr(thisGroup, \"" << name.substr(0, half) << "\" + \"" << name.substr(half) << "\")." << src.name
+               << ", \"get\" + \"Value\")(" << std::max(0, p.exprSourceDim) << ")";
+
+            return os.str();
+        }
         os << nodeName(rt, src.node) << "." << src.name << ".getValue(";
         if (p.exprSourceDim >= 0) {
             os << p.exprSourceDim;
@@ -317,6 +350,21 @@ namespace {
             break;
         case ePrimMipmap:
             os << "mipmap " << p.first;
+            break;
+        case ePrimRewriteFile:
+            os << "rewrite file " << p.first << " as version " << p.input;
+            break;
+        case ePrimReload:
+            os << "reload " << nodeName(rt, p.node);
+            break;
+        case ePrimRename:
+            os << "rename " << nodeName(rt, p.node) << " -> " << p.text;
+            break;
+        case ePrimSetting:
+            os << "setting " << p.text << "[" << p.dim << "] = " << p.value;
+            break;
+        case ePrimAddLayer:
+            os << "addLayer " << p.text << " with " << p.first << " channels";
             break;
         }
 
@@ -444,6 +492,26 @@ namespace {
             Primitive q = p;
             q.first = (int)rt.mipmap;
             inverse->push_back(q);
+            break;
+        }
+        case ePrimRewriteFile:
+        case ePrimReload:
+        case ePrimAddLayer:
+            // Scripted only: a file's past versions and a grown registry are not undone.
+            break;
+        case ePrimRename: {
+            Primitive q = p;
+            q.text = nodeName(rt, p.node);
+            inverse->push_back(q);
+            break;
+        }
+        case ePrimSetting: {
+            KnobIPtr knob = appPTR->getCurrentSettings()->getKnobByName(p.text);
+            if (knob) {
+                Primitive q = p;
+                q.value = knobValueAt(knob, p.dim, currentTime(rt));
+                inverse->push_back(q);
+            }
             break;
         }
         } // switch
@@ -596,6 +664,83 @@ namespace {
             rt.mipmap = (unsigned)p.first;
 
             return true;
+        case ePrimRewriteFile:
+            if ((p.first < 0) || (p.first >= (int)rt.graph.files.size())) {
+                *error = "the graph has no such file";
+
+                return false;
+            }
+            if (!rt.graph.files[p.first](p.input, error)) {
+                return false;
+            }
+            rt.stale = true;
+
+            return true;
+        case ePrimReload: {
+            KnobButton* reload = dynamic_cast<KnobButton*>(rt.graph.nodes[p.node]->getKnobByName(kNatronReadParamReload).get());
+            if (!reload) {
+                *error = "the node has no Reload button";
+
+                return false;
+            }
+            reload->trigger();
+            rt.stale = false;
+
+            return true;
+        }
+        case ePrimRename: {
+            const NodePtr& node = rt.graph.nodes[p.node];
+            try {
+                node->setScriptName(p.text);
+            } catch (const std::exception& e) {
+                *error = std::string("setScriptName threw: ") + e.what();
+
+                return false;
+            }
+            if (node->getScriptName() != p.text) {
+                *error = "the node was named " + node->getScriptName();
+
+                return false;
+            }
+
+            return true;
+        }
+        case ePrimSetting: {
+            KnobIPtr knob = appPTR->getCurrentSettings()->getKnobByName(p.text);
+            if (!knob || (p.dim >= knob->getDimension())) {
+                *error = "Settings has no knob " + p.text + " of that dimension";
+
+                return false;
+            }
+            const std::pair<std::string, int> key(p.text, p.dim);
+            if (rt.settings.find(key) == rt.settings.end()) {
+                rt.settings[key] = knobValueAt(knob, p.dim, currentTime(rt));
+            }
+            if (!knobSetValue(knob, p.dim, p.value)) {
+                *error = "the setting takes no number";
+
+                return false;
+            }
+
+            return true;
+        }
+        case ePrimAddLayer: {
+            static const char* const kChannels[] = { "A", "B", "C", "D" };
+            if ((p.first < 1) || (p.first > 4)) {
+                *error = "a layer has 1 to 4 channels";
+
+                return false;
+            }
+            const std::vector<std::string> channels(kChannels, kChannels + p.first);
+            std::string why;
+            if (rt.app->getProject()->addLayer(ImageLayerDesc(p.text, p.text, "", channels), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
+                *error = "the registry refused the layer: " + why;
+
+                return false;
+            }
+
+            return true;
+        }
         } // switch
 
         return false;
@@ -821,15 +966,17 @@ namespace {
             return true;
         }
         case eOpSetExpression:
+        case eOpDynamicExpression:
         case eOpWholeValueExpression: {
+            const bool readsADimension = kind != eOpWholeValueExpression;
             std::vector<std::pair<int, int>> pairs;
             for (std::size_t i = 0; i < g.exprTargets.size(); ++i) {
                 const int t = g.exprTargets[i];
                 if (knobHasExpression(rt, t, g.knobs[t].dim) || isLinked(rt, t)) {
                     continue;
                 }
-                const std::vector<int>& sources = (kind == eOpSetExpression) ? std::vector<int>() : g.wholeValueSources;
-                if (kind == eOpSetExpression) {
+                const std::vector<int>& sources = readsADimension ? std::vector<int>() : g.wholeValueSources;
+                if (readsADimension) {
                     for (std::size_t s = 0; s < g.knobs.size(); ++s) {
                         if (((int)s != t) && !g.knobs[s].animatable && (g.knobs[s].node != g.knobs[t].node) && sameCollection(rt, g.knobs[s].node, g.knobs[t].node) && !knobHasExpressionAnywhere(rt.knobs[s]) && !knobIsAnimatedAnywhere(rt.knobs[s])) {
                             pairs.push_back(std::make_pair(t, (int)s));
@@ -848,8 +995,9 @@ namespace {
                 return false;
             }
             const std::pair<int, int>& pick = pairs[rng.pick((int)pairs.size())];
-            const int sourceDim = (kind == eOpSetExpression) ? g.knobs[pick.second].dim : -1;
+            const int sourceDim = readsADimension ? g.knobs[pick.second].dim : -1;
             step->prims.push_back(dimensionExpressionPrim(pick.first, g.knobs[pick.first].dim, pick.second, sourceDim));
+            step->prims.back().exprDynamic = kind == eOpDynamicExpression;
 
             return true;
         }
@@ -1000,6 +1148,36 @@ namespace {
             step->prims.push_back(mipmapPrim(rt.mipmap == 0 ? 1 : 0));
 
             return true;
+        case eOpRename: {
+            std::vector<int> sources;
+            for (std::map<std::pair<int, int>, Primitive>::const_iterator it = rt.expressions.begin(); it != rt.expressions.end(); ++it) {
+                if (it->second.exprSourceKnob >= 0) {
+                    const int node = g.knobs[it->second.exprSourceKnob].node;
+                    if (std::find(sources.begin(), sources.end(), node) == sources.end()) {
+                        sources.push_back(node);
+                    }
+                }
+            }
+            if (sources.empty()) {
+                return false;
+            }
+            Primitive p;
+            p.kind = ePrimRename;
+            p.node = sources[rng.pick((int)sources.size())];
+            // Another node's name plus a digit makes one name a prefix of another, which a rename
+            // must not confuse.
+            const NodeCollectionPtr collection = g.nodes[p.node]->getGroup();
+            std::string name = nodeName(rt, rng.pick((int)g.nodes.size())) + std::to_string(rng.pick(10));
+            while (collection && collection->checkIfNodeNameExists(name, 0)) {
+                name += std::to_string(rng.pick(10));
+            }
+            p.text = name;
+            step->prims.push_back(p);
+
+            return true;
+        }
+        case eOpRewriteFile:
+        case eOpReload:
         case eOpCount:
             break;
         } // switch
@@ -1035,6 +1213,10 @@ namespace {
         double time = 0.;
         unsigned mipmap = 0;
         int probe = -1;
+        // Set while a file is stale: the record whose renders this step's must equal, if any
+        // succeed. The reference pass does not render such a step, since emptying the caches
+        // purges the Reads, which reloads their files.
+        int pinnedTo = -1;
         Probe legacy;
         Probe taskGraph;
         Probe custom;
@@ -1183,7 +1365,7 @@ namespace {
 OpMask
 defaultOps()
 {
-    return allOps() & ~(opBit(eOpWholeValueExpression) | opBit(eOpViewerB) | opBit(eOpMipmap));
+    return allOps() & ~(opBit(eOpWholeValueExpression) | opBit(eOpViewerB) | opBit(eOpMipmap) | opBit(eOpRewriteFile) | opBit(eOpReload));
 }
 
 OpMask
@@ -1234,6 +1416,14 @@ opName(OpKind kind)
         return "viewerB";
     case eOpMipmap:
         return "mipmap";
+    case eOpRewriteFile:
+        return "rewriteFile";
+    case eOpReload:
+        return "reload";
+    case eOpRename:
+        return "rename";
+    case eOpDynamicExpression:
+        return "dynamicExpression";
     case eOpCount:
         break;
     }
@@ -1289,6 +1479,58 @@ mipmapPrim(int level)
 
     p.kind = ePrimMipmap;
     p.first = level;
+
+    return p;
+}
+
+Primitive
+rewriteFilePrim(int file,
+                int version)
+{
+    Primitive p;
+
+    p.kind = ePrimRewriteFile;
+    p.first = file;
+    p.input = version;
+
+    return p;
+}
+
+Primitive
+reloadPrim(int node)
+{
+    Primitive p;
+
+    p.kind = ePrimReload;
+    p.node = node;
+
+    return p;
+}
+
+Primitive
+addLayerPrim(const std::string& layerID,
+             int channels)
+{
+    Primitive p;
+
+    p.kind = ePrimAddLayer;
+    p.text = layerID;
+    p.first = channels;
+
+    return p;
+}
+
+Primitive
+settingPrim(const std::string& knobName,
+            int dim,
+            double value)
+{
+    Primitive p;
+
+    p.kind = ePrimSetting;
+    p.text = knobName;
+    p.dim = dim;
+    p.value = value;
 
     return p;
 }
@@ -1600,6 +1842,7 @@ run(const AppInstancePtr& app,
         }
         Rng rng(seed);
         std::vector<std::vector<Primitive>> undoStack;
+        int pinned = -1;
         // The first record renders the graph as built, so the first edit already meets filled caches.
         const int total = 1 + (int)options.scripted.size() + (options.seeded ? options.steps : 0);
         for (int i = 0; i < total; ++i) {
@@ -1640,6 +1883,24 @@ run(const AppInstancePtr& app,
             record.time = currentTime(rt);
             record.mipmap = rt.mipmap;
             record.probe = resolveProbe(rt);
+            if (rt.stale) {
+                record.pinnedTo = pinned;
+                const StepRecord* before = (pinned >= 0) ? &records[pinned] : 0;
+                if (!before || (before->time != record.time) || (before->mipmap != record.mipmap) || (before->probe != record.probe)) {
+                    std::ostringstream os;
+                    os << "NATRON_CACHE_STRESS_SEED=" << seed << ": step " << i
+                       << " renders a stale file at another time, scale or node than the last render before the rewrite\n"
+                       << formatLog(records, records.size());
+                    result.ok = false;
+                    result.failedStep = i;
+                    result.report = os.str();
+
+                    return result;
+                }
+                records.push_back(record);
+                continue;
+            }
+            pinned = i;
             if (options.legacy) {
                 clearEverything(app);
                 record.legacy = renderOnce(rt, record.probe, eRenderSchedulerModeLegacy, true);
@@ -1712,6 +1973,34 @@ run(const AppInstancePtr& app,
         std::string mode;
         if (probe != record.probe) {
             mismatch = "the passes probe different nodes";
+        }
+        if (mismatch.empty() && (record.pinnedTo >= 0)) {
+            // Pinned to the file as last loaded: failing or rendering nothing is fine, any other
+            // image than the one before the rewrite mixes in the new file.
+            const StepRecord& pinnedRecord = records[record.pinnedTo];
+            for (int m = 0; (m < 2) && mismatch.empty(); ++m) {
+                const bool legacy = (m == 0);
+                if (legacy ? !options.legacy : !options.taskGraph) {
+                    continue;
+                }
+                const Probe got = renderOnce(rt, probe, legacy ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph, false);
+                if (got.ok && !got.empty) {
+                    mismatch = compareProbes(legacy ? pinnedRecord.legacy : pinnedRecord.taskGraph, got);
+                    mode = legacy ? "legacy, stale file" : "task graph, stale file";
+                }
+            }
+            if (!mismatch.empty()) {
+                std::ostringstream os;
+                os << "cache stress mismatch: NATRON_CACHE_STRESS_SEED=" << seed << " step " << i << " (" << mode << "): " << mismatch << "\n"
+                   << "op log:\n"
+                   << formatLog(records, i);
+                result.ok = false;
+                result.failedStep = (int)i;
+                result.report = os.str();
+
+                return result;
+            }
+            continue;
         }
         // Alternate which mode renders first, so each also runs against the other's entries.
         const bool legacyFirst = (i % 2) == 0;

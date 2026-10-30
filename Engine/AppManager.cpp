@@ -2642,15 +2642,23 @@ void
 AppManager::getViewerCachedFrames(const std::string& holderID,
                                   U64 viewerHash,
                                   unsigned int mipmapLevel,
+                                  const ViewerFrameFilter* filter,
                                   std::map<SequenceTime, StorageModeEnum>* frames) const
 {
     frames->clear();
     if (!_imp->_viewerCache) {
         return;
     }
+    std::map<SequenceTime, std::vector<TextureRect>> tilesHeld;
     _imp->_viewerCache->visitEntryKeys([&](const FrameKey& key, StorageModeEnum storage) {
         if ((key.getTreeVersion() != viewerHash) || (key.getMipmapLevel() != mipmapLevel) || (key.getCacheHolderID() != holderID)) {
             return;
+        }
+        if (filter && (key.isDraft() || !key.hasTheDisplaySettingsOf(filter->settings))) {
+            return;
+        }
+        if (filter) {
+            tilesHeld[key.getTime()].push_back(key.getTexRect());
         }
         std::map<SequenceTime, StorageModeEnum>::iterator found = frames->find(key.getTime());
         if (found == frames->end()) {
@@ -2659,6 +2667,24 @@ AppManager::getViewerCachedFrames(const std::string& holderID,
             found->second = eStorageModeRAM;
         }
     });
+    if (!filter) {
+        return;
+    }
+    for (std::map<SequenceTime, StorageModeEnum>::iterator it = frames->begin(); it != frames->end();) {
+        const std::vector<TextureRect>& held = tilesHeld[it->first];
+        bool covered = true;
+        for (const TextureRect& tile : filter->tiles) {
+            if (std::find(held.begin(), held.end(), tile) == held.end()) {
+                covered = false;
+                break;
+            }
+        }
+        if (covered) {
+            ++it;
+        } else {
+            frames->erase(it++);
+        }
+    }
 }
 
 SettingsPtr AppManager::getCurrentSettings() const
@@ -3526,7 +3552,7 @@ AppManager::getReaderPluginIDForFile(const std::string& originalPath,
         }
     }
     // DeepRead reads the first part, so that is the part that decides.
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL);
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(firstFile, NULL, FilePin::eDisk);
     if (header && !header->subimages.empty() && header->subimages[0].deep) {
         return std::string(PLUGINID_NATRON_DEEPREAD);
     }

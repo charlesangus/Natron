@@ -428,12 +428,24 @@ public:
 
     /**
      * @brief True when the project frame range is part of this node's content hash: the effect
-     * reads it, or an expression on one of its knobs can.
+     * reads it, or an expression on one of its render-hashed knobs can.
      **/
     bool dependsOnProjectFrameRange() const;
 
     virtual std::string getCacheID() const OVERRIDE FINAL;
 
+    /**
+     * @brief Takes the cache ID saved with the node unless a live node of any project holds it.
+     **/
+    void adoptSerializedCacheID(const std::string& cacheID);
+
+private:
+    static bool claimCacheID(const std::string& cacheID);
+    static void releaseCacheID(const std::string& cacheID);
+
+    void releaseOwnCacheID();
+
+public:
     /**
      * @brief Forwarded to the live effect instance
      **/

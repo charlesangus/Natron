@@ -24,6 +24,8 @@ struct GpuTransferOptions {
     bool allowHostImport = true;
     // Keep host-pointer imports alive across calls so pinning is paid once per allocation. The
     // caller must call forgetHostAllocation() before freeing such memory, or releaseHostImports().
+    // Covers prepareImport(), process() and the upload() and download() calls that set
+    // StreamOptions::cacheImport.
     bool cacheHostImports = false;
     // Fills the device-side TimeSpans of TransferTimeline. Costs a blocking query-pool reset per process().
     bool recordTimestamps = false;
@@ -98,6 +100,11 @@ struct StreamOptions {
     // Host memcpy time, relative to hostOrigin. A download fills it in by the time wait() returns.
     TimeSpan* hostSpan = nullptr;
     std::chrono::steady_clock::time_point hostOrigin {};
+    // With GpuTransferOptions::cacheHostImports, a host import made for this transfer is kept for
+    // later ones. Only for memory whose free calls forgetHostAllocation(): otherwise a later
+    // allocation at the same address would transfer through the stale import. Imports already
+    // cached are used either way.
+    bool cacheImport = false;
 };
 
 struct HostImportStats {

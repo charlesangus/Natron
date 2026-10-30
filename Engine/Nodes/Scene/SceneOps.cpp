@@ -1042,7 +1042,8 @@ SceneLayerMemo::produce(const Key& key,
                         const std::string& layerTag,
                         const AuthorFunc& author,
                         ScenePayload* output,
-                        std::string* errorMessage)
+                        std::string* errorMessage,
+                        const KeyCheckFunc& keyStillValid)
 {
     ContentHasher h;
     h.appendU64(key.nodeDigest);
@@ -1127,6 +1128,19 @@ SceneLayerMemo::produce(const Key& key,
     SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
     links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
     entry.links = shareLinks(std::move(links));
+    if (keyStillValid && !keyStillValid(key)) {
+        // The layer is not what key describes, so it must not hash like one authored under it:
+        // stack hashes key what downstream caches hold.
+        static std::atomic<U64> unmemoized(0);
+        ContentHasher u;
+        u.appendU64(layerHash);
+        u.appendString("unmemoized");
+        u.appendU64(++unmemoized);
+        entry.hash = u.finalize();
+        *output = SceneOps::appendEntry(upstream, entry);
+
+        return true;
+    }
     _imp->output = SceneOps::appendEntry(upstream, entry);
     _imp->layerHash = layerHash;
     _imp->valid = true;

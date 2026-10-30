@@ -28,7 +28,9 @@
 #include <QDebug>
 #include <QThread>
 
+#include <set>
 #include <sstream>
+#include <utility>
 
 #include "Engine/AppInstance.h"
 #include "Engine/GroupOutput.h"
@@ -87,10 +89,7 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
         setScriptName_no_error_check(name);
 
     } else if (serialization) {
-        if (group && !group->isCacheIDAlreadyTaken(serialization->cacheID)) {
-            QMutexLocker k(&_imp->nameMutex);
-            _imp->cacheID = serialization->cacheID;
-        }
+        adoptSerializedCacheID(serialization->cacheID);
         std::string name = serialization->scriptName;
         // If the serialized script name is available, use it as is (else we get issue #755).
         // Else look for a similar name by adding a (different) number suffix.
@@ -399,32 +398,15 @@ Node::setNameInternal(const std::string& name,
         }
     }
 
-    bool mustSetCacheID;
     {
         QMutexLocker l(&_imp->nameMutex);
         _imp->scriptName = newName;
-        mustSetCacheID = _imp->cacheID.empty();
         ///Set the label at the same time if the label is empty
         if ( _imp->label.empty() ) {
             _imp->label = newName;
         }
     }
     std::string fullySpecifiedName = getFullyQualifiedName();
-
-    if (mustSetCacheID) {
-        std::string baseName = fullySpecifiedName;
-        std::string cacheID = fullySpecifiedName;
-        int i = 1;
-        while ( getGroup() && getGroup()->isCacheIDAlreadyTaken(cacheID) ) {
-            std::stringstream ss;
-            ss << baseName;
-            ss << i;
-            cacheID = ss.str();
-            ++i;
-        }
-        QMutexLocker l(&_imp->nameMutex);
-        _imp->cacheID = cacheID;
-    }
 
     if (collection) {
         if ( !oldName.empty() ) {
@@ -440,39 +422,34 @@ Node::setNameInternal(const std::string& name,
         }
 
         if (_imp->nodeCreated) {
-            ///For all knobs that have listeners, change in the expressions of listeners this knob script-name
+            // Every listener has the name replaced only where it names a node in code: a metadata
+            // key or another string may hold it as text that must stay, and a longer name that
+            // starts with it (Blur10 for Blur1) is another node.
             KnobI::ListenerDimsMap dependencies;
             KnobI::ListenerDimsMap metadataDependencies;
             insertDependenciesRecursive(this, &dependencies, &metadataDependencies);
-            // A metadata read's keys and other strings may hold the name as text that must stay, so
-            // an expression reading metadata only has the name replaced where it names a node:
-            // which covers its knob reads, made through the same identifiers and getNode() paths.
-            for (KnobI::ListenerDimsMap::iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
-                KnobIPtr reader = it->first.lock();
-                if (!reader) {
-                    continue;
-                }
-                for (std::size_t d = 0; d < it->second.size(); ++d) {
-                    if (it->second[d].isListening) {
-                        reader->replaceNodeNameInExpressionCode((int)d, oldName, newName);
-                    }
-                }
-            }
-            for (KnobI::ListenerDimsMap::iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
-                KnobIPtr listener = it->first.lock();
-                if (!listener) {
-                    continue;
-                }
-                KnobI::ListenerDimsMap::const_iterator readsMetadata = metadataDependencies.find(it->first);
-                for (std::size_t d = 0; d < it->second.size(); ++d) {
-                    if (!it->second[d].isListening || !it->second[d].isExpr) {
+            std::set<std::pair<KnobI*, std::size_t>> renamed;
+            const auto rename = [&](const KnobI::ListenerDimsMap& listeners, bool exprOnly) {
+                for (KnobI::ListenerDimsMap::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
+                    KnobIPtr listener = it->first.lock();
+                    if (!listener) {
                         continue;
                     }
-                    if ((readsMetadata != metadataDependencies.end()) && (d < readsMetadata->second.size()) && readsMetadata->second[d].isListening) {
-                        continue;
+                    for (std::size_t d = 0; d < it->second.size(); ++d) {
+                        if (!it->second[d].isListening || (exprOnly && !it->second[d].isExpr)) {
+                            continue;
+                        }
+                        if (renamed.insert(std::make_pair(listener.get(), d)).second) {
+                            listener->replaceNodeNameInExpressionCode((int)d, oldName, newName);
+                        }
                     }
-                    listener->replaceNodeNameInExpression(d, oldName, newName);
                 }
+            };
+            rename(metadataDependencies, false);
+            rename(dependencies, true);
+            if (!oldName.empty()) {
+                // An expression naming the new name was invalid until now.
+                getApp()->recheckInvalidExpressions();
             }
         }
     }

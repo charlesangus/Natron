@@ -3019,6 +3019,109 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
     return ss.str();
 } // KnobHelperPrivate::declarePythonVariables
 
+namespace {
+thread_local ExpressionReadRecorder* innermostExpressionReadRecorder = NULL;
+} // anon namespace
+
+ExpressionReadRecorder::ExpressionReadRecorder(const KnobI* evaluating)
+    : _outer(innermostExpressionReadRecorder)
+    , _evaluating(evaluating)
+    , _reads()
+{
+    innermostExpressionReadRecorder = this;
+}
+
+ExpressionReadRecorder::~ExpressionReadRecorder()
+{
+    innermostExpressionReadRecorder = _outer;
+}
+
+void
+ExpressionReadRecorder::record(KnobI* knob,
+                               int dimension)
+{
+    ExpressionReadRecorder* recorder = innermostExpressionReadRecorder;
+    if (!recorder || !knob || (knob == recorder->_evaluating)) {
+        return;
+    }
+    for (const std::pair<KnobIWPtr, int>& read : recorder->_reads) {
+        if ((read.second == dimension) && (read.first.lock().get() == knob)) {
+            return;
+        }
+    }
+    KnobIWPtr weak = knob->weak_from_this();
+    if (weak.expired()) {
+        return;
+    }
+    recorder->_reads.push_back(std::make_pair(weak, dimension));
+}
+
+void
+KnobHelper::registerExpressionReads(int dimension,
+                                    const ExpressionReadRecorder::Reads& reads,
+                                    bool deferred)
+{
+    if (reads.empty() || (dimension < 0) || (dimension >= _imp->dimension)) {
+        return;
+    }
+    // Most evaluations read only known dependencies; those queue nothing.
+    ExpressionReadRecorder::Reads unknown;
+    std::string expression;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& expr = _imp->expressions[dimension];
+        expression = expr.originalExpression;
+        for (const std::pair<KnobIWPtr, int>& read : reads) {
+            const KnobIPtr source = read.first.lock();
+            if (!source) {
+                continue;
+            }
+            bool known = false;
+            for (const std::pair<KnobIWPtr, int>& dependency : expr.dependencies) {
+                if ((dependency.first.lock() == source) && ((dependency.second == read.second) || (dependency.second == -1))) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                unknown.push_back(read);
+            }
+        }
+    }
+    if (unknown.empty() || expression.empty()) {
+        return;
+    }
+
+    QCoreApplication* app = QCoreApplication::instance();
+    const bool onMainThread = app && (QThread::currentThread() == app->thread());
+    if (deferred || !onMainThread) {
+        if (!app) {
+            return;
+        }
+        const KnobIWPtr weakThis = weak_from_this();
+        QMetaObject::invokeMethod(app, [weakThis, dimension, unknown, expression]() {
+            const KnobIPtr knob = weakThis.lock();
+            KnobHelper* helper = dynamic_cast<KnobHelper*>( knob.get() );
+            if ( !helper || (helper->getExpression(dimension) != expression) ) {
+                return;
+            }
+            helper->registerExpressionReads(dimension, unknown, false);
+            helper->invalidateContentHash(); }, Qt::QueuedConnection);
+
+        return;
+    }
+
+    const KnobIPtr thisKnob = shared_from_this();
+    for (const std::pair<KnobIWPtr, int>& read : unknown) {
+        const KnobIPtr source = read.first.lock();
+        if (!source || (source == thisKnob)) {
+            continue;
+        }
+        const int sourceDimension = (read.second >= 0) && (read.second < source->getDimension()) ? read.second : -1;
+        source->addListener(true, dimension, sourceDimension, thisKnob);
+    }
+}
+
 void
 KnobHelperPrivate::registerRFVListeners(int dimension,
                                         const std::string& expression)
@@ -3407,6 +3510,7 @@ KnobHelper::setExpressionInternal(int dimension,
     std::string exprResult;
     std::string exprCpy;
     std::string exprInvalid;
+    ExpressionReadRecorder validationReads(this);
     try {
         exprCpy = validateExpression(expression, dimension, hasRetVariable, &exprResult);
     } catch (const std::exception &e) {
@@ -3438,6 +3542,7 @@ KnobHelper::setExpressionInternal(int dimension,
                 EXPR_RECURSION_LEVEL();
                 _imp->parseListenersFromExpression(dimension);
             }
+            registerExpressionReads(dimension, validationReads.getReads(), false);
             std::string metadataCycle;
             {
                 QMutexLocker k(&_imp->expressionMutex);
@@ -3462,39 +3567,6 @@ KnobHelper::setExpressionInternal(int dimension,
     //Notify the expr. has changed
     expressionChanged(dimension);
 } // KnobHelper::setExpressionInternal
-
-void
-KnobHelper::replaceNodeNameInExpression(int dimension,
-                                        const std::string& oldName,
-                                        const std::string& newName)
-{
-    assert(dimension >= 0 && dimension < _imp->dimension);
-    KnobHolder* holder = getHolder();
-    if (!holder) {
-        return;
-    }
-    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-    if (!isEffect) {
-        return;
-    }
-
-    std::string hasExpr = getExpression(dimension);
-    if ( hasExpr.empty() ) {
-        return;
-    }
-    isEffect->beginChanges();
-    bool hasRetVar = isExpressionUsingRetVariable(dimension);
-    try {
-        //Change in expressions the script-name
-        QString estr = QString::fromUtf8( hasExpr.c_str() );
-        estr.replace( QString::fromUtf8( oldName.c_str() ), QString::fromUtf8( newName.c_str() ) );
-        hasExpr = estr.toStdString();
-        setExpression(dimension, hasExpr, hasRetVar, false);
-    } catch (...) {
-    }
-
-    isEffect->endChanges(true);
-}
 
 void
 KnobHelper::replaceNodeNameInExpressionCode(int dimension,

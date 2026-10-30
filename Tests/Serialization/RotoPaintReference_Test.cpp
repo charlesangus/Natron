@@ -132,6 +132,28 @@ normalizedYaml(const std::string& yaml)
     return out;
 }
 
+// Each node's cacheID is a UUID made at creation, so it differs between the run that recorded the
+// reference and this one. LoadThenSaveIsStable keeps them, as a reload must restore them.
+std::string
+withoutCacheIDs(const std::string& yaml)
+{
+    std::istringstream in(yaml);
+    std::string out;
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t key = line.find_first_not_of(' ');
+        if ((key != std::string::npos) && (line.compare(key, 8, "cacheID:") == 0)) {
+            continue;
+        }
+        out += line;
+        if (!in.eof()) {
+            out += '\n';
+        }
+    }
+
+    return out;
+}
+
 } // anonymous namespace
 
 class RotoPaintReferenceTest
@@ -210,7 +232,7 @@ TEST_F(RotoPaintReferenceTest, SavedProjectMatchesTheReference)
     ASSERT_TRUE(tmp.isValid());
     ASSERT_TRUE(buildProject());
 
-    const std::string yaml = saveYaml(tmp, "roto.ntpz");
+    const std::string yaml = withoutCacheIDs(saveYaml(tmp, "roto.ntpz"));
     ASSERT_FALSE(yaml.empty());
 
     const char* const record = std::getenv("NATRON_GOLDEN_RECORD_DIR");
@@ -224,7 +246,7 @@ TEST_F(RotoPaintReferenceTest, SavedProjectMatchesTheReference)
     std::string reference;
     ASSERT_TRUE(readFile(referencePath(), &reference)) << "no reference " << referencePath()
                                                        << ". Record it with NATRON_GOLDEN_RECORD_DIR=" << NATRON_TESTS_FIXTURES_DIR << "/roto-roundtrip and commit the file.";
-    EXPECT_EQ(normalizedYaml(reference), yaml);
+    EXPECT_EQ(withoutCacheIDs(normalizedYaml(reference)), yaml);
 }
 
 TEST_F(RotoPaintReferenceTest, LoadThenSaveIsStable)

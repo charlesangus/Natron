@@ -25,23 +25,39 @@
 
 #include "Global/Macros.h"
 
+#include <iostream>
+#include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
+#include <QString>
+#include <QTemporaryDir>
+
+#include <ofxImageEffect.h>
+
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "HashSweepEdits.h"
+#include "Native/RawFixtures.h"
 #include "NativeParity.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
@@ -49,13 +65,18 @@
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
+#include "Engine/Nodes/Raw/RawToImage.h"
 #include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/STMap.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_USING
 
@@ -333,6 +354,70 @@ buildChainIn(const AppInstancePtr& app,
     return true;
 }
 
+// Two Transforms in a row, which render differently with and without concatenation.
+bool
+buildTransformPair(const AppInstancePtr& app,
+                   StressGraph* g,
+                   std::string* error)
+{
+    setFormat(app);
+    const NodeCollectionPtr root = app->getProject();
+    const int source = paritySource(app, root, g, 0, 0);
+    const int first = addNode(g, createIn(app, root, PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM));
+    const int second = addNode(g, createIn(app, root, PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM));
+
+    if ((source < 0) || (first < 0) || (second < 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    if (!connect(*g, source, first, 0) || !connect(*g, first, second, 0)) {
+        return fail(error, "could not connect the graph");
+    }
+    addKnob(g, first, kTransformNodeParamTranslate, 0, { 0.5, 1.25, -0.75 });
+    addKnob(g, first, kTransformNodeParamRotate, 0, { 7., -3. });
+    addKnob(g, second, kTransformNodeParamTranslate, 1, { 0.5, -1.5 });
+    addKnob(g, second, kTransformNodeParamScale, 0, { 0.8, 1.2 });
+    g->toggles = { first, second };
+    g->probe = second;
+    g->window = kWindow;
+
+    return true;
+}
+
+// A parity source into an AddLayers that adds the project layer "mask", then a Grade.
+bool
+buildAddLayers(const AppInstancePtr& app,
+               StressGraph* g,
+               std::string* error)
+{
+    setFormat(app);
+    const NodeCollectionPtr root = app->getProject();
+    std::string why;
+    if (app->getProject()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
+        return fail(error, "could not register the mask layer: " + why);
+    }
+    const int source = paritySource(app, root, g, 0, 0);
+    const int add = addNode(g, createIn(app, root, PLUGINID_NATRON_ADDLAYERS));
+    const int grade = addNode(g, createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE));
+
+    if ((source < 0) || (add < 0) || (grade < 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    if (!connect(*g, source, add, 0) || !connect(*g, add, grade, 0)) {
+        return fail(error, "could not connect the graph");
+    }
+    KnobChannelSetPtr layers = std::dynamic_pointer_cast<KnobChannelSet>(g->nodes[add]->getKnobByName(kAddLayersParamLayers));
+    if (!layers) {
+        return fail(error, "AddLayers has no layers knob");
+    }
+    layers->setLayer(0, "mask", NULL);
+    addKnob(g, grade, kGradeParamWhite, 0, { 1., 0.5, 2. });
+    g->toggles = { add, grade };
+    g->probe = grade;
+    g->window = kWindow;
+
+    return true;
+}
+
 // (4) Grade -> Blur -> Transform with expressions and links across the nodes.
 bool
 buildChain(const AppInstancePtr& app,
@@ -468,6 +553,166 @@ buildErode(const AppInstancePtr& app,
     return true;
 }
 
+// Version n of a flat RGBA EXR: each version has another size and value.
+bool
+writeExrVersion(const std::string& path,
+                int version,
+                std::string* error)
+{
+    const int width = 24 + 8 * version;
+    const int height = 16 + 4 * version;
+    OIIO::ImageSpec spec(width, height, 4, OIIO::TypeDesc::FLOAT);
+
+    spec.channelnames = { "R", "G", "B", "A" };
+    spec.alpha_channel = 3;
+    std::vector<float> pixels((std::size_t)width * height * 4, 0.2f + 0.1f * (float)version);
+    for (std::size_t i = 3; i < pixels.size(); i += 4) {
+        pixels[i] = 1.f;
+    }
+    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+    if (!out || !out->open(path, spec) || !out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) || !out->close()) {
+        return fail(error, "could not write " + path);
+    }
+
+    return true;
+}
+
+// Even versions hold the Bayer fixture's bytes, odd ones the linear DNG's.
+bool
+writeRawVersion(const std::string& path,
+                int version,
+                std::string* error)
+{
+    const std::vector<char> bytes = readFixtureBytes(((version % 2) == 0 ? bayerFixture() : linearFixture()).path());
+
+    if (bytes.empty() || !writeFixtureBytes(path, bytes.data(), bytes.size())) {
+        return fail(error, "could not write " + path);
+    }
+
+    return true;
+}
+
+// Writes version 0 of a file and forgets what an earlier pass recorded about it, as a fresh
+// session would.
+bool
+startFile(const std::string& path,
+          const std::function<bool(const std::string&, int, std::string*)>& write,
+          StressGraph* g,
+          std::string* error)
+{
+    if (!write(path, 0, error)) {
+        return false;
+    }
+    FileStampRegistry::instance().invalidate(path);
+    OiioReadSupport::evictHeaders(std::vector<std::string>(1, path));
+    RawDecodeSupport::evict(std::vector<std::string>(1, path));
+    g->files.push_back([path, write](int version, std::string* err) {
+        return write(path, version, err);
+    });
+
+    return true;
+}
+
+int
+readOf(const AppInstancePtr& app,
+       const NodeCollectionPtr& parent,
+       StressGraph* g,
+       const std::string& path)
+{
+    const NodePtr read = createIn(app, parent, PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ);
+    KnobStringBase* file = read ? dynamic_cast<KnobStringBase*>(read->getKnobByName(kOfxImageEffectFileParamName).get()) : NULL;
+
+    if (!file) {
+        return -1;
+    }
+    file->setValue(path);
+
+    return addNode(g, read);
+}
+
+// A Read of a flat EXR under a Grade, so the Grade's images are cached under the Read's hash.
+bool
+buildPinnedExr(const AppInstancePtr& app,
+               const std::string& path,
+               StressGraph* g,
+               std::string* error)
+{
+    setFormat(app);
+    if (!startFile(path, writeExrVersion, g, error)) {
+        return false;
+    }
+    const NodeCollectionPtr root = app->getProject();
+    const int read = readOf(app, root, g, path);
+    const int grade = addNode(g, createIn(app, root, PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE));
+
+    if ((read < 0) || (grade < 0) || !connect(*g, read, grade, 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    g->probe = grade;
+    g->window = kWindow;
+
+    return true;
+}
+
+// A Read of a raw file under RawToImage, rendered over a corner of the Bayer fixture's active area.
+bool
+buildPinnedRaw(const AppInstancePtr& app,
+               const std::string& path,
+               StressGraph* g,
+               std::string* error)
+{
+    setFormat(app);
+    std::string headerError;
+    const std::shared_ptr<const RawDecodeSupport::Header> header = RawDecodeSupport::readHeader(bayerFixture().path(), &headerError);
+    if (!header) {
+        return fail(error, headerError);
+    }
+    if (!startFile(path, writeRawVersion, g, error)) {
+        return false;
+    }
+    const NodeCollectionPtr root = app->getProject();
+    const int read = readOf(app, root, g, path);
+    const int convert = addNode(g, createIn(app, root, PLUGINID_NATRON_RAWTOIMAGE));
+
+    if ((read < 0) || (convert < 0) || !connect(*g, read, convert, 0)) {
+        return fail(error, "could not create the nodes");
+    }
+    g->probe = convert;
+    g->window = RectI(header->window.x1, header->window.y1, header->window.x1 + 48, header->window.y1 + 32);
+
+    return true;
+}
+
+// Renders the probe again with nothing changed.
+Step
+renderAgain()
+{
+    Step step;
+
+    step.kind = eOpTime;
+
+    return step;
+}
+
+// Rewrite, render the stale file twice, Reload, and again with a second rewrite. The Read is node 0.
+Options
+pinnedUntilReloadScript()
+{
+    Options options;
+
+    options.ops = opBit(eOpRewriteFile) | opBit(eOpReload);
+    options.seeded = false;
+    options.scripted.push_back(scriptedStep(eOpRewriteFile, rewriteFilePrim(0, 1)));
+    options.scripted.push_back(renderAgain());
+    options.scripted.push_back(scriptedStep(eOpReload, reloadPrim(0)));
+    options.scripted.push_back(renderAgain());
+    options.scripted.push_back(scriptedStep(eOpRewriteFile, rewriteFilePrim(0, 2)));
+    options.scripted.push_back(renderAgain());
+    options.scripted.push_back(scriptedStep(eOpReload, reloadPrim(0)));
+
+    return options;
+}
+
 Options
 defaults()
 {
@@ -535,6 +780,173 @@ TEST_F(CacheStressTest, FrameExpression)
     EXPECT_EQ(0, expectClean(getApp(), buildChain, kSeeds, options));
 }
 
+// An RGB render of a node leaves an image a later RGBA request of the same node must not serve,
+// since its alpha is not the node's. Only Legacy renders the layers asked for, so the RGB render is
+// a Legacy one; the RGBA one runs in both modes.
+TEST_F(CacheStressTest, RgbThenRgbaRequest)
+{
+    const AppInstancePtr app = getApp();
+    StressGraph g;
+    std::string error;
+    ASSERT_TRUE(buildChain(app, &g, &error)) << error;
+    const NodePtr probe = g.nodes[g.probe];
+    const std::list<ImageLayerDesc> rgb(1, ImageLayerDesc::getRGBComponents());
+
+    clearEverything(app);
+    RenderedPlane reference;
+    ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, eRenderSchedulerModeLegacy, true, &reference, &error)) << error;
+    ASSERT_EQ(4u, reference.channels.size());
+
+    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
+    for (RenderSchedulerModeEnum mode : modes) {
+        clearEverything(app);
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &planes, &error, false)) << error;
+        RenderedPlane got;
+        ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, mode, false, &got, &error)) << error;
+        EXPECT_EQ(std::string(), compareExact(reference, got)) << "mode " << (int)mode;
+    }
+}
+
+// Expressions whose results fall outside the Blur size's range render the clamped size.
+TEST_F(CacheStressTest, ExpressionOutsideRange)
+{
+    Options options = defaults();
+    options.ops |= opBit(eOpFrameExpression);
+    // Knob target 3 is the Blur's size, at least 0.
+    options.scripted.push_back(scriptedStep(eOpSetExpression, expressionPrim(3, 0, "-3")));
+    options.scripted.push_back(scriptedStep(eOpTime, seekPrim(2)));
+    options.scripted.push_back(scriptedStep(eOpFrameExpression, expressionPrim(3, 0, "frame - 4")));
+    options.scripted.push_back(scriptedStep(eOpTime, seekPrim(6)));
+    options.scripted.push_back(scriptedStep(eOpTime, seekPrim(1)));
+    EXPECT_EQ(0, expectClean(getApp(), buildChain, kSeeds, options));
+}
+
+// Transform concatenation is a render-affecting setting: toggling it re-keys every node through
+// the project digest.
+TEST_F(CacheStressTest, RenderSettingEdit)
+{
+    Options options = defaults();
+    // Knob targets of buildTransformPair: first translate.x 0, first rotate 1.
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(1, 0, 7.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, settingPrim("transformCatSupport", 0, 0.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 1.25)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, settingPrim("transformCatSupport", 0, 1.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, settingPrim("transformCatSupport", 0, 0.)));
+    EXPECT_EQ(0, expectClean(getApp(), buildTransformPair, kSeeds, options));
+    EXPECT_TRUE(appPTR->getCurrentSettings()->isTransformConcatenationEnabled());
+}
+
+// A knob that is neither persistent nor evaluate-on-change stays out of the node hash, so it must
+// not change what a node renders: after each such edit the cached render equals an empty-cache one.
+TEST_F(CacheStressTest, NonHashedKnobSweep)
+{
+    const std::vector<HashSweep::PluginVersion> plugins = HashSweep::sweptPlugins();
+    ASSERT_FALSE(plugins.empty());
+    setFormat(getApp());
+    const NodeCollectionPtr root = getApp()->getProject();
+    std::vector<std::string> failures;
+    int edits = 0;
+
+    for (std::size_t i = 0; i < plugins.size(); ++i) {
+        const HashSweep::PluginVersion& plugin = plugins[i];
+        if (plugin.isOfx) {
+            continue;
+        }
+        getApp()->getProject()->reset(false, true);
+        appPTR->clearAllCaches();
+        StressGraph g;
+        const int source = paritySource(getApp(), root, &g, 0, 0);
+        const int index = addNode(&g, createIn(getApp(), root, plugin.id, plugin.major));
+        if ((source < 0) || (index < 0)) {
+            continue;
+        }
+        const NodePtr node = g.nodes[index];
+        if (!node->getEffectInstance() || (node->getEffectInstance()->getOutputDataKind() != eDataKindImage)) {
+            continue;
+        }
+        if (node->getNInputs() > 0) {
+            node->connectInput(g.nodes[source], 0);
+        }
+        std::vector<std::pair<KnobIPtr, int>> targets;
+        const KnobsVec knobs = node->getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            // Buttons are actions (render, track, reload), not state; pages, groups and
+            // separators only lay out the panel. Toggling their bool value would press them.
+            const KnobI* k = it->get();
+            if (dynamic_cast<const KnobButton*>(k) || dynamic_cast<const KnobPage*>(k) || dynamic_cast<const KnobGroup*>(k) || dynamic_cast<const KnobSeparator*>(k)) {
+                continue;
+            }
+            if (*it && !(*it)->isRenderHashed()) {
+                for (int d = 0; d < (*it)->getDimension(); ++d) {
+                    targets.push_back(std::make_pair(*it, d));
+                }
+            }
+        }
+        if (targets.empty()) {
+            continue;
+        }
+        RenderedPlane plane;
+        std::string error;
+        if (!renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) {
+            continue;
+        }
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            const KnobIPtr& knob = targets[t].first;
+            const int dim = targets[t].second;
+            HashSweep::KnobEdit edit;
+            bool unsupported = false;
+            if (!HashSweep::staticValueSkipReason(knob, dim).empty() || !HashSweep::makeEdit(knob, dim, &edit, &unsupported).empty() || unsupported) {
+                continue;
+            }
+            const std::string label = plugin.describe() + " " + HashSweep::knobLabel(knob, dim);
+            if (!edit.apply()) {
+                continue;
+            }
+            ++edits;
+            RenderedPlane cached, reference;
+            std::string cachedError, referenceError;
+            const bool cachedOk = renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &cached, &cachedError);
+            clearEverything(getApp());
+            const bool referenceOk = renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, true, &reference, &referenceError);
+            if (referenceOk && !cachedOk) {
+                failures.push_back(label + ": the cached render failed: " + cachedError);
+            } else if (referenceOk) {
+                const std::string diff = compareExact(reference, cached);
+                if (!diff.empty()) {
+                    failures.push_back(label + ": edit " + edit.what + ": " + diff);
+                }
+            }
+            edit.revert();
+            // Refills the caches under the reverted state for the next edit.
+            (void)renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error);
+        }
+    }
+
+    std::cout << "[non-hashed sweep] " << edits << " edits" << std::endl;
+    std::string joined;
+    for (std::size_t i = 0; i < failures.size(); ++i) {
+        joined += "  " + failures[i] + "\n";
+    }
+    EXPECT_TRUE(failures.empty()) << failures.size() << " non-hashed knob(s) change the render; make each persistent or evaluate-on-change:\n"
+                                  << joined;
+}
+
+// Adding project layers the AddLayers node does not name (the registry refuses growing an existing
+// one) changes the registry the node and the project digest fold in.
+TEST_F(CacheStressTest, AddLayersRegistryChange)
+{
+    Options options = defaults();
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("cachestressExtra", 2)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 1.)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, addLayerPrim("cachestressOther", 3)));
+    options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(0, 0, 0.5)));
+    EXPECT_EQ(0, expectClean(getApp(), buildAddLayers, kSeeds, options));
+}
+
 // A whole-value expression (getValue() with no dimension) records a dimension -1 dependency that
 // adds nothing to the reader's hash, so editing the source leaves the reader's image in place.
 // Fixed by M72 - Expression Dependencies (E1); enable it there.
@@ -561,6 +973,30 @@ TEST_F(CacheStressTest, ViewerABSwitch)
     options.scripted.push_back(scriptedStep(eOpSetValue, setValuePrim(kViewerXWhite, 0, 1.)));
     options.scripted.push_back(scriptedStep(eOpViewerB, viewerBPrim(1)));
     EXPECT_EQ(0, expectClean(getApp(), buildViewer, kSeeds, options));
+}
+
+// A Read keeps rendering the file as it was loaded, or fails, until Reload; it never mixes in the
+// rewritten file, and after Reload it renders the new one.
+TEST_F(CacheStressTest, ReadPinnedUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("pinned.exr")).toStdString();
+    const GraphBuilder builder = [path](const AppInstancePtr& app, StressGraph* g, std::string* error) {
+        return buildPinnedExr(app, path, g, error);
+    };
+    EXPECT_EQ(0, expectClean(getApp(), builder, { 1u }, pinnedUntilReloadScript()));
+}
+
+TEST_F(CacheStressTest, RawReadPinnedUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("pinned.cr2")).toStdString();
+    const GraphBuilder builder = [path](const AppInstancePtr& app, StressGraph* g, std::string* error) {
+        return buildPinnedRaw(app, path, g, error);
+    };
+    EXPECT_EQ(0, expectClean(getApp(), builder, { 1u }, pinnedUntilReloadScript()));
 }
 
 // A one-pixel erode is an identity at mipmap 1 and not at mipmap 0, so the identity answer of one

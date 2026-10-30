@@ -2871,6 +2871,12 @@ Project::onKnobValueChanged(KnobI* knob,
     bool ret = true;
     bool shouldAutoSave = false;
 
+    // Nodes that read a project variable outside an expression hash its value themselves.
+    if (knob && (RFV::findDeclaredVariable(this, knob->getName()).get() == knob)) {
+        RFV::rehashExtraContextReaders(*this, knob->getName(), reason != eValueChangedReasonTimeChanged);
+        RFV::scheduleReaderRefresh(getApp());
+    }
+
     if ( knob == _imp->viewsList.get() ) {
         /**
          * All cache entries are linked to a view index which may no longer be correct since the user changed the project settings.
@@ -4029,6 +4035,8 @@ Project::onUserKnobsChanged()
     RFV::refreshNodeVariableGroups(*this);
     // An expression reading rfv may name a variable the project declares only from here on.
     RFV::refreshExpressionListeners(*this);
+    RFV::rehashExtraContextReaders(*this, std::string());
+    RFV::scheduleReaderRefresh(getApp());
     // Such an expression failed while the variable was undeclared and is applied again.
     AppInstancePtr app = getApp();
     if (app) {

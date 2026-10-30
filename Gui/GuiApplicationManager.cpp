@@ -365,6 +365,9 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_METADATA_GROUPING:
         path = NATRON_ICONS_PATH "lucide/tags.svg";
         break;
+    case NATRON_PIXMAP_RFV_GROUPING:
+        path = NATRON_ICONS_PATH "natron/rfv.svg";
+        break;
     case NATRON_PIXMAP_FILTER_GROUPING:
         path = NATRON_ICONS_PATH "natron/filter.svg";
         break;
@@ -1219,6 +1222,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_3D,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
+    PLUGIN_GROUP_RFV,
     PLUGIN_GROUP_MULTIVIEW,
     PLUGIN_GROUP_TOOLSETS,
     PLUGIN_GROUP_OTHER,
@@ -1258,6 +1262,8 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_DEEP_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
         e = NATRON_PIXMAP_METADATA_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_RFV)) {
+        e = NATRON_PIXMAP_RFV_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW)) {
         e = NATRON_PIXMAP_MULTIVIEW_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TOOLSETS)) {

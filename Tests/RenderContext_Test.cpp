@@ -41,7 +41,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/RFV/ReverseFlowVariableSet.h"
+#include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
@@ -450,10 +450,10 @@ TEST_F(ContextReadSetGraph, BindingIdentityFollowsTheKnob)
 // binding capturing what the knob reads of the incoming context, the same at every request time.
 TEST_F(ContextReadSetGraph, SetStoresConstantsAsValuesAndTimeVaryingAsBindings)
 {
-    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
+    NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
     ASSERT_TRUE(bool(set));
     EffectInstancePtr effect = set->getEffectInstance();
-    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kReverseFlowVariableSetParamVariables));
+    KnobGroupPtr variables = std::dynamic_pointer_cast<KnobGroup>(set->getKnobByName(kRFVSetParamVariables));
     ASSERT_TRUE(effect && variables);
     KnobDoublePtr constant = effect->createDoubleKnob("constant", "constant", 1);
     KnobDoublePtr animated = effect->createDoubleKnob("animated", "animated", 1);

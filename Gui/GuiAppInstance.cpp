@@ -53,6 +53,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
@@ -1175,8 +1176,15 @@ GuiAppInstance::setLastViewerUsingTimeline(const NodePtr& node)
         return;
     }
     if ( node->isEffectViewer() ) {
-        QMutexLocker k(&_imp->lastTimelineViewerMutex);
-        _imp->lastTimelineViewer = node;
+        bool changed = false;
+        {
+            QMutexLocker k(&_imp->lastTimelineViewerMutex);
+            changed = (_imp->lastTimelineViewer != node);
+            _imp->lastTimelineViewer = node;
+        }
+        if (changed) {
+            RFV::scheduleReaderRefresh(std::const_pointer_cast<AppInstance>(shared_from_this()));
+        }
     }
 }
 
@@ -1190,6 +1198,16 @@ GuiAppInstance::getLastViewerUsingTimeline() const
     }
 
     return _imp->lastTimelineViewer->isEffectViewer();
+}
+
+NodePtr
+GuiAppInstance::getActiveViewerNode() const
+{
+    ViewerTab* tab = _imp->_gui ? _imp->_gui->getActiveViewer() : 0;
+    ViewerInstance* viewer = tab ? tab->getInternalNode() : 0;
+    NodePtr node = viewer ? viewer->getNode() : NodePtr();
+
+    return node ? node : AppInstance::getActiveViewerNode();
 }
 
 void

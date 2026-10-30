@@ -45,6 +45,7 @@
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
 #include "Engine/Settings.h"
 #include "Engine/ThreadPool.h"
@@ -1640,6 +1641,8 @@ Node::onInputChanged(int inputNb,
     if (isInspector) {
         isInspector->refreshActiveInputs(inputNb, isInputA);
     }
+    // The path from an RFVRead to the viewer may run through this connection.
+    RFV::scheduleReaderRefresh(app);
 
     bool shouldDoInputChanged = ( !getApp()->getProject()->isProjectClosing() && !getApp()->isCreatingNodeTree() ) ||
                                 _imp->effect->isRotoPaintNode();
@@ -1993,6 +1996,7 @@ InspectorNode::setInputA(int inputNb)
         computeHash();
     }
     Q_EMIT refreshOptionalState();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 void
@@ -2010,6 +2014,7 @@ InspectorNode::setInputB(int inputNb)
         computeHash();
     }
     Q_EMIT refreshOptionalState();
+    RFV::scheduleReaderRefresh(getApp());
 }
 
 RenderContextReadSet

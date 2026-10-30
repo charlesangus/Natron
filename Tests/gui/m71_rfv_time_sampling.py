@@ -1,7 +1,7 @@
-"""Reverse-Flow Variables sampled over time: a variable animated on a ReverseFlowVariableSet is read at
+"""Reverse-Flow Variables sampled over time: a variable animated on a RFVSet is read at
 the sample times of motion blur and of a TimeBlur node above the Set, not only at the output frame.
 
-Graph: CheckerBoard -> Transform -> ReverseFlowVariableSet -> Viewer. The Set declares a Double v keyed
+Graph: CheckerBoard -> Transform -> RFVSet -> Viewer. The Set declares a Double v keyed
 0 at frame 1 and V_END at frame 10; the Transform's translate x is the expression rfv.v. All
 comparisons are against the sharp render of the same frame, never against exact pixel values.
 
@@ -34,7 +34,7 @@ POLL_TIMEOUT_S = 25.0
 PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
 PLUGIN_TRANSFORM = "net.sf.openfx.TransformPlugin"
 PLUGIN_TIMEBLUR = "net.sf.openfx.TimeBlur"
-PLUGIN_SET = "ReverseFlowVariableSet"
+PLUGIN_SET = "RFVSet"
 PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
 
 VARIABLE = "v"

@@ -140,9 +140,13 @@ set(Tests_SOURCES
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
+    RFVMetadata_Test.cpp
+    RFVPatternMatch_Test.cpp
     RFVPython_Test.cpp
+    RFVRead_Test.cpp
     RFVRender_Test.cpp
     RFVSetNode_Test.cpp
+    RFVSwitch_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp

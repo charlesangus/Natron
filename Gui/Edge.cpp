@@ -260,6 +260,15 @@ Edge::isOutputEdge() const
     return _imp->isOutputEdge;
 }
 
+QColor
+Edge::highlightColor(int alpha)
+{
+    double r, g, b;
+    appPTR->getCurrentSettings()->getSelectionColor(&r, &g, &b);
+
+    return QColor::fromRgbF(r, g, b, alpha / 255.);
+}
+
 void
 Edge::setDefaultColor(const QColor & color)
 {
@@ -864,7 +873,7 @@ Edge::paint(QPainter *painter,
     if (_imp->useSelected) {
         color = arrowColor = Qt::white;
     } else if (_imp->useHighlight) {
-        color = arrowColor = Qt::green;
+        color = arrowColor = highlightColor();
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {

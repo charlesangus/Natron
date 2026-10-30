@@ -46,6 +46,7 @@
 #include "Gui/KnobGuiChannelSet.h"
 #include "Gui/KnobGuiChoice.h"
 #include "Gui/KnobGuiColor.h"
+#include "Gui/KnobGuiColorWheelGrid.h"
 #include "Gui/KnobGuiFile.h"
 #include "Gui/KnobGuiGroup.h"
 #include "Gui/KnobGuiLayerSelect.h"
@@ -123,10 +124,15 @@ KnobGuiFactory::createGuiForKnob(KnobIPtr knob,
                                  KnobGuiContainerI *container) const
 {
     assert(knob);
-    // A range knob is a plain KnobDouble, whose typeName() is FINAL, so its hint is checked first.
+    // A range knob is a plain KnobDouble and a wheel grid a plain KnobSeparator, whose
+    // typeName() is FINAL, so their hints are checked first.
     KnobDoublePtr isDouble = std::dynamic_pointer_cast<KnobDouble>(knob);
     if (isDouble && isDouble->isRangeWidget()) {
         return KnobGuiTrapezoid::BuildKnobGui(knob, container);
+    }
+    KnobSeparatorPtr isSeparator = std::dynamic_pointer_cast<KnobSeparator>(knob);
+    if (isSeparator && !isSeparator->getColorWheelGrid().empty()) {
+        return KnobGuiColorWheelGrid::BuildKnobGui(knob, container);
     }
     std::map<std::string, LibraryBinary *>::const_iterator it = _loadedKnobs.find( knob->typeName() );
     if ( it == _loadedKnobs.end() ) {

@@ -833,6 +833,39 @@ public:
         return true;
     }
 
+    /**
+     * @brief The working-space RGB a colour wheel shows at hueDegrees (0 on the right,
+     * counter-clockwise) and chroma.
+     **/
+    typedef std::function<void(double hueDegrees, double chroma, double rgb[3])> ColorWheelColour;
+
+    /**
+     * @brief One wheel of a colour wheel grid: its title, its 1-dimensional hue (degrees, the
+     * angle), chroma (the radius, the rim starting at its display maximum) and luminance (the
+     * slider beneath) knobs, and its colours.
+     **/
+    struct ColorWheelSpec {
+        std::string label;
+        KnobDoubleWPtr hue;
+        KnobDoubleWPtr chroma;
+        KnobDoubleWPtr luminance;
+        ColorWheelColour colour;
+    };
+
+    /**
+     * @brief Shows wheels, two to a row, in a grid below this separator. The wheels edit the
+     * knobs, which keep their own rows elsewhere for typed values. Call before the GUI is created.
+     **/
+    void setColorWheelGrid(const std::vector<ColorWheelSpec>& wheels)
+    {
+        _colorWheels = wheels;
+    }
+
+    const std::vector<ColorWheelSpec>& getColorWheelGrid() const
+    {
+        return _colorWheels;
+    }
+
 private:
 
 
@@ -845,6 +878,7 @@ private:
 
 private:
     static const std::string _typeNameStr;
+    std::vector<ColorWheelSpec> _colorWheels;
 };
 
 /******************************RGBA_KNOB**************************************/

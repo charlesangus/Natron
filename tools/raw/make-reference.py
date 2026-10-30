@@ -89,6 +89,7 @@ DT_IOP_TEMP_D65_LATE = 4
 USER_COEFFS = (2.2, 1.0, 1.6)
 
 DT_COLORSPACE_LIN_REC709 = 3
+DT_COLORSPACE_LIN_REC2020 = 4
 DT_COLORSPACE_EMBEDDED_MATRIX = 10
 DT_COLORSPACE_STANDARD_MATRIX = 11
 DT_COLORSPACE_ENHANCED_MATRIX = 12
@@ -134,16 +135,16 @@ def highlights_params(mode, strength=0.0, clip=1.0, noise_level=0.0, iterations=
                        iterations, 6, 0.4, 2.0, RECOVERY_MODES[recovery], solid_color)
 
 
-def colorin_params(input_profile, normalize=0):
+def colorin_params(input_profile, normalize=0, work_profile=DT_COLORSPACE_LIN_REC709):
     # dt_iop_colorin_params_t, version 7: perceptual intent (a matrix profile ignores it), no blue
-    # mapping, linear Rec. 709 working space.
+    # mapping, and the working space (linear Rec. 709 unless a job asks otherwise).
     return struct.pack("<i%dsiiii%ds" % (ICC_LEN, ICC_LEN), input_profile, b"", 0, normalize, 0,
-                       DT_COLORSPACE_LIN_REC709, b"")
+                       work_profile, b"")
 
 
-def colorout_params():
-    # dt_iop_colorout_params_t, version 5: linear Rec. 709.
-    return struct.pack("<i%dsi" % ICC_LEN, DT_COLORSPACE_LIN_REC709, b"", 0)
+def colorout_params(profile=DT_COLORSPACE_LIN_REC709):
+    # dt_iop_colorout_params_t, version 5: linear Rec. 709 unless a job asks otherwise.
+    return struct.pack("<i%dsi" % ICC_LEN, profile, b"", 0)
 
 
 def flip_params():
@@ -226,13 +227,13 @@ def history_entry(num, operation, enabled, version, params):
 
 
 def develop_entries(demosaic, highlights="opposed", input_profile=DT_COLORSPACE_STANDARD_MATRIX, normalize=0,
-                    demosaic_options=None, highlights_options=None, extra=()):
+                    demosaic_options=None, highlights_options=None, extra=(), work_profile=DT_COLORSPACE_LIN_REC709):
     entries = [
         ("flip", 0, 2, flip_params()),
         ("highlights", 0 if highlights == "unclipped" else 1, 4, highlights_params(highlights, **(highlights_options or {}))),
         ("demosaic", 1, 6, demosaic_params(demosaic, **(demosaic_options or {}))),
-        ("colorin", 1, 7, colorin_params(input_profile, normalize)),
-        ("colorout", 1, 5, colorout_params()),
+        ("colorin", 1, 7, colorin_params(input_profile, normalize, work_profile)),
+        ("colorout", 1, 5, colorout_params(work_profile)),
     ]
     return entries + list(extra)
 
@@ -276,7 +277,7 @@ class Job:
     """One reference: a crop of a camera file's develop, or a synthetic DNG's mosaic."""
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None):
+                 log_line=None, mosaic=None, icc_type="LIN_REC709", half=False):
         self.name = name
         self.source = source
         self.entries = entries
@@ -287,6 +288,11 @@ class Job:
         self.log_line = log_line
         # (pattern, period) of a synthetic mosaic; None for a camera crop.
         self.mosaic = mosaic
+        # The export profile, darktable-cli's --icc-type.
+        self.icc_type = icc_type
+        # Store the reference as half float: the parity references a test only compares with,
+        # kept small; a test's inputs stay float.
+        self.half = half
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -517,14 +523,98 @@ def colour_calibration_jobs(coeffs):
     return jobs
 
 
-def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0):
+# dt_iop_colorbalancergb_params_t, version 5, in field order, with darktable's defaults; the last
+# field, saturation_formula, is an int (0 JzAzBz, 1 darktable UCS).
+COLORBALANCERGB_FIELDS = [
+    ("shadows_Y", 0.0), ("shadows_C", 0.0), ("shadows_H", 0.0),
+    ("midtones_Y", 0.0), ("midtones_C", 0.0), ("midtones_H", 0.0),
+    ("highlights_Y", 0.0), ("highlights_C", 0.0), ("highlights_H", 0.0),
+    ("global_Y", 0.0), ("global_C", 0.0), ("global_H", 0.0),
+    ("shadows_weight", 1.0), ("white_fulcrum", 0.0), ("highlights_weight", 1.0),
+    ("chroma_shadows", 0.0), ("chroma_highlights", 0.0), ("chroma_global", 0.0), ("chroma_midtones", 0.0),
+    ("saturation_global", 0.0), ("saturation_highlights", 0.0), ("saturation_midtones", 0.0),
+    ("saturation_shadows", 0.0), ("hue_angle", 0.0),
+    ("brilliance_global", 0.0), ("brilliance_highlights", 0.0), ("brilliance_midtones", 0.0),
+    ("brilliance_shadows", 0.0), ("mask_grey_fulcrum", 0.1845),
+    ("vibrance", 0.0), ("grey_fulcrum", 0.1845), ("contrast", 0.0),
+]
+COLORBALANCERGB_FORMULAS = {"jzazbz": 0, "ucs": 1}
+# init_presets() in src/iop/colorbalancergb.c: every other field at its default.
+COLORBALANCERGB_PRESETS = [
+    ("legacy", {"formula": "jzazbz", "chroma_global": 0.2, "saturation_shadows": 0.1,
+                "saturation_midtones": 0.05, "saturation_highlights": -0.05}),
+    ("natural-skin", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.30,
+                      "saturation_midtones": 0.0, "saturation_highlights": -0.5}),
+    ("vibrant-colors", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.5,
+                        "saturation_midtones": 0.0, "saturation_highlights": -0.25}),
+    ("standard", {"formula": "ucs", "saturation_global": 0.2, "saturation_shadows": 0.25,
+                  "saturation_midtones": 0.0, "saturation_highlights": -0.25}),
+]
+
+
+def colorbalancergb_params(formula="ucs", **fields):
+    unknown = set(fields) - {name for name, _ in COLORBALANCERGB_FIELDS}
+    if unknown:
+        raise ValueError("unknown colorbalancergb fields %s" % sorted(unknown))
+    values = [float(fields.get(name, default)) for name, default in COLORBALANCERGB_FIELDS]
+    return struct.pack("<%dfi" % len(values), *values, COLORBALANCERGB_FORMULAS[formula])
+
+
+def colour_balance_rgb_jobs():
+    """Color balance rgb on the CR2's crop, in darktable's linear Rec. 2020 working space.
+
+    Every job exports linear Rec. 2020. The "base" job is the same develop without the module:
+    NativeColorBalanceRGB_Test feeds it to ColorBalanceRGB in a linear Rec. 2020 project and
+    compares the result with each graded job. The base stays float, the test's input; the graded
+    jobs are stored as half float.
+    """
+    def develop(extra=()):
+        return develop_entries(BASE_DEMOSAIC[CR2], work_profile=DT_COLORSPACE_LIN_REC2020, extra=list(extra))
+
+    def graded(suffix, what, **params):
+        entry = ("colorbalancergb", 1, 5, colorbalancergb_params(**params))
+        return camera_job(CR2, "colorbalancergb-" + suffix, "demosaic %s, working space linear Rec. 2020, color "
+                          "balance rgb %s" % (BASE_DEMOSAIC[CR2], what), develop([entry]), icc_type="LIN_REC2020",
+                          half=True)
+
+    jobs = [camera_job(CR2, "colorbalancergb-base", "demosaic %s, working space linear Rec. 2020, no color balance "
+                       "rgb" % BASE_DEMOSAIC[CR2], develop(), icc_type="LIN_REC2020")]
+    for name, fields in COLORBALANCERGB_PRESETS:
+        jobs.append(graded("preset-" + name, "preset %s %s" % (name, sorted(fields.items())), **fields))
+    for formula in ("jzazbz", "ucs"):
+        jobs.append(graded("defaults-" + formula, "defaults, %s" % formula, formula=formula))
+    # The 4 ways: luminance, chroma and hue of each wheel.
+    wheels = [("offset", "global", 0.02, 0.005, 40.0), ("lift", "shadows", 0.15, 0.2, 200.0),
+              ("gain", "highlights", -0.1, 0.1, 80.0), ("power", "midtones", 0.1, 0.05, 300.0)]
+    for name, field, y, c, h in wheels:
+        params = {field + "_Y": y, field + "_C": c, field + "_H": h}
+        jobs.append(graded("4ways-" + name, "%s %s" % (name, sorted(params.items())), **params))
+    for formula in ("jzazbz", "ucs"):
+        for kind in ("saturation", "brilliance"):
+            for zone, amount in (("global", 0.3), ("shadows", 0.4), ("midtones", -0.3), ("highlights", 0.5)):
+                field = "%s_%s" % (kind, zone)
+                jobs.append(graded("%s-%s-%s" % (kind, zone, formula), "%s %+g, %s" % (field, amount, formula),
+                                   formula=formula, **{field: amount}))
+    chroma = {"chroma_global": 0.2, "chroma_shadows": 0.3, "chroma_midtones": -0.2, "chroma_highlights": 0.4}
+    jobs.append(graded("chroma", "chroma %s" % sorted(chroma.items()), **chroma))
+    jobs.append(graded("hue-shift", "hue shift 25", hue_angle=25.0))
+    for sign, amount in (("plus", 0.4), ("minus", -0.4)):
+        jobs.append(graded("vibrance-" + sign, "vibrance %+g" % amount, vibrance=amount))
+        jobs.append(graded("contrast-" + sign, "contrast %+g" % amount, contrast=amount))
+    masks = {"shadows_weight": 2.0, "highlights_weight": 0.5, "mask_grey_fulcrum": 0.3, "white_fulcrum": 1.5,
+             "grey_fulcrum": 0.25, "shadows_Y": 0.2, "highlights_Y": -0.2, "midtones_Y": 0.1, "contrast": 0.2}
+    jobs.append(graded("masks", "mask and fulcrum controls %s" % sorted(masks.items()), **masks))
+    return jobs
+
+
+def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc_type="LIN_REC709"):
     if os.path.exists(output):
         os.remove(output)
     config = os.path.join(scratch, "config-" + re.sub(r"[^a-z]+", "-", workflow))
     os.makedirs(config, exist_ok=True)
     command = [
         "darktable-cli", source, xmp, output,
-        "--hq", "true", "--apply-custom-presets", "false", "--icc-type", "LIN_REC709",
+        "--hq", "true", "--apply-custom-presets", "false", "--icc-type", icc_type,
         "--width", str(size), "--height", str(size),
         "--core", "--configdir", config, "--disable-opencl",
         "--conf", "plugins/darkroom/workflow=%s" % workflow,
@@ -547,9 +637,10 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
     return image[:, :, :3], result.stdout.splitlines()
 
 
-def write_reference(path, image, description):
-    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float32), photometric="rgb" if image.ndim == 3 else "minisblack",
-                     compression="zlib", description=description, metadata=None)
+def write_reference(path, image, description, half=False):
+    tifffile.imwrite(path, np.ascontiguousarray(image, dtype=np.float16 if half else np.float32),
+                     photometric="rgb" if image.ndim == 3 else "minisblack", compression="zlib", description=description,
+                     metadata=None)
 
 
 def probe_coefficients(fixture, scratch):
@@ -660,7 +751,7 @@ def run_job(job, out, scratch):
     xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
     write_xmp(xmp, job.entries, job.auto_presets_applied)
     image, log = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
-                               job.workflow, job.debug)
+                               job.workflow, job.debug, icc_type=job.icc_type)
     height, width = image.shape[:2]
     logged = [line.strip() for line in log if job.log_line and job.log_line.search(line)]
     for line in logged:
@@ -670,7 +761,8 @@ def run_job(job, out, scratch):
         result = image[top:top + CROP_SIZE, left:left + CROP_SIZE, :]
         if result.shape[:2] != (CROP_SIZE, CROP_SIZE):
             raise RuntimeError("%s: developed %dx%d, too small for the crop" % (job.name, width, height))
-        where = "developed %dx%d, crop left %d top %d size %d, linear Rec. 709" % (width, height, left, top, CROP_SIZE)
+        space = {"LIN_REC709": "linear Rec. 709", "LIN_REC2020": "linear Rec. 2020"}.get(job.icc_type, job.icc_type)
+        where = "developed %dx%d, crop left %d top %d size %d, %s" % (width, height, left, top, CROP_SIZE, space)
         summary = "mean %s max %s" % (result.mean(axis=(0, 1)), result.max())
     else:
         if (height, width) != (SYNTH_HEIGHT, SYNTH_WIDTH):
@@ -689,14 +781,14 @@ def run_job(job, out, scratch):
         os.environ.get("DARKTABLE_REF", "?"), job.source, job.workflow, job.what, where)
     if logged:
         description += "; darktable log: " + " | ".join(logged)
-    write_reference(os.path.join(out, job.name), result, description)
+    write_reference(os.path.join(out, job.name), result, description, job.half)
     print("%s: %s" % (job.name, summary))
 
 
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs))
+            + colour_calibration_jobs(coeffs) + colour_balance_rgb_jobs())
 
 
 def main():

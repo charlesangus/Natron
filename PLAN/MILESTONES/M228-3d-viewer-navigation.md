@@ -83,17 +83,30 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
   - verify: Xvfb GUI script — after navigating, create the camera, merge it into the viewed scene and look through it: the image matches the pre-creation view within tolerance.
   - size: M
 
-**Verification gate:** release gate green; scene GUI scripts (select, navigation presets, ortho, lock, create camera) pass under Xvfb; screenshots of each preset's shortcut-editor page and an ortho view shared before sign-off; user tries the Nuke preset on real hardware.
+**Prior verification gate:** release gate green; scene GUI scripts (select, navigation presets, ortho, lock, create camera) pass under Xvfb; screenshots of each preset's shortcut-editor page and an ortho view shared before sign-off; user tries the Nuke preset on real hardware.
 
 ## Phase 228.4: UAT round 1 fixes (user, 2026-10-27)
 
 - [x] M228.P4.T1 — Nuke preset: plain drag marquee-selects
-  - Ctrl-drag tumbles in the Nuke preset, so plain left-drag on empty space must marquee-select (click still selects).
+  - files: 3D viewer navigation bindings and GUI test
+  - approach: Keep Ctrl-drag for tumble in the Nuke preset and make plain left-drag on empty space marquee-select while a click still selects.
+  - verify: The Nuke-preset GUI test covers click, plain marquee and Ctrl-drag tumble.
+  - size: M
 - [x] M228.P4.T2 — Locked look-through viewport performance
-  - Viewport interaction is very slow while locked to a camera. Profile the locked path (likely per-event authoring of the camera prim / engine rebuild / full-scene re-sync) and make it as fast as the free camera.
+  - files: locked-camera navigation path, camera authoring, 3D GUI bench
+  - approach: Profile the locked path and remove per-event camera authoring, engine rebuild or full-scene resync so it is as fast as the free camera.
+  - verify: The locked-view bench remains within the signed-off delta from free navigation.
+  - size: M
 - [x] M228.P4.T3 — One-step lock
-  - "Lock" with no look-through camera: one camera in the scene locks to it directly; several open a menu of cameras to pick from. Also add the camera list to the look-through control so lock is one step.
+  - files: 3D viewer camera menu and GUI test
+  - approach: With no current look-through camera, lock directly when the scene has one camera and open a camera menu when it has several; expose the same list in the look-through control.
+  - verify: GUI coverage checks zero, one and several cameras and reaches the locked state in one action.
+  - size: M
 - [ ] M228.P4.T4 — Rebuild, AppImage, re-UAT
+  - files: release build artifacts, M228 UAT guide
+  - approach: Run the release and GUI gates, package the AppImage and refresh the UAT checklist and screenshots.
+  - verify: Gates are green and the replacement artifact launches on the target host.
+  - size: S
 
 ## Decisions
 
@@ -102,3 +115,19 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 - 2026-10-27 — A plain left-drag marquee-selects wherever it starts, in every preset (Nuke docs: "click and drag a marquee"); a click selects, Ctrl+drag tumbles. Locked navigation: the view draws a transient camera during the gesture and writes the camera knobs once on release (one undo step); wheel runs commit 300 ms after the last step. Root cause was a knob write → evaluate → full scene re-sync per mouse event.
 - 2026-10-27 — UAT round 1 (user): fixes in Phase 228.4. Lock with several cameras offers a menu (PM call: one camera locks directly).
 - 2026-10-27 — **Choices (bosley-native-nodes):** Nuke preset follows the Nuke 17 docs (Ctrl+left tumble, Alt+left pan, Alt+middle dolly; plain middle-drag pan added); Back/Left/Bottom views added; clip planes per viewer, not saved; a camera created from the view is not auto-connected (as Nuke). Release gate 568/568; GUI checks pass; draft PR #137; UAT pending.
+
+## Phase 228.5: UAT round 2 fixes
+
+- [ ] M228.P5.T1 — Keep locked-view camera knobs synchronized
+  - files: `Gui/SceneViewport*`, camera node knob synchronization, 3D viewer GUI test
+  - approach: Commit navigation changes back to the locked camera as one undoable edit and refresh its visible knobs immediately, without reintroducing per-motion evaluation stalls.
+  - verify: Navigate while locked, then inspect and undo the camera knobs; values and view remain consistent.
+  - size: M
+
+- [ ] M228.P5.T2 — Fix NVIDIA USDRender crashes in the UAT scene
+  - files: USDRender/Hydra GL lifecycle, crash regression harness, M228 UAT fixture
+  - approach: Reproduce with `M228-r2-scene.ntpz` and the supplied crash log, isolate the invalid GL/Hydra lifetime or command path, and fail safely if the driver cannot execute it.
+  - verify: The supplied scene renders repeatedly on the NVIDIA target without a segfault and still passes llvmpipe coverage.
+  - size: L
+
+**Verification gate:** release and 3D GUI suites pass; the supplied NVIDIA scene is crash-free; camera knobs track locked navigation; the user accepts the replacement AppImage.

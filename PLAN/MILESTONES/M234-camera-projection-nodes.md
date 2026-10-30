@@ -64,7 +64,7 @@ their images through M233 - Live Node Textures. Survey:
   - verify: gtest — an exported card projection opened through USDRead and rendered with USDRender matches the live USDProject3D render within tolerance on a finely subdivided card.
   - size: M
 
-**Verification gate:** release gate green; strict-GL projection tests pass; on real hardware a tracked camera from an `.abc` projects a plate sequence onto cards and a sphere live in the 3D view and in USDRender; screenshots shared before sign-off.
+**Prior verification gate:** release gate green; strict-GL projection tests pass; on real hardware a tracked camera from an `.abc` projects a plate sequence onto cards and a sphere live in the 3D view and in USDRender; screenshots shared before sign-off.
 
 ## Decisions
 
@@ -75,3 +75,25 @@ their images through M233 - Live Node Textures. Survey:
 - 2026-10-28: P1.T1 implemented (build pending). Camera source = optional Camera input plus a Camera dropdown (that input's cameras, else the Scene input's); Nuke UVProject controls ported except viewer-only display/selectable/render; Format + Fit Mode for Perspective; Use Frame Hold holds the camera only; no animatable knobs; points behind the camera use |w| and clamp; Planar/Spherical/Cylindrical without Nuke's 0.25 factor; out-of-scope vertices keep their old primvar or (0,0); output primvar indexed faceVarying. Open to user: keep the dropdown alongside the Camera input (recommended) or input only.
 - 2026-10-26 — **Comp-first projection (user):** USDProject3D takes a Camera input (a scene, read where it is wired, as classic Nuke) and an Image input, in place of the camera path knob and prim pattern; its output is a material that feeds a geometry node's Material input (M226.P2.T4). The camera is stored as values (time-sampled matrices), never as a relationship, so grafting needs no repair. A **Projection Space** choice: World (default; the projection stays fixed and moving geometry slides through it) or Geometry (the camera is stored relative to the geometry where the projection is set up and the shader projects object-space positions, so downstream transforms carry the projection with the geometry). USDProjectUV keeps its scene input and pattern but also takes a Camera input.
 - 2026-10-26 — **Both projection styles, separate nodes (user, M19/M20 UAT grill):** a live Storm projection shader (USDProject3D) and portable projected UVs (USDProjectUV). Supersedes the 2026-09-18 roadmap's "projection is a bake, never a live shader".
+
+## Phase 234.3: UAT projection policy
+
+- [ ] M234.P3.T1 — Finish unlit alpha-blended projection output
+  - files: USDProject3D glslfx/material authoring, USDWrite projection bake, projection tests
+  - approach: Keep projection emissive/unlit, propagate plate alpha through live and baked paths, and blend transparent regions instead of using the prior opaque material.
+  - verify: A semi-transparent plate matches in the Viewer and USDRender with and without authored lights, and exported output matches within tolerance.
+  - size: L
+
+- [ ] M234.P3.T2 — Keep camera selection flexible and remove the warp warning
+  - files: USDProjectUV/USDProject3D knobs and validation, node docs/tests
+  - approach: Keep the Camera dropdown alongside the Camera input, allow a typed camera path that is currently absent but may resolve downstream/later, and remove the coarse-geometry warp warning from the user-facing path.
+  - verify: A future camera path round-trips without an immediate hard error and resolves when that camera appears; the dropdown remains available.
+  - size: M
+
+- [ ] M234.P3.T3 — Support projected materials through material assignment
+  - files: USDProject3D output contract, Assign Material node compatibility, scene/material tests
+  - approach: Make the projection output a normal assignable material that can be connected through the material-assignment workflow as well as directly to a geometry node.
+  - verify: One projected material is assigned to selected prims through Assign Material and renders identically to the direct connection.
+  - size: M
+
+**Verification gate:** strict-GL and hardware projection tests pass; emissive alpha, future camera paths and material assignment are accepted in the replacement AppImage.

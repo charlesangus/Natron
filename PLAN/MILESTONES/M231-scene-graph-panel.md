@@ -72,8 +72,24 @@ No tree widget for scenes exists today. From the M19/M20 UAT feedback (2026-10-2
   - verify: gtest — folding a subtree on a SceneStage leaves Hydra's render index with no rprims under it (count via the engine's render index in a Storm test) and a bounds draw for it; a USDRender of the same node still renders the subtree. Perf: folding the top of the 100k-cube file drops viewer sync+draw time by an order of magnitude (record numbers in `## Decisions`). Xvfb screenshot of a folded branch's bbox.
   - size: L
 
-**Verification gate:** release gate green; panel GUI scripts pass under Xvfb; fold perf numbers recorded; screenshots (tree, attribute view, folded bbox) shared before sign-off.
+**Prior verification gate:** release gate green; panel GUI scripts pass under Xvfb; fold perf numbers recorded; screenshots (tree, attribute view, folded bbox) shared before sign-off.
 
 ## Decisions
 
 - 2026-10-27: release gate green with the C++20 TfWeakPtr compare fix, the model re-entrancy fix and valid usda in the fold tests; next: GUI check and screenshots, then AppImage/UAT.
+
+## Phase 231.4: UAT folding model
+
+- [ ] M231.P4.T1 — Separate transient tree expansion from authored scene folding
+  - files: Scene Graph model/panel, 3D viewport population and bbox display, USDRead controls, GUI tests
+  - approach: Make closed tree items draw their bounding boxes; keep panel twirl state transient; add an authored graph operation for persistent expand/fold and a USDRead default-loading policy that can open the first N layers fully and leave deeper content as bboxes.
+  - verify: Heavy-scene fixture opens with configured depth, closed prims show bboxes, transient twirls reset when leaving the node, and the authored operation persists.
+  - size: L
+
+- [ ] M231.P4.T2 — Let the Scene Graph follow node selection or the Viewer
+  - files: Scene Graph panel source binding, node/viewer selection signals, GUI tests
+  - approach: Add an explicit panel mode that follows the selected scene-producing node or the active Viewer, with pinning still available and no ambiguous automatic switching.
+  - verify: The GUI test switches nodes and viewers in each mode and confirms the tree displays the chosen source.
+  - size: M
+
+**Verification gate:** panel tests and fold performance pass; bbox folding, load-depth policy and follow mode are accepted from the replacement AppImage.

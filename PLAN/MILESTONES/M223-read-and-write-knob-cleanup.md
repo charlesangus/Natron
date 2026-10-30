@@ -43,9 +43,25 @@ Acceptance sketch:
   - verify: both scripts pass under the remote GUI runner.
   - size: M
 
-**Verification gate:** full build + ctest (`NativeWrite*`, `NativeReadReload`); `tools/ci/remote/build.sh debug --tests` green; the GUI bench (diff touches `Engine/Knob*`) compared against the Xvfb baseline and recorded in `## Decisions`; Xvfb screenshots shared with the user before sign-off.
+**Prior verification gate:** full build + ctest (`NativeWrite*`, `NativeReadReload`); `tools/ci/remote/build.sh debug --tests` green; the GUI bench (diff touches `Engine/Knob*`) compared against the Xvfb baseline and recorded in `## Decisions`; Xvfb screenshots shared with the user before sign-off.
 
 ## Decisions
 
 - 2026-10-28: implemented (build pending). Write format = NativeWrite::inputFormat(): input format, else its RoD, else empty (no input). Read-back tests restamp a written file in a foreign format (the Write can no longer write one). Only Read, the OCIO file nodes and USDRead own both a file knob and a Reload button.
 - 2026-10-28: elaborated (consultant). Defaults taken from its recommendations, open to the user's override: keep the labelled Reload and hide the file knob's icon (the button reloads File and Proxy together); apply the same flag to the OCIO file nodes and USDRead in T3; keep `clipToRoD`, which is not a format control.
+
+## Phase 223.2: UAT layout fixes
+
+- [ ] M223.P2.T1 — Put OCIO Reload actions on the file-knob row
+  - files: OCIOFileTransform and OCIOCDLTransform knob declarations, knob-layout GUI tests
+  - approach: Place each labelled Reload button on the same line as its file knob, matching the Read and USDRead convention without reintroducing a duplicate icon.
+  - verify: GUI screenshots show one Reload action aligned with each OCIO file field.
+  - size: M
+
+- [ ] M223.P2.T2 — Remove Write's legacy recycling-style Reload icon
+  - files: Native Write knob declaration and icon flags, Write GUI test
+  - approach: Remove the stale per-file reload decoration from Write, which has no file-reload action, while leaving actual reader reload controls unchanged.
+  - verify: Write shows no reload icon; Read and OCIO reader actions still work.
+  - size: M
+
+**Verification gate:** the original Write/read tests and GUI checks pass; the user accepts the aligned OCIO actions and clean Write file row.

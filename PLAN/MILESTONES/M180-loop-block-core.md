@@ -83,7 +83,7 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
   - files: `Engine/Nodes/Loop/docs/LoopBegin.md`, `Engine/Nodes/Loop/docs/LoopEnd.md`
   - approach: Variables, nesting names, the modes, the fold order, the caps, the metadata limitation, and the GPU tolerance line.
   - verify: reviewed at the gate against the node code.
-  - size: S
+  - size: M
 
 ## Decisions
 
@@ -98,4 +98,14 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 - 2026-10-25 — **Images only in v1 (user).**
 - 2026-10-25 — **Layer and ID iteration cut (user);** frame iteration, single pass and stop kept.
 
-**Verification gate:** the full build and ctest pass, including `NativeLoopBlock` and `NativeLoopFoldGpu`; `renderBothWays` is bit-identical on every loop test graph; a 64-iteration 4K Accumulate render stays within the bytes budget on the 15 GB dev host. Under Xvfb, a project with a blur-driven Accumulate loop and a frame-range echo is rendered; screenshots are shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+**Prior verification gate:** the full build and ctest pass, including `NativeLoopBlock` and `NativeLoopFoldGpu`; `renderBothWays` is bit-identical on every loop test graph; a 64-iteration 4K Accumulate render stays within the bytes budget on the 15 GB dev host. Under Xvfb, a project with a blur-driven Accumulate loop and a frame-range echo is rendered; screenshots are shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+
+## Phase 180.5: UAT cancellation semantics
+
+- [ ] M180.P5.T1 — Cancel a running loop when its graph changes
+  - files: `Engine/Nodes/Loop/*`, render-context invalidation and cancellation code, native loop tests
+  - approach: Treat edits to LoopBegin, LoopEnd, the loop body or its drivers as render-affecting changes that abort the in-flight loop job before starting work under the new hash.
+  - verify: A slow loop edited mid-render cancels promptly, never publishes a mixed-state frame, and restarts with the new values.
+  - size: M
+
+**Verification gate:** the original gate plus the mid-render edit/cancel regression passes, and the user confirms cancellation from the AppImage.

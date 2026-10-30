@@ -43,11 +43,15 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
   - size: M
 
 - [ ] M181.P1.T4 — Driver Start/End keys in the curve editor, dope sheet and timeline
-  - Driver Start/End keys (Curve on KnobDriver, d3af7e02c) appear under their driven knob in the curve editor and dope sheet, editable there with undo, and are marked on the timeline like knob keys.
+  - files: `Engine/KnobDriver*`, `Gui/CurveEditor*`, `Gui/DopeSheet*`, timeline key-marker tests
+  - approach: Make Driver Start/End keys (Curve on KnobDriver, d3af7e02c) appear under their driven knob in the curve editor and dope sheet, editable there with undo, and marked on the timeline like knob keys.
+  - verify: Add, move and delete Driver Start/End keys in both editors; the timeline markers and undo history stay synchronized.
   - size: M
 
 - [ ] M181.P1.T5 — Knob expressions under knobChanged see preview loop variables
-  - EffectInstance::onKnobValueChanged_public (EffectInstance.cpp ~5893-5931) sets isAnalysis frame args before knobChanged; PyRFV expressionContext (~281) and Knob.cpp (~7875) treat any frame args as a render, so a body-knob expression evaluated during knobChanged misses previewContextOf's loop variables. Make "is this a render" mean a real render (not analysis/instance-changed args) in one shared predicate, used by LoopEnd::evaluateStop, PyRFV and Knob expression context. Test: a body knob expression reading loop.iteration evaluated from another knob's knobChanged sees the preview iteration.
+  - files: `Engine/EffectInstance.cpp`, `Engine/PyRFV.cpp`, `Engine/Knob.cpp`, loop expression tests
+  - approach: `EffectInstance::onKnobValueChanged_public` sets analysis frame args before knobChanged; make "is this a render" mean a real render in one shared predicate used by `LoopEnd::evaluateStop`, PyRFV and knob expression context so analysis callbacks use `previewContextOf`.
+  - verify: A body-knob expression reading `loop.iteration` from another knob's knobChanged sees the preview iteration.
   - size: M
 
 ## Phase 181.2: Expressions
@@ -76,4 +80,14 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
 - 2026-10-25 — **Copy Houdini's block visuals (user).**
 - 2026-10-25 — **Default driver range:** start = the knob's default (usually its identity: Blur size 0, Grade gain 1), end = its current value.
 
-**Verification gate:** the full build and ctest pass; the Xvfb GUI tests pass; the GUI bench rule applies (`Gui/NodeGraph*`, `Gui/NodeGui*`); screenshots of the inline driver row, the driver table and the loop-block visuals are shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+**Prior verification gate:** the full build and ctest pass; the Xvfb GUI tests pass; the GUI bench rule applies (`Gui/NodeGraph*`, `Gui/NodeGui*`); screenshots of the inline driver row, the driver table and the loop-block visuals are shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+
+## Phase 181.3: UAT hull fix
+
+- [ ] M181.P3.T1 — Keep the loop hull attached while the graph pans
+  - files: `Gui/NodeGraph*`, loop-block hull drawing, loop GUI test
+  - approach: Compute or invalidate hull geometry in the same scene/view coordinate system as the nodes so panning and zooming cannot leave the hull behind.
+  - verify: The GUI test pans and zooms a loop graph and checks the hull continues to enclose the same nodes.
+  - size: M
+
+**Verification gate:** the original gate and GUI bench pass; the loop hull follows pan/zoom in the replacement AppImage.

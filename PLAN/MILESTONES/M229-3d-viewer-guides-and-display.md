@@ -48,9 +48,25 @@ add them (usdview draws its own). Our overlay pass sits next to `drawGrid` in
   - verify: Xvfb GUI script — a scene with one red rect light renders reddish with lighting=Scene and neutral with Headlight; toggling the render purpose shows a render-purpose prim; the draw-mode shortcuts switch modes.
   - size: M
 
-**Verification gate:** release gate green; guide and display GUI scripts pass under Xvfb; screenshots of camera and light guides (selected and not) shared before sign-off.
+**Prior verification gate:** release gate green; guide and display GUI scripts pass under Xvfb; screenshots of camera and light guides (selected and not) shared before sign-off.
 
 ## Decisions
 
 - 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-27 — Display keys are Ctrl+4/5/6 (wireframe/shaded/unshaded), Ctrl+G grid, Ctrl+Shift+G guides: plain 4/5/6 already connect viewer inputs. Guides are 1 scene unit long. Show Grid moved into a Display submenu.
+
+## Phase 229.3: UAT guide and layout fixes
+
+- [ ] M229.P3.T1 — Make camera and light guide scale configurable
+  - files: 3D guide drawing, Viewer display knobs/menu, guide GUI tests
+  - approach: Add a persistent display-scale control with a useful scene-relative default so guides remain legible across unit scales without changing authored scene geometry.
+  - verify: The GUI test changes guide scale and confirms camera/light guides remain pickable and visibly resize.
+  - size: M
+
+- [ ] M229.P3.T2 — Use standard knob alignment on USD nodes
+  - files: native USD node knob declarations/pages, generic knob-layout GUI checks
+  - approach: Remove accidental centered/custom row layout from USDLight and the affected USD nodes so labels and editors align with ordinary Natron properties panels.
+  - verify: Screenshot comparison shows USDLight and representative USD nodes aligned like image nodes.
+  - size: M
+
+**Verification gate:** original 3D display checks pass; guide scale and USD knob layouts are accepted in the replacement AppImage.

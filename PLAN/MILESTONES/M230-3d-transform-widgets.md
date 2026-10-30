@@ -49,9 +49,19 @@ handles on its first match (`drawTransformHandles`, `getHandleTarget` in
   - verify: Xvfb GUI script, per policy — dragging a USDCard under a USDXformPrim writes the expected node (Card's translate / the open edit / a new edit node at the branch end); Undo once restores the graph and knobs exactly; a USDRead prim under policy 1 creates an edit node.
   - size: L
 
-**Verification gate:** release gate green; widget and policy GUI scripts pass under Xvfb; the user tries all three policies on real hardware and picks the default; screenshots shared before sign-off.
+**Prior verification gate:** release gate green; widget and policy GUI scripts pass under Xvfb; the user tries all three policies on real hardware and picks the default; screenshots shared before sign-off.
 
 ## Decisions
 
 - 2026-10-28: GUI checks pass on Actions (M269 remote runs); AppImage and UAT doc in build/appimages/, contact sheet build/uat-shots/; awaiting user UAT.
 - 2026-10-27 — PM: R/Y act as transform tools while the 3D view has focus (over the Viewer's own R/Y); the pivot toggle is menu-only. A created edit node is inserted after the viewed node and takes all its outputs (the scene edit applies downstream, not only in the Viewer). Handle drags preview and write once on release as one undo step.
+
+## Phase 230.3: UAT startup crash
+
+- [ ] M230.P3.T1 — Make the AppImage survive unavailable Vulkan compute
+  - files: GPU device initialization/fallback, 3D viewer startup, packaging smoke tests
+  - approach: Reproduce the supplied `vkCreateDevice failed` startup followed by a null-address segfault, keep the CPU/GL viewer fallback fully initialized, and guard any transform-widget resource that assumed Vulkan succeeded.
+  - verify: The M230 AppImage launches on the reported NVIDIA host with Vulkan compute unavailable and the transform widgets still operate through the supported fallback.
+  - size: L
+
+**Verification gate:** startup smoke tests cover Vulkan failure; 3D widget tests pass; the user can launch and exercise the replacement AppImage.

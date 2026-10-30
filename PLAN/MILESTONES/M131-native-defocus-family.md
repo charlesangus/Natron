@@ -192,3 +192,5 @@ Scouted facts (scouted 2026-10-13 on `main` `338d9324a`; M85 - Native GPU Kernel
 - 2026-10-25 — **IBlur and IDefocus moved out (user):** to E15 - Loops And I-Nodes, so every I-node shares one Map convention; Phase 130.2 is cancelled. Keep `BokehKernel` engine-free and reusable, since M186 - Exact IDefocus builds on it.
 
 **Verification gate:** the full build and `ctest` pass. Every `Native*Gpu` parity test in this milestone passes on RADV. Under Xvfb, Defocus (disc, 6-blade and image kernels) and ZDefocus (Manual and Lens modes, plus the focal-plane output) are rendered on a CG fixture with a depth pass. The ZDefocus focal-point overlay is dragged. Screenshots are shared with the user before sign-off. An AppImage built with `package.sh` is handed over for UAT.
+
+- 2026-10-30 — **UAT passed (user).** The Defocus and ZDefocus family is accepted for merge.

@@ -46,4 +46,14 @@ Feedback mode for M180 - Loop Block Core (user, 2026-10-24): iteration k's LoopB
 - 2026-10-27 — PM: Houdini's knob model — LoopEnd `mode` = {Accumulate, Feedback}; Single Pass becomes a separate toggle (keeps `singlePassIteration`), reworking M180's knob (no backward compat). Feedback's LoopBegin hashing/caching design under consultant review.
 - 2026-10-25 — **Cross-frame feedback is its own milestone (user):** M190 - Cross-Frame Feedback, blocked on this one.
 
-**Verification gate:** the full build and ctest pass, including `NativeLoopFeedback`; `tools/ci/remote/build.sh debug --tests` passes; under Xvfb an iterated-erode and a smear-trail project are rendered and screenshots shared with the user before sign-off.
+**Prior verification gate:** the full build and ctest pass, including `NativeLoopFeedback`; `tools/ci/remote/build.sh debug --tests` passes; under Xvfb an iterated-erode and a smear-trail project are rendered and screenshots shared with the user before sign-off.
+
+## Phase 182.2: Shared loop inputs
+
+- [ ] M182.P2.T1 — Allow several LoopBegin nodes to reference one loop
+  - files: `Engine/Nodes/Loop/*`, loop pairing and validation code, `Tests/Native/NativeLoopFeedback_Test.cpp`
+  - approach: Replace one-to-one LoopBegin pairing with one LoopEnd-owned loop identity that several LoopBegin nodes may reference, while keeping feedback/back-reference selection explicit and rejecting cycles or ambiguous owners.
+  - verify: A graph with two LoopBegin nodes for one LoopEnd renders both branches, saves/reopens, and reports invalid cross-loop references clearly.
+  - size: L
+
+**Verification gate:** the original feedback gate passes with one and multiple LoopBegin nodes, and the shared-loop workflow is accepted in UAT.

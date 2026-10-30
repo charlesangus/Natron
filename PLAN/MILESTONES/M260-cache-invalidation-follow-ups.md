@@ -165,3 +165,5 @@ Closes the holes M242 - Cache Invalidation Audit left open (`docs/cache-invalida
   - size: M
 
 **Verification gate:** one build of the full tree and ctest. All new and re-enabled CacheStress cases pass with `NATRON_CACHE_STRESS_SEEDS=8` in Legacy and Task graph, plus CacheStressGpuTest on a GPU host. Run `Tests/gui/m178_timeline_cache_line.py` and `Tests/gui/cache_invalidation_viewer.py` under Xvfb. The follow-up table in docs/cache-invalidation.md and the family docs mark every hole in scope as fixed.
+
+- 2026-10-30 — **UAT passed (user).** The cache-invalidation fixes are accepted for merge. The separate interactive-speed concern is tracked by M276 - Cache Responsiveness Audit.

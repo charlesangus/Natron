@@ -67,7 +67,7 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
   - verify: gtest — export of an animated live texture writes N EXRs and a layer whose time samples point at them; `USDRead` of the export renders the same pixels through USDRender as the live scene.
   - size: M
 
-**Verification gate:** release gate green; strict-GL live-texture test passes; on real hardware a plate sequence on a USDCard plays in the 3D view and in USDRender; an export opens in `usdview` with textures; screenshots shared before sign-off.
+**Prior verification gate:** release gate green; strict-GL live-texture test passes; on real hardware a plate sequence on a USDCard plays in the 3D view and in USDRender; an export opens in `usdview` with textures; screenshots shared before sign-off.
 
 ## Decisions
 
@@ -75,3 +75,31 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 - 2026-10-26 — **Live textures split from M53 and moved into the MVP (user, M19/M20 UAT grill).**
 - 2026-10-26 — **The resolver never renders (cat-plan):** consumers pre-render needed URIs on their own worker before Hydra sync; this replaces M53's plan of rendering inside `OpenAsset`, which risked deadlock on the GUI thread.
 - 2026-10-26 — **Animated textures by time-sampled asset paths (cat-plan):** the payload stays time-independent (M19), and per-frame hashes come without rendering.
+
+## Phase 233.3: UAT texture correctness
+
+- [ ] M233.P3.T1 — Map texture UVs to the display window
+  - files: live-texture image metadata, card/material UV mapping, texture tests
+  - approach: Define 0–1 over the image display window and retain data-window overscan outside that range instead of squeezing the full data window onto the card.
+  - verify: An overscan fixture places the format corners at UV 0–1 and shows outside-format pixels only beyond the card's nominal range.
+  - size: M
+
+- [ ] M233.P3.T2 — Refresh animated textures every frame
+  - files: live-texture cache keys, Hydra texture invalidation, playback GUI test
+  - approach: Include frame and source hash in the texture resource identity and invalidate/upload at the playhead cadence without stalling the scene.
+  - verify: A numbered texture sequence advances on every playback frame with no multi-second stale periods.
+  - size: L
+
+- [ ] M233.P3.T3 — Remove implicit lighting and add shader choices
+  - files: 3D viewer lighting defaults, USDMaterial/live-texture shader controls, material tests
+  - approach: Render diffuse-only material black with no authored light, remove any default headlight, and provide an unlit/emissive mode for cards and projections alongside lit diffuse/specular shading.
+  - verify: No-light diffuse is black; emissive texture matches the source independent of lights; lit mode responds to authored lights.
+  - size: M
+
+- [ ] M233.P3.T4 — Fix NVIDIA live-texture USDRender crashes
+  - files: live-texture/Hydra GL buffer transfers, USDRender lifecycle, supplied crash fixture
+  - approach: Reproduce the `HgiGLOps::CopyBufferGpuToGpu` invalid-value failure on NVIDIA, correct buffer sizes/lifetimes or synchronize transfers, and convert driver rejection into a safe error.
+  - verify: The supplied scene renders repeatedly on the NVIDIA host without GL errors or segfaults and still passes llvmpipe coverage.
+  - size: L
+
+**Verification gate:** live-texture tests pass on llvmpipe and NVIDIA; animated overscan textures and shader modes are accepted from the replacement AppImage.

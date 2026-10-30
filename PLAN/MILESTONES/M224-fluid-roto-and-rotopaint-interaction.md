@@ -100,7 +100,7 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
   - verify: the user signs off at UAT with screenshots.
   - size: M
 
-**Verification gate:** `tools/ci/remote/build.sh release --tests` is green for each phase. The stroke and shape goldens are bit-identical. The `m224_*` Xvfb tests pass. `roto_bench` `compare.py` against `roto-xvfb.jsonl` shows no regression. Host p95 pen-to-pixel latency is within the signed-off budget, and the user passes UAT.
+**Prior verification gate:** `tools/ci/remote/build.sh release --tests` is green for each phase. The stroke and shape goldens are bit-identical. The `m224_*` Xvfb tests pass. `roto_bench` `compare.py` against `roto-xvfb.jsonl` shows no regression. Host p95 pen-to-pixel latency is within the signed-off budget, and the user passes UAT.
 
 ## Decisions
 
@@ -138,3 +138,37 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 - 2026-10-28: Phases 224.2–224.3 implemented (builds pending). Preview: brush-faithful dabs into a destination-alpha mask; eraser/clone/smear show a 35% white footprint; the preview stays until the neat frame is displayed (1000 ms fallback if the frame never shows). One stroke render in flight (StrokeRenderCoalescer). Pen-up waits on no thread; a pen-down during a neat render is queued and replayed. Shape drags: preference "Roto Shape Drag Render" (Adaptive default, Always Live, On Release); Adaptive falls back to on-release above 100 ms per render; playback drags act as On Release. One undo entry per gesture (snapshot at start, delta per motion, exact redo from captured end state). Overlay: per-Bezier polygon cache keyed on time, content generation, GUI edit counter and transform; clip-space culling, selected shapes never culled.
 - 2026-10-27 — **User:** preview under the pen = brush-faithful dabs (size, hardness, opacity, pressure). Live render while dragging shapes = a **preference** (Adaptive default: live with latest-wins abort, falling back to render-on-release when a frame exceeds a threshold; plus Always Live and On Release). Shortcuts: adopt **Nuke's Roto/RotoPaint map wholesale**. Latency budget: preview within **1 display frame p95**, real render converging within **100 ms**. Bench records keep the op's main cost in `median_ms` with a `headline` field (PM).
+
+## Phase 224.6: UAT round 1 fixes
+
+- [ ] M224.P6.T1 — Stabilize shape creation and the V tool state
+  - files: Roto/RotoPaint viewer interaction state, Bezier creation commands, GUI tests
+  - approach: Prevent new control points from snapping to 0,0 and keep V in draw-shape mode until the gesture completes or the user explicitly changes tools.
+  - verify: Repeatedly draw shapes after selecting/editing others; every point stays under the cursor and V always starts a new shape.
+  - size: M
+
+- [ ] M224.P6.T2 — Fix brush preview flicker and single-stroke mode
+  - files: RotoPaint preview/coalescer, multi-stroke state, paint GUI tests
+  - approach: Remove the transient white preview geometry and make Multi-stroke off render one stable completed stroke with no black or half-drawn frames.
+  - verify: Clone/paint/erase strokes show no white flicker; Multi-stroke off matches the neat render and survives rapid strokes.
+  - size: L
+
+- [ ] M224.P6.T3 — Restore live-drag responsiveness with many shapes
+  - files: Roto render invalidation, overlay caching, `tools/bench/roto*`, M224 GUI/bench scripts
+  - approach: Profile Adaptive and Always Live with 100 shapes, remove the multi-second image update bottleneck, and repair the bench automation so it drives Natron and writes results.
+  - verify: The bench emits results; handles stay fluid and the rendered image converges within the signed-off latency budget for the 100-shape case.
+  - size: L
+
+- [ ] M224.P6.T4 — Refine smoothing shortcuts and tangent quality
+  - files: Roto shortcut map, Bezier smoothing algorithm, Roto GUI tests
+  - approach: Remove the redundant S cycle binding because repeated tool shortcuts already cycle, and make Smooth choose stable, visually smooth tangent directions and lengths.
+  - verify: Shortcut coverage has no duplicate cycle path and a varied set of corners smooths without kinks or tangent flips.
+  - size: M
+
+- [ ] M224.P6.T5 — Scale feather tangents with feather distance
+  - files: feather-handle drag math, Roto interaction tests and docs
+  - approach: Make ordinary feather dragging scale tangent lengths so circular and curved shapes preserve their outer contour; reserve the old fixed-tangent behaviour for an explicit Alt modifier.
+  - verify: Growing a circle's feather produces a concentric circular feather; Alt-drag reproduces the previous behaviour.
+  - size: M
+
+**Verification gate:** all Roto/RotoPaint goldens and GUI tests pass; the repaired host bench meets the agreed latency budget; the user accepts creation, brushes, live drag, smoothing and feather behaviour.

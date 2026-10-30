@@ -73,7 +73,7 @@ Acceptance sketch:
   - verify: the script passes under the remote GUI runner; docs reviewed at the gate.
   - size: M
 
-**Verification gate:** full build + ctest incl. `LoopFrameCache`, `NativeLoopCrossFrame`; `tools/ci/remote/build.sh debug --tests` green; Xvfb trail and reaction-diffusion projects rendered, screenshots shared with the user; AppImage for UAT.
+**Prior verification gate:** full build + ctest incl. `LoopFrameCache`, `NativeLoopCrossFrame`; `tools/ci/remote/build.sh debug --tests` green; Xvfb trail and reaction-diffusion projects rendered, screenshots shared with the user; AppImage for UAT.
 
 ## Decisions
 
@@ -81,3 +81,13 @@ Acceptance sketch:
 - 2026-10-28: elaborated (consultant). Defaults from its recommendations, open to the user's override: the RAM budget is a share of the image-cache setting, not a knob; Load From Cache keeps loading after upstream edits with a warning, as Houdini does.
 - 2026-10-26: RFVs bind to Set knobs and evaluate at the requested frame (M71 Phase 71.5); cross-frame results are keyed by binding identity and frame, so rendering N-1 from N carries RFV(N-1).
 - 2026-10-25 — **Design for trails and simulations equally (user).**
+
+## Phase 190.3: Fractional-frame iteration
+
+- [ ] M190.P3.T1 — Evaluate loop samples at fractional frame times
+  - files: `Engine/Nodes/Loop/*`, render-context time keys, `Tests/Native/NativeLoopCrossFrame_Test.cpp`, loop docs
+  - approach: Give iteration/substep sampling an explicit fractional time derived from the loop range and count, propagate it through input evaluation and caching, and document the distinction between iterations and whole-frame stepping.
+  - verify: An animated-dot fixture sampled over several substeps produces smooth intermediate positions and distinct cache keys rather than repeated whole frames.
+  - size: L
+
+**Verification gate:** the original cross-frame gate passes; the animated-dot UAT demonstrates smooth fractional samples and the guide describes the semantics accurately.

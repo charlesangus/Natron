@@ -82,8 +82,24 @@ adds headless render tests, and gets the bench running on the original comps.
   - verify: `tools/bench/comps/run_comps.sh 1 2` exits 0 and prints three `frames 1-2 wall` lines; the temp `.tmp-*` siblings are gone and the `out/` dir is cleaned by the script.
   - size: M
 
-**Verification gate:** the release gate is green (`tools/ci/remote/build.sh release --tests`, including `NativeWritePathVariables_Test`), and `tools/bench/comps/run_comps.sh` renders `keying_grade`, `cg_multipass` and `defocus_retime` from the original `.ntpz` files.
+**Prior verification gate:** the release gate is green (`tools/ci/remote/build.sh release --tests`, including `NativeWritePathVariables_Test`), and `tools/bench/comps/run_comps.sh` renders `keying_grade`, `cg_multipass` and `defocus_retime` from the original `.ntpz` files.
 
 ## Decisions
 
 - 2026-10-28: implemented (build pending). Variables expand before the frame pattern, so a `#` inside a variable's value becomes a frame pattern (as Read's frame listing and hashing already do); the edge case saying otherwise is superseded. An unknown variable in a relative path is reported as <project dir>/[Nope]/…. No DeepWrite/USDWrite cases in the gtest (they share the KnobFile path). Bench comps re-run pending a build.
+
+## Phase 245.4: UAT variable editing
+
+- [ ] M245.P4.T1 — Make project-path creation safe and composable
+  - files: project path-variable model/dialog, validation tests, GUI test
+  - approach: Reject duplicate names and duplicate effective values with a clear choice, allow existing variables inside the Add dialog, preview the fully expanded path, and reduce the steps needed to create one from a file knob.
+  - verify: GUI coverage creates a nested variable, blocks accidental duplicates, and inserts the resulting token into a Write path.
+  - size: M
+
+- [ ] M245.P4.T2 — Define the bridge from project paths to RFVs
+  - files: project-variable/RFV design and implementation surface, serialization tests
+  - approach: Reuse RFV value resolution where it preserves project-path semantics, or add an explicit adapter if path variables must remain a distinct persisted namespace; keep existing projects compatible and record the decision.
+  - verify: A nested project path resolves through the chosen RFV integration in GUI and headless renders and round-trips through save/load.
+  - size: L
+
+**Verification gate:** original path expansion/bench gate passes; nested creation, duplicate handling and RFV integration are accepted in the replacement AppImage.

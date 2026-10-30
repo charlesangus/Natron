@@ -71,7 +71,7 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
   - verify: remote GUI job passes; screenshots.
   - size: M
 
-**Verification gate:** full build + ctest incl. ViewerKnobs_Test; GUI check passes; GUI bench recorded if Engine/Knob* changes; screenshots shared; AppImage for UAT.
+**Prior verification gate:** full build + ctest incl. ViewerKnobs_Test; GUI check passes; GUI bench recorded if Engine/Knob* changes; screenshots shared; AppImage for UAT.
 
 ## Open questions (for the user; can start)
 - Q1 Also save checkerboard, gain/gamma enable toggles, wipe centre/angle/mix and the current view? Recommendation: yes (per-viewer look state).
@@ -83,3 +83,25 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 - 2026-10-28: Phase 2 implemented (build pending). One undo command records only the changed viewer knobs; drags merge (undo ID 25). Widgets follow knob changes with signals blocked and never write knobs; unknown saved layer/alpha/display values show as unlisted entries. Display channels auto-switch to alpha only when a layer is picked. Layer knob stores the entry ID. A timeline range differing from the project's after load/undo/Python counts as edited. Locked fps follows the input's rate, falling back to the project's (old behaviour; the plan said project fps — put to the user).
 - 2026-10-28: Phase 1 implemented (build pending). Upstream hashes never include the viewer, but the viewer's own hash keys its cached frames, so every viewer knob is hash-exempt. Display/view/look are text knobs (a missing OCIO name survives; empty = project default) — departs from choice-by-ID. Gain in f-stops (default 0); toolbar 1× / gamma 1 turn the enable toggle off. RB-3 names: clipToFormat, enableRegionOfInterest, enableCheckerBoard, desiredFps; downscale = enableDownscale + downscaleLevel (2–32); wipe angle in radians; wipe centre and RoI canonical. Fps/in/out default from the project at creation. Page "Viewer UI Controls". Phase 2 must stop the toolbar's refresh fallbacks overwriting a saved missing layer/display.
 - 2026-10-28: elaborated (consultant); can start before Q1–Q3.
+
+## Phase 164.4: UAT round 1 fixes
+
+- [ ] M164.P4.T1 — Make Viewer a normal persistent properties-panel node
+  - files: `Engine/ViewerInstance.*`, `Gui/ViewerTab.*`, `Gui/NodeSettingsPanel.*`, viewer serialization tests
+  - approach: Let a Viewer open the standard properties panel, persist and restore its node knobs like other nodes, and cover save/reopen with more than one Viewer.
+  - verify: A saved project reopens with each Viewer's properties and panel behaviour intact.
+  - size: M
+
+- [ ] M164.P4.T2 — Frame the Viewer on new and reopened projects
+  - files: `Gui/ViewerTab.*`, `Gui/ViewerGL*`, viewer GUI tests
+  - approach: Apply the normal fit/framed view once after a fresh script gains a Viewer and after a saved script is opened, without overriding user navigation made after load.
+  - verify: The GUI test opens a fresh and a saved project and confirms the image is framed in both.
+  - size: M
+
+- [ ] M164.P4.T3 — Expose FPS as a Viewer property
+  - files: `Engine/ViewerInstance.*`, `Gui/ViewerTab.*`, `Tests/ViewerKnobs_Test.cpp`
+  - approach: Keep desired FPS on the Viewer node, show it in the properties panel, and make the player use that knob while preserving the existing locked/input-rate behaviour.
+  - verify: Editing FPS in the properties panel updates playback and survives save/reopen.
+  - size: M
+
+**Verification gate:** full build and tests pass; the Viewer GUI test covers properties, FPS, framing and save/reopen; a new AppImage is accepted by the user.

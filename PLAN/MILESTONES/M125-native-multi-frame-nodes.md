@@ -168,3 +168,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-13 — **AppendClip and SlitScan are in** (user).
 - 2026-10-13 — **TimeDissolve is retired, not ported** (user): animating native Dissolve's `which` is sufficient.
 - 2026-10-13 — **All time nodes on the GPU, to maximise residency** (user), on M124 - Native Time Remaps' multi-time views.
+- 2026-10-30 — **UAT passed (user).** The native multi-frame nodes are accepted; M125.P3.T3 and the remaining verification gate still run before merge.

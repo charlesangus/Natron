@@ -189,7 +189,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: at the phase build, the retired IDs no longer load, `git grep` finds no live use of them outside the `Engine/OfxRetired/` markers, and ctest passes.
   - size: M
 
-**Verification gate:**
+**Prior verification gate:**
 - In one build, ctest passes in both scheduler modes.
 - GPU parity for Retime's blend passes on RADV, and `GpuPlacement_Test` shows a region spanning a TimeOffset.
 - The Xvfb GUI check of the dope sheet and roto clone passes, with screenshots shared and OK'd before sign-off.
@@ -219,7 +219,7 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
   - verify: gtest: in-only maps 10→20 at speed 2 (source 10,12,14… from 20); both on maps 1..100 onto 1..50 (speed 2, greyed); out-only anchors the out frame. Dope sheet bar follows the new range.
   - size: L
 
-**Verification gate (round 2):** release gate green; GUI checks pass on Actions; screenshots shared; AppImage and UAT round 2.
+**Verification gate:** release gate green; GUI checks pass on Actions; screenshots shared; AppImage and UAT round 2.
 
 ## Decisions
 
@@ -229,3 +229,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-13 — **Four Nuke-style nodes** (user): TimeOffset, FrameHold, FrameRange and Retime stay separate. They are not merged into one Time node or into each other.
 - 2026-10-13 — **All time nodes on the GPU, to maximise residency** (user). For the pure remaps this means placement keeps a region through them, since they have no pixel work. Retime's blend gets a kernel.
 - 2026-10-13 — **This milestone owns the multi-time infrastructure:** the native fetch, the GPU (input, time) views and the placement pass-through. M125 - Native Multi-Frame Nodes depends on it, so the remaps, which are the simplest consumers, prove it first.
+- 2026-10-30 — **UAT round 2 passed (user).** The revised time-remap nodes are accepted for merge.

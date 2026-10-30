@@ -59,4 +59,14 @@ Follow-up to M72 - RFV Integration And UAT. RFVSwitch gets a "Match Variable" bu
   - verify: rows, row count and input visibility refresh on the press; the user OKs the screenshots.
   - size: S
 
-**Verification gate:** `RFVPatternMatch` and `RFVSwitch` gtests pass; full ctest passes; the user has OK'd the Xvfb screenshots (M267.P1.T5).
+**Prior verification gate:** `RFVPatternMatch` and `RFVSwitch` gtests pass; full ctest passes; the user has OK'd the Xvfb screenshots (M267.P1.T5).
+
+## Phase 267.2: Practical row capacity
+
+- [ ] M267.P2.T1 — Raise RFVSwitch's effective row limit to 1024
+  - files: RFVSwitch dynamic input/pattern storage, serialization and GUI tests
+  - approach: Replace the 16-row cap with dynamic growth up to 1024 rows, keeping lazy input visibility and avoiding eager creation/layout work for unused rows.
+  - verify: A 1024-option Choice matches, saves/reopens and renders the first, middle and final options without truncation or unusable panel latency.
+  - size: M
+
+**Verification gate:** RFVSwitch tests pass at 1, 16 and 1024 rows; the large-choice workflow is accepted in the replacement AppImage.

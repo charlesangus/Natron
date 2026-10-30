@@ -131,7 +131,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - verify: the script passes under Xvfb.
   - size: M
 
-**Verification gate:**
+**Prior verification gate:**
 - The full build and ctest pass, including both Retouch suites on lavapipe and RADV.
 - The Xvfb script passes.
 - Screenshots of a skin and blemish cleanup across two scales are shared with the user before sign-off.
@@ -142,3 +142,25 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 - 2026-10-27 — Parity also leaves out every shape's feather band (outline to feather distance): fill-color-ellipse's 21% pixel sits 0.15 px outside the outline, interior mask matches opacity exactly. Open: Natron's Roto feather reads ~0.34 at 0.15 px outside where a linear 2 px falloff gives ~0.54 — possibly a coarse feather mesh; check at UAT/visual review before calling it a Roto bug.
 - 2026-10-27 — PM: darktable rasterises path feathers with integer-snapped lines (path.c _path_falloff_roi: len+1, neighbour writes, int truncation), giving a ~1 px full-strength band biased up/left; geometry otherwise matches exactly. Parity for Bezier-path jobs excludes a band from 2 px inside to feather + 1 px outside the path outline (darktable feather lines are int(len)+1 long with neighbour writes); tolerances unchanged; documented beside the feather-falloff deviation.
 - 2026-10-27 — PM: kept darktable's behaviour for shapes above Scales+1 (no effect), cropped (not mirrored) out-of-image sources, Roto's feather falloff (differs from darktable's quadratic — documented), Max Heal Iterations visible, a Residual output; darktable's unused 'none' algorithm dropped. Source drag made undoable (one step per drag). References: 16 whole 64x48 synthetic half-float images, ~0.3 MB plain git.
+
+## Phase 211.5: UAT round 1 fixes
+
+- [ ] M211.P5.T1 — Make Z smoothing produce expected Roto tangents
+  - files: Roto shortcut dispatch, Bezier smoothing code, Wavelet Retouch GUI test
+  - approach: Route Z through the same smooth-point operation used by the Roto editor and cover cusp, corner and multi-point selections without changing unrelated shortcuts.
+  - verify: Selected retouch-path points become visibly smooth with symmetric tangent handles and undo in one step.
+  - size: M
+
+- [ ] M211.P5.T2 — Expose paintbrush tools alongside Roto tools
+  - files: Wavelet Retouch node registration and viewer toolbar integration, GUI test
+  - approach: Advertise the retouch node as supporting the relevant RotoPaint brush tools as well as shape tools, with tool changes targeting its hosted context.
+  - verify: The node panel and viewer can create and edit brush strokes and Roto shapes on the same node.
+  - size: M
+
+- [ ] M211.P5.T3 — Match darktable's default source selection
+  - files: `Engine/Nodes/Color/WaveletRetouch*`, darktable parity notes, native tests
+  - approach: Trace darktable's source-placement logic and port it when deterministic; if darktable uses an arbitrary offset, document and test Natron's chosen equivalent instead of guessing.
+  - verify: Reference cases demonstrate the same initial source placement as darktable or record the justified deterministic Natron policy.
+  - size: M
+
+**Verification gate:** original parity and GUI checks pass; Z smoothing, brush tools and default source behaviour are accepted in a replacement AppImage.

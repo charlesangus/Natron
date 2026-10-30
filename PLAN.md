@@ -336,6 +336,9 @@ future core work has solid ground to build on.
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
 | M273 | RenderIsolation Exit Hang | todo | - |  | E6 | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 | M274 | SplineWarp Remaining Controls | doing | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
+| M275 | Viewer Widget Editing | todo | - |  | E10 | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
+| M276 | Cache Responsiveness Audit | todo | M260 |  | E14 | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
+| M277 | Graph Creation And Insert | todo | M192, M193 |  | E10 | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 
 # Epics
 

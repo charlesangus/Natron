@@ -20,7 +20,7 @@ model, drag hint on path knobs) and M228 - 3D Viewer Navigation (selection set).
 - The tab menu's kind filtering is a general mechanism. Launching it from a context that knows the upstream kind hides nodes whose inputs can't accept that kind.
 
 **Out:**
-- Filtering the node-graph tab menu by the selected node's output kind in general — none, unless the user asks (only the create-from-selection launch filters here).
+- Filtering unrelated launch contexts beyond the selected node's output kind and scene-selection workflows.
 - Python access to the viewer selection — none.
 
 **Edge cases:**
@@ -51,4 +51,32 @@ model, drag hint on path knobs) and M228 - 3D Viewer Navigation (selection set).
   - verify: python test — with a scene context the filtered list contains USDEditTransform, USDPrune and USDMaterial and no Blur/Grade; Xvfb GUI script — create-from-selection of USDPrune with two prims selected inserts it downstream of the viewed node with the pattern set and the prims pruned in the view.
   - size: M
 
-**Verification gate:** release gate green; picker, set-on-node and create-from-selection GUI scripts pass under Xvfb; screenshots of the picker popup and the filtered tab menu shared before sign-off.
+**Prior verification gate:** release gate green; picker, set-on-node and create-from-selection GUI scripts pass under Xvfb; screenshots of the picker popup and the filtered tab menu shared before sign-off.
+
+## Phase 232.3: UAT selection and typed-menu fixes
+
+- [ ] M232.P3.T1 — Always write the selected prim pattern
+  - files: create-from-selection and set-on-current-node helpers, scene selection GUI tests
+  - approach: Populate the target node's first compatible prim pattern/path for both actions before the first evaluation, preserving multi-selection ordering and one undo step.
+  - verify: Viewer and Scene Graph actions create or update a node with the exact selected paths already filled in.
+  - size: M
+
+- [ ] M232.P3.T2 — Wrap selected prims with USDXformPrim
+  - files: USDXformPrim creation action, scene graph rewiring, selection GUI tests
+  - approach: When USDXformPrim is created from a selected prim, insert a new Xform at that location and reparent the selected prim and descendants beneath it while keeping the graph connection in the selected node's place.
+  - verify: A selected hierarchy is wrapped, not duplicated; child paths and downstream scene output remain correct after undo/redo.
+  - size: L
+
+- [ ] M232.P3.T3 — Filter the normal Tab menu by selected output kind
+  - files: `Gui/TabMenuBridge.*`, TabTabTab Python adapter/tests, node-graph launch context
+  - approach: Pass the selected node's output kind to ordinary node-graph Tab launches and show only nodes with at least one compatible input, while an empty selection keeps the full menu.
+  - verify: DeepImage selection shows DeepImage consumers and hides image/scene-only nodes; Scene and Image cases have equivalent coverage.
+  - size: M
+
+- [ ] M232.P3.T4 — Lay out variadic typed inputs like Merge and Switch
+  - files: USDMerge, USD transform and RFVSwitch input metadata, node-edge layout tests
+  - approach: Show the two active/default inputs in normal positions, hide unused variadic inputs on the left, and reveal the next input for manual connection without changing multi-connect gestures.
+  - verify: The three node families show compact edge layouts and still accept bulk/multi-input connections.
+  - size: M
+
+**Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, typed filtering and compact input layouts are accepted in the replacement AppImage.

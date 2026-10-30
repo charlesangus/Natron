@@ -47,10 +47,12 @@ Deps: M163 - Incremental Bezier Edits.
 - [ ] M261.P2.T1 — Draw, hit-test and select shape and item-knob keys
   - files: Gui/DopeSheetView.cpp, Gui/DopeSheetHierarchyView.cpp
   - approach: `drawKeyframes`/`drawKnobRow` and the selection rectangle read through the T1 accessors. Shape keys use `getKeyframeTimesAndInterpolation` for the texture type. Hide shape rows with no keys and item rows with no animation.
+  - verify: Shape and item-knob keys draw at their actual times and can be hit-tested and selected across zoom levels.
   - size: M
 - [ ] M261.P2.T2 — Move, delete and interpolation commands for shape keys
   - files: Gui/DopeSheetEditorUndoRedo.cpp/.h
   - approach: `DSMoveKeysAndNodesCommand`, `DSTransformKeysCommand`, `DSRemoveKeysCommand` and `DSSetSelectedKeysInterpolationCommand` branch on `key->bezier`. They use `Bezier::moveKeyframe`/`setKeyframe`/`removeKeyframe`/`setKeyFrameInterpolation`, with the collision refusal from Scope. Paste skips shape keys.
+  - verify: Move, delete and interpolation edits change the rendered shape and round-trip through undo/redo.
   - size: M
 
 ## Phase 261.3: Curve editor
@@ -58,10 +60,12 @@ Deps: M163 - Incremental Bezier Edits.
 - [ ] M261.P3.T1 — Keep the host node's own knob curves
   - files: Gui/CurveEditor.cpp, Gui/CurveEditor.h
   - approach: `addNode` creates the `NodeCurveEditorContext` for curve hosts too, filtering out `isItemProxyKnob`, and adds the `RotoCurveEditorContext`. `removeNode`, `getSelectedCurves`/`findKnob` handle both contexts.
+  - verify: A RotoPaint host shows its ordinary animated knobs and point curves together without duplicate proxy rows.
   - size: M
 - [ ] M261.P3.T2 — No shape track in the curve editor; per-point curves on request
   - files: Gui/CurveEditor.cpp/.h, Gui/CurveGui.cpp/.h, Gui/RotoGui*/viewer roto interact, Engine/Bezier.h/.cpp as needed
   - approach: remove the shape "Animation" track (`BezierCPCurveGui` rows) from the curve editor. Add a "Show in Curve Editor" action for selected control points (viewer right-click and/or roto panel) that adds that point's x and y over time as curves under its shape; editing a key value there moves the point at that key (with undo). Points can be removed from the curve editor again.
+  - verify: Adding a point shows editable x/y curves, removing it clears them, and curve edits move the point with undo.
   - size: L
 
 - [ ] M261.P2.T3 — Frame the dope sheet over every clip range
@@ -78,10 +82,38 @@ Deps: M163 - Incremental Bezier Edits.
   - verify: run-gui-test.sh in natron-dev under Xvfb.
   - size: M
 
-**Verification gate:** one build of all phases, ctest green, m261_roto_keys_editors.py passes under Xvfb, and the user approves the dope sheet and curve editor screenshots from a release AppImage.
+**Prior verification gate:** one build of all phases, ctest green, m261_roto_keys_editors.py passes under Xvfb, and the user approves the dope sheet and curve editor screenshots from a release AppImage.
 
 ## Decisions
 
 ## Decisions
 
 - 2026-10-27 — **Curve editor (user):** overall shape keys don't belong in the curve editor; offer adding individual control points to it instead.
+
+## Phase 261.5: UAT editor correctness
+
+- [ ] M261.P5.T1 — Keep viewer timeline indicators synchronized
+  - files: Roto/RotoPaint keyframe notifications, Viewer timeline marks, dope-sheet GUI tests
+  - approach: Emit the same keyframe-change signal for shape and mask creation, selection-independent dope-sheet edits and brush keys so blue indicators update immediately.
+  - verify: Add and move shape/mask keys with no Roto selection; Viewer indicators update without reopening or reselection.
+  - size: M
+
+- [ ] M261.P5.T2 — Make brush-opacity key edits change the value
+  - files: RotoPaint brush knob keyframe adapter, dope-sheet model/commands, tests
+  - approach: Bind the displayed opacity key to the actual brush opacity curve and preserve value/time through move, undo and redo.
+  - verify: Moving and editing a brush-opacity key changes rendered opacity at the expected frames.
+  - size: M
+
+- [ ] M261.P5.T3 — Keep overlay handles consistent with interpolation
+  - files: Bezier evaluation/cache invalidation, viewer overlay, dope-sheet interpolation commands
+  - approach: Invalidate and reevaluate viewer control-point positions whenever interpolation changes or a key is inserted between changed keys.
+  - verify: Handles and rendered shape match before and after interpolation changes and inserting an intermediate key.
+  - size: M
+
+- [ ] M261.P5.T4 — Correct control-point curves, drawing and hit testing
+  - files: `Gui/CurveGui*`, Roto curve adapter, curve-editor GUI tests
+  - approach: Map each point coordinate to its real x/y curve, draw correct pre/post-key extrapolation, and use the same transformed coordinates for drawing and clickable control points.
+  - verify: Known two-dimensional point motion produces accurate x/y curves; drawn and clickable points coincide across zoom levels.
+  - size: L
+
+**Verification gate:** dope-sheet, curve-editor and viewer GUI tests pass; indicators, brush opacity, interpolation and control-point curves are accepted from the replacement AppImage.

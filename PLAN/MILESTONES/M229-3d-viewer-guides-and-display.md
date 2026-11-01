@@ -57,16 +57,17 @@ add them (usdview draws its own). Our overlay pass sits next to `drawGrid` in
 
 ## Phase 229.3: UAT guide and layout fixes
 
-- [ ] M229.P3.T1 — Make camera and light guide scale configurable
+- [x] M229.P3.T1 — Make camera and light guide scale configurable
   - files: 3D guide drawing, Viewer display knobs/menu, guide GUI tests
   - approach: Add a persistent display-scale control with a useful scene-relative default so guides remain legible across unit scales without changing authored scene geometry.
   - verify: The GUI test changes guide scale and confirms camera/light guides remain pickable and visibly resize.
   - size: M
 
-- [ ] M229.P3.T2 — Use standard knob alignment on USD nodes
+- [x] M229.P3.T2 — Use standard knob alignment on USD nodes
   - files: native USD node knob declarations/pages, generic knob-layout GUI checks
   - approach: Remove accidental centered/custom row layout from USDLight and the affected USD nodes so labels and editors align with ordinary Natron properties panels.
   - verify: Screenshot comparison shows USDLight and representative USD nodes aligned like image nodes.
   - size: M
 
 **Verification gate:** original 3D display checks pass; guide scale and USD knob layouts are accepted in the replacement AppImage.
+- 2026-11-01 — P3 at 31eb1683c: guide size is a Preferences value (viewer3DGuideSize, scene units, default 3), replacing the fixed 1 unit; not metre-based since USD defaults metersPerUnit to 0.01. Odd USD knob layout was the shared numeric widget: a range-less hidden slider left no stretch, spreading spinboxes — fixed for all such knobs (implementer).

@@ -40,13 +40,13 @@ USDRead gains two toggles, **Match Project Up Axis** and **Match Project Units**
 
 ## Phase 241.1: Correction substrate
 
-- [ ] M241.P1.T1 — Probe the corrective transform on file roots
+- [x] M241.P1.T1 — Probe the corrective transform on file roots
   - files: `build/m241-probe/` (throwaway), `Engine/Nodes/Scene/SceneOps.cpp` read only
   - approach: Using test files that cover a Z-up cm file (Xform root, Scope root holding meshes, a camera with clippingRange [1, 100000] and a focusDistance, a root whose xformOpOrder is authored in a sublayer), author the planned correction in a stronger layer: `over`s on the topmost xformable prims, prepending `xformOp:rotateX:upAxisCorrection` and `xformOp:scale:unitsCorrection` to the composed order. Compose the stage, then check world bounds, the camera's world transform, and the Storm render of the camera view against the same scene converted by hand. Also measure the cost of the composed-order read (a `SceneQueryPool` lease versus a `LoadNone` stage on the file layer) on a large file from `build/assets`. Record the chosen read path and any Hydra camera-scale problem in `## Decisions`.
   - verify: probe script output shows matching bounds and a pixel-matching camera render (within ulps) for both directions and both unit cases; the decision is recorded.
   - size: L
 
-- [ ] M241.P1.T2 — `SceneOps::authorMetricsCorrection`
+- [x] M241.P1.T2 — `SceneOps::authorMetricsCorrection`
   - files: `Engine/Nodes/Scene/SceneOps.h`, `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/Scene/SceneMetricsCorrection_Test.cpp`, `Tests/CMakeLists.txt` (or the Scene test list it uses)
   - approach: A function taking the target layer, the composed source (the read path chosen in P1.T1), the file's and the project's up axis and meters per unit, and two booleans (correct axis, correct units). It finds the topmost xformable prims under each root, authors `over`s prepending the rotate and/or scale ops (the Edge cases above give the rules), and rescales `clippingRange`/`focusDistance` on every `UsdGeomCamera` under a scaled prim, default and time samples alike. Corrects nothing when both booleans are off or the metrics already match.
   - verify: gtest — Y→Z and Z→Y rotation give the expected world transform on an Xform root and on a mesh under a Scope root; cm→m scales the bounds by 0.01; a sublayer-authored xformOpOrder is preserved after the prepended ops; `!resetXformStack!` stays first; a camera's clippingRange and focusDistance samples are rescaled; matching metrics author nothing.
@@ -54,13 +54,13 @@ USDRead gains two toggles, **Match Project Up Axis** and **Match Project Units**
 
 ## Phase 241.2: USDRead controls
 
-- [ ] M241.P2.T1 — Match Project Up Axis and Match Project Units toggles
+- [x] M241.P2.T1 — Match Project Up Axis and Match Project Units toggles
   - files: `Engine/Nodes/Scene/USDRead.cpp`, `Engine/Nodes/Scene/USDRead.h`, `Engine/Nodes/Scene/docs/USDRead.md`, `Tests/Scene/SceneUpAxis_Test.cpp`
   - approach: Two `KnobBool`s, `matchUpAxis` ("Match Project Up Axis") and `matchUnits` ("Match Project Units"), both default off and not animatable, after Frame Offset. Both go into the layer key. `authorLayer` calls `authorMetricsCorrection` after the sublayer is inserted. For each corrected aspect it writes the project's value into the layer's root metadata instead of copying the file's, so the composed metadata matches the project. The warning in `renderScene` lists only the aspects still differing, names the toggle that would fix each, and says "(unauthored, USD fallback)" for a metric the file doesn't author. Document both toggles in `USDRead.md`.
   - verify: gtest — a Z-up cm file in a Y-up m project: both off warns about both and authors no ops; Match Project Up Axis alone warns about units only and composes upAxis Y; both on clears the warning, composes the project's metrics and scales bounds; toggling off restores the uncorrected layer; switching the project's axis with a toggle on re-authors the correction; a file with no metrics warns with the fallback wording.
   - size: M
 
-- [ ] M241.P2.T2 — Use File's Metrics For Project button
+- [x] M241.P2.T2 — Use File's Metrics For Project button
   - files: `Engine/Nodes/Scene/USDRead.cpp`, `Engine/Nodes/Scene/USDRead.h`, `Engine/Project.h`, `Engine/Project.cpp`, `Engine/Nodes/Scene/docs/USDRead.md`
   - approach: A `KnobButton` `useFileMetrics` ("Use File's Metrics For Project") beside the toggles. On press it sets the project's `upAxis` and `metersPerUnit` knobs to the file's values (USD fallbacks where unauthored) through the knobs' user-edit path, so it is one undo step. Find how other buttons make undoable knob edits (grep `KnobButton` handlers that set another node's knobs) and follow that. It is disabled with no file loaded. Add a small `Project` setter only if no existing path lets a node set project knobs undoably.
   - verify: gtest — pressing it on a Z-up 0.01 file sets the project to Z / 0.01, the warning clears, and undo restores Y / 1.0.
@@ -68,7 +68,7 @@ USDRead gains two toggles, **Match Project Up Axis** and **Match Project Units**
 
 ## Phase 241.3: Export
 
-- [ ] M241.P3.T1 — USDWrite round trip of corrected reads
+- [x] M241.P3.T1 — USDWrite round trip of corrected reads
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: Verify, and fix if needed, that both modes export a corrected USDRead correctly. Flattened mode bakes the corrective ops into the prims, and the output root carries the project's metrics. Layered mode writes USDRead's sidecar with the `over`s and the project's metrics, and keeps referencing the file by relative path. An uncorrected read's sidecar keeps the file's metrics, as today.
   - verify: round-trip gtest — Z-up cm file read with both toggles on → USDWrite (both modes) → USDRead composes the same world bounds and metadata as the source graph (`ExportToString` diff of the composed stage); in layered mode the file is still referenced by a relative path.
@@ -76,7 +76,7 @@ USDRead gains two toggles, **Match Project Up Axis** and **Match Project Units**
 
 ## Phase 241.4: GUI check
 
-- [ ] M241.P4.T1 — Viewer check of corrected reads under Xvfb
+- [x] M241.P4.T1 — Viewer check of corrected reads under Xvfb
   - files: `Tests/gui/m241_up_axis_policy.py`
   - approach: Follow `Tests/gui/m226_scene_hierarchy.py`'s setup and the Xvfb runner at 1920x1080. Use a Y-up project, read a Z-up cm fixture (generated under `build/`), and screenshot the Viewer's 3D view with the toggles off and with both on. Assert the warning text in each state, check that the corrected model stands upright against the grid at metre scale (bounds via the scene API), and check that Use File's Metrics For Project flips the grid to Z.
   - verify: the script passes under the Xvfb runner; screenshots are saved for the user.

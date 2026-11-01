@@ -35,13 +35,13 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 ## Phase 233.1: Resolver and image plugin
 
-- [ ] M233.P1.T1 — Live-texture store and the `natron://` `ArResolver`
+- [x] M233.P1.T1 — Live-texture store and the `natron://` `ArResolver`
   - files: `Engine/Nodes/Scene/LiveTextureStore.{h,cpp}`, `Engine/Nodes/Scene/LiveTextureResolver.{h,cpp}` (`ArResolver` + `ArAsset`), `Engine/Nodes/Scene/plugInfo.json` and CMake install rules, the AppImage/bundle staging script, `Tests/Scene/LiveTexture_Test.cpp`
   - approach: URI `natron://<nodeScriptName>/<layer>?v=<imageHash>`. The store maps the URI to an immutable float RGBA buffer, filled only by Natron renders and evicted by an LRU budget and on cache purge / Free GPU Memory. The resolver is a URI resolver for the `natron` scheme: `Resolve` returns the URI if the store has it, and `OpenAsset` returns an `ArAsset` over the buffer. It never triggers a render. Install `plugInfo.json` where `PlugRegistry` finds it in the build tree, the install and the AppImage.
   - verify: gtest — a stored buffer opens through `ArGetResolver().OpenAsset()` with the expected bytes; a missing URI fails cleanly; eviction makes it fail. The bundle startup check finds the plugin.
   - size: L
 
-- [ ] M233.P1.T2 — `HioImage` plugin for `natron://` assets
+- [x] M233.P1.T2 — `HioImage` plugin for `natron://` assets
   - files: `Engine/Nodes/Scene/LiveTextureImage.{h,cpp}`, `Engine/Nodes/Scene/plugInfo.json`, `Tests/Scene/LiveTexture_Test.cpp`
   - approach: an `HioImage` subclass registered for the scheme that reads the `ArAsset` from T1 as RGBA float with the correct size. Flip once from Natron's bottom-up layout to Hio's top-down.
   - verify: gtest — `HioImage::OpenForReading` on a stored URI reads matching dimensions, and the corner pixels match a known gradient (orientation checked).
@@ -49,19 +49,19 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 ## Phase 233.2: Material inputs
 
-- [ ] M233.P2.T1 — USDMaterial image inputs authored as time-sampled live URIs
+- [x] M233.P2.T1 — USDMaterial image inputs authored as time-sampled live URIs
   - files: `Engine/Nodes/Scene/USDMaterial.{h,cpp}`, `Engine/Nodes/Scene/SceneNodeAuthoring.cpp`, `Tests/Scene/USDMaterial_Test.cpp`
   - approach: add optional Image inputs per channel. For a connected input, author a `UsdUVTexture` whose `inputs:file` is time-sampled per project frame with the input's per-frame image hash in `?v=`, or a single default when the hash doesn't vary. Hashes come from the engine without rendering, and they go into the layer key so a change re-authors the one layer. The scene action records which (node, layer, frame) URIs the layer needs.
   - verify: gtest — a Constant into diffuse authors a single-default `natron://` path; an animated input authors one sample per frame with distinct `v=` values; changing the upstream colour changes the hash and re-authors only USDMaterial's layer.
   - size: M
 
-- [ ] M233.P2.T2 — Consumers pre-render the live textures they need
+- [x] M233.P2.T2 — Consumers pre-render the live textures they need
   - files: `Gui/SceneViewport.cpp` (viewer sync worker), `Engine/Nodes/Scene/HydraRenderImpl.cpp` (USDRender job), `Engine/Nodes/Scene/LiveTextureStore.cpp`, `Tests/Scene/USDRenderStorm_Test.cpp`, `Tests/gui/scene_live_texture.py`
   - approach: before syncing Hydra for a frame, the viewer's worker and the USDRender job collect the live URIs that frame needs (from the stage's `UsdUVTexture` inputs at that time) and render any missing ones through the normal render engine on their own thread. The result goes into the store before Storm commits. The GUI thread never renders, which addresses the deadlock risk recorded in M53's 2026-10-25 decision. Missing textures after a failed render leave Storm's fallback.
   - verify: strict-GL test — a Constant (red) into a card's material renders red through USDRender; an animated Ramp source gives different pixels at frames 1 and 10; Xvfb GUI script — editing the Constant's colour updates the card in the 3D view without touching the viewport.
   - size: L
 
-- [ ] M233.P2.T3 — USDWrite exports live textures
+- [x] M233.P2.T3 — USDWrite exports live textures
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: an "Export Live Textures" bool (default on). For each `natron://` URI in the written range, render it to `<usd basename>_textures/<node>_<layer>.####.exr` (one file when static), and rewrite the exported attribute to the relative path, with a `<UDIM>`-free frame token through time samples. Without the option, URIs are written as-is with a warning that the file is not portable.
   - verify: gtest — export of an animated live texture writes N EXRs and a layer whose time samples point at them; `USDRead` of the export renders the same pixels through USDRender as the live scene.
@@ -78,19 +78,19 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 ## Phase 233.3: UAT texture correctness
 
-- [ ] M233.P3.T1 — Map texture UVs to the display window
+- [x] M233.P3.T1 — Map texture UVs to the display window
   - files: live-texture image metadata, card/material UV mapping, texture tests
   - approach: Define 0–1 over the image display window and retain data-window overscan outside that range instead of squeezing the full data window onto the card.
   - verify: An overscan fixture places the format corners at UV 0–1 and shows outside-format pixels only beyond the card's nominal range.
   - size: M
 
-- [ ] M233.P3.T2 — Refresh animated textures every frame
+- [x] M233.P3.T2 — Refresh animated textures every frame
   - files: live-texture cache keys, Hydra texture invalidation, playback GUI test
   - approach: Include frame and source hash in the texture resource identity and invalidate/upload at the playhead cadence without stalling the scene.
   - verify: A numbered texture sequence advances on every playback frame with no multi-second stale periods.
   - size: L
 
-- [ ] M233.P3.T3 — Remove implicit lighting and add shader choices
+- [x] M233.P3.T3 — Remove implicit lighting and add shader choices
   - files: 3D viewer lighting defaults, USDMaterial/live-texture shader controls, material tests
   - approach: Render diffuse-only material black with no authored light, remove any default headlight, and provide an unlit/emissive mode for cards and projections alongside lit diffuse/specular shading.
   - verify: No-light diffuse is black; emissive texture matches the source independent of lights; lit mode responds to authored lights.
@@ -103,3 +103,4 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
   - size: L
 
 **Verification gate:** live-texture tests pass on llvmpipe and NVIDIA; animated overscan textures and shader modes are accepted from the replacement AppImage.
+- 2026-11-01 — P3.T1–T3 at 300b0b546: UVs crop to the format (overscan beyond it is not kept — user to confirm); headlight removed from the 3D view and USDRender, so unlit scenes render black; Emissive shader on USDMaterial. P3.T4 (NVIDIA crash) not reproducible here; retest after M228's thread/context fix (PM).

@@ -361,7 +361,9 @@ RotoDrawableItem::createNodes(bool connectNodes)
 std::string
 RotoDrawableItem::getCacheID() const
 {
-    assert(_imp->mergeNode);
+    if (!_imp->mergeNode) {
+        return getScriptName() + ".RotoDrawableItem";
+    }
 
     //The cache iD is the one of the internal merge node + RotoDrawableItem
     return _imp->mergeNode->getCacheID() + ".RotoDrawableItem";
@@ -370,8 +372,10 @@ RotoDrawableItem::getCacheID() const
 void
 RotoDrawableItem::disconnectNodes()
 {
-    _imp->mergeNode->disconnectInput(0);
-    _imp->mergeNode->disconnectInput(1);
+    if (_imp->mergeNode) {
+        _imp->mergeNode->disconnectInput(0);
+        _imp->mergeNode->disconnectInput(1);
+    }
     if (_imp->effectNode) {
         _imp->effectNode->disconnectInput(0);
     }
@@ -406,7 +410,9 @@ RotoDrawableItem::activateNodes()
     if (_imp->effectNode) {
         _imp->effectNode->activate(std::list<NodePtr>(), false, false);
     }
-    _imp->mergeNode->activate(std::list<NodePtr>(), false, false);
+    if (_imp->mergeNode) {
+        _imp->mergeNode->activate(std::list<NodePtr>(), false, false);
+    }
     if (_imp->timeOffsetNode) {
         _imp->timeOffsetNode->activate(std::list<NodePtr>(), false, false);
     }
@@ -745,6 +751,9 @@ RotoDrawableItem::getFrameHoldNode() const
 void
 RotoDrawableItem::refreshNodesConnections()
 {
+    if (!_imp->mergeNode) {
+        return;
+    }
     RotoDrawableItem* previous = findPreviousInHierarchy();
     NodePtr rotoPaintInput =  getContext()->getNode()->getInput(0);
     NodePtr upstreamNode = previous ? previous->getMergeNode() : rotoPaintInput;
@@ -894,7 +903,9 @@ RotoDrawableItem::resetNodesThreadSafety()
     if (_imp->effectNode) {
         _imp->effectNode->revertToPluginThreadSafety();
     }
-    _imp->mergeNode->revertToPluginThreadSafety();
+    if (_imp->mergeNode) {
+        _imp->mergeNode->revertToPluginThreadSafety();
+    }
     if (_imp->timeOffsetNode) {
         _imp->timeOffsetNode->revertToPluginThreadSafety();
     }

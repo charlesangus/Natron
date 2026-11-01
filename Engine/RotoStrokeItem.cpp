@@ -317,8 +317,10 @@ RotoStrokeItem::setStrokeFinished()
         effectNode->setWhileCreatingPaintStroke(false);
         effectNode->markHashDirty();
     }
-    mergeNode->setWhileCreatingPaintStroke(false);
-    mergeNode->markHashDirty();
+    if (mergeNode) {
+        mergeNode->setWhileCreatingPaintStroke(false);
+        mergeNode->markHashDirty();
+    }
     if (timeOffsetNode) {
         timeOffsetNode->setWhileCreatingPaintStroke(false);
         timeOffsetNode->markHashDirty();

@@ -8,7 +8,9 @@ checks that the shape's Source Offset follows the drag. With Current Scale 3, ri
 shape in the curve list, checks the menu offers "Copy to Scale 3" and "Move to Scale 3", moves
 the shape and checks its scale and column, then undoes the move with Edit > Undo. Adds a
 rectangle by script, presses Z in the viewer and checks every corner gets the equal, opposite
-handles of the circle through the corners, then undoes it. Screenshots of
+handles of the circle through the corners, then undoes it. Picks the Brush tool, drags a brush
+stroke across the viewer and checks it becomes a "Brush1" shape in the curve list with the node's
+Brush Size, drawn with its dashed source line. Screenshots of
 the panel and the viewer at each step go to $NATRON_GUI_TEST_OUT.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -42,6 +44,10 @@ OUTLINE_GAP = 8  # widget pixels between the shape's handles and the source outl
 # The rectangle Z smooths: its corner and side, in canonical pixels.
 SQUARE = (1300.0, 300.0)
 SQUARE_SIZE = 300.0
+# The brush stroke, in canonical pixels, clear of the ellipse, the square and their sources.
+BRUSH_FROM = (300.0, 150.0)
+BRUSH_TO = (900.0, 230.0)
+BRUSH_SIZE = 60.0
 
 try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
@@ -425,6 +431,44 @@ try:
             back = [square.getControlPointPosition(i, 1.0) for i in range(count)]
             check(all(abs(a - b) < 1e-6 for c, d in zip(back, corners) for a, b in zip(c, d)),
                   "one undo puts the cusps back")
+
+        gt.section("brush")
+        node.getParam("brushSize").setValue(BRUSH_SIZE)
+        tool = node.getParam("DrawBrushTool")
+        require(tool is not None, "the Retouch toolbar has the Draw Brush Tool")
+        tool.trigger()
+        yield ("sleep", SETTLE_MS)
+        # Canonical to widget pixels from the measured source outline, which undo put back.
+        origin = (CENTRE[0] + OFFSET_X, CENTRE[1])
+
+        def to_widget(p):
+            return (source_centre[0] + (p[0] - origin[0]) * scale, source_centre[1] - (p[1] - origin[1]) * scale)
+
+        before = red_pixels(grab_viewer())
+        w = visible_viewer()
+        start = to_widget(BRUSH_FROM)
+        end = to_widget(BRUSH_TO)
+        send_mouse(w, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        for i in range(1, 17):
+            f = i / 16.0
+            p = (start[0] + f * (end[0] - start[0]), start[1] + f * (end[1] - start[1]) - 20.0 * f * (1.0 - f))
+            send_mouse(w, QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
+        send_mouse(w, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+        yield ("sleep", 2 * SETTLE_MS)
+        brush_text = shape_column_text(node, "Brush1")
+        report("NOTE brush column text %r" % (brush_text,))
+        check(brush_text is not None, "the stroke is the Brush1 shape in the curve list")
+        check(brush_text == "S2 / Heal", "the brush takes the node's Heal and scale 2")
+        brush = ctx.getItemByName("Brush1")
+        if brush is not None and brush.getParam("shapeBrushSize") is not None:
+            check(brush.getParam("shapeBrushSize").getValue() == BRUSH_SIZE, "the brush takes the node's Brush Size")
+        else:
+            report("NOTE the brush item has no Python wrapper with params")
+        added = red_pixels(grab_viewer()) - before
+        report("NOTE red pixels added by the brush: %d" % len(added))
+        check(len(added) > MIN_OUTLINE_PIXELS, "the brush's dashed source line is drawn")
+        screen_crop("retouch_viewer_brush.png", visible_viewer())
+        gt.shot("retouch_screen_brush.png")
 
         faulthandler.cancel_dump_traceback_later()
 

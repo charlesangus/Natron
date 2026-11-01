@@ -37,6 +37,7 @@
 
 #include "Engine/ChoiceOption.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Filter/RetouchInteract.h"
 #include "Engine/Nodes/Filter/RetouchRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
@@ -61,6 +62,10 @@
 #define kRetouchParamFillMode "fillMode"
 #define kRetouchParamFillColor "fillColor"
 #define kRetouchParamFillBrightness "fillBrightness"
+#define kRetouchParamBrushSize "brushSize"
+#define kRetouchParamBrushHardness "brushHardness"
+#define kRetouchParamBrushDensity "brushDensity"
+#define kRetouchParamBrushPressure "brushPressure"
 #define kRetouchParamMaxHealIterations "maxHealIterations"
 #define kRetouchParamSelectedShape "selectedShape"
 
@@ -73,6 +78,11 @@
 #define kRetouchShapeParamFillMode "shapeFillMode"
 #define kRetouchShapeParamFillColor "shapeFillColor"
 #define kRetouchShapeParamFillBrightness "shapeFillBrightness"
+// Per-shape knobs of brush shapes only.
+#define kRetouchShapeParamBrushSize "shapeBrushSize"
+#define kRetouchShapeParamBrushHardness "shapeBrushHardness"
+#define kRetouchShapeParamBrushDensity "shapeBrushDensity"
+#define kRetouchShapeParamBrushPressure "shapeBrushPressure"
 
 #define kRetouchAlgorithmClone "clone"
 #define kRetouchAlgorithmHeal "heal"
@@ -199,14 +209,59 @@ public:
     /// width by height: a fixed fraction of the image per kind of shape.
     static void defaultSourceOffset(RotoToolEnum tool, double width, double height, double* dx, double* dy);
 
-    /// The per-shape knobs, owned by host or, without one, detached.
-    static std::vector<KnobIPtr> createShapeKnobs(Retouch* host);
+    /// The per-shape knobs, owned by host or, without one, detached. withBrush adds the brush knobs.
+    static std::vector<KnobIPtr> createShapeKnobs(Retouch* host, bool withBrush);
+
+    /**
+     * @brief The strokes of a brush shape at time in the pixels of a render at scale over full,
+     * the source's pixels (top-down, as RetouchCore::Region), with the shape's size, hardness,
+     * density and pressure mode applied; darktable's smallest border is a fraction of full's
+     * smaller side. Empty for a shape that is not a brush.
+     **/
+    static std::vector<std::vector<RetouchCore::BrushPoint>> readBrushStrokes(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full);
+
+    /**
+     * @brief The mask of a brush shape over its bounds, as collectShapes() makes it. False when
+     * the shape is not a brush or covers nothing.
+     **/
+    static bool rasterizeBrushShape(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full, RetouchCore::Region* roi, std::vector<float>* mask);
+
+    /**
+     * @brief Where the source of a new shape goes, from darktable's Shift-click (relative) and
+     * Ctrl+Shift-click (absolute) before drawing. Relative is the first shape's offset reused by
+     * every later one; a Shift-click sets the next shape's source and makes its offset the new
+     * relative one; a Ctrl+Shift-click puts the source of every later shape at that point.
+     **/
+    enum SourcePlacementEnum {
+        eSourcePlacementRelative = 0,
+        eSourcePlacementRelativePending,
+        eSourcePlacementAbsolute,
+    };
+
+    /// Records a Shift-click (absolute = false) or Ctrl+Shift-click (absolute = true) at pos, canonical.
+    void placeSource(const QPointF& pos, bool absolute);
+
+    /**
+     * @brief The source offset a new shape anchored at anchor gets, canonical; false when it has
+     * none yet (relative with no shape drawn and no image size). tool picks darktable's default.
+     * Consumes a pending relative placement.
+     **/
+    bool takeNewShapeSourceOffset(RotoToolEnum tool, const QPointF& anchor, double* dx, double* dy);
+
+    /// Where the source of a shape anchored at the cursor would go, canonical; false when unknown.
+    bool previewSourcePosition(RotoToolEnum tool, const QPointF& cursor, QPointF* source) const;
+
+    SourcePlacementEnum getSourcePlacement() const
+    {
+        return _sourcePlacement;
+    }
 
     static std::vector<ChoiceOption> algorithmOptions();
     static std::vector<ChoiceOption> blurTypeOptions();
     static std::vector<ChoiceOption> fillModeOptions();
+    static std::vector<ChoiceOption> brushPressureOptions();
 
-    const RotoCurveInteractPtr& getInteract() const
+    const RetouchInteractPtr& getInteract() const
     {
         return _ui;
     }
@@ -317,7 +372,7 @@ private:
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    RotoCurveInteractPtr _ui;
+    RetouchInteractPtr _ui;
 
     KnobChoiceWPtr _algorithm;
     KnobIntWPtr _scales;
@@ -331,10 +386,16 @@ private:
     KnobColorWPtr _fillColor;
     KnobDoubleWPtr _fillBrightness;
     KnobIntWPtr _maxHealIterations;
+    KnobDoubleWPtr _brushSize;
+    KnobDoubleWPtr _brushHardness;
+    KnobDoubleWPtr _brushDensity;
+    KnobChoiceWPtr _brushPressure;
 
     struct NewShape {
         RotoDrawableItemWPtr item;
         RotoToolEnum tool;
+        // The press that created the shape: darktable anchors a path's or brush's source to its first point.
+        QPointF anchor;
     };
 
     // Shapes created since the last pen down, waiting for their default source.
@@ -343,6 +404,10 @@ private:
     // node is reloaded.
     bool _hasSessionSourceOffset = false;
     double _sessionSourceOffset[2] = { 0., 0. };
+    SourcePlacementEnum _sourcePlacement = eSourcePlacementRelative;
+    double _placedSource[2] = { 0., 0. };
+    // The last press with a drawing tool, the anchor of the shape it creates.
+    QPointF _drawPressPos;
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
     // The drag's offset is the offset at the press moved by the pen since the press; it is never read

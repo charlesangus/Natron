@@ -26,6 +26,7 @@
 #include "RetouchRender.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "Engine/Nodes/Filter/EdgeAware/Wavelets.h"
 #include "Engine/Nodes/Filter/RetouchAlgorithms.h"
@@ -33,6 +34,120 @@
 NATRON_NAMESPACE_ENTER
 
 namespace RetouchCore {
+void
+applyBrushPressure(BrushPressureEnum mode,
+                   float pressure,
+                   float minRadius,
+                   BrushPoint* point)
+{
+    switch (mode) {
+    case eBrushPressureSizeRelative:
+        point->radius = std::max(minRadius, point->radius * pressure);
+        break;
+    case eBrushPressureHardnessAbsolute:
+        point->hardness = std::max(kBrushHardnessMin, pressure);
+        break;
+    case eBrushPressureHardnessRelative:
+        point->hardness = std::max(kBrushHardnessMin, point->hardness * pressure);
+        break;
+    case eBrushPressureOpacityAbsolute:
+        point->density = std::max(kBrushDensityPressureMin, pressure);
+        break;
+    case eBrushPressureOpacityRelative:
+        point->density = std::max(kBrushDensityPressureMin, point->density * pressure);
+        break;
+    case eBrushPressureOff:
+        break;
+    }
+}
+
+Region
+brushBounds(const std::vector<BrushPoint>& points)
+{
+    Region r;
+    if (points.empty()) {
+        return r;
+    }
+    float x1 = points[0].x, y1 = points[0].y, x2 = x1, y2 = y1;
+    for (const BrushPoint& p : points) {
+        x1 = std::min(x1, p.x - p.radius);
+        y1 = std::min(y1, p.y - p.radius);
+        x2 = std::max(x2, p.x + p.radius);
+        y2 = std::max(y2, p.y + p.radius);
+    }
+    r.x = (int)std::floor(x1);
+    r.y = (int)std::floor(y1);
+    r.width = (int)std::ceil(x2) - r.x;
+    r.height = (int)std::ceil(y2) - r.y;
+
+    return r;
+}
+
+namespace {
+    inline float
+    brushFalloff(float distance,
+                 float radius,
+                 float hardness,
+                 float density)
+    {
+        if ((radius <= 0.f) || (distance >= radius)) {
+            return 0.f;
+        }
+        const float u = distance / radius;
+        if ((u <= hardness) || (hardness >= 1.f)) {
+            return density;
+        }
+
+        return density * (1.f - u) / (1.f - hardness);
+    }
+} // anon namespace
+
+void
+rasterizeBrush(const std::vector<BrushPoint>& points,
+               const Region& roi,
+               std::vector<float>* mask)
+{
+    mask->assign((std::size_t)std::max(0, roi.width) * (std::size_t)std::max(0, roi.height), 0.f);
+    if (points.empty() || (roi.width <= 0) || (roi.height <= 0)) {
+        return;
+    }
+    const std::size_t w = (std::size_t)roi.width;
+    // A single point is a round stamp; segments carry the parameters linearly between their ends.
+    const std::size_t nSegments = points.size() > 1 ? points.size() - 1 : 1;
+    for (std::size_t s = 0; s < nSegments; ++s) {
+        const BrushPoint& a = points[s];
+        const BrushPoint& b = points.size() > 1 ? points[s + 1] : points[s];
+        const float maxRadius = std::max(a.radius, b.radius);
+        const int px1 = std::max(roi.x, (int)std::floor(std::min(a.x, b.x) - maxRadius));
+        const int py1 = std::max(roi.y, (int)std::floor(std::min(a.y, b.y) - maxRadius));
+        const int px2 = std::min(roi.x + roi.width, (int)std::ceil(std::max(a.x, b.x) + maxRadius) + 1);
+        const int py2 = std::min(roi.y + roi.height, (int)std::ceil(std::max(a.y, b.y) + maxRadius) + 1);
+        const float ex = b.x - a.x;
+        const float ey = b.y - a.y;
+        const float len2 = ex * ex + ey * ey;
+        for (int py = py1; py < py2; ++py) {
+            float* row = &(*mask)[(std::size_t)(py - roi.y) * w];
+            const float cy = (float)py + 0.5f;
+            for (int px = px1; px < px2; ++px) {
+                const float cx = (float)px + 0.5f;
+                float t = 0.f;
+                if (len2 > 0.f) {
+                    t = std::clamp(((cx - a.x) * ex + (cy - a.y) * ey) / len2, 0.f, 1.f);
+                }
+                const float qx = a.x + t * ex - cx;
+                const float qy = a.y + t * ey - cy;
+                const float d = std::sqrt(qx * qx + qy * qy);
+                const float radius = a.radius + t * (b.radius - a.radius);
+                const float hardness = a.hardness + t * (b.hardness - a.hardness);
+                const float density = a.density + t * (b.density - a.density);
+                const float v = brushFalloff(d, radius, hardness, density);
+                float& out = row[px - roi.x];
+                out = std::max(out, v);
+            }
+        }
+    }
+} // rasterizeBrush
+
 int
 returnLayerForOutput(OutputEnum output,
                      int numScales,

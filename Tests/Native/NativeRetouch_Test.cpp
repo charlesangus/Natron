@@ -61,6 +61,9 @@
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoLayer.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
@@ -460,6 +463,12 @@ TEST_F(NativeRetouchTest, KnobsMatchDarktableParams)
     expectDouble(node->getKnobByName(kRetouchParamFillBrightness), "Fill Brightness", 0., -1., 1.);
     expectInt(node->getKnobByName(kRetouchParamMaxHealIterations), "Max Heal Iterations", 2000, 1, 100000);
     EXPECT_EQ(2000, EdgeAware::kPoissonHealDefaultIterations);
+    // darktable's brush form: hardness and density as its defaults, size a diameter in pixels.
+    const std::vector<std::string> pressures = { "off", "hardnessRelative", "hardnessAbsolute", "opacityRelative", "opacityAbsolute", "sizeRelative" };
+    expectDouble(node->getKnobByName(kRetouchParamBrushSize), "Brush Size", 100., 1., 4000.);
+    expectDouble(node->getKnobByName(kRetouchParamBrushHardness), "Brush Hardness", 0.66, RC::kBrushHardnessMin, 1.);
+    expectDouble(node->getKnobByName(kRetouchParamBrushDensity), "Brush Density", 1., 0., 1.);
+    expectChoice(node->getKnobByName(kRetouchParamBrushPressure), "Brush Pressure", (int)RC::eBrushPressureOff, pressures);
 
     // A form's settings, on a new shape: darktable's form defaults.
     RotoCurveContextPtr context = node->getCurveContext();
@@ -479,6 +488,12 @@ TEST_F(NativeRetouchTest, KnobsMatchDarktableParams)
     ASSERT_TRUE(bool(shapeColor));
     EXPECT_EQ(std::string("Shape Fill Color"), shapeColor->getLabel());
     expectDouble(shape->getKnobByName(kRetouchShapeParamFillBrightness), "Shape Fill Brightness", 0., -1., 1.);
+    expectDouble(node->getKnobByName(kRetouchShapeParamBrushSize), "Shape Brush Size", 100., 1., 4000.);
+    expectDouble(node->getKnobByName(kRetouchShapeParamBrushHardness), "Shape Brush Hardness", 0.66, RC::kBrushHardnessMin, 1.);
+    expectDouble(node->getKnobByName(kRetouchShapeParamBrushDensity), "Shape Brush Density", 1., 0., 1.);
+    // The Selected Shape group carries a brush's knobs; a Bezier has none of its own.
+    expectChoice(node->getKnobByName(kRetouchShapeParamBrushPressure), "Shape Brush Pressure", (int)RC::eBrushPressureOff, pressures);
+    EXPECT_FALSE(bool(shape->getKnobByName(kRetouchShapeParamBrushSize)));
 
     const RC::ShapeSettings defaults;
     EXPECT_EQ(RC::eAlgorithmHeal, defaults.algorithm);
@@ -1101,4 +1116,323 @@ TEST_F(NativeRetouchTest, MatchesDarktableReferences)
         EXPECT_LE(relMean, kDarktableClass.mean) << job.name;
         EXPECT_LE(relMax, kDarktableClass.max) << job.name;
     }
+}
+
+namespace {
+// A finished brush shape through points, made the way the brush tool makes one.
+RotoStrokeItemPtr
+makeBrushShape(const NodePtr& node,
+               const std::vector<QPointF>& points)
+{
+    RotoCurveContextPtr context = node->getCurveContext();
+    if (!context) {
+        return RotoStrokeItemPtr();
+    }
+    RotoStrokeItemPtr stroke = std::make_shared<RotoStrokeItem>(eRotoStrokeTypeSolid, context, context->generateUniqueName(kRetouchBrushBaseName), RotoLayerPtr());
+    context->onItemCreated(stroke, false);
+    context->addItem(context->getOrCreateBaseLayer(), 0, stroke, RotoItem::eSelectionReasonOther);
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        stroke->appendPoint(i == 0, RotoPoint(points[i].x(), points[i].y(), 1., 0.));
+    }
+    stroke->setStrokeFinished();
+
+    return stroke;
+}
+
+float
+expectedFalloff(float d,
+                float radius,
+                float hardness,
+                float density)
+{
+    if (d >= radius) {
+        return 0.f;
+    }
+    const float u = d / radius;
+
+    return (u <= hardness) ? density : density * (1.f - u) / (1.f - hardness);
+}
+} // anon namespace
+
+// darktable's brush falloff: full density inside the hardness fraction of the radius, then linear
+// to zero at the border; a lone point is a round stamp and a segment has round caps.
+TEST(NativeRetouchBrush, RasterizeFollowsDarktablesFalloff)
+{
+    RC::Region roi;
+    roi.width = 20;
+    roi.height = 20;
+    std::vector<float> mask;
+
+    RC::BrushPoint stamp;
+    stamp.x = 10.f;
+    stamp.y = 10.f;
+    stamp.radius = 4.f;
+    stamp.hardness = 0.5f;
+    stamp.density = 0.9f;
+    RC::rasterizeBrush({ stamp }, roi, &mask);
+    ASSERT_EQ(400u, mask.size());
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 20; ++x) {
+            const float d = std::hypot(x + 0.5f - 10.f, y + 0.5f - 10.f);
+            EXPECT_NEAR(expectedFalloff(d, 4.f, 0.5f, 0.9f), mask[y * 20 + x], 1e-5f) << x << "," << y;
+        }
+    }
+
+    RC::BrushPoint a, b;
+    a.x = 5.f;
+    a.y = 10.f;
+    a.radius = 2.f;
+    b = a;
+    b.x = 15.f;
+    RC::rasterizeBrush({ a, b }, roi, &mask);
+    EXPECT_FLOAT_EQ(1.f, mask[10 * 20 + 9]);
+    EXPECT_FLOAT_EQ(1.f, mask[11 * 20 + 9]);
+    EXPECT_FLOAT_EQ(0.f, mask[12 * 20 + 9]);
+    EXPECT_FLOAT_EQ(1.f, mask[10 * 20 + 16]);
+    EXPECT_FLOAT_EQ(0.f, mask[10 * 20 + 17]);
+    EXPECT_FLOAT_EQ(1.f, mask[10 * 20 + 3]);
+    EXPECT_FLOAT_EQ(0.f, mask[10 * 20 + 2]);
+
+    const RC::Region bounds = RC::brushBounds({ a, b });
+    EXPECT_EQ(3, bounds.x);
+    EXPECT_EQ(8, bounds.y);
+    EXPECT_EQ(14, bounds.width);
+    EXPECT_EQ(4, bounds.height);
+}
+
+// The pressure modes of darktable's brush, with its floors.
+TEST(NativeRetouchBrush, PressureModesUseDarktablesMinimums)
+{
+    RC::BrushPoint p;
+    p.radius = 10.f;
+    p.hardness = 0.6f;
+    p.density = 0.5f;
+
+    RC::BrushPoint q = p;
+    RC::applyBrushPressure(RC::eBrushPressureOff, 0.25f, 1.f, &q);
+    EXPECT_FLOAT_EQ(10.f, q.radius);
+    EXPECT_FLOAT_EQ(0.6f, q.hardness);
+    EXPECT_FLOAT_EQ(0.5f, q.density);
+
+    q = p;
+    RC::applyBrushPressure(RC::eBrushPressureSizeRelative, 0.5f, 1.f, &q);
+    EXPECT_FLOAT_EQ(5.f, q.radius);
+    q = p;
+    RC::applyBrushPressure(RC::eBrushPressureSizeRelative, 0.f, 1.f, &q);
+    EXPECT_FLOAT_EQ(1.f, q.radius);
+
+    q = p;
+    RC::applyBrushPressure(RC::eBrushPressureHardnessRelative, 0.5f, 1.f, &q);
+    EXPECT_FLOAT_EQ(0.3f, q.hardness);
+    q = p;
+    RC::applyBrushPressure(RC::eBrushPressureHardnessAbsolute, 0.f, 1.f, &q);
+    EXPECT_FLOAT_EQ(RC::kBrushHardnessMin, q.hardness);
+
+    q = p;
+    RC::applyBrushPressure(RC::eBrushPressureOpacityRelative, 0.5f, 1.f, &q);
+    EXPECT_FLOAT_EQ(0.25f, q.density);
+    q = p;
+    RC::applyBrushPressure(RC::eBrushPressureOpacityAbsolute, 0.f, 1.f, &q);
+    EXPECT_FLOAT_EQ(RC::kBrushDensityPressureMin, q.density);
+    EXPECT_EQ(10.f, q.radius);
+}
+
+// A brush shape takes the node's brush settings when made, and its mask is its stroke in the
+// render frame: canonical y up, rows top-down, scaled with the render.
+TEST_F(NativeRetouchTest, BrushShapeTakesTheNodeSettingsAndRasterizes)
+{
+    NodePtr node = makeRetouch(makeSource(false), 2);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamBrushSize, { 10. }));
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamBrushHardness, { 0.5 }));
+    ASSERT_TRUE(setKnobValues(node, kRetouchParamBrushDensity, { 0.8 }));
+    RotoStrokeItemPtr brush = makeBrushShape(node, { QPointF(10., 24.), QPointF(25., 24.), QPointF(40., 24.) });
+    ASSERT_TRUE(bool(brush));
+
+    KnobDoublePtr size = RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamBrushSize);
+    KnobDoublePtr hardness = RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamBrushHardness);
+    KnobDoublePtr density = RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamBrushDensity);
+    KnobChoicePtr pressure = RetouchTest::shapeKnob<KnobChoice>(brush, kRetouchShapeParamBrushPressure);
+    ASSERT_TRUE(size && hardness && density && pressure);
+    EXPECT_EQ(std::string("Shape Brush Size"), size->getLabel());
+    EXPECT_DOUBLE_EQ(10., size->getValue());
+    EXPECT_DOUBLE_EQ(0.5, hardness->getValue());
+    EXPECT_DOUBLE_EQ(0.8, density->getValue());
+    EXPECT_EQ((int)RC::eBrushPressureOff, pressure->getValue());
+    EXPECT_TRUE(bool(RetouchTest::shapeKnob<KnobChoice>(brush, kRetouchShapeParamAlgorithm)));
+
+    const RectI full(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RC::Region roi;
+    std::vector<float> mask;
+    ASSERT_TRUE(Retouch::rasterizeBrushShape(brush, kTime, 1., full, &roi, &mask));
+    ASSERT_EQ((std::size_t)roi.width * roi.height, mask.size());
+    const float y = (float)kParitySourceHeight - 24.f;
+    EXPECT_LE(roi.x, 5);
+    EXPECT_GE(roi.x + roi.width, 45);
+    EXPECT_LE(roi.y, (int)y - 5);
+    EXPECT_GE(roi.y + roi.height, (int)y + 5);
+    auto at = [&](int px, int py) {
+        return mask[(std::size_t)(py - roi.y) * roi.width + (px - roi.x)];
+    };
+    EXPECT_FLOAT_EQ(0.8f, at(25, (int)y));
+    EXPECT_NEAR(expectedFalloff(3.5f, 5.f, 0.5f, 0.8f), at(25, (int)y + 3), 1e-4f);
+    EXPECT_NEAR(expectedFalloff(4.5f, 5.f, 0.5f, 0.8f), at(25, (int)y + 4), 1e-4f);
+
+    // Half resolution halves the radius around the halved stroke.
+    const RectI half(0, 0, kParitySourceWidth / 2, kParitySourceHeight / 2);
+    ASSERT_TRUE(Retouch::rasterizeBrushShape(brush, kTime, 0.5, half, &roi, &mask));
+    EXPECT_FLOAT_EQ(0.8f, at(12, (int)(y / 2)));
+    EXPECT_FLOAT_EQ(0.f, at(12, (int)(y / 2) + 2));
+}
+
+// A brush shape's points and settings survive a save and load.
+TEST_F(NativeRetouchTest, BrushSaveLoadRoundTrip)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    NodePtr node = makeRetouch(makeSource(false), 2);
+    ASSERT_TRUE(bool(node));
+    RotoStrokeItemPtr brush = makeBrushShape(node, { QPointF(8., 10.), QPointF(20., 30.), QPointF(44., 12.) });
+    ASSERT_TRUE(bool(brush));
+    RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamBrushSize)->setValue(17.);
+    RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamBrushHardness)->setValue(0.3);
+    RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamBrushDensity)->setValue(0.7);
+    RetouchTest::shapeKnob<KnobChoice>(brush, kRetouchShapeParamBrushPressure)->setValue((int)RC::eBrushPressureOpacityAbsolute);
+    RetouchTest::shapeKnob<KnobChoice>(brush, kRetouchShapeParamAlgorithm)->setValue((int)RC::eAlgorithmClone);
+    RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamSourceOffset)->setValue(-6., ViewSpec::all(), 0);
+    RetouchTest::shapeKnob<KnobDouble>(brush, kRetouchShapeParamSourceOffset)->setValue(2.5, ViewSpec::all(), 1);
+    const RectI full(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const std::vector<std::vector<RC::BrushPoint>> before = Retouch::readBrushStrokes(brush, kTime, 1., full);
+    ASSERT_EQ(1u, before.size());
+    const std::string nodeName = node->getScriptName();
+    const std::string brushName = brush->getScriptName();
+
+    std::string yaml;
+    ProjectPtr project = getApp()->getProject();
+    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("retouchbrush.ntpz"), &yaml));
+    node.reset();
+    brush.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("retouchbrush.ntpz")));
+
+    NodePtr loaded = project->getNodeByName(nodeName);
+    ASSERT_TRUE(bool(loaded));
+    RotoCurveContextPtr context = loaded->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    RotoStrokeItemPtr loadedBrush = std::dynamic_pointer_cast<RotoStrokeItem>(context->getItemByName(brushName));
+    ASSERT_TRUE(bool(loadedBrush));
+
+    EXPECT_DOUBLE_EQ(17., RetouchTest::shapeKnob<KnobDouble>(loadedBrush, kRetouchShapeParamBrushSize)->getValue());
+    EXPECT_DOUBLE_EQ(0.3, RetouchTest::shapeKnob<KnobDouble>(loadedBrush, kRetouchShapeParamBrushHardness)->getValue());
+    EXPECT_DOUBLE_EQ(0.7, RetouchTest::shapeKnob<KnobDouble>(loadedBrush, kRetouchShapeParamBrushDensity)->getValue());
+    EXPECT_EQ((int)RC::eBrushPressureOpacityAbsolute, RetouchTest::shapeKnob<KnobChoice>(loadedBrush, kRetouchShapeParamBrushPressure)->getValue());
+    const RC::ShapeSettings s = Retouch::readShapeSettings(loadedBrush, kTime);
+    EXPECT_EQ(RC::eAlgorithmClone, s.algorithm);
+    double dx = 0., dy = 0.;
+    Retouch::readShapeSourceOffset(loadedBrush, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(-6., dx);
+    EXPECT_DOUBLE_EQ(2.5, dy);
+
+    const std::vector<std::vector<RC::BrushPoint>> after = Retouch::readBrushStrokes(loadedBrush, kTime, 1., full);
+    ASSERT_EQ(before.size(), after.size());
+    ASSERT_EQ(before[0].size(), after[0].size());
+    for (std::size_t i = 0; i < before[0].size(); ++i) {
+        EXPECT_NEAR(before[0][i].x, after[0][i].x, 1e-4f) << i;
+        EXPECT_NEAR(before[0][i].y, after[0][i].y, 1e-4f) << i;
+        EXPECT_FLOAT_EQ(before[0][i].radius, after[0][i].radius) << i;
+        EXPECT_FLOAT_EQ(before[0][i].density, after[0][i].density) << i;
+    }
+}
+
+// darktable's source placement: Shift-click puts the next shape's source there and keeps that
+// offset for later shapes; Ctrl+Shift-click puts every later shape's source there.
+TEST_F(NativeRetouchTest, SourcePlacementIsRelativeOrAbsolute)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    EXPECT_EQ(Retouch::eSourcePlacementRelative, effect->getSourcePlacement());
+
+    double dx = 0., dy = 0.;
+    effect->placeSource(QPointF(30., 20.), false);
+    EXPECT_EQ(Retouch::eSourcePlacementRelativePending, effect->getSourcePlacement());
+    QPointF preview;
+    ASSERT_TRUE(effect->previewSourcePosition(eRotoToolSolidBrush, QPointF(5., 5.), &preview));
+    EXPECT_EQ(QPointF(30., 20.), preview);
+    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolSolidBrush, QPointF(10., 12.), &dx, &dy));
+    EXPECT_DOUBLE_EQ(20., dx);
+    EXPECT_DOUBLE_EQ(8., dy);
+    EXPECT_EQ(Retouch::eSourcePlacementRelative, effect->getSourcePlacement());
+    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawEllipse, QPointF(40., 2.), &dx, &dy));
+    EXPECT_DOUBLE_EQ(20., dx);
+    EXPECT_DOUBLE_EQ(8., dy);
+    ASSERT_TRUE(effect->previewSourcePosition(eRotoToolDrawBezier, QPointF(1., 2.), &preview));
+    EXPECT_EQ(QPointF(21., 10.), preview);
+
+    effect->placeSource(QPointF(7., 9.), true);
+    EXPECT_EQ(Retouch::eSourcePlacementAbsolute, effect->getSourcePlacement());
+    for (const QPointF& anchor : { QPointF(10., 12.), QPointF(-3., 40.) }) {
+        ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawBezier, anchor, &dx, &dy));
+        EXPECT_DOUBLE_EQ(7. - anchor.x(), dx);
+        EXPECT_DOUBLE_EQ(9. - anchor.y(), dy);
+    }
+    EXPECT_EQ(Retouch::eSourcePlacementAbsolute, effect->getSourcePlacement());
+
+    // A new relative placement replaces the absolute one, and its offset the old one.
+    effect->placeSource(QPointF(0., 0.), false);
+    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawRectangle, QPointF(4., -2.), &dx, &dy));
+    EXPECT_DOUBLE_EQ(-4., dx);
+    EXPECT_DOUBLE_EQ(2., dy);
+    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawRectangle, QPointF(50., 50.), &dx, &dy));
+    EXPECT_DOUBLE_EQ(-4., dx);
+    EXPECT_DOUBLE_EQ(2., dy);
+}
+
+// The brush tool through the overlay: a Shift-click places the source, then a drag paints a brush
+// shape whose source is at the click, measured from its first point.
+TEST_F(NativeRetouchTest, BrushToolPaintsAShapeWithThePlacedSource)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    const RetouchInteractPtr& ui = effect->getInteract();
+    ASSERT_TRUE(bool(ui));
+    ui->setCurrentTool(ui->drawBrushAction.lock());
+    ASSERT_EQ(eRotoToolSolidBrush, ui->getSelectedTool());
+    const RenderScale scale = RenderScale::identity;
+
+    const QPointF click(40., 30.);
+    ui->shiftDown = 1;
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), click, click, 1., 0., ePenTypeLMB));
+    EXPECT_TRUE(context->getCurvesByRenderOrder(false).empty());
+    EXPECT_EQ(Retouch::eSourcePlacementRelativePending, effect->getSourcePlacement());
+    ui->shiftDown = 0;
+    ignore_result(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), click, click, 1., 0.));
+
+    const QPointF start(10., 12.);
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), start, start, 1., 0., ePenTypeLMB));
+    for (int i = 1; i <= 4; ++i) {
+        const QPointF p(start.x() + 5. * i, start.y() + i);
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), p, p, 1., 0.));
+    }
+    const QPointF end(start.x() + 20., start.y() + 4.);
+    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), end, end, 1., 0.));
+
+    const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(false);
+    ASSERT_EQ(1u, curves.size());
+    RotoStrokeItemPtr brush = std::dynamic_pointer_cast<RotoStrokeItem>(curves.front());
+    ASSERT_TRUE(bool(brush));
+    EXPECT_FALSE(bool(ui->getStrokeBeingPainted()));
+    double dx = 0., dy = 0.;
+    Retouch::readShapeSourceOffset(brush, kTime, &dx, &dy);
+    EXPECT_DOUBLE_EQ(30., dx);
+    EXPECT_DOUBLE_EQ(18., dy);
+    EXPECT_EQ(Retouch::eSourcePlacementRelative, effect->getSourcePlacement());
+    const RectI full(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const std::vector<std::vector<RC::BrushPoint>> strokes = Retouch::readBrushStrokes(brush, kTime, 1., full);
+    ASSERT_EQ(1u, strokes.size());
+    EXPECT_GE(strokes[0].size(), 5u);
 }

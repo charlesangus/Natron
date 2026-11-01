@@ -118,6 +118,50 @@ struct Params {
     float renderScale = 1.f;
 };
 
+/// What pen pressure changes on a brush stroke: darktable's pressure_sensitivity preference.
+enum BrushPressureEnum {
+    eBrushPressureOff = 0,
+    eBrushPressureHardnessRelative,
+    eBrushPressureHardnessAbsolute,
+    eBrushPressureOpacityRelative,
+    eBrushPressureOpacityAbsolute,
+    eBrushPressureSizeRelative,
+};
+
+/// darktable's brush limits. kBrushBorderMin is a fraction of the image's smaller side.
+const float kBrushHardnessMin = 0.0005f;
+const float kBrushBorderMin = 0.00005f;
+const float kBrushDensityPressureMin = 0.05f;
+
+/**
+ * @brief One point of a brush stroke, darktable's dt_masks_point_brush_t, in the pixels of a
+ * Region frame (x right, y down). radius is the border, from the centre line to where the mask
+ * reaches 0.
+ **/
+struct BrushPoint {
+    float x = 0.f;
+    float y = 0.f;
+    float radius = 1.f;
+    float hardness = 1.f;
+    float density = 1.f;
+};
+
+/**
+ * @brief Applies pen pressure (0 to 1) to a point as darktable does when a stroke ends.
+ * minRadius is kBrushBorderMin times the image's smaller side, in the point's pixels.
+ **/
+void applyBrushPressure(BrushPressureEnum mode, float pressure, float minRadius, BrushPoint* point);
+
+/// The pixels a stroke can touch.
+Region brushBounds(const std::vector<BrushPoint>& points);
+
+/**
+ * @brief The mask of a brush stroke over roi, rows top-down, sampled at pixel centres:
+ * darktable's brush falloff, full density up to hardness times the border and falling linearly to
+ * 0 at the border, with round ends. Where segments overlap the larger value wins.
+ **/
+void rasterizeBrush(const std::vector<BrushPoint>& points, const Region& roi, std::vector<float>* mask);
+
 /// The returnLayer of an output mode.
 int returnLayerForOutput(OutputEnum output, int numScales, int currentScale);
 

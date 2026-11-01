@@ -16,7 +16,8 @@ Merge From, when above 0, merges the scales from it up into one before the shape
 on any of them works on the merged layer.
 
 The shapes are the node's Roto shapes (Beziers, ellipses, rectangles), drawn in the viewer with
-the Roto tools. Each carries its own settings, under the Selected Shape group for the selected one:
+the Roto tools, and brush shapes, drawn with the Brush tool (N). Each carries its own settings,
+under the Selected Shape group for the selected one:
 
 | Knob | Label | Default | Range |
 | --- | --- | --- | --- |
@@ -28,9 +29,25 @@ the Roto tools. Each carries its own settings, under the Selected Shape group fo
 | `shapeFillMode` | Shape Fill Mode | Erase | Erase, Color |
 | `shapeFillColor` | Shape Fill Color | 0, 0, 0 | |
 | `shapeFillBrightness` | Shape Fill Brightness | 0 | -1 .. 1 |
+| `shapeBrushSize` | Shape Brush Size | 100 | 1 .. 4000 |
+| `shapeBrushHardness` | Shape Brush Hardness | 0.66 | 0.0005 .. 1 |
+| `shapeBrushDensity` | Shape Brush Density | 1 | 0 .. 1 |
+| `shapeBrushPressure` | Shape Brush Pressure | Off | Off, Hardness (Relative), Hardness (Absolute), Opacity (Relative), Opacity (Absolute), Brush Size (Relative) |
 
-The shape's Roto opacity is darktable's form opacity and its Roto feather the form's feather
-(border). A new shape takes the node's Algorithm, Blur and Fill settings, and the Current Scale.
+The brush knobs only change brush shapes. The shape's Roto opacity is darktable's form opacity and its Roto feather the form's feather
+(border). A new shape takes the node's Algorithm, Blur and Fill settings, and the Current Scale;
+a new brush shape also takes the node's Brush Size, Brush Hardness, Brush Density and Brush
+Pressure.
+
+A brush shape is darktable's brush form (`src/develop/masks/brush.c`): a freehand stroke, its mask
+the stroke's centre line swept by a disc of the Brush Size (a diameter, in canonical pixels),
+Brush Density inside the Brush Hardness fraction of the radius and falling linearly to 0 at the
+edge, overlaps taking the larger value. The pen pressure is recorded with every point (1 for a
+mouse) and Brush Pressure picks what it changes, with darktable's floors: hardness down to
+0.0005, opacity to 0.05, size to 0.005% of the smaller image side. The pressure applies at render
+time, so changing the mode changes a drawn brush. darktable's brush smoothing preference is not
+ported: the stroke is Roto's Catmull-Rom curve through the pen events. Roto opacity scales the
+brush mask; Roto feather does not apply to it.
 
 ## Algorithms
 
@@ -47,7 +64,14 @@ draws each Clone and Heal shape's source as a dashed outline with a line to the 
 the outline moves the source. As in darktable, the first shape drawn in the viewer takes a source
 at a fixed fraction of the image: an ellipse 2% of the width to the right and 1.414% of the height
 up, a Bezier or rectangle 2% to the right and 2% down. Every later shape drawn in the viewer reuses
-that first offset until the node is reloaded. A shape made by script takes 0, 0. A source outside the image is cropped to it.
+that first offset until the node is reloaded. A brush shape's source is 1% of the width right and
+1% of the height down. A shape made by script takes 0, 0. A source outside the image is cropped to it.
+As in darktable, Shift-click in the viewer with a drawing tool (Bezier, ellipse, rectangle or
+brush) places the next shape's source there: that shape's offset is from its anchor (an ellipse's
+centre, a Bezier's, rectangle's or brush's first point) to the click, and later shapes reuse it.
+Ctrl+Shift-click places every later shape's source at the click, until the next Shift-click.
+While a drawing tool is active the viewer marks where the next Clone or Heal shape's source goes
+with a small cross.
 Copy to Scale N and Move to Scale N in a shape's right-click menu put a copy of the selected
 shapes, or the shapes themselves, on the Current Scale, as one undoable step.
 
@@ -67,6 +91,10 @@ shapes, or the shapes themselves, on the Current Scale, as one undoable step.
 | `fillColor` | Fill Color | 0, 0, 0 | |
 | `fillBrightness` | Fill Brightness | 0 | -1 .. 1 |
 | `maxHealIterations` | Max Heal Iterations | 2000 | 1 .. 100000 |
+| `brushSize` | Brush Size | 100 | 1 .. 4000 |
+| `brushHardness` | Brush Hardness | 0.66 | 0.0005 .. 1 |
+| `brushDensity` | Brush Density | 1 | 0 .. 1 |
+| `brushPressure` | Brush Pressure | Off | as Shape Brush Pressure |
 
 Output shows the result, or the Current Scale's detail through the Preview Levels (black, grey and
 white points, darktable's wavelet preview), or the residual. darktable's "display wavelet scale"
@@ -92,7 +120,8 @@ Tolerance:
 | Retouch (Retouch) | identity | `1e-6` | no shapes, or shapes only on skipped scales; the decomposition and recomposition alone |
 | Retouch (Retouch) | GPU against CPU | `kRetouchTolerance`, `kRetouchHealTolerance` | `ParityTolerance::make(0., 1e-4)`, the edge-aware library's bound; 1e-3 for the heal, as `EdgeAwareGpu_Test` |
 
-The knob audit, identity, save and load, the column and the copy and move actions and the darktable
+The knob audit, identity, save and load (brush shapes included), the brush mask and pressure
+modes, the brush tool, source placement, the column and the copy and move actions and the darktable
 references are in `Tests/Native/NativeRetouch_Test.cpp`; the GPU parity is in
 `Tests/Native/NativeRetouchGpu_Test.cpp`, the viewer interaction in `Tests/gui/m211_retouch.py`.
 The references are described in `Tests/fixtures/raw/README.md`.

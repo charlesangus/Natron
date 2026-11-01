@@ -327,7 +327,7 @@ compositeWorker(const ZDefocusStatePtr& state,
                 if (layer.sharp) {
                     const float* const src = buffers->plane(1, p) + row + x1;
                     for (int i = 0; i < x2 - x1; ++i) {
-                        c[i] = a[i] * src[i];
+                        c[i] = (a[i] > 0.f && std::isfinite(src[i])) ? a[i] * src[i] : 0.f;
                     }
                 } else {
                     bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, layer.runs, y, x1, x2, acc->data(), c);
@@ -1021,7 +1021,14 @@ ZDefocus::slices(const ZDefocusParams& params,
     const int rest = std::max(1, params.layers - 1);
     int nFront = 0;
     int nBack = 0;
-    if (frontBlurs && backBlurs) {
+    if (frontBlurs && backBlurs && rest < 2) {
+        // One slice to share: it goes to the side that blurs more.
+        if (front >= back) {
+            nFront = 1;
+        } else {
+            nBack = 1;
+        }
+    } else if (frontBlurs && backBlurs) {
         nFront = std::clamp((int)std::lround(rest * front / (front + back)), 1, std::max(1, rest - 1));
         nBack = std::max(1, rest - nFront);
     } else if (frontBlurs) {
@@ -1439,8 +1446,11 @@ ZDefocus::gpuWeight(double time,
         return GpuWeight::filter();
     }
 
-    // The gather visits every kernel row, so its cost follows the kernel's diameter.
-    return gpuSizeScaledWeight(2. * halo);
+    // The gather visits every kernel row once per slice, so its cost follows the kernel's diameter and the slice count.
+    const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+    const std::size_t sliceCount = std::max<std::size_t>(1, slices(getParams(time, view), getPassContext(time, view, scale)).size());
+
+    return gpuSizeScaledWeight(2. * halo * std::sqrt((double)sliceCount));
 }
 
 bool

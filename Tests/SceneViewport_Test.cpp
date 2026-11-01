@@ -53,7 +53,10 @@
 #include "Engine/AppManager.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Gui/GuiGLRequirements.h"
+
+#include <pxr/base/gf/vec4f.h>
 
 NATRON_NAMESPACE_USING
 
@@ -111,6 +114,102 @@ referenceScene()
     layer->InsertSubLayerPath(file->GetIdentifier());
 
     return SceneOps::appendLayer(ScenePayload(), layer, 0x5ce7e5ULL);
+}
+
+PXR_NS::UsdGeomMesh
+defineQuad(const PXR_NS::UsdStageRefPtr& stage,
+           const char* path,
+           float halfSize,
+           float z)
+{
+    PXR_NS::UsdGeomMesh mesh = PXR_NS::UsdGeomMesh::Define(stage, PXR_NS::SdfPath(path));
+    PXR_NS::VtVec3fArray points(4);
+
+    points[0] = PXR_NS::GfVec3f(-halfSize, -halfSize, z);
+    points[1] = PXR_NS::GfVec3f(halfSize, -halfSize, z);
+    points[2] = PXR_NS::GfVec3f(halfSize, halfSize, z);
+    points[3] = PXR_NS::GfVec3f(-halfSize, halfSize, z);
+    mesh.CreatePointsAttr(PXR_NS::VtValue(points));
+    mesh.CreateFaceVertexCountsAttr(PXR_NS::VtValue(PXR_NS::VtIntArray(1, 4)));
+    PXR_NS::VtIntArray indices(4);
+    for (int i = 0; i < 4; ++i) {
+        indices[i] = i;
+    }
+    mesh.CreateFaceVertexIndicesAttr(PXR_NS::VtValue(indices));
+    mesh.CreateSubdivisionSchemeAttr(PXR_NS::VtValue(PXR_NS::UsdGeomTokens->none));
+
+    return mesh;
+}
+
+// /World/Card, a 4-unit square at z = 0, carries the projection material as USDProject3D authors
+// it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent
+// premultiplied red. The projector's frame covers the card's left half, x -2..0; Crop on and
+// Outside transparent leave the right half undrawn. /World/Backdrop, an opaque blue 6-unit square
+// at z = -1, lies behind the whole card. From the fixture's free camera the card spans pixels
+// 66..190 and the backdrop 44..212 on both axes.
+ScenePayload
+projectedCardScene(std::string* error)
+{
+    const std::string shaderPath = USDProject3D::getShaderPath();
+
+    if (shaderPath.empty()) {
+        *error = "the installation lacks " kUSDProject3DShaderFile;
+
+        return ScenePayload();
+    }
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportProjection");
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    if (!stage) {
+        *error = "USD could not open a stage on the layer";
+
+        return ScenePayload();
+    }
+
+    PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
+    backdrop.CreateDisplayColorAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f, 0.f, 1.f))));
+    PXR_NS::UsdGeomMesh card = defineQuad(stage, "/World/Card", 2.f, 0.f);
+
+    const PXR_NS::SdfPath materialPath("/World/Projection");
+    PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterial::Define(stage, materialPath);
+    PXR_NS::UsdShadeShader shader = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken("Project")));
+    shader.SetSourceAsset(PXR_NS::SdfAssetPath(shaderPath), PXR_NS::TfToken("glslfx"));
+    // Row vectors: u = (x + 2) / 2 and v = (y + 2) / 4, w = 1.
+    PXR_NS::GfMatrix4d worldToProjector(0.5, 0., 0., 0.,
+                                        0., 0.25, 0., 0.,
+                                        0., 0., 1., 0.,
+                                        1., 0.5, 0., 1.);
+    shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector), PXR_NS::SdfValueTypeNames->Matrix4d).Set(worldToProjector);
+    shader.CreateInput(PXR_NS::TfToken("projectorOrigin"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(-1.f, 0.f, 5.f, 1.f));
+    shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(1.f, 1.f, 0.f, 0.f));
+    const std::pair<const char*, int> ints[] = {
+        { kUSDProject3DInputProjectionSpace, 0 },
+        { "projectOn", 0 },
+        { "crop", 1 },
+        { "clip", 0 },
+        { "outside", 1 },
+    };
+    for (const std::pair<const char*, int>& value : ints) {
+        shader.CreateInput(PXR_NS::TfToken(value.first), PXR_NS::SdfValueTypeNames->Int).Set(value.second);
+    }
+    material.CreateSurfaceOutput().ConnectToSource(shader.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+
+    PXR_NS::UsdShadeShader reader = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken("StReader")));
+    reader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float2")));
+    reader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String).Set(std::string("st"));
+    PXR_NS::UsdShadeShader texture = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken("Plate")));
+    texture.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdUVTexture")));
+    texture.CreateInput(PXR_NS::TfToken("st"), PXR_NS::SdfValueTypeNames->Float2)
+        .ConnectToSource(reader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2));
+    for (const char* name : { "wrapS", "wrapT" }) {
+        texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token).Set(PXR_NS::TfToken("black"));
+    }
+    texture.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(0.6f, 0.f, 0.f, 0.5f));
+    shader.CreateInput(PXR_NS::TfToken("plate"), PXR_NS::SdfValueTypeNames->Float4)
+        .ConnectToSource(texture.CreateOutput(PXR_NS::TfToken("rgba"), PXR_NS::SdfValueTypeNames->Float4));
+
+    PXR_NS::UsdShadeMaterialBindingAPI::Apply(card.GetPrim()).Bind(material);
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 0x9c0ec7ULL);
 }
 
 struct Rgb {
@@ -313,6 +412,46 @@ TEST_F(SceneViewportStorm, PicksThePrimDrawnAtAPixel)
     const Rgb back = pixel(cleared, 128, 128);
     EXPECT_LE(std::abs(back.r - before.r) + std::abs(back.g - before.g) + std::abs(back.b - before.b), 6)
         << "clearing the selection left the highlight: " << before << " -> " << back;
+}
+
+// The projection's material is translucent, drawn in Storm's blended pass, which writes no prim
+// ids; the pick runs its own id pass over every material tag and discards only fragments whose
+// alpha is below its threshold, so the projected card picks wherever it shows and not where it
+// is transparent.
+TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+
+    const QImage unselected = render();
+    const Rgb projected = pixel(unselected, 97, 128);
+    const Rgb beside = pixel(unselected, 159, 128);
+    EXPECT_TRUE(isBluish(beside)) << "the backdrop where the card is transparent: " << beside;
+    // Half-transparent red over the blue backdrop: both show.
+    EXPECT_GT(projected.r, 120) << "the projected plate: " << projected;
+    EXPECT_GT(projected.b, 90) << "the backdrop through the plate: " << projected;
+    EXPECT_LT(projected.g, 60) << projected;
+    EXPECT_TRUE(isBackground(pixel(unselected, 20, 128))) << pixel(unselected, 20, 128);
+
+    EXPECT_EQ(std::string("/World/Card"), _renderer.pick(97, 128, kSize, kSize));
+    EXPECT_EQ(std::string("/World/Card"), _renderer.pick(76, 76, kSize, kSize));
+    EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(159, 128, kSize, kSize));
+    EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(97, 200, kSize, kSize));
+    EXPECT_EQ(std::string(), _renderer.pick(20, 128, kSize, kSize));
+
+    _renderer.setSelectedPrim("/World/Card");
+    const QImage selected = render();
+    const Rgb highlighted = pixel(selected, 97, 128);
+    EXPECT_GT(std::abs(highlighted.r - projected.r) + std::abs(highlighted.g - projected.g) + std::abs(highlighted.b - projected.b), 30)
+        << "highlight left the projected card unchanged: " << projected << " -> " << highlighted;
+    const Rgb besideSelected = pixel(selected, 159, 128);
+    EXPECT_LE(std::abs(besideSelected.r - beside.r) + std::abs(besideSelected.g - beside.g) + std::abs(besideSelected.b - beside.b), 6)
+        << "the card's transparent half highlighted the backdrop: " << beside << " -> " << besideSelected;
 }
 
 // /World/Cam sits at (1, 1, 10) with the fallback aperture (vertical 15.2908 mm) and a 35 mm lens:

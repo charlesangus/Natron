@@ -56,7 +56,9 @@ inline constexpr InputSpec kLoopBeginInputs[] = {
  * outputs what the body output at the iteration before it instead, conformed to its input's
  * components and depth. Its hash then folds in the body's state, hashed as if every LoopBegin
  * feeding back read a fixed image, and the LoopEnd's knobs that decide the iterations: what it
- * outputs moves with them, its inputs' hashes do not.
+ * outputs moves with them, its inputs' hashes do not. With the LoopEnd's Cross Frame on and
+ * Feedback on, it outputs the LoopEnd's output at the frame before after Start Frame, and its
+ * hash folds the same body state and the Cross Frame knobs.
  **/
 class LoopBegin
     : public NativeEffectBase {
@@ -91,7 +93,9 @@ private:
                        "once. Several LoopBegins may start the body of one LoopEnd, each bringing in its "
                        "own input. The image passes through LoopBegin unchanged, except when the LoopEnd "
                        "is in Feedback mode and Feedback is on: each iteration after the first then starts "
-                       "from the output of the iteration before it. The loop's name is the LoopEnd's.",
+                       "from the output of the iteration before it. With the LoopEnd's Cross Frame on and "
+                       "Feedback on, frames after its Start Frame start from the LoopEnd's output at the "
+                       "frame before. The loop's name is the LoopEnd's.",
         .grouping = PLUGIN_GROUP_LOOP,
         .majorVersion = PLUGIN_MAJOR_NATRON_LOOPBEGIN,
         .minorVersion = 0,

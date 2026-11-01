@@ -215,23 +215,18 @@ protected:
         return crop;
     }
 
-    NodePtr createLoopBegin(const std::string& name,
-                            const NodePtr& input)
+    NodePtr createLoopBegin(const NodePtr& input)
     {
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
-        KnobStringPtr nameKnob = node ? std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kLoopBeginParamName)) : KnobStringPtr();
 
-        EXPECT_TRUE(bool(nameKnob));
-        if (nameKnob) {
-            nameKnob->setValue(name);
-        }
         EXPECT_TRUE(node && node->connectInput(input, 0));
 
         return node;
     }
 
-    // A LoopEnd in mode over count iterations, Cross Frame from startFrame when crossFrame.
-    NodePtr createLoopEnd(const std::string& mode,
+    // A LoopEnd named name in mode over count iterations, Cross Frame from startFrame when crossFrame.
+    NodePtr createLoopEnd(const std::string& name,
+                          const std::string& mode,
                           int count,
                           bool crossFrame,
                           int startFrame,
@@ -242,6 +237,11 @@ protected:
         EXPECT_TRUE(bool(node));
         if (!node) {
             return NodePtr();
+        }
+        KnobStringPtr nameKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kLoopEndParamName));
+        EXPECT_TRUE(bool(nameKnob));
+        if (nameKnob) {
+            nameKnob->setValue(name);
         }
         EXPECT_TRUE(setKnobValues(node, kLoopEndParamIterations, { (double)count }));
         EXPECT_TRUE(setKnobValue(node, kLoopEndParamMode, mode));
@@ -328,7 +328,7 @@ protected:
 
         NodePtr constant = createConstant(1.);
         NodePtr dot = createDot(constant, 10., std::map<int, double>({ { 1, (double)(d.right - 8) } }));
-        NodePtr begin = createLoopBegin("drift", dot);
+        NodePtr begin = createLoopBegin(dot);
         NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
         EXPECT_TRUE(constant && dot && begin && transform);
         if (!transform) {
@@ -346,7 +346,7 @@ protected:
             translate->setValueAtTime((double)frame, 0., ViewSpec::all(), 1);
         }
         EXPECT_TRUE(transform->connectInput(begin, 0));
-        d.end = createLoopEnd(kLoopEndParamModeFeedback, 1, true, 1, transform);
+        d.end = createLoopEnd("drift", kLoopEndParamModeFeedback, 1, true, 1, transform);
 
         return d;
     }
@@ -366,7 +366,7 @@ protected:
         }
         t.constant = createConstant(1.);
         t.dot = createDot(t.constant, 10., xAtFrame);
-        t.begin = createLoopBegin("trail", t.dot);
+        t.begin = createLoopBegin(t.dot);
         t.grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
         t.merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         EXPECT_TRUE(t.constant && t.dot && t.begin && t.grade && t.merge);
@@ -378,7 +378,7 @@ protected:
         EXPECT_TRUE(t.grade->connectInput(t.begin, 0));
         EXPECT_TRUE(t.merge->connectInput(t.grade, 0));
         EXPECT_TRUE(t.merge->connectInput(t.dot, 1));
-        t.end = createLoopEnd(kLoopEndParamModeAccumulate, 1, true, startFrame, t.merge);
+        t.end = createLoopEnd("trail", kLoopEndParamModeAccumulate, 1, true, startFrame, t.merge);
 
         return t;
     }
@@ -416,7 +416,7 @@ protected:
 
         m.constant = createConstant(1.);
         m.dot = createQuarterKeyedDot(m.constant, 10.);
-        m.begin = createLoopBegin("smear", m.dot);
+        m.begin = createLoopBegin(m.dot);
         m.merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         EXPECT_TRUE(m.constant && m.dot && m.begin && m.merge);
         if (!m.merge) {
@@ -425,7 +425,7 @@ protected:
         EXPECT_TRUE(setKnobValue(m.merge, kNativeMergeParamOperation, std::string("max")));
         EXPECT_TRUE(m.merge->connectInput(m.begin, 0));
         EXPECT_TRUE(m.merge->connectInput(side ? side : m.dot, 1));
-        m.end = createLoopEnd(kLoopEndParamModeFeedback, 4, true, 1, m.merge);
+        m.end = createLoopEnd("smear", kLoopEndParamModeFeedback, 4, true, 1, m.merge);
 
         return m;
     }
@@ -494,7 +494,7 @@ TEST_F(NativeLoopCrossFrameTest, FeedbackIterationsAreSubstepsOfEachFrame)
     const std::string names[2] = { "sim", "ref" };
     const int frame = 3;
     for (int i = 0; i < 2; ++i) {
-        NodePtr begin = createLoopBegin(names[i], dot);
+        NodePtr begin = createLoopBegin(dot);
         NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
         NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
         ASSERT_TRUE(begin && blur && grade);
@@ -504,8 +504,8 @@ TEST_F(NativeLoopCrossFrameTest, FeedbackIterationsAreSubstepsOfEachFrame)
         ASSERT_TRUE(blur->connectInput(begin, 0));
         ASSERT_TRUE(grade->connectInput(blur, 0));
         // The reference runs every substep of frames 1 to 3 in one loop.
-        NodePtr end = (i == 0) ? createLoopEnd(kLoopEndParamModeFeedback, 4, true, 1, grade)
-                               : createLoopEnd(kLoopEndParamModeFeedback, 4 * frame, false, 1, grade);
+        NodePtr end = (i == 0) ? createLoopEnd(names[i], kLoopEndParamModeFeedback, 4, true, 1, grade)
+                               : createLoopEnd(names[i], kLoopEndParamModeFeedback, 4 * frame, false, 1, grade);
         ASSERT_TRUE(bool(end));
         nodes[i][0] = begin;
         nodes[i][1] = blur;
@@ -596,6 +596,42 @@ TEST_F(NativeLoopCrossFrameTest, BeforeTheStartFrameTheInputPassesThrough)
     ASSERT_TRUE(renderAt(t.end, 6., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
     EXPECT_NEAR(0.9, redAt(plane, 51, 11), 1e-6);
     EXPECT_EQ(0.f, redAt(plane, 41, 11));
+}
+
+// Two LoopBegins open the trail: the one feeding back carries the frame before, the one with
+// Feedback off brings in the moving dot, so the trail matches the one-begin trail. With both
+// feeding back the dot is never added again and frame 1's image holds.
+TEST_F(NativeLoopCrossFrameTest, ALoopBeginWithFeedbackOffPassesItsInputThrough)
+{
+    Trail t = createTrail(1);
+    ASSERT_TRUE(bool(t.end));
+    NodePtr source = createLoopBegin(t.dot);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(setKnobValues(source, kLoopBeginParamFeedback, { 0. }));
+    ASSERT_TRUE(t.merge->connectInput(source, 1));
+    std::shared_ptr<LoopEnd> end = loopEndOf(t.end);
+    ASSERT_TRUE(bool(end));
+    EXPECT_EQ(2u, end->getLoopBegins().size());
+    EXPECT_EQ(std::vector<NodePtr>({ t.begin }), end->getChainingBegins());
+    EXPECT_EQ(end, LoopEnd::chainingEndOf(t.begin));
+    EXPECT_FALSE(bool(LoopEnd::chainingEndOf(source)));
+
+    RenderedPlane plane;
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    EXPECT_NEAR(std::pow(0.9, 9), redAt(plane, 11, 11), 1e-5);
+    EXPECT_NEAR(std::pow(0.9, 5), redAt(plane, 51, 11), 1e-5);
+    EXPECT_EQ(1.f, redAt(plane, 101, 11));
+    EXPECT_EQ(0.f, redAt(plane, 111, 11));
+    RenderedPlane taskGraph;
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeTaskGraph, false, &taskGraph));
+    expectSamePixels(plane, taskGraph, 0.f, "frame 10, two LoopBegins, both schedulers");
+
+    ASSERT_TRUE(setKnobValues(source, kLoopBeginParamFeedback, { 1. }));
+    EXPECT_EQ(2u, end->getChainingBegins().size());
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    EXPECT_EQ(1.f, redAt(plane, 11, 11));
+    EXPECT_EQ(0.f, redAt(plane, 51, 11));
+    EXPECT_EQ(0.f, redAt(plane, 101, 11));
 }
 
 // The frames keep what leaves the format: a dot pushed past its right edge comes back.
@@ -700,13 +736,13 @@ TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     NodePtr constant = createConstant(0.25);
-    NodePtr begin = createLoopBegin("sim", constant);
+    NodePtr begin = createLoopBegin(constant);
     NodePtr counting = createNode(QString::fromUtf8(kTestPluginIDCounting));
     ASSERT_TRUE(constant && begin && counting);
     ASSERT_TRUE(setKnobValues(counting, "value", { 0.5 }));
     ASSERT_TRUE(counting->connectInput(begin, 0));
     // Four substeps a frame, each adding 0.5.
-    NodePtr endNode = createLoopEnd(kLoopEndParamModeFeedback, 4, true, 1, counting);
+    NodePtr endNode = createLoopEnd("sim", kLoopEndParamModeFeedback, 4, true, 1, counting);
     ASSERT_TRUE(bool(endNode));
     std::shared_ptr<LoopEnd> end = loopEndOf(endNode);
     ASSERT_TRUE(bool(end));
@@ -761,11 +797,11 @@ TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
 TEST_F(NativeLoopCrossFrameTest, ABodyAskingAnotherFrameOfItsLoopFailsAtOnce)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin("shifted", constant);
+    NodePtr begin = createLoopBegin(constant);
     NodePtr shift = createNode(QString::fromUtf8(kTestPluginIDContextLoopFrameShift));
     ASSERT_TRUE(constant && begin && shift);
     ASSERT_TRUE(shift->connectInput(begin, 0));
-    NodePtr end = createLoopEnd(kLoopEndParamModeAccumulate, 1, true, 1, shift);
+    NodePtr end = createLoopEnd("shifted", kLoopEndParamModeAccumulate, 1, true, 1, shift);
     ASSERT_TRUE(bool(end));
     const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
 

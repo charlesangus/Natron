@@ -139,9 +139,10 @@ M259 - GPU Placement Under Render Contexts.
 
 ## Cross Frame
 
-- `crossFrame` feeds each output frame into the next: after `startFrame`, the LoopBegin outputs
-  this LoopEnd's output at the frame before instead of its input, under Accumulate at every
-  iteration and under Feedback at the first. At `startFrame` and before it, the LoopBegin
+- `crossFrame` feeds each output frame into the next: after `startFrame`, each LoopBegin with
+  `feedback` on outputs this LoopEnd's output at the frame before instead of its input, under
+  Accumulate at every iteration and under Feedback at the first. LoopBegins with `feedback` off
+  pass their input through, as under Feedback. At `startFrame` and before it, every LoopBegin
   outputs its input. A trail or a simulation builds up from `startFrame`, the iterations of a
   frame being its substeps: four Feedback iterations make four substeps a frame. With
   `iterateOver` Count, `subframes` places the substeps between frames: see

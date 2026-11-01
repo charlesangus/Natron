@@ -2004,13 +2004,14 @@ LoopEnd::initializeKnobs()
     KnobBoolPtr crossFrame = createKnob<KnobBool>(tr("Cross Frame"));
     crossFrame->setName(kLoopEndParamCrossFrame);
     crossFrame->setAnimationEnabled(false);
-    crossFrame->setHintToolTip(tr("After Start Frame, the LoopBegin outputs this node's output at the frame before "
-                                  "instead of its input: under Accumulate at every iteration, under Feedback at the "
-                                  "first. A trail or a simulation builds up from Start Frame, the iterations of each "
+    crossFrame->setHintToolTip(tr("After Start Frame, the LoopBegins with Feedback on output this node's output at "
+                                  "the frame before instead of their input: under Accumulate at every iteration, under "
+                                  "Feedback at the first. The LoopBegins with Feedback off pass their input through. "
+                                  "A trail or a simulation builds up from Start Frame, the iterations of each "
                                   "frame being its substeps. Each frame's output is kept in RAM, whole, beyond the "
                                   "format when it reaches past it; a frame not kept is rendered from the latest one "
-                                  "kept before it, or from Start Frame. At Start Frame and before it, the LoopBegin "
-                                  "outputs its input."));
+                                  "kept before it, or from Start Frame. At Start Frame and before it, the LoopBegins "
+                                  "output their input."));
     crossFrame->setDefaultValue(false);
     page->addKnob(crossFrame);
     _crossFrame = crossFrame;
@@ -2018,8 +2019,8 @@ LoopEnd::initializeKnobs()
     KnobIntPtr startFrame = createKnob<KnobInt>(tr("Start Frame"));
     startFrame->setName(kLoopEndParamStartFrame);
     startFrame->setAnimationEnabled(false);
-    startFrame->setHintToolTip(tr("The frame Cross Frame starts from: there the LoopBegin outputs its input, and "
-                                  "from the frame after it the output of the frame before."));
+    startFrame->setHintToolTip(tr("The frame Cross Frame starts from: there the LoopBegins output their input, and "
+                                  "from the frame after it those with Feedback on output the frame before."));
     startFrame->setDisplayMinimum(1);
     startFrame->setDisplayMaximum(100);
     startFrame->setDefaultValue(1);

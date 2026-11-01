@@ -120,7 +120,7 @@ try:
         grade = app.createNode(GRADE_ID)
         end = app.createNode(END_ID)
         require(begin is not None and grade is not None and end is not None, "create the loop's nodes")
-        begin.getParam("name").setValue("trail")
+        end.getParam("name").setValue("trail")
         set_all(grade.getParam("multiply"), 0.9)
         set_all(grade.getParam("offset"), 0.01)
         chain = (constant, begin, grade, end)

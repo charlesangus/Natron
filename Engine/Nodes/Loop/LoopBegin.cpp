@@ -126,9 +126,10 @@ LoopBegin::initializeKnobs()
     feedback->setAnimationEnabled(false);
     feedback->setDefaultValue(true);
     feedback->setHintToolTip(tr("When the LoopEnd is in Feedback mode, each iteration after the first outputs the "
-                                "iteration before it rather than this node's input. Off, this node passes its input "
-                                "through at every iteration, which brings an unchanging source into the body. "
-                                "Ignored in Accumulate mode."));
+                                "iteration before it rather than this node's input; with the LoopEnd's Cross Frame on, "
+                                "frames after Start Frame output the LoopEnd's frame before. Off, this node passes its "
+                                "input through at every iteration and frame, which brings an unchanging source into "
+                                "the body. Ignored in Accumulate mode without Cross Frame."));
     page->addKnob(feedback);
     _feedback = feedback;
 }
@@ -543,7 +544,7 @@ LoopBegin::knobChanged(KnobI* k,
     if (!feedback || (k != feedback.get())) {
         return false;
     }
-    // Under Feedback, whether it reads its loop's variables moves with it.
+    // Under Feedback or Cross Frame, whether it reads its loop's variables moves with it.
     invalidateRenderContextReads();
 
     return true;

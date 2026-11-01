@@ -122,7 +122,7 @@ public:
 
     /**
      * @brief Whether every output frame shows the Source a constant number of frames earlier, and
-     * that number: true when the offset is neither animated nor an expression and the input is not
+     * that number (whole frames: the offset rounded up, as the source frame is rounded down): true when the offset is neither animated nor an expression and the input is not
      * reversed. Clipping to the input range is ignored, as within that range the shift holds.
      **/
     bool getConstantShift(double* shift) const;

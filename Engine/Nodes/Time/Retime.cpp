@@ -44,19 +44,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-bool
-boundedRange(const EffectInstancePtr& input,
-             double* first,
-             double* last)
-{
-    if (!input) {
-        return false;
-    }
-    input->getFrameRange_public(input->getRenderHash(), first, last);
-
-    return (*first > std::numeric_limits<int>::min()) && (*last < std::numeric_limits<int>::max()) && (*first <= *last);
-}
-
 KnobChoicePtr
 createOutsideKnob(KnobHolder* holder,
                   const KnobPagePtr& page,
@@ -252,7 +239,7 @@ Retime::ranges(ViewIdx view) const
     r.originalOut = originalOutKnob->getValue();
     double first = 0.;
     double last = 0.;
-    if ((!useIn || !useOut) && boundedRange(getInput(0), &first, &last)) {
+    if ((!useIn || !useOut) && boundedInputFrameRange(getInput(0), &first, &last)) {
         if (!useIn) {
             r.originalIn = first;
         }
@@ -272,10 +259,17 @@ Retime::ranges(ViewIdx view) const
         r.newOut = newOutKnob->getValue();
         r.speed = speedKnob->getValueAtTime(r.newOut, 0, view);
         r.newIn = (r.speed != 0.) ? r.newOut - length / std::abs(r.speed) : r.newOut;
+        if (r.speed < 0.) {
+            // A negative speed plays the clip backwards from the anchor, so the anchor sits on the other end.
+            std::swap(r.originalIn, r.originalOut);
+        }
     } else {
         r.newIn = useIn ? newInKnob->getValue() : r.originalIn;
         r.speed = speedKnob->getValueAtTime(r.newIn, 0, view);
         r.newOut = (r.speed != 0.) ? r.newIn + length / std::abs(r.speed) : r.newIn;
+        if (r.speed < 0.) {
+            std::swap(r.originalIn, r.originalOut);
+        }
     }
 
     return r;
@@ -350,43 +344,48 @@ Retime::sourceTime(double time,
                    ViewIdx view,
                    double* source) const
 {
+    Ranges r;
+    double mapped = 0.;
+    bool moving = true;
+    bool reverse = false;
+
+    return mapSource(time, view, &r, &mapped, &moving, &reverse, source);
+} // Retime::sourceTime
+
+bool
+Retime::mapSource(double time,
+                  ViewIdx view,
+                  Ranges* r,
+                  double* mapped,
+                  bool* moving,
+                  bool* reverse,
+                  double* source) const
+{
     KnobBoolPtr reverseKnob = _reverse.lock();
     if (!reverseKnob || !getInput(0)) {
         return false;
     }
-    const Ranges r = ranges(view);
-    double mapped = 0.;
-    bool moving = true;
-    if (!outputTime(time, r, &mapped, &moving)) {
+    *r = ranges(view);
+    if (!outputTime(time, *r, mapped, moving)) {
         return false;
     }
-    const double s = inputTime(mapped, r, reverseKnob->getValueAtTime(time, 0, view), view);
-    if (!std::isfinite(s)) {
-        return false;
-    }
-    *source = s;
+    *reverse = reverseKnob->getValueAtTime(time, 0, view);
+    *source = inputTime(*mapped, *r, *reverse, view);
 
-    return true;
-} // Retime::sourceTime
+    return std::isfinite(*source);
+}
 
 Retime::Sample
 Retime::sample(double time,
                ViewIdx view) const
 {
     Sample result;
-    KnobBoolPtr reverseKnob = _reverse.lock();
-    if (!reverseKnob || !getInput(0)) {
-        return result;
-    }
-    const Ranges r = ranges(view);
+    Ranges r;
     double mapped = 0.;
     bool moving = true;
-    if (!outputTime(time, r, &mapped, &moving)) {
-        return result;
-    }
-    const bool reverse = reverseKnob->getValueAtTime(time, 0, view);
-    const double s = inputTime(mapped, r, reverse, view);
-    if (!std::isfinite(s)) {
+    bool reverse = false;
+    double s = 0.;
+    if (!mapSource(time, view, &r, &mapped, &moving, &reverse, &s)) {
         return result;
     }
 
@@ -469,7 +468,7 @@ Retime::followInputRange()
     KnobBoolPtr editedKnob = _rangeEdited.lock();
     double first = 0.;
     double last = 0.;
-    if (_refreshingKnobs || !editedKnob || editedKnob->getValue() || getApp()->getProject()->isLoadingProject() || !boundedRange(getInput(0), &first, &last)) {
+    if (_refreshingKnobs || !editedKnob || editedKnob->getValue() || getApp()->getProject()->isLoadingProject() || !boundedInputFrameRange(getInput(0), &first, &last)) {
         return;
     }
     _refreshingKnobs = true;
@@ -499,7 +498,7 @@ Retime::noteRangeEdit(KnobI* k)
     }
     double first = 0.;
     double last = 0.;
-    const bool bounded = boundedRange(getInput(0), &first, &last);
+    const bool bounded = boundedInputFrameRange(getInput(0), &first, &last);
     // The ends a mapping does not use only ever show derived values, and writes that match the
     // input's range are this node following it.
     const std::tuple<KnobDoubleWPtr, bool, double> ends[] = {

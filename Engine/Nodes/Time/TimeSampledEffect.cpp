@@ -279,10 +279,11 @@ TimeSampledEffect::renderOp(const RenderActionArgs& args,
         // at a declared time is an input with nothing there, which reads as black.
         std::vector<ImagePtr> images(s.times.size());
         for (std::size_t i = 0; i < s.times.size(); ++i) {
-            if (!declaresInputTime(0, args.time, args.view, s.times[i])) {
+            images[i] = fetchInputAt(0, s.times[i], args, &output.first);
+            if (!images[i] && !declaresInputTime(0, args.time, args.view, s.times[i])) {
+                // fetchInputAt() has posted why.
                 return eStatusFailed;
             }
-            images[i] = fetchInputAt(0, s.times[i], args, &output.first);
         }
         if (!TimeBlend::renderCpu(output.second, args.roi, images, s.weights)) {
             return eStatusFailed;

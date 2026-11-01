@@ -186,6 +186,10 @@ private:
      **/
     bool outputTime(double time, const Ranges& r, double* mapped, bool* moving) const;
 
+    // The input time the output at time reads, before the filter, with the pieces it came from;
+    // false where it reads nothing.
+    bool mapSource(double time, ViewIdx view, Ranges* r, double* mapped, bool* moving, bool* reverse, double* source) const;
+
     // The input time at the output time mapped (within or past the new range), not filtered.
     double inputTime(double mapped, const Ranges& r, bool reverse, ViewIdx view) const;
 

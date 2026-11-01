@@ -135,8 +135,7 @@ TimeWarp::sample(double time,
     double keepHigh = std::numeric_limits<double>::infinity();
     double first = 0.;
     double last = 0.;
-    input->getFrameRange_public(input->getRenderHash(), &first, &last);
-    if ((first > std::numeric_limits<int>::min()) && (last < std::numeric_limits<int>::max()) && (first <= last)) {
+    if (boundedInputFrameRange(input, &first, &last)) {
         keepLow = first;
         keepHigh = last;
     }

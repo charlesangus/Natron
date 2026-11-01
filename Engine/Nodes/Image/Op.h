@@ -185,6 +185,23 @@ concept PassesOp = BakesParams<OP> && std::copyable<typename OP::Params> && requ
 };
 
 /**
+ * @brief The frame range input reports, false when input is null or its range is unbounded at
+ * either end, as a generator's is.
+ **/
+inline bool
+boundedInputFrameRange(const EffectInstancePtr& input,
+                       double* first,
+                       double* last)
+{
+    if (!input) {
+        return false;
+    }
+    input->getFrameRange_public(input->getRenderHash(), first, last);
+
+    return (*first > std::numeric_limits<int>::min()) && (*last < std::numeric_limits<int>::max()) && (*first <= *last);
+}
+
+/**
  * @brief What a Route op chooses from: the time and view asked for, and which inputs of its
  * node are connected.
  **/
@@ -222,14 +239,7 @@ public:
                          double* first,
                          double* last) const
     {
-        const EffectInstancePtr input = _node.getInput(inputNb);
-
-        if (!input) {
-            return false;
-        }
-        input->getFrameRange_public(input->getRenderHash(), first, last);
-
-        return (*first > std::numeric_limits<int>::min()) && (*last < std::numeric_limits<int>::max()) && (*first <= *last);
+        return boundedInputFrameRange(_node.getInput(inputNb), first, last);
     }
 
 private:

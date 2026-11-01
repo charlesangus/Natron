@@ -244,8 +244,7 @@ FrameRange::resetToInputRange()
     }
     double first = 0.;
     double last = 0.;
-    input->getFrameRange_public(input->getRenderHash(), &first, &last);
-    if ((first <= std::numeric_limits<int>::min()) || (last >= std::numeric_limits<int>::max()) || (first > last)) {
+    if (!boundedInputFrameRange(input, &first, &last)) {
         return;
     }
     firstKnob->setValue((int)std::floor(first));

@@ -157,7 +157,13 @@ TimeOffset::getConstantShift(double* shift) const
     if (!offset || !reverse || reverse->getValue() || offset->isAnimated(0) || !offset->getExpression(0).empty()) {
         return false;
     }
-    *shift = offset->getValue();
+    KnobChoicePtr rounding = op().roundingMode.lock();
+    if (!rounding) {
+        return false;
+    }
+    // Whole frames read floor(t - offset), so a whole-frame output t shows t - ceil(offset).
+    const double value = offset->getValue();
+    *shift = (rounding->getValue() == (int)TimeRounding::eFractional) ? value : std::ceil(value);
 
     return true;
 }

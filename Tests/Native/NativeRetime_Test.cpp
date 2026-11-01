@@ -182,6 +182,17 @@ TEST_F(NativeRetimeTest, SpeedTwoSkipsFramesAndHalvesTheOutputRange)
     expectFrameRange(retime, 1., 26.);
 }
 
+TEST_F(NativeRetimeTest, ConstantNegativeSpeedPlaysTheClipBackwards)
+{
+    NodePtr retime = createRetime();
+    ASSERT_TRUE(bool(retime));
+    setKnob<KnobDouble>(retime, kRetimeParamSpeed, -1.);
+
+    EXPECT_EQ(50., sourceAt(retime, 1.));
+    EXPECT_EQ(41., sourceAt(retime, 10.));
+    EXPECT_EQ(1., sourceAt(retime, 50.));
+}
+
 TEST_F(NativeRetimeTest, SpeedHalfBlendsBetweenFramesAndDoublesTheOutputRange)
 {
     NodePtr retime = createRetime({ 5, 6 });

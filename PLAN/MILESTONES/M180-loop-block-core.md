@@ -79,7 +79,7 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Phase 180.4: Documentation
 
-- [ ] M180.P4.T1 — Document the loop block
+- [x] M180.P4.T1 — Document the loop block
   - files: `Engine/Nodes/Loop/docs/LoopBegin.md`, `Engine/Nodes/Loop/docs/LoopEnd.md`
   - approach: Variables, nesting names, the modes, the fold order, the caps, the metadata limitation, and the GPU tolerance line.
   - verify: reviewed at the gate against the node code.
@@ -102,10 +102,11 @@ A Houdini-style loop block (user, 2026-10-24): `LoopBegin` and `LoopEnd` nodes a
 
 ## Phase 180.5: UAT cancellation semantics
 
-- [ ] M180.P5.T1 — Cancel a running loop when its graph changes
+- [x] M180.P5.T1 — Cancel a running loop when its graph changes
   - files: `Engine/Nodes/Loop/*`, render-context invalidation and cancellation code, native loop tests
   - approach: Treat edits to LoopBegin, LoopEnd, the loop body or its drivers as render-affecting changes that abort the in-flight loop job before starting work under the new hash.
   - verify: A slow loop edited mid-render cancels promptly, never publishes a mixed-state frame, and restarts with the new values.
   - size: M
 
 **Verification gate:** the original gate plus the mid-render edit/cancel regression passes, and the user confirms cancellation from the AppImage.
+- 2026-11-01 — P5.T1 at 86612398f: the viewer abort never cancels the oldest running render (upstream rule, keeps drag feedback), and a slow loop is always that render; LoopEnd now aborts itself when its hash moved since the frame started (abortable viewer renders, not during drags). Open: should every non-drag edit cancel the oldest render for all nodes? (implementer question, for the user).

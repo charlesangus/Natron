@@ -77,6 +77,7 @@ struct EdgePrivate
     NodeGuiWPtr dest;
     NodeGuiWPtr source;
     QColor defaultColor;
+    bool isSpliceHint;
     QColor renderingColor;
     bool useRenderingColor;
     bool useHighlight;
@@ -105,6 +106,7 @@ struct EdgePrivate
         , dest()
         , source()
         , defaultColor(Qt::black)
+        , isSpliceHint(false)
         , renderingColor(243, 149, 0)
         , useRenderingColor(false)
         , useHighlight(false)
@@ -261,7 +263,7 @@ Edge::isOutputEdge() const
 }
 
 QColor
-Edge::highlightColor(int alpha)
+Edge::selectionColorWithAlpha(int alpha)
 {
     double r, g, b;
     appPTR->getCurrentSettings()->getSelectionColor(&r, &g, &b);
@@ -270,9 +272,10 @@ Edge::highlightColor(int alpha)
 }
 
 void
-Edge::setDefaultColor(const QColor & color)
+Edge::setIsSpliceHint(bool hint)
 {
-    _imp->defaultColor = color;
+    _imp->isSpliceHint = hint;
+    update();
 }
 
 bool
@@ -870,10 +873,12 @@ Edge::paint(QPainter *painter,
     }
 
     QColor color, arrowColor;
-    if (_imp->useSelected) {
+    if (_imp->isSpliceHint) {
+        color = arrowColor = selectionColorWithAlpha(100);
+    } else if (_imp->useSelected) {
         color = arrowColor = Qt::white;
     } else if (_imp->useHighlight) {
-        color = arrowColor = highlightColor();
+        color = arrowColor = selectionColorWithAlpha();
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {

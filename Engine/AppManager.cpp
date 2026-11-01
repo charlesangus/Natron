@@ -1731,6 +1731,15 @@ AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
         p->setForInternalUseOnly(true);
     }
     p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
+    {
+        std::vector<DataKindEnum> kinds;
+        for (int i = 0; i < node->getNInputs(); ++i) {
+            if (!node->isInputMask(i)) {
+                kinds.push_back(node->getInputDataKind(i));
+            }
+        }
+        p->setInputDataKinds(kinds);
+    }
 
     return p;
 }
@@ -1761,7 +1770,7 @@ AppManager::registerNativePlugin()
 
     Plugin* plugin = registerBuiltInEffect(node, (void (*)())&PLUGIN::BuildEffect, QString::fromUtf8(spec->icon.data(), static_cast<int>(spec->icon.size())), spec->deprecated, spec->internal);
     if (plugin) {
-        plugin->setPrimPathKnob(std::string(spec->primPathKnob));
+        plugin->setPrimPathKnob(std::string(spec->primPathKnob), spec->primPathKnobTakesPattern);
     }
 }
 

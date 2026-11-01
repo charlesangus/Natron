@@ -452,6 +452,17 @@ Plugin::setFirstInputDataKind(bool hasInput,
     _firstInputDataKind = hasInput ? (int)kind : -1;
 }
 
+void
+Plugin::setInputDataKinds(const std::vector<Natron::DataKindEnum>& kinds)
+{
+    _inputDataKinds.clear();
+    for (Natron::DataKindEnum kind : kinds) {
+        if (std::find(_inputDataKinds.begin(), _inputDataKinds.end(), kind) == _inputDataKinds.end()) {
+            _inputDataKinds.push_back(kind);
+        }
+    }
+}
+
 bool
 Plugin::getFirstInputDataKind(Natron::DataKindEnum* kind) const
 {

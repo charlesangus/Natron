@@ -1082,6 +1082,10 @@ OfxHost::loadOFXPlugins()
         natronPlugin->setOpenGLRenderSupport(glSupport);
 
         natronPlugin->setOfxPlugin(p);
+        {
+            const bool hasSource = contexts.count(kOfxImageEffectContextGeneral) || contexts.count(kOfxImageEffectContextFilter) || contexts.count(kOfxImageEffectContextPaint) || contexts.count(kOfxImageEffectContextTransition) || contexts.count(kOfxImageEffectContextWriter);
+            natronPlugin->setInputDataKinds(hasSource ? std::vector<DataKindEnum> { eDataKindImage } : std::vector<DataKindEnum>());
+        }
 
         std::list<PluginActionShortcut> shortcuts;
         getPluginShortcuts(p->getDescriptor(), &shortcuts);

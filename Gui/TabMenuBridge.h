@@ -56,6 +56,9 @@ struct LaunchContext {
     bool needsPrimPathKnob = false;
     // The node the created node is inserted after, taking its outputs as the graph's insert does.
     NodeWPtr insertAfter;
+    // Adds to the creation arguments of the node the chosen action creates, such as initial knob
+    // values, which are in place before the node first evaluates.
+    std::function<void(CreateNodeArgs& args)> decorateArgs;
     // Called with the node created, in the undo step that creates it.
     std::function<void(const NodePtr& created)> created;
 };
@@ -79,7 +82,9 @@ void triggerAction(QAction* action);
 void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scenePos);
 
 /**
- * @brief Records the graph and the cursor's scene position, then opens the tab menu.
+ * @brief Records the graph and the cursor's scene position, then opens the tab menu. When every
+ * node selected in graph outputs the same kind of data, the menu lists only node types with an
+ * input other than a mask that takes that kind.
  * A Python failure is reported in the Script Editor and on stderr.
  **/
 void launch(NodeGraph* graph);

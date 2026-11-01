@@ -45,7 +45,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Defines an Xform at its Prim Path with the root prims of every input grafted under it,
- * so the inputs' prims move with it. Its transform is one xformOp:transform op on the prim.
+ * so the inputs' prims move with it; in wrap mode it defines the Xform beside the input 0 prim at
+ * Prim Path and moves that prim under it. Its transform is one xformOp:transform op on the prim.
  **/
 class USDXformPrim
     : public SceneReparentNode {
@@ -55,7 +56,9 @@ public:
         .label = "USDXformPrim",
         .description = "Define an Xform prim and place the root prims of every input under it, so they move with its "
                        "transform. Where two inputs have a root prim of the same name, the later input is stronger, "
-                       "unless Auto Rename gives it a free name. Animated knobs are written as time samples.",
+                       "unless Auto Rename gives it a free name. In Wrap mode, define the Xform beside the input 0 prim "
+                       "at Prim Path instead and move that prim and everything under it beneath the Xform. Animated "
+                       "knobs are written as time samples.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -86,6 +89,10 @@ private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual std::string getPrimTypeName() const OVERRIDE FINAL;
+    virtual bool offersWrapMode() const OVERRIDE FINAL
+    {
+        return true;
+    }
     virtual bool authorPrimOverrides(const SceneLayerEdit& edit,
                                      const std::string& primPath,
                                      std::string* errorMessage) const OVERRIDE FINAL;

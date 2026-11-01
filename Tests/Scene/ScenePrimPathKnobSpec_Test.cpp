@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -35,6 +36,9 @@
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepMerge.h"
+#include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -64,6 +68,7 @@ TEST_F(ScenePrimPathKnobSpecTest, DeclaredKnobsAreHintedStringKnobs)
             KnobStringPtr knob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(plugin->getPrimPathKnob()));
             ASSERT_TRUE(bool(knob)) << plugin->getPluginID().toStdString() << " has no string knob " << plugin->getPrimPathKnob();
             EXPECT_NE(KnobString::ePrimPathHintNone, knob->getPrimPathHint()) << plugin->getPluginID().toStdString();
+            EXPECT_EQ(plugin->getPrimPathKnobTakesPattern(), knob->getPrimPathHint() == KnobString::ePrimPathHintPattern) << plugin->getPluginID().toStdString();
         }
     }
     EXPECT_GE(declared, 2);
@@ -94,5 +99,26 @@ TEST_F(ScenePrimPathKnobSpecTest, PluginsKnowTheirFirstInputsKind)
             EXPECT_EQ(e.kind, kind) << e.id;
         }
         EXPECT_EQ(std::string(e.primPathKnob), plugin->getPrimPathKnob()) << e.id;
+    }
+}
+
+TEST_F(ScenePrimPathKnobSpecTest, PluginsKnowTheKindsTheirInputsTake)
+{
+    struct Expected {
+        const char* id;
+        std::vector<DataKindEnum> kinds;
+    };
+    const Expected expected[] = {
+        { PLUGINID_NATRON_DEEPFROMIMAGE, { eDataKindImage } },
+        { PLUGINID_NATRON_DEEPTOIMAGE, { eDataKindDeep } },
+        { PLUGINID_NATRON_DEEPMERGE, { eDataKindDeep } },
+        { PLUGINID_NATRON_USDMERGE, { eDataKindScene } },
+        { PLUGINID_NATRON_USDCAMERA, {} },
+    };
+
+    for (const Expected& e : expected) {
+        Plugin* plugin = appPTR->getPluginBinary(QString::fromUtf8(e.id), -1, -1, false);
+        ASSERT_TRUE(plugin != nullptr) << e.id;
+        EXPECT_EQ(e.kinds, plugin->getInputDataKinds()) << e.id;
     }
 }

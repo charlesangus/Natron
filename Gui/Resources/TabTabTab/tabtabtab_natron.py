@@ -95,8 +95,9 @@ _COLOR_PROPERTY = "natronCategoryColor"
 _SHORTCUT_PROPERTY = "natronShortcut"
 _INPUT_KIND_PROPERTY = "natronInputKind"
 _PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
+_INPUT_KINDS_PROPERTY = "natronInputKinds"
 
-# A first input of this kind takes any kind.
+# An input of this kind takes any kind.
 _ANY_KIND = "polymorphic"
 
 _MNEMONIC = re.compile(r"&(&?)")
@@ -151,12 +152,18 @@ def _node_items():
 
 def _accepts(action, context):
     """Whether the node type of `action` fits a launch `context`: its first
-    input takes context['inputKind'], and it declares a prim path knob when
+    input takes context['inputKind'], one of its inputs other than masks
+    takes context['selectedKind'], and it declares a prim path knob when
     context['needsPrimPathKnob'] says so."""
     kind = context.get('inputKind')
     if kind:
         accepted = _string_property(action, _INPUT_KIND_PROPERTY)
         if accepted not in (kind, _ANY_KIND):
+            return False
+    selected = context.get('selectedKind')
+    if selected:
+        kinds = [k for k in _string_property(action, _INPUT_KINDS_PROPERTY).split(",") if k]
+        if selected not in kinds and _ANY_KIND not in kinds:
             return False
     if context.get('needsPrimPathKnob') and not _string_property(action, _PRIM_PATH_KNOB_PROPERTY):
         return False
@@ -308,7 +315,8 @@ def launch(app, context=None):
     """Open the tab menu for `app`, the GuiApp whose node graph has focus.
 
     `context`, when given, lists only the node types that fit it, see
-    _accepts(): a dict with 'inputKind' (a kind name such as "scene") and
+    _accepts(): a dict with any of 'inputKind' (a kind name such as
+    "scene"), 'selectedKind' (the kind the selected nodes output) and
     'needsPrimPathKnob'.
     """
     window = _find_natron_main_window()

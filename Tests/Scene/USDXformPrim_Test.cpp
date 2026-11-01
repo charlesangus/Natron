@@ -29,6 +29,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -407,5 +408,186 @@ TEST_F(USDXformPrimTest, ALinkTheGraftCannotCarryIsANodeWarning)
     ASSERT_EQ(0, xform->disconnectInput(0));
     stage = composeNode(xform);
     ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(xform->hasPersistentMessage());
+}
+
+namespace {
+// /World holds Box, whose Geo binds Box's own Mat and names Ball as its proxy, and Ball, which binds
+// Box's Mat.
+const char* const kWrapScene = "#usda 1.0\n"
+                               "def Xform \"World\"\n{\n"
+                               "    def Xform \"Box\"\n    {\n"
+                               "        def Scope \"Mat\"\n        {\n        }\n"
+                               "        def Cube \"Geo\"\n        {\n"
+                               "            rel material:binding = </World/Box/Mat>\n"
+                               "            rel proxyPrim = </World/Ball>\n"
+                               "        }\n"
+                               "    }\n"
+                               "    def Sphere \"Ball\"\n    {\n"
+                               "        rel material:binding = </World/Box/Mat>\n"
+                               "    }\n"
+                               "}\n";
+
+std::vector<std::string>
+sorted(std::vector<std::string> paths)
+{
+    std::sort(paths.begin(), paths.end());
+
+    return paths;
+}
+
+std::vector<PXR_NS::SdfPath>
+targetsOf(const PXR_NS::UsdStageRefPtr& stage,
+          const char* primPath,
+          const char* relationship)
+{
+    std::vector<PXR_NS::SdfPath> targets;
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(primPath));
+
+    EXPECT_TRUE(prim.IsValid()) << primPath;
+    if (prim) {
+        prim.GetRelationship(PXR_NS::TfToken(relationship)).GetTargets(&targets);
+    }
+
+    return targets;
+}
+} // anonymous namespace
+
+class USDXformPrimWrapTest
+    : public USDXformPrimTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        USDXformPrimTest::SetUp();
+        ASSERT_TRUE(_tmp.isValid());
+        const QString path = _tmp.path() + QString::fromUtf8("/world.usda");
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write(kWrapScene);
+        file.close();
+        _reader = node(PLUGINID_NATRON_USDREAD, "Read1");
+        ASSERT_TRUE(bool(_reader));
+        KnobFile* knob = getKnob<KnobFile>(_reader, kUSDReadParamFile);
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(path.toStdString());
+    }
+
+    static void setWrapping(const NodePtr& xform,
+                            bool wrap)
+    {
+        KnobChoice* mode = getKnob<KnobChoice>(xform, kSceneReparentParamMode);
+
+        ASSERT_TRUE(mode != NULL);
+        mode->setValue(wrap ? (int)eSceneReparentModeWrap : (int)eSceneReparentModeGraft);
+    }
+
+    QTemporaryDir _tmp;
+    NodePtr _reader;
+};
+
+// The Xform goes beside the prim at Prim Path, named after the node, and the prim moves under it
+// with everything beneath it: nothing is left at the old path and nothing is duplicated.
+TEST_F(USDXformPrimWrapTest, WrapMovesThePrimAndItsDescendantsUnderTheXform)
+{
+    NodePtr xform = node(PLUGINID_NATRON_USDXFORMPRIM, "Wrap1", { _reader });
+    ASSERT_TRUE(bool(xform));
+    setWrapping(xform, true);
+    setString(xform, kSceneParamPrimPath, "/World/Box");
+    EXPECT_EQ(std::string("Wrap1"), getKnob<KnobString>(xform, kSceneReparentParamWrapName)->getValue());
+    setTranslate(xform, PXR_NS::GfVec3d(1., 2., 3.));
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(xform);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(sorted({ "/World", "/World/Ball", "/World/Wrap1", "/World/Wrap1/Box", "/World/Wrap1/Box/Geo", "/World/Wrap1/Box/Mat" }),
+              sorted(traverse(stage)));
+    EXPECT_EQ(PXR_NS::TfToken("Xform"), typeAt(stage, "/World/Wrap1"));
+    EXPECT_EQ(PXR_NS::TfToken("Xform"), typeAt(stage, "/World/Wrap1/Box"));
+    EXPECT_EQ(PXR_NS::TfToken("Cube"), typeAt(stage, "/World/Wrap1/Box/Geo"));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Box")).IsActive());
+
+    PXR_NS::GfMatrix4d expected(1.);
+    expected.SetTranslate(PXR_NS::GfVec3d(1., 2., 3.));
+    EXPECT_TRUE(PXR_NS::GfIsClose(expected, localTransform(stage, "/World/Wrap1"), 1e-9));
+
+    // Links into the moved prim follow it, from inside and from outside; one leaving it stays.
+    const std::vector<PXR_NS::SdfPath> mat = { PXR_NS::SdfPath("/World/Wrap1/Box/Mat") };
+    EXPECT_EQ(mat, targetsOf(stage, "/World/Wrap1/Box/Geo", "material:binding"));
+    EXPECT_EQ(mat, targetsOf(stage, "/World/Ball", "material:binding"));
+    EXPECT_EQ(std::vector<PXR_NS::SdfPath>({ PXR_NS::SdfPath("/World/Ball") }), targetsOf(stage, "/World/Wrap1/Box/Geo", "proxyPrim"));
+    EXPECT_FALSE(xform->hasPersistentMessage());
+
+    // The GUI finds the Xform and where the moved prims came from.
+    const SceneReparentNode* reparent = dynamic_cast<const SceneReparentNode*>(xform->getEffectInstance().get());
+    ASSERT_TRUE(reparent != NULL);
+    EXPECT_EQ(std::string("/World/Wrap1"), reparent->getDefinedPrimPath());
+    EXPECT_EQ(std::string("/World/Box/Geo"), reparent->mapToInputPath("/World/Wrap1/Box/Geo"));
+    EXPECT_EQ(std::string("/World/Ball"), reparent->mapToInputPath("/World/Ball"));
+    EXPECT_EQ(std::string(), reparent->mapToInputPath("/World/Wrap1"));
+    EXPECT_EQ(std::string(), reparent->mapToInputPath("/World/Box/Geo"));
+}
+
+// Downstream nodes see the wrapped hierarchy, and switching the mode away and back, as an undo and
+// a redo of the wrap do, gives the same scene again.
+TEST_F(USDXformPrimWrapTest, DownstreamSeesTheWrapAcrossModeChanges)
+{
+    NodePtr xform = node(PLUGINID_NATRON_USDXFORMPRIM, "Wrap1", { _reader });
+    ASSERT_TRUE(bool(xform));
+    setString(xform, kSceneParamPrimPath, "/World/Box");
+    NodePtr outer = node(PLUGINID_NATRON_USDXFORMPRIM, "Outer", { xform });
+    ASSERT_TRUE(bool(outer));
+
+    setWrapping(xform, true);
+    PXR_NS::UsdStageRefPtr stage = composeNode(outer);
+    ASSERT_TRUE(bool(stage));
+    const std::vector<std::string> wrapped = sorted(traverse(stage));
+    EXPECT_EQ(sorted({ "/Outer", "/Outer/World", "/Outer/World/Ball", "/Outer/World/Wrap1", "/Outer/World/Wrap1/Box", "/Outer/World/Wrap1/Box/Geo",
+                       "/Outer/World/Wrap1/Box/Mat" }),
+              wrapped);
+    EXPECT_EQ(std::vector<PXR_NS::SdfPath>({ PXR_NS::SdfPath("/Outer/World/Wrap1/Box/Mat") }), targetsOf(stage, "/Outer/World/Ball", "material:binding"));
+
+    setWrapping(xform, false);
+    stage = composeNode(outer);
+    ASSERT_TRUE(bool(stage));
+    // Grafted, the input's root goes under the Xform at Prim Path instead.
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Outer/World/Box/World/Box/Geo")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Outer/World/Wrap1")).IsValid());
+
+    setWrapping(xform, true);
+    stage = composeNode(outer);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(wrapped, sorted(traverse(stage)));
+}
+
+TEST_F(USDXformPrimWrapTest, WrappingAMissingPrimOrOntoAnExistingPathIsANodeError)
+{
+    NodePtr xform = node(PLUGINID_NATRON_USDXFORMPRIM, "Wrap1", { _reader });
+    ASSERT_TRUE(bool(xform));
+    setWrapping(xform, true);
+    ScenePayload payload;
+    std::string error;
+
+    setString(xform, kSceneParamPrimPath, "/World/Nothing");
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluate(xform, &payload, &error));
+    {
+        QString message;
+        int type = 0;
+        getPersistentMessage(xform, &message, &type);
+        EXPECT_EQ((int)eMessageTypeError, type);
+        EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Nothing"))) << message.toStdString();
+    }
+
+    setString(xform, kSceneParamPrimPath, "/World/Box");
+    setString(xform, kSceneReparentParamWrapName, "Ball");
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluate(xform, &payload, &error));
+    {
+        QString message;
+        int type = 0;
+        getPersistentMessage(xform, &message, &type);
+        EXPECT_EQ((int)eMessageTypeError, type);
+        EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Ball"))) << message.toStdString();
+    }
+
+    setString(xform, kSceneReparentParamWrapName, "Wrap1");
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(xform, &payload, &error)) << error;
     EXPECT_FALSE(xform->hasPersistentMessage());
 }

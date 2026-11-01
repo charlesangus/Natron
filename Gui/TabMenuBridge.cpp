@@ -44,6 +44,7 @@
 
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/UndoHistory.h"
@@ -122,6 +123,31 @@ openMenu(NodeGraph* graph,
     }
 }
 
+// The kind every selected node outputs, false when the selection is empty, mixed, or holds a node
+// whose output kind is polymorphic or not yet resolved.
+bool
+selectedOutputKind(NodeGraph* graph,
+                   DataKindEnum* kind)
+{
+    bool found = false;
+
+    for (const NodeGuiPtr& nodeGui : graph->getSelectedNodes()) {
+        NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
+        if (!node) {
+            continue;
+        }
+        bool ambiguous = false;
+        const DataKindEnum nodeKind = node->getEffectiveOutputDataKind(&ambiguous);
+        if (ambiguous || (nodeKind == eDataKindPolymorphic) || (found && (nodeKind != *kind))) {
+            return false;
+        }
+        *kind = nodeKind;
+        found = true;
+    }
+
+    return found;
+}
+
 // Triggers action as context says; see TabMenuBridge::launch(NodeGraph*, const LaunchContext&).
 void
 triggerInContext(QAction* action,
@@ -146,7 +172,9 @@ triggerInContext(QAction* action,
     const NodesList before = collection->getNodes();
     {
         NodeCreationContextScope scope(app, collection, g_scenePos);
+        GuiApplicationManager::NodesMenuArgsDecorator previous = appPTR->swapNodesMenuArgsDecorator(context.decorateArgs);
         action->trigger();
+        appPTR->swapNodesMenuArgsDecorator(previous);
     }
     NodePtr created;
     const NodesList after = collection->getNodes();
@@ -239,7 +267,12 @@ launch(NodeGraph* graph)
     g_target = graph;
     g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
     g_context.reset();
-    openMenu(graph, std::string());
+    DataKindEnum kind = eDataKindImage;
+    if (selectedOutputKind(graph, &kind)) {
+        openMenu(graph, ", {'selectedKind': " + pythonStringLiteral(dataKindKey(kind)) + "}");
+    } else {
+        openMenu(graph, std::string());
+    }
 }
 
 void

@@ -33,6 +33,7 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -64,6 +65,89 @@ getKindToken(int kind)
 
     return PXR_NS::TfToken();
 }
+
+// Where wrap mode defines its prim: beside wrapped, named name.
+bool
+getWrapPath(const PXR_NS::SdfPath& wrapped,
+            const std::string& name,
+            PXR_NS::SdfPath* wrapPath,
+            std::string* errorMessage)
+{
+    if (!PXR_NS::SdfPath::IsValidIdentifier(name)) {
+        *errorMessage = EffectInstance::tr("Wrap Name \"%1\" is not a valid prim name.").arg(QString::fromStdString(name)).toStdString();
+
+        return false;
+    }
+    const PXR_NS::TfToken token(name);
+    if (token == wrapped.GetNameToken()) {
+        *errorMessage = EffectInstance::tr("Wrap Name must differ from the name of the prim it wraps, %1.").arg(QString::fromStdString(name)).toStdString();
+
+        return false;
+    }
+    *wrapPath = wrapped.GetParentPath().AppendChild(token);
+
+    return true;
+}
+
+// A relationship or attribute connection whose targets the move changes, as it reads afterwards.
+struct WrapRetarget {
+    PXR_NS::SdfPath property;
+    bool isConnection = false;
+    bool custom = false;
+    PXR_NS::SdfVariability variability = PXR_NS::SdfVariabilityVarying;
+    PXR_NS::SdfValueTypeName typeName;
+    std::vector<PXR_NS::SdfPath> targets;
+};
+
+/**
+ * @brief The links of stage the move of wrapped to moved changes: a target under wrapped, from a
+ * property outside it, which the move would leave dangling; and a target outside wrapped from a
+ * property under it, which a reference may not carry. Each is listed whole, with its property
+ * and targets as they read after the move.
+ **/
+void
+gatherWrapRetargets(const PXR_NS::UsdStageRefPtr& stage,
+                    const PXR_NS::SdfPath& wrapped,
+                    const PXR_NS::SdfPath& moved,
+                    std::vector<WrapRetarget>* retargets)
+{
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+        const bool inside = prim.GetPath().HasPrefix(wrapped);
+        for (const PXR_NS::UsdProperty& property : prim.GetAuthoredProperties()) {
+            WrapRetarget retarget;
+            if (property.Is<PXR_NS::UsdRelationship>()) {
+                const PXR_NS::UsdRelationship relationship = property.As<PXR_NS::UsdRelationship>();
+                relationship.GetTargets(&retarget.targets);
+                retarget.custom = relationship.IsCustom();
+            } else if (property.Is<PXR_NS::UsdAttribute>()) {
+                const PXR_NS::UsdAttribute attribute = property.As<PXR_NS::UsdAttribute>();
+                if (!attribute.HasAuthoredConnections()) {
+                    continue;
+                }
+                attribute.GetConnections(&retarget.targets);
+                retarget.isConnection = true;
+                retarget.custom = attribute.IsCustom();
+                retarget.variability = attribute.GetVariability();
+                retarget.typeName = attribute.GetTypeName();
+            } else {
+                continue;
+            }
+            bool changes = false;
+            for (PXR_NS::SdfPath& target : retarget.targets) {
+                if (target.HasPrefix(wrapped)) {
+                    target = target.ReplacePrefix(wrapped, moved);
+                    changes = changes || !inside;
+                } else {
+                    changes = changes || inside;
+                }
+            }
+            if (changes) {
+                retarget.property = inside ? property.GetPath().ReplacePrefix(wrapped, moved) : property.GetPath();
+                retargets->push_back(retarget);
+            }
+        }
+    }
+}
 } // anonymous namespace
 
 SceneReparentNode::SceneReparentNode(NodePtr node)
@@ -78,10 +162,46 @@ SceneReparentNode::~SceneReparentNode()
 void
 SceneReparentNode::createReparentKnobs(const KnobPagePtr& page)
 {
+    const QString type = QString::fromStdString(getPrimTypeName());
+    if (offersWrapMode()) {
+        KnobChoicePtr mode = createKnob<KnobChoice>(tr("Mode"));
+        mode->setName(kSceneReparentParamMode);
+        mode->setHintToolTip(tr("Graft: defines the %1 at Prim Path and grafts the root prims of every input under it, so the "
+                                "node graph's shape is the scene's.\n"
+                                "Wrap: defines the %1 beside the input 0 prim at Prim Path, named Wrap Name, and moves "
+                                "that prim and everything under it beneath the %1. The other inputs are not read.")
+                                 .arg(type));
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("graft", tr("Graft").toStdString(), ""));
+        options.push_back(ChoiceOption("wrap", tr("Wrap").toStdString(), ""));
+        mode->populateChoices(options);
+        mode->setDefaultValue((int)eSceneReparentModeGraft);
+        mode->setAnimationEnabled(false);
+        page->addKnob(mode);
+        _mode = mode;
+    }
+
     _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, getPrimTypeName()),
-                                        tr("The path of the prim the node defines. The root prims of every input are grafted "
-                                           "under it; missing ancestors of a nested path are defined as %1 prims.")
-                                            .arg(QString::fromStdString(getPrimTypeName())));
+                                        offersWrapMode()
+                                            ? tr("Graft: the path of the prim the node defines. The root prims of every input are "
+                                                 "grafted under it; missing ancestors of a nested path are defined as %1 prims.\n"
+                                                 "Wrap: the path of the input 0 prim moved under the %1.")
+                                                  .arg(type)
+                                            : tr("The path of the prim the node defines. The root prims of every input are grafted "
+                                                 "under it; missing ancestors of a nested path are defined as %1 prims.")
+                                                  .arg(type));
+
+    if (offersWrapMode()) {
+        KnobStringPtr wrapName = createKnob<KnobString>(tr("Wrap Name"));
+        wrapName->setName(kSceneReparentParamWrapName);
+        wrapName->setHintToolTip(tr("Wrap: the name of the %1 the node defines beside the prim at Prim Path (by default the "
+                                    "node's name, following renames until edited).")
+                                     .arg(type));
+        wrapName->setDefaultValue(getDefaultWrapName());
+        wrapName->setAnimationEnabled(false);
+        page->addKnob(wrapName);
+        _wrapName = wrapName;
+    }
 
     KnobChoicePtr kind = createKnob<KnobChoice>(tr("Kind"));
     kind->setName(kSceneReparentParamKind);
@@ -114,6 +234,70 @@ void
 SceneReparentNode::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 {
     followSceneNodeRename(_primPath.lock(), getSceneNodeDefaultPrimPath(this, getPrimTypeName()));
+    followSceneNodeRename(_wrapName.lock(), getDefaultWrapName());
+}
+
+std::string
+SceneReparentNode::getDefaultWrapName() const
+{
+    return getSceneNodeDefaultPrimPath(this, getPrimTypeName()).substr(1);
+}
+
+bool
+SceneReparentNode::isWrapping() const
+{
+    KnobChoicePtr mode = _mode.lock();
+
+    return mode && (mode->getValue() == (int)eSceneReparentModeWrap);
+}
+
+std::string
+SceneReparentNode::getDefinedPrimPath() const
+{
+    KnobStringPtr primPath = _primPath.lock();
+    const std::string value = primPath ? primPath->getValue() : std::string();
+
+    if (!PXR_NS::SdfPath::IsValidPathString(value)) {
+        return std::string();
+    }
+    const PXR_NS::SdfPath path(value);
+    if (!path.IsAbsolutePath() || !path.IsPrimPath()) {
+        return std::string();
+    }
+    if (!isWrapping()) {
+        return path.GetString();
+    }
+    PXR_NS::SdfPath wrapPath;
+    std::string error;
+    KnobStringPtr wrapName = _wrapName.lock();
+
+    return getWrapPath(path, wrapName ? wrapName->getValue() : std::string(), &wrapPath, &error) ? wrapPath.GetString() : std::string();
+}
+
+std::string
+SceneReparentNode::mapToInputPath(const std::string& outputPath) const
+{
+    const std::string defined = getDefinedPrimPath();
+
+    if (defined.empty() || !PXR_NS::SdfPath::IsValidPathString(outputPath)) {
+        return std::string();
+    }
+    const PXR_NS::SdfPath path(outputPath);
+    const PXR_NS::SdfPath definedPath(defined);
+    if (!path.IsAbsolutePath() || !path.IsPrimPath() || (path == definedPath)) {
+        return std::string();
+    }
+    if (!isWrapping()) {
+        return path.HasPrefix(definedPath) ? path.ReplacePrefix(definedPath, PXR_NS::SdfPath::AbsoluteRootPath()).GetString() : std::string();
+    }
+    KnobStringPtr primPath = _primPath.lock();
+    const PXR_NS::SdfPath wrapped(primPath->getValue());
+    const PXR_NS::SdfPath moved = definedPath.AppendChild(wrapped.GetNameToken());
+    if (path.HasPrefix(wrapped)) {
+        return std::string();
+    }
+
+    return path.HasPrefix(moved) ? path.ReplacePrefix(moved, wrapped).GetString() : path.GetString();
 }
 
 bool
@@ -154,6 +338,116 @@ SceneReparentNode::authorOverrides(const SceneLayerEdit& edit,
 }
 
 StatusEnum
+SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
+                              const std::string& wrappedPath,
+                              int kind,
+                              ScenePayload* outputScene,
+                              std::string* errorMessage)
+{
+    const PXR_NS::SdfPath wrapped(wrappedPath);
+    KnobStringPtr wrapNameKnob = _wrapName.lock();
+    PXR_NS::SdfPath wrapPath;
+    if (!getWrapPath(wrapped, wrapNameKnob ? wrapNameKnob->getValue() : std::string(), &wrapPath, errorMessage)) {
+        setPersistentMessage(eMessageTypeError, *errorMessage);
+
+        return eStatusFailed;
+    }
+    const PXR_NS::SdfPath moved = wrapPath.AppendChild(wrapped.GetNameToken());
+
+    const ScenePayload upstream = args.getInputScene(0);
+    std::vector<WrapRetarget> retargets;
+    {
+        SceneQueryPool::Lease lease = upstream.isEmpty() ? SceneQueryPool::Lease() : SceneQueryPool::instance().borrow(upstream, errorMessage);
+        const PXR_NS::UsdStageRefPtr stage = lease.isValid() ? lease.getStage() : PXR_NS::UsdStageRefPtr();
+        if (!upstream.isEmpty() && !stage) {
+            if (errorMessage->empty()) {
+                *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            }
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        const PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(wrapped) : PXR_NS::UsdPrim();
+        if (!prim || !prim.IsDefined() || prim.IsAbstract()) {
+            *errorMessage = tr("Input 0 has no prim at %1 to wrap.").arg(QString::fromStdString(wrappedPath)).toStdString();
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        if (stage->GetPrimAtPath(wrapPath)) {
+            *errorMessage = tr("Input 0 already has a prim at %1; give Wrap Name another name.").arg(QString::fromStdString(wrapPath.GetString())).toStdString();
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        gatherWrapRetargets(stage, wrapped, moved, &retargets);
+    }
+
+    const std::string typeName = getPrimTypeName();
+    SceneLayerMemo::AuthorFunc author = [this, wrapped, wrapPath, moved, retargets, kind, typeName](const SceneLayerEdit& edit,
+                                                                                                    std::string* error) {
+        // The overrides first: they open a stage on the layer, which would warn about the
+        // reference below, whose target only the upstream layers hold.
+        if (!authorOverrides(edit, wrapPath.GetString(), kind, error)) {
+            return false;
+        }
+        const PXR_NS::SdfLayerRefPtr& layer = edit.layer;
+        const PXR_NS::SdfPrimSpecHandle wrapSpec = PXR_NS::SdfCreatePrimInLayer(layer, wrapPath);
+        const PXR_NS::SdfPrimSpecHandle movedSpec = PXR_NS::SdfCreatePrimInLayer(layer, moved);
+        const PXR_NS::SdfPrimSpecHandle wrappedSpec = PXR_NS::SdfCreatePrimInLayer(layer, wrapped);
+        if (!wrapSpec || !movedSpec || !wrappedSpec) {
+            *error = tr("USD could not author the move of %1 under %2.").arg(QString::fromStdString(wrapped.GetString()), QString::fromStdString(wrapPath.GetString())).toStdString();
+
+            return false;
+        }
+        wrapSpec->SetSpecifier(PXR_NS::SdfSpecifierDef);
+        wrapSpec->SetTypeName(typeName);
+        // An internal reference composes the prim from the whole layer stack, this layer's
+        // deactivation of it included; the local opinion re-activates the moved copy.
+        movedSpec->SetSpecifier(PXR_NS::SdfSpecifierDef);
+        movedSpec->GetReferenceList().Prepend(PXR_NS::SdfReference(std::string(), wrapped));
+        movedSpec->SetActive(true);
+        wrappedSpec->SetActive(false);
+        // An explicit list, stronger than the reference, stands in for the property's whole list.
+        for (const WrapRetarget& retarget : retargets) {
+            const PXR_NS::SdfPrimSpecHandle owner = PXR_NS::SdfCreatePrimInLayer(layer, retarget.property.GetPrimPath());
+            if (!owner) {
+                *error = tr("USD could not retarget %1.").arg(QString::fromStdString(retarget.property.GetString())).toStdString();
+
+                return false;
+            }
+            const PXR_NS::TfToken name = retarget.property.GetNameToken();
+            if (retarget.isConnection) {
+                if (!layer->GetAttributeAtPath(retarget.property) && !PXR_NS::SdfAttributeSpec::New(owner, name.GetString(), retarget.typeName, retarget.variability, retarget.custom)) {
+                    *error = tr("USD could not retarget %1.").arg(QString::fromStdString(retarget.property.GetString())).toStdString();
+
+                    return false;
+                }
+                layer->SetField(retarget.property, PXR_NS::SdfFieldKeys->ConnectionPaths, PXR_NS::SdfPathListOp::CreateExplicit(retarget.targets));
+            } else {
+                if (!layer->GetRelationshipAtPath(retarget.property) && !PXR_NS::SdfRelationshipSpec::New(owner, name.GetString(), retarget.custom)) {
+                    *error = tr("USD could not retarget %1.").arg(QString::fromStdString(retarget.property.GetString())).toStdString();
+
+                    return false;
+                }
+                layer->SetField(retarget.property, PXR_NS::SdfFieldKeys->TargetPaths, PXR_NS::SdfPathListOp::CreateExplicit(retarget.targets));
+            }
+        }
+
+        return true;
+    };
+
+    if (!emitSceneLayer(upstream, author, outputScene, errorMessage)) {
+        setPersistentMessage(eMessageTypeError, *errorMessage);
+
+        return eStatusFailed;
+    }
+    clearPersistentMessage(false);
+
+    return eStatusOK;
+} // SceneReparentNode::renderWrap
+
+StatusEnum
 SceneReparentNode::renderScene(const SceneRenderActionArgs& args,
                                ScenePayload* outputScene,
                                std::string* errorMessage)
@@ -167,6 +461,9 @@ SceneReparentNode::renderScene(const SceneRenderActionArgs& args,
     KnobChoicePtr kindKnob = _kind.lock();
     KnobBoolPtr autoRenameKnob = _autoRename.lock();
     const int kind = kindKnob ? kindKnob->getValue() : (int)eKindNone;
+    if (isWrapping()) {
+        return renderWrap(args, path.GetString(), kind, outputScene, errorMessage);
+    }
 
     SceneReparentArgs reparent;
     for (int i = 0; i < kSceneReparentInputCount; ++i) {

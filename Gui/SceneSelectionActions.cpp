@@ -32,13 +32,17 @@
 #include <QUndoCommand>
 #include <QtCore/QCoreApplication>
 
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Plugin.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -93,15 +97,40 @@ private:
 };
 
 std::string
-knobText(const KnobStringPtr& knob,
+knobText(bool takesPattern,
          const QStringList& paths)
 {
     if (paths.isEmpty()) {
         return std::string();
     }
-    const QString text = (knob->getPrimPathHint() == KnobString::ePrimPathHintPath) ? paths.front() : paths.join(QLatin1Char(' '));
+    const QString text = takesPattern ? paths.join(QLatin1Char(' ')) : paths.front();
 
     return text.trimmed().toStdString();
+}
+
+std::string
+knobText(const KnobStringPtr& knob,
+         const QStringList& paths)
+{
+    return knobText(knob->getPrimPathHint() != KnobString::ePrimPathHintPath, paths);
+}
+
+// Gives the prim knob of the node args create paths as its initial value; a USDXformPrim wraps
+// the prim rather than defining one there.
+void
+addInitialPrims(CreateNodeArgs& args,
+                const QStringList& paths)
+{
+    const QString pluginID = QString::fromStdString(args.getProperty<std::string>(kCreateNodeArgsPropPluginID));
+    const Plugin* plugin = appPTR->getPluginBinary(pluginID, args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 0), args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 1), false);
+
+    if (!plugin || plugin->getPrimPathKnob().empty() || paths.isEmpty()) {
+        return;
+    }
+    args.addParamDefaultValue<std::string>(plugin->getPrimPathKnob(), knobText(plugin->getPrimPathKnobTakesPattern(), paths));
+    if (pluginID == QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM)) {
+        args.addParamDefaultValue<int>(kSceneReparentParamMode, (int)eSceneReparentModeWrap);
+    }
 }
 
 // Pushes the edit of node's prim knob; false when there is nothing to change.
@@ -260,6 +289,10 @@ createFromSelection(Gui* gui,
     context.inputKind = eDataKindScene;
     context.needsPrimPathKnob = true;
     context.insertAfter = viewed;
+    context.decorateArgs = [paths](CreateNodeArgs& args) {
+        addInitialPrims(args, paths);
+    };
+    // A node type the decorator could not reach, such as a PyPlug's, still gets the prims.
     context.created = [gui, paths](const NodePtr& created) {
         if (KnobStringPtr knob = primKnob(created)) {
             pushSet(gui, created, knob, paths);

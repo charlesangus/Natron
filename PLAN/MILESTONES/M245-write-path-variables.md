@@ -90,13 +90,13 @@ adds headless render tests, and gets the bench running on the original comps.
 
 ## Phase 245.4: UAT variable editing
 
-- [ ] M245.P4.T1 — Make project-path creation safe and composable
+- [x] M245.P4.T1 — Make project-path creation safe and composable
   - files: project path-variable model/dialog, validation tests, GUI test
   - approach: Reject duplicate names and duplicate effective values with a clear choice, allow existing variables inside the Add dialog, preview the fully expanded path, and reduce the steps needed to create one from a file knob.
   - verify: GUI coverage creates a nested variable, blocks accidental duplicates, and inserts the resulting token into a Write path.
   - size: M
 
-- [ ] M245.P4.T2 — Define the bridge from project paths to RFVs
+- [x] M245.P4.T2 — Define the bridge from project paths to RFVs
   - files: project-variable/RFV design and implementation surface, serialization tests
   - approach: Reuse RFV value resolution where it preserves project-path semantics, or add an explicit adapter if path variables must remain a distinct persisted namespace; record the decision. No backward compatibility with existing projects.
   - verify: A nested project path resolves through the chosen RFV integration in GUI and headless renders and round-trips through save/load.

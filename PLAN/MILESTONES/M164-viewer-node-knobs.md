@@ -86,22 +86,23 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 ## Phase 164.4: UAT round 1 fixes
 
-- [ ] M164.P4.T1 — Make Viewer a normal persistent properties-panel node
+- [x] M164.P4.T1 — Make Viewer a normal persistent properties-panel node
   - files: `Engine/ViewerInstance.*`, `Gui/ViewerTab.*`, `Gui/NodeSettingsPanel.*`, viewer serialization tests
   - approach: Let a Viewer open the standard properties panel, persist and restore its node knobs like other nodes, and cover save/reopen with more than one Viewer.
   - verify: A saved project reopens with each Viewer's properties and panel behaviour intact.
   - size: M
 
-- [ ] M164.P4.T2 — Frame the Viewer on new and reopened projects
+- [x] M164.P4.T2 — Frame the Viewer on new and reopened projects
   - files: `Gui/ViewerTab.*`, `Gui/ViewerGL*`, viewer GUI tests
   - approach: Apply the normal fit/framed view once after a fresh script gains a Viewer and after a saved script is opened, without overriding user navigation made after load.
   - verify: The GUI test opens a fresh and a saved project and confirms the image is framed in both.
   - size: M
 
-- [ ] M164.P4.T3 — Expose FPS as a Viewer property
+- [x] M164.P4.T3 — Expose FPS as a Viewer property
   - files: `Engine/ViewerInstance.*`, `Gui/ViewerTab.*`, `Tests/ViewerKnobs_Test.cpp`
   - approach: Keep desired FPS on the Viewer node, show it in the properties panel, and make the player use that knob while preserving the existing locked/input-rate behaviour.
   - verify: Editing FPS in the properties panel updates playback and survives save/reopen.
   - size: M
 
 **Verification gate:** full build and tests pass; the Viewer GUI test covers properties, FPS, framing and save/reopen; a new AppImage is accepted by the user.
+- 2026-11-01 — P4 at 7ab6d8e9c and 79c40415c: Viewer has a normal properties panel (Label + its own knobs, no Disable/Info page), closed on creation; viewers fit once a project finishes loading (replacing any saved zoom); viewers are registered headlessly and survive headless load/save; naming a Viewer as a headless render target is refused. To confirm with the user: panel closed on creation, fit replaces saved zoom (implementer).

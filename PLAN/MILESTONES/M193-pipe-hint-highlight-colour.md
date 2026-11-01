@@ -29,13 +29,13 @@ The drop-on-pipe hint paints the target pipe and the two ghost pipes green: `Edg
 
 ## Phase 193.1: Recolour
 
-- [ ] M193.P1.T1 — Recolour the highlighted pipe and ghost edges
+- [x] M193.P1.T1 — Recolour the highlighted pipe and ghost edges
   - files: `Gui/Edge.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGraph20.cpp`
   - approach: In `Edge::paint` replace `Qt::green` in the `useHighlight` branch with the colour from `appPTR->getCurrentSettings()->getSelectionColor`. Replace the ghost edges' `setDefaultColor(QColor(0,255,0,100))` with the Selection colour at alpha 100, and refresh it where the splice hint is shown (`NodeGraph20.cpp:321-329`) so a Preferences change is picked up.
   - verify: build; under Xvfb the splice hint pixels match the Selection colour (T2).
   - size: M
 
-- [ ] M193.P1.T2 — Update the GUI colour checks
+- [x] M193.P1.T2 — Update the GUI colour checks
   - files: `Tests/gui/m55_node_graph.py`
   - approach: Replace `is_green` and its callers with a colour-distance check against the Selection colour read from Preferences, and add a check with a non-default Selection colour.
   - verify: `m55_node_graph.py` passes under Xvfb, including `splice-vertical` as far as M176 - Splice-Vertical Regression allows (record any pre-existing failure).

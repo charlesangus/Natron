@@ -98,7 +98,7 @@ adds headless render tests, and gets the bench running on the original comps.
 
 - [ ] M245.P4.T2 — Define the bridge from project paths to RFVs
   - files: project-variable/RFV design and implementation surface, serialization tests
-  - approach: Reuse RFV value resolution where it preserves project-path semantics, or add an explicit adapter if path variables must remain a distinct persisted namespace; keep existing projects compatible and record the decision.
+  - approach: Reuse RFV value resolution where it preserves project-path semantics, or add an explicit adapter if path variables must remain a distinct persisted namespace; record the decision. No backward compatibility with existing projects.
   - verify: A nested project path resolves through the chosen RFV integration in GUI and headless renders and round-trips through save/load.
   - size: L
 

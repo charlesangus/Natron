@@ -29,13 +29,13 @@ Topology, with no scene input. Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`
 
 ## Phase 235.1: File-backed camera
 
-- [ ] M235.P1.T1 — `USDCamera` reads a camera prim from a file
+- [x] M235.P1.T1 — `USDCamera` reads a camera prim from a file
   - files: `Engine/Nodes/Scene/USDCamera.{h,cpp}`, `Engine/Nodes/Scene/USDRead.cpp` (share its file-stamp, time-mapping and Reload helpers; factor them out if they are private), `Tests/Scene/USDCamera_Test.cpp`, a small committed `.abc` or `.usda` with an animated camera under a transformed parent
   - approach: with Read From File on, author at the node's Prim Path a `UsdGeomCamera` whose lens and clipping attributes come from the file camera (time samples over the project range, mapped through the frame offset) and whose transform is the file camera's world transform as one `xformOp:transform` per sample. The file layer is opened through the same stamp registry and barrier as USDRead. The camera chooser is populated from the file.
   - verify: gtest — the committed animated camera's world matrix and focal length at frames 1 and 10 match `UsdGeomCamera`/`ComputeLocalToWorldTransform` read directly from the file; a missing prim errors; Reload after rewriting the file changes the values.
   - size: M
 
-- [ ] M235.P1.T2 — Knob display and per-group edit overrides
+- [x] M235.P1.T2 — Knob display and per-group edit overrides
   - files: `Engine/Nodes/Scene/USDCamera.cpp`, `Tests/Scene/USDCamera_Test.cpp`, `Tests/gui/scene_camera_from_file.py`
   - approach: with a file camera, the knobs refresh to the file's values at the current frame (display-only, disabled). An Edit toggle per group (transform, lens, clipping) enables that group's knobs. Their values then author over the file's samples: the transform group as an appended offset op, lens and clipping as replacement values. Turning Edit off restores the file values.
   - verify: gtest — enabling the lens group and setting focal 35 overrides only focalLength while the transform still follows the file; Xvfb GUI script — the knobs show the file's focal at frame 10 and update on scrub.

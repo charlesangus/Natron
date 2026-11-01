@@ -17,6 +17,8 @@ future core work has solid ground to build on.
 
 - **Six lanes, same-file rule waived (user, 2026-10-27):** bosley-native-nodes runs six parallel lanes across E13, E9, E3, E10, E15, E16, E17 plus M224, M163 and M242; lanes may overlap files and accept rebases. M64 - Tiled Rendering gates nothing. A milestone blocked on user feedback pauses and its lane takes the next one.
 
+- **Never port display-referred nodes (user, 2026-10-30):** darktable and other ports must operate on scene-linear data; a module that only makes sense display-referred is not ported.
+
 - **Stop Docker containers gracefully (user, 2026-10-27):** never `docker kill`, `docker rm -f` or SIGKILL a running natron-dev (or any Natron) container; `docker stop` (SIGTERM, a timeout of 30 s or more) and then `docker rm`. Killed containers left GPU/driver memory held on the host, which looked like M225's "memory not released" bug.
 
 | | |
@@ -188,7 +190,7 @@ future core work has solid ground to build on.
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255 |  | E8 | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255 |  | E8 | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
-| M259 | GPU Placement Under Render Contexts | doing | M180 | bosley-native-nodes | E15 | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
+| M259 | GPU Placement Under Render Contexts | doing | M180, M181, M182 | bosley-native-nodes | E15 | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | doing | M226 | bosley-native-nodes | E9 | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | doing | M52, M233 | bosley-native-nodes | E9 | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | SOPs-Style Geometry | todo | M52, M53, M227 |  | E9 | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |

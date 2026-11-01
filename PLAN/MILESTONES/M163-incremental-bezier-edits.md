@@ -81,7 +81,7 @@ Building M16 - Project Format Redesign's heavy benchmark project (30 beziers × 
 
 ## Phase 163.4: Host measurement
 
-- [ ] M163.P4.T1 — Measure after on the host and check drag responsiveness
+- [x] M163.P4.T1 — Measure after on the host and check drag responsiveness
   - files: `tools/bench/BASELINE.md`
   - approach: Rerun `tools/bench/bezier_build_bench.py` (including `--heavy`) on a stripped `release` AppImage on the user's host and record the "after" table next to the baseline. If `tools/bench/gui/run.sh` exists on main, run a point drag on a 24×200 feathered shape, plus one with a tracker-linked bezier, and record frame times. Otherwise record the drag check as a manual run on the AppImage.
   - verify: The table shows time roughly linear in K and a large drop for the heavy build. The drag numbers (or the manual note) are recorded and approved by the user.

@@ -52,7 +52,7 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
 
 ## Phase 210.1: Profiles
 
-- [ ] M210.P1.T1 — Vendor the noise-profile DB and write the lookup
+- [x] M210.P1.T1 — Vendor the noise-profile DB and write the lookup
   - files: new `Engine/Nodes/Filter/data/noiseprofiles.json` (copied at `DARKTABLE_REF`, with a header note in the doc), new `Engine/Nodes/Filter/NoiseProfiles.{h,cpp}`, `tools/license/components/README.md`, `Engine/CMakeLists.txt` (Qt resource), new `Tests/Native/NoiseProfiles_Test.cpp`
   - approach:
     - Port `noiseprofiles.c`: parse, look up by make, model and ISO, and interpolate between neighbouring ISOs.
@@ -63,7 +63,7 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
 
 ## Phase 210.2: CPU node
 
-- [ ] M210.P2.T1 — Node skeleton, knobs and variance stabilisation
+- [x] M210.P2.T1 — Node skeleton, knobs and variance stabilisation
   - files: new `Engine/Nodes/Filter/DenoiseProfiled.h`, `Engine/Nodes/Filter/DenoiseProfiled.cpp`, `Engine/Nodes/Filter/DenoiseProfiled.reg.inc`
   - approach:
     - Every knob from the Scope, with darktable's defaults and auto-mode logic: `adjustAutoset` maps to the derived patch, search, scattering and strength.
@@ -72,13 +72,13 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
   - verify: with the denoiser stubbed to identity, the forward and inverse transforms round-trip within 1e-5, and P2.T4's knob audit passes.
   - size: L
 
-- [ ] M210.P2.T2 — Non-local means path
+- [x] M210.P2.T2 — Non-local means path
   - files: `Engine/Nodes/Filter/DenoiseProfiled.cpp`, new `Engine/Nodes/Filter/DenoiseProfiledNlm.cpp`
   - approach: port `process_nlmeans_cpu` and its helpers: patch distances, scattering and central-pixel weight. Thread over rows.
   - verify: P2.T4's reference jobs for the NLM modes pass.
   - size: L
 
-- [ ] M210.P2.T3 — Wavelet path and Y0U0V0
+- [x] M210.P2.T3 — Wavelet path and Y0U0V0
   - files: `Engine/Nodes/Filter/DenoiseProfiled.cpp`, new `Engine/Nodes/Filter/DenoiseProfiledWavelets.cpp`
   - approach:
     - Port `process_wavelets` on M209's `Wavelets`, with per-band thresholds from the curves.
@@ -86,7 +86,7 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
   - verify: P2.T4's reference jobs for the wavelet modes pass.
   - size: L
 
-- [ ] M210.P2.T4 — Reference parity and knob audit
+- [x] M210.P2.T4 — Reference parity and knob audit
   - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new crops), new `Tests/Native/NativeDenoiseProfiled_Test.cpp`
   - approach:
     - Add darktable-cli jobs on the Canon and Fuji fixtures for each mode and color mode, plus shadows, bias and strength variants. Feed the node the same pre-denoise stage through the existing Develop chain, following `RawReferenceModules_Test.cpp`.
@@ -97,19 +97,19 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
 
 ## Phase 210.3: GPU, Develop option and docs
 
-- [ ] M210.P3.T1 — GPU kernels for NLM and the transforms
+- [x] M210.P3.T1 — GPU kernels for NLM and the transforms
   - files: new `Engine/Gpu/Kernels/denoiseprofile_nlm.slang`, `denoiseprofile_nlm.cmake`, `denoiseprofile_vst.slang`, `denoiseprofile_vst.cmake`, `Engine/Nodes/Filter/DenoiseProfiled.cpp`
   - approach: port from darktable `data/kernels/denoiseprofile.cl`. Run the wavelet path on M209's GPU wavelets.
   - verify: P3.T2's parity tests pass.
   - size: L
 
-- [ ] M210.P3.T2 — GPU parity tests
+- [x] M210.P3.T2 — GPU parity tests
   - files: new `Tests/Native/NativeDenoiseProfiledGpu_Test.cpp`
   - approach: run each mode on GPU against CPU on fixture crops.
   - verify: `ctest -R NativeDenoiseProfiledGpu` passes on lavapipe within the doc's tolerance.
   - size: M
 
-- [ ] M210.P3.T3 — Develop RAW option, doc and icon
+- [x] M210.P3.T3 — Develop RAW option, doc and icon
   - files: `Engine/Settings.{h,cpp}`, `Engine/Nodes/Raw/RawDevelop.cpp`, `Engine/Nodes/Filter/docs/DenoiseProfiled.md`, `Gui/Resources/Images/NativeNodes/`
   - approach:
     - Add a `developRawDenoise` bool (off) that inserts the node into `buildChain` after the demosaic slot.

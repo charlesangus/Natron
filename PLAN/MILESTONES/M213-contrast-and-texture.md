@@ -28,7 +28,7 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 
 ## Phase 213.1: Node
 
-- [ ] M213.P1.T1 — Pin the master SHA and extend the reference harness
+- [x] M213.P1.T1 — Pin the master SHA and extend the reference harness
   - files: `tools/ci/local/fetch-assets.sh`, `tools/raw/make-reference.sh`, `tools/raw/make-reference.py`
   - approach:
     - Add `DARKTABLE_MASTER_REF`, a darktable master SHA that contains `contrastntexture.c` (as of 2026-10-24, `fee19b421`), or the 5.8 tag if it has been released.
@@ -39,19 +39,19 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
     - A real run renders them on a host that can pull.
   - size: M
 
-- [ ] M213.P1.T2 — ContrastTexture node (CPU)
+- [x] M213.P1.T2 — ContrastTexture node (CPU)
   - files: new `Engine/Nodes/Filter/ContrastTexture.h`, `Engine/Nodes/Filter/ContrastTexture.cpp`, `Engine/Nodes/Filter/ContrastTexture.reg.inc`
   - approach: port `contrastntexture.c`'s process and its detail-level decomposition on M209's `Eigf`, with every control and default.
   - verify: P1.T4's reference jobs pass.
   - size: L
 
-- [ ] M213.P1.T3 — GPU path
+- [x] M213.P1.T3 — GPU path
   - files: new `Engine/Gpu/Kernels/contrastntexture.slang`, `contrastntexture.cmake`, `Engine/Nodes/Filter/ContrastTexture.cpp`, new `Tests/Native/NativeContrastTextureGpu_Test.cpp`
   - approach: compose M209's GPU EIGF with a per-level gain kernel.
   - verify: `ctest -R NativeContrastTextureGpu` passes on lavapipe within 1e-4 relative of the CPU path.
   - size: M
 
-- [ ] M213.P1.T4 — Reference parity, knob audit and docs
+- [x] M213.P1.T4 — Reference parity, knob audit and docs
   - files: `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeContrastTexture_Test.cpp`, `Engine/Nodes/Filter/docs/ContrastTexture.md`, `Gui/Resources/Images/NativeNodes/`
   - approach: compare against P1.T1's references on the same pre-module image in linear Rec.2020, run the params audit, and run identity checks. Write the doc with the tolerance and add an icon.
   - verify: `ctest -R NativeContrastTexture` passes within the doc's `Tolerance:`.

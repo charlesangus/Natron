@@ -35,13 +35,13 @@ long-lived engine and its dedicated Hydra render thread.
 
 ## Phase 248.1: Discovery and engines
 
-- [ ] M248.P1.T1 — Delegate registry
+- [x] M248.P1.T1 — Delegate registry
   - files: `Engine/Nodes/Scene/RenderDelegates.h`, `Engine/Nodes/Scene/RenderDelegates.cpp`, CMake source list, `Tests/Scene/RenderDelegates_Test.cpp`
   - approach: wrap `HdRendererPluginRegistry::GetRendererPluginDescs` / `UsdImagingGLEngine::GetRendererPlugins` behind a small Natron type (id token, display name, loadable flag, load error). Storm is always present and first. Read the pinned headers and usdview's renderer menu for the exact calls and mark anything recalled from memory.
   - verify: unit test lists Storm; a stub plugInfo.json on `PXR_PLUGINPATH_NAME` declaring a renderer whose library is missing is listed as unavailable with an error string.
   - size: M
 
-- [ ] M248.P1.T2 — Engine per delegate in the Hydra render path
+- [x] M248.P1.T2 — Engine per delegate in the Hydra render path
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/HydraRenderImpl.h`, `Engine/Nodes/Scene/HydraHandoff.cpp`
   - approach: key the engine entry by delegate id. Storm keeps the GL render thread, Hgi and the AOV-texture hand-off. A non-Storm engine is created with `SetRendererPlugin`, takes no GL context, and its AOVs go through the existing `MappedAov` read-back. Per M20 - 3D Node Vocabulary's long-lived-scene decision the engine is not rebuilt per edit — only on delegate change.
   - verify: existing Storm tests pass unchanged; a test selects the stub delegate from M248.P1.T1 and gets a node error, not a crash, with the Storm engine count unchanged.
@@ -49,13 +49,13 @@ long-lived engine and its dedicated Hydra render thread.
 
 ## Phase 248.2: Knobs
 
-- [ ] M248.P2.T1 — USDRender Renderer knob
+- [x] M248.P2.T1 — USDRender Renderer knob
   - files: `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/RenderDelegates.cpp`, `Tests/Scene/USDRender_Test.cpp`
   - approach: a choice knob named `renderer`, label `Renderer`, populated from the registry at node creation and on refresh. Storm is the default. An unavailable saved id is kept as a hidden entry so project save/load round-trips it, and shown as a persistent node error. Hash the id into the node's render hash.
   - verify: test sets the knob to the stub delegate, saves and reloads the project, and gets the same id plus the error; changing the knob changes the node hash.
   - size: M
 
-- [ ] M248.P2.T2 — Viewer renderer dropdown
+- [x] M248.P2.T2 — Viewer renderer dropdown
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneViewport.h`, `Tests/SceneViewport_Test.cpp`
   - approach: a dropdown on the 3D viewer, defaulting to Storm and independent of any USDRender node (user, 2026-10-27). Changing it rebuilds only the viewer's engine. The choice is stored with the viewer's other per-viewer state.
   - verify: GUI test under the strict runner switches Storm → stub delegate → Storm without a crash, the viewer shows the error for the stub, and the Storm engine count returns to one.

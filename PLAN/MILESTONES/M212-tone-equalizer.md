@@ -86,4 +86,4 @@ Deps: M209 - Edge-Aware Filter Library. See `DECISIONS/2026-10-25-darktable-ai-a
 
 - 2026-10-27 — Gate green; GUI check passes (readout expectation corrected to the curve fit: +0.78 EV / −0.28 EV). Screenshots sent. UAT: build/appimages/Natron-m212-tone-equalizer.AppImage, M212-uat.md.
 - 2026-10-27 — All 7 darktable luminance estimators ported (plan's list was short). GPU kernel is original (darktable has no OpenCL tone equalizer). References use linear Rec.709 on a synthetic source (the node is space-agnostic). Scroll-to-edit is ported via a new generic viewer wheel hook for native overlays (PM). GUI script named m212_tone_equalizer.py.
-- 2026-10-30 — **UAT passed after input-domain confirmation (user).** Tone Equalizer consumes unbounded scene-linear data before the view transform; it is not a display-referred port.
+- 2026-10-30 — **UAT approved (user)**, with a question: does it expect scene-linear or display-referred input? Display-referred nodes are never ported. Answer (PM, 2026-11-01, reported to the user): scene-linear — darktable runs the tone equalizer in the scene-referred part of the pipe, before the view transform, and the port keeps that.

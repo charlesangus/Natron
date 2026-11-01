@@ -94,8 +94,8 @@ Deps: M163 - Incremental Bezier Edits.
 
 - [ ] M261.P5.T1 — Keep viewer timeline indicators synchronized
   - files: Roto/RotoPaint keyframe notifications, Viewer timeline marks, dope-sheet GUI tests
-  - approach: Emit the same keyframe-change signal for shape and mask creation, selection-independent dope-sheet edits and brush keys so blue indicators update immediately.
-  - verify: Add and move shape/mask keys with no Roto selection; Viewer indicators update without reopening or reselection.
+  - approach: Emit the same keyframe-change signal for shape and mask creation, selection-independent dope-sheet edits and brush keys so blue indicators update immediately. A shape created in the viewer gets its dope-sheet row at once, not after its first edit.
+  - verify: Add and move shape/mask keys with no Roto selection; Viewer indicators update without reopening or reselection; a newly drawn shape appears in the dope sheet immediately.
   - size: M
 
 - [ ] M261.P5.T2 — Make brush-opacity key edits change the value

@@ -30,7 +30,7 @@ Deps: M209 - Edge-Aware Filter Library, M214 - Colour Balance RGB. See `DECISION
 
 ## Phase 215.1: Node
 
-- [ ] M215.P1.T1 — ColorEqualizer node and curve knobs (CPU)
+- [x] M215.P1.T1 — ColorEqualizer node and curve knobs (CPU)
   - files: new `Engine/Nodes/Color/ColorEqualizer.h`, `Engine/Nodes/Color/ColorEqualizer.cpp`, `Engine/Nodes/Color/ColorEqualizer.reg.inc`
   - approach:
     - Port `process` with its guided-filter smoothing on M209's `GuidedFilter`, the hue-node interpolation and the chroma weighting from `colorequal.c`.
@@ -38,13 +38,13 @@ Deps: M209 - Edge-Aware Filter Library, M214 - Colour Balance RGB. See `DECISION
   - verify: P1.T3's reference jobs pass.
   - size: L
 
-- [ ] M215.P1.T2 — GPU path
+- [x] M215.P1.T2 — GPU path
   - files: new `Engine/Gpu/Kernels/colorequal.slang`, `colorequal.cmake`, `Engine/Nodes/Color/ColorEqualizer.cpp`, new `Tests/Native/NativeColorEqualizerGpu_Test.cpp`
   - approach: port from darktable's `data/kernels/colorequal.cl`, on `dtcolorspaces.slang` and M209's GPU guided filter.
   - verify: `ctest -R NativeColorEqualizerGpu` passes on lavapipe within the doc's tolerance.
   - size: L
 
-- [ ] M215.P1.T3 — Reference parity, knob audit and docs
+- [x] M215.P1.T3 — Reference parity, knob audit and docs
   - files: `tools/raw/make-reference.py`, `Tests/fixtures/raw/reference/` (new), new `Tests/Native/NativeColorEqualizer_Test.cpp`, `Engine/Nodes/Color/docs/ColorEqualizer.md`
   - approach:
     - darktable-cli jobs: per-node hue, saturation and brightness edits, filter on and off, and presets.

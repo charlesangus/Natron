@@ -20,17 +20,17 @@ Split out of M180 - Loop Block Core (2026-10-27). M178 - Render Context Core kep
 
 ## Phase 259.1: Context tasks on the GPU
 
-- [ ] M259.P1.T1 — Look up and render context tasks by (node, context key)
+- [x] M259.P1.T1 — Look up and render context tasks by (node, context key)
   - files: `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp`
   - approach: drop the `contextKey != 0` refusals (GpuPlacement.cpp:601, :707). Use `NodeCtxKey(node, task.key.contextKey)` for `find`/`findFrameViewRequest`/`getArgs` (:609, :643, :711-712). Wrap `canRenderOnGpu`, `getGpuStageSummary` and `renderGpu` per member in `ContextFrameArgsScope` + `ActionContextScope`, mirroring RenderScheduler.cpp:1166, so driven knobs read their context.
   - verify: at the phase build, `ctest -R NativeGpuContext` (T3) passes.
   - size: L
-- [ ] M259.P1.T2 — Carry context-request edges in regions
+- [x] M259.P1.T2 — Carry context-request edges in regions
   - files: `Engine/Nodes/Image/GpuRender.h`, `Engine/GpuRegionTask.cpp`, `Engine/GpuPlacement.cpp`
   - approach: add `GpuRenderArgs::contextInputs`, filled in `fvRequest->dependencies` order for −3 edges (edge build at GpuRegionTask.cpp:~783), and count them as external inputs or internal edges when forming regions.
   - verify: at the phase build, `ctest -R NativeGpuContext` passes.
   - size: L
-- [ ] M259.P1.T3 — Test context tasks on the GPU
+- [x] M259.P1.T3 — Test context tasks on the GPU
   - files: `Tests/Native/NativeGpuContext_Test.cpp`
   - approach: on lavapipe, a Grade driven by `loop.t` in a 5-iteration Accumulate loop puts the body tasks on `Device::Gpu` and matches the CPU result within tolerance. Under an RFV Set context, each context gets distinct image keys (no hits across contexts).
   - verify: at the phase build, `ctest -R NativeGpuContext` passes.
@@ -38,22 +38,22 @@ Split out of M180 - Loop Block Core (2026-10-27). M178 - Render Context Core kep
 
 ## Phase 259.2: Fold kernels and residency
 
-- [ ] M259.P2.T1 — Fold kernels for LoopEnd
+- [x] M259.P2.T1 — Fold kernels for LoopEnd
   - files: `Engine/Gpu/Kernels/loopfold.slang`, `Engine/Gpu/Kernels/loopfold.cmake`, `Engine/Nodes/Loop/LoopEnd.{h,cpp}`
   - approach: one point kernel per `LoopFold::OperationEnum`, matching `foldRow`/`finishRow`. LoopEnd gains `opKind`, `canRenderOnGpu` and `renderGpu` reading step k−1 from `contextInputs`. Add LoopEnd to `gpuCapableIds()` in `Tests/Native/NativeGpuCapability_Test.cpp`.
   - verify: at the phase build, `ctest -R NativeLoopFoldGpu` (T3) passes.
   - size: L
-- [ ] M259.P2.T2 — LoopBegin's feedback forward on the GPU
+- [x] M259.P2.T2 — LoopBegin's feedback forward on the GPU
   - files: `Engine/Nodes/Loop/LoopBegin.{h,cpp}`
   - approach: `renderGpu` copies or conforms the tail's previous step from `contextInputs`, so a feedback chain stays in one region.
   - verify: at the phase build, `ctest -R NativeLoopFoldGpu` passes.
   - size: M
-- [ ] M259.P2.T3 — Test GPU folding, residency and memory bounds
+- [x] M259.P2.T3 — Test GPU folding, residency and memory bounds
   - files: `Tests/Native/NativeLoopFoldGpu_Test.cpp`
   - approach: parity with the `NativeGpuParity.h` helpers: min/max bit-exact, mean/sum/over/under within 1e-6 relative, with reverse order. The fold chain and a 10-step feedback chain each run as one region with no host round-trip per step. 256 iterations at 4K under a capped `GpuBufferPool` userBudgetBytes keep peakBytes ≤ budget; a budget below one image falls back to the CPU.
   - verify: at the phase build, `ctest -R NativeLoopFoldGpu` passes.
   - size: M
-- [ ] M259.P2.T4 — Document GPU loops
+- [x] M259.P2.T4 — Document GPU loops
   - files: `Engine/Nodes/Loop/docs/LoopEnd.md`
   - approach: GPU tolerance line, residency, CPU fallback.
   - verify: reviewed at the gate.

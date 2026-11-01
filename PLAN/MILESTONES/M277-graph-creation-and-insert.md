@@ -35,6 +35,12 @@ Make shortcut-created and drag-inserted nodes follow normal node-creation placem
   - verify: A node with input 0 occupied inserts through input 1, keeps input 0, and undoes as one step.
   - size: M
 
+- [ ] M277.P2.T3 — Lay out variadic typed inputs like Merge and Switch
+  - files: USDMerge, USD transform and RFVSwitch input metadata, node-edge layout tests
+  - approach: Show the two active/default inputs in normal positions, hide unused variadic inputs on the left, and reveal the next input for manual connection without changing multi-connect gestures (Merge and Switch already behave this way). RFVSwitch places its visible inputs as if all were shown; fix that too.
+  - verify: The three node families show compact edge layouts and still accept bulk/multi-input connections.
+  - size: M
+
 ## Phase 277.3: GUI regression
 
 - [ ] M277.P3.T1 — Cover shortcut creation and drag insert end to end

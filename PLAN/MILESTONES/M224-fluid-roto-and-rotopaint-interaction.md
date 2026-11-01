@@ -153,11 +153,19 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
   - verify: Clone/paint/erase strokes show no white flicker; Multi-stroke off matches the neat render and survives rapid strokes.
   - size: L
 
-- [ ] M224.P6.T3 — Restore live-drag responsiveness with many shapes
-  - files: Roto render invalidation, overlay caching, `tools/bench/roto*`, M224 GUI/bench scripts
-  - approach: Profile Adaptive and Always Live with 100 shapes, remove the multi-second image update bottleneck, and repair the bench automation so it drives Natron and writes results.
-  - verify: The bench emits results; handles stay fluid and the rendered image converges within the signed-off latency budget for the 100-shape case.
+- [ ] M224.P6.T3 — Fast image update with many shapes
+  - files: Roto render invalidation and rasterisation, `tools/bench/roto*`, M224 GUI/bench scripts
+  - approach: In the 100-shape test the handles stayed fluid but the rendered image took seconds to update after each new shape; profile that path and remove the bottleneck (hundreds of shapes should rasterise well under a second). Repair the bench automation so it drives Natron and writes results.
+  - verify: The bench emits results; the 100-shape image update lands well under a second.
   - size: L
+
+- [ ] M224.P6.T3b — No handle stutter under Adaptive and Always Live
+  - files: Roto/RotoPaint overlay interaction, live-render scheduling, M224 GUI scripts
+  - approach: Dragging roto handles in Adaptive or Always Live mode stutters badly enough to block interaction; keep the overlay on the GUI thread's fast path and let the live render trail without blocking the drag.
+  - verify: A scripted drag under each mode keeps the overlay frame time within the M117 harness budget.
+  - size: M
+
+Viewers opening framed on a new or opened script is tracked in M164.P4.T2.
 
 - [ ] M224.P6.T4 — Refine smoothing shortcuts and tangent quality
   - files: Roto shortcut map, Bezier smoothing algorithm, Roto GUI tests

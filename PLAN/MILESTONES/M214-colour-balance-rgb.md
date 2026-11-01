@@ -55,7 +55,7 @@ Deps: none. See `DECISIONS/2026-10-25-darktable-ai-and-image-tool-ports.md`.
   - verify: P1.T5's reference jobs pass.
   - size: L
 
-- [ ] M214.P1.T3 — 4-ways on the trackball widget
+- [x] M214.P1.T3 — 4-ways on the trackball widget
   - files: `Engine/Nodes/Color/ColorBalanceRGB.cpp`, `Gui/` trackball files from M44 (read `PLAN/MILESTONES/M44-trackball-colour-editing.md` and M119's panel layout first)
   - approach: bind each wheel's hue and chroma to a trackball in polar mode, and the luminance to its slider. If the widget has no polar mode, add one when it takes a few lines. Otherwise fall back per the Scope's edge case.
   - verify: a gtest sets a wheel's trackball value through its knob API and checks the hue and chroma knobs. The gate's Xvfb screenshot shows the four wheels.

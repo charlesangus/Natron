@@ -63,7 +63,7 @@ model, drag hint on path knobs) and M228 - 3D Viewer Navigation (selection set).
 
 - [ ] M232.P3.T2 — Wrap selected prims with USDXformPrim
   - files: USDXformPrim creation action, scene graph rewiring, selection GUI tests
-  - approach: When USDXformPrim is created from a selected prim, insert a new Xform at that location and reparent the selected prim and descendants beneath it while keeping the graph connection in the selected node's place.
+  - approach: When USDXformPrim is created from a selected prim, insert a new Xform at that location and reparent the selected prim and descendants beneath it while keeping the graph connection in the selected node's place. Both workflows must work: graph-matches-hierarchy (add a child Xform) and wrap-the-selection; prefer one USDXformPrim with a knob choosing between them over a second node (user).
   - verify: A selected hierarchy is wrapped, not duplicated; child paths and downstream scene output remain correct after undo/redo.
   - size: L
 
@@ -73,10 +73,6 @@ model, drag hint on path knobs) and M228 - 3D Viewer Navigation (selection set).
   - verify: DeepImage selection shows DeepImage consumers and hides image/scene-only nodes; Scene and Image cases have equivalent coverage.
   - size: M
 
-- [ ] M232.P3.T4 — Lay out variadic typed inputs like Merge and Switch
-  - files: USDMerge, USD transform and RFVSwitch input metadata, node-edge layout tests
-  - approach: Show the two active/default inputs in normal positions, hide unused variadic inputs on the left, and reveal the next input for manual connection without changing multi-connect gestures.
-  - verify: The three node families show compact edge layouts and still accept bulk/multi-input connections.
-  - size: M
+Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2.T3 (2026-11-01, PM).
 
-**Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, typed filtering and compact input layouts are accepted in the replacement AppImage.
+**Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in the replacement AppImage.

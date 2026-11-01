@@ -43,8 +43,10 @@ Natron session can read) to OpenEXR files in a `name_textures` folder beside
 `name.usda`, and points the texture paths at them, following Asset Paths. Each
 is `<node>_<layer>.exr` for an image that does not change over time, and
 `<node>_<layer>.####.exr`, one per frame of the range with its frame number, for
-one that does, the path time-sampled per frame. The files are half-float RGBA,
-ZIP-compressed. Off, the `natron://` paths are written as they are, and the node
+one that does, the path time-sampled per frame. A material's texture spans the
+image's format; a USDProject3D plate spans its whole region of definition,
+overscan included, and is named `<node>_<layer>_definition` so the two never
+collide. The files are half-float RGBA, ZIP-compressed. Off, the `natron://` paths are written as they are, and the node
 warns that the file is not portable.
 
 A layer already open on a written file, such as a USDRead of it, is reloaded in

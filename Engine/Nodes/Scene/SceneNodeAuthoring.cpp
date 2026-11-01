@@ -816,6 +816,7 @@ appendLiveTextureSource(const LiveTextureSource& source,
     h->appendString(source.layer);
     h->appendU64(source.contentHash);
     h->appendBool(source.varying);
+    h->appendI64((std::int64_t)source.coverage);
 }
 
 LiveTextureSource

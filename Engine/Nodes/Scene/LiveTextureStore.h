@@ -44,8 +44,10 @@
 
 // Free of USD: the store is filled by Natron renders, which know nothing of pxr.
 
-// The URI scheme live textures are served under: natron://<node>/<layer>?v=<hash>.
+// The URI scheme live textures are served under: natron://<node>/<layer>?v=<hash>, with
+// "&cover=definition" appended for a texture covering the region of definition.
 #define kLiveTextureScheme "natron"
+#define kLiveTextureCoverDefinitionQuery "&cover=definition"
 
 NATRON_NAMESPACE_ENTER
 
@@ -107,6 +109,16 @@ private:
 typedef std::shared_ptr<const LiveTextureBuffer> LiveTextureBufferConstPtr;
 
 /**
+ * @brief What texture coordinates 0 to 1 of a live texture span. Materials map them to the image's
+ * format, its display window. A camera projection needs the overscan beyond the format too, so its
+ * texture covers the region of definition and the projection maps the format inside it.
+ **/
+enum LiveTextureCoverageEnum {
+    eLiveTextureCoverageFormat,
+    eLiveTextureCoverageDefinition,
+};
+
+/**
  * @brief An image input a scene layer authors as a natron:// texture: which node's image, at
  * which frames, under which URI. Recorded in the layer's payload entry, so consumers find what
  * they must render before Hydra reads the stage, without traversing it.
@@ -121,6 +133,7 @@ struct LiveTextureSource {
     U64 contentHash = 0;
     // Whether the image changes over time; a static one has one URI at every frame.
     bool varying = false;
+    LiveTextureCoverageEnum coverage = eLiveTextureCoverageFormat;
     // The frames the layer authors samples at, as SceneNodeAuthoring::getSampleFrames does.
     double firstFrame = 0.;
     double lastFrame = 0.;
@@ -132,7 +145,8 @@ struct LiveTextureSource {
 
     static std::string makeUri(const std::string& nodeName,
                                const std::string& layer,
-                               U64 version);
+                               U64 version,
+                               LiveTextureCoverageEnum coverage = eLiveTextureCoverageFormat);
 };
 
 typedef std::vector<LiveTextureSource> LiveTextureSourceList;

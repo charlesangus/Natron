@@ -21,8 +21,10 @@ prim path. The camera is stored as values
 (a matrix per frame when it moves), so the material keeps projecting where the
 camera was wherever it is grafted.
 
-The image's format fills the camera's frame. Data beyond the format (overscan) is
-in the texture too: it shows past the frame's edges when Crop is off.
+The image's format fills the camera's frame. Unlike a USDMaterial texture, which
+spans only the format, the projection's texture holds the whole region of
+definition: data beyond the format (overscan) shows past the frame's edges when
+Crop is off.
 
 Controls:
 

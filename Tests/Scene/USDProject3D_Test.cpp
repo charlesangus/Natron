@@ -37,6 +37,7 @@
 
 #include <cmath>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -325,11 +326,13 @@ TEST_F(USDProject3DTest, TheImageIsALiveTextureTheShaderSamples)
     ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("file")).Get(&file));
     const std::string prefix = std::string(kLiveTextureScheme) + "://" + plate->getFullyQualifiedName() + "/rgba?v=";
     EXPECT_EQ(0u, file.GetAssetPath().rfind(prefix, 0)) << file.GetAssetPath();
+    EXPECT_NE(std::string::npos, file.GetAssetPath().find(kLiveTextureCoverDefinitionQuery)) << file.GetAssetPath();
 
-    // Recorded for consumers to render.
+    // Recorded for consumers to render, over the region of definition rather than the format.
     const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
     ASSERT_EQ((std::size_t)1, sources.size());
     EXPECT_EQ(file.GetAssetPath(), sources[0].getUri(1.));
+    EXPECT_EQ(eLiveTextureCoverageDefinition, sources[0].coverage);
 }
 
 TEST_F(USDProject3DTest, ACardWithTheProjectionAsItsMaterialIsBoundToIt)
@@ -397,7 +400,7 @@ TEST_F(USDProject3DTest, ACollectionBindingBindsTheProjectionToGeometry)
     const PXR_NS::TfToken name("assign");
     const PXR_NS::UsdCollectionAPI collection = PXR_NS::UsdCollectionAPI::Apply(root, name);
     ASSERT_TRUE(bool(collection));
-    ASSERT_TRUE(collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims)));
+    ASSERT_TRUE(bool(collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))));
     ASSERT_TRUE(collection.CreateIncludesRel().SetTargets({ cardPath }));
     const PXR_NS::UsdShadeMaterialBindingAPI binding = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
     ASSERT_TRUE(binding.Bind(collection, PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(materialPath)), name));
@@ -561,6 +564,63 @@ TEST_F(USDProject3DTest, TheFormatOfAnImageWithOverscanFillsTheFrame)
     // The frame's corners land on the format's corners in the texture.
     EXPECT_NEAR(200.f / 2400.f, 0.f * transform[0] + transform[2], 1e-6f);
     EXPECT_NEAR(2200.f / 2400.f, 1.f * transform[0] + transform[2], 1e-6f);
+}
+
+// With Crop off the overscan beyond the frame projects: the texture the projection samples holds
+// the whole region of definition, so frame coordinates below 0 still find the image there.
+TEST_F(USDProject3DTest, WithCropOffTheOverscanIsInTheProjectedTexture)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobBool>(projector, kUSDProject3DParamCrop)->setValue(false);
+    KnobColor* color = getKnob<KnobColor>(plate, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    const double rgba[4] = { 0.5, 0.25, 0.75, 1. };
+    for (int c = 0; c < 4; ++c) {
+        color->setValue(rgba[c], ViewSpec::all(), c);
+    }
+    getKnob<KnobChoice>(plate, kNativeGeneratorParamExtent)->setValue((int)ExtentKnobs::eExtentSize);
+    KnobDouble* bottomLeft = getKnob<KnobDouble>(plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = getKnob<KnobDouble>(plate, kNativeGeneratorParamSize);
+    ASSERT_TRUE(bottomLeft && size);
+    bottomLeft->setValue(-200., ViewSpec::all(), 0);
+    bottomLeft->setValue(-100., ViewSpec::all(), 1);
+    size->setValue(2400., ViewSpec::all(), 0);
+    size->setValue(1200., ViewSpec::all(), 1);
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error)) << error;
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    const PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    EXPECT_EQ(0, getInt(shader, "crop"));
+    const PXR_NS::GfVec4f transform = getPlateTransform(shader);
+
+    const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    const std::string uri = sources[0].getUri(1.);
+    LiveTextureStore& store = LiveTextureStore::instance();
+    store.clear();
+    int numFailed = -1;
+    std::thread worker([&]() { numFailed = store.prepare(sources, 1., ViewIdx(0)); });
+    worker.join();
+    ASSERT_EQ(0, numFailed) << store.getFailure(uri);
+    const LiveTextureBufferConstPtr buffer = store.find(uri);
+    ASSERT_TRUE(bool(buffer));
+    EXPECT_EQ(2400, buffer->getWidth());
+    EXPECT_EQ(1200, buffer->getHeight());
+
+    // Frame coordinate (-0.05, -0.05), outside the frame, maps into the overscan and finds the image.
+    const double u = -0.05 * transform[0] + transform[2];
+    const double v = -0.05 * transform[1] + transform[3];
+    ASSERT_GT(u, 0.);
+    ASSERT_GT(v, 0.);
+    const float* texel = buffer->getRow((int)(v * buffer->getHeight())) + 4 * (int)(u * buffer->getWidth());
+    for (int c = 0; c < 4; ++c) {
+        EXPECT_NEAR(rgba[c], texel[c], 1e-5) << "channel " << c;
+    }
+    store.clear();
 }
 
 // In Geometry space the geometry node the projection is the material of gives it its own placement;

@@ -112,6 +112,12 @@ clipInfiniteSides(const NodePtr& node,
     }
 }
 
+enum RenderExtentEnum {
+    eRenderExtentPixelRect,
+    eRenderExtentFormat,
+    eRenderExtentDefinition,
+};
+
 bool
 renderLayer(const NodePtr& node,
             const AbortableRenderInfoPtr& abortInfo,
@@ -120,7 +126,7 @@ renderLayer(const NodePtr& node,
             unsigned int mipmapLevel,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
-            bool wholeFormat,
+            RenderExtentEnum extent,
             RectI* format,
             RectI* roi,
             ImagePtr* image)
@@ -149,7 +155,7 @@ renderLayer(const NodePtr& node,
     }
     const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
-    if (wholeFormat) {
+    if (extent == eRenderExtentFormat) {
         RectI outputFormat = renderMetadata->getOutputFormat();
         if (outputFormat.isNull()) {
             Format projectFormat;
@@ -166,6 +172,9 @@ renderLayer(const NodePtr& node,
 
             return true;
         }
+    } else if (extent == eRenderExtentDefinition) {
+        clipInfiniteSides(node, &rod);
+        *roi = rod.toPixelEnclosing(mipmapLevel, par);
     } else {
         *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
     }
@@ -219,13 +228,13 @@ renderNodeImageImpl(const NodePtr& node,
                     unsigned int mipmapLevel,
                     const RectI& pixelRect,
                     const ImageLayerDesc& layer,
-                    bool wholeFormat,
+                    RenderExtentEnum extent,
                     RectI* format,
                     RectI* renderedRect,
                     bool* rendered)
 {
     *rendered = false;
-    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!wholeFormat && pixelRect.isNull())) {
+    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || ((extent == eRenderExtentPixelRect) && pixelRect.isNull())) {
         return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
@@ -251,7 +260,7 @@ renderNodeImageImpl(const NodePtr& node,
     RectI roi;
     RectI formatRect;
     ImagePtr image;
-    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, wholeFormat, &formatRect, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, extent, &formatRect, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -284,7 +293,7 @@ renderNodeImage(const NodePtr& node,
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, false, nullptr, renderedRect, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, eRenderExtentPixelRect, nullptr, renderedRect, &rendered);
 }
 
 bool
@@ -298,9 +307,21 @@ renderNodeImageOverFormat(const NodePtr& node,
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, true, format, renderedRect, &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, eRenderExtentFormat, format, renderedRect, &rendered);
 
     return rendered;
+}
+
+ImagePtr
+renderNodeImageOverDefinition(const NodePtr& node,
+                              double time,
+                              ViewIdx view,
+                              const ImageLayerDesc& layer,
+                              RectI* renderedRect)
+{
+    bool rendered;
+
+    return renderNodeImageImpl(node, time, view, 0, RectI(), layer, eRenderExtentDefinition, nullptr, renderedRect, &rendered);
 }
 
 bool

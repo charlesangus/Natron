@@ -67,6 +67,16 @@ bool renderNodeImageOverFormat(const NodePtr& node,
                                RectI* renderedRect);
 
 /**
+ * @brief As renderNodeImage(), at full scale over the whole region of definition, overscan
+ * included, with an infinite side clipped to the project format. renderedRect receives the region.
+ **/
+ImagePtr renderNodeImageOverDefinition(const NodePtr& node,
+                                       double time,
+                                       ViewIdx view,
+                                       const ImageLayerDesc& layer,
+                                       RectI* renderedRect);
+
+/**
  * @brief The pixel rectangle at full scale renderNodeImageOverDefinition() renders node over at
  * time, without rendering: its region of definition, an infinite side clipped to the project
  * format. False when the region cannot be computed or is empty. For use outside a render.

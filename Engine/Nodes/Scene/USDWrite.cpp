@@ -630,7 +630,8 @@ fileNameOf(const std::string& name)
 /**
  * @brief Every URI sources author over their frames, keyed to the file in directory it is
  * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
- * the frame padded to 4 digits.
+ * the frame padded to 4 digits. A texture covering the region of definition, as projections use, is
+ * <node>_<layer>_definition, so it never overwrites the same image over its format.
  **/
 std::map<std::string, LiveTextureExport>
 planLiveTextureExports(const LiveTextureSourceList& sources,
@@ -639,7 +640,8 @@ planLiveTextureExports(const LiveTextureSourceList& sources,
     std::map<std::string, LiveTextureExport> exports;
 
     for (const LiveTextureSource& source : sources) {
-        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer));
+        const QString suffix = (source.coverage == eLiveTextureCoverageDefinition) ? QString::fromUtf8("_definition") : QString();
+        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer) + suffix);
         const double first = std::ceil(source.firstFrame);
         const double last = source.varying ? std::max(first, std::floor(source.lastFrame)) : first;
         for (double frame = first; frame <= last; frame += 1.) {

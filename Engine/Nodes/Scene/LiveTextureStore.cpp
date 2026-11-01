@@ -111,20 +111,27 @@ renderSource(const LiveTextureSource& source,
 
         return LiveTextureBufferConstPtr();
     }
-    // Texture coordinates 0 to 1 span the image's format, its display window: pixels of the
-    // format the image does not cover stay transparent black, and overscan outside it is left out.
-    RectI format;
+    // Over the format, pixels of it the image does not cover stay transparent black and overscan
+    // outside it is left out. Over the definition, the texture is exactly the rendered region.
+    RectI extent;
     RectI rect;
     ImagePtr image;
-    const bool rendered = renderNodeImageOverFormat(node, frame, view, ImageLayerDesc::getRGBAComponents(), &format, &image, &rect);
+    bool rendered;
+    if (source.coverage == eLiveTextureCoverageDefinition) {
+        image = renderNodeImageOverDefinition(node, frame, view, ImageLayerDesc::getRGBAComponents(), &rect);
+        rendered = bool(image);
+        extent = rect;
+    } else {
+        rendered = renderNodeImageOverFormat(node, frame, view, ImageLayerDesc::getRGBAComponents(), &extent, &image, &rect);
+    }
     char frameText[32];
     std::snprintf(frameText, sizeof(frameText), "%g", frame);
-    if (!rendered || format.isNull() || (image && rect.isNull())) {
+    if (!rendered || extent.isNull() || (image && rect.isNull())) {
         *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
 
         return LiveTextureBufferConstPtr();
     }
-    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(format.width(), format.height());
+    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(extent.width(), extent.height());
     if (!buffer) {
         *failure = "the image of " + node->getFullyQualifiedName() + " at frame " + frameText + " is too large to hold";
 
@@ -136,7 +143,7 @@ renderSource(const LiveTextureSource& source,
     const int numComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image.get());
     for (int y = rect.y1; y < rect.y2; ++y) {
-        float* row = buffer->getRow(y - format.y1) + std::size_t(rect.x1 - format.x1) * 4;
+        float* row = buffer->getRow(y - extent.y1) + std::size_t(rect.x1 - extent.x1) * 4;
         switch (image->getBitDepth()) {
         case eImageBitDepthByte:
             copyRow<unsigned char>(access, rect, y, numComps, 1.f / 255.f, row);
@@ -237,24 +244,30 @@ std::string
 LiveTextureSource::getUri(double frame) const
 {
     if (!varying) {
-        return makeUri(nodeName, layer, contentHash);
+        return makeUri(nodeName, layer, contentHash, coverage);
     }
     ContentHasher h;
     h.appendU64(contentHash);
     h.appendDouble(getSourceFrame(frame));
 
-    return makeUri(nodeName, layer, h.finalize());
+    return makeUri(nodeName, layer, h.finalize(), coverage);
 }
 
 std::string
 LiveTextureSource::makeUri(const std::string& nodeName,
                            const std::string& layer,
-                           U64 version)
+                           U64 version,
+                           LiveTextureCoverageEnum coverage)
 {
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)version);
 
-    return std::string(kLiveTextureScheme "://") + nodeName + "/" + layer + "?v=" + hex;
+    std::string uri = std::string(kLiveTextureScheme "://") + nodeName + "/" + layer + "?v=" + hex;
+    if (coverage == eLiveTextureCoverageDefinition) {
+        uri += kLiveTextureCoverDefinitionQuery;
+    }
+
+    return uri;
 }
 
 LiveTextureStore::LiveTextureStore()

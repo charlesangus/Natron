@@ -402,7 +402,13 @@ USDProject3D::getPlateTransform(double time,
     if (!metadata || !getNodeDefinitionPixelRect(input->getNode(), time, ViewIdx(0), &window)) {
         return;
     }
-    const RectI& format = metadata->getOutputFormat();
+    RectI format = metadata->getOutputFormat();
+    if (format.isNull()) {
+        // As live textures over the format take it, so both variants agree on the camera frame.
+        Format projectFormat;
+        getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        format = projectFormat;
+    }
     if ((format.width() <= 0) || (format.height() <= 0)) {
         return;
     }
@@ -584,6 +590,9 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     // The image's identity and hash, without rendering it: the layer reads nothing else of it.
     LiveTextureSource plate;
     const bool hasPlate = SceneNodeAuthoring::getLiveTextureSource(*this, kUSDProject3DInputImage, kLiveTextureLayer, &plate);
+    // Overscan projects when Crop is off, so the texture holds all of it; plateTransform maps the
+    // format inside it.
+    plate.coverage = eLiveTextureCoverageDefinition;
 
     std::shared_ptr<const PlateWindows> windows;
     {

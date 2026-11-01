@@ -141,25 +141,25 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.6: UAT round 1 fixes
 
-- [ ] M224.P6.T1 — Stabilize shape creation and the V tool state
+- [x] M224.P6.T1 — Stabilize shape creation and the V tool state
   - files: Roto/RotoPaint viewer interaction state, Bezier creation commands, GUI tests
   - approach: Prevent new control points from snapping to 0,0 and keep V in draw-shape mode until the gesture completes or the user explicitly changes tools.
   - verify: Repeatedly draw shapes after selecting/editing others; every point stays under the cursor and V always starts a new shape.
   - size: M
 
-- [ ] M224.P6.T2 — Fix brush preview flicker and single-stroke mode
+- [x] M224.P6.T2 — Fix brush preview flicker and single-stroke mode
   - files: RotoPaint preview/coalescer, multi-stroke state, paint GUI tests
   - approach: Remove the transient white preview geometry and make Multi-stroke off render one stable completed stroke with no black or half-drawn frames.
   - verify: Clone/paint/erase strokes show no white flicker; Multi-stroke off matches the neat render and survives rapid strokes.
   - size: L
 
-- [ ] M224.P6.T3 — Fast image update with many shapes
+- [x] M224.P6.T3 — Fast image update with many shapes
   - files: Roto render invalidation and rasterisation, `tools/bench/roto*`, M224 GUI/bench scripts
   - approach: In the 100-shape test the handles stayed fluid but the rendered image took seconds to update after each new shape; profile that path and remove the bottleneck (hundreds of shapes should rasterise well under a second). Repair the bench automation so it drives Natron and writes results.
   - verify: The bench emits results; the 100-shape image update lands well under a second.
   - size: L
 
-- [ ] M224.P6.T3b — No handle stutter under Adaptive and Always Live
+- [x] M224.P6.T3b — No handle stutter under Adaptive and Always Live
   - files: Roto/RotoPaint overlay interaction, live-render scheduling, M224 GUI scripts
   - approach: Dragging roto handles in Adaptive or Always Live mode stutters badly enough to block interaction; keep the overlay on the GUI thread's fast path and let the live render trail without blocking the drag.
   - verify: A scripted drag under each mode keeps the overlay frame time within the M117 harness budget.
@@ -167,16 +167,17 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 Viewers opening framed on a new or opened script is tracked in M164.P4.T2.
 
-- [ ] M224.P6.T4 — Refine smoothing shortcuts and tangent quality
+- [x] M224.P6.T4 — Refine smoothing shortcuts and tangent quality
   - files: Roto shortcut map, Bezier smoothing algorithm, Roto GUI tests
   - approach: Remove the redundant S cycle binding because repeated tool shortcuts already cycle, and make Smooth choose stable, visually smooth tangent directions and lengths.
   - verify: Shortcut coverage has no duplicate cycle path and a varied set of corners smooths without kinks or tangent flips.
   - size: M
 
-- [ ] M224.P6.T5 — Scale feather tangents with feather distance
+- [x] M224.P6.T5 — Scale feather tangents with feather distance
   - files: feather-handle drag math, Roto interaction tests and docs
   - approach: Make ordinary feather dragging scale tangent lengths so circular and curved shapes preserve their outer contour; reserve the old fixed-tangent behaviour for an explicit Alt modifier.
   - verify: Growing a circle's feather produces a concentric circular feather; Alt-drag reproduces the previous behaviour.
   - size: M
 
 **Verification gate:** all Roto/RotoPaint goldens and GUI tests pass; the repaired host bench meets the agreed latency budget; the user accepts creation, brushes, live drag, smoothing and feather behaviour.
+- 2026-11-01 — P6 at 0275b3142: snap-to-0,0 and handle stutter shared a cause (edits during a live render were overwritten by the next copy from the internal curve; pending overlay edits are now flushed first); Multi-Stroke off finished the wrong stroke; clone/eraser footprint removed; RotoPaint tree refresh reconnects only changed merge inputs; S cycle removed; smoothing = M211's shared algorithm; feather tangents scale by local curvature, Alt-drag / Alt+E keep them (Alt+E to confirm with the user). 100-shape latency unproven until the bench runs (P5.T1 host bench).

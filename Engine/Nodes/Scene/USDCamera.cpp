@@ -25,6 +25,8 @@
 
 #include "USDCamera.h"
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <string>
 #include <vector>
@@ -182,6 +184,44 @@ copyAttribute(const PXR_NS::UsdAttribute& from,
     return SceneNodeAuthoring::authorValue(to, edit, from.ValueMightBeTimeVarying(), valueAt);
 }
 
+// Whether a and b are the same single-precision value, allowing for the knob's unit conversion.
+bool
+nearlyEqual(double a,
+            double b)
+{
+    return std::abs(a - b) <= 1e-5 * std::max(1., std::max(std::abs(a), std::abs(b)));
+}
+
+// Whether the file attribute from holds a value equal() accepts at any frame of the project
+// range or any time it is sampled at.
+template <typename T, typename EQUAL>
+bool
+fileHolds(const PXR_NS::UsdAttribute& from,
+          const SceneLayerEdit& edit,
+          const FileTime& fileTime,
+          const EQUAL& equal)
+{
+    T value {};
+
+    if (!from.ValueMightBeTimeVarying()) {
+        return from.Get(&value, fileTime(edit.firstFrame)) && equal(value);
+    }
+    for (double frame : SceneNodeAuthoring::getSampleFrames(edit)) {
+        if (from.Get(&value, fileTime(frame)) && equal(value)) {
+            return true;
+        }
+    }
+    std::vector<double> times;
+    from.GetTimeSamples(&times);
+    for (double time : times) {
+        if (from.Get(&value, PXR_NS::UsdTimeCode(time)) && equal(value)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
  * @brief Authors the file camera's world transform, its ancestors' flattened in, as xformable's
  * xformOp:transform: one time sample per frame of the project range, or its default when the
@@ -258,17 +298,15 @@ decomposeTransform(const PXR_NS::GfMatrix4d& matrix,
     (*rotate)[first] = angles[2];
 }
 
-// Shows value in dimension of knob, dropping any animation or expression it held.
+// Shows value in dimension of knob, leaving a dimension that holds the user's keys or expression
+// as it is: the file's value is shown only, and a group not being edited ignores the knobs.
 void
 setFileValue(const KnobDoublePtr& knob,
              int dimension,
              double value)
 {
-    if (knob->isAnimated(dimension)) {
-        knob->removeAnimation(ViewSpec::all(), dimension);
-    }
-    if (!knob->getExpression(dimension).empty()) {
-        knob->clearExpression(dimension, true);
+    if (knob->isAnimated(dimension) || !knob->getExpression(dimension).empty()) {
+        return;
     }
     knob->setValue(value, ViewSpec::all(), dimension, true);
 }
@@ -847,44 +885,55 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
     // Millimetres to tenths of a scene unit: a tenth of a scene unit is 100 x the project's
     // metersPerUnit mm.
     const double millimetresToCameraUnits = 1. / (100. * SceneNodeAuthoring::getMetersPerUnit(edit));
-    const auto lengthAt = [millimetresToCameraUnits](const KnobDoublePtr& knob) {
-        return [knob, millimetresToCameraUnits](double frame) {
-            return (float)(knob->getValueAtTime(frame, 0) * millimetresToCameraUnits);
-        };
-    };
-    const auto valueAt = [](const KnobDoublePtr& knob) {
-        return [knob](double frame) {
-            return (float)knob->getValueAtTime(frame, 0);
-        };
-    };
     using SceneNodeAuthoring::authorValue;
     using SceneNodeAuthoring::isAnimated;
-    bool authored;
+    bool authored = true;
+    const auto fileAttr = [&](PXR_NS::UsdAttribute (PXR_NS::UsdGeomCamera::*getter)() const) {
+        return file.enabled ? (fileCamera.*getter)() : PXR_NS::UsdAttribute();
+    };
     // The file's values are copied as they are, in its units: a units mismatch is only warned of.
-    if (file.enabled && !file.editLens) {
-        authored = copyAttribute<PXR_NS::TfToken>(fileCamera.GetProjectionAttr(), camera.CreateProjectionAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetFocalLengthAttr(), camera.CreateFocalLengthAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetHorizontalApertureAttr(), camera.CreateHorizontalApertureAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetVerticalApertureAttr(), camera.CreateVerticalApertureAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetHorizontalApertureOffsetAttr(), camera.CreateHorizontalApertureOffsetAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetVerticalApertureOffsetAttr(), camera.CreateVerticalApertureOffsetAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetFStopAttr(), camera.CreateFStopAttr(), edit, fileTime)
-            && copyAttribute<float>(fileCamera.GetFocusDistanceAttr(), camera.CreateFocusDistanceAttr(), edit, fileTime);
-    } else {
-        authored = camera.CreateProjectionAttr().Set((projection->getValue() == (int)eProjectionOrthographic) ? PXR_NS::UsdGeomTokens->orthographic : PXR_NS::UsdGeomTokens->perspective)
-            && authorValue(camera.CreateFocalLengthAttr(), edit, isAnimated(focalLength), lengthAt(focalLength))
-            && authorValue(camera.CreateHorizontalApertureAttr(), edit, isAnimated(horizontalAperture), lengthAt(horizontalAperture))
-            && authorValue(camera.CreateVerticalApertureAttr(), edit, isAnimated(verticalAperture), lengthAt(verticalAperture))
-            && authorValue(camera.CreateHorizontalApertureOffsetAttr(), edit, isAnimated(horizontalApertureOffset), lengthAt(horizontalApertureOffset))
-            && authorValue(camera.CreateVerticalApertureOffsetAttr(), edit, isAnimated(verticalApertureOffset), lengthAt(verticalApertureOffset))
-            && authorValue(camera.CreateFStopAttr(), edit, isAnimated(fStop), valueAt(fStop))
-            && authorValue(camera.CreateFocusDistanceAttr(), edit, isAnimated(focusDistance), valueAt(focusDistance));
-    }
-    if (authored) {
-        if (file.enabled && !file.editClipping) {
-            authored = copyAttribute<PXR_NS::GfVec2f>(fileCamera.GetClippingRangeAttr(), camera.CreateClippingRangeAttr(), edit, fileTime);
+    // An edited group overrides only the attributes whose knob was changed from what the file
+    // holds, so the file's samples stay on the others.
+    const auto authorLength = [&](const PXR_NS::UsdAttribute& from,
+                                  const PXR_NS::UsdAttribute& to,
+                                  const KnobDoublePtr& knob,
+                                  double knobToFile) {
+        if (file.enabled && (!file.editLens || (!isAnimated(knob) && fileHolds<float>(from, edit, fileTime, [&](float v) { return nearlyEqual(knob->getValue() * knobToFile, v); })))) {
+            return copyAttribute<float>(from, to, edit, fileTime);
+        }
+
+        return authorValue(to, edit, isAnimated(knob), [&knob, knobToFile](double frame) {
+            return (float)(knob->getValueAtTime(frame, 0) * knobToFile);
+        });
+    };
+    {
+        const PXR_NS::TfToken knobProjection = (projection->getValue() == (int)eProjectionOrthographic) ? PXR_NS::UsdGeomTokens->orthographic : PXR_NS::UsdGeomTokens->perspective;
+        if (file.enabled && (!file.editLens || fileHolds<PXR_NS::TfToken>(fileAttr(&PXR_NS::UsdGeomCamera::GetProjectionAttr), edit, fileTime, [&](const PXR_NS::TfToken& v) { return v == knobProjection; }))) {
+            authored = copyAttribute<PXR_NS::TfToken>(fileAttr(&PXR_NS::UsdGeomCamera::GetProjectionAttr), camera.CreateProjectionAttr(), edit, fileTime);
         } else {
-            authored = authorValue(camera.CreateClippingRangeAttr(), edit, isAnimated(nearKnob) || isAnimated(farKnob), [&nearKnob, &farKnob](double frame) {
+            authored = camera.CreateProjectionAttr().Set(knobProjection);
+        }
+    }
+    authored = authored
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetFocalLengthAttr), camera.CreateFocalLengthAttr(), focalLength, millimetresToCameraUnits)
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetHorizontalApertureAttr), camera.CreateHorizontalApertureAttr(), horizontalAperture, millimetresToCameraUnits)
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetVerticalApertureAttr), camera.CreateVerticalApertureAttr(), verticalAperture, millimetresToCameraUnits)
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetHorizontalApertureOffsetAttr), camera.CreateHorizontalApertureOffsetAttr(), horizontalApertureOffset, millimetresToCameraUnits)
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetVerticalApertureOffsetAttr), camera.CreateVerticalApertureOffsetAttr(), verticalApertureOffset, millimetresToCameraUnits)
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetFStopAttr), camera.CreateFStopAttr(), fStop, 1.)
+        && authorLength(fileAttr(&PXR_NS::UsdGeomCamera::GetFocusDistanceAttr), camera.CreateFocusDistanceAttr(), focusDistance, 1.);
+    if (authored) {
+        const bool clippingAnimated = isAnimated(nearKnob) || isAnimated(farKnob);
+        const bool keepClipping = file.enabled
+            && (!file.editClipping
+                || (!clippingAnimated
+                    && fileHolds<PXR_NS::GfVec2f>(fileAttr(&PXR_NS::UsdGeomCamera::GetClippingRangeAttr), edit, fileTime, [&](const PXR_NS::GfVec2f& v) {
+                           return nearlyEqual(nearKnob->getValue(), v[0]) && nearlyEqual(farKnob->getValue(), v[1]);
+                       })));
+        if (keepClipping) {
+            authored = copyAttribute<PXR_NS::GfVec2f>(fileAttr(&PXR_NS::UsdGeomCamera::GetClippingRangeAttr), camera.CreateClippingRangeAttr(), edit, fileTime);
+        } else {
+            authored = authorValue(camera.CreateClippingRangeAttr(), edit, clippingAnimated, [&nearKnob, &farKnob](double frame) {
                 return PXR_NS::GfVec2f((float)nearKnob->getValueAtTime(frame, 0), (float)farKnob->getValueAtTime(frame, 0));
             });
         }

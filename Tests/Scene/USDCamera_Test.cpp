@@ -587,7 +587,7 @@ TEST_F(USDCameraTest, EditingTheLensOverridesOnlyTheLens)
     setToggle(camera, kUSDCameraParamEditLens, true);
     KnobDouble* focalLength = getDoubleKnob(camera, kUSDCameraParamFocalLength);
     ASSERT_TRUE(focalLength != NULL);
-    focalLength->setValue(35.);
+    focalLength->setValue(20.);
 
     PXR_NS::UsdStageRefPtr stage = composeNode(camera);
     ASSERT_TRUE(bool(stage));
@@ -598,9 +598,9 @@ TEST_F(USDCameraTest, EditingTheLensOverridesOnlyTheLens)
     PXR_NS::UsdGeomCamera fileCamera = getFileCamera(fileStage, "/Track/Cam");
     ASSERT_TRUE(bool(fileCamera));
 
-    // The file's focal length is 0.5 at frame 10; the knob's 35 mm replaces it at every frame.
+    // The file's focal length is 0.5 at frame 10; the knob's 20 mm replaces it at every frame.
     EXPECT_EQ((std::size_t)0, usdCamera.GetFocalLengthAttr().GetNumTimeSamples());
-    EXPECT_FLOAT_EQ(0.35f, getFloat(usdCamera.GetFocalLengthAttr(), PXR_NS::UsdTimeCode(10.)));
+    EXPECT_FLOAT_EQ(0.2f, getFloat(usdCamera.GetFocalLengthAttr(), PXR_NS::UsdTimeCode(10.)));
     EXPECT_FLOAT_EQ(0.36f, getFloat(usdCamera.GetHorizontalApertureAttr(), PXR_NS::UsdTimeCode(10.)));
     // The clipping and the transform still come from the file.
     PXR_NS::GfVec2f clipping;
@@ -610,6 +610,52 @@ TEST_F(USDCameraTest, EditingTheLensOverridesOnlyTheLens)
         const PXR_NS::UsdTimeCode time(frame);
         expectSameMatrix(fileCamera.ComputeLocalToWorldTransform(time), usdCamera.ComputeLocalToWorldTransform(time), "world transform");
     }
+}
+
+TEST_F(USDCameraTest, EditingTheLensKeepsTheFilesSamplesOfTheAttributesLeftAlone)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("tracked.usda")).toStdString();
+    const std::string original = readFile(kTrackedCamera);
+    ASSERT_FALSE(original.empty());
+    writeFile(path, replaceOnce(original, "float horizontalAperture = 0.36", "float horizontalAperture.timeSamples = {\n            1: 0.36,\n            10: 0.4,\n        }"));
+    NodePtr camera = createFileCamera(path);
+    ASSERT_TRUE(bool(camera));
+    setToggle(camera, kUSDCameraParamEditLens, true);
+    KnobDouble* focalLength = getDoubleKnob(camera, kUSDCameraParamFocalLength);
+    ASSERT_TRUE(focalLength != NULL);
+    focalLength->setValue(20.);
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(camera);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::UsdGeomCamera usdCamera(stage->GetPrimAtPath(getNodePath(camera)));
+    ASSERT_TRUE(bool(usdCamera));
+    EXPECT_EQ((std::size_t)0, usdCamera.GetFocalLengthAttr().GetNumTimeSamples());
+    EXPECT_FLOAT_EQ(0.2f, getFloat(usdCamera.GetFocalLengthAttr(), PXR_NS::UsdTimeCode(10.)));
+    const PXR_NS::UsdAttribute aperture = usdCamera.GetHorizontalApertureAttr();
+    EXPECT_EQ((std::size_t)2, aperture.GetNumTimeSamples());
+    EXPECT_FLOAT_EQ(0.36f, getFloat(aperture, PXR_NS::UsdTimeCode(1.)));
+    EXPECT_FLOAT_EQ(0.4f, getFloat(aperture, PXR_NS::UsdTimeCode(10.)));
+}
+
+TEST_F(USDCameraTest, ShowingTheFilesValuesKeepsTheUsersAnimation)
+{
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    ASSERT_TRUE(bool(camera));
+    KnobDouble* focalLength = getDoubleKnob(camera, kUSDCameraParamFocalLength);
+    ASSERT_TRUE(focalLength != NULL);
+    focalLength->setValueAtTime(1., 35., ViewSpec::all(), 0);
+    focalLength->setValueAtTime(11., 85., ViewSpec::all(), 0);
+
+    KnobFile* file = dynamic_cast<KnobFile*>(camera->getKnobByName(kUSDCameraParamFile).get());
+    KnobBool* readFromFile = dynamic_cast<KnobBool*>(camera->getKnobByName(kUSDCameraParamReadFromFile).get());
+    ASSERT_TRUE(file && readFromFile);
+    file->setValue(kTrackedCamera);
+    readFromFile->setValue(true);
+
+    EXPECT_TRUE(focalLength->isAnimated(0));
+    EXPECT_NEAR(85., focalLength->getValueAtTime(11.), 1e-6);
 }
 
 TEST_F(USDCameraTest, EditingTheTransformMovesTheFileCameraInItsOwnSpace)

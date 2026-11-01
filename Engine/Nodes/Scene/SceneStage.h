@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -108,8 +109,9 @@ public:
 
     /**
      * @brief Makes exactly paths folded: each is drawn as its bounding box (a GeomModelAPI over in
-     * the session layer, model:applyDrawMode true and model:drawMode bounds) and the payloads at
-     * and below it are unloaded; unfolding removes the over and loads them again. The folds are
+     * the session layer, model:applyDrawMode true, model:drawMode bounds and an extentsHint
+     * measured from its children before they unload) and the payloads at and below it are
+     * unloaded; unfolding removes the over and loads them again. The folds are
      * kept across sync(), whatever prims the scene has. Returns whether anything changed; false
      * on a stage that is not foldable.
      **/
@@ -117,7 +119,44 @@ public:
 
     const std::set<PXR_NS::SdfPath>& getFoldedPrims() const;
 
+    /**
+     * @brief Prim customData graph nodes author to fold the viewer's scene by default; renders
+     * ignore them. kViewerFoldKey (bool) folds a prim when true and opens it when false.
+     * kViewerOpenLevelsKey (int) opens a prim and that many levels below it, folding the level
+     * after; a negative count opens everything below. The nearest prim at or above with an open
+     * level count rules; kViewerFoldKey on a prim beats it.
+     **/
+    static constexpr const char* kViewerFoldKey = "natron:viewerFold";
+    static constexpr const char* kViewerOpenLevelsKey = "natron:viewerOpenLevels";
+
+    /**
+     * @brief The prims the viewer folds: those the customData above folds, and defaults, then
+     * overrides on top, where true folds a prim and false opens it and everything below it that
+     * an open level count folds (kViewerFoldKey folds stay). Nothing below a folded prim is
+     * listed. authored, if given, is set to whether the customData folds any prim.
+     **/
+    std::set<PXR_NS::SdfPath> computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
+                                                 const std::set<PXR_NS::SdfPath>& defaults,
+                                                 bool* authored = nullptr) const;
+
+    /**
+     * @brief Folds the stage to computeViewerFolds(), again while a fold change loads payloads that
+     * bring more customData, and brings the bounds of folds whose prims changed up to date.
+     * Returns whether the folds changed.
+     **/
+    bool applyViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
+                          const std::set<PXR_NS::SdfPath>& defaults,
+                          bool* authored = nullptr);
+
 private:
+    // The subtree's bounds in the prim's own space, from its children, for the bounds a fold
+    // draws: an Xform authors no extent of its own, and UsdImaging draws the extentsHint then.
+    static PXR_NS::GfRange3d computeFoldBound(PXR_NS::UsdGeomBBoxCache& cache,
+                                              const PXR_NS::UsdPrim& prim);
+
+    // Writes the extentsHint of each folded prim of bounds; an empty range keeps the one written.
+    void writeFoldBounds(const std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::GfRange3d>>& bounds);
+
     struct PreviewPrim {
         PXR_NS::SdfPath path;
         PXR_NS::GfMatrix4d parentToWorld;
@@ -134,6 +173,7 @@ private:
     std::vector<std::string> _subLayerPaths;
     SceneMetadata _metadata;
     U64 _editCount = 0;
+    U64 _foldBoundsEditCount = 0;
     std::vector<PreviewPrim> _preview;
     std::vector<std::string> _previewRequested;
 };

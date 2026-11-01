@@ -44,19 +44,23 @@ class SceneGraphModel;
 
 /**
  * @brief The prims of a scene as a tree, beside the 3D viewer. It shows the scene the last active
- * viewer shows, or the scene of a pinned node. Selecting rows selects the prims in the viewer and
- * the viewer's selection selects the rows. A name filter lists the matching prims instead of the
- * tree. Below the tree, the current prim's attributes at the viewer's frame, with the node that
- * authored each one. Rows drag their prim paths onto prim path and pattern knobs.
+ * viewer shows, or, following the node selection, that of the scene node last selected in the
+ * node graph, or the scene of a pinned node. When the rows are the viewer's prims, selecting rows
+ * selects the prims in the viewer and the viewer's selection selects the rows. A name filter
+ * lists the matching prims instead of the tree. Below the tree, the current prim's attributes at
+ * the viewer's frame, with the node that authored each one. Rows drag their prim paths onto prim
+ * path and pattern knobs.
  *
- * Fold and Unfold (buttons and the tree's context menu) fold the selected prims to their bounding
- * boxes in the followed viewer (SceneViewport::setFolded).
+ * When the rows are the viewer's prims, a closed row is a prim the viewer draws as its bounding
+ * box: the rows open down to the viewer's folds, and closing or opening a row, or Fold and Unfold
+ * (buttons and the tree's context menu), folds or opens prims until the viewer shows another node
+ * (SceneViewport::setFolded).
  *
  * Scripts find its widgets by object name: sceneGraphTree, sceneGraphResults, sceneGraphFilter,
- * sceneGraphPin, sceneGraphFold, sceneGraphUnfold, sceneGraphNode, sceneGraphStatus and
- * sceneGraphAttributes. It mirrors its state into the natronSceneGraphPinned,
- * natronSceneGraphNode, natronSceneGraphHasScene, natronSceneGraphFilterBusy and
- * natronSceneGraphFolded properties.
+ * sceneGraphPin, sceneGraphFollow, sceneGraphFold, sceneGraphUnfold, sceneGraphNode,
+ * sceneGraphStatus and sceneGraphAttributes. It mirrors its state into the
+ * natronSceneGraphPinned, natronSceneGraphFollow ("viewer" or "selection"), natronSceneGraphNode,
+ * natronSceneGraphHasScene, natronSceneGraphFilterBusy and natronSceneGraphFolded properties.
  **/
 class SceneGraphPanel
     : public QWidget,
@@ -66,6 +70,11 @@ class SceneGraphPanel
     GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
+    enum FollowEnum {
+        eFollowViewer = 0,
+        eFollowSelection
+    };
+
     explicit SceneGraphPanel(Gui* gui);
 
     ~SceneGraphPanel() override;
@@ -76,6 +85,11 @@ public:
     void pinNode(const NodePtr& node);
 
     NodePtr getPinnedNode() const;
+
+    // What the panel shows when not pinned: the active viewer's scene, or the selected node's.
+    void setFollow(FollowEnum follow);
+
+    FollowEnum getFollow() const;
 
     // The node whose scene is shown, pinned or viewed; null for none.
     NodePtr getShownNode() const;
@@ -103,6 +117,7 @@ private Q_SLOTS:
     void onPinToggled(bool pinned);
     void onNodeChosen(int index);
     void onPinnedPoll();
+    void onSelectionPoll();
     void onPinnedSynced(bool ok, const QString& error);
     void onModelReset();
     void onExpanded(const QModelIndex& index);
@@ -118,6 +133,9 @@ protected:
     void mousePressEvent(QMouseEvent* e) override;
 
 private:
+    // Reads node's scene into a stage of the panel's own; null shows the followed scene.
+    void showNodeScene(const NodePtr& node);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };

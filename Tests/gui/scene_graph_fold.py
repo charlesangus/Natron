@@ -7,10 +7,13 @@ Checks:
   - selecting /World/Box's row and pressing Fold folds it: natronSceneGraphFolded lists it and the
     viewer redraws (screenshot of the box drawn as its bounding box);
   - Unfold takes the fold away;
-  - with the Viewer 3D Prim Budget preference at 1, viewing the second reader for the first time
-    folds its root prims;
-  - folds are per viewed node: back on the first reader, its own folds (none) come back, and on the
-    second reader again, the budget's fold is still there.
+  - closing /World's row folds /World, and opening it again unfolds it;
+  - folds made in the panel are transient: viewing the second reader and coming back finds the
+    first reader's scene unfolded again;
+  - with the Viewer 3D Prim Budget preference at 1, viewing the second reader folds its root prims,
+    each time it is viewed, and their rows are closed; opening /World's row opens it;
+  - the second reader's Open Mode First Levels with Open Levels 1 folds /World's children and opens
+    /World's row, with the budget back at its default.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -187,33 +190,64 @@ try:
         ok = yield ("until", lambda: folded() == [], POLL_TIMEOUT_S)
         check(ok, "Unfold takes the fold away (got %r)" % (folded(),))
 
+        tree().collapse(find(WORLD))
+        ok = yield ("until", lambda: folded() == [WORLD], POLL_TIMEOUT_S)
+        check(ok, "closing /World's row folds it (got %r)" % (folded(),))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-graph-fold-world-closed.png")
+        tree().expand(find(WORLD))
+        ok = yield ("until", lambda: folded() == [], POLL_TIMEOUT_S)
+        check(ok, "opening /World's row unfolds it (got %r)" % (folded(),))
+
+        tree().collapse(find(WORLD))
+        ok = yield ("until", lambda: folded() == [WORLD], POLL_TIMEOUT_S)
+        require(ok, "/World is folded before leaving the node")
+        require(view_input(other), "view the second USDRead")
+        ok = yield ("until", lambda: shown_node() == other.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "the panel follows the viewer to the second reader (got %r)" % (shown_node(),))
+        require(view_input(usd), "view the first USDRead again")
+        ok = yield ("until", lambda: shown_node() == usd.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "the panel follows the viewer back")
+        yield ("sleep", SETTLE_MS)
+        check(folded() == [], "a fold made in the panel does not outlive leaving the node (got %r)" % (folded(),))
+        world = find(WORLD)
+        check(world.isValid() and tree().isExpanded(world), "/World's row is open again")
+
         budget = NatronEngine.natron.getSettings().getParam("viewer3DPrimBudget")
         require(budget is not None, "Settings has viewer3DPrimBudget")
         report("NOTE default viewer3DPrimBudget %r" % (budget.getValue(),))
         check(budget.getValue() == 50000, "the budget defaults to 50000")
         budget.setValue(1)
 
-        require(view_input(other), "view the second USDRead")
-        ok = yield ("until", lambda: shown_node() == other.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
-        require(ok, "the panel follows the viewer to the second reader (got %r)" % (shown_node(),))
-        ok = yield ("until", lambda: folded() != [] and folded() == sorted(top_paths()), POLL_TIMEOUT_S)
-        check(ok, "over the budget, a newly viewed scene has its root prims folded (got %r, roots %r)"
-              % (folded(), top_paths()))
-        yield ("sleep", SETTLE_MS)
-        shot("scene-graph-fold-over-budget.png")
-
-        require(view_input(usd), "view the first USDRead again")
-        ok = yield ("until", lambda: shown_node() == usd.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
-        require(ok, "the panel follows the viewer back")
-        yield ("sleep", SETTLE_MS)
-        check(folded() == [], "the first reader keeps its own folds, none (got %r)" % (folded(),))
-
-        require(view_input(other), "view the second USDRead again")
-        ok = yield ("until", lambda: shown_node() == other.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
-        require(ok, "the panel follows the viewer to the second reader again")
-        ok = yield ("until", lambda: folded() == sorted(top_paths()) and folded() != [], POLL_TIMEOUT_S)
-        check(ok, "the second reader's fold is remembered (got %r)" % (folded(),))
+        for visit in ("first", "second"):
+            require(view_input(other), "view the second USDRead (%s time)" % visit)
+            ok = yield ("until", lambda: shown_node() == other.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
+            require(ok, "the panel follows the viewer to the second reader (got %r)" % (shown_node(),))
+            ok = yield ("until", lambda: folded() != [] and folded() == sorted(top_paths()), POLL_TIMEOUT_S)
+            check(ok, "over the budget, the viewed scene has its root prims folded, %s time (got %r, roots %r)"
+                  % (visit, folded(), top_paths()))
+            world = find(WORLD)
+            check(world.isValid() and not tree().isExpanded(world), "the folded /World row is closed (%s time)" % visit)
+            if visit == "first":
+                yield ("sleep", SETTLE_MS)
+                shot("scene-graph-fold-over-budget.png")
+                tree().expand(world)
+                ok = yield ("until", lambda: WORLD not in folded(), POLL_TIMEOUT_S)
+                check(ok, "opening the folded /World row opens it (got %r)" % (folded(),))
+                require(view_input(usd), "view the first USDRead in between")
+                ok = yield ("until", lambda: shown_node() == usd.getScriptName() and scene_drawn(), POLL_TIMEOUT_S)
+                require(ok, "the panel follows the viewer back")
         budget.setValue(50000)
+
+        other.getParam("openMode").setValue(1)
+        other.getParam("openLevels").setValue(1)
+        children = sorted([BOX, "/World/Ball", "/World/Cam"])
+        ok = yield ("until", lambda: folded() == children, POLL_TIMEOUT_S)
+        check(ok, "Open Levels 1 folds /World's children (got %r)" % (folded(),))
+        world = find(WORLD)
+        check(world.isValid() and tree().isExpanded(world), "/World's row is open over its folded children")
+        yield ("sleep", SETTLE_MS)
+        shot("scene-graph-fold-open-levels.png")
 
     run(steps())
 except Exception:

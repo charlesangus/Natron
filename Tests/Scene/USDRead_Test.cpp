@@ -30,7 +30,9 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -838,4 +840,49 @@ TEST_F(USDReadTest, USDReadSublayerChangedWhileClosed)
     ScenePayload reference;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(fresh, &reference, &error)) << error;
     EXPECT_DOUBLE_EQ(leafRadius(SceneOps::compose(reference)), leafRadius(SceneOps::compose(loaded)));
+}
+
+TEST_F(USDReadTest, FirstLevelsOpensTheViewerToTheGivenDepth)
+{
+    NodePtr reader = createReader(kReferenceScene);
+    ASSERT_TRUE(bool(reader));
+    KnobChoice* openMode = dynamic_cast<KnobChoice*>(reader->getKnobByName(kUSDReadParamOpenMode).get());
+    KnobInt* openLevels = dynamic_cast<KnobInt*>(reader->getKnobByName(kUSDReadParamOpenLevels).get());
+    ASSERT_TRUE(openMode != NULL);
+    ASSERT_TRUE(openLevels != NULL);
+    const PXR_NS::SdfPath world("/World");
+    const std::map<PXR_NS::SdfPath, bool> none;
+    const std::set<PXR_NS::SdfPath> noDefaults;
+
+    std::string error;
+    ScenePayload fully;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &fully, &error)) << error;
+    SceneStage fullyShown(true);
+    fullyShown.sync(fully);
+    EXPECT_TRUE(fullyShown.computeViewerFolds(none, noDefaults).empty());
+
+    openMode->setValue((int)USDRead::eOpenModeFirstLevels);
+    openLevels->setValue(1);
+    ScenePayload oneLevel;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &oneLevel, &error)) << error;
+    SceneStage shown(true);
+    shown.sync(oneLevel);
+    bool authored = false;
+    EXPECT_TRUE(shown.applyViewerFolds(none, noDefaults, &authored));
+    EXPECT_TRUE(authored);
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world.AppendChild(PXR_NS::TfToken("Box")), world.AppendChild(PXR_NS::TfToken("Ball")), world.AppendChild(PXR_NS::TfToken("Cam")) }),
+              shown.getFoldedPrims());
+    // Only the viewer folds: the file's own layer is not edited.
+    PXR_NS::SdfLayerHandle file = PXR_NS::SdfLayer::Find(kReferenceScene);
+    ASSERT_TRUE(bool(file));
+    EXPECT_TRUE(file->GetPrimAtPath(world)->GetCustomData().empty());
+
+    openLevels->setValue(0);
+    ScenePayload noLevel;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &noLevel, &error)) << error;
+    SceneStage closed(true);
+    closed.sync(noLevel);
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), closed.computeViewerFolds(none, noDefaults));
+    // The Scene Graph opening the root prim draws all of it.
+    EXPECT_TRUE(closed.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, noDefaults).empty());
 }

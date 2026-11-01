@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -186,14 +187,23 @@ public:
     U64 getStageEditCount() const;
 
     /**
-     * @brief Folds exactly paths: each is drawn as its bounding box and the payloads below it stay
-     * unloaded (SceneStage::setFoldedPrims). The next sync applies them before it composes;
-     * applyNow applies them at once as well, waiting for a sync under way.
+     * @brief The viewer's own folds over those the scene's customData authors
+     * (SceneStage::computeViewerFolds): overrides fold (true) or open (false) prims, and defaults
+     * fold prims as customData would. Every sync folds the stage before it composes, to the last
+     * folds, and after, to the new scene's; applyNow folds it at once as well, waiting for a sync
+     * under way.
      **/
-    void setFoldedPrims(const std::vector<std::string>& paths, bool applyNow);
+    void setFoldState(const std::map<std::string, bool>& overrides,
+                      const std::vector<std::string>& defaults,
+                      bool applyNow);
 
-    // The prims folded, or to be folded by the next sync.
+    std::map<std::string, bool> getFoldOverrides() const;
+
+    // The prims the last fold of the stage drew as bounding boxes.
     std::vector<std::string> getFoldedPrims() const;
+
+    // Whether the scene's customData folded any prim at the last fold of the stage.
+    bool hasAuthoredFolds() const;
 
     // How many prims the shown stage has, counting no further than cap + 1.
     std::size_t countPrims(std::size_t cap) const;
@@ -501,8 +511,9 @@ public:
 private:
     bool renderLocked(unsigned int fbo, int width, int height);
 
-    // Brings the stage's folds to the wanted ones. Needs stageMutex.
-    bool applyFoldsLocked();
+    // Folds the stage again: to the last folds, or, with recompute, to those of the stage's
+    // scene and the fold state. Needs stageMutex.
+    bool applyFoldsLocked(bool recompute);
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
@@ -657,12 +668,15 @@ public:
     void releaseEngine();
 
     /**
-     * @brief The prims drawn as their bounding boxes. Folds are kept per viewed node for the
-     * session; the first time a node is shown, a scene over the Viewer 3D Prim Budget preference
-     * has its root prims folded.
+     * @brief The prims drawn as their bounding boxes: those the scene's customData folds (USDRead's
+     * Open Mode, USDExpandHierarchy), or, when it folds none and the scene is over the Viewer 3D
+     * Prim Budget preference, its root prims; then the folds setFolded() made, which last while
+     * the viewer shows the same node.
      **/
     QStringList getFoldedPrims() const;
 
+    // Folds or opens paths until the viewer shows another node; opening a prim opens everything
+    // below it that a customData open level count folds.
     void setFolded(const QStringList& paths, bool folded);
 
 Q_SIGNALS:

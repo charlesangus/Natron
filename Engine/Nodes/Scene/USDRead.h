@@ -45,6 +45,8 @@
 #define kUSDReadParamMatchUpAxis "matchUpAxis"
 #define kUSDReadParamMatchUnits "matchUnits"
 #define kUSDReadParamUseFileMetrics "useFileMetrics"
+#define kUSDReadParamOpenMode "openMode"
+#define kUSDReadParamOpenLevels "openLevels"
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,10 +65,20 @@ struct SceneLayerEdit;
  * Match Project Up Axis and Match Project Units convert the file to the project's metrics with
  * corrective ops over its topmost xformable prims (SceneOps::authorMetricsCorrection); the layer
  * then carries the project's value for each aspect it converts.
+ *
+ * Open Mode First Levels has the viewer draw the file's first Open Levels levels of prims and
+ * the prims below them as their bounding boxes, their payloads unloaded, by authoring
+ * SceneStage::kViewerOpenLevelsKey (or, for no level, SceneStage::kViewerFoldKey) on the file's
+ * root prims. Renders draw every prim.
  **/
 class USDRead
     : public NativeEffectBase {
 public:
+    enum OpenModeEnum {
+        eOpenModeFully = 0,
+        eOpenModeFirstLevels
+    };
+
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDREAD,
         .label = "USDRead",
@@ -145,6 +157,7 @@ private:
                      double frameOffset,
                      bool matchUpAxis,
                      bool matchUnits,
+                     int openLevels,
                      std::string* errorMessage);
 
     KnobFileWPtr _filename;
@@ -153,6 +166,8 @@ private:
     KnobBoolWPtr _matchUpAxis;
     KnobBoolWPtr _matchUnits;
     KnobButtonWPtr _useFileMetrics;
+    KnobChoiceWPtr _openMode;
+    KnobIntWPtr _openLevels;
 
     std::unique_ptr<Implementation> _imp;
 };

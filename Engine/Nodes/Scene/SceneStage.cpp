@@ -28,8 +28,22 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdint>
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+PXR_NS::UsdGeomBBoxCache
+makeFoldBoundsCache()
+{
+    // Earliest, so geometry with only time samples still has bounds; asset extentsHints are used
+    // for unloaded payloads.
+    return PXR_NS::UsdGeomBBoxCache(PXR_NS::UsdTimeCode::EarliestTime(),
+                                    PXR_NS::TfTokenVector { PXR_NS::UsdGeomTokens->default_, PXR_NS::UsdGeomTokens->render, PXR_NS::UsdGeomTokens->proxy },
+                                    true);
+}
+} // anonymous namespace
 
 SceneStage::SceneStage(bool foldable)
 {
@@ -273,6 +287,21 @@ SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
         return false;
     }
 
+    // Measured before the payloads below the new folds are unloaded, which takes their geometry.
+    std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::GfRange3d>> bounds;
+    {
+        PXR_NS::UsdGeomBBoxCache cache = makeFoldBoundsCache();
+        for (const PXR_NS::SdfPath& path : wanted) {
+            if (_folded.count(path)) {
+                continue;
+            }
+            const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(path);
+            if (prim) {
+                bounds.push_back(std::make_pair(path, computeFoldBound(cache, prim)));
+            }
+        }
+    }
+
     {
         PXR_NS::SdfChangeBlock block;
         for (const PXR_NS::SdfPath& path : _folded) {
@@ -283,7 +312,7 @@ SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
             if (!spec) {
                 continue;
             }
-            for (const PXR_NS::TfToken& name : { PXR_NS::UsdGeomTokens->modelApplyDrawMode, PXR_NS::UsdGeomTokens->modelDrawMode }) {
+            for (const PXR_NS::TfToken& name : { PXR_NS::UsdGeomTokens->modelApplyDrawMode, PXR_NS::UsdGeomTokens->modelDrawMode, PXR_NS::UsdGeomTokens->extentsHint }) {
                 const PXR_NS::SdfPropertySpecHandle property = spec->GetPropertyAtPath(path.AppendProperty(name));
                 if (property) {
                     spec->RemoveProperty(property);
@@ -314,6 +343,7 @@ SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
                 mode->SetDefaultValue(PXR_NS::VtValue(PXR_NS::UsdGeomTokens->bounds));
             }
         }
+        writeFoldBounds(bounds);
         // Drop the overs left holding nothing, deepest first, so their parents empty out in turn.
         std::vector<PXR_NS::SdfPath> specPaths;
         _session->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&specPaths](const PXR_NS::SdfPath& specPath) {
@@ -348,5 +378,183 @@ SceneStage::setFoldedPrims(const std::set<PXR_NS::SdfPath>& paths)
 
     return true;
 } // SceneStage::setFoldedPrims
+
+PXR_NS::GfRange3d
+SceneStage::computeFoldBound(PXR_NS::UsdGeomBBoxCache& cache,
+                             const PXR_NS::UsdPrim& prim)
+{
+    // The children, not the prim: the prim's own extentsHint may be the one a fold wrote.
+    PXR_NS::GfBBox3d total;
+    for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimDefaultPredicate))) {
+        total = PXR_NS::GfBBox3d::Combine(total, cache.ComputeRelativeBound(child, prim));
+    }
+
+    return total.ComputeAlignedRange();
+}
+
+void
+SceneStage::writeFoldBounds(const std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::GfRange3d>>& bounds)
+{
+    PXR_NS::SdfChangeBlock block;
+    for (const std::pair<PXR_NS::SdfPath, PXR_NS::GfRange3d>& bound : bounds) {
+        if (bound.second.IsEmpty()) {
+            continue;
+        }
+        PXR_NS::SdfPrimSpecHandle spec = _session->GetPrimAtPath(bound.first);
+        if (!spec) {
+            continue;
+        }
+        // One pair of corners: the default purpose's, which the draw mode's bounds are drawn from.
+        PXR_NS::VtVec3fArray hint(2);
+        hint[0] = PXR_NS::GfVec3f(bound.second.GetMin());
+        hint[1] = PXR_NS::GfVec3f(bound.second.GetMax());
+        PXR_NS::SdfAttributeSpecHandle attribute = spec->GetAttributeAtPath(bound.first.AppendProperty(PXR_NS::UsdGeomTokens->extentsHint));
+        if (!attribute) {
+            attribute = PXR_NS::SdfAttributeSpec::New(spec, PXR_NS::UsdGeomTokens->extentsHint, PXR_NS::SdfValueTypeNames->Float3Array);
+        }
+        if (!attribute) {
+            continue;
+        }
+        const PXR_NS::VtValue value(hint);
+        if (attribute->GetDefaultValue() != value) {
+            attribute->SetDefaultValue(value);
+        }
+    }
+}
+
+namespace {
+// A prim's customData integer, whichever integer type the layer stores it as.
+bool
+getCustomDataInt(const PXR_NS::UsdPrim& prim,
+                 const PXR_NS::TfToken& key,
+                 int* value)
+{
+    const PXR_NS::VtValue data = prim.GetCustomDataByKey(key);
+
+    if (data.IsHolding<int>()) {
+        *value = data.UncheckedGet<int>();
+
+        return true;
+    }
+    if (data.IsHolding<int64_t>()) {
+        *value = (int)std::max<int64_t>(std::min<int64_t>(data.UncheckedGet<int64_t>(), INT_MAX), INT_MIN);
+
+        return true;
+    }
+    if (data.IsHolding<unsigned int>()) {
+        *value = (int)std::min<unsigned int>(data.UncheckedGet<unsigned int>(), INT_MAX);
+
+        return true;
+    }
+
+    return false;
+}
+} // anonymous namespace
+
+std::set<PXR_NS::SdfPath>
+SceneStage::computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
+                               const std::set<PXR_NS::SdfPath>& defaults,
+                               bool* authored) const
+{
+    std::set<PXR_NS::SdfPath> folds;
+
+    if (authored) {
+        *authored = false;
+    }
+    if (!_stage) {
+        return folds;
+    }
+    static const PXR_NS::TfToken foldKey(kViewerFoldKey);
+    static const PXR_NS::TfToken openLevelsKey(kViewerOpenLevelsKey);
+    // The tree's prims, so a fold is always on a row the Scene Graph shows.
+    const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
+    // Each prim still to visit, with how many levels below its parent are open: negative for all.
+    std::vector<std::pair<PXR_NS::UsdPrim, int>> stack;
+    for (const PXR_NS::UsdPrim& root : _stage->GetPseudoRoot().GetFilteredChildren(predicate)) {
+        stack.push_back(std::make_pair(root, -1));
+    }
+    while (!stack.empty()) {
+        const PXR_NS::UsdPrim prim = stack.back().first;
+        const int parentLevels = stack.back().second;
+        stack.pop_back();
+        const PXR_NS::SdfPath& path = prim.GetPath();
+
+        bool folded = (parentLevels == 0);
+        bool byCustomData = folded;
+        int levels = (parentLevels < 0) ? -1 : std::max(parentLevels - 1, 0);
+        int openLevels = 0;
+        if (getCustomDataInt(prim, openLevelsKey, &openLevels)) {
+            folded = false;
+            byCustomData = false;
+            levels = (openLevels < 0) ? -1 : openLevels;
+        }
+        const PXR_NS::VtValue fold = prim.GetCustomDataByKey(foldKey);
+        if (fold.IsHolding<bool>()) {
+            folded = fold.UncheckedGet<bool>();
+            byCustomData = folded;
+        }
+        if (byCustomData && authored) {
+            *authored = true;
+        }
+        if (defaults.count(path)) {
+            folded = true;
+        }
+        const std::map<PXR_NS::SdfPath, bool>::const_iterator overridden = overrides.find(path);
+        if (overridden != overrides.end()) {
+            folded = overridden->second;
+            if (!folded) {
+                levels = -1;
+            }
+        }
+        if (folded) {
+            folds.insert(path);
+            continue;
+        }
+        const PXR_NS::UsdPrimSiblingRange children = prim.GetFilteredChildren(predicate);
+        for (PXR_NS::UsdPrimSiblingRange::const_iterator it = children.begin(); it != children.end(); ++it) {
+            stack.push_back(std::make_pair(*it, levels));
+        }
+    }
+
+    return folds;
+} // SceneStage::computeViewerFolds
+
+bool
+SceneStage::applyViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
+                             const std::set<PXR_NS::SdfPath>& defaults,
+                             bool* authored)
+{
+    if (authored) {
+        *authored = false;
+    }
+    if (!isFoldable()) {
+        return false;
+    }
+    // A pass can load payloads whose prims carry more folds; a few passes reach any real nesting.
+    const int kMaxPasses = 8;
+    bool changed = false;
+    for (int pass = 0; pass < kMaxPasses; ++pass) {
+        if (!setFoldedPrims(computeViewerFolds(overrides, defaults, authored))) {
+            break;
+        }
+        changed = true;
+    }
+    if (_foldBoundsEditCount != _editCount) {
+        _foldBoundsEditCount = _editCount;
+        std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::GfRange3d>> bounds;
+        PXR_NS::UsdGeomBBoxCache cache = makeFoldBoundsCache();
+        for (const PXR_NS::SdfPath& path : _folded) {
+            const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(path);
+            // A fold unloads the payloads below it, so measuring now would miss their geometry:
+            // such a fold keeps the bounds measured as it folded.
+            if (prim && _stage->FindLoadable(path).empty()) {
+                bounds.push_back(std::make_pair(path, computeFoldBound(cache, prim)));
+            }
+        }
+        writeFoldBounds(bounds);
+    }
+
+    return changed;
+} // SceneStage::applyViewerFolds
 
 NATRON_NAMESPACE_EXIT

@@ -29,6 +29,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -243,4 +244,84 @@ TEST(SceneFoldTest, FoldingTheTopOfALargeSceneLightensImaging)
     EXPECT_LT(folded.prims.size() * 10, full.prims.size());
     std::cout << "[ SceneFold ] " << kCubes << " cubes: scene index walk " << fullMs << " ms unfolded, " << foldedMs
               << " ms folded; " << full.prims.size() << " vs " << folded.prims.size() << " Hydra prims" << std::endl;
+}
+
+TEST(SceneFoldTest, AFoldedXformIsBoundedByItsChildren)
+{
+    const PXR_NS::SdfPath heavy("/World/Heavy");
+    SceneStage stage(true);
+    ASSERT_TRUE(stage.isValid());
+    stage.sync(stackOf(makeLayer(kScene)));
+
+    // An Xform authors no extent, so without a hint its bounds would be empty and nothing drawn.
+    ASSERT_TRUE(stage.setFoldedPrims(std::set<PXR_NS::SdfPath> { heavy }));
+    PXR_NS::VtVec3fArray hint;
+    ASSERT_TRUE(PXR_NS::UsdGeomModelAPI(stage.getStage()->GetPrimAtPath(heavy)).GetExtentsHint(&hint));
+    ASSERT_GE(hint.size(), 2u);
+    EXPECT_NEAR(-0.5f, hint[0][0], 1e-6f);
+    EXPECT_NEAR(-0.5f, hint[0][1], 1e-6f);
+    EXPECT_NEAR(-0.5f, hint[0][2], 1e-6f);
+    EXPECT_NEAR(3.5f, hint[1][0], 1e-6f);
+    EXPECT_NEAR(0.5f, hint[1][1], 1e-6f);
+    EXPECT_NEAR(0.5f, hint[1][2], 1e-6f);
+
+    ASSERT_TRUE(stage.setFoldedPrims(std::set<PXR_NS::SdfPath>()));
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(heavy).GetAttribute(PXR_NS::UsdGeomTokens->extentsHint).HasAuthoredValue());
+}
+
+TEST(SceneFoldTest, ViewerFoldsFollowTheScenesCustomData)
+{
+    const PXR_NS::SdfPath world("/World");
+    const PXR_NS::SdfPath heavy("/World/Heavy");
+    const PXR_NS::SdfPath light("/World/Light");
+    const PXR_NS::SdfPath a("/World/Heavy/A");
+    PXR_NS::SdfLayerRefPtr layer = makeLayer(kScene);
+    SceneStage stage(true);
+    ASSERT_TRUE(stage.isValid());
+    stage.sync(stackOf(layer));
+
+    const std::map<PXR_NS::SdfPath, bool> none;
+    bool authored = true;
+    EXPECT_TRUE(stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath>(), &authored).empty());
+    EXPECT_FALSE(authored);
+
+    // One level open below /World: its children fold.
+    {
+        PXR_NS::UsdStageRefPtr edit = PXR_NS::UsdStage::Open(layer);
+        ASSERT_TRUE(bool(edit));
+        edit->GetPrimAtPath(world).SetCustomDataByKey(PXR_NS::TfToken(SceneStage::kViewerOpenLevelsKey), PXR_NS::VtValue(0));
+    }
+    stage.sync(stackOf(layer));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy, light }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath>(), &authored));
+    EXPECT_TRUE(authored);
+
+    // An override opening a prim opens everything below it; one folding it wins over the scene.
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { light }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { heavy, false } }, std::set<PXR_NS::SdfPath>()));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, true } }, std::set<PXR_NS::SdfPath>()));
+
+    // A fold authored deeper on an opened prim is kept; one authored open lifts the depth fold.
+    {
+        PXR_NS::UsdStageRefPtr edit = PXR_NS::UsdStage::Open(layer);
+        edit->GetPrimAtPath(a).SetCustomDataByKey(PXR_NS::TfToken(SceneStage::kViewerFoldKey), PXR_NS::VtValue(true));
+        edit->GetPrimAtPath(light).SetCustomDataByKey(PXR_NS::TfToken(SceneStage::kViewerFoldKey), PXR_NS::VtValue(false));
+    }
+    stage.sync(stackOf(layer));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath>()));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { a }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { heavy, false } }, std::set<PXR_NS::SdfPath>()));
+
+    // Defaults fold on top of the scene, and overrides on top of both.
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath> { world }));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { a }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, std::set<PXR_NS::SdfPath> { world }));
+
+    // Applying writes the folds, bounds included, and a render stage of the scene sees none.
+    EXPECT_TRUE(stage.applyViewerFolds(none, std::set<PXR_NS::SdfPath>(), &authored));
+    EXPECT_TRUE(authored);
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.getFoldedPrims());
+    EXPECT_FALSE(stage.applyViewerFolds(none, std::set<PXR_NS::SdfPath>()));
+    EXPECT_EQ(0u, image(stage.getStage()).countUnder(heavy, PXR_NS::HdPrimTypeTokens->cube));
+    EXPECT_EQ(1u, image(stage.getStage()).countUnder(world, PXR_NS::HdPrimTypeTokens->cube));
+    SceneStage render;
+    render.sync(stackOf(layer));
+    EXPECT_FALSE(render.applyViewerFolds(none, std::set<PXR_NS::SdfPath>()));
+    EXPECT_EQ(3u, image(render.getStage()).countUnder(world, PXR_NS::HdPrimTypeTokens->cube));
 }

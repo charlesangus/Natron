@@ -429,7 +429,8 @@ compose(const ScenePayload& payload)
 }
 
 std::vector<PXR_NS::SdfLayerRefPtr>
-getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
+getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
+                    std::vector<std::string>* missingPaths)
 {
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
 
@@ -440,6 +441,7 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
     // GetCompositionAssetDependencies lists one layer's own sublayer, reference and payload asset
     // paths, without recursing (sdf/layer.h), so the walk recurses itself.
     std::set<std::string> visited;
+    std::set<std::string> missing;
     std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
     PXR_NS::TfErrorMark mark;
     while (!pending.empty()) {
@@ -460,6 +462,11 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer)
             const PXR_NS::SdfLayerRefPtr dependency = PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(current, assetPath);
             if (dependency) {
                 pending.push_back(dependency);
+            } else if (missingPaths) {
+                const std::string anchored = PXR_NS::SdfComputeAssetPathRelativeToLayer(current, assetPath);
+                if (!anchored.empty() && missing.insert(anchored).second) {
+                    missingPaths->push_back(anchored);
+                }
             }
         }
     }

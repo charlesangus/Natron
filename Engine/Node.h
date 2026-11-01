@@ -2350,6 +2350,12 @@ protected:
      **/
     void computeHash();
 
+    /**
+     * @brief Runs edit with render starts of this node held off, and marks the hash before they
+     * are let in again when edit returns true.
+     **/
+    void editBeforeRenderStarts(const std::function<bool()>& edit);
+
 private:
 
 

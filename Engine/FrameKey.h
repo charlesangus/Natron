@@ -127,11 +127,16 @@ public:
 
     /**
      * @brief True if a lookup with `other` could be served by this key's texture at another frame
-     * and tile: everything but the time, the tree version, the tile and the mipmap level matches.
+     * and tile: the hash and operator== agree on everything but the time, the tree version, the
+     * tile and the mipmap level.
      **/
     bool hasTheDisplaySettingsOf(const FrameKey& other) const WARN_UNUSED_RETURN
     {
-        return (_gain == other._gain) && (_gamma == other._gamma) && (_displayTransformHash == other._displayTransformHash) && (_bitDepth == other._bitDepth) && (_channels == other._channels) && (_view == other._view) && (_inputName == other._inputName) && (_layer == other._layer) && (_alphaChannelFullName == other._alphaChannelFullName) && (_useShaders == other._useShaders) && (_draftMode == other._draftMode);
+        // The shader flag picks which fields the hash folds, so keys that differ on it never meet
+        // in a lookup even when operator== would accept them.
+        const bool sameDisplay = (_useShaders == other._useShaders) && (_useShaders || ((_gain == other._gain) && (_gamma == other._gamma) && (_displayTransformHash == other._displayTransformHash)));
+
+        return sameDisplay && (_bitDepth == other._bitDepth) && (_channels == other._channels) && (_view == other._view) && (_inputName == other._inputName) && (_layer == other._layer) && (_alphaChannelFullName == other._alphaChannelFullName) && (_draftMode == other._draftMode);
     }
 
     template<class Archive>

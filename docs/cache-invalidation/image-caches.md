@@ -177,6 +177,6 @@ not known well enough to rule time out. See hole I1 for what it was before.
   one disk cache: the harness has a single AppInstance.
 - **I4 Colour layers interchangeable on lookup.** `convertible` treats any two colour layers as
   matching (EffectInstance.cpp:2131) because the key has no layer. Unverified whether an entry
-  stored for RGB can answer an RGBA request with a synthesized alpha. **M260** adds
-  `CacheStressTest.RgbThenRgbaRequest` with no engine change; if it fails, `convertible` is to
-  accept only a superset of the requested channels.
+  stored for RGB can answer an RGBA request with a synthesized alpha. **Checked in M260:**
+  `CacheStressTest.RgbThenRgbaRequest` passes in Legacy and Task graph, so the case does not
+  occur and the engine is unchanged.

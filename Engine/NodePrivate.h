@@ -375,10 +375,7 @@ public:
     std::string scriptName; //node name internally and as visible to python
     std::string label; // node label as visible in the GUI
 
-    /// The cacheID is a UUID made when the node is created, unique among the live nodes of every project
-    /// it is then used in the cache to identify images that belong to this node
-    /// In order for the cache to be persistent, the cacheID is serialized with the node
-    /// and 2 nodes cannot have the same cacheID.
+    // A UUID, not the script name: the caches are shared by every project in the process.
     std::string cacheID;
     bool cacheIDClaimed; // protected by nameMutex
     DeactivatedState deactivatedState;

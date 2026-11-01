@@ -21,7 +21,7 @@ knob edit, an input change, or a file changed on disk.
 | --- | --- | --- | --- | --- | --- |
 | `SceneLayerMemo` (authored USD layer) | Nodes/Scene/SceneLayerMemo.h:40-110, `produce` Nodes/Scene/SceneOps.cpp:357-440 | `layerHash`: `nodeDigest`, upstream-read mode, the upstream stack hash or `factsDigest`, frame range if read, fps (:365-385) | no: a layer whose key moved during authoring is not memoized (N1, fixed in M260) | no; facts mode is as right as each node's `factsDigest` | via the stamp model (USDRead N2, fixed in M260) |
 | `CurveTablesCache` | Nodes/Image/CurveSnapshot.h:384-424; users ColorCorrect.h:161, HueCorrect.h:167, ColorLookup.h:157 | `knob.getContentHash()`, stored only when the hash is unchanged after the build | only through E1 | n/a | n/a |
-| `StageGpuShaderGate` | Nodes/Image/StagePlan.h:415-427, member Nodes/Image/StagedImageEffect.h:543 | entry + source (Nodes/Image/StagePlan.cpp:1639-1644) | no | no | n/a; ignores the device (G2) |
+| `StageGpuShaderGate` | Nodes/Image/StagePlan.h:415-427, member Nodes/Image/StagedImageEffect.h:543 | device tag + entry + source (Nodes/Image/StagePlan.cpp) | no | no | n/a; keyed by device (G2, fixed in M260) |
 | AddLayers registry signature | Nodes/Channel/AddLayers.h:218, Nodes/Deep/DeepAddLayers.h:156 | layer registry signature, folded into `appendNodeContentHash` (AddLayers.cpp:360-379) with `markHashDirty` on change | no | no | n/a |
 | NativeRead frame listings | `_listing`, `_proxyListing` Nodes/IO/NativeRead.h:260-262, built NativeRead.cpp:528-591 | canonical pattern, with an invalidation-counter guard | no (cleared on filename/proxy edits :829, :987) | n/a | until Reload (`purgeCaches` :609-650), same as the stamp |
 | USDRead file layer and closure | `Implementation` Nodes/Scene/USDRead.cpp:81-100 | `closureDigest` (stamps of every file brought in) in `appendNodeContentHash` (:273-277) | no | n/a | no: stamped when the node is created or loaded and when File changes (N2, fixed in M260) |
@@ -90,7 +90,6 @@ members (RawColorCalibration.h:509-511; knob UI state used in `knobChanged`, Raw
 
 - A file changed on disk without Reload, by design (the stamp model). The OIIO and Raw readers
   then fail on the changed file rather than read it (N3).
-- A device switch, for `StageGpuShaderGate` (G2).
 
 ## Covered by tests
 
@@ -140,10 +139,17 @@ members (RawColorCalibration.h:509-511; knob UI state used in `knobChanged`, Raw
   decode, the only way a new version comes in. NativeWrite's read-back of its own output and the
   deep-file sniff in `AppManager` read with `FilePin::eDisk`, unpinned. Emptying every cache
   (`AppManager::clearAllCaches`) drops what the Reads decoded but keeps their stamps
-  (`purgeCachesKeepingFileStamps`), so a file changed since fails until Reload. Tests: `FileStamp.*Identity*`, `FileStamp.*MatchesDisk`,
+  (`purgeCachesKeepingFileStamps`), so a file changed since fails until Reload. The stamps are
+  shared by every project in the process, so a Reload re-keys every reader of the files it
+  reloaded in all of them (`KnobFile::reloadNodesReadingFiles`): file knobs naming one, and
+  USDReads whose closure holds one, since USD reloads each layer in place for every consumer. A
+  sublayer missing at load is stamped as missing until Reload. Tests: `FileStamp.*Identity*`, `FileStamp.*MatchesDisk`,
   `FileStamp.OiioReaderFailsOnARewrittenFileUntilReload`,
   `RawDecodeSupportTest.ARewrittenFileFailsWithoutADecodeUntilReload`,
-  `CacheStressTest.ReadPinnedUntilReload` and `CacheStressTest.RawReadPinnedUntilReload`.
+  `CacheStressTest.ReadPinnedUntilReload`, `CacheStressTest.RawReadPinnedUntilReload`,
+  `HashInvariantsTest.ReloadInOneProjectReKeysAReadOfTheFileInAnother`,
+  `USDReadTest.AReloadReKeysOtherReadersOfASublayer` and
+  `USDReadTest.AMissingSublayerIsStampedAsMissingUntilReload`.
 - **G2** (shader gate ignores the device) is recorded in [gpu.md](gpu.md); fixed in M260.
 - **K5 audit (M260).** AddLayers reads the project layer registry, which only grows; a layer it
   names is resolved when the row is set, so a later registration changes no output it has

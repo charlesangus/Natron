@@ -14,35 +14,35 @@ Status values:
 
 | Cache | Owner | Key | Doc | Status |
 | --- | --- | --- | --- | --- |
-| Node content hash | `Node::computeContentHash` Engine/Node.cpp:950 | Plug-in and binary stamp, render-hashed knobs, inputs, roto, groups, frame range, project digest | [keys.md](cache-invalidation/keys.md) | suspected hole (K3, K4, K5, K7, K8; K1 and K2 fixed by M202) |
+| Node content hash | `Node::computeContentHash` Engine/Node.cpp:950 | Plug-in and binary stamp, render-hashed knobs, inputs, roto, groups, frame range, project digest | [keys.md](cache-invalidation/keys.md) | covered: K1 and K2 fixed by M202; K4, K6 and K7 fixed in M260; K3 swept and K5 audited in M260, no instance found; K8 safe (misses only), no change |
 | Frame args `nodeHash` (render hash) | `ParallelRenderArgsSetter::buildArgsMap` Engine/ParallelRenderArgs.cpp:1944 | Content hash mixed with the render-context key | [keys.md](cache-invalidation/keys.md) | fixed by M202 (K1, K2) |
-| Project digest | `Project::getContentDigest` Engine/Project.cpp:3460 | Project knobs, formats, layers, OCIO, concatenation generations | [keys.md](cache-invalidation/keys.md) | suspected hole (K7: Settings outside the digest) |
+| Project digest | `Project::getContentDigest` Engine/Project.cpp:3460 | Project knobs, formats, layers, OCIO, concatenation generations | [keys.md](cache-invalidation/keys.md) | K7 fixed in M260 |
 | Upstream context read-set | `Node::getUpstreamContextReadSet` Engine/NodeInputs.cpp:2101 | `getRenderContextReadsGeneration()` | [keys.md](cache-invalidation/keys.md) | covered |
-| Topology edits (inputs, queued edits) | Engine/NodeInputs.cpp, `Node::dequeueActions` Engine/Node.cpp:7983 | Input slots folded into the content hash | [topology.md](cache-invalidation/topology.md) | T1 (queued edits), T2, T6 and T7 fixed in M242; T1 also gated by M202; T3, T4 and T8 fixed in M260; suspected hole (T5) |
+| Topology edits (inputs, queued edits) | Engine/NodeInputs.cpp, `Node::dequeueActions` Engine/Node.cpp:7983 | Input slots folded into the content hash | [topology.md](cache-invalidation/topology.md) | T1 (queued edits), T2, T6 and T7 fixed in M242; T1 also gated by M202; T3, T4, T5 and T8 fixed in M260 (T5: a removed GroupInput is no longer restored by the next dequeue; nothing queues group connection changes) |
 | ActionsCache: identity | `ActionsCache` Engine/EffectInstancePrivate.h:216 | (render hash, time, view, mipmap) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | A1 fixed in M242; A2 fixed by M202 |
-| ActionsCache: RoD, frames needed, time domain, components needed | Engine/EffectInstancePrivate.h:252-268 | (render hash, time, view[, mipmap]) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | fixed by M202 (A2); A5 latent |
-| ActionsCache: metadata, pass-through, time-invariant, range summary | Engine/EffectInstancePrivate.h:274-308 | (hash with context key, time, view) plus generation | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | suspected hole (A4: non-abortable render uses newer metadata) |
+| ActionsCache: RoD, frames needed, time domain, components needed | Engine/EffectInstancePrivate.h:252-268 | (render hash, time, view[, mipmap]) | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | fixed by M202 (A2); A5 fixed in M260 |
+| ActionsCache: metadata, pass-through, time-invariant, range summary | Engine/EffectInstancePrivate.h:274-308 | (hash with context key, time, view) plus generation | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | suspected hole (A4: a non-abortable viewer or single-frame render uses newer metadata; the frame on disk does not arise, writes abort) |
 | NativeEffectBase output metadata | `NativeEffectBase::getOutputMetadata` Engine/Nodes/NativeEffectBase.cpp:387 | (time, view) under one node hash | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | fixed by M202 (A3) |
 | Effective output data kind | `Node::getEffectiveOutputDataKind` Engine/Node.cpp:2016 | Memo per node, cleared by `invalidateEffectiveOutputDataKindCache` Engine/Node.cpp:2377 | [actions-and-metadata.md](cache-invalidation/actions-and-metadata.md) | covered |
-| NodeCache | `Cache<Image>` "NodeCache" Engine/AppManager.cpp:1041 | `ImageKey` (Engine/ImageKey.h:42-51) | [image-caches.md](cache-invalidation/image-caches.md) | I1 fixed in M242; suspected hole (I4); I2 fixed by M202 |
-| DiskCache | `Cache<Image>` "DiskCache" Engine/AppManager.cpp:1042 | `ImageKey`, persisted under `NATRON_CACHE_VERSION` | [image-caches.md](cache-invalidation/image-caches.md) | I1 fixed in M242; suspected hole (I3); I2 fixed by M202 |
+| NodeCache | `Cache<Image>` "NodeCache" Engine/AppManager.cpp:1041 | `ImageKey` (Engine/ImageKey.h:42-51) | [image-caches.md](cache-invalidation/image-caches.md) | I1 fixed in M242; I4 does not occur (`CacheStressTest.RgbThenRgbaRequest` passes, engine unchanged); I2 fixed by M202 |
+| DiskCache | `Cache<Image>` "DiskCache" Engine/AppManager.cpp:1042 | `ImageKey`, persisted under `NATRON_CACHE_VERSION` | [image-caches.md](cache-invalidation/image-caches.md) | I1 fixed in M242; I3 fixed in M260; I2 fixed by M202 |
 | DeepImageCache | `Cache<DeepImageCacheEntry>` Engine/AppManager.cpp:1046 | `DeepImageKey` (Engine/DeepImageKey.h:46-49) | [image-caches.md](cache-invalidation/image-caches.md) | fixed by M202 (I2) |
 | FrameStore | `FrameStore` Engine/FrameRenderContext.h:58 | `TaskKey` (node, time, view, mipmap, context key) | [image-caches.md](cache-invalidation/image-caches.md) | covered |
 | DiskCache node | `DiskCacheNode` Engine/DiskCacheNode.cpp | `ImageKey` in DiskCache | [image-caches.md](cache-invalidation/image-caches.md) | I1 fixed in M242; K2 frame range fixed by M202 |
 | ViewerCache | `Cache<FrameEntry>` Engine/AppManager.cpp:1043; stores in Engine/ViewerInstance.cpp | `FrameKey` (Engine/FrameKey.h:125-140) | [viewer-and-timeline.md](cache-invalidation/viewer-and-timeline.md) | fixed by M202 (V1) |
 | Viewer on-screen images | `TextureInfo::lastRenderedTiles` Gui/ViewerGLPrivate.h:148-165 | Per mipmap level | [viewer-and-timeline.md](cache-invalidation/viewer-and-timeline.md) | V4 fixed in M242 |
-| Timeline cached-frames line | `TimeLineGui::refreshCachedFrames` Gui/TimeLineGui.cpp:1436 | (viewer hash, mipmap level, holder), any tile | [viewer-and-timeline.md](cache-invalidation/viewer-and-timeline.md) | V5 fixed in M242; suspected hole (V2, V3; display only) |
+| Timeline cached-frames line | `TimeLineGui::refreshCachedFrames` Gui/TimeLineGui.cpp:1436 | (viewer hash, mipmap level, holder), any tile | [viewer-and-timeline.md](cache-invalidation/viewer-and-timeline.md) | V5 fixed in M242; V2 and V3 fixed in M260 |
 | GpuTextureCache | Engine/Gpu/GpuTexture.h:91 | Caller string; OCIO hashes description and texels | [gpu.md](cache-invalidation/gpu.md) | covered (keyed by content; no keying test) |
 | GpuPipelineCache | Engine/Gpu/GpuPipelineCache.h:39 | Versions, device tag, stage, entry, source | [gpu.md](cache-invalidation/gpu.md) | covered |
-| GPU host import cache | Engine/Gpu/GpuTransfer.cpp:347 | Host address and length | [gpu.md](cache-invalidation/gpu.md) | suspected hole (G1) |
+| GPU host import cache | Engine/Gpu/GpuTransfer.cpp:347 | Host address and length | [gpu.md](cache-invalidation/gpu.md) | G1 fixed in M260 |
 | GPU device residency, StripMemory, GpuBufferPool | Engine/GpuRegionTask.cpp, Engine/Gpu/GpuBufferPool.h | `TaskKey`; tuning and size classes hold no content | [gpu.md](cache-invalidation/gpu.md) | covered |
-| Expression results (`_exprRes`, `_exprCtxRes`) | Engine/Knob.h:2859 | time; (time, view, context key) | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | suspected hole (E3 minor) |
-| Expression dependencies in the content hash | `getDimensionContentHashRecursive` Engine/Knob.cpp:6755 | Dependencies, masters, metadata sources | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | suspected hole (E1, fixed by M72 not M202; metadata residual) |
+| Expression results (`_exprRes`, `_exprCtxRes`) | Engine/Knob.h:2859 | time; (time, view, context key) | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | E3 fixed in M260 |
+| Expression dependencies in the content hash | `getDimensionContentHashRecursive` Engine/Knob.cpp:6755 | Dependencies, masters, metadata sources | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | suspected hole (E1, fixed by M72 not M202; metadata residual); K4 fixed in M260 |
 | Links (link groups, master/slave) | Engine/KnobLinkGroup.h:60 | No result cache | [expressions-and-links.md](cache-invalidation/expressions-and-links.md) | covered |
 | SceneLayerMemo | Engine/Nodes/Scene/SceneLayerMemo.h:40 | Node digest, upstream stack or facts, frame range, fps | [node-private.md](cache-invalidation/node-private.md) | N1 fixed in M260 |
 | USDRead closure | Engine/Nodes/Scene/USDRead.cpp:81 | `closureDigest` | [node-private.md](cache-invalidation/node-private.md) | N2 fixed in M260 |
 | OIIO header and Raw decode caches | Engine/Nodes/IO/OiioReadSupport.cpp:63, Engine/Nodes/IO/RawDecodeSupport.cpp:78 | (path, `FileIdentity`), pinned to the stamp until Reload | [node-private.md](cache-invalidation/node-private.md) | N3 fixed in M260 |
-| StageGpuShaderGate | Engine/Nodes/Image/StagePlan.h:415 | Entry and source, no device | [node-private.md](cache-invalidation/node-private.md) | suspected hole (G2; placement only) |
+| StageGpuShaderGate | Engine/Nodes/Image/StagePlan.h:415 | Device tag, entry and source | [node-private.md](cache-invalidation/node-private.md) | G2 fixed in M260 |
 | Other node-private caches (CurveTablesCache, NativeRead listings, NativeWrite read-back, RawDemosaic memos, AddLayers signature, USDTransform matches, DeepRead layers, IErodeDilate) | Engine/Nodes | Content hash or file identity; see the doc | [node-private.md](cache-invalidation/node-private.md) | covered (CurveTablesCache inherits E1) |
 
 ## Stress tests
@@ -68,7 +68,7 @@ Cases for holes fixed here run by default:
 | `USDReadTest.USDReadSublayerChangedWhileClosed` | N2 | fixed in M260 |
 | `CacheStressConcurrentTest.OnInputChangedUnderTheNewHash` | T4 | fixed in M260 |
 | `CacheStressConcurrentTest.ViewerABSwitchDuringRender` | T3 | fixed in M260 |
-| `CacheStressTest.RgbThenRgbaRequest` | I4 | added in M260; engine unchanged unless it fails |
+| `CacheStressTest.RgbThenRgbaRequest` | I4 | passes in M260; I4 does not occur, engine unchanged |
 | `CacheStressTest.ExpressionOutsideRange` | E3 | fixed in M260 |
 | `CacheStressTest.RenderSettingEdit` | K7 | fixed in M260 |
 | `CacheStressTest.NonHashedKnobSweep` | K3 | fixed in M260 |
@@ -83,8 +83,9 @@ Unit tests for the M242 fixes: `Tests/ExpressionFrameVarying_Test.cpp` (I1, E2) 
 
 Unit tests for the M260 fixes: `NodeContentHashTest` (E2 rename, K4 getattr reads, K6 range
 edits, K7 Settings digest), `Knob_Test` (E3), `RawKindFrameworkTest` (A5), `ProjectYaml` and
-`ClipboardYaml` cache-ID tests plus `CacheStressSelfTest` (I3), `HashInvariantsTest` (V2) and
-`Tests/gui/m178_timeline_cache_line.py` (V3). The random walk gains `dynamicExpression` (K4).
+`ClipboardYaml` cache-ID tests plus `CacheStressSelfTest` (I3), `HashInvariantsTest` (V2, and N3
+across projects), `USDReadTest` (N2 missing sublayers, N3 across readers), `QueuedInputEditTest`
+(T5, T8, the A/B switch) and `Tests/gui/m178_timeline_cache_line.py` (V3). The random walk gains `dynamicExpression` (K4).
 
 ## Follow-up list
 
@@ -93,7 +94,5 @@ stores and V1; M72 owns E1). Details in the family docs.
 
 | Hole | Summary | Doc |
 |---|---|---|
-| T5 | Group connection changes in the queue don't count as a change | topology.md |
-| A4 | A sequence write can use metadata newer than its render (the plan's premise does not hold: these writes are abortable) | actions-and-metadata.md |
-| I4 | Colour layers interchangeable on lookup, pending `CacheStressTest.RgbThenRgbaRequest` | image-caches.md |
+| A4 | A non-abortable viewer or single-frame render can use metadata newer than its render (sequence writes abort, so the frame on disk does not arise) | actions-and-metadata.md |
 | K8 | Failed `statx` on the binary only causes misses (safe, no change) | keys.md |

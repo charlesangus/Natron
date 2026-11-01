@@ -165,7 +165,10 @@ Not found: a test of precomp Pre-Render toggling.
   the group some other way (node creation) is not verified here. Nothing queues those lists:
   `notifyNodeActivated` writes both copies at once, and `notifyNodeDeactivated` too, except that
   removing a GroupInput returns before it copies `inputs` to `guiInputs`, so the next dequeue
-  would put the removed GroupInput back. Open for a decision (M260).
+  would put the removed GroupInput back. **Fixed in M260:** removing a GroupInput copies the
+  lists like every other path, so the dequeue keeps it removed; with nothing queuing the lists,
+  `dequeueConnexions` has no change of its own to report. Test:
+  `QueuedInputEditTest.ARemovedGroupInputStaysRemovedAfterTheDequeue`.
 - **T8. A render can start between an input write and the hash mark. Fixed in M260:** the mark is
   made under the render-start lock, right after the write. Before the fix, the render-start lock covered
   the check and the write, not the `computeHash()` that follows outside it. A render that starts in

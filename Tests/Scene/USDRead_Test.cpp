@@ -640,6 +640,80 @@ TEST_F(USDReadTest, TimeMapsBySecondsWithTheFrameOffset)
     EXPECT_NEAR(24., value, 1e-9);
 }
 
+// A sublayer missing when the file is loaded is part of the closure, stamped as missing: the
+// stamp holds once the file appears, so nothing moves until Reload, which reads it.
+TEST_F(USDReadTest, AMissingSublayerIsStampedAsMissingUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(top, sceneSublayering("leaf.usda"));
+
+    std::vector<std::string> missing;
+    {
+        PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(top);
+        ASSERT_TRUE(bool(layer));
+        const std::vector<PXR_NS::SdfLayerRefPtr> closure = SceneOps::getFileLayerClosure(layer, &missing);
+        EXPECT_EQ(1u, closure.size());
+    }
+    ASSERT_EQ(1u, missing.size());
+    EXPECT_TRUE(std::filesystem::path(missing[0]).is_absolute()) << missing[0];
+    EXPECT_EQ(std::string("leaf.usda"), std::filesystem::path(missing[0]).lexically_normal().filename().string());
+
+    NodePtr reader = createReader(top);
+    ASSERT_TRUE(bool(reader));
+    const U64 whileMissing = reader->getHashValue();
+
+    writeFile(leaf, leafWithRadius(1.));
+    EXPECT_FALSE(FileStampRegistry::instance().identity(missing[0]).exists) << "the missing sublayer was not stamped when the file was loaded";
+    reader->markHashDirty();
+    EXPECT_EQ(whileMissing, reader->getHashValue());
+
+    pressReload(reader);
+    EXPECT_TRUE(FileStampRegistry::instance().identity(missing[0]).exists);
+    EXPECT_NE(whileMissing, reader->getHashValue());
+    ScenePayload after;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &after, &error)) << error;
+    SceneQueryPool::Lease lease = borrow(after);
+    EXPECT_DOUBLE_EQ(1., leafRadius(lease.getStage()));
+}
+
+// USD reloads a layer in place for every consumer, so one reader's Reload re-keys every other
+// reader of a file in its closure: one reading the sublayer directly, and one sublayering it.
+TEST_F(USDReadTest, AReloadReKeysOtherReadersOfASublayer)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string otherTop = dir.filePath(QString::fromUtf8("otherTop.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(leaf, leafWithRadius(1.));
+    writeFile(top, sceneSublayering("leaf.usda"));
+    writeFile(otherTop, sceneSublayering("leaf.usda"));
+    NodePtr reader = createReader(top);
+    NodePtr leafReader = createReader(leaf);
+    NodePtr otherReader = createReader(otherTop);
+    ASSERT_TRUE(bool(reader) && bool(leafReader) && bool(otherReader));
+    ScenePayload payload;
+    std::string error;
+    for (const NodePtr& n : { reader, leafReader, otherReader }) {
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(n, &payload, &error)) << error;
+    }
+    const U64 leafBefore = leafReader->getHashValue();
+    const U64 otherBefore = otherReader->getHashValue();
+
+    writeFile(leaf, leafWithRadius(2.));
+    pressReload(reader);
+    EXPECT_NE(leafBefore, leafReader->getHashValue()) << "the reader of the sublayer kept its hash";
+    EXPECT_NE(otherBefore, otherReader->getHashValue()) << "the other reader sublayering it kept its hash";
+    ScenePayload after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(otherReader, &after, &error)) << error;
+    SceneQueryPool::Lease lease = borrow(after);
+    EXPECT_DOUBLE_EQ(2., leafRadius(lease.getStage()));
+}
+
 namespace {
 // Ends the session the way quitting does as far as the reader is concerned: the project is gone,
 // no stage holds the files' layers, and the stamps a new process would not have are dropped.

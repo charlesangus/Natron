@@ -579,6 +579,36 @@ TEST_F(HashInvariantsTest, ReloadedRewrittenReadFileChangesHashUpToDownstream)
     EXPECT_NE(blurBefore, blur->getHashValue());
 }
 
+// The stamps are shared by every project in the process: a Reload in one re-keys a Read of the
+// same file in another, or that Read would take the reloaded file under its old hash.
+TEST_F(HashInvariantsTest, ReloadInOneProjectReKeysAReadOfTheFileInAnother)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("shared.exr")).toStdString();
+    ASSERT_TRUE(writeFlatExr(path, 16, 12, 0.25f));
+    setMTime(path, 1000000);
+
+    NodePtr reader = createWorkingSpaceRead(path);
+    ASSERT_TRUE(bool(reader));
+    ScopedSecondApp second(getApp());
+    ASSERT_TRUE(bool(second.get()));
+    CreateNodeArgs args(_readPluginID.toStdString(), second.get()->getProject());
+    args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, path);
+    NodePtr otherReader = second.get()->createNode(args);
+    ASSERT_TRUE(bool(otherReader));
+
+    const U64 otherBefore = otherReader->getHashValue();
+    ASSERT_TRUE(writeFlatExr(path, 32, 24, 0.75f));
+    setMTime(path, 2000000);
+    EXPECT_EQ(otherBefore, otherReader->getHashValue());
+
+    KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+    ASSERT_TRUE(bool(fileKnob));
+    fileKnob->reloadFile();
+    EXPECT_NE(otherBefore, otherReader->getHashValue()) << "the Read in the other project kept the hash of the file before the Reload";
+}
+
 // ---------------------------------------------------------------------------------------------
 // Edits that don't change what renders leave the hash alone, so they don't throw away cache.
 // ---------------------------------------------------------------------------------------------
@@ -789,6 +819,49 @@ cacheViewerTile(const NodePtr& holder,
 }
 
 } // namespace
+
+// The timeline counts a cached frame when its display settings match the viewer's; that must
+// agree with what a lookup at the same frame and tile would find, by hash and operator==. Gain,
+// gamma and the display transform are applied by shaders when both keys use them.
+TEST(FrameKeyDisplaySettings, MatchWhatALookupWouldServe)
+{
+    std::vector<std::string> channels;
+    channels.push_back("R");
+    channels.push_back("G");
+    channels.push_back("B");
+    channels.push_back("A");
+    const ImageLayerDesc layer("Color", "Color", "RGBA", channels);
+    const TextureRect tile(0, 0, 256, 256, 1, 1.);
+    struct Display {
+        double gain;
+        double gamma;
+        U64 displayTransform;
+        bool useShaders;
+    };
+    const Display displays[] = {
+        { 1., 1., 0, true },
+        { 2., 1., 0, true },
+        { 1., 0.5, 7, true },
+        { 1., 1., 0, false },
+        { 2., 1., 0, false },
+        { 1., 1., 7, false },
+    };
+    const std::size_t n = sizeof(displays) / sizeof(displays[0]);
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            const Display& a = displays[i];
+            const Display& b = displays[j];
+            const FrameKey cached(NULL, 3, 11, a.gain, a.gamma, a.displayTransform, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", a.useShaders, false);
+            const FrameKey lookup(NULL, 3, 11, b.gain, b.gamma, b.displayTransform, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", b.useShaders, false);
+            const bool served = (cached.getHash() == lookup.getHash()) && (cached == lookup);
+            const FrameKey otherFrame(NULL, 9, 12, a.gain, a.gamma, a.displayTransform, 0, 4, ViewIdx(0), TextureRect(256, 0, 512, 256, 2, 1.), 1, "Viewer1", layer, "Color.A", a.useShaders, false);
+            EXPECT_EQ(served, otherFrame.hasTheDisplaySettingsOf(lookup)) << "cached display " << i << ", viewer display " << j;
+        }
+    }
+    const FrameKey shaded(NULL, 3, 11, 1., 1., 0, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", true, false);
+    const FrameKey shadedGain(NULL, 3, 11, 2., 1., 0, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", true, false);
+    EXPECT_TRUE(shaded.hasTheDisplaySettingsOf(shadedGain));
+}
 
 // The timeline's cached line is built from getViewerCachedFrames(). The viewer cache is tiled and
 // keeps every tile in its disk portion; a frame the viewer just rendered must still be listed as

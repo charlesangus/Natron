@@ -108,7 +108,8 @@ struct USDRead::Implementation {
     // Every file layer the file brings in, the file's own first, as of the last authoring or
     // Reload: what Reload reloads.
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
-    // Their files on disk, in the same order.
+    // Their files on disk, in the same order, then the files the closure names that could not be
+    // opened: stamped as missing, so one appearing re-keys the node at the next load or Reload.
     std::vector<std::string> closurePaths;
     // The links out of their root the file's layer stack authors, as of the closure's walk.
     SceneLinkIndex links;
@@ -165,12 +166,14 @@ struct USDRead::Implementation {
     {
         // Read before the walk, so a reload during it leaves the result marked stale.
         const std::uint64_t reloadCount = SceneOps::getFileLayerReloadCount();
-        std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer) : std::vector<PXR_NS::SdfLayerRefPtr>();
+        std::vector<std::string> missing;
+        std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer, &missing) : std::vector<PXR_NS::SdfLayerRefPtr>();
         std::vector<std::string> paths;
-        paths.reserve(layers.size());
+        paths.reserve(layers.size() + missing.size());
         for (const PXR_NS::SdfLayerRefPtr& l : layers) {
             paths.push_back(l->GetRealPath());
         }
+        paths.insert(paths.end(), missing.begin(), missing.end());
         SceneLinkIndex fileLinks = SceneOps::findLayerStackLinks(layer);
         std::lock_guard<std::mutex> lock(fileLayerMutex);
         closure.swap(layers);
@@ -397,6 +400,14 @@ USDRead::knobChanged(KnobI* k,
             layers = SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open));
         }
     }
+    std::vector<std::string> reloaded;
+    {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        reloaded = _imp->closurePaths;
+    }
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        reloaded.push_back(layer->GetRealPath());
+    }
     std::string error;
     if (!layers.empty() && !SceneOps::reloadFileLayers(layers, &error)) {
         setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
@@ -406,6 +417,13 @@ USDRead::knobChanged(KnobI* k,
     // A reload can change what the file brings in. The file's layer is the same object, reloaded
     // in place.
     _imp->setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
+    // A file the reload left out of the closure was still reloaded for every other consumer.
+    FileStampRegistry& stamps = FileStampRegistry::instance();
+    for (const std::string& path : reloaded) {
+        if (!path.empty()) {
+            stamps.invalidate(path);
+        }
+    }
     purgeCaches();
     // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
     // hash inputs.
@@ -413,9 +431,17 @@ USDRead::knobChanged(KnobI* k,
     if (node) {
         node->markHashDirty();
     }
-    if (filename) {
-        filename->reloadOtherNodesReadingTheseFiles();
+    {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        reloaded.insert(reloaded.end(), _imp->closurePaths.begin(), _imp->closurePaths.end());
     }
+    if (filename) {
+        reloaded.push_back(filename->getResolvedPath());
+    }
+    std::sort(reloaded.begin(), reloaded.end());
+    reloaded.erase(std::unique(reloaded.begin(), reloaded.end()), reloaded.end());
+    reloaded.erase(std::remove(reloaded.begin(), reloaded.end(), std::string()), reloaded.end());
+    KnobFile::reloadNodesReadingFiles(reloaded, this);
 
     return true;
 }
@@ -452,6 +478,40 @@ USDRead::purgeCachesKeepingFileStamps()
     // The layers stay as loaded; the next evaluation authors from them again.
     invalidateSceneLayer();
     clearActionsCache();
+}
+
+bool
+USDRead::refreshFileDependencies(const std::vector<std::string>& paths)
+{
+    PXR_NS::SdfLayerRefPtr root;
+    bool reads = false;
+    {
+        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
+        for (const std::string& path : _imp->closurePaths) {
+            if (std::find(paths.begin(), paths.end(), path) != paths.end()) {
+                reads = true;
+                break;
+            }
+        }
+        if (!_imp->closure.empty()) {
+            root = _imp->closure.front();
+        }
+    }
+    if (!reads) {
+        return false;
+    }
+    if (root && SceneOps::checkUsdRuntime(nullptr)) {
+        // The reloaded layers can bring in other files; the walk opens them.
+        SceneWriteBarrier::ReadScope read;
+        PXR_NS::TfErrorMark mark;
+        _imp->setClosure(root);
+        mark.Clear();
+    }
+    _imp->closureDigest = _imp->stampClosurePaths();
+    invalidateSceneLayer();
+    clearActionsCache();
+
+    return true;
 }
 
 void

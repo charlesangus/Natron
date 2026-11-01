@@ -20,19 +20,19 @@ Feedback mode for M180 - Loop Block Core (user, 2026-10-24): iteration k's LoopB
 
 ## Phase 182.1: Feedback
 
-- [ ] M182.P1.T1 — Implement LoopBegin's feedback back-reference
+- [x] M182.P1.T1 — Implement LoopBegin's feedback back-reference
   - files: `Engine/Nodes/Loop/LoopBegin.cpp`, `Engine/Nodes/Loop/LoopEnd.cpp`
   - approach: Under feedback, LoopBegin at iteration k > 0 requests LoopEnd's input node under the k−1 context (M178.P2.T1's target-context request) instead of its own input, and reports `loop.iteration` through `getExtraContextReads`. LoopEnd requests only the last iteration. RoIs propagate through the chain in the request pass.
   - verify: at the phase build, `ctest -R NativeLoopFeedback` (T2) passes.
   - size: L
 
-- [ ] M182.P1.T2 — Test feedback
+- [x] M182.P1.T2 — Test feedback
   - files: `Tests/Native/NativeLoopFeedback_Test.cpp`
   - approach: Erode 1 px in a feedback loop of 5 equals Erode 5 px (square kernel). A Transform translate 1 px × 10 iterations equals translate 10 px (impulse filter). RoI growth requested at iteration 0 matches n·r. Single pass k=2 equals 3 iterations. Both schedulers bit-identical.
   - verify: at the phase build, `ctest -R NativeLoopFeedback` passes.
   - size: M
 
-- [ ] M182.P1.T3 — Document feedback
+- [x] M182.P1.T3 — Document feedback
   - files: `Engine/Nodes/Loop/docs/LoopEnd.md`
   - approach: Semantics, RoI growth, memory, and combining with frame iteration.
   - verify: reviewed at the gate.
@@ -50,10 +50,11 @@ Feedback mode for M180 - Loop Block Core (user, 2026-10-24): iteration k's LoopB
 
 ## Phase 182.2: Shared loop inputs
 
-- [ ] M182.P2.T1 — Allow several LoopBegin nodes to reference one loop
+- [x] M182.P2.T1 — Allow several LoopBegin nodes to reference one loop
   - files: `Engine/Nodes/Loop/*`, loop pairing and validation code, `Tests/Native/NativeLoopFeedback_Test.cpp`
   - approach: Replace one-to-one LoopBegin pairing with one LoopEnd-owned loop identity that several LoopBegin nodes may reference, while keeping feedback/back-reference selection explicit and rejecting cycles or ambiguous owners.
   - verify: A graph with two LoopBegin nodes for one LoopEnd renders both branches, saves/reopens, and reports invalid cross-loop references clearly.
   - size: L
 
 **Verification gate:** the original feedback gate passes with one and multiple LoopBegin nodes, and the shared-loop workflow is accepted in UAT.
+- 2026-11-01 — P2.T1 at f33f0eb9e: a LoopEnd pairs with every LoopBegin above it; the loop name moved to LoopEnd; each LoopBegin has a Feedback knob (default on). Rejected: a begin reached by several LoopEnds, a begin inside its own loop's body. To confirm with the user: name on LoopEnd, Feedback default on (implementer).

@@ -35,6 +35,10 @@ both.
   should be a rectangle, such as a window or a facade. They default to 20% and 80% of the format,
   as in darktable, and can be animated.
 
+A fit sets the knobs for one frame. On a moving plate, animate the four knobs and fit on
+representative frames, each fit keying its frame. Without animation, a fit sets one value for the
+whole clip.
+
 A fit that cannot work says why: there are too few guide lines in a fitted direction, or the fit
 did not converge. The knobs are left as they were.
 

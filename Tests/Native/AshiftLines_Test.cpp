@@ -214,6 +214,24 @@ TEST(AshiftLines, QuadLinesTypesItsSides)
     EXPECT_EQ(kHeight, set.height);
 }
 
+// A corner dragged until a side tips past 45 degrees keeps the side's type, so the types agree
+// with the counts.
+TEST(AshiftLines, QuadLinesKeepTypesPastFortyFiveDegrees)
+{
+    const double pts[8] = { 10., 12., 120., 20., 300., 8., 296., 204. };
+    const Ashift::LineSet set = Ashift::quadLines(pts, kWidth, kHeight);
+
+    ASSERT_EQ(4u, set.lines.size());
+    int vertical = 0;
+    int horizontal = 0;
+    for (const auto& line : set.lines) {
+        vertical += line.type == Ashift::eLineVerticalSelected;
+        horizontal += line.type == Ashift::eLineHorizontalSelected;
+    }
+    EXPECT_EQ(set.verticalCount, vertical);
+    EXPECT_EQ(set.horizontalCount, horizontal);
+}
+
 // A quadrilateral that a known model makes rectangular: the fit of rotation and both lens shifts
 // recovers the model.
 TEST(AshiftLines, QuadFitRecoversTheModel)

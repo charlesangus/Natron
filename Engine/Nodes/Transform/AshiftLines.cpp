@@ -93,7 +93,8 @@ quadLines(const double pts[8],
           int width,
           int height)
 {
-    // darktable's order: the left side, the right side, the top and the bottom.
+    // darktable's order: the left side, the right side, the top and the bottom. The type follows
+    // the side, not its tilt, so the counts below hold however far a corner is dragged.
     const int sides[4][2] = { { 0, 1 }, { 2, 3 }, { 0, 2 }, { 1, 3 } };
     LineSet set;
 
@@ -102,8 +103,7 @@ quadLines(const double pts[8],
         const double y1 = pts[2 * sides[i][0] + 1];
         const double x2 = pts[2 * sides[i][1]];
         const double y2 = pts[2 * sides[i][1] + 1];
-        const bool horizontal = std::fabs(x1 - x2) > std::fabs(y1 - y2);
-        set.lines.push_back(makeLine(x1, y1, x2, y2, horizontal ? eLineHorizontalSelected : eLineVerticalSelected));
+        set.lines.push_back(makeLine(x1, y1, x2, y2, i < 2 ? eLineVerticalSelected : eLineHorizontalSelected));
     }
     set.width = width;
     set.height = height;

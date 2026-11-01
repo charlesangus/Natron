@@ -67,7 +67,10 @@ public:
 
     explicit LoopBlockItem(QGraphicsItem* parent);
 
-    void setBlocks(const std::vector<Block>& blocks);
+    /**
+     * @brief Takes the shapes in scene coordinates.
+     **/
+    void setBlocks(const std::vector<Block>& sceneBlocks);
 
     virtual QRectF boundingRect() const OVERRIDE FINAL;
     virtual void paint(QPainter* painter,

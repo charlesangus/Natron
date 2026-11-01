@@ -114,11 +114,18 @@ LoopBlockItem::LoopBlockItem(QGraphicsItem* parent)
 }
 
 void
-LoopBlockItem::setBlocks(const std::vector<Block>& blocks)
+LoopBlockItem::setBlocks(const std::vector<Block>& sceneBlocks)
 {
+    // Panning moves the parent, so the shapes are kept in the item's own coordinates, which move with the nodes.
+    std::vector<Block> blocks = sceneBlocks;
     QRectF bounds;
 
-    for (const Block& block : blocks) {
+    for (Block& block : blocks) {
+        block.hull = mapFromScene(block.hull);
+        block.beginWedge = mapFromScene(block.beginWedge);
+        block.endWedge = mapFromScene(block.endWedge);
+        block.beginRect = mapRectFromScene(block.beginRect);
+        block.endRect = mapRectFromScene(block.endRect);
         bounds = bounds.united(block.hull.boundingRect());
         bounds = bounds.united(block.beginWedge.boundingRect());
         bounds = bounds.united(block.endWedge.boundingRect());
@@ -127,7 +134,7 @@ LoopBlockItem::setBlocks(const std::vector<Block>& blocks)
     bounds.adjust(-8., -8., 8., 8.);
     prepareGeometryChange();
     _blocks = blocks;
-    _bounds = mapRectFromScene(bounds);
+    _bounds = bounds;
     update();
 }
 
@@ -151,18 +158,18 @@ LoopBlockItem::paint(QPainter* painter,
         line.setAlpha(block.highlighted ? 255 : 110);
         painter->setPen(QPen(line, block.highlighted ? 2.5 : 1., block.highlighted ? Qt::SolidLine : Qt::DashLine));
         painter->setBrush(fill);
-        painter->drawPath(mapFromScene(block.hull));
+        painter->drawPath(block.hull);
 
         painter->setPen(QPen(block.color.darker(160), 1.));
         painter->setBrush(block.color);
-        painter->drawPolygon(mapFromScene(block.beginWedge));
-        painter->drawPolygon(mapFromScene(block.endWedge));
+        painter->drawPolygon(block.beginWedge);
+        painter->drawPolygon(block.endWedge);
 
         if (block.highlighted) {
             painter->setBrush(Qt::NoBrush);
             painter->setPen(QPen(block.color.lighter(130), 3.));
-            painter->drawRect(mapRectFromScene(block.beginRect.adjusted(-4., -4., 4., 4.)));
-            painter->drawRect(mapRectFromScene(block.endRect.adjusted(-4., -4., 4., 4.)));
+            painter->drawRect(block.beginRect.adjusted(-4., -4., 4., 4.));
+            painter->drawRect(block.endRect.adjusted(-4., -4., 4., 4.));
         }
     }
     painter->restore();

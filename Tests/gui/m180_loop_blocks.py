@@ -101,6 +101,31 @@ try:
             x, y = node.getPosition()
             check(rect.contains(x, y), "the blocks cover %s" % node.getScriptName())
 
+        # Panning moves the graph's root item, not the blocks; the blocks must travel with the nodes.
+        root = block_item().parentItem().parentItem()
+        before = block_item().sceneBoundingRect()
+        root_before = root.pos()
+        root.moveBy(173., -91.)
+        yield ("sleep", 400)
+        QApplication.processEvents()
+        after = block_item().sceneBoundingRect()
+        check(abs((after.x() - before.x()) - (root.pos().x() - root_before.x())) < 0.5
+              and abs((after.y() - before.y()) - (root.pos().y() - root_before.y())) < 0.5,
+              "panning the graph moves the blocks with the nodes")
+        for node in chain[1:]:
+            x, y = node.getPosition()
+            check(after.contains(root.mapToScene(x, y)), "after a pan the blocks still cover %s" % node.getScriptName())
+        view.scale(1.25, 1.25)
+        yield ("sleep", 400)
+        QApplication.processEvents()
+        after = block_item().sceneBoundingRect()
+        for node in chain[1:]:
+            x, y = node.getPosition()
+            check(after.contains(root.mapToScene(x, y)), "after a zoom the blocks still cover %s" % node.getScriptName())
+        view.scale(0.8, 0.8)
+        root.moveBy(-173., 91.)
+        yield ("sleep", 400)
+
         app.selectNode(inner_end, False)
         yield ("sleep", 600)
         QApplication.processEvents()

@@ -54,13 +54,13 @@ adds headless render tests, and gets the bench running on the original comps.
 
 ## Phase 245.1: Expand at the knob layer
 
-- [ ] M245.P1.T1 — Resolve project variables in `generateFileNameAtTime` and `getFileName`
+- [x] M245.P1.T1 — Resolve project variables in `generateFileNameAtTime` and `getFileName`
   - files: `Engine/KnobFile.cpp`, `Engine/KnobFile.h` (doc comments only)
   - approach: in `KnobOutputFile::generateFileNameAtTime` and the input branch of `KnobFile::getFileName`, run the raw `getValue()` through the same step `KnobFile::getResolvedPath` uses (`getApp()->getProject()->canonicalizePath`, guarded for a holder with no app) before `SequenceParsing::generateFileNameFromPattern`. Factor the guarded call into one private helper both `getResolvedPath` and the two generators use, rather than a third copy. The non-input-image branch of `getFileName` returns the resolved value too. Document on both functions that the result is expanded.
   - verify: builds; `ctest -R "NativeWrite|NativeRead|DeepReadWrite|KnobFile"` still green (existing tests set absolute paths, so they are unchanged by this task).
   - size: M
 
-- [ ] M245.P1.T2 — Audit the remaining raw `getValue()` consumers of file knobs
+- [x] M245.P1.T2 — Audit the remaining raw `getValue()` consumers of file knobs
   - files: `Engine/Nodes/IO/NativeWrite.cpp`, `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/Deep/DeepRead.cpp`, `Engine/Nodes/Deep/DeepWrite.cpp`, `Engine/Nodes/Scene/USDWrite.cpp`
   - approach: list every `filename->getValue()` in these files that feeds a filesystem call, a stat, a hash or a read-back (not an extension or empty check, which are fine on the raw value) and route it through `getResolvedPath()`. Known so far: `NativeWrite` read-back and overwrite check go through `generateFileNameAtTime` (covered by T1), the extension checks use the raw value (leave). Record the audited list in the commit message; add nothing if the audit finds nothing.
   - verify: builds; `ctest -R "NativeWrite|DeepReadWrite|USD"` green.
@@ -68,7 +68,7 @@ adds headless render tests, and gets the bench running on the original comps.
 
 ## Phase 245.2: Tests
 
-- [ ] M245.P2.T1 — gtest: Write and Read expand `[Project]` and user variables in a headless render
+- [x] M245.P2.T1 — gtest: Write and Read expand `[Project]` and user variables in a headless render
   - files: `Tests/Native/NativeWritePathVariables_Test.cpp`, `Tests/CMakeLists.txt` (or the Tests source list the neighbouring `NativeWriteEntryPoints_Test.cpp` is registered in)
   - approach: model on `Tests/Native/NativeWriteEntryPoints_Test.cpp` and its `BaseTest.h` setup. Create a `QTemporaryDir`; set the project's `[Project]` row to it (as `Tests/Serialization/SyntheticProjectGraphs.h` does) and add a user row `[Out]` pointing at a subdirectory. Cases: Write `[Project]/w.####.exr` renders frame 1 and `w.0001.exr` exists under the temp dir; Write `[Out]/w.####.exr` likewise; a relative path `rel/w.####.exr` lands under `[Project]`; then a Read with `[Project]/w.####.exr` and one with `[Out]/w.####.exr` read the frame back with the same pixels (sequence frame path, not only the listing); an unknown `[Nope]/w.exr` render fails and no file is created. Assert the stored knob value still reads `[Project]/...`. Also a `DeepWrite`/`USDWrite` case if the fixtures of `DeepReadWrite_Test.cpp` make it a few lines, otherwise leave them to the T1 shared path.
   - verify: the test fails on a build without M245.P1.T1 (run once against origin/main sources in the batch build to confirm it is not vacuous) and passes with it.
@@ -103,3 +103,4 @@ adds headless render tests, and gets the bench running on the original comps.
   - size: L
 
 **Verification gate:** original path expansion/bench gate passes; nested creation, duplicate handling and RFV integration are accepted in the replacement AppImage.
+- 2026-11-01 — P4.T2 design (implementer, at f052e6570): project paths reuse the RFV system — every project text variable is a `[name]` path whose value may nest others; the projectPaths table keeps only the built-ins [Project] (set on save/load, needed by GUI-launched background renders) and [OCIO], which win over any variable and can't be taken. Follow-up in progress: rename rewrite, undo of creation, value-change refresh, dead table-editor code.

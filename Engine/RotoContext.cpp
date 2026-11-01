@@ -165,9 +165,22 @@ RotoContext::getRotoPaintBottomMergeNode() const
 
     int bop;
     if ( isRotoPaintTreeConcatenatableInternal(items, &bop) ) {
-        QMutexLocker k(&_imp->rotoContextMutex);
-        if ( !_imp->globalMergeNodes.empty() ) {
-            return _imp->globalMergeNodes.front();
+        NodesList mergeNodes;
+        {
+            QMutexLocker k(&_imp->rotoContextMutex);
+            mergeNodes = _imp->globalMergeNodes;
+        }
+        if (!mergeNodes.empty()) {
+            // Past one Merge's A inputs the items continue in Merges chained through their B
+            // input, so the output is the last Merge of that chain; spare Merges after it are
+            // disconnected.
+            NodesList::const_iterator it = mergeNodes.begin();
+            NodePtr bottom = *it;
+            for (++it; it != mergeNodes.end() && (*it)->getInput(0) == bottom; ++it) {
+                bottom = *it;
+            }
+
+            return bottom;
         }
     }
 
@@ -3087,34 +3100,9 @@ RotoContextPrivate::applyAndDestroyMask(cairo_t* cr,
 }
 
 NodePtr
-RotoContext::getOrCreateGlobalMergeNode(int *availableInputIndex)
+RotoContext::createGlobalMergeNode()
 {
-    {
-        QMutexLocker k(&_imp->rotoContextMutex);
-        for (NodesList::iterator it = _imp->globalMergeNodes.begin(); it != _imp->globalMergeNodes.end(); ++it) {
-            const std::vector<NodeWPtr> &inputs = (*it)->getInputs();
-
-            //Merge node goes like this: B, A, Mask, A2, A3, A4 ...
-            assert( inputs.size() >= 3 && (*it)->getEffectInstance()->isInputMask(2) );
-            if ( !inputs[1].lock() ) {
-                *availableInputIndex = 1;
-
-                return *it;
-            }
-
-            //Leave the B empty to connect the next merge node
-            for (std::size_t i = 3; i < inputs.size(); ++i) {
-                if ( !inputs[i].lock() ) {
-                    *availableInputIndex = (int)i;
-
-                    return *it;
-                }
-            }
-        }
-    }
-
     NodePtr node = getNode();
-    //We must create a new merge node
     QString fixedNamePrefix = QString::fromUtf8( node->getScriptName_mt_safe().c_str() );
 
     fixedNamePrefix.append( QLatin1Char('_') );
@@ -3133,13 +3121,11 @@ RotoContext::getOrCreateGlobalMergeNode(int *availableInputIndex)
     if ( getNode()->isDuringPaintStrokeCreation() ) {
         mergeNode->setWhileCreatingPaintStroke(true);
     }
-    *availableInputIndex = 1;
-
     QMutexLocker k(&_imp->rotoContextMutex);
     _imp->globalMergeNodes.push_back(mergeNode);
 
     return mergeNode;
-} // RotoContext::getOrCreateGlobalMergeNode
+} // RotoContext::createGlobalMergeNode
 
 void
 RotoContext::refreshRotoPaintTree()
@@ -3152,55 +3138,69 @@ RotoContext::refreshRotoPaintTree()
     std::list<RotoDrawableItemPtr> items = getCurvesByRenderOrder(false /*onlyActivatedItems*/);
     int blendingOperator;
     bool canConcatenate = isRotoPaintTreeConcatenatableInternal(items, &blendingOperator);
-    NodePtr globalMerge;
-    int globalMergeIndex = -1;
-    NodesList mergeNodes;
+    std::vector<NodePtr> mergeNodes;
     {
         QMutexLocker k(&_imp->rotoContextMutex);
-        mergeNodes = _imp->globalMergeNodes;
+        mergeNodes.assign(_imp->globalMergeNodes.begin(), _imp->globalMergeNodes.end());
     }
-    //ensure that all global merge nodes are disconnected
-    for (NodesList::iterator it = mergeNodes.begin(); it != mergeNodes.end(); ++it) {
-        int maxInputs = (*it)->getNInputs();
-        for (int i = 0; i < maxInputs; ++i) {
-            (*it)->disconnectInput(i);
+
+    // The inputs each global Merge should have, Merge by Merge: B, A, Mask, A2, A3... The items
+    // fill the A inputs in render order, and a full Merge feeds the B input of the next.
+    std::vector<std::vector<NodePtr>> wanted;
+    if (canConcatenate) {
+        NodePtr rotopaintNodeInput = getNode()->getInput(0);
+        std::size_t inputNb = 0;
+        for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+            NodePtr effectNode = (*it)->getEffectNode();
+            assert(effectNode);
+            if (wanted.empty() || (inputNb >= wanted.back().size())) {
+                const std::size_t m = wanted.size();
+                if (m == mergeNodes.size()) {
+                    NodePtr created = createGlobalMergeNode();
+                    if (!created) {
+                        break;
+                    }
+                    mergeNodes.push_back(created);
+                }
+                const int nInputs = mergeNodes[m]->getNInputs();
+                assert(nInputs >= 3 && mergeNodes[m]->getEffectInstance()->isInputMask(2));
+                wanted.push_back(std::vector<NodePtr>(std::max(nInputs, 3)));
+                wanted.back()[0] = (m == 0) ? rotopaintNodeInput : mergeNodes[m - 1];
+                inputNb = 1;
+            }
+            wanted.back()[inputNb] = effectNode;
+            inputNb = (inputNb == 1) ? 3 : (inputNb + 1);
         }
     }
-    if (canConcatenate) {
-        globalMerge = getOrCreateGlobalMergeNode(&globalMergeIndex);
-    }
-    if (globalMerge) {
-        NodePtr rotopaintNodeInput = getNode()->getInput(0);
-        //Connect the rotopaint node input to the B input of the Merge
-        if (rotopaintNodeInput) {
-            globalMerge->connectInput(rotopaintNodeInput, 0);
+
+    // Only the inputs that differ are touched: each connection change aborts the renders in
+    // flight and recomputes hashes and metadata, so redoing every input for each new item made
+    // adding a shape cost in proportion to the shapes already there.
+    for (std::size_t m = 0; m < mergeNodes.size(); ++m) {
+        const NodePtr& merge = mergeNodes[m];
+        const int nInputs = merge->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            const NodePtr target = (m < wanted.size() && i < (int)wanted[m].size()) ? wanted[m][i] : NodePtr();
+            NodePtr current = merge->getRealGuiInput(i);
+            if (current && (current != target)) {
+                merge->disconnectInput(i);
+            }
         }
     }
 
     for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
         (*it)->refreshNodesConnections();
+    }
 
-        if (globalMerge) {
-            {
-                KnobIPtr mergeOperatorKnob = globalMerge->getKnobByName(kNativeMergeParamOperation);
-                KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
-                if (mergeOp) {
-                    mergeOp->setValueFromID(Merge::getOperatorString((MergingFunctionEnum)blendingOperator), 0);
-                }
-            }
-
-            NodePtr effectNode = (*it)->getEffectNode();
-            assert(effectNode);
-            //qDebug() << "Connecting" << (*it)->getScriptName().c_str() << "to input" << globalMergeIndex <<
-            //"(" << globalMerge->getInputLabel(globalMergeIndex).c_str() << ")" << "of" << globalMerge->getScriptName().c_str();
-            globalMerge->connectInput(effectNode, globalMergeIndex);
-
-            ///Refresh for next node
-            NodePtr nextMerge = getOrCreateGlobalMergeNode(&globalMergeIndex);
-            if (nextMerge != globalMerge) {
-                assert( !nextMerge->getInput(0) );
-                nextMerge->connectInput(globalMerge, 0);
-                globalMerge = nextMerge;
+    for (std::size_t m = 0; m < wanted.size(); ++m) {
+        const NodePtr& merge = mergeNodes[m];
+        KnobChoice* mergeOp = dynamic_cast<KnobChoice*>(merge->getKnobByName(kNativeMergeParamOperation).get());
+        if (mergeOp) {
+            mergeOp->setValueFromID(Merge::getOperatorString((MergingFunctionEnum)blendingOperator), 0);
+        }
+        for (std::size_t i = 0; i < wanted[m].size(); ++i) {
+            if (wanted[m][i] && (merge->getRealGuiInput(i) != wanted[m][i])) {
+                merge->connectInput(wanted[m][i], i);
             }
         }
     }

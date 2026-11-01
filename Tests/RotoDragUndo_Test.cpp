@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <cstdio>
 #include <list>
 #include <memory>
@@ -296,13 +297,121 @@ TEST_F(RotoDragUndoTest, FeatherBar)
     selected.push_back(pointAt(0));
     selected.push_back(pointAt(3));
     _ui->undoGesture.begin();
-    std::shared_ptr<MoveFeatherBarUndoCommand> cmd = std::make_shared<MoveFeatherBarUndoCommand>(_ui, 3., 1., pointAt(0), selected, _time);
+    std::shared_ptr<MoveFeatherBarUndoCommand> cmd = std::make_shared<MoveFeatherBarUndoCommand>(_ui, 3., 1., pointAt(0), selected, _time, false);
     cmd->redo();
-    cmd->addDelta(1.2, 0.4);
-    cmd->addDelta(-0.3, 2.6);
+    cmd->addDelta(1.2, 0.4, true);
+    cmd->addDelta(-0.3, 2.6, false);
     _ui->undoGesture.end();
 
     expectUndoRedo(cmd, before);
+}
+
+namespace {
+
+// A closed four-point circle about (cx, cy) whose feather sits on the curve.
+BezierPtr
+makeCircle(const RotoContextPtr& context,
+           double cx,
+           double cy,
+           double r,
+           double time)
+{
+    const double h = r * 4. / 3. * std::tan(std::atan(1.) / 2.);
+    BezierPtr circle = context->makeBezier(cx + r, cy, "Circle", time, false);
+    if (!circle) {
+        return circle;
+    }
+    circle->addControlPoint(cx, cy + r, time);
+    circle->addControlPoint(cx - r, cy, time);
+    circle->addControlPoint(cx, cy - r, time);
+    circle->setCurveFinished(true);
+    for (int i = 0; i < 4; ++i) {
+        const double a = 2. * std::atan(1.) * i;
+        const double x = cx + r * std::cos(a);
+        const double y = cy + r * std::sin(a);
+        const double tx = -std::sin(a) * h;
+        const double ty = std::cos(a) * h;
+        circle->setPointAtIndex(false, i, time, x, y, x - tx, y - ty, x + tx, y + ty);
+        circle->setPointAtIndex(true, i, time, x, y, x - tx, y - ty, x + tx, y + ty);
+    }
+
+    return circle;
+}
+
+// Distances from (cx, cy) of points sampled along every feather segment, the feather points included.
+std::list<double>
+featherRadii(const BezierPtr& shape,
+             double cx,
+             double cy,
+             double time)
+{
+    std::list<double> radii;
+    const int n = shape->getControlPointsCount();
+    for (int i = 0; i < n; ++i) {
+        BezierCPPtr a = shape->getFeatherPointAtIndex(i);
+        BezierCPPtr b = shape->getFeatherPointAtIndex((i + 1) % n);
+        double ax, ay, arx, ary, blx, bly, bx, by;
+        a->getPositionAtTime(false, time, ViewIdx(0), &ax, &ay);
+        a->getRightBezierPointAtTime(false, time, ViewIdx(0), &arx, &ary);
+        b->getLeftBezierPointAtTime(false, time, ViewIdx(0), &blx, &bly);
+        b->getPositionAtTime(false, time, ViewIdx(0), &bx, &by);
+        for (int k = 0; k < 8; ++k) {
+            const double t = k / 8.;
+            const double u = 1. - t;
+            const double x = u * u * u * ax + 3 * u * u * t * arx + 3 * u * t * t * blx + t * t * t * bx;
+            const double y = u * u * u * ay + 3 * u * u * t * ary + 3 * u * t * t * bly + t * t * t * by;
+            radii.push_back(std::hypot(x - cx, y - cy));
+        }
+    }
+
+    return radii;
+}
+
+double
+featherHandleLength(const BezierPtr& shape,
+                    int index,
+                    double time)
+{
+    BezierCPPtr fp = shape->getFeatherPointAtIndex(index);
+    double x, y, rx, ry;
+
+    fp->getPositionAtTime(false, time, ViewIdx(0), &x, &y);
+    fp->getRightBezierPointAtTime(false, time, ViewIdx(0), &rx, &ry);
+
+    return std::hypot(rx - x, ry - y);
+}
+
+} // namespace
+
+TEST_F(RotoDragUndoTest, GrowingACircleFeatherKeepsItACircle)
+{
+    RotoContextPtr context = _node->getRotoContext();
+    ASSERT_NE(context, nullptr);
+    const double cx = 200., cy = 150., r = 60., grow = 25.;
+    for (int keep = 0; keep < 2; ++keep) {
+        BezierPtr circle = makeCircle(context, cx, cy, r, _time);
+        ASSERT_NE(circle, nullptr);
+        const double handleBefore = featherHandleLength(circle, 0, _time);
+        PointList points;
+        for (int i = 0; i < 4; ++i) {
+            points.push_back(std::make_pair(circle->getControlPointAtIndex(i), circle->getFeatherPointAtIndex(i)));
+        }
+        std::shared_ptr<MoveFeatherBarUndoCommand> cmd = std::make_shared<MoveFeatherBarUndoCommand>(_ui, grow, points, _time, keep != 0);
+        cmd->redo();
+
+        const std::list<double> radii = featherRadii(circle, cx, cy, _time);
+        const double featherRadius = radii.front();
+        EXPECT_NEAR(grow, std::fabs(featherRadius - r), 1e-6) << "the feather points move by the distance";
+        if (keep) {
+            EXPECT_NEAR(handleBefore, featherHandleLength(circle, 0, _time), 1e-9) << "Alt keeps the feather tangents";
+        } else {
+            EXPECT_NEAR(handleBefore * featherRadius / r, featherHandleLength(circle, 0, _time), 1e-6);
+            for (std::list<double>::const_iterator it = radii.begin(); it != radii.end(); ++it) {
+                EXPECT_NEAR(featherRadius, *it, 0.001 * featherRadius) << "the feather is a concentric circle";
+            }
+        }
+        context->removeItem(circle);
+    }
 }
 
 TEST_F(RotoDragUndoTest, TransformBox)

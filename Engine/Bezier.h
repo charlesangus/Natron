@@ -219,6 +219,12 @@ public:
      **/
     void moveFeatherByIndex(int index, double time, double dx, double dy);
 
+    /**
+     * @brief Scales the left and right tangents of the feather point at index about that point,
+     * keying and rippling as moveFeatherByIndex does.
+     **/
+    void scaleFeatherTangentsByIndex(int index, double time, double leftScale, double rightScale);
+
 private:
 
     void movePointByIndexInternal(bool useGuiCurve, int index, double time, double dx, double dy, bool onlyFeather);
@@ -663,6 +669,18 @@ private:
      * @brief If the node is currently involved in a render, returns false, otherwise returns true
      */
     bool canSetInternalPoints() const;
+
+    /**
+     * @brief Returns true when an edit must go to the GUI copy because the node renders.
+     * Otherwise first writes back GUI edits still pending from an earlier render, so the
+     * edit's internal-to-GUI copy cannot overwrite them, and returns false.
+     **/
+    bool useGuiCurveForEdit();
+
+    /**
+     * @brief Writes pending GUI edits to the internal curves when the node is not rendering.
+     **/
+    void flushGuiEdits();
 
     /**
      * @brief setKeyframe() on the internal curves. copyToGui also copies the new key and its

@@ -149,11 +149,11 @@ class RotoDragUndoCommand;
 
 #define kRotoUIParamRightClickMenuActionIncreaseFeather "increaseFeather"
 #define kRotoUIParamRightClickMenuActionIncreaseFeatherLabel "Increase Feather"
-#define kRotoUIParamRightClickMenuActionIncreaseFeatherHint "Moves the feather of the selected points (or of every point of the selected shapes) outwards by 10 screen pixels"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherHint "Moves the feather of the selected points (or of every point of the selected shapes) outwards by 10 screen pixels. The feather tangents grow with it, so a circle's feather stays a circle. Dragging a feather bar does the same; hold Alt while dragging to keep the tangents as they are."
 
-#define kRotoUIParamCycleToolModes "cycleToolModes"
-#define kRotoUIParamCycleToolModesLabel "Cycle Tool Modes"
-#define kRotoUIParamCycleToolModesHint "Selects the next tool of the current toolbar group"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangents "increaseFeatherKeepTangents"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsLabel "Increase Feather Keep Tangents"
+#define kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsHint "Moves the feather of the selected points (or of every point of the selected shapes) outwards by 10 screen pixels, leaving the feather tangents as they are"
 
 #define kRotoUIParamRightClickMenuActionNudgeLeft "nudgeLeftAction"
 #define kRotoUIParamRightClickMenuActionNudgeLeftLabel "Nudge Left"
@@ -419,7 +419,7 @@ public:
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
     KnobButtonWPtr increaseFeatherMenuAction;
-    KnobButtonWPtr cycleToolModesAction;
+    KnobButtonWPtr increaseFeatherKeepTangentsMenuAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
 
     // Right click on curve
@@ -655,13 +655,8 @@ public:
     bool smoothSelectedCurve();
     bool cuspSelectedCurve();
     bool removeFeatherForSelectedCurve();
-    bool increaseFeatherForSelection();
+    bool increaseFeatherForSelection(bool keepTangents);
     bool lockSelectedCurves();
-
-    /**
-     * @brief Selects the next tool of the current toolbar group, wrapping around.
-     **/
-    bool cycleCurrentToolMode();
 
     /**
      * @brief The select tool used last, the Select All tool if none has been.

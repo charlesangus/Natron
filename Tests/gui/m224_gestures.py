@@ -16,8 +16,8 @@ Checks, each on its own shape:
     in one step.
   - Ctrl+drag of the transform box's cross hair moves the pivot: a scale from a corner then keeps
     the new pivot fixed.
-  - S cycles the drawing tools (Bezier to Ellipse); Shift+drag draws a circle (equal width and
-    height); Ctrl+Shift+drag draws it from the centre (the shape is centred on the press).
+  - V pressed again cycles the drawing tools (Bezier to Ellipse); Shift+drag draws a circle (equal
+    width and height); Ctrl+Shift+drag draws it from the centre (the shape is centred on the press).
   - Ripple edit draws a red border just inside the viewer edges, and no border once it is off.
 Saves screenshots of the sketched shape, the moved pivot and the ripple border.
 
@@ -528,10 +528,10 @@ try:
         send_key(gl, Qt.Key_V)
         yield ("sleep", SETTLE_MS)
         report("NOTE after V the drawing tool is %s" % (drawing_tool(),))
-        send_key(gl, Qt.Key_S)
+        send_key(gl, Qt.Key_V)
         yield ("sleep", SETTLE_MS)
         tool = drawing_tool()
-        check(tool == (True, "DrawEllipseTool"), "V then S selects the ellipse tool (%s)" % (tool,))
+        check(tool == (True, "DrawEllipseTool"), "V again selects the ellipse tool (%s)" % (tool,))
         a = QPointF(w * 0.3, h * 0.3)
         with_modifiers(gl, Qt.ShiftModifier, lambda m: drag(gl, a, a + QPointF(120, 50), m))
         yield ("sleep", SETTLE_MS)

@@ -891,10 +891,14 @@ RotoCurveInteract::onToolChangedInternal(const KnobButtonPtr& actionButton)
         return true;
     }
 
-    // Clear all selection if we were building a new bezier
-    if ((selectedRole == eRotoRoleBezierEdition) && ((selectedTool == eRotoToolDrawBezier) || (selectedTool == eRotoToolOpenBezier)) && builtBezier && (tool != selectedTool)) {
-        builtBezier->setCurveFinished(true);
-        clearSelection();
+    // Leaving the tool ends the shape it was making: a later click with a drawing tool must start
+    // a new shape, not continue or hit this one.
+    if (builtBezier && (tool != selectedTool)) {
+        if (!builtBezier->isCurveFinished()) {
+            builtBezier->setCurveFinished(true);
+            clearSelection();
+        }
+        builtBezier.reset();
     }
     selectedToolAction = actionButton;
     {
@@ -1358,14 +1362,15 @@ RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
         increaseFeatherMenuAction = action;
     }
     {
-        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamCycleToolModesLabel));
-        action->setName(kRotoUIParamCycleToolModes);
-        action->setHintToolTip(tr(kRotoUIParamCycleToolModesHint));
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsLabel));
+        action->setName(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangents);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsHint));
         action->setSecretByDefault(true);
         action->setEvaluateOnChange(false);
         action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
         page->addKnob(action);
-        cycleToolModesAction = action;
+        increaseFeatherKeepTangentsMenuAction = action;
     }
     {
         KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionNudgeBottomLabel));
@@ -1529,7 +1534,7 @@ RotoCurveInteract::getRightClickMenuShortcuts(std::list<PluginActionShortcut>* s
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionSmoothItems, kRotoUIParamRightClickMenuActionSmoothItemsLabel, Key_Z));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionRemoveItemsFeather, kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel, Key_E, eKeyboardModifierShift));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionIncreaseFeather, kRotoUIParamRightClickMenuActionIncreaseFeatherLabel, Key_E));
-    shortcuts->push_back(PluginActionShortcut(kRotoUIParamCycleToolModes, kRotoUIParamCycleToolModesLabel, Key_S));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangents, kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsLabel, Key_E, eKeyboardModifierAlt));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeLeft, kRotoUIParamRightClickMenuActionNudgeLeftLabel, Key_4, eKeyboardModifierKeypad));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeBottom, kRotoUIParamRightClickMenuActionNudgeBottomLabel, Key_2, eKeyboardModifierKeypad));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeTop, kRotoUIParamRightClickMenuActionNudgeTopLabel, Key_8, eKeyboardModifierKeypad));
@@ -1623,11 +1628,11 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
             *ret = false;
         }
     } else if (k == increaseFeatherMenuAction.lock().get()) {
-        if (!increaseFeatherForSelection()) {
+        if (!increaseFeatherForSelection(false)) {
             *ret = false;
         }
-    } else if (k == cycleToolModesAction.lock().get()) {
-        if (!cycleCurrentToolMode()) {
+    } else if (k == increaseFeatherKeepTangentsMenuAction.lock().get()) {
+        if (!increaseFeatherForSelection(true)) {
             *ret = false;
         }
     } else if (k == nudgeLeftMenuAction.lock().get()) {
@@ -1861,6 +1866,7 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
     menuKnobs.push_back(cuspItemMenuAction.lock());
     menuKnobs.push_back(removeItemFeatherMenuAction.lock());
     menuKnobs.push_back(increaseFeatherMenuAction.lock());
+    menuKnobs.push_back(increaseFeatherKeepTangentsMenuAction.lock());
     menuKnobs.push_back(nudgeLeftMenuAction.lock());
     menuKnobs.push_back(nudgeBottomMenuAction.lock());
     menuKnobs.push_back(nudgeRightMenuAction.lock());
@@ -1896,6 +1902,7 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
     if (!curve->isOpenBezier()) {
         menuKnobs.push_back(removeItemFeatherMenuAction.lock());
         menuKnobs.push_back(increaseFeatherMenuAction.lock());
+        menuKnobs.push_back(increaseFeatherKeepTangentsMenuAction.lock());
     }
     menuKnobs.push_back(lockShapeMenuAction.lock());
 
@@ -2521,7 +2528,7 @@ RotoCurveInteract::removeFeatherForSelectedCurve()
 }
 
 bool
-RotoCurveInteract::increaseFeatherForSelection()
+RotoCurveInteract::increaseFeatherForSelection(bool keepTangents)
 {
     std::list<std::pair<BezierCPPtr, BezierCPPtr>> points = selectedCps;
     if (points.empty()) {
@@ -2548,37 +2555,8 @@ RotoCurveInteract::increaseFeatherForSelection()
     std::pair<double, double> pixelScale;
     _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
     const double step = 10. * pixelScale.first;
-    pushUndoCommand(new MoveFeatherBarUndoCommand(shared_from_this(), step, points, _host->getCurrentTime()));
+    pushUndoCommand(new MoveFeatherBarUndoCommand(shared_from_this(), step, points, _host->getCurrentTime(), keepTangents));
     getCurveContext()->evaluateChange();
-
-    return true;
-}
-
-bool
-RotoCurveInteract::cycleCurrentToolMode()
-{
-    KnobGroupPtr role = selectedToolRole.lock();
-    KnobButtonPtr current = selectedToolAction.lock();
-    if (!role || !current) {
-        return false;
-    }
-    std::vector<KnobButtonPtr> tools;
-    std::size_t currentIndex = 0;
-    const std::vector<KnobIPtr> children = role->getChildren();
-    for (std::vector<KnobIPtr>::const_iterator it = children.begin(); it != children.end(); ++it) {
-        KnobButtonPtr tool = std::dynamic_pointer_cast<KnobButton>(*it);
-        if (!tool) {
-            continue;
-        }
-        if (tool == current) {
-            currentIndex = tools.size();
-        }
-        tools.push_back(tool);
-    }
-    if (tools.size() < 2) {
-        return false;
-    }
-    setCurrentTool(tools[(currentIndex + 1) % tools.size()]);
 
     return true;
 }
@@ -3621,10 +3599,6 @@ RotoCurveInteract::onOverlayPenDown(double time,
     case eRotoToolOpenBezier: {
         if (builtBezier && builtBezier->isCurveFinished()) {
             builtBezier.reset();
-            clearSelection();
-            setCurrentTool(selectAllAction.lock());
-
-            return true;
         }
         if (builtBezier) {
             /// if the user clicked on a control point of the bezier, select the point instead.
@@ -3960,9 +3934,9 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     }
     case eEventStateDraggingFeatherBar: {
         if (std::shared_ptr<MoveFeatherBarUndoCommand> open = getOpenDragCommand<MoveFeatherBarUndoCommand>(time)) {
-            open->addDelta(dx, dy);
+            open->addDelta(dx, dy, altDown != 0);
         } else {
-            pushDragCommand(std::make_shared<MoveFeatherBarUndoCommand>(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time));
+            pushDragCommand(std::make_shared<MoveFeatherBarUndoCommand>(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time, altDown != 0));
         }
         evaluateOnPenUp = true;
         didSomething = true;
@@ -4163,6 +4137,7 @@ RotoCurveInteract::onOverlayPenUp()
 
     if ((selectedTool == eRotoToolDrawEllipse) || (selectedTool == eRotoToolDrawRectangle)) {
         selectedCps.clear();
+        builtBezier.reset();
         setCurrentTool(selectAllAction.lock());
         ret = true;
     }

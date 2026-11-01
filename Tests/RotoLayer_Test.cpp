@@ -433,6 +433,70 @@ TEST_F(RotoLayerTest, RotoPaintBezierGetsItsRenderNodes)
     project->reset(false, true);
 }
 
+// Past one Merge's 64 A inputs the shapes continue in a second global Merge chained through its
+// B input; the RotoPaint output reads the end of that chain, and adding a shape leaves the
+// connections of the full Merge alone.
+TEST_F(RotoLayerTest, RotoPaintOutputReachesEveryShapePastOneMerge)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr paint = roto->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+
+    const int nShapes = kNativeMergeMaxAInputs + 6;
+    std::vector<NodePtr> effects;
+    for (int i = 0; i < nShapes; ++i) {
+        BezierPtr square = addSquare(roto);
+        ASSERT_TRUE(bool(square));
+        ASSERT_TRUE(bool(square->getEffectNode()));
+        effects.push_back(square->getEffectNode());
+    }
+
+    const auto reachedEffects = [&]() {
+        std::vector<NodePtr> reached;
+        NodePtr merge = paint->getRotoPaintBottomMergeNode();
+        int merges = 0;
+        while (merge && (merges < 8) && (merge->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE)) {
+            for (int i = 1; i < merge->getNInputs(); ++i) {
+                NodePtr input = merge->getInput(i);
+                if (input && (i != 2)) {
+                    reached.push_back(input);
+                }
+            }
+            merge = merge->getInput(0);
+            ++merges;
+        }
+
+        return reached;
+    };
+
+    std::vector<NodePtr> reached = reachedEffects();
+    EXPECT_EQ(effects.size(), reached.size());
+    for (std::size_t i = 0; i < effects.size(); ++i) {
+        EXPECT_NE(reached.end(), std::find(reached.begin(), reached.end(), effects[i])) << "shape " << i;
+    }
+
+    NodePtr bottom = paint->getRotoPaintBottomMergeNode();
+    ASSERT_TRUE(bool(bottom));
+    NodePtr full = bottom->getInput(0);
+    ASSERT_TRUE(bool(full));
+    int fullChanges = 0;
+    QMetaObject::Connection counting = QObject::connect(full.get(), &Node::inputChanged, [&fullChanges](int) { ++fullChanges; });
+    BezierPtr extra = addSquare(roto);
+    QObject::disconnect(counting);
+    ASSERT_TRUE(bool(extra));
+    EXPECT_EQ(0, fullChanges);
+    reached = reachedEffects();
+    EXPECT_EQ(effects.size() + 1, reached.size());
+    EXPECT_NE(reached.end(), std::find(reached.begin(), reached.end(), extra->getEffectNode()));
+
+    project->reset(false, true);
+}
+
 namespace {
 
 // Each tool group of the viewer toolbar page, followed by its actions, as "Group" and "Group/Action".

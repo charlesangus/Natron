@@ -498,16 +498,13 @@ RotoPaintInteract::removeCurve(const RotoDrawableItemPtr& curve)
     RotoCurveInteract::removeCurve(curve);
 }
 
-// Strength of the footprint drawn for tools whose result the preview cannot show.
-static const double kStrokePreviewFootprintOpacity = 0.35;
-
 void
 RotoPaintInteract::beginStrokePreview(const QPointF& pos,
                                       double pressure)
 {
     StrokePreview preview;
 
-    preview.footprintOnly = (selectedTool != eRotoToolSolidBrush);
+    preview.drawsDabs = (selectedTool == eRotoToolSolidBrush);
     preview.opacity = opacitySpinbox.lock()->getValue();
     preview.size = sizeSpinbox.lock()->getValue();
     preview.hardness = hardnessSpinbox.lock()->getValue();
@@ -519,7 +516,7 @@ RotoPaintInteract::beginStrokePreview(const QPointF& pos,
     preview.spacing = strokeBeingPaint ? strokeBeingPaint->getBrushSpacingKnob()->getValue() : 0.1;
 
     float rgba[4] = { 1.f, 1.f, 1.f, 1.f };
-    if (!preview.footprintOnly) {
+    if (preview.drawsDabs) {
         KnobColorPtr colorWheel = colorWheelButton.lock();
         for (int i = 0; i < 3; ++i) {
             rgba[i] = (float)colorWheel->getValue(i);
@@ -557,7 +554,7 @@ RotoPaintInteract::addStrokePreviewPoint(StrokePreview& preview,
     const int pointIndex = preview.pointCount++;
 
     // Same rules as RotoContextPrivate::renderStroke, so the dabs land where the render puts them.
-    if (preview.spacing == 0.) {
+    if (!preview.drawsDabs || (preview.spacing == 0.)) {
         return;
     }
     const double brushSpacing = std::max(preview.spacing, 0.05);
@@ -567,22 +564,16 @@ RotoPaintInteract::addStrokePreviewPoint(StrokePreview& preview,
         StrokePreview::Dab dab;
         double spacing;
         std::vector<std::pair<double, double>> stops;
-        if (preview.footprintOnly) {
-            getRenderDotParams(1., preview.size, 1., brushSpacing, dabPressure, false, preview.pressureSize, false,
-                               &dab.innerRadius, &dab.outerRadius, &spacing, &stops);
-            stops.clear();
-        } else {
-            getRenderDotParams(preview.opacity, preview.size, preview.hardness, brushSpacing, dabPressure,
-                               preview.pressureOpacity, preview.pressureSize, preview.pressureHardness,
-                               &dab.innerRadius, &dab.outerRadius, &spacing, &stops);
-        }
+        getRenderDotParams(preview.opacity, preview.size, preview.hardness, brushSpacing, dabPressure,
+                           preview.pressureOpacity, preview.pressureSize, preview.pressureHardness,
+                           &dab.innerRadius, &dab.outerRadius, &spacing, &stops);
         dab.x = dabX;
         dab.y = dabY;
         dab.pointIndex = pointIndex;
         dab.solid = stops.empty();
         if (dab.solid) {
             // A flat dab takes the stroke opacity whatever the pressure, as in RotoContextPrivate::renderDot.
-            const float flat = (float)(preview.footprintOnly ? kStrokePreviewFootprintOpacity : preview.opacity);
+            const float flat = (float)preview.opacity;
             std::fill(dab.opacities, dab.opacities + 9, flat);
         } else {
             for (int i = 0; i < 9; ++i) {
@@ -780,7 +771,7 @@ RotoPaintInteract::drawStrokePreviews()
         fillBox();
 
         glEnable(GL_BLEND);
-        if (preview.buildUp && !preview.footprintOnly) {
+        if (preview.buildUp) {
             glBlendEquation(GL_FUNC_ADD);
             glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         } else {
@@ -1161,6 +1152,10 @@ RotoPaintInteract::finishStroke()
     context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, false);
     assert(strokeBeingPaint->getParentLayer());
 
+    // With Multi-Stroke off strokeBeingPaint is replaced by a fresh stroke below. The painted one must still leave
+    // painting mode: its nodes would otherwise keep reading the app's last-stroke image, which the next stroke
+    // takes over, and draw half-drawn, black or flickering.
+    const RotoStrokeItemPtr paintedStroke = strokeBeingPaint;
     bool multiStrokeEnabled = isMultiStrokeEnabled();
     if (!multiStrokeEnabled) {
         pushUndoCommand(new AddStrokeUndoCommand(shared_from_this_paint(), strokeBeingPaint));
@@ -1185,7 +1180,7 @@ RotoPaintInteract::finishStroke()
             self->onNeatRenderLanded();
         }
     });
-    strokeBeingPaint->setStrokeFinished();
+    paintedStroke->setStrokeFinished();
 } // RotoPaintInteract::finishStroke
 
 void

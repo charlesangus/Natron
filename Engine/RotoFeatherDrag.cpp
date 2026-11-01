@@ -25,6 +25,7 @@
 
 #include "RotoFeatherDrag.h"
 
+#include <algorithm>
 #include <cmath>
 
 NATRON_NAMESPACE_ENTER
@@ -104,6 +105,38 @@ applyFeatherDistance(const Point& featherPoint,
     moved.y = featherPoint.y + dir.y * s;
 
     return moved;
+}
+
+Point
+featherCurvature(const Point& p0,
+                 const Point& p1,
+                 const Point& p3)
+{
+    Point k;
+
+    k.x = k.y = 0.;
+    const double tx = p1.x - p0.x;
+    const double ty = p1.y - p0.y;
+    const double len = std::hypot(tx, ty);
+    const double cx = p3.x - p0.x;
+    const double cy = p3.y - p0.y;
+    const double chord2 = cx * cx + cy * cy;
+    if ((len == 0.) || (chord2 == 0.)) {
+        return k;
+    }
+    // A chord c at angle phi to the tangent spans a circle of radius |c| / (2 sin phi).
+    const double curvature = 2. * (tx * cy - ty * cx) / (len * chord2);
+    k.x = -ty / len * curvature;
+    k.y = tx / len * curvature;
+
+    return k;
+}
+
+double
+featherTangentScale(const Point& curvature,
+                    const Point& delta)
+{
+    return std::max(0., 1. - (curvature.x * delta.x + curvature.y * delta.y));
 }
 
 NATRON_NAMESPACE_EXIT

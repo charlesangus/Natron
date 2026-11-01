@@ -681,7 +681,7 @@ ViewerTab::claimShortcutOverride(QKeyEvent* e)
     if (!app || app->isClosing()) {
         return false;
     }
-    // A key bound to an active interact (Roto's S cycles its tool group) goes to the viewer's
+    // A key bound to an active interact (Roto's V picks its drawing tools) goes to the viewer's
     // keyPressEvent rather than to a global action on the same key.
     Qt::Key qKey = (Qt::Key)e->key();
     Qt::KeyboardModifiers qMods = e->modifiers();

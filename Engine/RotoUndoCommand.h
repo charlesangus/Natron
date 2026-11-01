@@ -392,23 +392,26 @@ public:
     /**
      * @brief Drags the feather bar of point by (dx, dy), and with it the feather of every point in
      * selectedPoints: each feather moves along its own direction by the signed distance the drag
-     * projects to on point's direction.
+     * projects to on point's direction. Each moved feather's tangents scale with the move so the
+     * feather stays an offset of its curve (a circle's stays a circle), unless keepTangents.
      **/
     MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
                               double dx,
                               double dy,
                               const std::pair<BezierCPPtr, BezierCPPtr>& point,
                               const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& selectedPoints,
-                              double time);
+                              double time,
+                              bool keepTangents);
 
     /**
      * @brief Moves the feather of every point in points outwards along its own direction by
-     * distance (inwards when negative).
+     * distance (inwards when negative), scaling tangents as the drag does unless keepTangents.
      **/
     MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
                               double distance,
                               const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points,
-                              double time);
+                              double time,
+                              bool keepTangents);
 
     virtual ~MoveFeatherBarUndoCommand();
 
@@ -418,7 +421,7 @@ public:
     /**
      * @brief Drags the bar by a further (dx, dy), as the next motion of the drag.
      **/
-    void addDelta(double dx, double dy);
+    void addDelta(double dx, double dy, bool keepTangents);
 
 private:
     struct FeatherBar {
@@ -427,7 +430,7 @@ private:
 
     void addFeatherBar(const std::pair<BezierCPPtr, BezierCPPtr>& point);
 
-    void moveFeathers(double dx, double dy);
+    void moveFeathers(double dx, double dy, bool keepTangents);
 
     double _dx, _dy;
     std::list<RotoDrawableItemPtr> _selectedCurves;
@@ -436,6 +439,8 @@ private:
     std::list<FeatherBar> _bars;
     // _dx is the distance itself rather than a drag.
     bool _byDistance;
+    // For the first move, made by redo() when the command is pushed.
+    bool _keepTangents;
 };
 
 class RemoveFeatherUndoCommand

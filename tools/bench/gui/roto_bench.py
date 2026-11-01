@@ -14,6 +14,9 @@ Ops, each with GUI_BENCH_REPS repetitions:
                    (topology roto-shapes, n = shapes) on one Roto node holding n shapes of
                    ROTO_BENCH_POINTS points keyed on ROTO_BENCH_KEYS frames; every drag is undone
                    through the Edit menu and checked
+    add_shape      (topology roto-shapes, n = shapes) a new single-key shape among the n, timed
+                   from its creation until the viewer shows it filled (read from the screen);
+                   each rep removes it again
 
 Configured by the environment:
     GUI_BENCH_REPS, GUI_BENCH_OPS, GUI_BENCH_OP_TIMEOUT_S, GUI_BENCH_SEED, GUI_BENCH_OUT
@@ -28,6 +31,7 @@ Configured by the environment:
     ROTO_BENCH_STROKE_EVENTS  pen moves per stroke (default 60)
     ROTO_BENCH_PEN_INTERVAL_MS  pause between pen moves, as a tablet's report rate (default 8)
     ROTO_BENCH_DRAG_EVENTS  mouse moves per drag or hover pass (default 20)
+    ROTO_BENCH_ADD_SHAPE_TIMEOUT_S  how long add_shape waits for the new shape (default 10)
     NATRON_ROTO_LATENCY_LOG the latency probe's log; without it no latency is reported
     NATRON_STALL_LOG        the stall monitor's log; stalls are attributed as in gui_bench.py
 
@@ -89,10 +93,11 @@ KEYS = int(os.environ.get("ROTO_BENCH_KEYS", "200"))
 STROKE_EVENTS = int(os.environ.get("ROTO_BENCH_STROKE_EVENTS", "60"))
 PEN_INTERVAL_MS = int(os.environ.get("ROTO_BENCH_PEN_INTERVAL_MS", "8"))
 DRAG_EVENTS = int(os.environ.get("ROTO_BENCH_DRAG_EVENTS", "20"))
+ADD_SHAPE_TIMEOUT_S = float(os.environ.get("ROTO_BENCH_ADD_SHAPE_TIMEOUT_S", "10"))
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
@@ -827,6 +832,66 @@ try:
 
         return {"before": before, "events": events}
 
+    def screen_lum(gl, p):
+        """Brightest channel at widget point p, read from the screen: a widget grab of the GL
+        viewer can come out blank."""
+        origin = gl.mapToGlobal(QPoint(0, 0))
+        img = QGuiApplication.primaryScreen().grabWindow(0, origin.x() + int(p.x()) - 1, origin.y() + int(p.y()) - 1, 3, 3).toImage()
+        if img.isNull() or img.width() == 0:
+            return None
+        c = img.pixelColor(img.width() // 2, img.height() // 2)
+        return max(c.red(), c.green(), c.blue())
+
+    def add_shape_op(sc):
+        """A new single-key shape among the others, timed from its creation until the viewer
+        shows it filled; each rep removes it again."""
+        def spare_cell():
+            cells, r_px = sc.cells
+            k = len(sc.shapes) - 1
+            if k >= len(cells):
+                raise RuntimeError("the viewer has no room for another shape")
+            return cells[k], r_px
+
+        def before(st, rep):
+            centre, r_px = spare_cell()
+            click(sc.gl, sc.empty_spot())
+            yield ("sleep", SETTLE_MS)
+            lum = screen_lum(sc.gl, centre)
+            if lum is None:
+                raise RuntimeError("the screen cannot be read back")
+            if lum > 60:
+                raise RuntimeError("the spare cell is not dark before the shape is added (%d)" % lum)
+            st["centre"], st["r_px"] = centre, r_px
+
+        def events(st, rep):
+            ps = sc.vmap.pixel_scale()
+            cx, cy = sc.vmap.to_canonical(st["centre"])
+            pts = shape_points(cx, cy, st["r_px"] * ps, 0.25 * st["r_px"] * ps)
+            bez = sc.roto.createBezier(pts[0][0], pts[0][1], sc.t)
+            if bez is None:
+                raise RuntimeError("createBezier failed")
+            for q in pts[1:]:
+                bez.addControlPoint(q[0], q[1])
+            bez.setCurveFinished(True)
+            st["added"] = bez
+            yield None
+            deadline = time.monotonic() + ADD_SHAPE_TIMEOUT_S
+            while True:
+                lum = screen_lum(sc.gl, st["centre"])
+                if lum is not None and lum >= 200:
+                    return
+                if time.monotonic() > deadline:
+                    raise RuntimeError("the new shape did not show within %gs" % ADD_SHAPE_TIMEOUT_S)
+                yield ("sleep", 5)
+
+        def after(st, rep):
+            bez = st.pop("added", None)
+            if bez is not None:
+                sc.roto.getBaseLayer().removeItem(bez)
+            yield ("sleep", RENDER_MS)
+
+        return {"before": before, "events": events, "after": after}
+
     def shape_phase():
         set_format(SHAPE_FORMAT)
         gt.close_all_panels()
@@ -861,11 +926,17 @@ try:
             if selected("hover"):
                 for cmd in run_op("hover", hover_op(sc), "roto-shapes", count, extra):
                     yield cmd
+            if selected("add_shape"):
+                for cmd in run_op("add_shape", add_shape_op(sc), "roto-shapes", count, extra):
+                    yield cmd
         view(None)
         node.destroy(False)
         yield ("sleep", SETTLE_MS)
 
     def steps():
+        # Written before any wait, so a run that never gets going still leaves a record of having started.
+        emit(host_record())
+        report("NOTE roto bench started; results in %s" % OUT_PATH)
         ok = yield ("until", lambda: main_window() is not None and viewer_gl() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "the main window and viewer are up")
         gt.close_all_panels()
@@ -874,7 +945,6 @@ try:
             report("NOTE NATRON_STALL_LOG is not set; no stalls will be attributed")
         if not LATENCY_LOG:
             report("NOTE NATRON_ROTO_LATENCY_LOG is not set; no pen-to-pixel latency will be reported")
-        emit(host_record())
         viewer = app.getNode("Viewer1")
         if viewer is None:
             viewer = app.createNode("fr.inria.built-in.Viewer")

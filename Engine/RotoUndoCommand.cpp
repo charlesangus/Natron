@@ -933,7 +933,8 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
                                                      double dy,
                                                      const std::pair<BezierCPPtr, BezierCPPtr>& point,
                                                      const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& selectedPoints,
-                                                     double time)
+                                                     double time,
+                                                     bool keepTangents)
     : RotoDragUndoCommand(roto, time)
     , _dx(dx)
     , _dy(dy)
@@ -941,6 +942,7 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
     , _selectedPoints()
     , _bars()
     , _byDistance(false)
+    , _keepTangents(keepTangents)
 {
     assert(point.first && point.second);
     roto->getSelection(&_selectedCurves, &_selectedPoints);
@@ -971,7 +973,8 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
 MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr& roto,
                                                      double distance,
                                                      const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points,
-                                                     double time)
+                                                     double time,
+                                                     bool keepTangents)
     : RotoDragUndoCommand(roto, time)
     , _dx(distance)
     , _dy(0.)
@@ -979,6 +982,7 @@ MoveFeatherBarUndoCommand::MoveFeatherBarUndoCommand(const RotoCurveInteractPtr&
     , _selectedPoints()
     , _bars()
     , _byDistance(true)
+    , _keepTangents(keepTangents)
 {
     roto->getSelection(&_selectedCurves, &_selectedPoints);
     for (SelectedCpList::const_iterator it = points.begin(); it != points.end(); ++it) {
@@ -1035,8 +1039,74 @@ struct FeatherBarDrag {
     BezierCPPtr fp;
     Point from;
     Point dir;
+    // Curvature vectors of the circles that leave this point along each tangent through the
+    // neighbouring feather point, read before any feather moves; (0, 0) at an open end.
+    Point leftCurvature, rightCurvature;
     bool isOnKeyframe;
 };
+
+Point
+transformedPoint(double x,
+                 double y,
+                 const Transform::Matrix3x3& transform)
+{
+    Transform::Point3D p;
+
+    p.x = x;
+    p.y = y;
+    p.z = 1.;
+    p = Transform::matApply(transform, p);
+    Point r;
+    r.x = p.x;
+    r.y = p.y;
+
+    return r;
+}
+
+void
+computeFeatherCurvatures(const BezierPtr& curve,
+                         const BezierCPPtr& fp,
+                         double time,
+                         const Transform::Matrix3x3& transform,
+                         FeatherBarDrag* drag)
+{
+    drag->leftCurvature.x = drag->leftCurvature.y = 0.;
+    drag->rightCurvature.x = drag->rightCurvature.y = 0.;
+    const std::list<BezierCPPtr>& fps = curve->getFeatherPoints();
+    std::list<BezierCPPtr>::const_iterator cur = std::find(fps.begin(), fps.end(), fp);
+    if ((fps.size() < 2) || (cur == fps.end())) {
+        return;
+    }
+    const bool closed = curve->isCurveFinished();
+    BezierCPPtr prevFp, nextFp;
+    if (cur != fps.begin()) {
+        std::list<BezierCPPtr>::const_iterator prev = cur;
+        prevFp = *(--prev);
+    } else if (closed) {
+        prevFp = fps.back();
+    }
+    std::list<BezierCPPtr>::const_iterator next = cur;
+    ++next;
+    if (next != fps.end()) {
+        nextFp = *next;
+    } else if (closed) {
+        nextFp = fps.front();
+    }
+
+    double x, y, hx, hy;
+    fp->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
+    const Point p = transformedPoint(x, y, transform);
+    if (prevFp) {
+        fp->getLeftBezierPointAtTime(true, time, ViewIdx(0), &x, &y);
+        prevFp->getPositionAtTime(true, time, ViewIdx(0), &hx, &hy);
+        drag->leftCurvature = featherCurvature(p, transformedPoint(x, y, transform), transformedPoint(hx, hy, transform));
+    }
+    if (nextFp) {
+        fp->getRightBezierPointAtTime(true, time, ViewIdx(0), &x, &y);
+        nextFp->getPositionAtTime(true, time, ViewIdx(0), &hx, &hy);
+        drag->rightCurvature = featherCurvature(p, transformedPoint(x, y, transform), transformedPoint(hx, hy, transform));
+    }
+}
 
 bool
 computeFeatherBarDrag(const BezierCPPtr& cp,
@@ -1092,6 +1162,7 @@ computeFeatherBarDrag(const BezierCPPtr& cp,
     drag->fp = fp;
     drag->from = f;
     drag->dir = featherDragDirection(c, f, left, right, clockWise);
+    computeFeatherCurvatures(curve, fp, time, transform, drag);
 
     return true;
 }
@@ -1110,21 +1181,23 @@ MoveFeatherBarUndoCommand::redo()
 
         return;
     }
-    moveFeathers(_dx, _dy);
+    moveFeathers(_dx, _dy, _keepTangents);
 }
 
 void
 MoveFeatherBarUndoCommand::addDelta(double dx,
-                                    double dy)
+                                    double dy,
+                                    bool keepTangents)
 {
     _dx += dx;
     _dy += dy;
-    moveFeathers(dx, dy);
+    moveFeathers(dx, dy, keepTangents);
 }
 
 void
 MoveFeatherBarUndoCommand::moveFeathers(double dx,
-                                        double dy)
+                                        double dy,
+                                        bool keepTangents)
 {
     RotoCurveInteractPtr roto = _roto.lock();
 
@@ -1160,6 +1233,12 @@ MoveFeatherBarUndoCommand::moveFeathers(double dx,
         }
         const Point to = applyFeatherDistance(it->from, it->dir, s);
         curve->moveFeatherByIndex(index, _time, to.x - it->from.x, to.y - it->from.y);
+        if (!keepTangents) {
+            Point delta;
+            delta.x = to.x - it->from.x;
+            delta.y = to.y - it->from.y;
+            curve->scaleFeatherTangentsByIndex(index, _time, featherTangentScale(it->leftCurvature, delta), featherTangentScale(it->rightCurvature, delta));
+        }
     }
 
     roto->setSelection(_selectedCurves, _selectedPoints);

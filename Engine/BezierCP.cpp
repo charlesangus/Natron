@@ -27,12 +27,14 @@
 #include "BezierCP.h"
 
 #include <algorithm> // min, max
-#include <limits>
-#include <set>
-#include <list>
-#include <utility>
 #include <cassert>
+#include <cmath>
+#include <iterator>
+#include <limits>
+#include <list>
+#include <set>
 #include <stdexcept>
+#include <utility>
 
 #include <QThread>
 #include <QCoreApplication>
@@ -665,115 +667,102 @@ cuspTangent(double x,
     }
 }
 
+/*
+ * The handles of a smoothed point: collinear along the bisector of its two chords, so the curve passes
+ * through without a kink, and of equal length. The length is the one that makes evenly spaced points on
+ * a circle trace that circle (c / (3 cos^2(b / 2)) for a chord c at angle b to the tangent), averaged over
+ * both sides and capped at half the shorter chord so that unevenly spaced points cannot loop.
+ * Positions are in the shape's transformed space.
+ */
 static void
-smoothTangent(bool useGuiCurves,
-              double time,
-              bool left,
-              const BezierCP* p,
-              const Transform::Matrix3x3& transform,
-              double x,
-              double y,
-              double *tx,
-              double *ty,
-              const std::pair<double, double>& pixelScale)
+smoothTangents(bool useGuiCurves,
+               double time,
+               ViewIdx view,
+               const BezierCP* p,
+               const Transform::Matrix3x3& transform,
+               double x,
+               double y,
+               double* leftX,
+               double* leftY,
+               double* rightX,
+               double* rightY,
+               const std::pair<double, double>& pixelScale)
 {
-    if ( (x == *tx) && (y == *ty) ) {
-        const std::list<BezierCPPtr> & cps = ( p->isFeatherPoint() ?
-                                                                  p->getBezier()->getFeatherPoints() :
-                                                                  p->getBezier()->getControlPoints() );
-
-        if (cps.size() == 1) {
-            return;
-        }
-
-        std::list<BezierCPPtr>::const_iterator prev = cps.end();
-        if ( prev != cps.begin() ) {
-            --prev;
-        }
-        std::list<BezierCPPtr>::const_iterator next = cps.begin();
-        if ( next != cps.end() ) {
-            ++next;
-        }
-
-        int index = 0;
-        int cpCount = (int)cps.size();
-        for (std::list<BezierCPPtr>::const_iterator it = cps.begin();
-             it != cps.end();
-             ++it) {
-            if ( prev == cps.end() ) {
-                prev = cps.begin();
-            }
-            if ( next == cps.end() ) {
-                next = cps.begin();
-            }
-            if (it->get() == p) {
-                break;
-            }
-
-            // increment for next iteration
-            if ( prev != cps.end() ) {
-                ++prev;
-            }
-            if ( next != cps.end() ) {
-                ++next;
-            }
-            ++index;
-        } // for(it)
-        if ( prev == cps.end() ) {
-            prev = cps.begin();
-        }
-        if ( next == cps.end() ) {
-            next = cps.begin();
-        }
-
-        assert(index < cpCount);
-        Q_UNUSED(cpCount);
-
-        double leftDx, leftDy, rightDx, rightDy;
-        Bezier::leftDerivativeAtPoint(useGuiCurves, time, *p, **prev, transform, &leftDx, &leftDy);
-        Bezier::rightDerivativeAtPoint(useGuiCurves, time, *p, **next, transform, &rightDx, &rightDy);
-        double norm = sqrt( (rightDx - leftDx) * (rightDx - leftDx) + (rightDy - leftDy) * (rightDy - leftDy) );
-        Point delta;
-        ///normalize derivatives by their norm
-        if (norm != 0) {
-            delta.x = ( (rightDx - leftDx) / norm ) * TANGENTS_CUSP_LIMIT * pixelScale.first;
-            delta.y = ( (rightDy - leftDy) / norm ) * TANGENTS_CUSP_LIMIT * pixelScale.second;
-        } else {
-            ///both derivatives are the same, use the direction of the left one
-            norm = sqrt( (leftDx - x) * (leftDx - x) + (leftDy - y) * (leftDy - y) );
-            if (norm != 0) {
-                delta.x = ( (rightDx - x) / norm ) * TANGENTS_CUSP_LIMIT * pixelScale.first;
-                delta.y = ( (leftDy - y) / norm ) * TANGENTS_CUSP_LIMIT * pixelScale.second;
-            } else {
-                ///both derivatives and control point are equal, just use 0
-                delta.x = delta.y = 0;
-            }
-        }
-
-        if (!left) {
-            *tx = x + delta.x;
-            *ty = y + delta.y;
-        } else {
-            *tx = x - delta.x;
-            *ty = y - delta.y;
-        }
-    } else {
-        ///increase the tangents distance by 1 fourth
-        ///if the tangents are equal to the control point, make them 10 pixels long
-        double dx = *tx - x;
-        double dy = *ty - y;
-        double newDx, newDy;
-        if ( (dx == 0) && (dy == 0) ) {
-            dx = (dx < 0 ? -TANGENTS_CUSP_LIMIT : TANGENTS_CUSP_LIMIT) * pixelScale.first;
-            dy = (dy < 0 ? -TANGENTS_CUSP_LIMIT : TANGENTS_CUSP_LIMIT) * pixelScale.second;
-        }
-        newDx = dx * 1.1;
-        newDy = dy * 1.1;
-
-        *tx = x + newDx;
-        *ty = y + newDy;
+    const BezierPtr bezier = p->getBezier();
+    const std::list<BezierCPPtr>& cps = p->isFeatherPoint() ? bezier->getFeatherPoints() : bezier->getControlPoints();
+    std::list<BezierCPPtr>::const_iterator it = cps.begin();
+    while ((it != cps.end()) && (it->get() != p)) {
+        ++it;
     }
-} // smoothTangent
+    if ((it == cps.end()) || (cps.size() < 2)) {
+        return;
+    }
+
+    const bool isOpen = bezier->isOpenBezier();
+    const auto neighbourPosition = [&](std::list<BezierCPPtr>::const_iterator n, double* nx, double* ny) {
+        Transform::Point3D q;
+        q.z = 1.;
+        (*n)->getPositionAtTime(useGuiCurves, time, view, &q.x, &q.y);
+        q = Transform::matApply(transform, q);
+        *nx = q.x;
+        *ny = q.y;
+    };
+
+    bool hasPrev = false, hasNext = false;
+    double prevX = x, prevY = y, nextX = x, nextY = y;
+    if ((it != cps.begin()) || !isOpen) {
+        std::list<BezierCPPtr>::const_iterator prev = (it == cps.begin()) ? std::prev(cps.end()) : std::prev(it);
+        neighbourPosition(prev, &prevX, &prevY);
+        hasPrev = true;
+    }
+    std::list<BezierCPPtr>::const_iterator next = std::next(it);
+    if ((next != cps.end()) || !isOpen) {
+        neighbourPosition((next == cps.end()) ? cps.begin() : next, &nextX, &nextY);
+        hasNext = true;
+    }
+
+    const double prevLen = hasPrev ? std::hypot(x - prevX, y - prevY) : 0.;
+    const double nextLen = hasNext ? std::hypot(nextX - x, nextY - y) : 0.;
+    hasPrev = hasPrev && (prevLen > 0.);
+    hasNext = hasNext && (nextLen > 0.);
+
+    double dirX = 1., dirY = 0., length = 0.;
+    if (hasPrev && hasNext) {
+        const double upX = (x - prevX) / prevLen, upY = (y - prevY) / prevLen;
+        const double unX = (nextX - x) / nextLen, unY = (nextY - y) / nextLen;
+        dirX = upX + unX;
+        dirY = upY + unY;
+        double norm = std::hypot(dirX, dirY);
+        if (norm < 1e-9) {
+            // The curve doubles back on itself here: no bisector, so cross the chord at a right angle.
+            dirX = -unY;
+            dirY = unX;
+            norm = 1.;
+        }
+        dirX /= norm;
+        dirY /= norm;
+        const double cosPrev = std::max(0., dirX * upX + dirY * upY);
+        const double cosNext = std::max(0., dirX * unX + dirY * unY);
+        const double prevHandle = 2. * prevLen / (3. * (1. + cosPrev));
+        const double nextHandle = 2. * nextLen / (3. * (1. + cosNext));
+        length = std::min((prevHandle + nextHandle) / 2., 0.5 * std::min(prevLen, nextLen));
+    } else if (hasPrev) {
+        dirX = (x - prevX) / prevLen;
+        dirY = (y - prevY) / prevLen;
+        length = prevLen / 3.;
+    } else if (hasNext) {
+        dirX = (nextX - x) / nextLen;
+        dirY = (nextY - y) / nextLen;
+        length = nextLen / 3.;
+    } else {
+        length = TANGENTS_CUSP_LIMIT * pixelScale.first;
+    }
+
+    *leftX = x - dirX * length;
+    *leftY = y - dirY * length;
+    *rightX = x + dirX * length;
+    *rightY = y + dirY * length;
+} // smoothTangents
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -848,12 +837,14 @@ BezierCP::smoothPoint(bool useGuiCurves,
     left = Transform::matApply(transform, left);
     right = Transform::matApply(transform, right);
 
-    smoothTangent(useGuiCurves, time, true, this, transform, pos.x, pos.y, &left.x, &left.y, pixelScale);
-    smoothTangent(useGuiCurves, time, false, this, transform, pos.x, pos.y, &right.x, &right.y, pixelScale);
+    smoothTangents(useGuiCurves, time, view, this, transform, pos.x, pos.y, &left.x, &left.y, &right.x, &right.y, pixelScale);
 
     bool keyframeSet = false;
 
-    transform = Transform::matInverse(transform);
+    // The handles were placed in the transformed space the user sees; the curves store them untransformed.
+    const Transform::Matrix3x3 inverse = Transform::matInverse(transform);
+    left = Transform::matApply(inverse, left);
+    right = Transform::matApply(inverse, right);
 
     setBroken(false);
     if (autoKeying || isOnKeyframe) {

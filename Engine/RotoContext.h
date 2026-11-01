@@ -236,7 +236,7 @@ Q_SIGNALS:
     void breakMultiStroke();
 
 private:
-    NodePtr getOrCreateGlobalMergeNode(int* availableInputIndex);
+    NodePtr createGlobalMergeNode();
 };
 
 NATRON_NAMESPACE_EXIT

@@ -335,8 +335,9 @@ private:
             unsigned char rgba[4];
         };
 
-        // Tools other than the solid brush show where they act, not what they do.
-        bool footprintOnly;
+        // Only the solid brush's result can be drawn faithfully; other tools keep a dab-less entry so that previews
+        // and pen-downs still pair up in order, and the brush circle alone shows where they act.
+        bool drawsDabs;
         unsigned char colour[3];
         double opacity, size, hardness, spacing;
         bool pressureOpacity, pressureSize, pressureHardness, buildUp;

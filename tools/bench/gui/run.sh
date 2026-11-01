@@ -186,10 +186,21 @@ export HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_CACHE_HOME="$home/.cache
 export DISPLAY="$display" QT_QPA_PLATFORM=xcb NATRON_GUI_TEST_ROOT="$repo" GUI_TEST_HOST_DISPLAY="$display"
 unset LD_LIBRARY_PATH WAYLAND_DISPLAY
 cd "$repo" || finish 2
-timeout "$timeout_s" "$scratch/squashfs-root/AppRun" "$script" > "$work/natron.log" 2>&1 < /dev/null
+echo "running on $display; leave the mouse and keyboard alone"
+echo "result $result"
+echo "Natron log $work/natron.log; progress follows"
+# --foreground keeps Natron in the terminal's process group: in a background group, anything in
+# the bundle that touches the terminal stops the process, leaving an open window that does nothing.
+timeout --foreground "$timeout_s" "$scratch/squashfs-root/AppRun" "$script" > "$work/natron.log" 2>&1 < /dev/null &
+natron_pid=$!
+tail --pid="$natron_pid" -n +1 -F "$work/results.txt" 2> /dev/null &
+tail_pid=$!
+wait "$natron_pid"
 rc=$?
-if [ -f "$work/results.txt" ]; then
-    tail -n 5 "$work/results.txt"
+wait "$tail_pid" 2> /dev/null
+if [ ! -s "$result" ]; then
+    echo "the driver wrote no results; last lines of $work/natron.log:"
+    tail -n 30 "$work/natron.log"
 fi
 [ "$rc" -eq 124 ] && echo "timed out after ${timeout_s}s"
 finish "$rc"

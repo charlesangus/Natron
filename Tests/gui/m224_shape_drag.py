@@ -7,6 +7,8 @@ inside the dragged shape but outside the original square:
   - Always Live: the pixel turns white before the release.
   - Adaptive (the default): reported only, as it falls back to On Release on a machine where one
     render takes longer than 100 ms.
+Every pass also times each drag move's handling (p95 within MOVE_BUDGET_MS) and checks that the
+corner ends where the cursor took it, so no edit made during a live render is lost.
 Saves a screenshot of the live pass before its release.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -27,6 +29,8 @@ SETTLE_MS = 300
 RENDER_MS = 1500
 PEN_INTERVAL_MS = 16
 DRAG_STEPS = 10
+# Xvfb catches regressions only; the one-display-frame budget is judged on the host bench.
+MOVE_BUDGET_MS = 50.0
 SQUARE_X, SQUARE_Y, SQUARE_SIZE = 760.0, 340.0, 400.0
 MODES = {"adaptive": 0, "live": 1, "onRelease": 2}
 T = 1.0
@@ -165,9 +169,17 @@ try:
         corner_x = _keep["shape"].getControlPointPosition(1, T)[0]
         corner = QPointF(x1, y0)
         press(gl, corner)
+        handle_ms = []
         for i in range(1, DRAG_STEPS + 1):
             yield ("sleep", PEN_INTERVAL_MS)
+            started = time.perf_counter()
             move(gl, QPointF(x1 + d * i / float(DRAG_STEPS), y0), Qt.LeftButton)
+            handle_ms.append((time.perf_counter() - started) * 1000.0)
+        handle_ms.sort()
+        p95 = handle_ms[min(len(handle_ms) - 1, int(round(0.95 * (len(handle_ms) - 1))))]
+        report("NOTE %s: drag move handling median %.1f ms, p95 %.1f ms, max %.1f ms" %
+               (mode, handle_ms[len(handle_ms) // 2], p95, handle_ms[-1]))
+        check(p95 <= MOVE_BUDGET_MS, "%s: the drag's moves are handled without stalling on the render (p95 %.1f ms)" % (mode, p95))
         yield ("sleep", RENDER_MS)
         held = Grab(gl)
         before = held.colour(probe)
@@ -179,6 +191,11 @@ try:
         after = Grab(gl).colour(probe)
         moved = _keep["shape"].getControlPointPosition(1, T)[0] - corner_x
         check(moved > 0, "%s: the drag moved the square's top-right corner (by %.1f)" % (mode, moved))
+        # Edits made while a live render runs live in the overlay's copy until written back; one
+        # lost to the next edit leaves the corner short of the cursor, the stutter seen while dragging.
+        expected = d * SQUARE_SIZE / float(max(1, x1 - x0))
+        check(abs(moved - expected) <= 0.05 * expected,
+              "%s: the corner follows the cursor through the whole drag (moved %.1f, cursor %.1f)" % (mode, moved, expected))
 
         if mode == "onRelease":
             check(is_dark(before), "onRelease: the probe pixel stays dark until the release (%s)" % (before,))

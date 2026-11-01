@@ -40,7 +40,10 @@ the host.
 tools/bench/gui/run.sh --host --appimage Natron-x86_64.AppImage --sizes 300,1000,3000 --topologies mixed,comp
 ```
 
-Natron takes over the screen while it runs. Leave the mouse and keyboard alone.
+Natron takes over the screen while it runs. Leave the mouse and keyboard alone. The terminal
+prints the result path first, then each result line as it lands; a run that writes no results
+ends with the tail of `natron.log`. On a session whose screen X clients cannot read back
+(XWayland), the run notes it and carries on; the bench itself reads no pixels.
 
 Both modes run Natron under a throwaway HOME seeded with `checkForUpdates=false`, so your
 settings are neither read nor changed. Each run writes:

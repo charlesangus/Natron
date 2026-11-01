@@ -8252,6 +8252,10 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
         std::list<const Node*> markedNodes;
         addIdentityNodesRecursively(this, this, time, view, &outputs, &markedNodes);
     }
+    // A viewer without the GUI never pulls images, so it does not count as a reference.
+    if (appPTR->isBackground()) {
+        outputs.remove_if([](const Node* output) { return output->isEffectViewer() != 0; });
+    }
     std::size_t sz = outputs.size();
 
     if (sz > 1) {

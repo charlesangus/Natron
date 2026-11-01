@@ -12,7 +12,6 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
-#include "Engine/ViewerInstance.h"
 
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
@@ -90,9 +89,6 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
-    // The background AppManager does not register the Viewer, and the Viewer is the one image input
-    // that takes raw, so ViewerRaw_Test.cpp needs it registered by hand.
-    registerTestBuiltInPlugin<ViewerInstance>();
 }
 
 void

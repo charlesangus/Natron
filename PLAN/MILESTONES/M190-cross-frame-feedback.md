@@ -84,10 +84,11 @@ Acceptance sketch:
 
 ## Phase 190.3: Fractional-frame iteration
 
-- [ ] M190.P3.T1 — Evaluate loop samples at fractional frame times
+- [x] M190.P3.T1 — Evaluate loop samples at fractional frame times
   - files: `Engine/Nodes/Loop/*`, render-context time keys, `Tests/Native/NativeLoopCrossFrame_Test.cpp`, loop docs
   - approach: Give iteration/substep sampling an explicit fractional time derived from the loop range and count, propagate it through input evaluation and caching, and document the distinction between iterations and whole-frame stepping.
   - verify: An animated-dot fixture sampled over several substeps produces smooth intermediate positions and distinct cache keys rather than repeated whole frames.
   - size: L
 
 **Verification gate:** the original cross-frame gate passes; the animated-dot UAT demonstrates smooth fractional samples and the guide describes the semantics accurately.
+- 2026-11-01 — P3.T1 at efd54d3fa: N Count iterations sample at f−1+(k+1)/N; a LoopEnd `subframes` knob (on by default, Cross Frame + Count only) restores whole-frame substeps for frame-only inputs such as sequence readers (implementer; user to confirm the knob). Answer to the user's "solver-like subframe sampling?": fixed, evenly spaced substeps only; adaptive step size would be its own milestone (PM).

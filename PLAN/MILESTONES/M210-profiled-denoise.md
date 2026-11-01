@@ -126,3 +126,4 @@ Deps: M209 - Edge-Aware Filter Library (wavelets). See `DECISIONS/2026-10-25-dar
 
 - 2026-10-27 — Restacked on main after M209 merged; gate green. UAT: build/appimages/Natron-m210-profiled-denoise.AppImage, M210-uat.md, draft PR #140. Reference suite timeout 1800 s (full-frame parity cases ~180 s per site).
 - 2026-10-30 — **UAT passed (user).** Profiled Denoise is accepted for merge.
+- 2026-11-01 — PR review: an ISO outside the profiled range falls back to the generic profile, as darktable does (it only interpolates between profiled ISOs); the brief's "clamp to nearest" edge case is superseded (PM).

@@ -677,7 +677,6 @@ Defocus::passes(const DefocusParams& params,
     gather.slot = 1;
     // Two table reads per run.
     gather.tapsPerSample = state ? std::max<std::size_t>(1, 2 * state->runs.size()) : (std::size_t)(2 * (2 * haloY + 1));
-    gather.sigma = 2. * std::max(rx, ry) / 2.4;
     list.passes.push_back(gather);
 
     if (params.highlight.isActive()) {
@@ -811,12 +810,19 @@ Defocus::readsGpuInput(int inputNb,
     return inputNb != kDefocusInputKernel;
 }
 
-std::optional<GpuCostHint>
-Defocus::gpuCostHint(double time,
-                     ViewIdx view,
-                     unsigned int mipmapLevel) const
+GpuWeight
+Defocus::gpuWeight(double time,
+                   ViewIdx view,
+                   unsigned int mipmapLevel) const
 {
-    return passListCostHint(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const PassExtent extent = passListExtent(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const int halo = std::max(extent.haloX, extent.haloY);
+    if (halo <= 0) {
+        return GpuWeight::filter();
+    }
+
+    // The gather visits every kernel row, so its cost follows the kernel's diameter.
+    return gpuSizeScaledWeight(2. * halo);
 }
 
 bool

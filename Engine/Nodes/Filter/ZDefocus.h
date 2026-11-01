@@ -184,9 +184,9 @@ public:
                                const ImageLayerDesc& plane,
                                double time,
                                ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual std::optional<GpuCostHint> gpuCostHint(double time,
-                                                   ViewIdx view,
-                                                   unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getGpuExtraInputLayers(int inputNb,
                                         const ImageLayerDesc& plane,
                                         double time,

@@ -434,7 +434,6 @@ focalPlanePasses(const ZDefocusStatePtr& state)
 PassList
 resultPasses(int haloX,
              int haloY,
-             double sigma,
              std::size_t taps,
              const ZDefocusStatePtr& state,
              const std::vector<unsigned char>& used)
@@ -446,7 +445,6 @@ resultPasses(int haloX,
 
     Pass extent = Pass::gather(haloX, haloY, false, Worker());
     extent.slot = 2;
-    extent.sigma = sigma;
     extent.tapsPerSample = taps;
     list.passes.push_back(extent);
     if (!state) {
@@ -1404,10 +1402,9 @@ ZDefocus::opPasses(double time,
     int haloX = 0;
     int haloY = 0;
     halo(params, context, sliceList, &haloX, &haloY);
-    const double sigma = 2. * std::max(sliceList.front().radiusX, std::max(sliceList.front().radiusY, std::max(sliceList.back().radiusX, sliceList.back().radiusY))) / 2.4;
     // Every slice gathers its layer and its coverage, at most two reads per kernel row each.
     const std::size_t taps = (std::size_t)(2 * (2 * haloY + 1)) * sliceList.size();
-    PassList list = resultPasses(haloX, haloY, sigma, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
+    PassList list = resultPasses(haloX, haloY, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
 
 #ifdef NATRON_HAVE_GPU
     ImageLayerDesc depthLayer;
@@ -1431,12 +1428,19 @@ ZDefocus::readsGpuInput(int inputNb,
     return inputNb != kZDefocusInputKernel;
 }
 
-std::optional<GpuCostHint>
-ZDefocus::gpuCostHint(double time,
-                      ViewIdx view,
-                      unsigned int mipmapLevel) const
+GpuWeight
+ZDefocus::gpuWeight(double time,
+                    ViewIdx view,
+                    unsigned int mipmapLevel) const
 {
-    return passListCostHint(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const PassExtent extent = passListExtent(opPasses(time, view, RenderScale::fromMipmapLevel(mipmapLevel)));
+    const int halo = std::max(extent.haloX, extent.haloY);
+    if (halo <= 0) {
+        return GpuWeight::filter();
+    }
+
+    // The gather visits every kernel row, so its cost follows the kernel's diameter.
+    return gpuSizeScaledWeight(2. * halo);
 }
 
 bool
@@ -1754,7 +1758,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
     const PassExtent extent = passListExtent(full);
     const Pass& first = full.passes.front();
 
-    return runPassesCpu(*this, plan, args, resultPasses(extent.haloX, extent.haloY, first.sigma, first.tapsPerSample, state, used));
+    return runPassesCpu(*this, plan, args, resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used));
 } // ZDefocus::renderOp
 
 void

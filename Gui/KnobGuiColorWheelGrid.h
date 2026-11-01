@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <vector>
 
 #include <QPointer>
@@ -121,6 +122,14 @@ private:
                          double value);
     void onLuminanceReset(int index);
 
+    /**
+     * @brief Repaints the wheels after the project's config or working space changed: their
+     * colours and the display conversion depend on both.
+     **/
+    void onProjectColorConfigChanged();
+
+    void unregisterConfigCallback();
+
     KnobSeparatorWPtr _knob;
     QPointer<QFrame> _line;
     QPointer<QWidget> _grid;
@@ -130,6 +139,8 @@ private:
     PolarValue _value;
     bool _moved;
     QPointer<Gui> _draftGui;
+    std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
+    int _configCallbackId;
 };
 
 NATRON_NAMESPACE_EXIT

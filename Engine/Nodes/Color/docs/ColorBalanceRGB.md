@@ -4,7 +4,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| ColorBalanceRGB | darktable reference | `kReferenceMean` 2e-4, `kReferenceMax` 5e-3 | mean and largest absolute error over the crop, relative to the reference's mean level, each sample's beyond the half float reference's rounding (`RawReference::halfFloatError`), against darktable-cli renders (`NativeColorBalanceRGB_Test.cpp`, `MatchesDarktable`). Provisional until the references are rendered |
+| ColorBalanceRGB | darktable reference | `kReferenceMean` 2e-4, `kReferenceMax` 5e-3 | mean and largest absolute error over the crop, relative to the reference's mean level, each sample's beyond the half float reference's rounding (`RawReference::halfFloatError`), against darktable-cli renders (`NativeColorBalanceRGB_Test.cpp`, `MatchesDarktable`) |
 | ColorBalanceRGB | identity | 2e-4 relative | defaults on low-chroma colours, both formulas (`DefaultsKeepLowChromaColours`) |
 | ColorBalanceRGB | gpu | `ParityTolerance::make(0., 1e-4)`, JzAzBz `1e-3` | kernel against the CPU row, both formulas, every control, mask outputs and presets (`NativeColorBalanceRGBGpu_Test.cpp`). JzAzBz's PQ curve amplifies float rounding: a float round trip drifts up to 2.6e-4 (CPU) and 2.8e-4 (lavapipe) from its input, and the two disagree by up to 3.75e-4 |
 
@@ -30,12 +30,15 @@ with other darktable ports live in `Engine/Nodes/Color/DtColorSpaces.h` and
 | midtones_Y, midtones_H, midtones_C | powerLuminance, powerHue, powerChroma | 4 Ways |
 | saturation_formula | saturationFormula (default darktable UCS) | Masks |
 | shadows_weight | shadowsWeight | Masks |
-| mask_grey_fulcrum | maskGreyFulcrum | Masks |
+| mask_grey_fulcrum | maskGreyFulcrum (minimum 1e-4) | Masks |
 | highlights_weight | highlightsWeight | Masks |
 | white_fulcrum | whiteFulcrum (EV) | Masks |
-| grey_fulcrum | contrastGreyFulcrum | Masks |
+| grey_fulcrum | contrastGreyFulcrum (minimum 1e-4) | Masks |
 | (GUI mask preview) | output: Result, Shadows Mask, Midtones Mask, Highlights Mask | Masks |
 | (presets) | preset and applyPreset | top |
+| (picker area) | pickerBottomLeft, pickerSize | top |
+| (wheel pickers; ctrl+click) | pickOffset, pickLift, pickGain, pickPower; pickSameHue | 4 Ways, Values group |
+| (fulcrum pickers) | pickWhiteFulcrum, pickContrastGreyFulcrum | Masks |
 
 Values are darktable's internal ones: darktable's GUI shows most sliders as percentages, the
 knobs hold the fraction (25 % is 0.25). The presets are darktable's four "basic colorfulness"
@@ -56,8 +59,20 @@ presets; Apply writes every control, resetting the ones a preset does not name.
   the centre is chroma; the outer edge is the chroma knob's soft maximum, and scrolling zooms it.
   Drag the ring to change the hue alone, and double-click to reset the chroma. A drag is one undo
   step. To type values, open the tab's collapsed Values group, which holds the twelve knobs.
-- **Not ported:** the colour pickers (white fulcrum, grey fulcrum, neutralize), the colour checker
-  and the GUI-only collapsible sections. Mask previews are the Output choice.
+- **Pickers.** darktable's pickers read the area its picker box covers; here the box is the Picker
+  Bottom Left and Picker Size knobs, drawn as a rectangle in the viewer, and each picker is a Pick
+  button beside the knobs it sets. As in darktable they read the node's input, in linear Rec.2020.
+  A wheel's Pick (Offset, Lift, Gain, Power) sets its hue opposite the area's mean colour, which
+  neutralizes a cast, and its chroma to the mean's luminance times chroma; with Pick Same Hue on
+  (darktable's ctrl+click) it takes the mean's own hue. Pick White Fulcrum sets the EV of the
+  luminance of the area's per-channel maximum; Pick Contrast Grey Fulcrum the mean's luminance.
+  Each pick is one undo step.
+- **Grey fulcrums stay above 0.** darktable lets Mask Grey Fulcrum and Contrast Grey Fulcrum reach
+  0, where the grade divides by zero and renders NaN. Both knobs stop at 1e-4, and the render
+  holds an expression or a script to it too.
+- **Output replaces the mask checker.** darktable previews the opacity masks over a checkerboard,
+  with toggles to show each mask and controls for the checker's colours and size. Here the Output
+  choice shows each mask as an image in the viewer instead, so those controls are not ported.
 - **Alpha** passes through. Premult, mask and mix are the host's stages.
 
 ## GPU

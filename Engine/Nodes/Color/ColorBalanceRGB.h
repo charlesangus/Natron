@@ -96,6 +96,16 @@
 #define kColorBalanceRGBParamContrastGreyFulcrum "contrastGreyFulcrum"
 #define kColorBalanceRGBParamOutput "output"
 
+#define kColorBalanceRGBParamPickerBottomLeft "pickerBottomLeft"
+#define kColorBalanceRGBParamPickerSize "pickerSize"
+#define kColorBalanceRGBParamPickSameHue "pickSameHue"
+#define kColorBalanceRGBParamPickOffset "pickOffset"
+#define kColorBalanceRGBParamPickLift "pickLift"
+#define kColorBalanceRGBParamPickGain "pickGain"
+#define kColorBalanceRGBParamPickPower "pickPower"
+#define kColorBalanceRGBParamPickWhiteFulcrum "pickWhiteFulcrum"
+#define kColorBalanceRGBParamPickContrastGreyFulcrum "pickContrastGreyFulcrum"
+
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kColorBalanceRGBInputs[] = {
@@ -132,6 +142,30 @@ struct ColorBalanceRGBOp {
         eWheelPower,
         eWheelCount
     };
+
+    /**
+     * @brief darktable's area colour pickers: one per wheel (in WheelEnum's order), then White
+     * Fulcrum and Contrast Grey Fulcrum.
+     **/
+    enum PickerEnum {
+        ePickerWhiteFulcrum = eWheelCount,
+        ePickerContrastGreyFulcrum,
+        ePickerCount
+    };
+
+    /**
+     * @brief What color_picker_apply() takes from a picked area: a wheel's hue (degrees) and
+     * chroma, White Fulcrum (EV) and Contrast Grey Fulcrum.
+     **/
+    struct PickedValues {
+        double hue = 0.;
+        double chroma = 0.;
+        double whiteFulcrum = 0.;
+        double greyFulcrum = 0.;
+    };
+
+    // The grey fulcrums divide the luminance; darktable's range starts at 0, which makes NaNs.
+    static constexpr double kMinimumGreyFulcrum = 1e-4;
 
     struct Params {
         int output = eOutputResult;
@@ -217,6 +251,25 @@ struct ColorBalanceRGBOp {
                       float opacities[3]);
 
     /**
+     * @brief darktable's color_picker_apply() on a picked area's mean and per-channel maximum, both
+     * in linear Rec.2020: a wheel takes the hue opposite the mean's (the mean's own when sameHue),
+     * in [0, 360), and the chroma Y times c of the mean's Ych; White Fulcrum is log2 of the
+     * maximum's Y; Contrast Grey Fulcrum the mean's Y. Each is clamped to its knob's range.
+     **/
+    static PickedValues pickedValues(const Params& params,
+                                     const float mean[3],
+                                     const float maximum[3],
+                                     bool sameHue);
+
+    /**
+     * @brief Converts count working-space RGB pixels (three floats each) to linear Rec.2020 in
+     * place, as the row kernel does before grading.
+     **/
+    static void workingToPipe(const Params& params,
+                              float* rgb,
+                              int count);
+
+    /**
      * @brief The double knobs a preset writes, in darktable's parameter order; the rest of the
      * node's double knobs are reset to their defaults when a preset is applied.
      **/
@@ -250,6 +303,11 @@ struct ColorBalanceRGBOp {
     KnobDoubleWPtr whiteFulcrum;
     KnobDoubleWPtr contrastGreyFulcrum;
     KnobChoiceWPtr output;
+
+    KnobDoubleWPtr pickerBottomLeft;
+    KnobDoubleWPtr pickerSize;
+    KnobBoolWPtr pickSameHue;
+    KnobButtonWPtr pickers[ePickerCount];
 
     KnobHolder* holder = nullptr;
 };
@@ -288,7 +346,30 @@ public:
      **/
     void applyPresetAt(int index);
 
+    /**
+     * @brief Reads the source at full scale over the picker area and sets the knobs darktable's
+     * picker sets from it (ColorBalanceRGBOp::PickerEnum), as one undo step. False, changing
+     * nothing, when there is no source or the area misses it.
+     **/
+    bool pickArea(int picker,
+                  double time,
+                  ViewIdx view);
+
 private:
+    virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
+
+    /**
+     * @brief While the picker area knobs are at their defaults, moves those defaults to
+     * darktable's default picker box, 2% to 98% of the source's format.
+     **/
+    void refreshPickerDefaults();
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,

@@ -263,6 +263,29 @@ try:
             yield ("sleep", 300)
             screen_crop("colorbalancergb_masks_" + name, panel_of(node))
         output.setValue(0)
+
+        # The Pick buttons read the input over the picker area, drawn in the viewer.
+        source = app.createNode("net.sf.openfx.ConstantPlugin")
+        require(source is not None, "create a Constant to pick from")
+        source.getParam("color").set(0.5, 0.25, 0.1, 1.0)
+        check(node.connectInput(0, source), "connect the Constant to ColorBalanceRGB")
+        yield ("sleep", 300)
+        for button, knobs in (("pickLift", ("liftHue", "liftChroma")),
+                              ("pickWhiteFulcrum", ("whiteFulcrum",)),
+                              ("pickContrastGreyFulcrum", ("contrastGreyFulcrum",))):
+            param = node.getParam(button)
+            if not check(param is not None, "ColorBalanceRGB has a %s button" % button):
+                continue
+            before = [node.getParam(k).getValue() for k in knobs]
+            param.trigger()
+            yield ("sleep", 300)
+            after = [node.getParam(k).getValue() for k in knobs]
+            report("NOTE %s: %r -> %r" % (button, before, after))
+            check(after != before, "%s sets %s" % (button, ", ".join(knobs)))
+        show_tab(panel_of(node), "Masks")
+        yield ("sleep", 200)
+        screen_crop("colorbalancergb_masks_picked", panel_of(node))
+        source.destroy()
         node.destroy()
         yield ("sleep", 200)
 

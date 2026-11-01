@@ -48,6 +48,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorBalanceRGB.h"
 #include "Engine/Nodes/Color/DtColorSpaces.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -115,6 +116,9 @@ protected:
         }
         if (Knob<int>* i = dynamic_cast<Knob<int>*>(knob.get())) {
             return i->getValue(0);
+        }
+        if (Knob<bool>* b = dynamic_cast<Knob<bool>*>(knob.get())) {
+            return b->getValue(0) ? 1. : 0.;
         }
         ADD_FAILURE() << name << " is not numeric";
 
@@ -220,6 +224,16 @@ TEST_F(NativeColorBalanceRGBTest, ControlsAndDefaults)
         EXPECT_NEAR(d.value, knobValue(node, d.name), 1e-7) << d.name;
     }
     EXPECT_TRUE(bool(node->getKnobByName(kColorBalanceRGBParamApplyPreset)));
+    EXPECT_NEAR(0., knobValue(node, kColorBalanceRGBParamPickSameHue), 1e-7);
+    for (const char* name : { kColorBalanceRGBParamPickOffset, kColorBalanceRGBParamPickLift, kColorBalanceRGBParamPickGain, kColorBalanceRGBParamPickPower,
+                              kColorBalanceRGBParamPickWhiteFulcrum, kColorBalanceRGBParamPickContrastGreyFulcrum }) {
+        EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(name)))) << name;
+    }
+    for (const char* name : { kColorBalanceRGBParamPickerBottomLeft, kColorBalanceRGBParamPickerSize }) {
+        KnobDoublePtr area = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+        ASSERT_TRUE(bool(area)) << name;
+        EXPECT_EQ(2, area->getDimension()) << name;
+    }
 
     const std::pair<const char*, int> choices[] = {
         { kColorBalanceRGBParamPreset, 4 },
@@ -242,8 +256,8 @@ TEST_F(NativeColorBalanceRGBTest, KnobsSitInTheirTabs)
     ASSERT_TRUE(bool(node));
     const std::pair<const char*, std::vector<const char*>> tabs[] = {
         { kColorBalanceRGBTabMaster, { kColorBalanceRGBParamHueShift, kColorBalanceRGBParamVibrance, kColorBalanceRGBParamContrast, kColorBalanceRGBParamChromaGlobal, kColorBalanceRGBParamSaturationShadows, kColorBalanceRGBParamBrillianceHighlights } },
-        { kColorBalanceRGBTabFourWays, { kColorBalanceRGBParamOffsetLuminance, kColorBalanceRGBParamOffsetHue, kColorBalanceRGBParamOffsetChroma, kColorBalanceRGBParamLiftLuminance, kColorBalanceRGBParamLiftHue, kColorBalanceRGBParamLiftChroma, kColorBalanceRGBParamGainLuminance, kColorBalanceRGBParamGainHue, kColorBalanceRGBParamGainChroma, kColorBalanceRGBParamPowerLuminance, kColorBalanceRGBParamPowerHue, kColorBalanceRGBParamPowerChroma } },
-        { kColorBalanceRGBTabMasks, { kColorBalanceRGBParamSaturationFormula, kColorBalanceRGBParamShadowsWeight, kColorBalanceRGBParamMaskGreyFulcrum, kColorBalanceRGBParamHighlightsWeight, kColorBalanceRGBParamWhiteFulcrum, kColorBalanceRGBParamContrastGreyFulcrum, kColorBalanceRGBParamOutput } },
+        { kColorBalanceRGBTabFourWays, { kColorBalanceRGBParamOffsetLuminance, kColorBalanceRGBParamOffsetHue, kColorBalanceRGBParamOffsetChroma, kColorBalanceRGBParamLiftLuminance, kColorBalanceRGBParamLiftHue, kColorBalanceRGBParamLiftChroma, kColorBalanceRGBParamGainLuminance, kColorBalanceRGBParamGainHue, kColorBalanceRGBParamGainChroma, kColorBalanceRGBParamPowerLuminance, kColorBalanceRGBParamPowerHue, kColorBalanceRGBParamPowerChroma, kColorBalanceRGBParamPickSameHue, kColorBalanceRGBParamPickOffset, kColorBalanceRGBParamPickLift, kColorBalanceRGBParamPickGain, kColorBalanceRGBParamPickPower } },
+        { kColorBalanceRGBTabMasks, { kColorBalanceRGBParamSaturationFormula, kColorBalanceRGBParamShadowsWeight, kColorBalanceRGBParamMaskGreyFulcrum, kColorBalanceRGBParamHighlightsWeight, kColorBalanceRGBParamWhiteFulcrum, kColorBalanceRGBParamContrastGreyFulcrum, kColorBalanceRGBParamOutput, kColorBalanceRGBParamPickWhiteFulcrum, kColorBalanceRGBParamPickContrastGreyFulcrum } },
     };
     for (const auto& tab : tabs) {
         KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(tab.first));
@@ -508,7 +522,7 @@ TEST_F(NativeColorBalanceRGBTest, ApplyPresetWritesEveryControl)
 /**
  * Each make-reference.py colorbalancergb job against ColorBalanceRGB in a Linear Rec.2020
  * project, fed the job's "base" crop: the same develop without the module, so the comparison
- * holds the module alone. Skipped until the references are rendered.
+ * holds the module alone.
  **/
 TEST_F(NativeColorBalanceRGBTest, MatchesDarktable)
 {
@@ -517,12 +531,7 @@ TEST_F(NativeColorBalanceRGBTest, MatchesDarktable)
     int height = 0;
     std::string error;
 
-    if (!RawReference::readReference(referencePath("base"), &base, &width, &height, &error)) {
-        // The bundled gtest has no GTEST_SKIP.
-        std::printf("no darktable references yet (tools/raw/make-reference.sh --only colorbalancergb): %s\n", error.c_str());
-
-        return;
-    }
+    ASSERT_TRUE(RawReference::readReference(referencePath("base"), &base, &width, &height, &error)) << error;
     setWorkingSpace(kLinearRec2020);
 
     const int jz = ColorBalanceRGBOp::eSaturationFormulaJzAzBz;
@@ -618,5 +627,174 @@ TEST_F(NativeColorBalanceRGBTest, MatchesDarktable)
                     job.suffix.c_str(), 100. * relMean, 100. * relMax, maxX, maxY, level);
         EXPECT_LE(relMean, kReferenceMean) << job.suffix;
         EXPECT_LE(relMax, kReferenceMax) << job.suffix << " at " << maxX << "," << maxY;
+    }
+}
+
+// darktable lets both grey fulcrums reach 0, where the grade divides by zero. The knobs stop at
+// kMinimumGreyFulcrum and bake() holds an expression to it, so black and grey stay finite.
+TEST_F(NativeColorBalanceRGBTest, GreyFulcrumsStayAboveZero)
+{
+    NodePtr node = makeNode();
+
+    ASSERT_TRUE(bool(node));
+    ColorBalanceRGB* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    for (const char* name : { kColorBalanceRGBParamMaskGreyFulcrum, kColorBalanceRGBParamContrastGreyFulcrum }) {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_DOUBLE_EQ(ColorBalanceRGBOp::kMinimumGreyFulcrum, knob->getMinimum(0)) << name;
+        ASSERT_TRUE(setKnobValues(node, name, { 0. }));
+        EXPECT_NEAR(ColorBalanceRGBOp::kMinimumGreyFulcrum, knob->getValue(0), 1e-12) << name;
+    }
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamContrast, { 0.4 }));
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamLiftLuminance, { 0.2 }));
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamGainLuminance, { -0.2 }));
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamShadowsWeight, { 2. }));
+
+    const std::vector<float> rgb = { 0.f, 0.f, 0.f, 0.18f, 0.18f, 0.18f, 0.5f, 0.2f, 0.05f, 4.f, 3.f, 2.f };
+    const auto expectFinite = [&](const char* what) {
+        const ColorBalanceRGBOp::Params p = effect->bakeColorBalanceRGB(kTime, ViewIdx(0));
+        EXPECT_GE(p.greyFulcrum, (float)ColorBalanceRGBOp::kMinimumGreyFulcrum) << what;
+        EXPECT_TRUE(std::isfinite(p.maskGreyFulcrum) && (p.maskGreyFulcrum > 0.f)) << what;
+        const std::vector<float> out = runRow(node, rgb);
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            EXPECT_TRUE(std::isfinite(out[i])) << what << " sample " << i;
+        }
+    };
+    expectFinite("knobs at the minimum");
+
+    // An expression bypasses the knob's minimum.
+    for (const char* name : { kColorBalanceRGBParamMaskGreyFulcrum, kColorBalanceRGBParamContrastGreyFulcrum }) {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+        ASSERT_NO_THROW(knob->setExpression(0, "0", false, false)) << name;
+        EXPECT_NEAR(0., knob->getValue(0, ViewSpec::current(), false), 1e-12) << name;
+    }
+    expectFinite("expressions at 0");
+}
+
+/**
+ * darktable's color_picker_apply(): a wheel takes the hue opposite the mean's (or the mean's own
+ * with Pick Same Hue) and the mean's luminance times chroma; White Fulcrum the EV of the
+ * per-channel maximum's luminance; Contrast Grey Fulcrum the mean's luminance.
+ **/
+TEST_F(NativeColorBalanceRGBTest, PickedValues)
+{
+    setWorkingSpace(kLinearRec2020);
+    NodePtr node = makeNode();
+
+    ASSERT_TRUE(bool(node));
+    ColorBalanceRGB* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    const ColorBalanceRGBOp::Params p = effect->bakeColorBalanceRGB(kTime, ViewIdx(0));
+
+    // Neutral colours: no chroma, and the luminance is the grey level.
+    {
+        const float grey[3] = { 0.18f, 0.18f, 0.18f };
+        const float white[3] = { 1.f, 1.f, 1.f };
+        const ColorBalanceRGBOp::PickedValues v = ColorBalanceRGBOp::pickedValues(p, grey, white, false);
+        EXPECT_NEAR(0.18, v.greyFulcrum, 2e-3);
+        EXPECT_NEAR(0., v.whiteFulcrum, 1e-2);
+        EXPECT_NEAR(0., v.chroma, 1e-3);
+        const float brighter[3] = { 4.f, 2.f, 1.f };
+        EXPECT_GT(ColorBalanceRGBOp::pickedValues(p, grey, brighter, false).whiteFulcrum, 1.);
+        const float black[3] = { 0.f, 0.f, 0.f };
+        const ColorBalanceRGBOp::PickedValues dark = ColorBalanceRGBOp::pickedValues(p, black, black, false);
+        EXPECT_DOUBLE_EQ(-16., dark.whiteFulcrum);
+        EXPECT_DOUBLE_EQ(ColorBalanceRGBOp::kMinimumGreyFulcrum, dark.greyFulcrum);
+    }
+
+    // An orange: the hue and chroma follow pipe_RGB_to_Ych() by hand.
+    const float orange[3] = { 0.6f, 0.3f, 0.1f };
+    float lms[3];
+    float yrg[3];
+    float ych[4];
+    DtColorSpaces::apply(p.inputMatrix, orange, lms);
+    DtColorSpaces::lmsToYrg(lms, yrg);
+    DtColorSpaces::yrgToYch(yrg, ych);
+    double hue = std::atan2((double)ych[3], (double)ych[2]) * 180. / M_PI - kAngleShiftDegrees;
+    hue = std::fmod(hue + 360., 360.);
+    const ColorBalanceRGBOp::PickedValues same = ColorBalanceRGBOp::pickedValues(p, orange, orange, true);
+    const ColorBalanceRGBOp::PickedValues opposite = ColorBalanceRGBOp::pickedValues(p, orange, orange, false);
+    EXPECT_NEAR(hue, same.hue, 1e-3);
+    EXPECT_NEAR(std::fmod(hue + 180., 360.), opposite.hue, 1e-3);
+    EXPECT_NEAR((double)ych[1] * ych[0], same.chroma, 1e-6);
+    EXPECT_DOUBLE_EQ(same.chroma, opposite.chroma);
+    EXPECT_GT(same.chroma, 0.01);
+    EXPECT_NEAR(std::log2((double)ych[0]), same.whiteFulcrum, 1e-5);
+    EXPECT_NEAR((double)ych[0], same.greyFulcrum, 1e-6);
+
+    // Grading the orange with the opposite hue on the offset pulls it towards neutral.
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamOffsetHue, { opposite.hue }));
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamOffsetChroma, { opposite.chroma }));
+    const std::vector<float> graded = runRow(node, { orange[0], orange[1], orange[2] });
+    EXPECT_LT(graded[0] - graded[2], orange[0] - orange[2]);
+}
+
+// The Pick buttons read the source over the picker area and set the knobs darktable's pickers set.
+TEST_F(NativeColorBalanceRGBTest, PickersSetTheirKnobs)
+{
+    setWorkingSpace(kLinearRec2020);
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr node = makeNode();
+
+    ASSERT_TRUE(source && node);
+    const float colour[3] = { 0.5f, 0.25f, 0.1f };
+    ASSERT_TRUE(setKnobValues(source, kConstantParamColor, { colour[0], colour[1], colour[2], 1. }));
+    connectNodes(source, node, 0, true);
+    ColorBalanceRGB* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamPickerBottomLeft, { 4., 4. }));
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamPickerSize, { 16., 16. }));
+
+    const ColorBalanceRGBOp::Params p = effect->bakeColorBalanceRGB(kTime, ViewIdx(0));
+    const ColorBalanceRGBOp::PickedValues opposite = ColorBalanceRGBOp::pickedValues(p, colour, colour, false);
+    const ColorBalanceRGBOp::PickedValues same = ColorBalanceRGBOp::pickedValues(p, colour, colour, true);
+
+    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::eWheelLift, kTime, ViewIdx(0)));
+    EXPECT_NEAR(opposite.hue, knobValue(node, kColorBalanceRGBParamLiftHue), 1e-3);
+    EXPECT_NEAR(opposite.chroma, knobValue(node, kColorBalanceRGBParamLiftChroma), 1e-5);
+    EXPECT_NEAR(0., knobValue(node, kColorBalanceRGBParamGainChroma), 1e-12);
+
+    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamPickSameHue, { 1. }));
+    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::eWheelGain, kTime, ViewIdx(0)));
+    EXPECT_NEAR(same.hue, knobValue(node, kColorBalanceRGBParamGainHue), 1e-3);
+    EXPECT_NEAR(same.chroma, knobValue(node, kColorBalanceRGBParamGainChroma), 1e-5);
+
+    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::ePickerWhiteFulcrum, kTime, ViewIdx(0)));
+    EXPECT_NEAR(same.whiteFulcrum, knobValue(node, kColorBalanceRGBParamWhiteFulcrum), 1e-5);
+    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::ePickerContrastGreyFulcrum, kTime, ViewIdx(0)));
+    EXPECT_NEAR(same.greyFulcrum, knobValue(node, kColorBalanceRGBParamContrastGreyFulcrum), 1e-5);
+}
+
+// The wheels draw in the working space: under ACEScct (no matrix to XYZ) a wheel colour is the
+// ACEScct encoding of the same colour under ACEScg.
+TEST_F(NativeColorBalanceRGBTest, WheelColoursFollowTheWorkingSpace)
+{
+    NodePtr node = makeNode();
+
+    ASSERT_TRUE(bool(node));
+    KnobSeparatorPtr grid = std::dynamic_pointer_cast<KnobSeparator>(node->getKnobByName("wheels"));
+    ASSERT_TRUE(bool(grid));
+    const std::vector<KnobSeparator::ColorWheelSpec> specs = grid->getColorWheelGrid();
+    ASSERT_EQ((std::size_t)ColorBalanceRGBOp::eWheelCount, specs.size());
+    const auto acescct = [](double x) {
+        return (x <= 0.0078125) ? 10.5402377416545 * x + 0.0729055341958355 : (std::log2(x) + 9.72) / 17.52;
+    };
+    const double hues[] = { 0., 75., 160., 290. };
+    const double chroma = 0.01;
+
+    setWorkingSpace("ACEScg");
+    double linear[4][3];
+    for (int i = 0; i < 4; ++i) {
+        specs[(std::size_t)i].colour(hues[i], chroma, linear[i]);
+    }
+    setWorkingSpace("ACEScct");
+    for (int i = 0; i < 4; ++i) {
+        double encoded[3];
+        specs[(std::size_t)i].colour(hues[i], chroma, encoded);
+        for (int c = 0; c < 3; ++c) {
+            ASSERT_GT(linear[i][c], 0.) << hues[i] << " " << c;
+            EXPECT_NEAR(acescct(linear[i][c]), encoded[c], 2e-3) << hues[i] << " " << c;
+        }
     }
 }

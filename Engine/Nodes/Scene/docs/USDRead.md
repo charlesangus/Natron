@@ -19,6 +19,10 @@ evaluations under way to finish and stops the viewers' renders first
 (SceneWriteBarrier). The node is keyed on the stamps of all those files as of its
 last Reload, so a changed nested file re-authors its layer, and the other nodes
 reading the same file are re-keyed with it.
+
+A file that is missing or does not parse sets a
+node error carrying USD's diagnostic, and the scene action fails.
+
 ## Up axis and units
 
 The project's Up Axis and Meters Per Unit are what every Natron-authored layer
@@ -45,8 +49,5 @@ value for it, so the scene reports the project's metrics from this node on.
 **Use File's Metrics For Project** sets the project's Up Axis and Meters Per Unit
 to the file's (fallbacks where unauthored), as one undoable edit. It is a one-shot
 copy, and is disabled while no file is set.
-
-A file that is missing or does not parse sets a
-node error carrying USD's diagnostic, and the scene action fails.
 
 Tolerance: none recorded.

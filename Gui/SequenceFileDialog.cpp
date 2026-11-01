@@ -877,6 +877,8 @@ SequenceFileDialog::getRelativeChoiceProjectPath(std::string& varName,
         std::advance(it, choice);
         varName = it->first;
         varValue = it->second;
+        // A project path may be spelled through another one, such as [Project]/shots.
+        Project::expandVariable(projectPaths, varValue);
 
         return true;
     }

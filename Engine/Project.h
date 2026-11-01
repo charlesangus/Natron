@@ -61,6 +61,8 @@ CLANG_DIAG_ON(uninitialized)
 #define kProjectParamRFVVariablesLabel "Variables"
 #define kProjectParamRFVEdit "editVariables"
 #define kProjectParamRFVEditLabel "Edit variables..."
+#define kProjectParamAddPathVariable "addPathVariable"
+#define kProjectParamAddPathVariableLabel "Add Path Variable..."
 
 NATRON_NAMESPACE_ENTER
 
@@ -420,9 +422,45 @@ public:
     virtual void onKnobContentChanged(const KnobI* knob) OVERRIDE FINAL;
 
     /**
-     * @brief Returns the user environment variables for the project
+     * @brief The project paths by name, with their values as typed: every string variable of the
+     * project (see RFV::getDeclarationSnapshot()) and the built-in [Project] and [OCIO] paths, which
+     * take precedence. MT-safe.
      **/
     void getEnvironmentVariables(std::map<std::string, std::string>& env) const;
+
+    /**
+     * @brief Whether name is a built-in project path, Project or OCIO, which no variable can take.
+     **/
+    static bool isBuiltinPathVariableName(const std::string& name);
+
+    /**
+     * @brief value with every project path expanded, made relative to [Project] when it is not
+     * absolute, and cleaned of '.' and '..', whether or not the folder exists. Empty for an empty
+     * value.
+     **/
+    std::string expandPathPreview(const std::string& value) const;
+
+    /**
+     * @brief The name of a project path other than except whose expanded value (see
+     * expandPathPreview()) is the expansion of value, or empty when there is none.
+     **/
+    std::string findPathVariableWithTarget(const std::string& value, const std::string& except = std::string()) const;
+
+    /**
+     * @brief Whether addPathVariable() would accept name. When it would not, reason says why: it is
+     * empty, built-in, not a valid Python identifier, the name of a project parameter, or an
+     * attribute of the app object.
+     **/
+    bool canAddPathVariable(const std::string& name, std::string* reason = nullptr) const;
+
+    /**
+     * @brief Adds a string variable to the project, name with the given value, which is a project
+     * path from then on. The value may use other project paths. This records nothing in the undo
+     * history.
+     * @returns the variable, or null with error set when canAddPathVariable() is false or the
+     * project's variables group refuses it.
+     **/
+    KnobIPtr addPathVariable(const std::string& name, const std::string& value, std::string* error = nullptr);
 
     /**
      * @brief Expands the environment variables in the given string that are found in env
@@ -634,6 +672,9 @@ Q_SIGNALS:
 
     // The user pressed the variables page's edit button.
     void mustEditVariables();
+
+    // The user pressed the variables page's add path variable button.
+    void mustAddPathVariable();
 
     void formatChanged(Format);
 

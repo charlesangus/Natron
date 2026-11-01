@@ -126,6 +126,7 @@ public:
     KnobStringPtr onNodeCreated;
     KnobStringPtr onNodeDeleted;
     KnobButtonPtr rfvEditKnob;
+    KnobButtonPtr addPathVariableKnob;
     KnobGroupPtr rfvGroup;
     TimeLinePtr timeline; // global timeline
     bool autoSetProjectFormat;

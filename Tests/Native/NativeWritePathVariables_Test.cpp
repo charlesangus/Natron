@@ -83,7 +83,9 @@ protected:
         // The variables must resolve before any file name is set: a [Project] change rewrites the
         // file names spelled through it.
         setPathVariable(NATRON_PROJECT_ENV_VAR_NAME, _dir.path().toStdString());
-        setPathVariable(kOutVariable, pathOf(kOutSubdir));
+        // A project path is a string variable of the project, here spelled through [Project].
+        std::string error;
+        ASSERT_TRUE(bool(project()->addPathVariable(kOutVariable, std::string("[") + NATRON_PROJECT_ENV_VAR_NAME + "]/" + kOutSubdir, &error))) << error;
 
         project()->setAutoSetProjectFormatEnabled(true);
         project()->setOrAddProjectFormat(Format(0, 0, kWidth, kHeight, "nativeWritePathVariables", 1.));
@@ -126,7 +128,7 @@ protected:
         return QFileInfo::exists(QString::fromStdString(path));
     }
 
-    // Sets the row `name` of the project's path variables to `value`, adding it if missing.
+    // Sets the row `name` of the project's built-in path variables to `value`, adding it if missing.
     void setPathVariable(const std::string& name,
                          const std::string& value)
     {

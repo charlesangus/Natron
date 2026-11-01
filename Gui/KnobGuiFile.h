@@ -84,6 +84,8 @@ public Q_SLOTS:
 
     void onSimplifyTriggered();
 
+    void onAddProjectPathTriggered();
+
 private:
     virtual void addRightClickMenuEntries(QMenu* menu) OVERRIDE FINAL;
     virtual bool shouldAddStretch() const OVERRIDE FINAL { return false; }
@@ -151,6 +153,8 @@ public Q_SLOTS:
     void onMakeRelativeTriggered();
 
     void onSimplifyTriggered();
+
+    void onAddProjectPathTriggered();
 
 private:
 

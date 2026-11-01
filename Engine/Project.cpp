@@ -1735,25 +1735,14 @@ Project::initializeKnobs()
 
     _imp->envVars = AppManager::createKnob<KnobPath>( this, tr("Project Paths") );
     _imp->envVars->setName("projectPaths");
-    _imp->envVars->setHintToolTip(tr("Specify here project paths. Any path can be used "
-                                     "in file paths and can be used between brackets, for example: \n"
-                                     "[%1]MyProject.ntpz \n"
-                                     "You can add as many project paths as you want and can name them as you want. This way it "
-                                     "makes it easy to share your projects and move files around."
-                                     " You can chain up paths, like so:\n "
-                                     "[%1] = <PathToProject> \n"
-                                     "[Scene1] = [%1]/Rush/S_01 \n"
-                                     "[Shot1] = [Scene1]/Shot001 \n"
-                                     "By default if a file-path is NOT absolute (i.e: not starting with '/' "
-                                     " on Unix or a drive name on Windows) "
-                                     "then it will be expanded using the [%1] path. "
-                                     "Absolute paths are treated as normal."
-                                     " The [%1] path will be set automatically to "
-                                     " the location of the project file when saving and loading a project."
-                                     " The [%2] path will also be set automatically for better sharing of projects with reader nodes.")
+    _imp->envVars->setHintToolTip(tr("The built-in project paths: [%1], the folder of the project file, set when the "
+                                     "project is saved or loaded, and [%2], the folder of the OCIO config. Every string "
+                                     "variable of the project is a project path too, used in a file path as [name]; its "
+                                     "value may itself use project paths, such as [%1]/shots. A file path that is not "
+                                     "absolute is relative to [%1].")
                                       .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME))
                                       .arg(QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME)));
-    _imp->envVars->setSecret(false);
+    _imp->envVars->setSecret(true);
     _imp->envVars->setMultiPath(true);
 
     page->addKnob(_imp->envVars);
@@ -2151,6 +2140,13 @@ Project::initializeKnobs()
     _imp->rfvEditKnob->setName(kProjectParamRFVEdit);
     _imp->rfvEditKnob->setHintToolTip(tr("Add, edit, reorder or delete the project's variables."));
     rfvPage->addKnob(_imp->rfvEditKnob);
+
+    _imp->addPathVariableKnob = AppManager::createKnob<KnobButton>(this, tr(kProjectParamAddPathVariableLabel));
+    _imp->addPathVariableKnob->setName(kProjectParamAddPathVariable);
+    _imp->addPathVariableKnob->setHintToolTip(tr("Add a string variable naming a folder, used in file paths as [name]. "
+                                                 "Its value may use other project paths, such as [%1]/shots.")
+                                                  .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME)));
+    rfvPage->addKnob(_imp->addPathVariableKnob);
 
     _imp->rfvGroup = AppManager::createKnob<KnobGroup>(this, tr(kProjectParamRFVVariablesLabel));
     _imp->rfvGroup->setName(kProjectParamRFVVariables);
@@ -2911,6 +2907,8 @@ Project::onKnobValueChanged(KnobI* knob,
         Q_EMIT mustCreateFormat();
     } else if ((knob == _imp->rfvEditKnob.get()) && (reason == eValueChangedReasonUserEdited)) {
         Q_EMIT mustEditVariables();
+    } else if ((knob == _imp->addPathVariableKnob.get()) && (reason == eValueChangedReasonUserEdited)) {
+        Q_EMIT mustAddPathVariable();
     } else if (knob == _imp->previewMode.get()) {
         Q_EMIT autoPreviewChanged( _imp->previewMode->getValue() );
         shouldAutoSave = true;
@@ -3705,13 +3703,118 @@ Project::unescapeXML(const std::string &istr)
 void
 Project::getEnvironmentVariables(std::map<std::string, std::string>& env) const
 {
-    std::list<std::vector<std::string> > table;
+    RFVDeclarationsConstPtr declarations = RFV::getDeclarationSnapshot(this);
+    if (declarations) {
+        for (const RFV::VariableDeclaration& declaration : *declarations) {
+            KnobString* isString = dynamic_cast<KnobString*>(declaration.knob.get());
+            if (isString && !isBuiltinPathVariableName(declaration.name)) {
+                env[declaration.name] = isString->getValue();
+            }
+        }
+    }
 
+    std::list<std::vector<std::string>> table;
     _imp->envVars->getTable(&table);
     for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-        assert(it->size() == 2);
-        env[(*it)[0]] = (*it)[1];
+        if ((it->size() == 2) && isBuiltinPathVariableName((*it)[0])) {
+            env[(*it)[0]] = (*it)[1];
+        }
     }
+}
+
+bool
+Project::isBuiltinPathVariableName(const std::string& name)
+{
+    return (name == NATRON_PROJECT_ENV_VAR_NAME) || (name == NATRON_OCIO_ENV_VAR_NAME);
+}
+
+std::string
+Project::expandPathPreview(const std::string& value) const
+{
+    std::map<std::string, std::string> env;
+    getEnvironmentVariables(env);
+    std::string str = value;
+    expandVariable(env, str);
+    if (!str.empty() && isRelative(str)) {
+        std::map<std::string, std::string>::const_iterator foundProject = env.find(NATRON_PROJECT_ENV_VAR_NAME);
+        if ((foundProject != env.end()) && !foundProject->second.empty()) {
+            str = foundProject->second + '/' + str;
+        }
+    }
+    if (str.empty()) {
+        return str;
+    }
+
+    return QDir::cleanPath(QString::fromUtf8(str.c_str())).toStdString();
+}
+
+std::string
+Project::findPathVariableWithTarget(const std::string& value,
+                                    const std::string& except) const
+{
+    const std::string target = expandPathPreview(value);
+    if (target.empty()) {
+        return std::string();
+    }
+    std::map<std::string, std::string> env;
+    getEnvironmentVariables(env);
+    for (std::map<std::string, std::string>::const_iterator it = env.begin(); it != env.end(); ++it) {
+        if ((it->first != except) && !it->second.empty() && (expandPathPreview(it->second) == target)) {
+            return it->first;
+        }
+    }
+
+    return std::string();
+}
+
+bool
+Project::canAddPathVariable(const std::string& name,
+                            std::string* reason) const
+{
+    std::string error;
+    if (name.empty()) {
+        error = "A project path needs a name";
+    } else if (isBuiltinPathVariableName(name)) {
+        error = "[" + name + "] is a built-in project path";
+    } else if (!RFV::isValidVariableName(name)) {
+        error = name + ": a project path name must be a valid Python identifier";
+    } else if (getKnobByName(name)) {
+        error = "The project already has a parameter named " + name;
+    } else if (RFV::isAppAttributeName(getApp(), name)) {
+        error = name + " is an attribute of the app object, so it cannot be a project variable";
+    }
+    if (reason) {
+        *reason = error;
+    }
+
+    return error.empty();
+}
+
+KnobIPtr
+Project::addPathVariable(const std::string& name,
+                         const std::string& value,
+                         std::string* error)
+{
+    if (!canAddPathVariable(name, error)) {
+        return KnobIPtr();
+    }
+    KnobStringPtr knob = createStringKnob(name, name);
+    if (!knob) {
+        if (error) {
+            *error = "Could not create the parameter " + name;
+        }
+
+        return KnobIPtr();
+    }
+    knob->setAnimationEnabled(false);
+    knob->setValue(value);
+    if (!RFV::addAsVariable(this, knob, error)) {
+        deleteKnob(knob.get(), true);
+
+        return KnobIPtr();
+    }
+
+    return knob;
 }
 
 void
@@ -3733,10 +3836,10 @@ Project::expandVariable(const std::string& varName,
                         const std::string& varValue,
                         std::string& str)
 {
-    if ( ( str.size() > (varName.size() + 2) ) && ///can contain the environment variable name
-         ( str[0] == '[') && /// env var name is bracketed
-         ( str.substr( 1, varName.size() ) == varName) && /// starts with the environment variable name
-         ( str[varName.size() + 1] == ']') ) { /// env var name is bracketed
+    if ((str.size() >= (varName.size() + 2)) && /// can contain the environment variable name
+        (str[0] == '[') && /// env var name is bracketed
+        (str.substr(1, varName.size()) == varName) && /// starts with the environment variable name
+        (str[varName.size() + 1] == ']')) { /// env var name is bracketed
         str.erase(str.begin() + varName.size() + 1);
         str.erase( str.begin() );
         str.replace(0, varName.size(), varValue);

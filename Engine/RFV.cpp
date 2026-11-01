@@ -381,6 +381,8 @@ canAddAsVariable(const KnobHolder* holder,
             error = name + ": " + owner + " already has another parameter with that name";
         } else if (project && isAppAttributeName(project->getApp(), name)) {
             error = name + " is an attribute of the app object, so it cannot be a project variable";
+        } else if (project && Project::isBuiltinPathVariableName(name)) {
+            error = name + " is the name of a built-in project path, so it cannot be a project variable";
         }
     }
     if (reason) {

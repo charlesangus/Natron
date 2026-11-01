@@ -58,3 +58,11 @@ print(app.shot.getValue())
 - for a project variable, the name is already an attribute of the app object, such as a method or a top-level node.
 
 A refused parameter stays where its creator put it. A project parameter that is not a variable is not reachable as `app.<name>`.
+
+## Project paths
+
+Every text variable of the project is also a project path: `[name]` in a file path stands for its value. A value can use other project paths, such as `[Project]/shots` or `[shots]/s01`. The names `Project` (the folder of the saved project) and `OCIO` (the folder of the OCIO config) are built in, and no variable can take them. Project paths resolve at the project only: a Set node that overrides a variable does not change the files a node reads or writes. In an expression, `rfv("name")` gives the value as typed, with any `[...]` left in place.
+
+**Add Path Variable...** on the project settings' Variables tab creates one. As you type, the dialog shows the value fully expanded, and its drop-down inserts an existing project path at the cursor. When another project path already names the same folder, the dialog offers to use that one. It creates a second one only when **Create Anyway** is ticked.
+
+**Add Project Path...** in the right-click menu of a file parameter opens the same dialog. It starts with the file's folder, written through the project path that holds most of it. Once the dialog is accepted, the file is rewritten as `[name]/` followed by its file name.

@@ -47,6 +47,7 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
+#include "Gui/AddPathVariableDialog.h"
 #include "Gui/Button.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -290,6 +291,11 @@ KnobGuiFile::addRightClickMenuEntries(QMenu* menu)
     QObject::connect( simplify, SIGNAL(triggered()), this, SLOT(onSimplifyTriggered()) );
     simplify->setToolTip( tr("Same as make relative but will pick the longest project variable to simplify") );
     menu->addAction(simplify);
+    QAction* addProjectPath = new QAction(tr("Add Project Path..."), menu);
+    addProjectPath->setObjectName(QString::fromUtf8("addProjectPathAction"));
+    addProjectPath->setToolTip(tr("Make a project path of this file's folder and spell the file-path through it"));
+    QObject::connect(addProjectPath, SIGNAL(triggered()), this, SLOT(onAddProjectPathTriggered()));
+    menu->addAction(addProjectPath);
 
     menu->addSeparator();
     QMenu* qtMenu = _lineEdit->createStandardContextMenu();
@@ -321,6 +327,21 @@ KnobGuiFile::onMakeRelativeTriggered()
         std::string newValue = oldValue;
         knob->getHolder()->getApp()->getProject()->makeRelativeToProject(newValue);
         pushUndoCommand( new KnobUndoCommand<std::string>( shared_from_this(), oldValue, newValue ) );
+    }
+}
+
+void
+KnobGuiFile::onAddProjectPathTriggered()
+{
+    KnobFilePtr knob = _knob.lock();
+
+    if (!knob || !knob->getHolder() || !knob->getHolder()->getApp()) {
+        return;
+    }
+    const std::string oldValue = knob->getValue();
+    std::string newValue;
+    if (AddPathVariableDialog::runForFilePath(getGui(), knob->getHolder()->getApp()->getProject(), oldValue, _lineEdit->parentWidget(), &newValue) && (newValue != oldValue)) {
+        pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldValue, newValue));
     }
 }
 
@@ -581,6 +602,11 @@ KnobGuiOutputFile::addRightClickMenuEntries(QMenu* menu)
     QObject::connect( simplify, SIGNAL(triggered()), this, SLOT(onSimplifyTriggered()) );
     simplify->setToolTip( tr("Same as make relative but will pick the longest project variable to simplify") );
     menu->addAction(simplify);
+    QAction* addProjectPath = new QAction(tr("Add Project Path..."), menu);
+    addProjectPath->setObjectName(QString::fromUtf8("addProjectPathAction"));
+    addProjectPath->setToolTip(tr("Make a project path of this file's folder and spell the file-path through it"));
+    QObject::connect(addProjectPath, SIGNAL(triggered()), this, SLOT(onAddProjectPathTriggered()));
+    menu->addAction(addProjectPath);
 
     menu->addSeparator();
     QMenu* qtMenu = _lineEdit->createStandardContextMenu();
@@ -612,6 +638,21 @@ KnobGuiOutputFile::onMakeRelativeTriggered()
         std::string newValue = oldValue;
         knob->getHolder()->getApp()->getProject()->makeRelativeToProject(newValue);
         pushUndoCommand( new KnobUndoCommand<std::string>( shared_from_this(), oldValue, newValue ) );
+    }
+}
+
+void
+KnobGuiOutputFile::onAddProjectPathTriggered()
+{
+    KnobOutputFilePtr knob = _knob.lock();
+
+    if (!knob || !knob->getHolder() || !knob->getHolder()->getApp()) {
+        return;
+    }
+    const std::string oldValue = knob->getValue();
+    std::string newValue;
+    if (AddPathVariableDialog::runForFilePath(getGui(), knob->getHolder()->getApp()->getProject(), oldValue, _lineEdit->parentWidget(), &newValue) && (newValue != oldValue)) {
+        pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldValue, newValue));
     }
 }
 

@@ -19,13 +19,15 @@ M259 - GPU Placement Under Render Contexts.
   - `loop.iteration`: `start + k * step` when iterating over a count, `k` over frames;
   - `loop.count`: `n`, the number of iterations the loop defines;
   - `loop.t`: `k / (n - 1)`, 0 for a single iteration;
-  - `loop.frame`: the frame the iteration renders the body at.
+  - `loop.frame`: the frame the iteration renders the body at, fractional under
+    [Subframes](#subframes).
 - The same values are set as `loops.<name>.*`, `name` being the LoopEnd's `name`. A nested
   loop sets its own `loop.*` and keeps the outer loop's `loops.<name>.*`, so a body reads its
   own loop as `loop.*` and any enclosing one by name.
 - Knob drivers in the body read these variables; body nodes whose knobs read none keep their
   context key and render once for every iteration at the same frame, sharing the cache with
-  ordinary renders of that frame.
+  ordinary renders of that frame. Under Subframes the iterations render at different times, so an
+  animated body node renders, and is cached, once per iteration.
 
 ## Drivers
 
@@ -75,8 +77,8 @@ M259 - GPU Placement Under Render Contexts.
 
 ## Iterations
 
-- `iterateOver` Count: `iterations` iterations, all at the current frame. 0 iterations
-  outputs black with a warning.
+- `iterateOver` Count: `iterations` iterations, all at the current frame, except under
+  [Subframes](#subframes). 0 iterations outputs black with a warning.
 - `iterateOver` Frames: one iteration per frame from the current frame plus `frameStart`
   to the current frame plus `frameEnd`, every `frameStep` frames (default -2 to 2 by 1),
   the body rendered at that frame. The body's frames are reported as the frames the LoopEnd
@@ -141,7 +143,9 @@ M259 - GPU Placement Under Render Contexts.
   this LoopEnd's output at the frame before instead of its input, under Accumulate at every
   iteration and under Feedback at the first. At `startFrame` and before it, the LoopBegin
   outputs its input. A trail or a simulation builds up from `startFrame`, the iterations of a
-  frame being its substeps: four Feedback iterations make four substeps a frame.
+  frame being its substeps: four Feedback iterations make four substeps a frame. With
+  `iterateOver` Count, `subframes` places the substeps between frames: see
+  [Subframes](#subframes).
 - A frame needs every frame before it back to `startFrame`. Rendering frame f renders, in
   order, the frames from the latest one kept before f, or from `startFrame`, to f, on one
   thread; the progress panel shows a run of more than two frames, and cancelling it fails that
@@ -158,6 +162,24 @@ M259 - GPU Placement Under Render Contexts.
   by changing `loops.<name>.frame`, would wait for a frame its own render holds up: the render
   fails at once instead, with an error on the LoopEnd naming `loops.<name>.frame`.
 - Each view, proxy level and render context renders its own series.
+
+## Subframes
+
+- `subframes`, on by default, shown under Cross Frame with `iterateOver` Count: the `n`
+  iterations of frame f render the body at `f - 1 + (k + 1) / n`, for k from 0 to `n - 1`,
+  spread evenly over the interval since the frame before and the last one at f itself. A node
+  animated in the body, or feeding it from the side, is sampled at each of those times, so a
+  moving dot merged in at each substep leaves a smooth smear rather than one copy per frame.
+  `loop.frame` is the iteration's fractional time; `loop.t` and `loop.iteration` are unchanged.
+- Off, every iteration renders the body at f, as without Cross Frame: the substeps repeat the
+  same frame of an animated input.
+- The rule applies at every frame, `startFrame` and the frames before it included: their
+  iterations sample the interval before them too.
+- The number of substeps is fixed: `iterations` a frame, evenly spaced. Nothing adapts the step
+  to how fast the input moves.
+- `iterateOver` Frames ignores it: its iterations render at whole frames apart.
+- A node that only has whole frames, such as a reader of an image sequence, shows whichever
+  frame it gives for a fractional time.
 
 ## Bake
 

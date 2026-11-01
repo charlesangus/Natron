@@ -403,6 +403,55 @@ LoopEnd::crossFrameStart() const
     return startFrame ? startFrame->getValue() : 1;
 }
 
+double
+LoopEnd::Resolved::offset(int k) const
+{
+    if (frames) {
+        return (double)frameStart + (double)k * frameStep;
+    }
+    if (subframes && (count > 1)) {
+        // The last iteration lands on the frame itself, exactly.
+        return (double)(k + 1 - count) / (double)count;
+    }
+
+    return 0.;
+}
+
+double
+LoopEnd::Resolved::loopFrame(double frameK,
+                             int k) const
+{
+    const double frame = frameK - offset(k);
+    if (!subframes) {
+        return frame;
+    }
+    // Undoing a fraction of a frame can miss a whole frame by a rounding error, which would make
+    // the iterations derived from one another miss the times the loop set and the frame before.
+    const double whole = std::round(frame);
+
+    return (std::abs(frame - whole) <= 1e-9 * std::max(1., std::abs(whole))) ? whole : frame;
+}
+
+void
+LoopEnd::Resolved::iterationFrom(int i,
+                                 double frameI,
+                                 double timeI,
+                                 int j,
+                                 double* frameJ,
+                                 double* timeJ) const
+{
+    if (!subframes) {
+        // Whole frames apart, which subtract exactly.
+        const double back = offset(i) - offset(j);
+        *frameJ = frameI - back;
+        *timeJ = timeI - back;
+
+        return;
+    }
+    *frameJ = loopFrame(frameI, i) + offset(j);
+    *timeJ = (timeI == frameI) ? *frameJ : timeI - (frameI - *frameJ);
+}
+
 bool
 LoopEnd::crossFrameDriven(double time) const
 {
@@ -460,8 +509,8 @@ LoopEnd::crossFrameStepBefore(const RenderContextPtr& context,
     if ((k < 0) || (k >= *count) || (resolved.feedback && (k > 0))) {
         return false;
     }
-    // The frame the loop renders, which iteration k of Iterate Over Frames renders the body away from.
-    const double outer = *frame - (resolved.frames ? (double)resolved.frameStart + (double)k * resolved.frameStep : 0.);
+    // The frame the loop renders, which iteration k of Iterate Over Frames or Subframes renders the body away from.
+    const double outer = resolved.loopFrame(*frame, k);
     if (!(outer > (double)crossFrameStart())) {
         return false;
     }
@@ -481,6 +530,7 @@ LoopEnd::appendCrossFrameKnobsHash(ContentHasher& h) const
         _reverseOrder.lock(),
         _crossFrame.lock(),
         _startFrame.lock(),
+        _subframes.lock(),
     };
 
     for (const KnobIPtr& knob : knobs) {
@@ -1396,9 +1446,9 @@ LoopEnd::feedbackStepBefore(const RenderContextPtr& context,
     if (!previous->tail) {
         return false;
     }
-    const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
-    previous->context = iterationContext(context, resolved.loopName, k - 1, (int)*count, resolved.start, resolved.step, *frame - frameStep);
-    previous->time = time - frameStep;
+    double previousFrame = 0.;
+    resolved.iterationFrom(k, *frame, time, k - 1, &previousFrame, &previous->time);
+    previous->context = iterationContext(context, resolved.loopName, k - 1, (int)*count, resolved.start, resolved.step, previousFrame);
     previous->iteration = k - 1;
     previous->count = (int)*count;
 
@@ -1451,14 +1501,13 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     if (!frame) {
         return eRenderRoIRetCodeFailed;
     }
-    const double frameStep = resolved.frames ? (double)resolved.frameStep : 0.;
     const unsigned int mipmapLevel = scale.toMipmapLevel();
     // Iteration j of the chain step belongs to, under the variables step.context sets besides it.
     auto iterationAt = [&](int j, double* time) {
-        const double back = (double)(step.iteration - j) * frameStep;
-        *time = step.time - back;
+        double frameJ = 0.;
+        resolved.iterationFrom(step.iteration, *frame, step.time, j, &frameJ, time);
 
-        return iterationContext(step.context, resolved.loopName, j, step.count, resolved.start, resolved.step, *frame - back);
+        return iterationContext(step.context, resolved.loopName, j, step.count, resolved.start, resolved.step, frameJ);
     };
     double time0 = 0.;
     const U64 contextKey = restrictContextToNode(iterationAt(0, &time0), step.tail, 0);
@@ -1769,7 +1818,7 @@ LoopEnd::previewContext(const RenderContextPtr& base,
         return base;
     }
     const int k = std::max(0, std::min(resolved.count - 1, singlePassIteration->getValue()));
-    const double frame = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+    const double frame = time + resolved.offset(k);
 
     return iterationContext(base ? base : RenderContext::empty(), resolved.loopName, k, resolved.count, resolved.start, resolved.step, frame);
 }
@@ -1977,6 +2026,17 @@ LoopEnd::initializeKnobs()
     page->addKnob(startFrame);
     _startFrame = startFrame;
 
+    KnobBoolPtr subframes = createKnob<KnobBool>(tr("Subframes"));
+    subframes->setName(kLoopEndParamSubframes);
+    subframes->setAnimationEnabled(false);
+    subframes->setHintToolTip(tr("Under Cross Frame and Iterate Over Count, spreads the iterations of frame f over the "
+                                 "interval from the frame before: iteration k renders the body at f - 1 + (k + 1) / "
+                                 "Iterations, the last at f, so an animated input moves smoothly between substeps. Off, "
+                                 "every iteration renders the body at f."));
+    subframes->setDefaultValue(true);
+    page->addKnob(subframes);
+    _subframes = subframes;
+
     KnobOutputFilePtr cacheFile = createKnob<KnobOutputFile>(tr("Cache File"));
     cacheFile->setName(kLoopEndParamCacheFile);
     cacheFile->setAsOutputImageFile();
@@ -2173,6 +2233,8 @@ LoopEnd::resolve() const
         resolved.count = iterations->getValue();
         resolved.start = start->getValue();
         resolved.step = step->getValue();
+        KnobBoolPtr subframes = _subframes.lock();
+        resolved.subframes = isCrossFrame() && subframes && subframes->getValue();
     }
     const int cap = maxIterations->getValue();
     if (resolved.count <= 0) {
@@ -2316,7 +2378,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
         int k = 0;
         for (; ok && (k < resolved.count); ++k) {
             const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
-            const double iterationTime = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+            const double iterationTime = time + resolved.offset(k);
             PyObject* variables = PyDict_New();
             PyObject* iteration = PyLong_FromLongLong((long long)resolved.start + (long long)k * resolved.step);
             PyObject* count = PyLong_FromLong(resolved.count);
@@ -2424,6 +2486,7 @@ LoopEnd::refreshKnobVisibility()
         std::make_pair(KnobIPtr(_frameEnd.lock()), frames),
         std::make_pair(KnobIPtr(_frameStep.lock()), frames),
         std::make_pair(KnobIPtr(_startFrame.lock()), crossFrame),
+        std::make_pair(KnobIPtr(_subframes.lock()), crossFrame && !frames),
         std::make_pair(KnobIPtr(_cacheFile.lock()), crossFrame),
         std::make_pair(KnobIPtr(_bakeEnd.lock()), crossFrame),
         std::make_pair(KnobIPtr(_bake.lock()), crossFrame),
@@ -2531,6 +2594,7 @@ LoopEnd::knobChanged(KnobI* k,
         _stopCondition.lock(),
         _crossFrame.lock(),
         _startFrame.lock(),
+        _subframes.lock(),
     };
 
     KnobStringPtr name = _name.lock();
@@ -2683,7 +2747,7 @@ LoopEnd::foldedIterations(const Resolved& resolved,
     iterations.reserve(resolved.folded);
     for (int k = first; k < first + resolved.folded; ++k) {
         Iteration iteration;
-        iteration.time = resolved.frames ? time + resolved.frameStart + (double)k * resolved.frameStep : time;
+        iteration.time = time + resolved.offset(k);
         iteration.context = iterationContext(base, resolved.loopName, k, resolved.count, resolved.start, resolved.step, iteration.time);
         iterations.push_back(iteration);
     }
@@ -2710,7 +2774,7 @@ LoopEnd::getFramesNeeded(double time,
     }
     const Resolved resolved = resolveAt(time);
 
-    if (!resolved.message.empty() || !resolved.frames || !getInput(0)) {
+    if (!resolved.message.empty() || (!resolved.frames && !resolved.subframes) || !getInput(0)) {
         return EffectInstance::getFramesNeeded(time, view);
     }
     const RenderContextPtr context = getCurrentRenderContext();

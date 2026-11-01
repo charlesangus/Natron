@@ -35,6 +35,7 @@ PAST_BAKE = BAKE_END + 2
 LABELS = {
     "crossFrame": "Cross Frame",
     "startFrame": "Start Frame",
+    "subframes": "Subframes",
     "cacheFile": "Cache File",
     "bakeEnd": "Bake End",
     "bake": "Bake",

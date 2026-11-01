@@ -382,6 +382,53 @@ protected:
 
         return t;
     }
+
+    // A dot moving 8 px a frame, x = 8 t, keyed every quarter frame so that each substep of a
+    // 4-iteration loop lands on a key: whole pixels at every sample.
+    NodePtr createQuarterKeyedDot(const NodePtr& constant,
+                                  double y)
+    {
+        NodePtr dot = createDot(constant, y, std::map<int, double>({ { 0, 0. } }));
+        KnobDoublePtr bottomLeft = dot ? std::dynamic_pointer_cast<KnobDouble>(dot->getKnobByName(kNativeGeneratorParamBottomLeft)) : KnobDoublePtr();
+
+        EXPECT_TRUE(bool(bottomLeft));
+        if (!bottomLeft) {
+            return dot;
+        }
+        for (int quarter = 0; quarter <= 24; ++quarter) {
+            const double time = quarter / 4.;
+            bottomLeft->setValueAtTime(time, 8. * time, ViewSpec::all(), 0);
+            bottomLeft->setValueAtTime(time, y, ViewSpec::all(), 1);
+        }
+
+        return dot;
+    }
+
+    // Feedback over four substeps a frame, Cross Frame from frame 1: each substep keeps the brighter
+    // of what came before and the dot.
+    struct Smear {
+        NodePtr constant, dot, begin, merge, end;
+    };
+
+    Smear createSmear(const NodePtr& side = NodePtr())
+    {
+        Smear m;
+
+        m.constant = createConstant(1.);
+        m.dot = createQuarterKeyedDot(m.constant, 10.);
+        m.begin = createLoopBegin("smear", m.dot);
+        m.merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(m.constant && m.dot && m.begin && m.merge);
+        if (!m.merge) {
+            return m;
+        }
+        EXPECT_TRUE(setKnobValue(m.merge, kNativeMergeParamOperation, std::string("max")));
+        EXPECT_TRUE(m.merge->connectInput(m.begin, 0));
+        EXPECT_TRUE(m.merge->connectInput(side ? side : m.dot, 1));
+        m.end = createLoopEnd(kLoopEndParamModeFeedback, 4, true, 1, m.merge);
+
+        return m;
+    }
 };
 
 static const RectI kTrailWindow(0, 8, 216, 16);
@@ -737,4 +784,74 @@ TEST_F(NativeLoopCrossFrameTest, ABodyAskingAnotherFrameOfItsLoopFailsAtOnce)
         EXPECT_EQ((int)eMessageTypeError, type) << "mode " << (int)mode;
         EXPECT_TRUE(message.contains(QString::fromUtf8("loops.shifted.frame"))) << message.toStdString();
     }
+}
+
+// With Subframes, the substeps of frame f sample an animated input at f - 1 + (k + 1) / 4: a dot
+// moving 8 px a frame leaves an unbroken smear 2 px a substep. Without it, every substep samples
+// the whole frame and the smear has gaps.
+TEST_F(NativeLoopCrossFrameTest, SubstepsSampleTheInputBetweenFrames)
+{
+    Smear m = createSmear();
+    ASSERT_TRUE(bool(m.end));
+    LoopFrameCache* cache = frameCacheOf(m.end);
+    ASSERT_TRUE(cache != 0);
+    const RectI window(0, 8, 40, 16);
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        cache->clear();
+        RenderedPlane plane;
+        ASSERT_TRUE(renderAt(m.end, 3., window, mode, true, &plane));
+        // The dot at 0.25, the first substep of frame 1, starts at x = 2; at frame 3 it ends at 28.
+        EXPECT_EQ(0.f, redAt(plane, 1, 11)) << "mode " << (int)mode;
+        for (int x = 2; x < 28; ++x) {
+            EXPECT_EQ(1.f, redAt(plane, x, 11)) << "mode " << (int)mode << ", x " << x;
+        }
+        EXPECT_EQ(0.f, redAt(plane, 28, 11)) << "mode " << (int)mode;
+    }
+
+    ASSERT_TRUE(setKnobValues(m.end, kLoopEndParamSubframes, { 0. }));
+    cache->clear();
+    RenderedPlane whole;
+    ASSERT_TRUE(renderAt(m.end, 3., window, eRenderSchedulerModeLegacy, true, &whole));
+    const int covered[] = { 8, 11, 16, 19, 24, 27 };
+    const int gaps[] = { 2, 7, 12, 15, 20, 23 };
+    for (int x : covered) {
+        EXPECT_EQ(1.f, redAt(whole, x, 11)) << "x " << x;
+    }
+    for (int x : gaps) {
+        EXPECT_EQ(0.f, redAt(whole, x, 11)) << "x " << x;
+    }
+}
+
+// Each substep time is its own cache entry for an animated body node: a cached node fed by the
+// dot renders once for the four substeps of a frame at the whole frame, and once more for each
+// of the three fractional times with Subframes.
+TEST_F(NativeLoopCrossFrameTest, SubstepTimesAreCachedApart)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr dot = createQuarterKeyedDot(constant, 10.);
+    NodePtr counting = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(constant && dot && counting);
+    ASSERT_TRUE(setKnobValues(counting, "value", { 0. }));
+    ASSERT_TRUE(setKnobValues(counting, "cacheOutput", { 1. }));
+    ASSERT_TRUE(counting->connectInput(dot, 0));
+    Smear m = createSmear(counting);
+    ASSERT_TRUE(bool(m.end));
+    LoopFrameCache* cache = frameCacheOf(m.end);
+    ASSERT_TRUE(cache != 0);
+    const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
+    ThreadCountGuard threads(1);
+
+    ASSERT_TRUE(setKnobValues(m.end, kLoopEndParamSubframes, { 0. }));
+    cache->clear();
+    CountingTestRegistry::reset();
+    RenderedPlane plane;
+    ASSERT_TRUE(renderAt(m.end, 1., window, eRenderSchedulerModeLegacy, false, &plane));
+    EXPECT_EQ(1, CountingTestRegistry::renders(counting));
+
+    ASSERT_TRUE(setKnobValues(m.end, kLoopEndParamSubframes, { 1. }));
+    cache->clear();
+    CountingTestRegistry::reset();
+    ASSERT_TRUE(renderAt(m.end, 1., window, eRenderSchedulerModeLegacy, false, &plane));
+    EXPECT_EQ(3, CountingTestRegistry::renders(counting));
 }

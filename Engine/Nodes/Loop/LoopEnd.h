@@ -75,6 +75,7 @@
 #define kLoopEndParamDrivenKnobs "drivenKnobs"
 #define kLoopEndParamCrossFrame "crossFrame"
 #define kLoopEndParamStartFrame "startFrame"
+#define kLoopEndParamSubframes "subframes"
 #define kLoopEndParamCacheFile "cacheFile"
 #define kLoopEndParamBakeEnd "bakeEnd"
 #define kLoopEndParamBake "bake"
@@ -371,6 +372,9 @@ private:
         bool frames = false;
         int frameStart = 0;
         int frameStep = 1;
+        // Iterate Over Count under Cross Frame with Subframes on: the iterations of frame f render
+        // the body at f - 1 + (k + 1) / count, spread over the interval from the frame before.
+        bool subframes = false;
         bool feedback = false;
         // The iteration Single Pass outputs, or -1.
         int singlePass = -1;
@@ -383,6 +387,26 @@ private:
         std::string message;
         // Why the stop condition failed; the iterations before it still render.
         std::string stopError;
+
+        /**
+         * @brief How far from the frame the loop renders iteration k renders the body.
+         **/
+        double offset(int k) const WARN_UNUSED_RETURN;
+        /**
+         * @brief The frame the loop renders, from frameK, the frame iteration k renders the body at.
+         **/
+        double loopFrame(double frameK,
+                         int k) const WARN_UNUSED_RETURN;
+        /**
+         * @brief The frame and time iteration j renders the body at, from frameI and timeI, those
+         * of iteration i: timeI differs from frameI by any time offset in the body.
+         **/
+        void iterationFrom(int i,
+                           double frameI,
+                           double timeI,
+                           int j,
+                           double* frameJ,
+                           double* timeJ) const;
     };
 
     struct Iteration {
@@ -413,7 +437,8 @@ private:
                        "iteration, each time with the loop variables loop.iteration, loop.count, loop.t "
                        "(0 at the first iteration, 1 at the last) and loop.frame set; knob drivers in the "
                        "body read them. Iterate Over Count runs Iterations iterations, loop.iteration "
-                       "being Start plus the iteration number times Step, all at the current frame. "
+                       "being Start plus the iteration number times Step, all at the current frame, or, under "
+                       "Cross Frame with Subframes, spread over the interval from the frame before. "
                        "Iterate Over Frames runs one iteration per frame from the current frame plus "
                        "Frame Start to the current frame plus Frame End, by Frame Step, rendering the "
                        "body at that frame; loop.iteration is then the iteration number and loop.frame "
@@ -669,6 +694,7 @@ private:
     KnobStringWPtr _stopCondition;
     KnobBoolWPtr _crossFrame;
     KnobIntWPtr _startFrame;
+    KnobBoolWPtr _subframes;
     KnobOutputFileWPtr _cacheFile;
     KnobIntWPtr _bakeEnd;
     KnobButtonWPtr _bake;

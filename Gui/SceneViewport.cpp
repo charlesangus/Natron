@@ -304,6 +304,7 @@ struct SceneViewportRenderer::Implementation {
     bool guidesValid = false;
     double guidesTimeCode = 0.;
     double guidesLength = 0.;
+    std::atomic<double> guideSize { 1. };
     std::vector<DrawnGuide> drawnGuides;
 
     // The transform handles, if any, and the drag of one under way.
@@ -354,11 +355,11 @@ struct SceneViewportRenderer::Implementation {
         guidesValid = false;
     }
 
-    // How far camera frustums reach and how big light icons are, in stage units: the scale the
-    // scene nodes author at (a USDLight is one unit wide).
     double guideLength() const
     {
-        return 1.;
+        const double size = guideSize.load();
+
+        return (size > 0.) ? size : 1.;
     }
 
     // The guides at the shown time, built again when the stage or the time changed. Needs
@@ -1117,6 +1118,18 @@ bool
 SceneViewportRenderer::getShowGuides() const
 {
     return _imp->showGuides;
+}
+
+void
+SceneViewportRenderer::setGuideSize(double size)
+{
+    _imp->guideSize = size;
+}
+
+double
+SceneViewportRenderer::getGuideSize() const
+{
+    return _imp->guideSize.load();
 }
 
 void
@@ -2360,6 +2373,20 @@ SceneViewport::SceneViewport(QWidget* parent)
         }
     });
 
+    SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
+    if (settings) {
+        _imp->renderer.setGuideSize(settings->getViewer3DGuideSize());
+        QObject::connect(settings.get(), &Settings::settingChanged, this, [this]() {
+            SettingsPtr current = appPTR->getCurrentSettings();
+            const double size = current ? current->getViewer3DGuideSize() : _imp->renderer.getGuideSize();
+            if (size != _imp->renderer.getGuideSize()) {
+                _imp->renderer.setGuideSize(size);
+                publishState();
+                update();
+            }
+        });
+    }
+
     Implementation* imp = _imp.get();
     _imp->worker = std::thread([this, imp]() {
         for (;;) {
@@ -2517,6 +2544,7 @@ SceneViewport::publishState()
     setProperty("natronSceneDrawMode", QString::fromUtf8(drawModeName(_imp->renderer.getDrawMode())));
     setProperty("natronSceneShowGrid", _imp->renderer.getShowGrid());
     setProperty("natronSceneShowGuides", _imp->renderer.getShowGuides());
+    setProperty("natronSceneGuideSize", _imp->renderer.getGuideSize());
     setProperty("natronScenePurposes", QVariantList { _imp->renderer.getShowProxy(), _imp->renderer.getShowRender(), _imp->renderer.getShowGuidePurpose() });
     setProperty("natronSceneLighting", QString::fromUtf8(lightingModeName(_imp->renderer.getLightingMode())));
 }

@@ -9,10 +9,17 @@ script checks:
   - a click on the camera guide selects the camera prim, and its guide turns the selection orange;
     a click on the light guide selects the light prim;
   - Ctrl+Shift+G hides the guides: natronSceneShowGuides is false, no guides are listed, and the
-    guide pixels are gone; Display > Show Guides in the context menu shows them again.
+    guide pixels are gone; Display > Show Guides in the context menu shows them again;
+  - the viewer3DGuideSize preference resizes the guides: with GuideLight made a distant light,
+    whose icon is all guide size, natronSceneGuideSize follows the preference, both guides cover
+    more pixels at a larger size, and a click still picks each resized guide.
+
+The guide size is 1 scene unit until the last section, so the scene's layout is the one the
+earlier checks were written for.
 
 Screenshots for sign-off: scene-guides-shown, scene-guides-camera-selected,
-scene-guides-light-selected, scene-guides-hidden, scene-guides-display-menu.
+scene-guides-light-selected, scene-guides-hidden, scene-guides-display-menu, scene-guides-size-1,
+scene-guides-size-3, scene-guides-size-3-camera-selected.
 
 Mouse and key events are sent to the SceneViewport (synthesized window-system events do not reach
 Natron's widgets under Xvfb). Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go
@@ -30,6 +37,8 @@ STARTUP_TIMEOUT_S = 60.0
 NUKE_PRESET = 0
 # Half the side of the square searched around a reported guide point.
 SEARCH_RADIUS = 4
+SMALL_GUIDE_SIZE = 1.0
+LARGE_GUIDE_SIZE = 3.0
 
 try:
     import NatronEngine
@@ -48,6 +57,10 @@ try:
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
     original_navigation = navigation.getValue()
     navigation.setValue(NUKE_PRESET)
+    guide_size = NatronEngine.natron.getSettings().getParam("viewer3DGuideSize")
+    require(guide_size is not None, "Preferences have a viewer3DGuideSize parameter")
+    original_guide_size = guide_size.getValue()
+    guide_size.setValue(SMALL_GUIDE_SIZE)
 
     def make(plugin_id, x, y):
         node = app.createNode(plugin_id)
@@ -166,6 +179,17 @@ try:
                     return True
         return False
 
+    def count_pixels(image, test):
+        """How many pixels of every other row and column pass test."""
+        if image is None:
+            return 0
+        found = 0
+        for y in range(0, image.height(), 2):
+            for x in range(0, image.width(), 2):
+                if test(image.pixelColor(x, y)):
+                    found += 1
+        return found
+
     def open_menu(v):
         state = {}
 
@@ -277,6 +301,43 @@ try:
         ok = yield ("until", lambda: cam_path in guides() and light_path in guides(), POLL_TIMEOUT_S)
         check(ok, "both guides are drawn again")
 
+        section("size")
+        # A sphere light's guide is its own radius; a distant light's is all guide size.
+        light.getParam("lightType").setValue(0)
+        ok = yield ("until", lambda: guides().get(light_path, ("",))[0] == "distantLight", POLL_TIMEOUT_S)
+        require(ok, "GuideLight's guide becomes a distant light guide (%r)" % (guides().get(light_path),))
+        click(v, QPoint(2, 2))
+        yield settle()
+        check(selection() == [], "a click on empty space clears the selection (%r)" % (selection(),))
+        check(abs(float(v.property("natronSceneGuideSize")) - SMALL_GUIDE_SIZE) < 1e-9,
+              "the view's guide size is the preference's (%r)" % (v.property("natronSceneGuideSize"),))
+        image = save_view("scene-guides-size-1")
+        small_camera = count_pixels(image, is_camera_colour)
+        small_light = count_pixels(image, is_light_colour)
+        guide_size.setValue(LARGE_GUIDE_SIZE)
+        ok = yield ("until", lambda: abs(float(v.property("natronSceneGuideSize")) - LARGE_GUIDE_SIZE) < 1e-9,
+                    POLL_TIMEOUT_S)
+        check(ok, "changing viewer3DGuideSize changes the view's guide size (%r)" % (v.property("natronSceneGuideSize"),))
+        yield settle()
+        ok = yield ("until", lambda: cam_path in guides() and light_path in guides(), POLL_TIMEOUT_S)
+        require(ok, "both guides are drawn at the larger size")
+        image = save_view("scene-guides-size-3")
+        large_camera = count_pixels(image, is_camera_colour)
+        large_light = count_pixels(image, is_light_colour)
+        report("NOTE guide pixels (sampled) at size %g: camera %d, light %d; at size %g: camera %d, light %d" %
+               (SMALL_GUIDE_SIZE, small_camera, small_light, LARGE_GUIDE_SIZE, large_camera, large_light))
+        check(large_camera > small_camera * 1.5, "the camera guide grows with the guide size")
+        check(large_light > small_light, "the light guide grows with the guide size")
+        cam_point = guides()[cam_path][1]
+        click(v, cam_point)
+        yield settle()
+        check(selection() == [cam_path], "a click on the resized camera guide selects the camera (%r)" % (selection(),))
+        save_view("scene-guides-size-3-camera-selected")
+        click(v, guides()[light_path][1])
+        yield settle()
+        check(selection() == [light_path], "a click on the resized light guide selects the light (%r)" % (selection(),))
+
+        guide_size.setValue(original_guide_size)
         navigation.setValue(original_navigation)
 
     run(steps())

@@ -1327,6 +1327,16 @@ Settings::initializeKnobsViewers()
                                            "draws a selection marquee. Choosing a preset rewrites the bindings in the shortcut "
                                            "editor's 3DViewer group; editing one there switches this to Custom."));
     _viewersTab->addKnob(_viewer3DNavigation);
+
+    _viewer3DGuideSize = AppManager::createKnob<KnobDouble>(this, tr("Viewer 3D Guide Size"));
+    _viewer3DGuideSize->setName("viewer3DGuideSize");
+    _viewer3DGuideSize->setHintToolTip(tr("How long camera frustums reach and how big light icons are in the viewer's 3D view, "
+                                          "in scene units. Only the guides change: the scene's cameras and lights are not "
+                                          "edited."));
+    _viewer3DGuideSize->setMinimum(1e-3);
+    _viewer3DGuideSize->setDisplayMinimum(0.1);
+    _viewer3DGuideSize->setDisplayMaximum(100.);
+    _viewersTab->addKnob(_viewer3DGuideSize);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1771,6 +1781,7 @@ Settings::setDefaultValues()
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
+    _viewer3DGuideSize->setDefaultValue(3.);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2619,6 +2630,12 @@ Settings::Viewer3DNavigationEnum
 Settings::getViewer3DNavigation() const
 {
     return (Viewer3DNavigationEnum)_viewer3DNavigation->getValue();
+}
+
+double
+Settings::getViewer3DGuideSize() const
+{
+    return _viewer3DGuideSize->getValue();
 }
 
 void

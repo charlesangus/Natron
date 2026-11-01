@@ -203,6 +203,11 @@ public:
 
     bool getShowGuides() const;
 
+    // How long camera frustums reach and how big light icons are, in scene units: 1 until set.
+    void setGuideSize(double size);
+
+    double getGuideSize() const;
+
     // Whether prims of the proxy, render and guide purposes are drawn: proxy only by default.
     void setShowProxy(bool show);
 

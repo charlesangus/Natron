@@ -145,7 +145,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 ## Phase 211.5: UAT round 1 fixes
 
-- [ ] M211.P5.T1 — Make Z smoothing produce expected Roto tangents
+- [x] M211.P5.T1 — Make Z smoothing produce expected Roto tangents
   - files: Roto shortcut dispatch, Bezier smoothing code, Wavelet Retouch GUI test
   - approach: Route Z through the same smooth-point operation used by the Roto editor and cover cusp, corner and multi-point selections without changing unrelated shortcuts.
   - verify: Selected retouch-path points become visibly smooth with symmetric tangent handles and undo in one step.
@@ -157,10 +157,11 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - verify: The node panel and viewer can create and edit brush strokes and Roto shapes on the same node.
   - size: M
 
-- [ ] M211.P5.T3 — Match darktable's default source selection
+- [x] M211.P5.T3 — Match darktable's default source selection
   - files: `Engine/Nodes/Color/WaveletRetouch*`, darktable parity notes, native tests
   - approach: Trace darktable's source-placement logic and port it when deterministic; if darktable uses an arbitrary offset, document and test Natron's chosen equivalent instead of guessing.
   - verify: Reference cases demonstrate the same initial source placement as darktable or record the justified deterministic Natron policy.
   - size: M
 
 **Verification gate:** original parity and GUI checks pass; Z smoothing, brush tools and default source behaviour are accepted in a replacement AppImage.
+- 2026-11-01 — P5.T1/T3 at 513102043: Z smoothing fixed in the shared BezierCP smoothing (aligned, equal handles tracing a circle; also affects Roto/RotoPaint). darktable has no source search: the default offset is a fixed fraction of the image per shape kind (circle/ellipse 2% right and up, path 2% right and down, brush 1%), reused for later shapes; ported. P5.T2: the user's "needs paintbrush" overrides the Scope's "curves only" — porting darktable's brush shape plus Shift/Ctrl+Shift-click source placement (PM).

@@ -26,12 +26,17 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -47,6 +52,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobDriver.h"
@@ -65,6 +71,7 @@
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -108,9 +115,12 @@ renderedValue(const NodePtr& node,
 // black identity with no region of its own.
 EffectInstance::RenderRoIRetCode
 renderRoIDirect(const NodePtr& node,
-                std::map<ImageLayerDesc, ImagePtr>* planes)
+                std::map<ImageLayerDesc, ImagePtr>* planes,
+                AbortableRenderInfoPtr abortInfo = AbortableRenderInfoPtr())
 {
-    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    if (!abortInfo) {
+        abortInfo = AbortableRenderInfo::create(false, 0);
+    }
     ParallelRenderArgsSetter frameArgs(kTime,
                                        ViewIdx(0),
                                        true /*isRenderUserInteraction*/,
@@ -261,6 +271,119 @@ linearDriver(const std::string& variable,
              double end)
 {
     return std::make_shared<const KnobDriver>(variable, start, end, KnobDriver::eEasingLinear);
+}
+
+// Renders node's RGBA as a frame of tasks run by the RenderScheduler, under abortInfo.
+EffectInstance::RenderRoIRetCode
+renderFrameOfTasks(const NodePtr& node,
+                   const AbortableRenderInfoPtr& abortInfo)
+{
+    RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+    ParallelRenderArgsSetter frameArgs(kTime,
+                                       ViewIdx(0),
+                                       true /*isRenderUserInteraction*/,
+                                       false /*isSequential*/,
+                                       abortInfo,
+                                       node,
+                                       0 /*textureIndex*/,
+                                       node->getApp()->getTimeLine().get(),
+                                       NodePtr(),
+                                       false /*isAnalysis*/,
+                                       false /*draftMode*/,
+                                       stats);
+    EffectInstancePtr effect = node->getEffectInstance();
+    const RectD canonicalWindow = fullWindow().toCanonical_noClipping(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
+    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+
+    if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0, canonicalWindow, node, *request) == eStatusFailed) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    frameArgs.updateNodesRequest(*request);
+    FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameArgs, abortInfo, stats, kTime, ViewIdx(0));
+    context->setRequest(request);
+    FrameGraph graph = RenderScheduler::buildGraph(context, node, kTime, ViewIdx(0), 0);
+    if (graph.tasks.empty()) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
+
+    return future->wait();
+}
+
+// Renders node as the viewer does, abortably and on another thread, through renderRoI or as a
+// frame of tasks. Before the render ends, edit runs on this thread once a body render has paused
+// at pauseAtRender, which ends the pause; with no edit, no render pauses.
+EffectInstance::RenderRoIRetCode
+renderAbortablyWhileEditing(const NodePtr& node,
+                            const NodePtr& body,
+                            bool throughScheduler,
+                            const AbortableRenderInfoPtr& abortInfo,
+                            int pauseAtRender,
+                            const std::function<void()>& edit,
+                            bool* edited)
+{
+    struct Pause {
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::atomic<int> renders { 0 };
+        bool reached = false;
+        bool released = false;
+    };
+    std::shared_ptr<Pause> pause = std::make_shared<Pause>();
+    const Node* bodyNode = body.get();
+    // Bounds every wait, so a render that never pauses fails the test rather than hanging it.
+    const std::chrono::seconds giveUp(20);
+
+    *edited = false;
+    if (edit) {
+        CountingTestRegistry::setRenderHook([pause, bodyNode, pauseAtRender, giveUp](const Node* rendered) {
+            if ((rendered != bodyNode) || (++pause->renders != pauseAtRender)) {
+                return;
+            }
+            std::unique_lock<std::mutex> l(pause->mutex);
+            pause->reached = true;
+            pause->changed.notify_all();
+            pause->changed.wait_for(l, giveUp, [&pause]() { return pause->released; });
+        });
+    }
+
+    const RenderSchedulerModeEnum savedMode = appPTR->getRenderSchedulerMode();
+    appPTR->setRenderSchedulerMode(throughScheduler ? eRenderSchedulerModeTaskGraph : eRenderSchedulerModeLegacy);
+    EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+    std::thread renderer([&code, &node, throughScheduler, &abortInfo]() {
+        try {
+            if (throughScheduler) {
+                code = renderFrameOfTasks(node, abortInfo);
+            } else {
+                std::map<ImageLayerDesc, ImagePtr> planes;
+                code = renderRoIDirect(node, &planes, abortInfo);
+            }
+        } catch (...) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+    });
+    if (edit) {
+        bool reached = false;
+        {
+            std::unique_lock<std::mutex> l(pause->mutex);
+            reached = pause->changed.wait_for(l, giveUp, [&pause]() { return pause->reached; });
+        }
+        if (reached) {
+            edit();
+            *edited = true;
+        }
+        {
+            std::lock_guard<std::mutex> l(pause->mutex);
+            pause->released = true;
+        }
+        pause->changed.notify_all();
+    }
+    renderer.join();
+    CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    appPTR->setRenderSchedulerMode(savedMode);
+    appPTR->clearAllCaches();
+
+    return code;
 }
 } // namespace
 
@@ -1119,4 +1242,71 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadsAParameterByBareNodeName)
     int type = -1;
     end->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+}
+
+// A viewer render of a loop that nothing edits runs to the end under either scheduler, though it
+// can be aborted.
+TEST_F(NativeLoopBlockTest, AnUneditedAbortableLoopRenderIsNotAborted)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr begin = createLoopBegin(std::string());
+    NodePtr body = createDrivenCounter();
+    NodePtr end = createLoopEnd(8, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && body && end);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(body->connectInput(begin, 0));
+    ASSERT_TRUE(end->connectInput(body, 0));
+
+    for (int throughScheduler = 0; throughScheduler < 2; ++throughScheduler) {
+        SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
+        CountingTestRegistry::reset();
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        bool edited = false;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderAbortablyWhileEditing(end, body, throughScheduler != 0, abortInfo, 0, std::function<void()>(), &edited));
+        EXPECT_FALSE(abortInfo->isAborted());
+        EXPECT_EQ(8, CountingTestRegistry::renders(body));
+    }
+}
+
+// Editing a body knob's driver while a viewer renders the loop aborts that render before it folds
+// another iteration, under either scheduler, and the next render folds the edited values only.
+TEST_F(NativeLoopBlockTest, EditingTheBodyMidRenderAbortsTheLoopsRender)
+{
+    const int iterations = 8;
+    const int pauseAt = 3;
+
+    for (int throughScheduler = 0; throughScheduler < 2; ++throughScheduler) {
+        SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
+        getApp()->getProject()->reset(false, true);
+        NodePtr constant = createConstant(1.);
+        NodePtr begin = createLoopBegin(std::string());
+        NodePtr body = createDrivenCounter();
+        NodePtr end = createLoopEnd(iterations, kLoopEndParamOperationMean);
+        ASSERT_TRUE(constant && begin && body && end);
+        ASSERT_TRUE(begin->connectInput(constant, 0));
+        ASSERT_TRUE(body->connectInput(begin, 0));
+        ASSERT_TRUE(end->connectInput(body, 0));
+        KnobDoublePtr value = std::dynamic_pointer_cast<KnobDouble>(body->getKnobByName("value"));
+        ASSERT_TRUE(bool(value));
+
+        CountingTestRegistry::reset();
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        bool edited = false;
+        const std::function<void()> editDriver = [&value]() {
+            EXPECT_TRUE(value->setDriver(0, linearDriver(kKnobDriverDefaultVariable, 0., 2.)));
+        };
+        const EffectInstance::RenderRoIRetCode code = renderAbortablyWhileEditing(end, body, throughScheduler != 0, abortInfo, pauseAt, editDriver, &edited);
+        ASSERT_TRUE(edited) << "no body render paused for the edit";
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code);
+        EXPECT_TRUE(abortInfo->isAborted());
+        if (!throughScheduler) {
+            // One iteration is pulled at a time, so none after the paused one starts.
+            EXPECT_EQ(pauseAt, CountingTestRegistry::renders(body));
+        }
+
+        // Before the edit the mean was 1 + 0.5; the edited driver's mean over 0..2 is 1.
+        float rendered = -1.f;
+        ASSERT_TRUE(renderedValue(end, &rendered));
+        EXPECT_NEAR(2., rendered, 1e-5);
+    }
 }

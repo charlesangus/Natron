@@ -34,6 +34,7 @@
 #include <QtCore/QString>
 
 #include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
@@ -1018,9 +1019,43 @@ LoopEnd::takePreviousStep(const RenderActionArgs& args,
     return true;
 }
 
+bool
+LoopEnd::abortIfEditedSinceFrameStart() const
+{
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    if (!frameArgs || !frameArgs->isRenderResponseToUserInteraction) {
+        return false;
+    }
+    const AbortableRenderInfoPtr abortInfo = frameArgs->abortInfo.lock();
+    if (!abortInfo || !abortInfo->canAbort()) {
+        return false;
+    }
+    // An edit keeps the oldest viewer render running so that the user sees something while dragging
+    // (ViewerInstance::markAllOnGoingRendersAsAborted). A loop's render can take many seconds, and its
+    // body reads knob values live, so finishing it would show a stale frame, or one folding
+    // iterations from before and after the edit. Only a drag keeps it, as it keeps any render.
+    AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return false;
+    }
+    // Every edit upstream (a body knob, a driver, the wiring, LoopBegin) or on this node moves its
+    // hash, which the frame folded its context key into when it was set up.
+    NodePtr node = getNode();
+    U64 current = 0;
+    if (node && node->getHashValueIfUpToDate(&current) && (mixRenderContextKey(current, frameArgs->contextKey) == frameArgs->nodeHash)) {
+        return false;
+    }
+    abortInfo->setAborted();
+
+    return true;
+}
+
 StatusEnum
 LoopEnd::render(const RenderActionArgs& args)
 {
+    if (abortIfEditedSinceFrameStart()) {
+        return eStatusOK;
+    }
     const Resolved resolved = resolveAt(args.time);
 
     if (!resolved.message.empty() || (resolved.folded <= 0)) {
@@ -1059,7 +1094,7 @@ LoopEnd::render(const RenderActionArgs& args)
         }
         // One iteration image at a time: each is folded in and released before the next is pulled.
         for (int k = first; k <= step; ++k) {
-            if (aborted()) {
+            if (abortIfEditedSinceFrameStart() || aborted()) {
                 return eStatusOK;
             }
             ImagePtr src;
@@ -1078,6 +1113,10 @@ LoopEnd::render(const RenderActionArgs& args)
                 const float* srcRow = rowCovered ? (const float*)access.pixelAt(covered.x1, y) : NULL;
                 LoopFold::foldRow(operation, srcRow, srcComps, covered.x1, covered.x2, &acc[(std::size_t)(y - roi.y1) * rowSize], nComps, alphaIndex, roi.x1, roi.x2);
             }
+        }
+        // The last iteration was pulled before this check, so an edit after it reached none.
+        if (abortIfEditedSinceFrameStart() || aborted()) {
+            return eStatusOK;
         }
         if (step == count - 1) {
             LoopFold::finishRow(operation, count, acc.data(), acc.size());

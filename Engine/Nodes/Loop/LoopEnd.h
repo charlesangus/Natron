@@ -276,6 +276,10 @@ private:
                           int nComps,
                           float* acc);
 
+    // Aborts the viewer render this thread runs when the loop's hash moved since its frame was set
+    // up, and says whether it did.
+    bool abortIfEditedSinceFrameStart() const WARN_UNUSED_RETURN;
+
     // The LoopBegin the walk up from input 0 pairs with, or why there is none.
     NodePtr findLoopBegin(std::string* error) const WARN_UNUSED_RETURN;
 

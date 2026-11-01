@@ -76,3 +76,7 @@ M259 - GPU Placement Under Render Contexts.
 - Metadata stays at its base values: the format, layers and other metadata are the body's
   outside the loop, not per iteration. A body whose format or layers change with a loop
   variable is folded as if they did not.
+- Editing the loop while a viewer renders it (a LoopEnd or LoopBegin parameter, a body
+  node, a driver, or the wiring) stops that render before it folds another iteration, and
+  the viewer shows the render of the edited loop instead. Only while a value is being
+  dragged does the render already running finish, as any viewer render does.

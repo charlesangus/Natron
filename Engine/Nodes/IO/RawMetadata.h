@@ -68,6 +68,7 @@
 #define kRawMetadataWbD65Coeffs "raw/wb_d65_coeffs"
 #define kRawMetadataSensorWhiteLevel "raw/sensor_white_level"
 #define kRawMetadataCatApplied "raw/cat_applied"
+#define kRawMetadataInputColorApplied "raw/input_color_applied"
 #define kRawMetadataMonochrome "raw/monochrome"
 #define kRawMetadataHighlightPreservation "raw/highlight_preservation"
 
@@ -300,6 +301,13 @@ void setWbLateCorrection(ImageMetadata* metadata, const std::array<double, 3>& c
  **/
 bool getCatApplied(const ImageMetadata& metadata);
 void setCatApplied(ImageMetadata* metadata);
+
+/**
+ * @brief raw/input_color_applied: 1 once a RawInputColor has moved the data out of camera RGB.
+ * Absent until one has.
+ **/
+bool getInputColorApplied(const ImageMetadata& metadata);
+void setInputColorApplied(ImageMetadata* metadata);
 
 /**
  * @brief raw/monochrome: 1 for an image without colour, darktable's DT_IMAGE_MONOCHROME (a raw

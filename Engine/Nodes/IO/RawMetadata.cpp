@@ -414,6 +414,20 @@ setCatApplied(ImageMetadata* metadata)
 }
 
 bool
+getInputColorApplied(const ImageMetadata& metadata)
+{
+    const std::optional<int> applied = metadata.getInt(kRawMetadataInputColorApplied);
+
+    return applied && (*applied != 0);
+}
+
+void
+setInputColorApplied(ImageMetadata* metadata)
+{
+    metadata->setInt(kRawMetadataInputColorApplied, 1);
+}
+
+bool
 getMonochrome(const ImageMetadata& metadata)
 {
     const std::optional<int> monochrome = metadata.getInt(kRawMetadataMonochrome);

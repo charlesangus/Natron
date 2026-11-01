@@ -70,4 +70,4 @@ Follow-up to M72 - RFV Integration And UAT. RFVSwitch gets a "Match Variable" bu
   - size: M
 
 **Verification gate:** RFVSwitch tests pass at 1, 16 and 1024 rows; the large-choice workflow is accepted in the replacement AppImage.
-- 2026-11-01 — P2.T1 at a851341cc: rows/inputs grow 16 at a time to 1024 (never deleted, only hidden); >1024 options fill 1024 and warn. Risk: rebuilding the panel at 1024 rows (~3000 widgets) may be slow — the GUI check times it (PM).
+- 2026-11-01 — P2.T1 at ffc3e6998: rows/inputs grow 16 at a time to 1024 (never deleted, only hidden); >1024 options fill 1024 and warn. Risk: rebuilding the panel at 1024 rows (~3000 widgets) may be slow — the GUI check times it (PM).

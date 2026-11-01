@@ -14,13 +14,13 @@ Make edits performed through Viewer overlays behave exactly like edits made thro
 
 ## Phase 275.1: Shared overlay edit path
 
-- [ ] M275.P1.T1 — Route Viewer widget drags through knob editing
+- [x] M275.P1.T1 — Route Viewer widget drags through knob editing
   - files: native overlay interaction base, transform overlay, knob edit/undo bridge, overlay tests
   - approach: Start one knob edit transaction on press, update the preview during motion, and commit through the node's normal knob path on release so keying, notifications and undo match property edits.
   - verify: A Transform widget drag changes the knob, does not snap back, and one undo restores the prior value.
   - size: L
 
-- [ ] M275.P1.T2 — Apply keyframe policy to overlay edits
+- [x] M275.P1.T2 — Apply keyframe policy to overlay edits
   - files: overlay edit transaction, animation/keyframe helpers, GUI tests
   - approach: Reuse the properties-panel decision for existing animation and auto-key; create/update a key at the current frame without changing unkeyed dimensions.
   - verify: Dragging at several frames creates the same keys and interpolation as editing the values directly.
@@ -28,10 +28,14 @@ Make edits performed through Viewer overlays behave exactly like edits made thro
 
 ## Phase 275.2: Regression coverage
 
-- [ ] M275.P2.T1 — Cover representative Viewer widgets and node undo
+- [x] M275.P2.T1 — Cover representative Viewer widgets and node undo
   - files: new Viewer-widget GUI test, Transform and representative overlay fixtures
   - approach: Exercise move, scale and rotate on Transform plus one other native widget, checking node undo/redo, key indicators and save/reopen.
   - verify: The GUI script passes under Xvfb and its screenshots show the overlay at the keyed values.
   - size: M
 
 **Verification gate:** full build and ctest pass; the Viewer-widget GUI test passes under Xvfb; direct and overlay edits produce equivalent keys and undo history; a release AppImage is accepted by the user.
+
+## Decisions
+
+- 2026-11-01 — Implemented at 27fbe2f73, generically in EffectInstance::onOverlayPen*_public and HostOverlay: a press a widget accepts opens one undo step, release closes it; writes key animated dimensions at the current frame and skip unchanged ones. Roto and Tracker drags also become one undo entry per press-release (accepted, PM).

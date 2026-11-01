@@ -728,7 +728,7 @@ Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
         }
     }
 
-    _newShapes.push_back(item);
+    _newShapes.push_back(NewShape { item, _ui ? _ui->getSelectedTool() : eRotoToolDrawBezier });
 } // Retouch::onCurveItemCreated
 
 RC::ShapeSettings
@@ -983,11 +983,58 @@ Retouch::knobChanged(KnobI* k,
 }
 
 void
+Retouch::defaultSourceOffset(RotoToolEnum tool,
+                             double width,
+                             double height,
+                             double* dx,
+                             double* dy)
+{
+    // darktable's initial_source_pos with its default spot sizes, y flipped from its top-down image
+    // space: a circle or ellipse takes its source up and right by its radii, a path down and right by
+    // 2% of the image, a brush by 1%. Natron's rectangle is a path.
+    switch (tool) {
+    case eRotoToolDrawEllipse:
+        *dx = 0.02 * width;
+        *dy = 0.01414 * height;
+        break;
+    case eRotoToolSolidBrush:
+    case eRotoToolOpenBezier:
+        *dx = 0.01 * width;
+        *dy = -0.01 * height;
+        break;
+    default:
+        *dx = 0.02 * width;
+        *dy = -0.02 * height;
+        break;
+    }
+}
+
+bool
+Retouch::sourceImageSize(double time,
+                         double* width,
+                         double* height) const
+{
+    const ViewIdx view(0);
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    RectD image;
+    if (metadata) {
+        image = PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, metadata->getPixelAspectRatio(getSourceInput()));
+    }
+    if (image.isNull() && !sourceRoD(time, view, &image)) {
+        return false;
+    }
+    *width = image.width();
+    *height = image.height();
+
+    return (*width > 0.) && (*height > 0.);
+}
+
+void
 Retouch::applyDefaultSourceOffsets()
 {
     const double time = getCurrentTime();
-    for (std::list<RotoDrawableItemWPtr>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
-        RotoDrawableItemPtr item = it->lock();
+    for (std::list<NewShape>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
+        RotoDrawableItemPtr item = it->item.lock();
         BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(item);
         if (!bezier) {
             it = _newShapes.erase(it);
@@ -1000,9 +1047,13 @@ Retouch::applyDefaultSourceOffsets()
         KnobDoublePtr offset = itemKnob<KnobDouble>(item, kRetouchShapeParamSourceOffset);
         if (offset && !offset->isAnimated(0, ViewSpec::all()) && !offset->isAnimated(1, ViewSpec::all())
             && (offset->getValueAtTime(time, 0) == 0.) && (offset->getValueAtTime(time, 1) == 0.)) {
-            const RectD bbox = bezier->getBoundingBox(time);
-            if (!bbox.isNull()) {
-                setShapeSourceOffset(item, time, bbox.width() / 2., bbox.height() / 2.);
+            double width = 0., height = 0.;
+            if (!_hasSessionSourceOffset && sourceImageSize(time, &width, &height)) {
+                defaultSourceOffset(it->tool, width, height, &_sessionSourceOffset[0], &_sessionSourceOffset[1]);
+                _hasSessionSourceOffset = true;
+            }
+            if (_hasSessionSourceOffset) {
+                setShapeSourceOffset(item, time, _sessionSourceOffset[0], _sessionSourceOffset[1]);
             }
         }
         it = _newShapes.erase(it);
@@ -1115,8 +1166,8 @@ Retouch::onOverlayPenDown(double time,
                           PenType pen)
 {
     // Shapes made before this press have had their pen up.
-    for (std::list<RotoDrawableItemWPtr>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
-        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(it->lock());
+    for (std::list<NewShape>::iterator it = _newShapes.begin(); it != _newShapes.end();) {
+        BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(it->item.lock());
         if (!bezier || bezier->isCurveFinished()) {
             it = _newShapes.erase(it);
         } else {

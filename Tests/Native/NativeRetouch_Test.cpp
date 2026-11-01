@@ -48,6 +48,7 @@
 #include "Serialization/ProjectBundleTestHelpers.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
@@ -60,6 +61,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
 
@@ -720,6 +722,158 @@ TEST_F(NativeRetouchTest, SourceDragOfASelectedShapeMovesTheNodeOffset)
     Retouch::readShapeSourceOffset(shape, later, &dx, &dy);
     EXPECT_DOUBLE_EQ(50., dx);
     EXPECT_DOUBLE_EQ(20., dy);
+}
+
+// Smooth (Z) on the cusp corners of a square: each point's handles become collinear and equal, along
+// the bisector of its chords and as long as a circle's through the four corners, so the square becomes
+// that circle. Smoothing again changes nothing, and one undo puts the cusps back.
+TEST_F(NativeRetouchTest, SmoothMakesSymmetricCircleTangentsAndUndoes)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    ASSERT_TRUE(bool(node));
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    context->setAutoKeyingEnabled(true);
+
+    const double cx = 32., cy = 24., h = 10.;
+    const std::vector<ShapePoint> square = {
+        { cx + h, cy - h, cx + h, cy - h, cx + h, cy - h },
+        { cx + h, cy + h, cx + h, cy + h, cx + h, cy + h },
+        { cx - h, cy + h, cx - h, cy + h, cx - h, cy + h },
+        { cx - h, cy - h, cx - h, cy - h, cx - h, cy - h },
+    };
+    BezierPtr shape = RetouchTest::makeBezierShape(node, square, ShapeSpec(), kTime);
+    ASSERT_TRUE(bool(shape));
+
+    SmoothCuspUndoCommand::SmoothCuspCurveData data;
+    data.curve = shape;
+    for (int i = 0; i < (int)square.size(); ++i) {
+        data.newPoints.push_back(std::make_pair(shape->getControlPointAtIndex(i), shape->getFeatherPointAtIndex(i)));
+    }
+    const std::pair<double, double> pixelScale(1., 1.);
+    std::shared_ptr<SmoothCuspUndoCommand> command = std::make_shared<SmoothCuspUndoCommand>(effect->getInteract(), std::list<SmoothCuspUndoCommand::SmoothCuspCurveData>(1, data), kTime, false, pixelScale);
+
+    const double radius = h * std::sqrt(2.);
+    const double handle = 4. / 3. * (std::sqrt(2.) - 1.) * radius;
+    const auto expectSmooth = [&](const char* when) {
+        for (int i = 0; i < (int)square.size(); ++i) {
+            for (const BezierCPPtr& p : { shape->getControlPointAtIndex(i), shape->getFeatherPointAtIndex(i) }) {
+                double x, y, lx, ly, rx, ry;
+                p->getPositionAtTime(false, kTime, ViewIdx(0), &x, &y);
+                p->getLeftBezierPointAtTime(false, kTime, ViewIdx(0), &lx, &ly);
+                p->getRightBezierPointAtTime(false, kTime, ViewIdx(0), &rx, &ry);
+                EXPECT_NEAR(0., (lx - x) + (rx - x), 1e-9) << when << " point " << i;
+                EXPECT_NEAR(0., (ly - y) + (ry - y), 1e-9) << when << " point " << i;
+                EXPECT_NEAR(handle, std::hypot(rx - x, ry - y), 1e-9) << when << " point " << i;
+                // Tangent to the circle: at right angles to the radius, turning counter-clockwise.
+                EXPECT_NEAR(0., (rx - x) * (x - cx) + (ry - y) * (y - cy), 1e-9) << when << " point " << i;
+                EXPECT_GT((x - cx) * (ry - y) - (y - cy) * (rx - x), 0.) << when << " point " << i;
+                EXPECT_FALSE(p->getBroken()) << when << " point " << i;
+            }
+        }
+    };
+
+    command->redo();
+    expectSmooth("smoothed");
+    for (int i = 0; i < (int)square.size(); ++i) {
+        shape->smoothPointAtIndex(i, kTime, pixelScale);
+    }
+    expectSmooth("smoothed twice");
+
+    command->undo();
+    for (int i = 0; i < (int)square.size(); ++i) {
+        double x, y, lx, ly, rx, ry;
+        BezierCPPtr p = shape->getControlPointAtIndex(i);
+        p->getPositionAtTime(false, kTime, ViewIdx(0), &x, &y);
+        p->getLeftBezierPointAtTime(false, kTime, ViewIdx(0), &lx, &ly);
+        p->getRightBezierPointAtTime(false, kTime, ViewIdx(0), &rx, &ry);
+        EXPECT_DOUBLE_EQ(square[i].lx, lx) << "undone point " << i;
+        EXPECT_DOUBLE_EQ(square[i].ly, ly) << "undone point " << i;
+        EXPECT_DOUBLE_EQ(square[i].rx, rx) << "undone point " << i;
+        EXPECT_DOUBLE_EQ(square[i].ry, ry) << "undone point " << i;
+    }
+}
+
+// Smooth on a corner whose chords differ in length: the handles stay collinear and equal, capped at half
+// the shorter chord so the short segment cannot loop. On the ends of an open path a handle runs along
+// its only chord, a third of its length.
+TEST_F(NativeRetouchTest, SmoothCapsUnevenChordsAndFollowsOpenEnds)
+{
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    ASSERT_TRUE(bool(node));
+    RotoCurveContextPtr context = node->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    context->setAutoKeyingEnabled(true);
+    const std::pair<double, double> pixelScale(1., 1.);
+
+    BezierPtr closed = RetouchTest::makeBezierShape(node, {
+                                                              { 0., 0., 0., 0., 0., 0. },
+                                                              { 4., 0., 4., 0., 4., 0. },
+                                                              { 4., 40., 4., 40., 4., 40. },
+                                                          },
+                                                    ShapeSpec(), kTime);
+    ASSERT_TRUE(bool(closed));
+    closed->smoothPointAtIndex(1, kTime, pixelScale);
+    {
+        double x, y, lx, ly, rx, ry;
+        BezierCPPtr p = closed->getControlPointAtIndex(1);
+        p->getPositionAtTime(false, kTime, ViewIdx(0), &x, &y);
+        p->getLeftBezierPointAtTime(false, kTime, ViewIdx(0), &lx, &ly);
+        p->getRightBezierPointAtTime(false, kTime, ViewIdx(0), &rx, &ry);
+        EXPECT_NEAR(2., std::hypot(rx - x, ry - y), 1e-9);
+        EXPECT_NEAR(2., std::hypot(lx - x, ly - y), 1e-9);
+        EXPECT_NEAR(0., (lx - x) + (rx - x), 1e-9);
+        EXPECT_NEAR(0., (ly - y) + (ry - y), 1e-9);
+        // Along the bisector of (1, 0) and (0, 1).
+        EXPECT_NEAR(rx - x, ry - y, 1e-9);
+        EXPECT_GT(rx - x, 0.);
+    }
+
+    BezierPtr open = context->makeBezier(0., 0., kRotoBezierBaseName, kTime, true);
+    ASSERT_TRUE(bool(open));
+    open->addControlPoint(30., 0., kTime);
+    open->addControlPoint(30., 30., kTime);
+    open->setCurveFinished(true);
+    open->smoothPointAtIndex(0, kTime, pixelScale);
+    open->smoothPointAtIndex(2, kTime, pixelScale);
+    double x, y, rx, ry, lx, ly;
+    BezierCPPtr first = open->getControlPointAtIndex(0);
+    first->getPositionAtTime(false, kTime, ViewIdx(0), &x, &y);
+    first->getRightBezierPointAtTime(false, kTime, ViewIdx(0), &rx, &ry);
+    EXPECT_NEAR(10., rx - x, 1e-9);
+    EXPECT_NEAR(0., ry - y, 1e-9);
+    BezierCPPtr last = open->getControlPointAtIndex(2);
+    last->getPositionAtTime(false, kTime, ViewIdx(0), &x, &y);
+    last->getLeftBezierPointAtTime(false, kTime, ViewIdx(0), &lx, &ly);
+    EXPECT_NEAR(0., lx - x, 1e-9);
+    EXPECT_NEAR(-10., ly - y, 1e-9);
+}
+
+// darktable's default sources, in Natron's y-up canonical space: an ellipse up and right by its
+// default radii, a path or rectangle down and right by 2% of the image, a brush by 1%.
+TEST(NativeRetouchSource, DefaultOffsetIsDarktablesFractionOfTheImage)
+{
+    const double w = 2000.;
+    const double h = 1000.;
+    double dx = 0., dy = 0.;
+
+    Retouch::defaultSourceOffset(eRotoToolDrawEllipse, w, h, &dx, &dy);
+    EXPECT_DOUBLE_EQ(dx, 40.);
+    EXPECT_DOUBLE_EQ(dy, 14.14);
+
+    Retouch::defaultSourceOffset(eRotoToolDrawBezier, w, h, &dx, &dy);
+    EXPECT_DOUBLE_EQ(dx, 40.);
+    EXPECT_DOUBLE_EQ(dy, -20.);
+
+    Retouch::defaultSourceOffset(eRotoToolDrawRectangle, w, h, &dx, &dy);
+    EXPECT_DOUBLE_EQ(dx, 40.);
+    EXPECT_DOUBLE_EQ(dy, -20.);
+
+    Retouch::defaultSourceOffset(eRotoToolSolidBrush, w, h, &dx, &dy);
+    EXPECT_DOUBLE_EQ(dx, 20.);
+    EXPECT_DOUBLE_EQ(dy, -10.);
 }
 
 // With no shapes, or shapes only on scales the node skips, the output is the input.

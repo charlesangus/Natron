@@ -195,6 +195,10 @@ public:
     /// The offset from a shape to its source, canonical, at time.
     static void readShapeSourceOffset(const RotoDrawableItemPtr& item, double time, double* dx, double* dy);
 
+    /// darktable's default offset from a shape drawn with tool to its source, canonical, on an image
+    /// width by height: a fixed fraction of the image per kind of shape.
+    static void defaultSourceOffset(RotoToolEnum tool, double width, double height, double* dx, double* dy);
+
     /// The per-shape knobs, owned by host or, without one, detached.
     static std::vector<KnobIPtr> createShapeKnobs(Retouch* host);
 
@@ -273,8 +277,11 @@ private:
      **/
     std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full) const;
 
-    // The finished shapes of a new drawing get darktable's default source, up and right by half their size.
+    // The finished shapes of a new drawing get darktable's default source.
     void applyDefaultSourceOffsets();
+
+    // The canonical size of the image the source is read from, for darktable's default source.
+    bool sourceImageSize(double time, double* width, double* height) const;
 
     // The shape whose source outline is under pos, if any.
     RotoDrawableItemPtr pickSource(double time, const QPointF& pos) const;
@@ -325,8 +332,17 @@ private:
     KnobDoubleWPtr _fillBrightness;
     KnobIntWPtr _maxHealIterations;
 
+    struct NewShape {
+        RotoDrawableItemWPtr item;
+        RotoToolEnum tool;
+    };
+
     // Shapes created since the last pen down, waiting for their default source.
-    std::list<RotoDrawableItemWPtr> _newShapes;
+    std::list<NewShape> _newShapes;
+    // As in darktable, the first drawn shape's default source is reused by every later one until the
+    // node is reloaded.
+    bool _hasSessionSourceOffset = false;
+    double _sessionSourceOffset[2] = { 0., 0. };
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
     // The drag's offset is the offset at the press moved by the pen since the press; it is never read

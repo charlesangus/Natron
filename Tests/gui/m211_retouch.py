@@ -6,7 +6,9 @@ a 1920x1080 screen, that its curve list has the "Scale / Algorithm" column readi
 and that the viewer draws the shape's dashed source outline. Drags the outline in the viewer and
 checks that the shape's Source Offset follows the drag. With Current Scale 3, right-clicks the
 shape in the curve list, checks the menu offers "Copy to Scale 3" and "Move to Scale 3", moves
-the shape and checks its scale and column, then undoes the move with Edit > Undo. Screenshots of
+the shape and checks its scale and column, then undoes the move with Edit > Undo. Adds a
+rectangle by script, presses Z in the viewer and checks every corner gets the equal, opposite
+handles of the circle through the corners, then undoes it. Screenshots of
 the panel and the viewer at each step go to $NATRON_GUI_TEST_OUT.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -37,6 +39,9 @@ OFFSET_X = 700.0
 DRAG = (80, -50)  # widget pixels, y down
 MIN_OUTLINE_PIXELS = 100
 OUTLINE_GAP = 8  # widget pixels between the shape's handles and the source outline's columns
+# The rectangle Z smooths: its corner and side, in canonical pixels.
+SQUARE = (1300.0, 300.0)
+SQUARE_SIZE = 300.0
 
 try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
@@ -388,6 +393,38 @@ try:
             ok = yield ("until", lambda: shape_column_text(node, name) == "S2 / Heal", POLL_TIMEOUT_S)
             check(ok, "after undo the row reads S2 / Heal (%r)" % (shape_column_text(node, name),))
         gt.shot("retouch_screen_undone.png")
+
+        gt.section("smooth")
+        square = ctx.createRectangle(SQUARE[0], SQUARE[1], SQUARE_SIZE, 1.0)
+        require(square is not None, "created a rectangle")
+        count = square.getNumControlPoints()
+        corners = [square.getControlPointPosition(i, 1.0) for i in range(count)]
+        report("NOTE rectangle points %r" % (corners,))
+        check(all(c[2] == c[0] and c[3] == c[1] and c[4] == c[0] and c[5] == c[1] for c in corners),
+              "the rectangle's corners are cusps")
+        yield ("sleep", SETTLE_MS)
+        send_key(visible_viewer(), Qt.Key_Z)
+        yield ("sleep", SETTLE_MS)
+        smoothed = [square.getControlPointPosition(i, 1.0) for i in range(count)]
+        report("NOTE smoothed points %r" % (smoothed,))
+        radius = SQUARE_SIZE / 2.0 * 2.0 ** 0.5
+        handle = 4.0 / 3.0 * (2.0 ** 0.5 - 1.0) * radius
+
+        def symmetric(c):
+            lx, ly, rx, ry = c[2] - c[0], c[3] - c[1], c[4] - c[0], c[5] - c[1]
+            return abs(lx + rx) < 1e-6 and abs(ly + ry) < 1e-6 and abs((rx * rx + ry * ry) ** 0.5 - handle) < 1e-6
+
+        check(len(smoothed) == count and all(symmetric(c) for c in smoothed),
+              "Z gives every corner of the selected rectangle equal, opposite handles %.3f long" % handle)
+        screen_crop("retouch_viewer_smoothed.png", visible_viewer())
+        undo = edit_menu_action("undo")
+        if check(undo is not None and undo.isEnabled(), "Edit > Undo is enabled after the smooth"):
+            undo.trigger()
+            QApplication.processEvents()
+            yield ("sleep", SETTLE_MS)
+            back = [square.getControlPointPosition(i, 1.0) for i in range(count)]
+            check(all(abs(a - b) < 1e-6 for c, d in zip(back, corners) for a, b in zip(c, d)),
+                  "one undo puts the cusps back")
 
         faulthandler.cancel_dump_traceback_later()
 

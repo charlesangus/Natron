@@ -44,8 +44,10 @@ The shape's Roto opacity is darktable's form opacity and its Roto feather the fo
 
 Source Offset goes from the shape to its source, in canonical pixels, x right and y up. The viewer
 draws each Clone and Heal shape's source as a dashed outline with a line to the shape; dragging
-the outline moves the source. A shape drawn in the viewer takes a source half its size to the
-right and above; one made by script takes 0, 0. A source outside the image is cropped to it.
+the outline moves the source. As in darktable, the first shape drawn in the viewer takes a source
+at a fixed fraction of the image: an ellipse 2% of the width to the right and 1.414% of the height
+up, a Bezier or rectangle 2% to the right and 2% down. Every later shape drawn in the viewer reuses
+that first offset until the node is reloaded. A shape made by script takes 0, 0. A source outside the image is cropped to it.
 Copy to Scale N and Move to Scale N in a shape's right-click menu put a copy of the selected
 shapes, or the shapes themselves, on the Current Scale, as one undoable step.
 

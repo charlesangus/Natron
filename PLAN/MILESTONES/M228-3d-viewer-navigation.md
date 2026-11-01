@@ -118,16 +118,17 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 ## Phase 228.5: UAT round 2 fixes
 
-- [ ] M228.P5.T1 — Keep locked-view camera knobs synchronized
+- [x] M228.P5.T1 — Keep locked-view camera knobs synchronized
   - files: `Gui/SceneViewport*`, camera node knob synchronization, 3D viewer GUI test
   - approach: Commit navigation changes back to the locked camera as one undoable edit and refresh its visible knobs immediately, without reintroducing per-motion evaluation stalls.
   - verify: Navigate while locked, then inspect and undo the camera knobs; values and view remain consistent.
   - size: M
 
-- [ ] M228.P5.T2 — Fix NVIDIA USDRender crashes in the UAT scene
+- [x] M228.P5.T2 — Fix NVIDIA USDRender crashes in the UAT scene
   - files: USDRender/Hydra GL lifecycle, crash regression harness, M228 UAT fixture
   - approach: Reproduce with `M228-r2-scene.ntpz` and the supplied crash log, isolate the invalid GL/Hydra lifetime or command path, and fail safely if the driver cannot execute it.
   - verify: The supplied scene renders repeatedly on the NVIDIA target without a segfault and still passes llvmpipe coverage.
   - size: L
 
 **Verification gate:** release and 3D GUI suites pass; the supplied NVIDIA scene is crash-free; camera knobs track locked navigation; the user accepts the replacement AppImage.
+- 2026-11-01 — P5 at 7c92ec3a6: camera knobs were written with UserEdited (panel doesn't refresh) — now NatronGuiEdited; knobs update on release, per the earlier decision (user may want live). NVIDIA crash: HgiGL's garbage collector is process-global and not thread safe, and USDRender's render thread and the 3D view each drive an HgiGL — all Storm work now runs in a process-wide StormGLSection. Unproven on NVIDIA until the user retests (PM).

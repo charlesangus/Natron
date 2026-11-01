@@ -159,9 +159,6 @@ struct AutoStraightenOp {
      **/
     bool canConcatenate() const;
 
-    std::optional<GpuCostHint> costHint(const Params& params,
-                                        const PassContext& context) const;
-
     const AutoStraighten* node = nullptr;
     KnobDoubleWPtr rotation;
     KnobDoubleWPtr lensShiftV;

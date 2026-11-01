@@ -601,13 +601,6 @@ AutoStraightenOp::canConcatenate() const
     return false;
 }
 
-std::optional<GpuCostHint>
-AutoStraightenOp::costHint(const Params& /*params*/,
-                           const PassContext& /*context*/) const
-{
-    return GpuCostHint();
-}
-
 AutoStraighten::AutoStraighten(NodePtr node)
     : ImageNode<AutoStraightenOp>(node)
     // Built here, as RotoPaint does: Node::load() creates the curve context before initializeKnobs()

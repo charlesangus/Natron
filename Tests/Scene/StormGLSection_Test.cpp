@@ -143,7 +143,7 @@ public:
         if (!_context) {
             return false;
         }
-        if (!PXR_NS::GarchGLApiLoad()) {
+        if (!GarchGLApiLoad()) {
             *error = "GL entry points could not be loaded in the viewer's context";
 
             return false;

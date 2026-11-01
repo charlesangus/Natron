@@ -28,12 +28,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QMutexLocker>
 #include <QtCore/QString>
+#include <QtCore/QThread>
+#include <QtCore/QTimer>
 
 #include "Engine/AbortableRenderInfo.h"
 
@@ -48,6 +54,9 @@
 #include "Engine/PyRFV.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -169,6 +178,49 @@ joined(const std::set<std::string>& lines)
 }
 } // anonymous namespace
 
+/**
+ * @brief Undoes an Add After, a Remove or a Match Variable press: the patterns, the pattern count
+ * and the inputs, as they were before and after it.
+ **/
+class RFVSwitchRowsCommand
+    : public UndoCommand {
+public:
+    RFVSwitchRowsCommand(const NodePtr& node,
+                         const RFVSwitch::RowsState& before,
+                         const RFVSwitch::RowsState& after,
+                         const std::string& text)
+        : UndoCommand(text)
+        , _node(node)
+        , _before(before)
+        , _after(after)
+    {
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        apply(_after);
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        apply(_before);
+    }
+
+private:
+    void apply(const RFVSwitch::RowsState& state)
+    {
+        NodePtr node = _node.lock();
+        RFVSwitch* rfvSwitch = node ? dynamic_cast<RFVSwitch*>(node->getEffectInstance().get()) : NULL;
+        if (rfvSwitch) {
+            rfvSwitch->applyRowsState(state);
+        }
+    }
+
+    NodeWPtr _node;
+    RFVSwitch::RowsState _before;
+    RFVSwitch::RowsState _after;
+};
+
 void
 RFVSwitch::initializeKnobs()
 {
@@ -193,43 +245,15 @@ RFVSwitch::initializeKnobs()
     count->setHintToolTip(tr(kRFVSwitchParamPatternCountHint));
     count->setAnimationEnabled(false);
     count->setMinimum(1);
-    count->setMaximum(kRFVSwitchInputCount);
+    count->setMaximum(kRFVSwitchMaxRows);
     count->setDefaultValue(1);
     count->setSecretByDefault(true);
     page->addKnob(count);
     _patternCount = count;
 
-    for (int i = 0; i < kRFVSwitchInputCount; ++i) {
-        const std::string number = std::to_string(i);
-        const QString suffix = QLatin1Char(' ') + QString::number(i);
-
-        KnobStringPtr pattern = createKnob<KnobString>(tr(kRFVSwitchParamPatternLabel) + suffix);
-        pattern->setName(kRFVSwitchParamPattern + number);
-        pattern->setHintToolTip(tr(kRFVSwitchParamPatternHint));
-        pattern->setAnimationEnabled(false);
-        pattern->setAddNewLine(false);
-        pattern->setSecretByDefault(i > 0);
-        page->addKnob(pattern);
-        _patterns.push_back(pattern);
-
-        KnobButtonPtr addAfter = createKnob<KnobButton>(tr(kRFVSwitchParamAddAfterLabel) + suffix);
-        addAfter->setName(kRFVSwitchParamAddAfter + number);
-        addAfter->setHintToolTip(tr(kRFVSwitchParamAddAfterHint));
-        addAfter->setIconLabel(NATRON_ICONS_PATH "lucide/plus.svg");
-        addAfter->setEvaluateOnChange(false);
-        addAfter->setAddNewLine(false);
-        addAfter->setSecretByDefault(i > 0);
-        page->addKnob(addAfter);
-        _addAfter.push_back(addAfter);
-
-        KnobButtonPtr remove = createKnob<KnobButton>(tr(kRFVSwitchParamRemoveLabel) + suffix);
-        remove->setName(kRFVSwitchParamRemove + number);
-        remove->setHintToolTip(tr(kRFVSwitchParamRemoveHint));
-        remove->setIconLabel(NATRON_ICONS_PATH "lucide/minus.svg");
-        remove->setEvaluateOnChange(false);
-        remove->setSecretByDefault(i > 0);
-        page->addKnob(remove);
-        _remove.push_back(remove);
+    _page = page;
+    for (int i = 0; i < kRFVSwitchRowChunk; ++i) {
+        createRow(i, page, -1);
     }
 
     KnobChoicePtr ifNoMatch = createKnob<KnobChoice>(tr(kRFVSwitchParamIfNoMatchLabel));
@@ -245,6 +269,183 @@ RFVSwitch::initializeKnobs()
     _ifNoMatch = ifNoMatch;
 } // RFVSwitch::initializeKnobs
 
+void
+RFVSwitch::createRow(int index,
+                     const KnobPagePtr& page,
+                     int pageIndex)
+{
+    const std::string number = std::to_string(index);
+    const QString suffix = QLatin1Char(' ') + QString::number(index);
+    const auto place = [&page, &pageIndex](const KnobIPtr& knob) {
+        if (pageIndex < 0) {
+            page->addKnob(knob);
+        } else {
+            page->insertKnob(pageIndex++, knob);
+        }
+    };
+
+    KnobStringPtr pattern = createKnob<KnobString>(tr(kRFVSwitchParamPatternLabel) + suffix);
+    pattern->setName(kRFVSwitchParamPattern + number);
+    pattern->setHintToolTip(tr(kRFVSwitchParamPatternHint));
+    pattern->setAnimationEnabled(false);
+    pattern->setAddNewLine(false);
+    pattern->setSecretByDefault(index > 0);
+    place(pattern);
+
+    KnobButtonPtr addAfter = createKnob<KnobButton>(tr(kRFVSwitchParamAddAfterLabel) + suffix);
+    addAfter->setName(kRFVSwitchParamAddAfter + number);
+    addAfter->setHintToolTip(tr(kRFVSwitchParamAddAfterHint));
+    addAfter->setIconLabel(NATRON_ICONS_PATH "lucide/plus.svg");
+    addAfter->setEvaluateOnChange(false);
+    addAfter->setAddNewLine(false);
+    addAfter->setSecretByDefault(index > 0);
+    place(addAfter);
+
+    KnobButtonPtr remove = createKnob<KnobButton>(tr(kRFVSwitchParamRemoveLabel) + suffix);
+    remove->setName(kRFVSwitchParamRemove + number);
+    remove->setHintToolTip(tr(kRFVSwitchParamRemoveHint));
+    remove->setIconLabel(NATRON_ICONS_PATH "lucide/minus.svg");
+    remove->setEvaluateOnChange(false);
+    remove->setSecretByDefault(index > 0);
+    place(remove);
+
+    QMutexLocker locker(&_rowsMutex);
+    _patterns.push_back(pattern);
+    _addAfter.push_back(addAfter);
+    _remove.push_back(remove);
+}
+
+int
+RFVSwitch::createdRows() const
+{
+    QMutexLocker locker(&_rowsMutex);
+
+    return (int)_patterns.size();
+}
+
+KnobStringPtr
+RFVSwitch::patternKnob(int row) const
+{
+    QMutexLocker locker(&_rowsMutex);
+
+    return ((row >= 0) && (row < (int)_patterns.size())) ? _patterns[row].lock() : KnobStringPtr();
+}
+
+int
+RFVSwitch::rowOfKnob(const std::string& name,
+                     const char* prefix)
+{
+    const std::size_t prefixSize = std::char_traits<char>::length(prefix);
+    if ((name.size() <= prefixSize) || (name.compare(0, prefixSize, prefix) != 0)) {
+        return -1;
+    }
+    int row = 0;
+    for (std::size_t i = prefixSize; i < name.size(); ++i) {
+        const char c = name[i];
+        if ((c < '0') || (c > '9') || (row >= kRFVSwitchMaxRows)) {
+            return -1;
+        }
+        row = row * 10 + (c - '0');
+    }
+
+    return (row < kRFVSwitchMaxRows) ? row : -1;
+}
+
+int
+RFVSwitch::getNInputs() const
+{
+    return _inputCount.load();
+}
+
+void
+RFVSwitch::ensureRows(int rows,
+                      bool loading)
+{
+    // Knobs and inputs are only created on the main thread.
+    if (QThread::currentThread() != qApp->thread()) {
+        return;
+    }
+    const int wanted = std::min(rows, (int)kRFVSwitchMaxRows);
+    const int created = createdRows();
+    KnobPagePtr page = _page.lock();
+    if ((wanted <= created) || !page) {
+        return;
+    }
+    const int target = std::min((int)kRFVSwitchMaxRows, (wanted + kRFVSwitchRowChunk - 1) / kRFVSwitchRowChunk * kRFVSwitchRowChunk);
+
+    // If No Match always follows the last row.
+    const KnobIPtr ifNoMatch = _ifNoMatch.lock();
+    const std::vector<KnobIPtr> children = page->getChildren();
+    int at = (int)children.size();
+    for (int i = 0; i < (int)children.size(); ++i) {
+        if (children[i] == ifNoMatch) {
+            at = i;
+            break;
+        }
+    }
+    for (int i = created; i < target; ++i) {
+        createRow(i, page, at);
+        at += 3;
+    }
+
+    _inputCount.store(target);
+    NodePtr node = getNode();
+    if (node) {
+        node->initializeInputs();
+    }
+    refreshRows();
+    refreshInputsVisibility();
+    if (loading) {
+        return;
+    }
+    if (node && node->isNodeCreated()) {
+        try {
+            node->declarePythonFields();
+        } catch (const std::logic_error&) {
+            // The node is not in Python yet: creating it declares every knob.
+        }
+    }
+    // Deferred, because the press of an Add After button lands here from inside its own widget,
+    // which the rebuild destroys.
+    if (!_panelRefreshPending) {
+        _panelRefreshPending = true;
+        QTimer::singleShot(0, this, [this]() {
+            _panelRefreshPending = false;
+            recreateKnobs(true);
+        });
+    }
+} // RFVSwitch::ensureRows
+
+void
+RFVSwitch::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
+{
+    if (!serialization) {
+        return;
+    }
+    int rows = 1;
+    for (const Serialization::KnobSerialization& knob : serialization->knobs) {
+        if (knob.name == kRFVSwitchParamPatternCount) {
+            if (!knob.dimensions.empty() && knob.dimensions[0].value) {
+                const Serialization::KnobValueSerialization& value = *knob.dimensions[0].value;
+                if (const int* count = std::get_if<int>(&value)) {
+                    rows = std::max(rows, *count);
+                } else if (const double* countDouble = std::get_if<double>(&value)) {
+                    rows = std::max(rows, (int)std::min(*countDouble, (double)kRFVSwitchMaxRows));
+                }
+            }
+            continue;
+        }
+        for (const char* prefix : { kRFVSwitchParamPattern, kRFVSwitchParamAddAfter, kRFVSwitchParamRemove }) {
+            rows = std::max(rows, rowOfKnob(knob.name, prefix) + 1);
+        }
+    }
+    // Variadic inputs are labelled by their number alone.
+    for (const auto& input : serialization->inputs) {
+        rows = std::max(rows, rowOfKnob(input.first, "") + 1);
+    }
+    ensureRows(rows, true);
+}
+
 bool
 RFVSwitch::knobChanged(KnobI* k,
                        ValueChangedReasonEnum /*reason*/,
@@ -255,24 +456,50 @@ RFVSwitch::knobChanged(KnobI* k,
     if (!k) {
         return false;
     }
-    for (int i = 0; i < (int)_addAfter.size(); ++i) {
-        if (k == _addAfter[i].lock().get()) {
-            insertRowAfter(i);
-
-            return true;
+    // Recorded here because these edits come from no undo command of their own.
+    const auto editRows = [this, k](const std::function<void()>& edit) {
+        AppInstancePtr app = getApp();
+        const UndoRecorderPtr recorder = app ? app->getRecordingUndoRecorder() : UndoRecorderPtr();
+        RowsState before;
+        if (recorder) {
+            before = rowsState();
         }
-        if (k == _remove[i].lock().get()) {
-            removeRow(i);
-
-            return true;
+        edit();
+        if (recorder) {
+            recordRowsEdit(recorder, before, k->getLabel());
+        }
+    };
+    const std::string& name = k->getName();
+    const int addAt = rowOfKnob(name, kRFVSwitchParamAddAfter);
+    const int removeAt = rowOfKnob(name, kRFVSwitchParamRemove);
+    KnobButtonPtr addAfter;
+    KnobButtonPtr remove;
+    {
+        QMutexLocker locker(&_rowsMutex);
+        if ((addAt >= 0) && (addAt < (int)_addAfter.size())) {
+            addAfter = _addAfter[addAt].lock();
+        }
+        if ((removeAt >= 0) && (removeAt < (int)_remove.size())) {
+            remove = _remove[removeAt].lock();
         }
     }
+    if (addAfter && (k == addAfter.get())) {
+        editRows([this, addAt]() { insertRowAfter(addAt); });
+
+        return true;
+    }
+    if (remove && (k == remove.get())) {
+        editRows([this, removeAt]() { removeRow(removeAt); });
+
+        return true;
+    }
     if (k == _matchVariable.lock().get()) {
-        matchVariableOptions();
+        editRows([this]() { matchVariableOptions(); });
 
         return true;
     }
     if (k == _patternCount.lock().get()) {
+        ensureRows(_patternCount.lock()->getValue(), false);
         refreshRows();
         refreshInputsVisibility();
         clearPostedMessage();
@@ -315,16 +542,23 @@ RFVSwitch::patternCount() const
     KnobIntPtr count = _patternCount.lock();
     const int value = count ? count->getValue() : 1;
 
-    return std::max(1, std::min(value, (int)_patterns.size()));
+    return std::max(1, std::min(value, createdRows()));
 }
 
 std::vector<std::string>
 RFVSwitch::patterns() const
 {
-    std::vector<std::string> values;
     const int count = std::min(patternCount(), getNInputs());
-    for (int i = 0; i < count; ++i) {
-        KnobStringPtr pattern = _patterns[i].lock();
+    std::vector<KnobStringPtr> knobs;
+    {
+        QMutexLocker locker(&_rowsMutex);
+        for (int i = 0; i < count && i < (int)_patterns.size(); ++i) {
+            knobs.push_back(_patterns[i].lock());
+        }
+    }
+    std::vector<std::string> values;
+    values.reserve(knobs.size());
+    for (const KnobStringPtr& pattern : knobs) {
         values.push_back(pattern ? pattern->getValue() : std::string());
     }
 
@@ -346,16 +580,25 @@ RFVSwitch::compiledPatterns() const
 void
 RFVSwitch::refreshRows()
 {
+    std::vector<KnobStringWPtr> patterns;
+    std::vector<KnobButtonWPtr> addAfters;
+    std::vector<KnobButtonWPtr> removes;
+    {
+        QMutexLocker locker(&_rowsMutex);
+        patterns = _patterns;
+        addAfters = _addAfter;
+        removes = _remove;
+    }
     const int count = patternCount();
-    for (int i = 0; i < (int)_patterns.size(); ++i) {
+    for (int i = 0; i < (int)patterns.size(); ++i) {
         const bool shown = i < count;
-        KnobStringPtr pattern = _patterns[i].lock();
-        KnobButtonPtr addAfter = _addAfter[i].lock();
-        KnobButtonPtr remove = _remove[i].lock();
+        KnobStringPtr pattern = patterns[i].lock();
+        KnobButtonPtr addAfter = addAfters[i].lock();
+        KnobButtonPtr remove = removes[i].lock();
         if (pattern && (pattern->getIsSecret() == shown)) {
             pattern->setSecret(!shown);
         }
-        const bool addShown = shown && (count < (int)_patterns.size());
+        const bool addShown = shown && (count < kRFVSwitchMaxRows);
         if (addAfter && (addAfter->getIsSecret() == addShown)) {
             addAfter->setSecret(!addShown);
         }
@@ -371,7 +614,15 @@ RFVSwitch::insertRowAfter(int row)
     KnobIntPtr countKnob = _patternCount.lock();
     NodePtr node = getNode();
     const int count = patternCount();
-    if (!countKnob || !node || (row < 0) || (row >= count) || (count >= (int)_patterns.size())) {
+    if (!countKnob || !node || (row < 0) || (row >= count) || (count >= kRFVSwitchMaxRows)) {
+        return;
+    }
+    ensureRows(count + 1, false);
+    // A connected last input would fall off the end.
+    if (node->getRealInput(node->getNInputs() - 1)) {
+        ensureRows(createdRows() + 1, false);
+    }
+    if (count >= createdRows()) {
         return;
     }
     std::vector<std::string> values = patterns();
@@ -381,13 +632,12 @@ RFVSwitch::insertRowAfter(int row)
     for (int i = 0; i < node->getNInputs(); ++i) {
         inputs.push_back(node->getRealInput(i));
     }
-    // An input past the last falls off.
     inputs.insert(inputs.begin() + row + 1, NodePtr());
     inputs.pop_back();
 
     beginChanges();
     for (int i = row + 1; i < (int)values.size(); ++i) {
-        _patterns[i].lock()->setValue(values[i]);
+        patternKnob(i)->setValue(values[i]);
     }
     countKnob->setValue(count + 1);
     endChanges();
@@ -404,7 +654,7 @@ RFVSwitch::removeRow(int row)
         return;
     }
     if (count == 1) {
-        _patterns[0].lock()->setValue(std::string());
+        patternKnob(0)->setValue(std::string());
 
         return;
     }
@@ -421,12 +671,116 @@ RFVSwitch::removeRow(int row)
 
     beginChanges();
     for (int i = row; i < (int)values.size(); ++i) {
-        _patterns[i].lock()->setValue(values[i]);
+        patternKnob(i)->setValue(values[i]);
     }
     countKnob->setValue(count - 1);
     endChanges();
     reconnectInputs(inputs);
 }
+
+RFVSwitch::RowsState
+RFVSwitch::rowsState() const
+{
+    RowsState state;
+    KnobIntPtr countKnob = _patternCount.lock();
+    state.count = countKnob ? countKnob->getValue() : 1;
+    std::vector<KnobStringWPtr> patterns;
+    {
+        QMutexLocker locker(&_rowsMutex);
+        patterns = _patterns;
+    }
+    for (const KnobStringWPtr& weak : patterns) {
+        KnobStringPtr pattern = weak.lock();
+        state.patterns.push_back(pattern ? pattern->getValue() : std::string());
+    }
+    NodePtr node = getNode();
+    for (int i = 0; node && (i < node->getNInputs()); ++i) {
+        state.inputs.push_back(node->getRealInput(i));
+    }
+
+    return state;
+}
+
+void
+RFVSwitch::applyRowsState(const RowsState& state)
+{
+    KnobIntPtr countKnob = _patternCount.lock();
+    NodePtr node = getNode();
+    if (!countKnob || !node) {
+        return;
+    }
+    ensureRows(std::max({ state.count, (int)state.patterns.size(), (int)state.inputs.size() }), false);
+    // Rows and inputs created after state was taken are emptied.
+    const int rows = createdRows();
+    beginChanges();
+    for (int i = 0; i < rows; ++i) {
+        const std::string value = (i < (int)state.patterns.size()) ? state.patterns[i] : std::string();
+        KnobStringPtr pattern = patternKnob(i);
+        if (pattern && (pattern->getValue() != value)) {
+            pattern->setValue(value);
+        }
+    }
+    if (countKnob->getValue() != state.count) {
+        countKnob->setValue(state.count);
+    }
+    endChanges();
+    std::vector<NodePtr> inputs;
+    for (int i = 0; i < node->getNInputs(); ++i) {
+        inputs.push_back((i < (int)state.inputs.size()) ? state.inputs[i].lock() : NodePtr());
+    }
+    reconnectInputs(inputs);
+    refreshRows();
+}
+
+void
+RFVSwitch::recordRowsEdit(const UndoRecorderPtr& recorder,
+                          const RowsState& before,
+                          const std::string& text)
+{
+    NodePtr node = getNode();
+    if (!recorder || !node) {
+        return;
+    }
+    const RowsState after = rowsState();
+    const auto sameInputs = [](const std::vector<NodeWPtr>& a,
+                               const std::vector<NodeWPtr>& b) {
+        const std::size_t n = std::max(a.size(), b.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            const NodePtr left = (i < a.size()) ? a[i].lock() : NodePtr();
+            const NodePtr right = (i < b.size()) ? b[i].lock() : NodePtr();
+            if (left != right) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    const auto samePatterns = [](const std::vector<std::string>& a,
+                                 const std::vector<std::string>& b) {
+        const std::size_t n = std::max(a.size(), b.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            if (((i < a.size()) ? a[i] : std::string()) != ((i < b.size()) ? b[i] : std::string())) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    if ((before.count == after.count) && samePatterns(before.patterns, after.patterns) && sameInputs(before.inputs, after.inputs)) {
+        return;
+    }
+    UndoTouched touched;
+    touched.nodes.push_back(node);
+    for (const RowsState* state : { &before, &after }) {
+        for (const NodeWPtr& weak : state->inputs) {
+            NodePtr input = weak.lock();
+            if (input && (std::find(touched.nodes.begin(), touched.nodes.end(), input) == touched.nodes.end())) {
+                touched.nodes.push_back(input);
+            }
+        }
+    }
+    recorder->record(std::make_shared<RFVSwitchRowsCommand>(node, before, after, text), touched);
+} // RFVSwitch::recordRowsEdit
 
 void
 RFVSwitch::matchVariableOptions()
@@ -460,15 +814,20 @@ RFVSwitch::matchVariableOptions()
     }
 
     const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
-    const int rows = std::min((int)entries.size(), (int)_patterns.size());
+    ensureRows(std::max(1, std::min((int)entries.size(), (int)kRFVSwitchMaxRows)), false);
+    const int created = createdRows();
+    const int rows = std::min((int)entries.size(), created);
     beginChanges();
-    for (int i = 0; i < (int)_patterns.size(); ++i) {
+    for (int i = 0; i < created; ++i) {
         std::string pattern;
         if (i < rows) {
             const ChoiceOption& entry = entries[i];
             pattern = RFV::patternForLabel(entry.label.empty() ? entry.id : entry.label);
         }
-        _patterns[i].lock()->setValue(pattern);
+        KnobStringPtr knob = patternKnob(i);
+        if (knob && (knob->getValue() != pattern)) {
+            knob->setValue(pattern);
+        }
     }
     countKnob->setValue(std::max(rows, 1));
     endChanges();
@@ -477,10 +836,10 @@ RFVSwitch::matchVariableOptions()
 
     const int leftOut = (int)entries.size() - rows;
     if (leftOut > 0) {
-        postMatchNote(tr("Match Variable: %1 has %2 options and the node %3 inputs; the last %4 were left out.")
+        postMatchNote(tr("Match Variable: %1 has %2 options, more than the %3 rows a switch can have; the last %4 were left out.")
                           .arg(variableName)
                           .arg((int)entries.size())
-                          .arg((int)_patterns.size())
+                          .arg((int)kRFVSwitchMaxRows)
                           .arg(leftOut)
                           .toStdString());
     }

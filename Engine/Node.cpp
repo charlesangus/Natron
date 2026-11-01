@@ -2701,11 +2701,30 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
     assert( QThread::currentThread() == qApp->thread() );
     assert(_imp->knobsInitialized);
 
+    Q_UNUSED(updateKnobGui);
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
 
-    ///for all knobs of the node
+    // Looked up by name, as a node can have thousands of knobs (an RFVSwitch with 1024 rows).
+    std::unordered_map<std::string, std::vector<const Serialization::KnobSerialization*>> savedByName;
+    for (const Serialization::KnobSerialization& saved : serialization.knobs) {
+        savedByName[NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(saved.name)].push_back(&saved);
+    }
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
-        loadKnob(nodeKnobs[j], serialization, updateKnobGui);
+        const KnobIPtr& knob = nodeKnobs[j];
+        const auto found = savedByName.find(knob->getName());
+        if (found == savedByName.end()) {
+            continue;
+        }
+        for (const Serialization::KnobSerialization* saved : found->second) {
+            // A knob might change its type between versions: fromSerialization() then loads nothing.
+            if (!knob->fromSerialization(*saved)) {
+                continue;
+            }
+            if (knob->getName() == kOfxImageEffectFileParamName) {
+                computeFrameRangeForReader(knob.get());
+            }
+            break;
+        }
     }
 
     ///now restore the roto context if the node has a roto context

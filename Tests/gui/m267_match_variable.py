@@ -5,10 +5,14 @@ Sections:
     Variable names it. Before the press the node has one empty row. Pressing Match Variable on the
     open panel makes patternCount 3 with the rows alpha, re:a\\*b (the label with its * escaped, so
     it matches literally) and gamma; the panel shows the three rows and the rest stay hidden;
-  - twenty options: a second Choice variable with 20 options, named in Variable. The node has 16
-    inputs, so Match Variable fills 16 rows and the node's warning says the last 4 were left out.
-Screenshots: m267-before.png (before the first press), m267-after.png (after it) and
-m267-left-out.png (after the second).
+  - twenty options: a second Choice variable with 20 options, named in Variable. The node starts
+    with 16 rows and inputs, so Match Variable adds rows: all 20 are filled, the rebuilt panel shows
+    Input 19 and hides Input 20, the node has 32 inputs and there is no warning;
+  - too many options: a third Choice variable with 1030 options. Match Variable fills the 1024 rows a
+    switch can have, the panel shows Input 1023, and the node's warning says the last 6 were left
+    out. The time from the press until the panel shows the last row is reported.
+Screenshots: m267-before.png (before the first press), m267-after.png (after it), m267-twenty.png
+(after the second) and m267-left-out.png (after the third).
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup; the harness must
 run Xvfb at 1920x1080):
@@ -17,6 +21,7 @@ run Xvfb at 1920x1080):
 """
 import os
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -26,9 +31,12 @@ WATCHDOG_S = 200
 SETTLE_MS = 500
 POLL_TIMEOUT_S = 15.0
 PLUGIN_SWITCH = "RFVSwitch"
-INPUT_COUNT = 16
+FIRST_ROWS = 16
+MAX_ROWS = 1024
 SMALL = "m267Small"
 BIG = "m267Big"
+HUGE = "m267Huge"
+HUGE_COUNT = MAX_ROWS + 6
 SMALL_OPTIONS = ["alpha", "a*b", "gamma"]
 SMALL_PATTERNS = ["alpha", "re:a\\*b", "gamma"]
 BIG_COUNT = 20
@@ -178,15 +186,46 @@ try:
         button = match_button(node_panel(switch))
         require(button is not None, "the panel still shows the Match Variable button")
         button.click()
-        ok = yield ("until", lambda: pattern_rows(switch)[0] == INPUT_COUNT, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: pattern_rows(switch)[0] == BIG_COUNT, POLL_TIMEOUT_S)
         count, rows = pattern_rows(switch)
-        check(ok, "Match Variable filled all %d rows (got %d)" % (INPUT_COUNT, count))
-        check(rows == ["opt%02d" % i for i in range(INPUT_COUNT)], "the rows are the first %d options (got %r)" % (INPUT_COUNT, rows))
+        check(ok, "Match Variable filled all %d rows (got %d)" % (BIG_COUNT, count))
+        check(rows == ["opt%02d" % i for i in range(BIG_COUNT)], "the rows are the %d options (got %r)" % (BIG_COUNT, rows))
+        check(switch.getMaxInputCount() == 2 * FIRST_ROWS,
+              "the node grew to %d inputs (got %d)" % (2 * FIRST_ROWS, switch.getMaxInputCount()))
+        ok = yield ("until", lambda: node_panel(switch) is not None
+                    and any(t.startswith("Input %d" % (BIG_COUNT - 1)) for t in shown_row_labels(node_panel(switch))),
+                    POLL_TIMEOUT_S)
+        labels = shown_row_labels(node_panel(switch))
+        check(ok, "the rebuilt panel shows row Input %d (shown %r)" % (BIG_COUNT - 1, labels))
+        check(not any(t.startswith("Input %d" % BIG_COUNT) for t in labels),
+              "the panel hides row Input %d (shown %r)" % (BIG_COUNT, labels))
+        check(switch.getPersistentMessage() == "", "no warning when every option fits (got %r)" % switch.getPersistentMessage())
+        yield ("sleep", SETTLE_MS)
+        gt.shot("m267-twenty.png")
+
+        gt.section("too many options")
+        declare_choice(HUGE, ["o%d" % i for i in range(HUGE_COUNT)])
+        switch.getParam("variable").setValue(HUGE)
+        activate_main_window()
+        yield ("sleep", SETTLE_MS)
+        button = match_button(node_panel(switch))
+        require(button is not None, "the rebuilt panel shows the Match Variable button")
+        started = time.monotonic()
+        button.click()
+        ok = yield ("until", lambda: pattern_rows(switch)[0] == MAX_ROWS, POLL_TIMEOUT_S)
+        count, rows = pattern_rows(switch)
+        check(ok, "Match Variable filled all %d rows (got %d)" % (MAX_ROWS, count))
+        check(rows == ["o%d" % i for i in range(MAX_ROWS)], "the rows are the first %d options" % MAX_ROWS)
+        ok = yield ("until", lambda: node_panel(switch) is not None
+                    and any(t.startswith("Input %d" % (MAX_ROWS - 1)) for t in shown_row_labels(node_panel(switch))),
+                    POLL_TIMEOUT_S)
+        gt.report("NOTE the panel showed row Input %d %.2f s after the press" % (MAX_ROWS - 1, time.monotonic() - started))
+        check(ok, "the rebuilt panel shows row Input %d" % (MAX_ROWS - 1))
         ok = yield ("until", lambda: "left out" in switch.getPersistentMessage(), POLL_TIMEOUT_S)
         message = switch.getPersistentMessage()
         check(ok, "the node's warning names the options left out (got %r)" % message)
-        check(str(BIG_COUNT - INPUT_COUNT) in message and BIG in message,
-              "the warning names the variable and the %d left out (got %r)" % (BIG_COUNT - INPUT_COUNT, message))
+        check(str(HUGE_COUNT - MAX_ROWS) in message and HUGE in message,
+              "the warning names the variable and the %d left out (got %r)" % (HUGE_COUNT - MAX_ROWS, message))
         yield ("sleep", SETTLE_MS)
         gt.shot("m267-left-out.png")
 

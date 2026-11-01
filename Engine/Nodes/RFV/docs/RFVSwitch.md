@@ -8,7 +8,7 @@ RFVSwitch passes one of its inputs through unchanged, chosen by the value of a R
 
 - **Variable**: the name of the variable to switch on, such as `shot`.
 - **Match Variable**: when Variable names a Choice variable of the project, writes one row per option, in menu order, so input N follows option N. See [Rows from a Choice variable](#rows-from-a-choice-variable).
-- **Input 0**, **Input 1**, ...: one row per pattern, up to 16. The pattern in row Input N chooses input N. The **+** button after a row inserts an empty row below it, and **-** removes its row; the rows below, and the inputs connected to them, move with them, so each pattern keeps choosing the node it chose. Removing the only row empties it instead.
+- **Input 0**, **Input 1**, ...: one row per pattern, up to 1024. The pattern in row Input N chooses input N. The **+** button after a row inserts an empty row below it, and **-** removes its row; the rows below, and the inputs connected to them, move with them, so each pattern keeps choosing the node it chose. Removing the only row empties it instead.
 - **If No Match**: what to output when the variable is unset or matches no pattern.
   - **Error** fails the render, and the node shows the variable and its value.
   - **First Input** passes input 0 through.
@@ -52,7 +52,7 @@ A Choice variable is matched by its option's label, so its rows can be typed by 
 - The rows already there are overwritten. With fewer options than rows, the surplus rows are emptied and hidden; inputs connected to them stay connected but are never chosen until a row is added back, as with **-**.
 - Inputs keep their index: nothing is reconnected. Connect input N to the node option N should show.
 - The rows stay ordinary rows. They do not follow later edits to the variable's options; press the button again to rewrite them.
-- At most 16 options are written. With more, the node shows a warning saying how many were left out.
+- At most 1024 options are written, one per row a switch can have. With more, the node shows a warning saying how many were left out.
 - When Variable is empty, the project declares no variable of that name, or the variable is not a Choice, nothing changes and the node shows a warning saying why. A Choice declared only by an RFVSet node is not read.
 
 The warning stays until a parameter or an input of the switch changes, unless a render posts an error.
@@ -76,7 +76,7 @@ the first RFVSet's branch shows A and the second's shows B. Only A and B render,
 
 ## Inputs
 
-Input 0 is always shown. Input i is also shown while row Input i is, or while it is connected. A chosen input that is not connected outputs black.
+The node has an input per row: 16 at first, more as rows are added, up to 1024. Input 0 is always shown. Input i is also shown while row Input i is, or while it is connected. A chosen input that is not connected outputs black.
 
 ## Errors
 

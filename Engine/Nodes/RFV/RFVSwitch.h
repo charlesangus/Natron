@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <memory>
 #include <set>
 #include <string>
@@ -52,10 +53,10 @@
                                          "in menu order, so input N follows option N, and overwrites the rows already there. A "  \
                                          "label holding *, ? or [, or starting with re:, is written as an escaped re: pattern. "  \
                                          "Inputs stay where they are. The rows do not follow later edits to the options: press "  \
-                                         "again to rewrite them. At most 16 options are written."
+                                         "again to rewrite them. At most 1024 options are written."
 #define kRFVSwitchParamPatternCount "patternCount"
 #define kRFVSwitchParamPatternCountLabel "Pattern Count"
-#define kRFVSwitchParamPatternCountHint "How many pattern rows the node shows."
+#define kRFVSwitchParamPatternCountHint "How many pattern rows the node shows, at most 1024. The node has an input per row."
 #define kRFVSwitchParamPattern "input"
 #define kRFVSwitchParamPatternLabel "Input"
 #define kRFVSwitchParamPatternHint "The pattern choosing this input. The first row matching the variable's whole value wins. A "  \
@@ -79,9 +80,14 @@
 #define kRFVSwitchIfNoMatchFirstInput "First Input"
 #define kRFVSwitchIfNoMatchFirstInputHint "Output input 0."
 
-#define kRFVSwitchInputCount 16
+// The most pattern rows, and inputs, a switch can have.
+#define kRFVSwitchMaxRows 1024
+// Rows and inputs are created this many at a time, as they are needed.
+#define kRFVSwitchRowChunk 16
 
 NATRON_NAMESPACE_ENTER
+
+class UndoRecorderI;
 
 enum RFVSwitchIfNoMatchEnum {
     eRFVSwitchIfNoMatchError = 0,
@@ -89,7 +95,7 @@ enum RFVSwitchIfNoMatchEnum {
 };
 
 inline constexpr InputSpec kRFVSwitchInputs[] = {
-    InputSpec { .label = "", .kind = eDataKindPolymorphic, .role = InputRole::Variadic, .optional = true, .count = kRFVSwitchInputCount, .firstNumber = 0 },
+    InputSpec { .label = "", .kind = eDataKindPolymorphic, .role = InputRole::Variadic, .optional = true, .count = kRFVSwitchMaxRows, .firstNumber = 0 },
 };
 
 /**
@@ -98,9 +104,13 @@ inline constexpr InputSpec kRFVSwitchInputs[] = {
  * its route, under the context the render reached it with, so two paths through RFVSet nodes
  * setting different values can choose different inputs from one RFVSwitch. Pattern row i chooses
  * input i; input i is shown while row i exists or the input is connected, and input 0 always is.
+ * Rows and inputs are created kRFVSwitchRowChunk at a time as rows are added, up to
+ * kRFVSwitchMaxRows, and are kept once created.
  **/
 class RFVSwitch
     : public NativeEffectBase {
+    friend class RFVSwitchRowsCommand;
+
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -112,10 +122,14 @@ public:
         , _variable()
         , _matchVariable()
         , _patternCount()
+        , _page()
+        , _rowsMutex()
         , _patterns()
         , _addAfter()
         , _remove()
         , _ifNoMatch()
+        , _inputCount(kRFVSwitchRowChunk)
+        , _panelRefreshPending(false)
         , _messageMutex()
         , _messageSequence(0)
         , _messageErrors()
@@ -148,7 +162,12 @@ private:
         return staticNodeSpec<kNodeSpec>();
     }
 
+    virtual int getNInputs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    // Creates the rows and inputs the saved knobs and connections need, before they load.
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
@@ -230,6 +249,43 @@ private:
     // Posts note as a warning, shown until a knob or input changes unless a render posts an error.
     void postMatchNote(const std::string& note);
 
+    struct RowsState {
+        int count = 1;
+        std::vector<std::string> patterns;
+        std::vector<NodeWPtr> inputs;
+    };
+
+    // The pattern count, every created row's pattern and every input, for undo.
+    RowsState rowsState() const;
+
+    // Restores state, creating the rows it names if they are gone from the panel.
+    void applyRowsState(const RowsState& state);
+
+    // Records the change from before to the current state on the recorder, if anything changed.
+    void recordRowsEdit(const std::shared_ptr<UndoRecorderI>& recorder,
+                        const RowsState& before,
+                        const std::string& text);
+
+    /**
+     * @brief Creates rows and inputs, kRFVSwitchRowChunk at a time, until there are at least
+     * rows of them, at most kRFVSwitchMaxRows. Main thread only. Outside a load, the new knobs
+     * are declared to Python and the settings panel is rebuilt once the event loop runs.
+     **/
+    void ensureRows(int rows,
+                    bool loading);
+
+    void createRow(int index,
+                   const KnobPagePtr& page,
+                   int pageIndex);
+
+    int createdRows() const;
+
+    KnobStringPtr patternKnob(int row) const;
+
+    // The row a knob named prefix followed by digits belongs to, or -1.
+    static int rowOfKnob(const std::string& name,
+                         const char* prefix);
+
     int patternCount() const;
 
     // The patterns of the shown rows, at most one per input.
@@ -251,10 +307,15 @@ private:
     KnobStringWPtr _variable;
     KnobButtonWPtr _matchVariable;
     KnobIntWPtr _patternCount;
+    KnobPageWPtr _page;
+    // Guards the row vectors, which renders read while the main thread adds rows.
+    mutable QMutex _rowsMutex;
     std::vector<KnobStringWPtr> _patterns;
     std::vector<KnobButtonWPtr> _addAfter;
     std::vector<KnobButtonWPtr> _remove;
     KnobChoiceWPtr _ifNoMatch;
+    std::atomic<int> _inputCount;
+    bool _panelRefreshPending;
 
     mutable QMutex _messageMutex;
     U64 _messageSequence;

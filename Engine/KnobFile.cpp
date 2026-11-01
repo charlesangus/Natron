@@ -226,12 +226,13 @@ KnobFile::getFileName(int time,
 /***********************************KnobOutputFile*****************************************/
 
 KnobOutputFile::KnobOutputFile(KnobHolder* holder,
-                               const std::string &description,
+                               const std::string& description,
                                int dimension,
                                bool declaredByPlugin)
     : KnobStringBase(holder, description, dimension, declaredByPlugin)
     , _isOutputImage(false)
     , _sequenceDialog(true)
+    , _showsRewriteButton(true)
 {
 }
 

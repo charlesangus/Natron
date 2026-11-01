@@ -839,6 +839,7 @@ NativeWrite::initializeKnobs()
     filename->setAsOutputImageFile();
     filename->setHintToolTip(tr("The image or image sequence to write."));
     filename->setIsMetadataSlave(true);
+    filename->setShowsRewriteButton(false);
     page->addKnob(filename);
     _filename = filename;
 

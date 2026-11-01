@@ -1,11 +1,13 @@
 """The Read and Write panels after the knob cleanup: the Read shows one reload, its Reload button,
 which picks up a file rewritten on disk, and no reload icon beside File or Proxy File; the Write has
-no Format Type or format widgets, since it always writes its input's format.
+no Format Type or format widgets, since it always writes its input's format, and no rewrite icon
+beside its File; the OCIOFileTransform and OCIOCDLTransform panels have their Reload button on the
+same row as the File field, with no reload icon of the file knob.
 
 A TGA is written at run time with oiiotool (or OpenImageIO's Python module if that is missing)
 under $NATRON_GUI_TEST_OUT/fixtures/m223.
 
-Screenshots (cropped): m223-read-panel.png and m223-write-panel.png.
+Screenshots (cropped): m223-read-panel.png, m223-write-panel.png and m223-<node>-panel.png.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m223_read_write_knobs.py
 """
@@ -24,6 +26,8 @@ CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
 GREEN = (0.1, 0.8, 0.1)
 BLUE = (0.1, 0.1, 0.8)
 FILE_RELOAD_TOOLTIP = "Reload the file"
+FILE_REWRITE_TOOLTIP = "Rewrite the file"
+OCIO_NODES = ("OCIOFileTransform", "OCIOCDLTransform")
 
 try:
     from PySide6.QtCore import QMetaObject, QRect
@@ -204,8 +208,38 @@ try:
         check("Clip To RoD" in labels, "the panel shows Clip To RoD")
         gone = [t for t in labels if t in ("Format Type", "Format", "Size", "Pixel Aspect Ratio")]
         check(not gone, "the panel has no format widgets (%r)" % gone)
+        rewrite = [b for b in visible_buttons(panel) if FILE_REWRITE_TOOLTIP in (b.toolTip() or "")]
+        reload_icons = [b for b in visible_buttons(panel) if FILE_RELOAD_TOOLTIP in (b.toolTip() or "")]
+        check(not rewrite, "the Write's File shows no rewrite icon (%d)" % len(rewrite))
+        check(not reload_icons, "the Write's File shows no reload icon (%d)" % len(reload_icons))
         screen_crop("m223-write-panel.png", panel)
         gt.close_all_panels()
+
+    def ocio_section():
+        gt.section("OCIO file nodes")
+        for i, plugin in enumerate(OCIO_NODES):
+            node = app.createNode(plugin)
+            require(node is not None, "create %s" % plugin, gt.plugin_problem(plugin))
+            node.setPosition(600 + 200 * i, 100)
+            state["ocio" + plugin] = node
+            yield from open_panel(node)
+            yield ("sleep", 800)
+            panel = panel_of(node)
+            require(panel is not None, "%s's panel is open" % plugin)
+            state["panel" + plugin] = panel
+            reloads = [b for b in visible_buttons(panel) if b.text() == "Reload"]
+            icons = [b for b in visible_buttons(panel) if FILE_RELOAD_TOOLTIP in (b.toolTip() or "")]
+            fields = [e for e in panel.findChildren(QLineEdit) if e.isVisible() and e.placeholderText() == "File path..."]
+            report("NOTE %s panel labels top to bottom: %r" % (plugin, panel_rows(panel)))
+            check(len(reloads) == 1, "%s has one Reload button (%d)" % (plugin, len(reloads)))
+            check(not icons, "%s's File shows no reload icon (%d)" % (plugin, len(icons)))
+            check(len(fields) == 1, "%s has one File field (%d)" % (plugin, len(fields)))
+            if len(reloads) == 1 and len(fields) == 1:
+                reload_y = reloads[0].mapTo(panel, reloads[0].rect().center()).y()
+                field_y = fields[0].mapTo(panel, fields[0].rect().center()).y()
+                check(abs(reload_y - field_y) <= 6, "%s's Reload is on the File row (y %d vs %d)" % (plugin, reload_y, field_y))
+            screen_crop("m223-%s-panel.png" % plugin.lower(), panel)
+            gt.close_all_panels()
 
     def steps():
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
@@ -219,6 +253,7 @@ try:
         gt.close_all_panels()
         yield from read_section()
         yield from write_section()
+        yield from ocio_section()
 
     gt.run(steps())
 except Exception:

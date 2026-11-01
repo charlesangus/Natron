@@ -229,6 +229,20 @@ public:
         return _sequenceDialog;
     }
 
+    /**
+     * @brief Whether the knob shows its rewrite icon beside the file field. Off for nodes whose
+     * written files are not rewritten from the field, such as the Write.
+     **/
+    void setShowsRewriteButton(bool shows)
+    {
+        _showsRewriteButton = shows;
+    }
+
+    bool showsRewriteButton() const
+    {
+        return _showsRewriteButton;
+    }
+
     QString generateFileNameAtTime(SequenceTime time, ViewSpec view);
 
 Q_SIGNALS:
@@ -246,6 +260,7 @@ private:
     static const std::string _typeNameStr;
     bool _isOutputImage;
     bool _sequenceDialog;
+    bool _showsRewriteButton;
 };
 
 

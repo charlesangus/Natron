@@ -1884,7 +1884,6 @@ public:
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) OVERRIDE FINAL;
 
 protected:
-
 public:
     virtual void setExpressionInternal(int dimension, const std::string& expression, bool hasRetVariable, bool clearResults, bool failIfInvalid) OVERRIDE FINAL;
     virtual void replaceNodeNameInExpressionCode(int dimension,

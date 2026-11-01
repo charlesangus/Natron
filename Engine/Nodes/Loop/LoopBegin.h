@@ -39,7 +39,7 @@
 #define PLUGINID_NATRON_LOOPBEGIN "fr.natron.LoopBegin"
 #define PLUGIN_MAJOR_NATRON_LOOPBEGIN 1
 
-#define kLoopBeginParamName "name"
+#define kLoopBeginParamFeedback "feedback"
 
 NATRON_NAMESPACE_ENTER
 
@@ -49,13 +49,14 @@ inline constexpr InputSpec kLoopBeginInputs[] = {
 
 /**
  * @brief Marks where a loop body starts. An identity on its input: the body is whatever lies
- * between it and the LoopEnd that pairs with it. Its name is what outer loops are seen as from
- * inside nested ones (`loops.<name>.*`), so it is unique within its group.
+ * between it and the LoopEnd that pairs with it. Several LoopBegins may pair with one LoopEnd,
+ * each bringing its own input into the body; the loop, and its name, are the LoopEnd's.
  *
- * When the LoopEnd is in Feedback mode, each iteration after the first outputs what the body
- * output at the iteration before it instead, conformed to its input's components and depth. Its
- * hash then folds in the body's state, hashed as if it read a fixed image, and the LoopEnd's
- * knobs that decide the iterations: what it outputs moves with them, its inputs' hashes do not.
+ * When the LoopEnd is in Feedback mode and Feedback is on, each iteration after the first
+ * outputs what the body output at the iteration before it instead, conformed to its input's
+ * components and depth. Its hash then folds in the body's state, hashed as if every LoopBegin
+ * feeding back read a fixed image, and the LoopEnd's knobs that decide the iterations: what it
+ * outputs moves with them, its inputs' hashes do not.
  **/
 class LoopBegin
     : public NativeEffectBase {
@@ -69,13 +70,10 @@ public:
 
     static bool isLoopBegin(const NodePtr& node) WARN_UNUSED_RETURN;
 
-    std::string getLoopName() const WARN_UNUSED_RETURN;
-
     /**
-     * @brief Why the loop name cannot be used, or empty when it can: it must be an identifier,
-     * and no other LoopBegin of the same group may have it.
+     * @brief Whether it outputs the iteration before when its LoopEnd is in Feedback mode.
      **/
-    std::string getLoopNameError() const WARN_UNUSED_RETURN;
+    bool feedsBack() const WARN_UNUSED_RETURN;
 
 private:
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -90,10 +88,10 @@ private:
                        "below it are rendered once per iteration, each time with the loop variables "
                        "loop.iteration, loop.count, loop.t (0 to 1) and loop.frame set, which knob "
                        "drivers in the body read. A body node that reads no loop variable renders only "
-                       "once. The image passes through LoopBegin unchanged, except when the LoopEnd is "
-                       "in Feedback mode: each iteration after the first then starts from the output of "
-                       "the iteration before it. Name is how a nested loop sees this one, as "
-                       "loops.<name>.*, and is unique within the group.",
+                       "once. Several LoopBegins may start the body of one LoopEnd, each bringing in its "
+                       "own input. The image passes through LoopBegin unchanged, except when the LoopEnd "
+                       "is in Feedback mode and Feedback is on: each iteration after the first then starts "
+                       "from the output of the iteration before it. The loop's name is the LoopEnd's.",
         .grouping = PLUGIN_GROUP_LOOP,
         .majorVersion = PLUGIN_MAJOR_NATRON_LOOPBEGIN,
         .minorVersion = 0,
@@ -115,11 +113,6 @@ private:
                              ViewSpec view,
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
-
-    virtual void onEffectCreated(bool mayCreateFileDialog,
-                                 const CreateNodeArgs& args) OVERRIDE FINAL;
-
-    virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL;
 
@@ -159,22 +152,14 @@ private:
     virtual void appendExtraContextReadSuccessors(std::vector<NodePtr>* successors,
                                                   std::vector<RenderContextReadSet>* overridden) const OVERRIDE FINAL;
 
-    void refreshNameMessage();
-
     // Shows, or clears when empty, the warning that the iteration before had other components.
     void refreshConformMessage(const std::string& message);
 
-    KnobStringWPtr _name;
-    std::string _postedMessage;
+    KnobBoolWPtr _feedback;
 
     QMutex _conformMutex;
     std::string _conformPosted;
 };
-
-/**
- * @brief The LoopBegins of node's group other than node itself.
- **/
-std::list<NodePtr> otherLoopBeginsInGroup(const NodePtr& node) WARN_UNUSED_RETURN;
 
 /**
  * @brief Shows message on node as a persistent message of type, unless it already shows it, or

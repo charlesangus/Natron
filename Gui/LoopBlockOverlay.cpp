@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -122,12 +123,18 @@ LoopBlockItem::setBlocks(const std::vector<Block>& sceneBlocks)
 
     for (Block& block : blocks) {
         block.hull = mapFromScene(block.hull);
-        block.beginWedge = mapFromScene(block.beginWedge);
+        for (QPolygonF& wedge : block.beginWedges) {
+            wedge = mapFromScene(wedge);
+        }
         block.endWedge = mapFromScene(block.endWedge);
-        block.beginRect = mapRectFromScene(block.beginRect);
+        for (QRectF& rect : block.beginRects) {
+            rect = mapRectFromScene(rect);
+        }
         block.endRect = mapRectFromScene(block.endRect);
         bounds = bounds.united(block.hull.boundingRect());
-        bounds = bounds.united(block.beginWedge.boundingRect());
+        for (const QPolygonF& wedge : block.beginWedges) {
+            bounds = bounds.united(wedge.boundingRect());
+        }
         bounds = bounds.united(block.endWedge.boundingRect());
     }
     // Room for the outline and rings drawn outside the shapes.
@@ -162,13 +169,17 @@ LoopBlockItem::paint(QPainter* painter,
 
         painter->setPen(QPen(block.color.darker(160), 1.));
         painter->setBrush(block.color);
-        painter->drawPolygon(block.beginWedge);
+        for (const QPolygonF& wedge : block.beginWedges) {
+            painter->drawPolygon(wedge);
+        }
         painter->drawPolygon(block.endWedge);
 
         if (block.highlighted) {
             painter->setBrush(Qt::NoBrush);
             painter->setPen(QPen(block.color.lighter(130), 3.));
-            painter->drawRect(block.beginRect.adjusted(-4., -4., 4., 4.));
+            for (const QRectF& rect : block.beginRects) {
+                painter->drawRect(rect.adjusted(-4., -4., 4., 4.));
+            }
             painter->drawRect(block.endRect.adjusted(-4., -4., 4., 4.));
         }
     }
@@ -271,18 +282,25 @@ LoopBlockOverlay::recomputeMembership()
             continue;
         }
         LoopEnd* effect = dynamic_cast<LoopEnd*>(end->getEffectInstance().get());
-        const NodePtr begin = effect ? effect->getLoopBegin() : NodePtr();
-        if (!begin) {
+        const std::vector<NodePtr> begins = effect ? effect->getLoopBegins() : std::vector<NodePtr>();
+        if (begins.empty()) {
             continue;
         }
         Membership block;
-        block.begin = begin;
         block.end = end;
-        LoopBegin* beginEffect = dynamic_cast<LoopBegin*>(begin->getEffectInstance().get());
-        block.name = beginEffect ? beginEffect->getLoopName() : begin->getScriptName_mt_safe();
-        const std::vector<NodePtr> nodes = pathNodes(begin, end);
-        for (const NodePtr& node : nodes) {
-            block.nodes.push_back(node);
+        block.name = effect->getLoopName();
+        if (block.name.empty()) {
+            block.name = end->getScriptName_mt_safe();
+        }
+        std::set<Node*> seen;
+        for (const NodePtr& begin : begins) {
+            block.begins.push_back(begin);
+            const std::vector<NodePtr> nodes = pathNodes(begin, end);
+            for (const NodePtr& node : nodes) {
+                if (seen.insert(node.get()).second) {
+                    block.nodes.push_back(node);
+                }
+            }
         }
         _blocks.push_back(block);
     }
@@ -306,19 +324,26 @@ LoopBlockOverlay::refresh()
 
     std::vector<LoopBlockItem::Block> shapes;
     for (const Membership& block : _blocks) {
-        NodeGui* beginGui = guiOf(block.begin.lock());
         NodeGui* endGui = guiOf(block.end.lock());
-        if (!beginGui || !endGui || !beginGui->isVisible() || !endGui->isVisible()) {
+        if (!endGui || !endGui->isVisible()) {
             continue;
         }
         LoopBlockItem::Block shape;
         shape.color = pairColor(block.name);
-        shape.beginRect = sceneRectOf(beginGui);
         shape.endRect = sceneRectOf(endGui);
-        shape.highlighted = beginGui->getIsSelected() || endGui->getIsSelected();
+        shape.highlighted = endGui->getIsSelected();
+        for (const NodeWPtr& weak : block.begins) {
+            NodeGui* beginGui = guiOf(weak.lock());
+            if (beginGui && beginGui->isVisible()) {
+                shape.beginRects.push_back(sceneRectOf(beginGui));
+                shape.highlighted = shape.highlighted || beginGui->getIsSelected();
+            }
+        }
+        if (shape.beginRects.empty()) {
+            continue;
+        }
 
-        std::vector<QRectF> rects;
-        rects.push_back(shape.beginRect);
+        std::vector<QRectF> rects(shape.beginRects);
         rects.push_back(shape.endRect);
         for (const NodeWPtr& weak : block.nodes) {
             NodeGui* gui = guiOf(weak.lock());
@@ -338,8 +363,11 @@ LoopBlockOverlay::refresh()
         shape.hull.closeSubpath();
 
         // The begin opens the block downwards and the end closes it from above, like a bracket pair.
-        const QRectF& b = shape.beginRect;
-        shape.beginWedge << b.bottomLeft() << b.bottomRight() << QPointF(b.center().x(), b.bottom() + kWedgeHeight);
+        for (const QRectF& b : shape.beginRects) {
+            QPolygonF wedge;
+            wedge << b.bottomLeft() << b.bottomRight() << QPointF(b.center().x(), b.bottom() + kWedgeHeight);
+            shape.beginWedges.push_back(wedge);
+        }
         const QRectF& e = shape.endRect;
         shape.endWedge << e.topLeft() << e.topRight() << QPointF(e.center().x(), e.top() - kWedgeHeight);
         shapes.push_back(shape);

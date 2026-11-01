@@ -459,17 +459,22 @@ protected:
         return node;
     }
 
-    NodePtr createLoopBegin(const std::string& name)
+    NodePtr createLoopBegin()
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
-        KnobStringPtr nameKnob = node ? std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kLoopBeginParamName)) : KnobStringPtr();
+        return createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
+    }
 
-        EXPECT_TRUE(bool(nameKnob));
-        if (nameKnob && !name.empty()) {
-            nameKnob->setValue(name);
+    static bool setLoopName(const NodePtr& end,
+                            const std::string& name)
+    {
+        KnobStringPtr knob = end ? std::dynamic_pointer_cast<KnobString>(end->getKnobByName(kLoopEndParamName)) : KnobStringPtr();
+
+        if (!knob) {
+            return false;
         }
+        knob->setValue(name);
 
-        return node;
+        return knob->getValue() == name;
     }
 
     NodePtr createLoopEnd(int iterations,
@@ -602,7 +607,7 @@ TEST_F(NativeLoopBlockTest, Identity)
 TEST_F(NativeLoopBlockTest, MeanOfADrivenGainIsItsMidpoint)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr grade = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
     NodePtr end = createLoopEnd(5, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && grade && end);
@@ -638,7 +643,7 @@ TEST_F(NativeLoopBlockTest, MeanOfADrivenGainIsItsMidpoint)
 TEST_F(NativeLoopBlockTest, AnUndrivenBodyRendersOnce)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createNode(QString::fromUtf8(kTestPluginIDCounting));
     NodePtr end = createLoopEnd(5, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && body && end);
@@ -661,13 +666,15 @@ TEST_F(NativeLoopBlockTest, AnUndrivenBodyRendersOnce)
 TEST_F(NativeLoopBlockTest, NestedLoopsSeeBothLoopsVariables)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr outerBegin = createLoopBegin("outer");
-    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
     NodePtr innerGain = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
     NodePtr outerGain = createDrivenGrade("loops.outer.t", 1., 3.);
     NodePtr innerEnd = createLoopEnd(3, kLoopEndParamOperationMean);
     NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
     ASSERT_TRUE(constant && outerBegin && innerBegin && innerGain && outerGain && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
     ASSERT_TRUE(outerBegin->connectInput(constant, 0));
     ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
     ASSERT_TRUE(innerGain->connectInput(innerBegin, 0));
@@ -692,10 +699,11 @@ TEST_F(NativeLoopBlockTest, NestedLoopsSeeBothLoopsVariables)
 TEST_F(NativeLoopBlockTest, AnExpressionReadsTheLoopVariable)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin("outer");
+    NodePtr begin = createLoopBegin();
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr end = createLoopEnd(3, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && grade && end);
+    ASSERT_TRUE(setLoopName(end, "outer"));
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(grade->connectInput(begin, 0));
     ASSERT_TRUE(end->connectInput(grade, 0));
@@ -727,12 +735,14 @@ TEST_F(NativeLoopBlockTest, AnExpressionReadsTheLoopVariable)
 TEST_F(NativeLoopBlockTest, AnExpressionReadsAnOuterLoopsVariables)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr outerBegin = createLoopBegin("outer");
-    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr innerEnd = createLoopEnd(3, kLoopEndParamOperationMean);
     NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
     ASSERT_TRUE(constant && outerBegin && innerBegin && grade && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
     ASSERT_TRUE(outerBegin->connectInput(constant, 0));
     ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
     ASSERT_TRUE(grade->connectInput(innerBegin, 0));
@@ -753,11 +763,13 @@ TEST_F(NativeLoopBlockTest, AnExpressionReadsAnOuterLoopsVariables)
 TEST_F(NativeLoopBlockTest, AStopConditionReadsAnOuterLoopsVariables)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr outerBegin = createLoopBegin("outer");
-    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
     NodePtr innerEnd = createLoopEnd(10, kLoopEndParamOperationSum);
     NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
     ASSERT_TRUE(constant && outerBegin && innerBegin && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
     ASSERT_TRUE(outerBegin->connectInput(constant, 0));
     ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
     ASSERT_TRUE(innerEnd->connectInput(innerBegin, 0));
@@ -779,11 +791,13 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadsAnOuterLoopsVariables)
 TEST_F(NativeLoopBlockTest, AStopConditionReadingAnOuterLoopIsValidOutsideARender)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr outerBegin = createLoopBegin("outer");
-    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
     NodePtr innerEnd = createLoopEnd(10, kLoopEndParamOperationSum);
     NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
     ASSERT_TRUE(constant && outerBegin && innerBegin && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
     ASSERT_TRUE(outerBegin->connectInput(constant, 0));
     ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
     ASSERT_TRUE(innerEnd->connectInput(innerBegin, 0));
@@ -801,10 +815,11 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadingAnOuterLoopIsValidOutsideARende
 TEST_F(NativeLoopBlockTest, AnExpressionReadInKnobChangedReadsThePreviewIteration)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin("outer");
+    NodePtr begin = createLoopBegin();
     NodePtr body = createNode(QString::fromUtf8(kTestPluginIDCounting));
     NodePtr end = createLoopEnd(3, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && body && end);
+    ASSERT_TRUE(setLoopName(end, "outer"));
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(body->connectInput(begin, 0));
     ASSERT_TRUE(end->connectInput(body, 0));
@@ -863,7 +878,7 @@ TEST_F(NativeLoopBlockTest, ALoopEndWithoutALoopBeginIsBlack)
 TEST_F(NativeLoopBlockTest, ALoopBeginSharedByTwoLoopEndsIsAnError)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr first = createLoopEnd(3, kLoopEndParamOperationMean);
     NodePtr second = createLoopEnd(3, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && first && second);
@@ -871,14 +886,14 @@ TEST_F(NativeLoopBlockTest, ALoopBeginSharedByTwoLoopEndsIsAnError)
     ASSERT_TRUE(first->connectInput(begin, 0));
     ASSERT_TRUE(second->connectInput(begin, 0));
 
-    expectBlackWithMessage(first, eMessageTypeError, QString::fromUtf8("is reached from more than one LoopEnd"));
-    expectBlackWithMessage(second, eMessageTypeError, QString::fromUtf8("is reached from more than one LoopEnd"));
+    expectBlackWithMessage(first, eMessageTypeError, QString::fromUtf8("belongs to more than one loop"));
+    expectBlackWithMessage(second, eMessageTypeError, QString::fromUtf8("belongs to more than one loop"));
 }
 
 TEST_F(NativeLoopBlockTest, ZeroIterationsIsBlackWithAWarning)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr end = createLoopEnd(0, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && end);
     ASSERT_TRUE(begin->connectInput(constant, 0));
@@ -900,7 +915,7 @@ TEST_F(NativeLoopBlockTest, ZeroIterationsIsBlackWithAWarning)
 TEST_F(NativeLoopBlockTest, MoreIterationsThanTheCapIsAnError)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && end);
     ASSERT_TRUE(setIntKnob(end, kLoopEndParamMaxIterations, 5));
@@ -913,24 +928,24 @@ TEST_F(NativeLoopBlockTest, MoreIterationsThanTheCapIsAnError)
 TEST_F(NativeLoopBlockTest, InvalidOrDuplicateLoopNamesAreErrors)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr first = createLoopBegin(std::string());
-    NodePtr second = createLoopBegin(std::string());
-    NodePtr end = createLoopEnd(2, kLoopEndParamOperationMean);
-    ASSERT_TRUE(constant && first && second && end);
-    ASSERT_TRUE(second->connectInput(constant, 0));
-    ASSERT_TRUE(end->connectInput(second, 0));
+    NodePtr begin = createLoopBegin();
+    NodePtr first = createLoopEnd(2, kLoopEndParamOperationMean);
+    NodePtr second = createLoopEnd(2, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && first && second);
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(second->connectInput(begin, 0));
 
-    // A new LoopBegin takes the first free name.
-    KnobStringPtr firstName = std::dynamic_pointer_cast<KnobString>(first->getKnobByName(kLoopBeginParamName));
-    KnobStringPtr secondName = std::dynamic_pointer_cast<KnobString>(second->getKnobByName(kLoopBeginParamName));
+    // A new LoopEnd takes the first free name.
+    KnobStringPtr firstName = std::dynamic_pointer_cast<KnobString>(first->getKnobByName(kLoopEndParamName));
+    KnobStringPtr secondName = std::dynamic_pointer_cast<KnobString>(second->getKnobByName(kLoopEndParamName));
     ASSERT_TRUE(firstName && secondName);
     EXPECT_NE(firstName->getValue(), secondName->getValue());
 
     secondName->setValue(firstName->getValue());
-    expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("is also named"));
+    expectBlackWithMessage(second, eMessageTypeError, QString::fromUtf8("is also named"));
 
     secondName->setValue(std::string("1st"));
-    expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("is not valid"));
+    expectBlackWithMessage(second, eMessageTypeError, QString::fromUtf8("is not valid"));
 }
 
 // Iterations of red 1, 2 and 3 under alpha 0.5. Over puts each iteration over the ones before:
@@ -939,7 +954,7 @@ TEST_F(NativeLoopBlockTest, InvalidOrDuplicateLoopNamesAreErrors)
 TEST_F(NativeLoopBlockTest, OverAndUnderFoldInOrder)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr grade = createDrivenColorGrade(1., 3.);
     NodePtr end = createLoopEnd(3, kLoopEndParamOperationOver);
     ASSERT_TRUE(constant && begin && grade && end);
@@ -1003,7 +1018,7 @@ TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
     const std::size_t budget = 6 * imageBytes;
 
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr grade = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
     NodePtr end = createLoopEnd(iterations, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && grade && end);
@@ -1043,7 +1058,7 @@ TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
 TEST_F(NativeLoopBlockTest, FramesIterateOverARelativeFrameRange)
 {
     NodePtr constant = createConstant(0.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr end = createLoopEnd(1, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && end);
     KnobColorPtr color = std::dynamic_pointer_cast<KnobColor>(constant->getKnobByName(kConstantParamColor));
@@ -1122,7 +1137,7 @@ TEST_F(NativeLoopBlockTest, FramesIterateOverARelativeFrameRange)
 TEST_F(NativeLoopBlockTest, FramesOfAStillBodyRenderOnce)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createNode(QString::fromUtf8(kTestPluginIDCounting));
     NodePtr end = createLoopEnd(1, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && body && end);
@@ -1142,7 +1157,7 @@ TEST_F(NativeLoopBlockTest, FramesOfAStillBodyRenderOnce)
 TEST_F(NativeLoopBlockTest, SinglePassOutputsOneIteration)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr grade = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
     NodePtr end = createLoopEnd(5, kLoopEndParamOperationSum);
     ASSERT_TRUE(constant && begin && grade && end);
@@ -1177,7 +1192,7 @@ TEST_F(NativeLoopBlockTest, SinglePassOutputsOneIteration)
 TEST_F(NativeLoopBlockTest, AStopConditionEndsTheLoop)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && body && end);
@@ -1214,7 +1229,7 @@ TEST_F(NativeLoopBlockTest, AStopConditionEndsTheLoop)
 TEST_F(NativeLoopBlockTest, ARaisingStopConditionEndsTheLoopWithItsError)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && body && end);
@@ -1256,7 +1271,7 @@ TEST_F(NativeLoopBlockTest, ARaisingStopConditionEndsTheLoopWithItsError)
 TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLoop)
 {
     NodePtr constant = createConstant(0.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr end = createLoopEnd(1, kLoopEndParamOperationSum);
     NodePtr control = createConstant(2.);
     ASSERT_TRUE(constant && begin && end && control);
@@ -1320,7 +1335,7 @@ TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLo
 TEST_F(NativeLoopBlockTest, AStopConditionsOutputIsCachedUntilWhatItReadsChanges)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
     NodePtr control = createConstant(3.);
@@ -1360,7 +1375,7 @@ TEST_F(NativeLoopBlockTest, AStopConditionsOutputIsCachedUntilWhatItReadsChanges
 TEST_F(NativeLoopBlockTest, AStopConditionReadsContextVariablesFromASetBelow)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
     NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_REVERSEFLOWVARIABLESET));
@@ -1400,7 +1415,7 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadsContextVariablesFromASetBelow)
 TEST_F(NativeLoopBlockTest, AStopConditionReadsAParameterByBareNodeName)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(10, kLoopEndParamOperationMean);
     NodePtr control = createConstant(4.);

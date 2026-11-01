@@ -49,8 +49,9 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Paints the loop blocks of a node graph under its nodes: a hull around each block's
- * nodes in the colour the pair shares, a downward wedge under the LoopBegin and an upward one
- * over the LoopEnd, and, while either is selected, the hull's outline and a ring round both.
+ * nodes in the colour the loop's nodes share, a downward wedge under each LoopBegin and an upward
+ * one over the LoopEnd, and, while any of them is selected, the hull's outline and a ring round
+ * each.
  **/
 class LoopBlockItem
     : public QGraphicsObject {
@@ -58,9 +59,9 @@ public:
     struct Block {
         QColor color;
         QPainterPath hull;
-        QPolygonF beginWedge;
+        std::vector<QPolygonF> beginWedges;
         QPolygonF endWedge;
-        QRectF beginRect;
+        std::vector<QRectF> beginRects;
         QRectF endRect;
         bool highlighted;
     };
@@ -105,7 +106,7 @@ public:
     void schedule(bool topology);
 
     /**
-     * @brief The colour of the loop block a LoopBegin opens, the same for the same loop name.
+     * @brief The colour of a loop block, the same for the same loop name.
      **/
     static QColor pairColor(const std::string& loopName);
 
@@ -121,7 +122,7 @@ public Q_SLOTS:
 
 private:
     struct Membership {
-        NodeWPtr begin;
+        std::vector<NodeWPtr> begins;
         NodeWPtr end;
         std::vector<NodeWPtr> nodes;
         std::string name;

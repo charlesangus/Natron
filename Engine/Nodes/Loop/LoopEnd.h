@@ -41,6 +41,7 @@
 #define PLUGINID_NATRON_LOOPEND "fr.natron.LoopEnd"
 #define PLUGIN_MAJOR_NATRON_LOOPEND 1
 
+#define kLoopEndParamName "name"
 #define kLoopEndParamIterations "iterations"
 #define kLoopEndParamStart "start"
 #define kLoopEndParamStep "step"
@@ -78,8 +79,9 @@ inline constexpr InputSpec kLoopEndInputs[] = {
 /**
  * @brief Ends a loop body: renders its input once per iteration, each under a render context
  * holding that iteration's loop variables, and folds the iterations together. The body starts at
- * the LoopBegin found walking up from its input. Nodes of the body that read no loop variable
- * keep their context key and render once.
+ * the LoopBegins found walking up from its input: one or several, each paired with this LoopEnd
+ * alone. The loop's name is this node's. Nodes of the body that read no loop variable keep their
+ * context key and render once.
  *
  * On the task-graph scheduler the fold is a chain of tasks of this node, one per iteration, each
  * under its own value of the fold step variable: step k folds iteration k into step k - 1's
@@ -106,7 +108,8 @@ public:
     static bool anyExists() WARN_UNUSED_RETURN;
 
     /**
-     * @brief The LoopEnd that pairs with begin when it is in Feedback mode, else null.
+     * @brief The LoopEnd that pairs with begin when it is in Feedback mode and begin feeds back,
+     * else null.
      **/
     static std::shared_ptr<LoopEnd> feedbackEndOf(const NodePtr& begin) WARN_UNUSED_RETURN;
 
@@ -193,9 +196,21 @@ public:
     std::string getLoopName() const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The LoopBegin this node pairs with, null when it has no valid one.
+     * @brief Why the Name knob cannot be used, or empty when it can: it must be an identifier,
+     * and no other LoopEnd of the same group may have it.
      **/
-    NodePtr getLoopBegin() const WARN_UNUSED_RETURN;
+    std::string getLoopNameError() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopBegins this node pairs with, by script name; empty when the loop is invalid.
+     **/
+    std::vector<NodePtr> getLoopBegins() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The LoopBegins that output the iteration before under Feedback, by script name;
+     * empty when the loop is invalid or not in Feedback mode.
+     **/
+    std::vector<NodePtr> getFeedbackBegins() const WARN_UNUSED_RETURN;
 
     /**
      * @brief base with the loop variables of the iteration the loop previews at time: Single
@@ -213,7 +228,7 @@ public:
 
 private:
     struct Resolved {
-        NodePtr begin;
+        std::vector<NodePtr> begins;
         std::string loopName;
         // The iterations the loop defines; loop.count and loop.t are relative to it.
         int count = 0;
@@ -260,7 +275,7 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_LOOPEND,
         .label = "LoopEnd",
-        .description = "Ends a loop body started by a LoopBegin above it. The body is rendered once per "
+        .description = "Ends a loop body started by one or more LoopBegins above it. The body is rendered once per "
                        "iteration, each time with the loop variables loop.iteration, loop.count, loop.t "
                        "(0 at the first iteration, 1 at the last) and loop.frame set; knob drivers in the "
                        "body read them. Iterate Over Count runs Iterations iterations, loop.iteration "
@@ -271,14 +286,15 @@ private:
                        "that frame. Accumulate folds the iterations together in order with the "
                        "Operation: their mean, sum, minimum or maximum, each iteration over the ones "
                        "before it (Over), or under them (Under); Reverse Order folds from the last "
-                       "iteration to the first. Feedback feeds each iteration's output to the LoopBegin "
-                       "of the next, which starts from the loop's input, and outputs the last. "
+                       "iteration to the first. Feedback feeds each iteration's output to the LoopBegins "
+                       "of the next that have Feedback on, which start from their input, and outputs the "
+                       "last; the other LoopBegins pass their input through at every iteration. "
                        "Single Pass outputs the one iteration Single Pass Iteration names, unfolded; "
                        "under Feedback, that iteration after the ones before it. A Stop Condition, a Python expression, is evaluated "
                        "before each iteration with loop.iteration, loop.count, loop.t, loop.frame and "
                        "frame set: the first iteration it is true for, and those after it, are not run. "
                        "A loop nested in another sees the outer loop's variables as loops.<name>.*, "
-                       "where name is the outer LoopBegin's Name. More iterations than Max Iterations "
+                       "where name is the outer LoopEnd's Name, unique within the group. More iterations than Max Iterations "
                        "is an error rather than a truncated loop.",
         .grouping = PLUGIN_GROUP_LOOP,
         .majorVersion = PLUGIN_MAJOR_NATRON_LOOPEND,
@@ -305,6 +321,9 @@ private:
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
 
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
 
@@ -400,11 +419,12 @@ private:
     // up, and says whether it did.
     bool abortIfEditedSinceFrameStart() const WARN_UNUSED_RETURN;
 
-    // The LoopBegin the walk up from input 0 pairs with, or why there is none.
-    NodePtr findLoopBegin(std::string* error) const WARN_UNUSED_RETURN;
+    // The LoopBegins the walk up from input 0 pairs with, by script name, or why there are none.
+    std::vector<NodePtr> findLoopBegins(std::string* error) const WARN_UNUSED_RETURN;
 
     void refreshMessage(const Resolved& resolved);
 
+    KnobStringWPtr _name;
     KnobIntWPtr _iterations;
     KnobIntWPtr _start;
     KnobIntWPtr _step;

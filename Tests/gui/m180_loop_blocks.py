@@ -79,8 +79,8 @@ try:
         chain = (constant, outer_begin, inner_begin, blur, inner_end, outer_end)
         for node in chain:
             require(node is not None, "create the loop graph's nodes")
-        outer_begin.getParam("name").setValue("outer")
-        inner_begin.getParam("name").setValue("inner")
+        outer_end.getParam("name").setValue("outer")
+        inner_end.getParam("name").setValue("inner")
         for i, node in enumerate(chain):
             node.setPosition(0, i * 110)
             if i > 0:

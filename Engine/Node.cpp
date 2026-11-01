@@ -1056,44 +1056,56 @@ Node::computeContentHash(U64 projectDigest,
 } // Node::computeContentHash
 
 void
-Node::walkLoopBody(const NodePtr& begin,
+Node::walkLoopBody(const std::vector<NodePtr>& begins,
                    const NodePtr& tail,
                    const NodePtr& end,
                    U64* digest,
                    std::vector<NodePtr>* outsideSources)
 {
-    // Stands for begin, whatever it renders: what begin's own hash folds in is its input's.
+    // Stands for every one of begins, whatever they render: they all output the same iteration,
+    // and what their own hashes fold in is their inputs'.
     const U64 kBeginTag = 0x6c6f6f70426567ULL;
 
     if (digest) {
         *digest = kBeginTag;
     }
-    if (!begin || !tail) {
+    if (begins.empty() || !tail) {
         return;
     }
-    // Downstream of begin, so only these can be in the body: the walk up from tail does not enter
-    // what feeds the body from outside.
+    std::unordered_set<const Node*> beginSet;
+    for (const NodePtr& begin : begins) {
+        if (begin) {
+            beginSet.insert(begin.get());
+        }
+    }
+    const bool tailIsBegin = (beginSet.find(tail.get()) != beginSet.end());
+    // Downstream of begins, so only these can be in the body: the walk up from tail does not
+    // enter what feeds the body from outside.
     std::unordered_set<const Node*> downstream;
     {
         std::vector<NodePtr> pending;
-        begin->appendOutputsWithGroupRedirection(&pending);
+        for (const NodePtr& begin : begins) {
+            if (begin) {
+                begin->appendOutputsWithGroupRedirection(&pending);
+            }
+        }
         while (!pending.empty()) {
             NodePtr node = std::move(pending.back());
             pending.pop_back();
-            if (!node || (node == end) || (node == begin) || !downstream.insert(node.get()).second) {
+            if (!node || (node == end) || (beginSet.find(node.get()) != beginSet.end()) || !downstream.insert(node.get()).second) {
                 continue;
             }
             node->appendOutputsWithGroupRedirection(&pending);
         }
     }
-    if ((tail != begin) && (downstream.find(tail.get()) == downstream.end())) {
+    if (!tailIsBegin && (downstream.find(tail.get()) == downstream.end())) {
         return;
     }
 
     std::unordered_map<const Node*, U64> bodyHashes;
     const std::function<U64(const Node&)>* enclosing = enclosingLoopBodyHash;
     const std::function<U64(const Node&)> hashOf = [&](const Node& node) -> U64 {
-        if (&node == begin.get()) {
+        if (beginSet.find(&node) != beginSet.end()) {
             return kBeginTag;
         }
         std::unordered_map<const Node*, U64>::const_iterator found = bodyHashes.find(&node);
@@ -1103,7 +1115,7 @@ Node::walkLoopBody(const NodePtr& begin,
 
         return enclosing ? (*enclosing)(node) : node.getStoredContentHash();
     };
-    const U64 projectDigest = digest ? begin->getApp()->getProject()->getContentDigest() : 0;
+    const U64 projectDigest = digest ? tail->getApp()->getProject()->getContentDigest() : 0;
     std::unordered_set<const Node*> sourcesSeen;
     std::unordered_set<const Node*> entered;
     // Post-order, so every body node is hashed after the body nodes it reads.
@@ -1124,7 +1136,7 @@ Node::walkLoopBody(const NodePtr& begin,
     while (!stack.empty()) {
         const NodePtr node = stack.back().first;
         const bool expanded = stack.back().second;
-        if (node == begin) {
+        if (beginSet.find(node.get()) != beginSet.end()) {
             stack.pop_back();
             continue;
         }
@@ -1154,7 +1166,7 @@ Node::walkLoopBody(const NodePtr& begin,
         }
         reads.insert(reads.end(), inputs.extraSources.begin(), inputs.extraSources.end());
         for (const NodePtr& input : reads) {
-            if (!input || (input == begin)) {
+            if (!input || (beginSet.find(input.get()) != beginSet.end())) {
                 continue;
             }
             if (downstream.find(input.get()) != downstream.end()) {
@@ -1166,7 +1178,7 @@ Node::walkLoopBody(const NodePtr& begin,
             }
         }
     }
-    if (digest && (tail != begin)) {
+    if (digest && !tailIsBegin) {
         *digest = hashOf(*tail);
     }
 } // Node::walkLoopBody

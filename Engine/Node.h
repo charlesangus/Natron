@@ -826,14 +826,15 @@ public:
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
 
     /**
-     * @brief Walks the body of a loop running from begin up to tail, closed by end: the nodes the
-     * inputs of tail reach going up that begin's outputs reach going down without passing end.
-     * With digest, sets it to tail's hash with begin standing for a fixed tag and each body node
-     * hashed in the same way from its inputs, so that it covers the body without folding in a hash
-     * that folds begin's own. Nested in such a walk, the enclosing walk's nodes are hashed the
-     * same way. With outsideSources, appends the nodes outside the body feeding it.
+     * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
+     * inputs of tail reach going up that the outputs of any of begins reach going down without
+     * passing end. With digest, sets it to tail's hash with each of begins standing for one fixed
+     * tag and each body node hashed in the same way from its inputs, so that it covers the body
+     * without folding in a hash that folds one of begins' own. Nested in such a walk, the
+     * enclosing walk's nodes are hashed the same way. With outsideSources, appends the nodes
+     * outside the body feeding it.
      **/
-    static void walkLoopBody(const NodePtr& begin,
+    static void walkLoopBody(const std::vector<NodePtr>& begins,
                              const NodePtr& tail,
                              const NodePtr& end,
                              U64* digest,

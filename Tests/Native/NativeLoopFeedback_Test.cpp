@@ -34,6 +34,7 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QtCore/QTemporaryDir>
 
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
@@ -284,17 +285,22 @@ protected:
         return node;
     }
 
-    NodePtr createLoopBegin(const std::string& name)
+    NodePtr createLoopBegin()
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
-        KnobStringPtr nameKnob = node ? std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kLoopBeginParamName)) : KnobStringPtr();
+        return createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
+    }
 
-        EXPECT_TRUE(bool(nameKnob));
-        if (nameKnob && !name.empty()) {
-            nameKnob->setValue(name);
+    static bool setLoopName(const NodePtr& end,
+                            const std::string& name)
+    {
+        KnobStringPtr knob = end ? std::dynamic_pointer_cast<KnobString>(end->getKnobByName(kLoopEndParamName)) : KnobStringPtr();
+
+        if (!knob) {
+            return false;
         }
+        knob->setValue(name);
 
-        return node;
+        return knob->getValue() == name;
     }
 
     NodePtr createFeedbackEnd(int iterations)
@@ -411,6 +417,43 @@ protected:
         EXPECT_FALSE(m.any) << describe(m);
     }
 
+    // Two LoopBegins, from constants 1 and 10, summed by the body into a LoopEnd of four
+    // iterations in Feedback mode; only the first LoopBegin feeds back.
+    struct SharedLoop {
+        NodePtr first;
+        NodePtr second;
+        NodePtr sum;
+        NodePtr end;
+    };
+
+    bool createSharedLoop(SharedLoop* loop)
+    {
+        NodePtr one = createConstant(1.);
+        NodePtr ten = createConstant(10.);
+        loop->first = createLoopBegin();
+        loop->second = createLoopBegin();
+        loop->sum = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+        loop->end = createFeedbackEnd(4);
+
+        return one && ten && loop->first && loop->second && loop->sum && loop->end && setDoubleKnob(loop->sum, "value", 0.) && setBoolKnob(loop->second, kLoopBeginParamFeedback, false) && loop->first->connectInput(one, 0) && loop->second->connectInput(ten, 0) && loop->sum->connectInput(loop->first, 0) && loop->sum->connectInput(loop->second, 1) && loop->end->connectInput(loop->sum, 0);
+    }
+
+    // Asks end for its route, which posts the loop's error, and returns the message posted.
+    static QString loopErrorOf(const NodePtr& end)
+    {
+        double inputTime = 0.;
+        ViewIdx inputView(0);
+        int inputNb = -3;
+        EXPECT_TRUE(end->getEffectInstance()->isIdentity_public(false, 0, kTime, RenderScale::identity, countingWindow(), ViewIdx(0), &inputTime, &inputView, &inputNb));
+        EXPECT_EQ(-1, inputNb) << "an invalid loop is black";
+        QString message;
+        int type = -1;
+        end->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type) << message.toStdString();
+
+        return message;
+    }
+
     NodePtr createParitySource(const std::string& components)
     {
         NodePtr node = createNode(QString::fromUtf8(kTestPluginIDParitySource));
@@ -428,7 +471,7 @@ protected:
 TEST_F(NativeLoopFeedbackTest, FiveOnePixelErodesAreAFivePixelErode)
 {
     NodePtr source = createParitySource("rgba");
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
     NodePtr end = createFeedbackEnd(5);
     NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
@@ -456,7 +499,7 @@ TEST_F(NativeLoopFeedbackTest, FiveOnePixelErodesAreAFivePixelErode)
 TEST_F(NativeLoopFeedbackTest, TenOnePixelTranslatesAreATenPixelTranslate)
 {
     NodePtr source = createParitySource("rgba");
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM));
     NodePtr end = createFeedbackEnd(10);
     NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM));
@@ -489,7 +532,7 @@ TEST_F(NativeLoopFeedbackTest, TheRegionAskedOfTheInputGrowsByEveryIteration)
     const int iterations = 5;
     const int radius = 2;
     NodePtr source = createParitySource("rgba");
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
     NodePtr end = createFeedbackEnd(iterations);
     NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
@@ -518,7 +561,7 @@ TEST_F(NativeLoopFeedbackTest, TheRegionAskedOfTheInputGrowsByEveryIteration)
 TEST_F(NativeLoopFeedbackTest, SinglePassIsTheLoopCutShort)
 {
     NodePtr source = createParitySource("rgba");
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
     NodePtr end = createFeedbackEnd(5);
     ASSERT_TRUE(source && begin && erode && end);
@@ -547,7 +590,7 @@ TEST_F(NativeLoopFeedbackTest, SinglePassIsTheLoopCutShort)
 TEST_F(NativeLoopFeedbackTest, ABodyReadingNoLoopVariableRendersEveryIteration)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr counting = createCounting(1.);
     NodePtr end = createFeedbackEnd(4);
     ASSERT_TRUE(constant && begin && counting && end);
@@ -570,7 +613,7 @@ TEST_F(NativeLoopFeedbackTest, ABodyReadingNoLoopVariableRendersEveryIteration)
 TEST_F(NativeLoopFeedbackTest, ATiledLegacyRenderRunsTheChainOnce)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr counting = createCounting(1.);
     NodePtr end = createFeedbackEnd(4);
     ASSERT_TRUE(constant && begin && counting && end);
@@ -599,7 +642,7 @@ TEST_F(NativeLoopFeedbackTest, ATiledLegacyRenderRunsTheChainOnce)
 TEST_F(NativeLoopFeedbackTest, ASinglePassRendersEachIterationBeforeItOnce)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr counting = createCounting(1.);
     NodePtr end = createFeedbackEnd(6);
     ASSERT_TRUE(constant && begin && counting && end);
@@ -620,7 +663,7 @@ TEST_F(NativeLoopFeedbackTest, ASinglePassRendersEachIterationBeforeItOnce)
 TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
 {
     NodePtr source = createParitySource("alpha");
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr counting = createCounting(1.);
     // Adds a different amount per channel, so that the final channels tell what fed the body.
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
@@ -699,7 +742,7 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
 TEST_F(NativeLoopFeedbackTest, FramesLeaveATrail)
 {
     NodePtr constant = createConstant(0.5);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
     // Animated, so its cached images are told apart by frame.
     NodePtr frames = createFrameRamp();
@@ -730,7 +773,7 @@ TEST_F(NativeLoopFeedbackTest, FramesLeaveATrail)
 TEST_F(NativeLoopFeedbackTest, ATimeOffsetInTheBodyAddsUpOverIterations)
 {
     NodePtr ramp = createFrameRamp();
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr shift = createNode(QString::fromUtf8(kTestPluginIDTimeShiftIdentity));
     NodePtr counting = createCounting(10.);
     NodePtr end = createFeedbackEnd(3);
@@ -748,13 +791,14 @@ TEST_F(NativeLoopFeedbackTest, ATimeOffsetInTheBodyAddsUpOverIterations)
 TEST_F(NativeLoopFeedbackTest, EditsReachTheCachedLoop)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin("fb");
+    NodePtr begin = createLoopBegin();
     NodePtr body = createCounting(1.);
     NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
     NodePtr outside = createCounting(2.);
     NodePtr side = createCounting(5.);
     NodePtr end = createFeedbackEnd(3);
     ASSERT_TRUE(constant && begin && body && merge && outside && side && end);
+    ASSERT_TRUE(setLoopName(end, "fb"));
     ASSERT_TRUE(setDoubleKnob(merge, "value", 0.));
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(body->connectInput(begin, 0));
@@ -814,7 +858,7 @@ TEST_F(NativeLoopFeedbackTest, EditsReachTheCachedLoop)
 TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin("fb");
+    NodePtr begin = createLoopBegin();
     NodePtr body = createCounting(1.);
     NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
     NodePtr outside = createCounting(2.);
@@ -822,6 +866,7 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
     NodePtr end = createFeedbackEnd(3);
     NodePtr below = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(constant && begin && body && merge && outside && side && end && below);
+    ASSERT_TRUE(setLoopName(end, "fb"));
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(body->connectInput(begin, 0));
     ASSERT_TRUE(merge->connectInput(body, 0));
@@ -879,13 +924,14 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
 TEST_F(NativeLoopFeedbackTest, AGroupInTheBodyIsPartOfIt)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin("fb");
+    NodePtr begin = createLoopBegin();
     CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
     groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
     groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
     NodePtr group = getApp()->createNode(groupArgs);
     NodePtr end = createFeedbackEnd(3);
     ASSERT_TRUE(constant && begin && group && end);
+    ASSERT_TRUE(setLoopName(end, "fb"));
     NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
     ASSERT_TRUE(bool(inside));
     const auto createInside = [&](const char* pluginID) {
@@ -940,12 +986,14 @@ TEST_F(NativeLoopFeedbackTest, AGroupInTheBodyIsPartOfIt)
 TEST_F(NativeLoopFeedbackTest, NestedFeedbackLoops)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr outerBegin = createLoopBegin("outer");
-    NodePtr innerBegin = createLoopBegin("inner");
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
     NodePtr body = createCounting(1.);
     NodePtr innerEnd = createFeedbackEnd(3);
     NodePtr outerEnd = createFeedbackEnd(4);
     ASSERT_TRUE(constant && outerBegin && innerBegin && body && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
     ASSERT_TRUE(outerBegin->connectInput(constant, 0));
     ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
     ASSERT_TRUE(body->connectInput(innerBegin, 0));
@@ -973,7 +1021,7 @@ TEST_F(NativeLoopFeedbackTest, ALongFeedbackChainStaysBounded)
     const std::size_t budget = 6 * imageBytes;
 
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr end = createFeedbackEnd(iterations);
     ASSERT_TRUE(constant && begin && end);
     ASSERT_TRUE(begin->connectInput(constant, 0));
@@ -1003,4 +1051,103 @@ TEST_F(NativeLoopFeedbackTest, ALongFeedbackChainStaysBounded)
     EXPECT_EQ(0, unplanned[0]);
     EXPECT_GT(scheduler->getPeakBytesInFlight(), (std::size_t)0);
     EXPECT_LE(scheduler->getPeakBytesInFlight(), budget + imageBytes) << "peak of " << ((double)scheduler->getPeakBytesInFlight() / (double)imageBytes) << " images";
+}
+
+// The loop is the LoopEnd's: both LoopBegins pair with it, and only the one with Feedback on
+// outputs the iteration before. 1 + 10, then 10 more per iteration: 41.
+TEST_F(NativeLoopFeedbackTest, TwoLoopBeginsShareOneLoop)
+{
+    SharedLoop loop;
+    ASSERT_TRUE(createSharedLoop(&loop));
+    LoopEnd* end = dynamic_cast<LoopEnd*>(loop.end->getEffectInstance().get());
+    ASSERT_TRUE(end);
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first, loop.second }), end->getLoopBegins());
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first }), end->getFeedbackBegins());
+    EXPECT_FALSE(end->getLoopName().empty());
+    cacheEverything({ loop.first, loop.second, loop.sum, loop.end });
+
+    expectValue(loop.end, 41.f, "one LoopBegin feeding back");
+    expectBothWays(loop.end, countingWindow());
+
+    // Both feed back: 11, doubled at every iteration after the first.
+    const U64 firstHash = loop.first->getContentHash();
+    ASSERT_TRUE(setBoolKnob(loop.second, kLoopBeginParamFeedback, true));
+    EXPECT_EQ(std::vector<NodePtr>({ loop.first, loop.second }), end->getFeedbackBegins());
+    EXPECT_NE(firstHash, loop.first->getContentHash());
+    expectValue(loop.end, 88.f, "both LoopBegins feeding back");
+    expectBothWays(loop.end, countingWindow());
+
+    // Accumulate renders every iteration from both inputs: 4 * 11.
+    ASSERT_TRUE(setChoiceKnob(loop.end, kLoopEndParamMode, kLoopEndParamModeAccumulate));
+    ASSERT_TRUE(setChoiceKnob(loop.end, kLoopEndParamOperation, kLoopEndParamOperationSum));
+    EXPECT_TRUE(end->getFeedbackBegins().empty());
+    expectValue(loop.end, 44.f, "accumulated");
+    expectBothWays(loop.end, countingWindow());
+}
+
+TEST_F(NativeLoopFeedbackTest, ASharedLoopSavesAndReopens)
+{
+    SharedLoop loop;
+    ASSERT_TRUE(createSharedLoop(&loop));
+    ASSERT_TRUE(setLoopName(loop.end, "shared"));
+    const std::string firstName = loop.first->getScriptName();
+    const std::string secondName = loop.second->getScriptName();
+    const std::string endName = loop.end->getScriptName();
+    expectValue(loop.end, 41.f, "before saving");
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("shared-loop.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    loop = SharedLoop();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr first = project->getNodeByName(firstName);
+    NodePtr second = project->getNodeByName(secondName);
+    NodePtr endNode = project->getNodeByName(endName);
+    ASSERT_TRUE(first && second && endNode);
+    LoopEnd* end = dynamic_cast<LoopEnd*>(endNode->getEffectInstance().get());
+    ASSERT_TRUE(end);
+    EXPECT_EQ(std::string("shared"), end->getLoopName());
+    EXPECT_EQ(std::vector<NodePtr>({ first, second }), end->getLoopBegins());
+    EXPECT_EQ(std::vector<NodePtr>({ first }), end->getFeedbackBegins());
+    expectValue(endNode, 41.f, "reopened");
+}
+
+// A LoopBegin reaching two LoopEnds belongs to neither loop, and one under another LoopBegin of
+// its own loop would sit in that one's body: both make the loop an error naming the nodes.
+TEST_F(NativeLoopFeedbackTest, InvalidSharedLoopsAreReported)
+{
+    SharedLoop loop;
+    ASSERT_TRUE(createSharedLoop(&loop));
+    NodePtr other = createFeedbackEnd(2);
+    ASSERT_TRUE(other && other->connectInput(loop.second, 0));
+    LoopEnd* end = dynamic_cast<LoopEnd*>(loop.end->getEffectInstance().get());
+    ASSERT_TRUE(end);
+    EXPECT_TRUE(end->getLoopBegins().empty());
+
+    QString message = loopErrorOf(loop.end);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("belongs to more than one loop"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(loop.second->getScriptName().c_str()))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(loop.end->getScriptName().c_str()))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(other->getScriptName().c_str()))) << message.toStdString();
+    message = loopErrorOf(other);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("belongs to more than one loop"))) << message.toStdString();
+
+    other->disconnectInput(0);
+    EXPECT_EQ(2u, end->getLoopBegins().size());
+    expectValue(loop.end, 41.f, "valid again");
+
+    // The second LoopBegin fed from the first.
+    ASSERT_TRUE(loop.second->replaceInput(loop.first, 0));
+    EXPECT_TRUE(end->getLoopBegins().empty());
+    message = loopErrorOf(loop.end);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("is inside the body"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(loop.first->getScriptName().c_str()))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8(loop.second->getScriptName().c_str()))) << message.toStdString();
 }

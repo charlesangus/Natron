@@ -4,8 +4,14 @@ Tolerance: none recorded. The fold runs on the CPU, whatever the GPU placement, 
 M259 - GPU Placement Under Render Contexts.
 
 - `LoopEnd`: renders its input, the loop body, once per iteration and folds the iterations
-  together. The body starts at the LoopBegin found walking up from the input; none, several,
-  or a LoopBegin also reached from another LoopEnd is an error, and the output is black.
+  together. The body starts at the LoopBegins found walking up from the input, each bringing
+  its own input into the body. The loop, and its `name`, belong to the LoopEnd. These are
+  errors, which make the output black: no LoopBegin; a LoopBegin also reached from another
+  LoopEnd (the error names it and every LoopEnd it reaches); a LoopBegin fed, directly or
+  through other nodes, by another LoopBegin of the same loop.
+- `name`: how a loop nested in this one sees its variables, as `loops.<name>.*`. An
+  identifier, unique within the group; a new or pasted LoopEnd takes the first free `loopN`.
+  An invalid or duplicate name is an error, and the output is black.
 
 ## Variables
 
@@ -14,7 +20,7 @@ M259 - GPU Placement Under Render Contexts.
   - `loop.count`: `n`, the number of iterations the loop defines;
   - `loop.t`: `k / (n - 1)`, 0 for a single iteration;
   - `loop.frame`: the frame the iteration renders the body at.
-- The same values are set as `loops.<name>.*`, `name` being the LoopBegin's `name`. A nested
+- The same values are set as `loops.<name>.*`, `name` being the LoopEnd's `name`. A nested
   loop sets its own `loop.*` and keeps the outer loop's `loops.<name>.*`, so a body reads its
   own loop as `loop.*` and any enclosing one by name.
 - Knob drivers in the body read these variables; body nodes whose knobs read none keep their
@@ -61,10 +67,10 @@ M259 - GPU Placement Under Render Contexts.
 
 ## Block display
 
-- The node graph draws a hull round each loop's LoopBegin, LoopEnd and the nodes on the paths
-  between them, in a colour derived from the loop's `name`, with a wedge below the LoopBegin
+- The node graph draws a hull round each loop's LoopBegins, LoopEnd and the nodes on the paths
+  between them, in a colour derived from the loop's `name`, with a wedge below each LoopBegin
   and above the LoopEnd. A nested loop's hull lies inside its enclosing loop's. Selecting
-  either end of a loop draws its hull's outline solid and rings both ends. A node feeding the
+  any LoopBegin or the LoopEnd of a loop draws its hull's outline solid and rings each of them. A node feeding the
   body from the side is part of the loop without lying inside the hull.
 
 ## Iterations
@@ -100,6 +106,10 @@ M259 - GPU Placement Under Render Contexts.
   on the loop's input, and each later iteration renders it on the output of the one before,
   which the LoopBegin outputs in place of its input. The LoopEnd outputs the last iteration.
   Five iterations of a 1 px Erode give a 5 px Erode; ten 1 px translates, a 10 px one.
+- Several LoopBegins: each LoopBegin's `feedback` (on by default) chooses whether it outputs
+  the iteration before or passes its own input through at every iteration. One LoopBegin
+  carrying the state and another, with `feedback` off, bringing in an unchanging source is the
+  usual pair; with both on, both output the iteration before.
 - The variables are those of Accumulate. A body that reads none of them still renders once
   per iteration: each iteration reads a different image.
 - `stopCondition` applies: the output is the last iteration before the one it is true for.

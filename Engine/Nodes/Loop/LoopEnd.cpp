@@ -30,11 +30,13 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <list>
 #include <map>
 #include <set>
 #include <utility>
 
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 #include <QtCore/QThread>
 
 #include "Engine/AbortableRenderInfo.h"
@@ -48,6 +50,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/PyRFV.h"
 #include "Engine/TLSHolder.h"
 #include "Global/PythonUtils.h"
@@ -133,6 +136,74 @@ collectPairedEnds(const NodePtr& begin,
             pending.push_back(std::make_pair(std::move(output), depth));
         }
     }
+}
+
+bool
+isLoopNameIdentifier(const std::string& name)
+{
+    if (name.empty() || ((name[0] >= '0') && (name[0] <= '9'))) {
+        return false;
+    }
+    for (char c : name) {
+        const bool alnum = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9'));
+        if (!alnum && (c != '_')) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::string
+loopNameOf(const NodePtr& end)
+{
+    KnobStringPtr name = end ? std::dynamic_pointer_cast<KnobString>(end->getKnobByName(kLoopEndParamName)) : KnobStringPtr();
+
+    return name ? name->getValue() : std::string();
+}
+
+std::list<NodePtr>
+otherLoopEndsInGroup(const NodePtr& node)
+{
+    std::list<NodePtr> others;
+    NodeCollectionPtr group = node ? node->getGroup() : NodeCollectionPtr();
+
+    if (!group) {
+        return others;
+    }
+    const NodesList nodes = group->getNodes();
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if ((*it != node) && LoopEnd::isLoopEnd(*it)) {
+            others.push_back(*it);
+        }
+    }
+
+    return others;
+}
+
+// The first of begins other than begin that begin's outputs reach without passing end, if any.
+NodePtr
+otherBeginBelow(const NodePtr& begin,
+                const NodePtr& end,
+                const std::vector<NodePtr>& begins)
+{
+    std::set<Node*> visited;
+    std::vector<NodePtr> pending;
+
+    begin->appendOutputsWithGroupRedirection(&pending);
+    while (!pending.empty()) {
+        NodePtr node = std::move(pending.back());
+        pending.pop_back();
+        if (!node || (node == end) || (node == begin) || !visited.insert(node.get()).second) {
+            continue;
+        }
+        if (std::find(begins.begin(), begins.end(), node) != begins.end()) {
+            return node;
+        }
+        node->appendOutputsWithGroupRedirection(&pending);
+    }
+
+    return NodePtr();
 }
 
 RenderContextName
@@ -234,7 +305,11 @@ LoopEnd::feedbackEndOf(const NodePtr& begin)
         return std::shared_ptr<LoopEnd>();
     }
     std::shared_ptr<LoopEnd> end = std::dynamic_pointer_cast<LoopEnd>((*ends.begin())->getEffectInstance());
-    if (!end || !end->isFeedback() || (end->getLoopBegin() != begin)) {
+    if (!end) {
+        return std::shared_ptr<LoopEnd>();
+    }
+    const std::vector<NodePtr> begins = end->getFeedbackBegins();
+    if (std::find(begins.begin(), begins.end(), begin) == begins.end()) {
         return std::shared_ptr<LoopEnd>();
     }
 
@@ -249,11 +324,9 @@ LoopEnd::appendFeedbackBeginsOf(const NodePtr& node,
 
     for (const NodePtr& endNode : ends) {
         const LoopEnd* end = dynamic_cast<const LoopEnd*>(endNode->getEffectInstance().get());
-        if (end && end->isFeedback()) {
-            const NodePtr begin = end->getLoopBegin();
-            if (begin) {
-                begins->push_back(begin);
-            }
+        if (end) {
+            const std::vector<NodePtr> feedbackBegins = end->getFeedbackBegins();
+            begins->insert(begins->end(), feedbackBegins.begin(), feedbackBegins.end());
         }
     }
 }
@@ -490,11 +563,10 @@ void
 LoopEnd::appendExtraHashDependents(std::vector<NodePtr>* dependents) const
 {
     // A Feedback LoopBegin folds in this node's knobs, and in any mode whether it is in Feedback.
-    const NodePtr begin = getLoopBegin();
+    std::string error;
+    const std::vector<NodePtr> begins = findLoopBegins(&error);
 
-    if (begin) {
-        dependents->push_back(begin);
-    }
+    dependents->insert(dependents->end(), begins.begin(), begins.end());
 }
 
 bool
@@ -591,12 +663,55 @@ LoopEnd::getLoopName() const
     return resolve().loopName;
 }
 
-NodePtr
-LoopEnd::getLoopBegin() const
+std::vector<NodePtr>
+LoopEnd::getLoopBegins() const
 {
     std::string error;
 
-    return findLoopBegin(&error);
+    return findLoopBegins(&error);
+}
+
+std::vector<NodePtr>
+LoopEnd::getFeedbackBegins() const
+{
+    std::vector<NodePtr> begins;
+
+    if (!isFeedback()) {
+        return begins;
+    }
+    std::string error;
+    const std::vector<NodePtr> paired = findLoopBegins(&error);
+    for (const NodePtr& node : paired) {
+        const LoopBegin* begin = dynamic_cast<const LoopBegin*>(node->getEffectInstance().get());
+        if (begin && begin->feedsBack()) {
+            begins.push_back(node);
+        }
+    }
+
+    return begins;
+}
+
+std::string
+LoopEnd::getLoopNameError() const
+{
+    const std::string name = loopNameOf(getNode());
+
+    if (!isLoopNameIdentifier(name)) {
+        return tr("The loop name \"%1\" is not valid: use letters, digits and underscores, not starting with a digit.")
+            .arg(QString::fromUtf8(name.c_str()))
+            .toStdString();
+    }
+    const std::list<NodePtr> others = otherLoopEndsInGroup(getNode());
+    for (std::list<NodePtr>::const_iterator it = others.begin(); it != others.end(); ++it) {
+        if (loopNameOf(*it) == name) {
+            return tr("Another LoopEnd in this group, %1, is also named \"%2\".")
+                .arg(QString::fromUtf8((*it)->getScriptName_mt_safe().c_str()))
+                .arg(QString::fromUtf8(name.c_str()))
+                .toStdString();
+        }
+    }
+
+    return std::string();
 }
 
 RenderContextPtr
@@ -637,6 +752,16 @@ LoopEnd::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
+    KnobStringPtr name = createKnob<KnobString>(tr("Name"));
+    name->setName(kLoopEndParamName);
+    name->setAnimationEnabled(false);
+    name->setDefaultValue("loop1");
+    name->setHintToolTip(tr("The loop's name, whichever of its LoopBegins the body starts from. A loop nested in "
+                            "this one sees this loop's variables as loops.<name>.iteration, loops.<name>.count, "
+                            "loops.<name>.t and loops.<name>.frame. Unique within the group."));
+    page->addKnob(name);
+    _name = name;
+
     KnobChoicePtr mode = createKnob<KnobChoice>(tr("Mode"));
     mode->setName(kLoopEndParamMode);
     mode->setAnimationEnabled(false);
@@ -646,8 +771,8 @@ LoopEnd::initializeKnobs()
         options.push_back(ChoiceOption(kLoopEndParamModeAccumulate, tr("Accumulate").toStdString(),
                                        tr("Renders every iteration from the LoopBegin's input and folds them together with the Operation.").toStdString()));
         options.push_back(ChoiceOption(kLoopEndParamModeFeedback, tr("Feedback").toStdString(),
-                                       tr("Each iteration's LoopBegin outputs the iteration before it, the first one the LoopBegin's "
-                                          "input; the output is the last iteration.")
+                                       tr("Each iteration's LoopBegins with Feedback on output the iteration before it, the first "
+                                          "one their input; the output is the last iteration.")
                                            .toStdString()));
         mode->populateChoices(options);
     }
@@ -821,40 +946,68 @@ LoopEnd::initializeKnobs()
     page->addKnob(drivenKnobs);
 }
 
-NodePtr
-LoopEnd::findLoopBegin(std::string* error) const
+std::vector<NodePtr>
+LoopEnd::findLoopBegins(std::string* error) const
 {
-    NodePtr input = getNode()->getInput(0);
+    std::vector<NodePtr> begins;
+    const NodePtr self = getNode();
+    NodePtr input = self->getInput(0);
 
     if (!input) {
         *error = tr("The input is not connected.").toStdString();
 
-        return NodePtr();
+        return begins;
     }
-    std::set<Node*> begins;
-    collectPairedBegins(input, &begins);
-    if (begins.empty()) {
+    std::set<Node*> found;
+    collectPairedBegins(input, &found);
+    if (found.empty()) {
         *error = tr("No LoopBegin was found above this LoopEnd.").toStdString();
 
-        return NodePtr();
+        return begins;
     }
+    for (Node* node : found) {
+        begins.push_back(node->shared_from_this());
+    }
+    std::sort(begins.begin(), begins.end(), [](const NodePtr& a, const NodePtr& b) {
+        return a->getScriptName_mt_safe() < b->getScriptName_mt_safe();
+    });
+    for (const NodePtr& begin : begins) {
+        std::set<Node*> ends;
+        collectPairedEnds(begin, &ends);
+        if (ends.size() > 1) {
+            std::vector<std::string> names;
+            for (Node* end : ends) {
+                names.push_back(end->getScriptName_mt_safe());
+            }
+            std::sort(names.begin(), names.end());
+            QStringList quoted;
+            for (const std::string& name : names) {
+                quoted.push_back(QString::fromUtf8(name.c_str()));
+            }
+            *error = tr("The LoopBegin %1 belongs to more than one loop: it is reached from the LoopEnds %2. A LoopBegin opens one loop only.")
+                         .arg(QString::fromUtf8(begin->getScriptName_mt_safe().c_str()))
+                         .arg(quoted.join(QString::fromUtf8(", ")))
+                         .toStdString();
+
+            return std::vector<NodePtr>();
+        }
+    }
+    // A LoopBegin of this loop under another one would sit inside the body that one opens.
     if (begins.size() > 1) {
-        *error = tr("More than one LoopBegin pairs with this LoopEnd: every path up from it must reach the same LoopBegin.").toStdString();
+        for (const NodePtr& begin : begins) {
+            const NodePtr inside = otherBeginBelow(begin, self, begins);
+            if (inside) {
+                *error = tr("The LoopBegin %1 is inside the body the LoopBegin %2 opens: the LoopBegins of one loop must not feed each other.")
+                             .arg(QString::fromUtf8(inside->getScriptName_mt_safe().c_str()))
+                             .arg(QString::fromUtf8(begin->getScriptName_mt_safe().c_str()))
+                             .toStdString();
 
-        return NodePtr();
-    }
-    NodePtr begin = (*begins.begin())->shared_from_this();
-    std::set<Node*> ends;
-    collectPairedEnds(begin, &ends);
-    if (ends.size() > 1) {
-        *error = tr("The LoopBegin %1 is reached from more than one LoopEnd.")
-                     .arg(QString::fromUtf8(begin->getScriptName_mt_safe().c_str()))
-                     .toStdString();
-
-        return NodePtr();
+                return std::vector<NodePtr>();
+            }
+        }
     }
 
-    return begin;
+    return begins;
 }
 
 LoopEnd::Resolved
@@ -878,23 +1031,18 @@ LoopEnd::resolve() const
 
         return resolved;
     }
-    resolved.begin = findLoopBegin(&resolved.message);
-    if (!resolved.begin) {
+    resolved.begins = findLoopBegins(&resolved.message);
+    if (resolved.begins.empty()) {
         return resolved;
     }
-    const LoopBegin* begin = dynamic_cast<const LoopBegin*>(resolved.begin->getEffectInstance().get());
-    if (!begin) {
-        resolved.message = tr("No LoopBegin was found above this LoopEnd.").toStdString();
-
-        return resolved;
-    }
-    const std::string nameError = begin->getLoopNameError();
+    const std::string nameError = getLoopNameError();
     if (!nameError.empty()) {
-        resolved.message = tr("%1: %2").arg(QString::fromUtf8(resolved.begin->getScriptName_mt_safe().c_str())).arg(QString::fromUtf8(nameError.c_str())).toStdString();
+        resolved.message = nameError;
+        resolved.begins.clear();
 
         return resolved;
     }
-    resolved.loopName = begin->getLoopName();
+    resolved.loopName = loopNameOf(getNode());
     resolved.feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
     resolved.frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
     if (resolved.frames) {
@@ -1238,6 +1386,21 @@ LoopEnd::knobChanged(KnobI* k,
         _stopCondition.lock(),
     };
 
+    KnobStringPtr name = _name.lock();
+    if (name && (k == name.get())) {
+        // The loops.<name>.* variables the body and the LoopBegins read move with it.
+        invalidateRenderContextReads();
+        refreshMessage(resolveAt(time));
+        const std::list<NodePtr> others = otherLoopEndsInGroup(getNode());
+        for (std::list<NodePtr>::const_iterator it = others.begin(); it != others.end(); ++it) {
+            LoopEnd* other = dynamic_cast<LoopEnd*>((*it)->getEffectInstance().get());
+            if (other) {
+                other->refreshMessage(other->resolve());
+            }
+        }
+
+        return true;
+    }
     for (const KnobIPtr& knob : resolving) {
         if (knob && (k == knob.get())) {
             KnobChoicePtr mode = _mode.lock();
@@ -1267,6 +1430,32 @@ void
 LoopEnd::onInputChanged(int /*inputNb*/)
 {
     refreshMessage(resolve());
+}
+
+void
+LoopEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
+                         const CreateNodeArgs& /*args*/)
+{
+    AppInstancePtr app = getApp();
+    KnobStringPtr name = _name.lock();
+
+    // A new or pasted LoopEnd takes the first free loopN; a loaded one keeps its saved name.
+    if (name && app && !app->getProject()->isLoadingProject()) {
+        std::set<std::string> taken;
+        const std::list<NodePtr> others = otherLoopEndsInGroup(getNode());
+        for (std::list<NodePtr>::const_iterator it = others.begin(); it != others.end(); ++it) {
+            taken.insert(loopNameOf(*it));
+        }
+        if (taken.count(name->getValue())) {
+            for (int i = 1;; ++i) {
+                const std::string candidate = "loop" + std::to_string(i);
+                if (!taken.count(candidate)) {
+                    name->setValue(candidate);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 void

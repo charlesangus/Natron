@@ -75,6 +75,7 @@
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -324,6 +325,8 @@ public:
                 _contextError = "USDRender could not load the OpenGL entry points of its context (" + _context->description() + ").";
                 _context.reset();
             } else {
+                // An HgiGL that goes collects every thread's garbage.
+                StormGLSection section;
                 _hgi = Hgi::CreateNamedHgi(HgiTokens->OpenGL);
                 if (!_hgi || !_hgi->IsBackendSupported()) {
                     _contextError = "Storm cannot draw through OpenGL on " + _context->description() + ".";
@@ -357,9 +360,12 @@ public:
         if (found == _engines.end()) {
             return;
         }
+        StormGLSection section;
         if (!_context || !_context->makeCurrent()) {
             // Its GL objects cannot be freed without the context; leak them with the engine.
             (void)found->second.engine.release();
+        } else {
+            section.collectWith(_hgi.get());
         }
         _engines.erase(found);
         _engineCount = _engines.size();
@@ -678,6 +684,8 @@ RenderThread::renderStorm(const HydraRender::Request& request,
         }
     }
     const bool edited = entry.stage->sync(request.scene);
+    StormGLSection section;
+    section.collectWith(_hgi.get());
     const UsdStageRefPtr& stage = entry.stage->getStage();
     bool headlight = entry.headlight;
     if (edited || !entry.engine) {
@@ -837,6 +845,8 @@ bool
 RenderThread::decodeIds(EngineEntry& entry,
                         std::string* error)
 {
+    StormGLSection section;
+    section.collectWith(_hgi.get());
     if (entry.idsDecoded) {
         return true;
     }
@@ -890,6 +900,8 @@ RenderThread::frame(EngineEntry& entry,
                     HydraRender::Result* result,
                     std::string* error)
 {
+    StormGLSection section;
+    section.collectWith(_hgi.get());
     std::string packError;
     if (!packAvailable(&packError)) {
         return cpuFrame(entry, result, error);
@@ -1010,6 +1022,8 @@ RenderThread::pack(EngineEntry& entry,
                    GLuint buffer,
                    std::string* error)
 {
+    StormGLSection section;
+    section.collectWith(_hgi.get());
     if (!packAvailable(error)) {
         return false;
     }
@@ -1091,6 +1105,8 @@ RenderThread::readWindow(EngineEntry& entry,
                          std::vector<float>* pixels,
                          std::string* error)
 {
+    StormGLSection section;
+    section.collectWith(_hgi.get());
     const std::size_t count = window.floatCount();
     pixels->assign(count, 0.f);
     if (count == 0) {

@@ -65,6 +65,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -1390,6 +1391,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return true;
     }
     StormGLStateGuard guard;
+    StormGLSection section;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, width, height);
@@ -1403,6 +1405,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     if (!_imp->ensureEngine()) {
         return true;
     }
+    section.collectWith(_imp->engine->GetHgi());
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
@@ -1442,10 +1445,12 @@ SceneViewportRenderer::pick(int x,
     }
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
+    StormGLSection section;
 
     if (!_imp->ensureEngine()) {
         return std::string();
     }
+    section.collectWith(_imp->engine->GetHgi());
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     // The pixel's centre in normalized device coordinates, y up, and a one-pixel window.
@@ -1485,10 +1490,12 @@ SceneViewportRenderer::pickRect(int x0,
     }
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
+    StormGLSection section;
 
     if (!_imp->ensureEngine()) {
         return paths;
     }
+    section.collectWith(_imp->engine->GetHgi());
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     // The rectangle's centre in normalized device coordinates, y up, and its size as a fraction
@@ -1520,6 +1527,8 @@ void
 SceneViewportRenderer::releaseGL()
 {
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    // No Hgi to collect with: the engine's own goes with it, collecting as it does.
+    StormGLSection section;
 
     _imp->engine.reset();
 }
@@ -1724,6 +1733,8 @@ loadMatrix(const double values[16])
 }
 
 // Sets a dimension of a locked camera's knob: at frame when it is animated, which keys it there.
+// As a GUI edit, not a user one: a knob's widget skips refreshing on a user edit, which it takes
+// for one typed into it, so the camera's panel would go on showing the old values.
 void
 setCameraKnobValue(const KnobDoublePtr& knob,
                    int dimension,
@@ -1732,9 +1743,9 @@ setCameraKnobValue(const KnobDoublePtr& knob,
                    double value)
 {
     if (animated) {
-        knob->setValueAtTime(frame, value, ViewSpec::all(), dimension, eValueChangedReasonUserEdited, nullptr);
+        knob->setValueAtTime(frame, value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, nullptr);
     } else {
-        knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonUserEdited, nullptr);
+        knob->setValue(value, ViewSpec::all(), dimension, eValueChangedReasonNatronGuiEdited, nullptr);
     }
 }
 

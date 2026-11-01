@@ -13,7 +13,8 @@ at x 3, and a camera /World/Cam read from the file.
 - Lock: looking through LockCam with Ctrl+L locked, a Ctrl+left drag (Nuke's tumble) turns the
   camera by editing its Rotate and Translate; Edit > Undo puts both back in one step. While the
   button is held the view moves but the knobs are not written and no scene is handed to the
-  view's sync (natronSceneSyncRequests stays put); the release writes them once. Locked to
+  view's sync (natronSceneSyncRequests stays put); the release writes them once, and LockCam's
+  open settings panel shows the written values, and the restored ones after the undo. Locked to
   /World/Cam, which no Camera node made, a drag leaves the view alone and the HUD says why.
 - One-step lock: from the free camera, Ctrl+L with two cameras in the scene opens a menu of them
   and picking LockCam locks to it; the Look Through menu's "Lock to /World/Cam" looks through and
@@ -41,10 +42,10 @@ HUD_MARGIN = 28
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QMainWindow
+    from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QLabel, QLineEdit, QMainWindow, QWidget
 
     from guitest import (FIXTURES, OUT, check, class_name, finish, menu_of, plugin_problem, report, require, run,
                          section, shot, widgets_of)
@@ -269,6 +270,48 @@ try:
     def near(a, b, tol=1e-4):
         return all(abs(x - y) <= tol * max(1., abs(x)) for x, y in zip(a, b))
 
+    def panel_of(node):
+        label = node.getLabel()
+        for panel in widgets_of("NodeSettingsPanel"):
+            if not panel.isVisible():
+                continue
+            for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                try:
+                    if w.text() == label:
+                        return panel
+                except RuntimeError:
+                    continue
+        return None
+
+    def open_panel(node):
+        views = [w for w in widgets_of("NodeGraph") if w.isVisible()]
+        require(bool(views), "the node graph is on screen")
+        app.selectNode(node, True)
+        QMetaObject.invokeMethod(views[0], "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(node) is not None, POLL_TIMEOUT_S)
+        require(ok, "open %s's settings panel" % node.getLabel())
+
+    def shown_values(node, name):
+        """The numbers the visible spin boxes of knob name on node's panel show, found by the knob's
+        script name in their tooltips. A knob whose dimensions are equal may show one box."""
+        panel = panel_of(node)
+        if panel is None:
+            return []
+        tag = "<b>%s</b>" % name
+        shown = []
+        for w in panel.findChildren(QWidget):
+            try:
+                if class_name(w) == "SpinBox" and w.isVisible() and tag in w.toolTip():
+                    shown.append(float(w.text()))
+            except (RuntimeError, ValueError):
+                continue
+        return shown
+
+    def panel_shows(node, name):
+        """Whether every dimension of knob name has a spin box on node's panel showing its value."""
+        shown = shown_values(node, name)
+        return bool(shown) and all(any(abs(s - x) <= 1e-3 * max(1., abs(x)) for s in shown) for x in values(node, name))
+
     VIEW_KEYS = [
         ("front", "Z", Qt.Key_Z, NONE), ("back", "Shift+Z", Qt.Key_Z, SHIFT), ("right", "X", Qt.Key_X, NONE),
         ("left", "Shift+X", Qt.Key_X, SHIFT), ("top", "C", Qt.Key_C, NONE), ("bottom", "Shift+C", Qt.Key_C, SHIFT),
@@ -338,6 +381,10 @@ try:
         check("red" in restored, "automatic clipping shows the scene again")
 
         section("lock")
+        yield from open_panel(lock_cam)
+        report("NOTE LockCam's panel shows translate %r, rotate %r" % (shown_values(lock_cam, "translate"), shown_values(lock_cam, "rotate")))
+        check(panel_shows(lock_cam, "translate") and panel_shows(lock_cam, "rotate"), "LockCam's panel shows its Translate and Rotate")
+        v = view()
         key(v, Qt.Key_V)
         ok = yield from with_menu(v, lock_cam_path)
         yield settle()
@@ -375,11 +422,17 @@ try:
         report("NOTE LockCam translate %r -> %r, rotate %r -> %r" % (t0, t1, r0, r1))
         check(not near(r0, r1), "a locked tumble turns LockCam's Rotate")
         check(not near(t0, t1), "a locked tumble moves LockCam's Translate about the scene")
+        ok = yield ("until", lambda: panel_shows(lock_cam, "translate") and panel_shows(lock_cam, "rotate"), POLL_TIMEOUT_S)
+        report("NOTE LockCam's panel shows translate %r, rotate %r" % (shown_values(lock_cam, "translate"), shown_values(lock_cam, "rotate")))
+        check(ok, "LockCam's panel shows the Translate and Rotate the locked move wrote")
         save_view("scene-views-locked-after")
         check(edit_undo(), "Edit > Undo is enabled after the locked move")
         yield settle()
         t2, r2 = values(lock_cam, "translate"), values(lock_cam, "rotate")
         check(near(t0, t2) and near(r0, r2), "one undo puts LockCam back (%r, %r)" % (t2, r2))
+        ok = yield ("until", lambda: panel_shows(lock_cam, "translate") and panel_shows(lock_cam, "rotate"), POLL_TIMEOUT_S)
+        check(ok, "LockCam's panel shows the Translate and Rotate the undo restored (%r, %r)" %
+              (shown_values(lock_cam, "translate"), shown_values(lock_cam, "rotate")))
 
         ok = yield from with_menu(v, "/World/Cam")
         yield settle()

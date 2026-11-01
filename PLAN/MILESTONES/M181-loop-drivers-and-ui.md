@@ -42,13 +42,13 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
   - verify: the Xvfb GUI test builds a nested loop and screenshots it; the GUI bench (`tools/bench/gui/run.sh --xvfb`, `compare.py`) shows no regression.
   - size: M
 
-- [ ] M181.P1.T4 — Driver Start/End keys in the curve editor, dope sheet and timeline
+- [x] M181.P1.T4 — Driver Start/End keys in the curve editor, dope sheet and timeline
   - files: `Engine/KnobDriver*`, `Gui/CurveEditor*`, `Gui/DopeSheet*`, timeline key-marker tests
   - approach: Make Driver Start/End keys (Curve on KnobDriver, d3af7e02c) appear under their driven knob in the curve editor and dope sheet, editable there with undo, and marked on the timeline like knob keys.
   - verify: Add, move and delete Driver Start/End keys in both editors; the timeline markers and undo history stay synchronized.
   - size: M
 
-- [ ] M181.P1.T5 — Knob expressions under knobChanged see preview loop variables
+- [x] M181.P1.T5 — Knob expressions under knobChanged see preview loop variables
   - files: `Engine/EffectInstance.cpp`, `Engine/PyRFV.cpp`, `Engine/Knob.cpp`, loop expression tests
   - approach: `EffectInstance::onKnobValueChanged_public` sets analysis frame args before knobChanged; make "is this a render" mean a real render in one shared predicate used by `LoopEnd::evaluateStop`, PyRFV and knob expression context so analysis callbacks use `previewContextOf`.
   - verify: A body-knob expression reading `loop.iteration` from another knob's knobChanged sees the preview iteration.
@@ -84,7 +84,7 @@ The user-facing side of loop drivers (user, 2026-10-24: both managed drivers and
 
 ## Phase 181.3: UAT hull fix
 
-- [ ] M181.P3.T1 — Keep the loop hull attached while the graph pans
+- [x] M181.P3.T1 — Keep the loop hull attached while the graph pans
   - files: `Gui/NodeGraph*`, loop-block hull drawing, loop GUI test
   - approach: Compute or invalidate hull geometry in the same scene/view coordinate system as the nodes so panning and zooming cannot leave the hull behind.
   - verify: The GUI test pans and zooms a loop graph and checks the hull continues to enclose the same nodes.

@@ -38,7 +38,7 @@ their images through M233 - Live Node Textures. Survey:
 
 ## Phase 234.1: USDProjectUV
 
-- [ ] M234.P1.T1 — `USDProjectUV` node
+- [x] M234.P1.T1 — `USDProjectUV` node
   - files: `Engine/Nodes/Scene/USDProjectUV.{h,cpp,reg.inc}`, `Engine/AppManager.cpp`, CMake source list, `Tests/Scene/USDProjectUV_Test.cpp`
   - approach: for each matched mesh at each needed frame, transform points to world, then through the camera's view/projection (`GfCamera`, conformed per the fit-mode knob) to NDC, and map to 0–1. Author `primvars:<name>` as `faceVarying` (indexed by faceVertexIndices) as time samples when the mesh or the camera is animated. Reads use `SceneQueryPool`. The layer key covers the matched paths, the camera's values and the mesh's point hash.
   - verify: gtest — a camera-facing USDCard filling the frame gets UVs (0,0)…(1,1) at its corners; moving the camera changes them; an animated camera gives per-frame samples; a missing camera errors with the path.
@@ -46,19 +46,19 @@ their images through M233 - Live Node Textures. Survey:
 
 ## Phase 234.2: USDProject3D
 
-- [ ] M234.P2.T1 — Spike: glslfx projection surface in Storm
+- [x] M234.P2.T1 — Spike: glslfx projection surface in Storm
   - files: a throwaway `tools/spikes/storm-projection/` program and `.glslfx`, the result recorded in this file's `## Decisions`
   - approach: hand-author a `.usda` with a card, a camera, and a material whose glslfx surface takes a `GfMatrix4d` world-to-camera-NDC parameter and a texture, projecting the fragment world position. Render it with `UsdImagingGLEngine` under the strict llvmpipe runner and on AMD/NVIDIA, with the texture from a `natron://` URI through M233's resolver. Record whether parameters animate (time samples), whether world position is available in the surface stage, and the GLSL entry points used. If Storm rejects it, stop and put the fallback (projection in USDRender's own pass) to the user.
   - verify: recorded screenshots per driver show the texture projected perspective-correctly onto a tilted card.
   - size: M
 
-- [ ] M234.P2.T2 — `USDProject3D` node and its glslfx shader
+- [x] M234.P2.T2 — `USDProject3D` node and its glslfx shader
   - files: `Engine/Nodes/Scene/USDProject3D.{h,cpp,reg.inc}`, `Engine/Nodes/Scene/shaders/natronProject3D.glslfx` (installed beside `plugInfo.json`), `Engine/AppManager.cpp`, CMake install rules and bundle staging, `Tests/Scene/USDProject3D_Test.cpp`
   - approach: author a `UsdShadeMaterial` with the glslfx shader per the spike. Parameters: camera matrix (time-sampled per frame, or held), clip on/off with near/far, cull on/off, outside mode, fit mode. The texture input is the plate as a `natron://` live URI (M233.P2.T1's authoring helper, reused). Bind it to the matched prims. Register the plate URIs so M233.P2.T2's pre-render covers them.
   - verify: gtest — the material, shader asset path, bindings and camera samples compose as expected; strict-GL test — a ColorBars plate projected through a camera onto a tilted card renders matching a committed reference; with cull on, a back-facing card is empty.
   - size: L
 
-- [ ] M234.P2.T3 — USDWrite bakes projections for export
+- [x] M234.P2.T3 — USDWrite bakes projections for export
   - files: `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: on export, replace each USDProject3D material with a `UsdPreviewSurface` whose diffuse is the exported plate (M233.P2.T3) and author projected UVs on the bound meshes with `USDProjectUV`'s math, as time samples. Warn when the bound mesh is too coarse (fewer than N faces across the projected area) that the result warps.
   - verify: gtest — an exported card projection opened through USDRead and rendered with USDRender matches the live USDProject3D render within tolerance on a finely subdivided card.
@@ -78,13 +78,13 @@ their images through M233 - Live Node Textures. Survey:
 
 ## Phase 234.3: UAT projection policy
 
-- [ ] M234.P3.T1 — Finish unlit alpha-blended projection output
+- [x] M234.P3.T1 — Finish unlit alpha-blended projection output
   - files: USDProject3D glslfx/material authoring, USDWrite projection bake, projection tests
   - approach: Keep projection emissive/unlit, propagate plate alpha through live and baked paths, and blend transparent regions instead of using the prior opaque material.
   - verify: A semi-transparent plate matches in the Viewer and USDRender with and without authored lights, and exported output matches within tolerance.
   - size: L
 
-- [ ] M234.P3.T2 — Keep camera selection flexible and remove the warp warning
+- [x] M234.P3.T2 — Keep camera selection flexible and remove the warp warning
   - files: USDProjectUV/USDProject3D knobs and validation, node docs/tests
   - approach: Keep the Camera dropdown alongside the Camera input, allow a typed camera path that is currently absent but may resolve downstream/later, and remove the coarse-geometry warp warning from the user-facing path.
   - verify: A future camera path round-trips without an immediate hard error and resolves when that camera appears; the dropdown remains available.
@@ -97,3 +97,4 @@ their images through M233 - Live Node Textures. Survey:
   - size: M
 
 **Verification gate:** strict-GL and hardware projection tests pass; emissive alpha, future camera paths and material assignment are accepted in the replacement AppImage.
+- 2026-11-01 — P3 at 970cc4920: projection shader translucent (premultiplied plate), export bake unlit+blended; cameraPath knob decides the camera, dropdown fills it, a missing path is allowed with a warning; warp warning removed. P3.T3 partial: binding through M236-style collection binding tested; the real Assign Material render waits for M236. Risk: blended surfaces write no prim IDs, so picking projected surfaces may break; Project3D goldens may need re-recording (implementer).

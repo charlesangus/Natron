@@ -304,6 +304,27 @@ for extension in ("usda", "usdc", "abc"):
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
 
+# Model downloads go through QNetworkAccessManager over HTTPS, so Qt has to find
+# its TLS backend under the bundle's plugins/tls and load OpenSSL 3 from lib/.
+# Asked of the Qt this process is running, not of a fresh one, so qt.conf and the
+# stripped environment are what decide it.
+import ctypes
+
+qt_process = ctypes.CDLL(None)
+supports_ssl = qt_process._ZN10QSslSocket11supportsSslEv
+supports_ssl.restype = ctypes.c_bool
+if not supports_ssl():
+    fail("QSslSocket::supportsSsl() is false; Qt found no TLS backend, so HTTPS downloads fail")
+with open("/proc/self/maps") as maps:
+    mapped = {line.split()[-1] for line in maps if line.rstrip().endswith(".so") or ".so." in line}
+for library in ("libqopensslbackend.so", "libssl.so.3", "libcrypto.so.3"):
+    paths = sorted(path for path in mapped if os.path.basename(path) == library)
+    if not paths:
+        fail("%s was not loaded after QSslSocket::supportsSsl()" % library)
+    outside = [path for path in paths if not os.path.realpath(path).startswith(BUNDLE + os.sep)]
+    if outside:
+        fail("%s was loaded from outside the bundle: %s" % (library, ", ".join(outside)))
+
 fontconfig_path = os.environ.get("FONTCONFIG_PATH", "")
 if not fontconfig_path.startswith(BUNDLE + os.sep):
     fail("FONTCONFIG_PATH is %r, not the bundle's own configuration" % fontconfig_path)
@@ -320,7 +341,6 @@ for config in configs:
 
 # Settings::tryLoadOpenColorIOConfig() exports OCIO long after the interpreter
 # snapshotted the environment into os.environ, so read the live one.
-import ctypes
 
 libc = ctypes.CDLL(None)
 libc.getenv.restype = ctypes.c_char_p

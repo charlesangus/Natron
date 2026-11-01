@@ -37,6 +37,10 @@
 #include <QFile>
 #include <QFutureWatcher>
 #include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSslError>
+#include <QSslSocket>
+#include <QStringList>
 #include <QUrl>
 #include <QtConcurrentRun>
 
@@ -63,6 +67,43 @@ struct InstallRequest {
 };
 
 const char* const kCancelled = "download cancelled";
+
+std::string
+joined(const QStringList& list)
+{
+    return list.isEmpty() ? std::string("none") : list.join(QStringLiteral(", ")).toStdString();
+}
+
+// Separates the TLS backend, certificate and HTTP failures that QNetworkReply::errorString()
+// reports in the same few words.
+std::string
+describeNetworkError(QNetworkReply::NetworkError error,
+                     const QString& errorString,
+                     int httpStatus,
+                     const QString& httpReason,
+                     const QStringList& sslErrors,
+                     const QUrl& url)
+{
+    const std::string where = url.toDisplayString().toStdString();
+    if (!sslErrors.isEmpty()) {
+        return "the TLS certificate of " + url.host().toStdString() + " was refused (" + joined(sslErrors) + "); check the system clock and that the system CA certificates are installed";
+    }
+    if (error == QNetworkReply::SslHandshakeFailedError) {
+        const std::string backend = ModelDownloader::tlsUnavailableReason();
+
+        return backend.empty() ? "TLS handshake with " + url.host().toStdString() + " failed: " + errorString.toStdString() : backend;
+    }
+    if (httpStatus >= 400) {
+        std::string message = "the server answered HTTP " + std::to_string(httpStatus);
+        if (!httpReason.isEmpty()) {
+            message += " " + httpReason.toStdString();
+        }
+
+        return message + " for " + where;
+    }
+
+    return errorString.toStdString() + " (" + where + ")";
+}
 
 // Empty on success.
 std::string
@@ -127,6 +168,7 @@ struct ModelDownloader::Job {
     FileDownloader* downloader = nullptr;
     std::unique_ptr<QFile> file;
     std::string writeError;
+    QStringList sslErrors;
 };
 
 ModelDownloader::ModelDownloader(std::shared_ptr<const ModelRegistry> registry,
@@ -148,6 +190,31 @@ ModelDownloader::~ModelDownloader()
             delete job.second->downloader;
         }
     }
+}
+
+std::string
+ModelDownloader::tlsUnavailableReason()
+{
+    if (QSslSocket::supportsSsl() && QSslSocket::implementedClasses().contains(QSsl::ImplementedClass::Socket)) {
+        return {};
+    }
+    const QStringList backends = QSslSocket::availableBackends();
+    std::string reason = "HTTPS is unavailable because Qt could not initialise TLS: ";
+    if (backends.isEmpty()) {
+        QStringList folders;
+        for (const QString& path : QCoreApplication::libraryPaths()) {
+            folders.append(path + QStringLiteral("/tls"));
+        }
+        reason += "no TLS backend plug-in was found (looked in " + joined(folders) + ")";
+    } else {
+        reason += "the TLS backends found (" + joined(backends) + ") cannot open sockets";
+        const QString built = QSslSocket::sslLibraryBuildVersionString();
+        if (!built.isEmpty()) {
+            reason += "; Qt was built against " + built.toStdString();
+        }
+    }
+
+    return reason + ". Natron's TLS backend needs OpenSSL 3 (libssl.so.3 and libcrypto.so.3): reinstall Natron, or install OpenSSL 3 from your distribution.";
 }
 
 ModelDownloader*
@@ -181,6 +248,17 @@ ModelDownloader::start(const std::string& id,
     if (findJob(entry->package)) {
         return true;
     }
+    const QUrl url(QString::fromStdString(entry->url));
+    if (url.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0) {
+        const std::string tls = tlsUnavailableReason();
+        if (!tls.empty()) {
+            if (error) {
+                *error = "model \"" + id + "\": cannot download: " + tls;
+            }
+
+            return false;
+        }
+    }
 
     auto job = std::make_unique<Job>();
     job->requestedId = id;
@@ -212,10 +290,17 @@ ModelDownloader::start(const std::string& id,
     }
 
     const std::string package = entry->package;
-    job->downloader = new FileDownloader(QUrl(QString::fromStdString(entry->url)), false);
+    job->downloader = new FileDownloader(url, false);
     QNetworkReply* reply = job->downloader->getReply();
     const std::vector<std::string> ids = job->ids;
     QObject::connect(reply, &QNetworkReply::readyRead, this, [this, package] { onDataReady(package); });
+    QObject::connect(reply, &QNetworkReply::sslErrors, this, [this, package](const QList<QSslError>& errors) {
+        if (Job* sslJob = findJob(package)) {
+            for (const QSslError& sslError : errors) {
+                sslJob->sslErrors.append(sslError.errorString());
+            }
+        }
+    });
     QObject::connect(reply, &QNetworkReply::downloadProgress, this, [this, ids](qint64 received, qint64 total) {
         for (const std::string& model : ids) {
             Q_EMIT progress(QString::fromStdString(model), received, total);
@@ -257,7 +342,7 @@ ModelDownloader::onDownloaded(const std::string& package)
     job->file->close();
     job->file.reset();
     const QNetworkReply::NetworkError networkError = reply->error();
-    const std::string networkErrorString = reply->errorString().toStdString();
+    const std::string networkErrorString = (networkError == QNetworkReply::NoError) ? std::string() : describeNetworkError(networkError, reply->errorString(), reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), reply->attribute(QNetworkRequest::HttpReasonPhraseAttribute).toString(), job->sslErrors, reply->url());
     job->downloader->deleteLater();
     job->downloader = nullptr;
 

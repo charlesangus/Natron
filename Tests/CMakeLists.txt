@@ -205,6 +205,7 @@ target_link_libraries(Tests
         NatronEngine
         Qt::Core
         Qt::Concurrent
+        Qt::Network
         Python3::Python
         openMVG
         rawspeed::rawspeed

@@ -35,6 +35,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
@@ -126,4 +127,58 @@ TEST_F(RotoItemKnobKeyframesTest, KeyframeHelpersRestoreKeysOnAKnobWithNoHolder)
 
     KnobGui::setKnobKeyframe(_opacity, 15., 0, ViewIdx(0));
     EXPECT_EQ(3, keyCount());
+}
+
+// The viewer overlay draws the GUI curves, so an interpolation change made through the shape must
+// reach them as well as the render curves, and stay there when a key is added between.
+TEST_F(RotoItemKnobKeyframesTest, ShapeInterpolationReachesTheOverlayCurves)
+{
+    _shape->setKeyframe(1.);
+    _shape->setKeyframe(20.);
+    BezierCPPtr cp = _shape->getControlPointAtIndex(0);
+    ASSERT_TRUE(bool(cp));
+    double x0, y0;
+    cp->getPositionAtTime(false, 20., ViewIdx(0), &x0, &y0);
+    ASSERT_TRUE(_shape->setPointPositionAtKeyframe(0, 20., x0 + 30., y0 + 40.));
+
+    int index = _shape->getKeyFrameIndex(1.);
+    ASSERT_GE(index, 0);
+    _shape->setKeyFrameInterpolation(eKeyframeTypeConstant, index);
+
+    for (double t = 2.; t < 20.; t += 3.) {
+        double ix, iy, gx, gy;
+        cp->getPositionAtTime(false, t, ViewIdx(0), &ix, &iy);
+        cp->getPositionAtTime(true, t, ViewIdx(0), &gx, &gy);
+        EXPECT_DOUBLE_EQ(ix, gx) << "time " << t;
+        EXPECT_DOUBLE_EQ(iy, gy) << "time " << t;
+        EXPECT_DOUBLE_EQ(x0, gx) << "time " << t;
+        EXPECT_DOUBLE_EQ(y0, gy) << "time " << t;
+    }
+
+    _shape->setKeyframe(10.);
+    for (double t = 2.; t < 20.; t += 3.) {
+        double ix, iy, gx, gy;
+        cp->getPositionAtTime(false, t, ViewIdx(0), &ix, &iy);
+        cp->getPositionAtTime(true, t, ViewIdx(0), &gx, &gy);
+        EXPECT_DOUBLE_EQ(ix, gx) << "time " << t;
+        EXPECT_DOUBLE_EQ(iy, gy) << "time " << t;
+    }
+}
+
+// A shape drawn with auto-keying gets its first key from its first point; the dope sheet and the
+// timeline learn of new keys only through keyframeSet.
+TEST_F(RotoItemKnobKeyframesTest, FirstPointOfAnAutoKeyedShapeSignalsItsKey)
+{
+    RotoContextPtr context = _node->getRotoContext();
+    context->setAutoKeyingEnabled(true);
+    BezierPtr shape(new Bezier(context, "Signalled", RotoLayerPtr(), false));
+    std::vector<double> signalled;
+    QObject::connect(shape.get(), &Bezier::keyframeSet, [&signalled](double time) { signalled.push_back(time); });
+
+    shape->addControlPoint(0., 0., 7.);
+    shape->addControlPoint(10., 0., 7.);
+
+    ASSERT_EQ(1, shape->getKeyframesCount());
+    ASSERT_EQ(1u, signalled.size());
+    EXPECT_DOUBLE_EQ(7., signalled[0]);
 }

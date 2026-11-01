@@ -352,17 +352,11 @@ CurveGui::drawCurve(int curveIndex,
     }
     bool isPeriodic = false;
     std::pair<double,double> parametricRange = std::make_pair(-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity());
-    if (isBezier) {
-        std::set<double> keys;
-        isBezier->getBezier()->getKeyframeTimes(&keys);
-        int i = 0;
-        for (std::set<double>::iterator it = keys.begin(); it != keys.end(); ++it, ++i) {
-            keyframes.insert( KeyFrame(*it, i) );
-        }
-    } else {
-        keyframes = getInternalCurve()->getKeyFrames_mt_safe();
-        isPeriodic = getInternalCurve()->isCurvePeriodic();
-        parametricRange = getInternalCurve()->getXRange();
+    CurvePtr internalCurve = getInternalCurve();
+    if (internalCurve) {
+        keyframes = internalCurve->getKeyFrames_mt_safe();
+        isPeriodic = internalCurve->isCurvePeriodic();
+        parametricRange = internalCurve->getXRange();
     }
     if ( !keyframes.empty() ) {
         try {

@@ -316,6 +316,21 @@ try:
         check(restored == expected, "one undo restores every key")
         gt.shot("m261-dope-sheet-after-undo.png")
 
+        # Drawing a shape with auto-keying keys it through its first point, before any edit.
+        roto, _roto_shapes = hosts[0]
+        drawn = roto.getRotoContext().createBezier(700.0, 100.0, SHAPE_KEYS[0])
+        gt.require(drawn is not None, "drew a third Bezier in %s" % roto.getLabel())
+        for x, y in ((800.0, 100.0), (800.0, 200.0)):
+            drawn.addControlPoint(x, y)
+        drawn.setCurveFinished(True)
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        report("NOTE drawn shape keys %r" % (drawn.getKeyframes(),))
+        item = child_with_text(top_item("DopeSheetEditor", roto.getLabel()), drawn.getLabel())
+        check(item is not None and not item["hidden"] and visible_text_at(rows_under(item), 1, "Shape"),
+              "a newly drawn shape has its dope sheet row at once")
+        gt.shot("m261-dope-sheet-new-shape.png")
+
         gt.section("curve-editor")
         editors = gt.widgets_of("CurveEditor")
         gt.require(editors, "found the curve editor")
@@ -386,12 +401,32 @@ try:
         check(not any(t.startswith("Point ") for _d, t, _h in rows), "removing the points drops their rows")
         gt.shot("m261-curve-editor.png")
 
-        gt.section("framing")
-        # Needs the build with the dope sheet framing over every clip range (not the one before it).
+        gt.section("selected-item-keys")
+        # The RotoPaint shapes are still selected, so their knobs are slaved to the node's proxy
+        # knobs; dope sheet edits of their keys must still change the keys that render.
         editors = editor_widgets("DopeSheetEditor")
         make_tab_current(editors[0], "dope")
         yield ("sleep", SETTLE_MS)
         views = gt.widgets_of("DopeSheetView")
+        QMetaObject.invokeMethod(views[0], "onSelectedAllTriggered")
+        QApplication.processEvents()
+        QMetaObject.invokeMethod(views[0], "deleteSelectedKeyframes")
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        paint_opacity = [b.getOpacityParam().getNumKeys() for b in paint_shapes]
+        report("NOTE selected RotoPaint shapes' opacity keys after delete %r" % (paint_opacity,))
+        check(paint_opacity == [0, 0], "deleting a selected shape's opacity key in the dope sheet removes it")
+        trigger_edit("undo")
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        paint_opacity = [b.getOpacityParam().getNumKeys() for b in paint_shapes]
+        opacity_at_key = [b.getOpacityParam().getValueAtTime(ITEM_KEY) for b in paint_shapes]
+        report("NOTE after undo: opacity keys %r, values at %g %r" % (paint_opacity, ITEM_KEY, opacity_at_key))
+        check(paint_opacity == [1, 1] and all(abs(v - 0.5) < 1e-9 for v in opacity_at_key),
+              "undo puts the selected shapes' opacity keys back with their values")
+
+        gt.section("framing")
+        # Needs the build with the dope sheet framing over every clip range (not the one before it).
         # A click on empty space clears any key selection, so F frames the whole project.
         QTest.mouseClick(views[0], Qt.LeftButton, Qt.NoModifier, QPoint(views[0].width() - 6, views[0].height() - 6))
         QApplication.processEvents()

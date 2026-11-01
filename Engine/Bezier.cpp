@@ -1246,11 +1246,13 @@ Bezier::addControlPoint(double x,
     BezierPtr this_shared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
     assert(this_shared);
     bool autoKeying = getContext()->isAutoKeyingEnabled();
+    bool createdKeyframe = false;
     {
         QMutexLocker l(&itemMutex);
         assert(!_imp->finished);
         if ( _imp->points.empty() ) {
             keyframeTime = time;
+            createdKeyframe = autoKeying;
         } else {
             keyframeTime = _imp->points.front()->getKeyframeTime(useGuiCurve, 0);
             if (keyframeTime == std::numeric_limits<int>::max()) {
@@ -1299,6 +1301,10 @@ Bezier::addControlPoint(double x,
     }
 
     invalidateContentHash();
+
+    if (createdKeyframe) {
+        Q_EMIT keyframeSet(keyframeTime);
+    }
 
     return p;
 } // Bezier::addControlPoint
@@ -3586,19 +3592,37 @@ void
 Bezier::setKeyFrameInterpolation(KeyframeTypeEnum interp,
                                  int index)
 {
-    QMutexLocker l(&itemMutex);
-    bool useFeather = useFeatherPoints();
-    BezierCPs::iterator fp = _imp->featherPoints.begin();
+    double time = 0.;
+    bool hasTime = false;
+    {
+        QMutexLocker l(&itemMutex);
+        bool useFeather = useFeatherPoints();
+        BezierCPs::iterator fp = _imp->featherPoints.begin();
 
-    for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
-        (*it)->setKeyFrameInterpolation(false, interp, index);
+        if (!_imp->points.empty()) {
+            time = _imp->points.front()->getKeyframeTime(false, index);
+            hasTime = time != std::numeric_limits<int>::max();
+        }
+        // The viewer overlay draws the GUI curves, and later edits copy key tangents from the
+        // internal curves to them, so both must carry the same interpolation.
+        for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+            (*it)->setKeyFrameInterpolation(false, interp, index);
+            (*it)->setKeyFrameInterpolation(true, interp, index);
 
-        if (useFeather) {
-            (*fp)->setKeyFrameInterpolation(false, interp, index);
-            ++fp;
+            if (useFeather) {
+                (*fp)->setKeyFrameInterpolation(false, interp, index);
+                (*fp)->setKeyFrameInterpolation(true, interp, index);
+                ++fp;
+            }
         }
     }
     invalidateContentHash();
+    if (hasTime) {
+        invalidatePolygonOrientation(false, time);
+        invalidatePolygonOrientation(true, time);
+    } else {
+        invalidatePolygonOrientation();
+    }
 }
 
 void

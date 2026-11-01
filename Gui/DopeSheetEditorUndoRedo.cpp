@@ -25,7 +25,9 @@
 
 #include "DopeSheetEditorUndoRedo.h"
 
+#include <set>
 #include <stdexcept>
+#include <tuple>
 
 #include <QDebug>
 
@@ -56,6 +58,29 @@ typedef std::map<KnobIWPtr, KnobGui *> KnobsAndGuis;
 
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+/**
+ * @brief Returns the knob whose curve a key edit must change. A slaved knob shows and renders
+ * its master's curve and leaves its own unused: a roto item's knobs are slaved to the host's
+ * proxy knobs while the item is selected, so editing the item knob itself would change nothing.
+ **/
+KnobIPtr
+editedKnob(const KnobIPtr& knob,
+           int dimension,
+           int* editedDimension)
+{
+    *editedDimension = dimension;
+    if (!knob || (dimension < 0)) {
+        return knob;
+    }
+    std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+    if (!master.second) {
+        return knob;
+    }
+    *editedDimension = master.first;
+
+    return master.second;
+}
 
 /**
  * @brief Move the node 'reader' on project timeline, by offsetting its
@@ -498,12 +523,18 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
 
 
     //////////Handle selected keyframes
+    std::set<std::tuple<KnobI*, int, double>> movedKeys;
     for (DopeSheetKeyPtrList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKeyPtr& selectedKey = (*it);
-        KnobIPtr knob = selectedKey->knob.lock();
+        int dimension;
+        KnobIPtr knob = editedKnob(selectedKey->knob.lock(), selectedKey->dimension, &dimension);
+        if (!movedKeys.insert(std::make_tuple(knob.get(), dimension, selectedKey->key.getTime())).second) {
+            selectedKey->key.setTime(selectedKey->key.getTime() + dt);
+            continue;
+        }
 
         knob->moveValueAtTime(eCurveChangeReasonDopeSheet, selectedKey->key.getTime(), ViewIdx(0),
-                              selectedKey->dimension,
+                              dimension,
                               dt, 0, &selectedKey->key);
     }
     ////////////Handle selected nodes
@@ -670,7 +701,9 @@ DSTransformKeysCommand::undo()
     }
 
     for (TransformKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
-        it->knob.lock()->cloneCurve(ViewSpec::all(), it->dimension, *it->oldCurve);
+        int dimension;
+        KnobIPtr knob = editedKnob(it->knob.lock(), it->dimension, &dimension);
+        knob->cloneCurve(ViewSpec::all(), dimension, *it->oldCurve);
     }
     _shapeStates.restore(false);
     setShapeKeyTimes(_shapeKeyTimes, false);
@@ -729,7 +762,9 @@ DSTransformKeysCommand::redo()
         _firstRedoCalled = true;
     } else {
         for (TransformKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
-            it->knob.lock()->cloneCurve(ViewIdx(0), it->dimension, *it->newCurve);
+            int dimension;
+            KnobIPtr knob = editedKnob(it->knob.lock(), it->dimension, &dimension);
+            knob->cloneCurve(ViewIdx(0), dimension, *it->newCurve);
         }
         _shapeStates.restore(true);
         setShapeKeyTimes(_shapeKeyTimes, true);
@@ -774,13 +809,14 @@ DSTransformKeysCommand::transformShapeKeys()
 void
 DSTransformKeysCommand::transformKey(const DopeSheetKeyPtr& key)
 {
-    KnobIPtr knob = key->knob.lock();
+    int dimension;
+    KnobIPtr knob = editedKnob(key->knob.lock(), key->dimension, &dimension);
 
     if (!knob) {
         return;
     }
 
-    knob->transformValueAtTime(eCurveChangeReasonDopeSheet, key->key.getTime(), ViewSpec::all(), key->dimension, _transform, &key->key);
+    knob->transformValueAtTime(eCurveChangeReasonDopeSheet, key->key.getTime(), ViewSpec::all(), dimension, _transform, &key->key);
 }
 
 int
@@ -1211,18 +1247,30 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
     }
 
     std::set<KnobIPtr> knobsSet;
+    // Several selected items' knobs can be slaved to one proxy knob, whose key must be edited once.
+    std::set<std::tuple<KnobI*, int, double>> editedKeys;
     for (std::vector<DopeSheetKey>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKey& selected = (*it);
-        KnobIPtr knob = selected.knob.lock();
+        int dimension;
+        KnobIPtr knob = editedKnob(selected.knob.lock(), selected.dimension, &dimension);
 
+        if (!editedKeys.insert(std::make_tuple(knob.get(), dimension, selected.key.getTime())).second) {
+            if (!add) {
+                DSKnobPtr knobContext = selected.context.lock();
+                if (knobContext) {
+                    knobContext->getTreeItem()->setSelected(false);
+                }
+            }
+            continue;
+        }
         std::pair<std::set<KnobIPtr>::iterator, bool> ok = knobsSet.insert(knob);
         if (ok.second) {
             knob->beginChanges();
         }
         if (add) {
-            KnobGui::setKnobKeyframe(knob, selected.key.getTime(), selected.key, selected.dimension, ViewIdx(0));
+            KnobGui::setKnobKeyframe(knob, selected.key.getTime(), selected.key, dimension, ViewIdx(0));
         } else {
-            KnobGui::removeKnobKeyframe(knob, selected.key.getTime(), selected.dimension, ViewIdx(0));
+            KnobGui::removeKnobKeyframe(knob, selected.key.getTime(), dimension, ViewIdx(0));
             DSKnobPtr knobContext = selected.context.lock();
             if (knobContext) {
                 knobContext->getTreeItem()->setSelected(false);
@@ -1317,21 +1365,23 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
 
     for (std::list<DSKeyInterpolationChange>::iterator it = _changes.begin(); it != _changes.end(); ++it) {
         KeyframeTypeEnum interp = undo ? it->_oldInterpType : it->_newInterpType;
+        int dimension;
+        KnobIPtr knob = editedKnob(it->_key->knob.lock(), it->_key->dimension, &dimension);
 
-        it->_key->knob.lock()->setInterpolationAtTime(eCurveChangeReasonDopeSheet,
-                                                      ViewSpec::all(),
-                                                      it->_key->dimension,
-                                                      it->_key->key.getTime(),
-                                                      interp,
-                                                      &it->_key->key);
+        knob->setInterpolationAtTime(eCurveChangeReasonDopeSheet,
+                                     ViewSpec::all(),
+                                     dimension,
+                                     it->_key->key.getTime(),
+                                     interp,
+                                     &it->_key->key);
         // Only Free and Broken keys carry weights; setTangentsAtTime would turn any other key into one of them.
         if (undo && interpolationHasWeights(it->_oldInterpType)) {
-            it->_key->knob.lock()->setTangentsAtTime(eCurveChangeReasonDopeSheet,
-                                                     ViewSpec::all(),
-                                                     it->_key->dimension,
-                                                     it->_key->key.getTime(),
-                                                     it->_oldTangents,
-                                                     &it->_key->key);
+            knob->setTangentsAtTime(eCurveChangeReasonDopeSheet,
+                                    ViewSpec::all(),
+                                    dimension,
+                                    it->_key->key.getTime(),
+                                    it->_oldTangents,
+                                    &it->_key->key);
         }
     }
 
@@ -1445,13 +1495,17 @@ DSPasteKeysCommand::addOrRemoveKeyframe(bool add)
                         KeyFrame k = _keys[i].key;
                         k.setTime(setTime);
 
-                        knob->setKeyFrame(k, ViewSpec::all(), j, eValueChangedReasonNatronGuiEdited);
+                        int editedDim;
+                        KnobIPtr edited = editedKnob(knob, j, &editedDim);
+                        edited->setKeyFrame(k, ViewSpec::all(), editedDim, eValueChangedReasonNatronGuiEdited);
                     }
                 }
             } else {
                 for (int j = 0; j < knob->getDimension(); ++j) {
                     if ( (dim == -1) || (j == dim) ) {
-                        knob->deleteValueAtTime(eCurveChangeReasonDopeSheet, setTime, ViewSpec::all(), j, i == 0);
+                        int editedDim;
+                        KnobIPtr edited = editedKnob(knob, j, &editedDim);
+                        edited->deleteValueAtTime(eCurveChangeReasonDopeSheet, setTime, ViewSpec::all(), editedDim, i == 0);
                     }
                 }
             }

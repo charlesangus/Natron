@@ -3144,8 +3144,9 @@ ViewerGL::wheelEvent(QWheelEvent* e)
     // The Qt Unit is 8 deltas per degree.
     // delta/2 gives a reasonable value in pixels (for panning, etc).
 
-    // Overlays get the wheel first; the viewer seeks or zooms only when none consumes it.
-    if (e->angleDelta().y() != 0) {
+    // Overlays get the wheel first, except Control's frame seek; the viewer zooms only when none
+    // consumes it.
+    if ((e->angleDelta().y() != 0) && !modCASIsControl(e)) {
         const QPointF zoomPos = toZoomCoordinates(e->position());
         if (_imp->viewerTab->notifyOverlaysWheel(RenderScale::fromMipmapLevel(getCurrentMipmapLevel()), e->position(), zoomPos,
                                                  e->angleDelta().y() / 120., e->modifiers())) {

@@ -154,8 +154,10 @@ struct ToneEqualizer::Resolved {
 ToneEqualizer::ToneEqualizer(NodePtr node)
     : StagedImageEffect(node)
     , _maskMutex()
+    , _maskComputeMutex()
     , _maskKey()
     , _mask()
+    , _colourMask()
     , _interact()
     , _message()
 {
@@ -549,12 +551,49 @@ ToneEqualizer::autoAdjust(bool exposure)
     }
 }
 
+namespace {
+std::string
+maskSourceKey(U64 frame,
+              const StagePlan& plan)
+{
+    return std::to_string(frame) + '|' + plan.divisorLayer.getLayerID() + '|' + std::to_string(plan.divisorChannel);
+}
+
+std::shared_ptr<std::vector<float>>
+maskFromFilled(const float* filled,
+               const PassExec::ProcessedPlanes& planes,
+               int width,
+               int height,
+               const ToneEqualizerKernels::Settings& s,
+               int radius,
+               const EdgeAware::ParallelFor& parallel)
+{
+    const std::size_t planeSize = (std::size_t)width * height;
+    // darktable's buffers run from the top row, which the guided filter's sampling grid follows.
+    std::vector<float> rgb(planeSize * 3);
+    parallel(height, [&](int row) {
+        const std::size_t y = (std::size_t)(height - 1 - row);
+        float* line = rgb.data() + (std::size_t)row * width * 3;
+        for (int c = 0; c < 3; ++c) {
+            const float* plane = filled + (std::size_t)planes.planeOfChannel[c] * planeSize + y * width;
+            for (int x = 0; x < width; ++x) {
+                line[3 * x + c] = plane[x];
+            }
+        }
+    });
+    std::shared_ptr<std::vector<float>> values = std::make_shared<std::vector<float>>(planeSize);
+    computeMask(rgb.data(), width, height, s, radius, values->data(), parallel);
+
+    return values;
+}
+} // namespace
+
 std::optional<ToneEqualizer::Mask>
 ToneEqualizer::lastMask() const
 {
     std::lock_guard<std::mutex> lock(_maskMutex);
 
-    return _mask;
+    return _colourMask;
 }
 
 void
@@ -562,8 +601,151 @@ ToneEqualizer::keepMask(const Mask& mask)
 {
     std::lock_guard<std::mutex> lock(_maskMutex);
 
-    _mask = mask;
+    _colourMask = mask;
 }
+
+std::optional<ToneEqualizer::Mask>
+ToneEqualizer::keptMask(const std::string& source,
+                        const ToneEqualizerKernels::Settings& settings,
+                        double time,
+                        ViewIdx view,
+                        double scale) const
+{
+    std::lock_guard<std::mutex> lock(_maskMutex);
+
+    if (_colourMask && _colourMask->values && (_colourMask->source == source) && (_colourMask->time == time) && (_colourMask->view == view)
+        && ((scale <= 0.) || (_colourMask->scale == scale)) && sameMask(_colourMask->settings, settings)) {
+        return _colourMask;
+    }
+
+    return std::nullopt;
+}
+
+std::string
+ToneEqualizer::maskSource(double time,
+                          ViewIdx view,
+                          StagePlan* plan)
+{
+    const StagePlan resolved = resolveRenderPlan(time, view, std::bitset<4>().set());
+    EffectInstancePtr input = (resolved.sourceInput >= 0) ? getInput(resolved.sourceInput) : EffectInstancePtr();
+
+    if (!input) {
+        return std::string();
+    }
+    if (plan) {
+        *plan = resolved;
+    }
+
+    return maskSourceKey(RawNodeSupport::frameKey(input->getRenderHash(), time, view), resolved);
+}
+
+void
+ToneEqualizer::readMaskSource(const StagePlan& plan,
+                              double time,
+                              const RenderScale& scale,
+                              ViewIdx view,
+                              const ImageLayerDesc& skipPlane,
+                              PassExec::PlaneJob* job)
+{
+    const int sourceInput = plan.sourceInput;
+    ImageLayerDesc sourceLayer;
+
+    if ((sourceInput < 0) || !getInput(sourceInput) || !resolveInputPlaneForRender(sourceInput, time, view, &sourceLayer, NULL)) {
+        return;
+    }
+    RectI sourceRoI;
+    job->src = getImage(sourceInput, time, scale, view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
+    if (!job->src || (plan.divisorChannel < 0)) {
+        return;
+    }
+    RectI divisorRoI;
+    job->divisor = getImage(sourceInput, time, scale, view, NULL, &plan.divisorLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &divisorRoI);
+    if (job->divisor && (plan.divisorChannel < (int)job->divisor->getComponentsCount())) {
+        job->divisorChannel = plan.divisorChannel;
+        job->skipChannel = Node::getUnPremultSkipChannel(skipPlane, plan.divisorLayer, plan.divisorChannel);
+    } else {
+        job->divisor.reset();
+    }
+}
+
+std::optional<ToneEqualizer::Mask>
+ToneEqualizer::colourMask(double time,
+                          ViewIdx view,
+                          const RenderScale& scale,
+                          const Resolved& r,
+                          bool wait)
+{
+    using namespace PassExec;
+
+    StagePlan plan;
+    const std::string source = maskSource(time, view, &plan);
+    if (source.empty()) {
+        return std::nullopt;
+    }
+    const double s = scale.toOfxPointD().x;
+    if (const std::optional<Mask> kept = keptMask(source, r.settings, time, view, s)) {
+        return kept;
+    }
+    std::unique_lock<std::mutex> computing(_maskComputeMutex, std::defer_lock);
+    if (!wait && !computing.try_lock()) {
+        return std::nullopt;
+    }
+
+    RectI rodPixel;
+    if (!effectRoDPixels(*this, time, scale, view, &rodPixel) || isEmptyRect(rodPixel)) {
+        return std::nullopt;
+    }
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const int nComps = std::clamp(metadata->getNComps(-1), 3, 4);
+    PlaneJob job;
+    job.nComps = nComps;
+    job.channels.set(0).set(1).set(2);
+    readMaskSource(plan, time, scale, view, ImageLayerDesc::mapNCompsToColorLayer(nComps), &job);
+    if (!job.src || !isFloatImage(job.src) || !isFloatImage(job.divisor)) {
+        return std::nullopt;
+    }
+    if (wait) {
+        computing.lock();
+    }
+    if (const std::optional<Mask> kept = keptMask(source, r.settings, time, view, s)) {
+        return kept;
+    }
+    job.lock();
+    const ProcessedPlanes planes(job);
+    const int w = rodPixel.width();
+    const int h = rodPixel.height();
+    std::vector<float> filled((std::size_t)w * h * planes.count());
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    RenderCancellation cancel(this);
+    const EdgeAware::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
+    fillBuffer(job, planes, rodPixel, Boundary::Zero, nThreads, cancel, filled.data());
+    if (cancel.check()) {
+        return std::nullopt;
+    }
+    EffectInstancePtr input = getInput(plan.sourceInput);
+    if (input) {
+        RawNodeSupport::noteFrameComputed(kToneEqualizerFrameMask, RawNodeSupport::frameKey(input->getRenderHash(), time, view));
+    }
+    const int fullWidth = (r.fullWidth > 0) ? r.fullWidth : w;
+    const int fullHeight = (r.fullHeight > 0) ? r.fullHeight : h;
+    std::shared_ptr<std::vector<float>> values = maskFromFilled(filled.data(), planes, w, h, r.settings, maskRadius(r.settings.blending, fullWidth, fullHeight, s), parallel);
+    if (cancel.check()) {
+        return std::nullopt;
+    }
+
+    Mask mask;
+    mask.settings = r.settings;
+    mask.source = source;
+    mask.time = time;
+    mask.view = view;
+    mask.scale = s;
+    mask.par = metadata->getPixelAspectRatio(plan.sourceInput);
+    mask.bounds = rodPixel;
+    mask.values = values;
+    keepMask(mask);
+
+    return mask;
+} // ToneEqualizer::colourMask
 
 std::optional<ToneEqualizer::Mask>
 ToneEqualizer::maskForAdjust(double time,
@@ -575,72 +757,33 @@ ToneEqualizer::maskForAdjust(double time,
     if (!r) {
         return std::nullopt;
     }
-    const double s = scale.toOfxPointD().x;
-    if (const std::optional<Mask> kept = lastMask()) {
-        if ((kept->time == time) && (kept->view == view) && (kept->scale == s) && sameMask(kept->settings, r->settings)) {
-            return kept;
-        }
+
+    return colourMask(time, view, scale, *r, true);
+}
+
+std::optional<ToneEqualizer::Mask>
+ToneEqualizer::interactMask(double time,
+                            ViewIdx view,
+                            bool compute)
+{
+    const std::optional<Resolved> r = resolve(time, view);
+
+    if (!r) {
+        return std::nullopt;
+    }
+    const std::string source = maskSource(time, view, NULL);
+    if (source.empty()) {
+        return std::nullopt;
+    }
+    if (const std::optional<Mask> kept = keptMask(source, r->settings, time, view, 0.)) {
+        return kept;
+    }
+    if (!compute) {
+        return std::nullopt;
     }
 
-    // Nothing rendered for these knobs yet: read the source, undivided, at scale.
-    const int inputNb = getSourceInput();
-    EffectInstancePtr input = getInput(inputNb);
-    if (!input) {
-        return std::nullopt;
-    }
-    RectD sourceRoD;
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &sourceRoD, &isProjectFormat) == eStatusFailed) {
-        return std::nullopt;
-    }
-    RectI roi;
-    ImagePtr src = getImage(inputNb, time, scale, view, &sourceRoD, NULL, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
-    if (!src || (src->getBitDepth() != eImageBitDepthFloat)) {
-        return std::nullopt;
-    }
-    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(inputNb);
-    const RectI bounds = src->getBounds();
-    const int w = bounds.width();
-    const int h = bounds.height();
-    if ((w <= 0) || (h <= 0)) {
-        return std::nullopt;
-    }
-    const int nComps = (int)src->getComponentsCount();
-    std::vector<float> rgb((std::size_t)w * h * 3, 0.f);
-    {
-        Image::ReadAccess access(src.get());
-        for (int row = 0; row < h; ++row) {
-            const float* pix = (const float*)access.pixelAt(bounds.x1, bounds.y2 - 1 - row);
-            if (!pix) {
-                continue;
-            }
-            float* line = rgb.data() + (std::size_t)row * w * 3;
-            for (int x = 0; x < w; ++x, pix += nComps) {
-                for (int c = 0; c < 3; ++c) {
-                    line[3 * x + c] = pix[(nComps >= 3) ? c : 0];
-                }
-            }
-        }
-    }
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    RenderCancellation cancel(this);
-    const EdgeAware::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
-    std::shared_ptr<std::vector<float>> values = std::make_shared<std::vector<float>>((std::size_t)w * h);
-    const int fullWidth = (r->fullWidth > 0) ? r->fullWidth : w;
-    const int fullHeight = (r->fullHeight > 0) ? r->fullHeight : h;
-    computeMask(rgb.data(), w, h, r->settings, maskRadius(r->settings.blending, fullWidth, fullHeight, s), values->data(), parallel);
-
-    Mask mask;
-    mask.settings = r->settings;
-    mask.time = time;
-    mask.view = view;
-    mask.scale = s;
-    mask.par = par;
-    mask.bounds = bounds;
-    mask.values = values;
-
-    return mask;
-} // ToneEqualizer::maskForAdjust
+    return colourMask(time, view, getOverlayInteractRenderScale(), *r, false);
+}
 
 ToneEqualizerInteract::Reading
 ToneEqualizer::readingAt(const Mask& mask,
@@ -650,7 +793,7 @@ ToneEqualizer::readingAt(const Mask& mask,
 {
     ToneEqualizerInteract::Reading reading;
 
-    if (!mask.values || (mask.par <= 0.)) {
+    if (!mask.values || (mask.par <= 0.) || (mask.time != time) || (mask.view != view)) {
         return reading;
     }
     const int px = (int)std::floor(canonical.x() * mask.scale / mask.par);
@@ -695,7 +838,8 @@ ToneEqualizer::drawOverlay(double time,
         return;
     }
     ToneEqualizerInteract::Reading reading;
-    if (const std::optional<Mask> mask = lastMask()) {
+    // Drawing never computes a mask; the pen motion that moved the cursor has.
+    if (const std::optional<Mask> mask = interactMask(time, view, false)) {
         reading = readingAt(*mask, pos, time, view);
     }
     _interact.draw(getCurrentViewportForOverlays(), reading);
@@ -712,7 +856,7 @@ ToneEqualizer::onOverlayPenMotion(double time,
 {
     _interact.setCursor(pos);
     ToneEqualizerInteract::Reading reading;
-    if (const std::optional<Mask> mask = lastMask()) {
+    if (const std::optional<Mask> mask = interactMask(time, view, true)) {
         reading = readingAt(*mask, pos, time, view);
     }
     showReadout(reading);
@@ -731,7 +875,11 @@ ToneEqualizer::onOverlayWheel(double time,
                               KeyboardModifiers modifiers)
 {
     _interact.setCursor(pos);
-    const std::optional<Mask> mask = lastMask();
+    const std::optional<float> stepEv = ToneEqualizerInteract::wheelStepEv(modifiers);
+    if (!stepEv) {
+        return false;
+    }
+    const std::optional<Mask> mask = interactMask(time, view, true);
     if (!mask) {
         return false;
     }
@@ -749,7 +897,7 @@ ToneEqualizer::onOverlayWheel(double time,
     if (!r) {
         return true;
     }
-    const float offset = (steps > 0 ? 1.f : -1.f) * ToneEqualizerInteract::wheelStepEv(modifiers);
+    const float offset = (steps > 0 ? 1.f : -1.f) * *stepEv;
     std::array<float, kBands> gains = r->settings.gains;
     bool changed = false;
     for (int i = 0; i < std::abs(steps); ++i) {
@@ -803,6 +951,7 @@ ToneEqualizer::purgeCaches()
 
     _maskKey.clear();
     _mask.reset();
+    _colourMask.reset();
 }
 
 bool
@@ -870,6 +1019,7 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
     }
     std::vector<PlaneJob> jobs;
     std::vector<std::string> layerIds;
+    std::vector<char> colourLayers;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         PlaneJob job;
         job.dst = it->second;
@@ -878,26 +1028,13 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
         }
         job.nComps = (int)job.dst->getComponentsCount();
         job.channels = processedBitsForImage(it->first, job.nComps, args.processChannels);
-        ImageLayerDesc sourceLayer;
-        if (input && resolveInputPlaneForRender(sourceInput, args.time, args.view, &sourceLayer, NULL)) {
-            RectI sourceRoI;
-            job.src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
-        }
-        if (job.src && (plan.divisorChannel >= 0)) {
-            RectI divisorRoI;
-            job.divisor = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &plan.divisorLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &divisorRoI);
-            if (job.divisor && (plan.divisorChannel < (int)job.divisor->getComponentsCount())) {
-                job.divisorChannel = plan.divisorChannel;
-                job.skipChannel = Node::getUnPremultSkipChannel(it->first.isColorLayer() ? job.dst->getComponents() : it->first, plan.divisorLayer, plan.divisorChannel);
-            } else {
-                job.divisor.reset();
-            }
-        }
+        readMaskSource(plan, args.time, args.mappedScale, args.view, it->first.isColorLayer() ? job.dst->getComponents() : it->first, &job);
         if (!isFloatImage(job.dst) || !isFloatImage(job.src) || !isFloatImage(job.divisor)) {
             return eStatusFailed;
         }
         jobs.push_back(job);
         layerIds.push_back(it->first.getLayerID());
+        colourLayers.push_back(it->first.isColorLayer());
     }
     if (!isFloatImage(mask)) {
         return eStatusFailed;
@@ -946,17 +1083,24 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
         std::vector<float> result;
         if (layout.processing) {
             // The mask depends on the source and the mask controls only, so band edits reuse it.
-            const U64 sourceKey = RawNodeSupport::frameKey(input->getRenderHash(), args.time, args.view);
-            const std::string key = std::to_string(sourceKey) + '|' + std::to_string(renderScale) + '|' + layerIds[j] + '|' + plan.divisorLayer.getLayerID() + '|'
-                + std::to_string(plan.divisorChannel) + '|' + std::to_string(rodPixel.x1) + ',' + std::to_string(rodPixel.y1) + ',' + std::to_string(rodPixel.x2) + ','
-                + std::to_string(rodPixel.y2);
-            std::shared_ptr<const std::vector<float>> values;
-            {
+            const U64 frame = RawNodeSupport::frameKey(input->getRenderHash(), args.time, args.view);
+            const std::string source = maskSourceKey(frame, plan);
+            const bool colour = colourLayers[j];
+            const std::string key = source + '|' + std::to_string(renderScale) + '|' + layerIds[j] + '|' + std::to_string(rodPixel.x1) + ',' + std::to_string(rodPixel.y1) + ','
+                + std::to_string(rodPixel.x2) + ',' + std::to_string(rodPixel.y2);
+            const auto cached = [&]() -> std::shared_ptr<const std::vector<float>> {
                 std::lock_guard<std::mutex> lock(_maskMutex);
                 if (_mask && (_maskKey == key) && sameMask(_mask->settings, s)) {
-                    values = _mask->values;
+                    return _mask->values;
                 }
-            }
+                if (colour && _colourMask && (_colourMask->source == source) && (_colourMask->time == args.time) && (_colourMask->view == args.view)
+                    && (_colourMask->scale == renderScale) && (_colourMask->bounds == rodPixel) && sameMask(_colourMask->settings, s)) {
+                    return _colourMask->values;
+                }
+
+                return std::shared_ptr<const std::vector<float>>();
+            };
+            std::shared_ptr<const std::vector<float>> values = cached();
             const RectI bufferRect = values ? window : rodPixel;
 
             PlaneJob fillJob = job;
@@ -972,40 +1116,32 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
             }
 
             if (!values) {
-                std::lock_guard<std::mutex> lock(_maskMutex);
-                if (_mask && (_maskKey == key) && sameMask(_mask->settings, s)) {
-                    values = _mask->values;
-                } else {
-                    // darktable's buffers run from the top row, which the guided filter's sampling grid follows.
-                    std::vector<float> rgb(planeSize * 3);
-                    parallel(bh, [&](int row) {
-                        const std::size_t y = (std::size_t)(bh - 1 - row);
-                        float* line = rgb.data() + (std::size_t)row * bw * 3;
-                        for (int c = 0; c < 3; ++c) {
-                            const float* plane = filled.data() + (std::size_t)fillPlanes.planeOfChannel[c] * planeSize + y * bw;
-                            for (int x = 0; x < bw; ++x) {
-                                line[3 * x + c] = plane[x];
-                            }
-                        }
-                    });
-                    RawNodeSupport::noteFrameComputed(kToneEqualizerFrameMask, sourceKey);
-                    std::shared_ptr<std::vector<float>> computed = std::make_shared<std::vector<float>>(planeSize);
+                std::lock_guard<std::mutex> computing(_maskComputeMutex);
+                values = cached();
+                if (!values) {
+                    RawNodeSupport::noteFrameComputed(kToneEqualizerFrameMask, frame);
                     const int fullWidth = (r.fullWidth > 0) ? r.fullWidth : bw;
                     const int fullHeight = (r.fullHeight > 0) ? r.fullHeight : bh;
-                    computeMask(rgb.data(), bw, bh, s, maskRadius(s.blending, fullWidth, fullHeight, renderScale), computed->data(), parallel);
+                    std::shared_ptr<std::vector<float>> computed
+                        = maskFromFilled(filled.data(), fillPlanes, bw, bh, s, maskRadius(s.blending, fullWidth, fullHeight, renderScale), parallel);
                     if (cancel.check()) {
                         return eStatusOK;
                     }
                     Mask kept;
                     kept.settings = s;
+                    kept.source = source;
                     kept.time = args.time;
                     kept.view = args.view;
                     kept.scale = renderScale;
                     kept.par = par;
                     kept.bounds = rodPixel;
                     kept.values = computed;
+                    std::lock_guard<std::mutex> lock(_maskMutex);
                     _mask = kept;
                     _maskKey = key;
+                    if (colour) {
+                        _colourMask = kept;
+                    }
                     values = computed;
                 }
             }

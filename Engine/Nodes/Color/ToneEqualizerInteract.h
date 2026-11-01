@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include <QPointF>
@@ -76,9 +77,10 @@ public:
     static std::string bandLabel(int band) WARN_UNUSED_RETURN;
 
     /**
-     * @brief darktable's scroll step: 1 EV with Shift alone, 0.1 EV with Control alone, else 0.25 EV.
+     * @brief The band change of one wheel notch: 0.1 EV, 0.02 EV with Shift. None with Control,
+     * Alt or Meta, which the viewer keeps for itself (Control seeks frames).
      **/
-    static float wheelStepEv(KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
+    static std::optional<float> wheelStepEv(KeyboardModifiers modifiers) WARN_UNUSED_RETURN;
 
     /**
      * @brief Adds a wheel turn, in notches, and returns the whole notches to apply, keeping the

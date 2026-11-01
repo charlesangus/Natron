@@ -5,8 +5,10 @@ the HSV Value estimator and no detail preservation the mask is exactly those val
 the centre of each half must write -4.0 EV (Midtones) and -1.0 EV (Whites), and the corrections
 the fitted curve gives there, into the Cursor Readout knob.
 
-A wheel notch up over the red half must raise the Midtones gain by about darktable's 0.25 EV step and
-leave the viewer's zoom alone; over the empty viewer outside the image the wheel still zooms.
+A wheel notch up over the red half must raise the correction there by the 0.1 EV step and leave the
+viewer's zoom alone; with Shift a notch moves the Midtones gain a fifth as far (0.02 EV), and with
+Control the wheel seeks frames and leaves the bands alone. Over the empty viewer outside the image
+the wheel still zooms.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     NATRON_GUI_TEST_OUT=build/m212-shots GUI_TEST_TIMEOUT=300 \
@@ -27,7 +29,10 @@ SETTLE_MS = 400
 RENDER_MS = 2000
 EV_TOL = 0.05
 WHEEL_NOTCH = 120
-WHEEL_STEP_EV = 0.25
+WHEEL_STEP_EV = 0.1
+FINE_WHEEL_STEP_EV = 0.02
+# The refit is close to linear in the step, so a fine notch moves the gain about a fifth as far.
+FINE_RATIO_TOL = 0.05
 
 INSIDE = (0.0625, 0.0, 0.0)
 OUTSIDE = (0.0, 0.0, 0.5)
@@ -210,11 +215,34 @@ try:
         if before and after:
             raised = after[2] - before[2]
             check(abs(raised - WHEEL_STEP_EV) <= EV_TOL,
-                  "the correction under the cursor rises by darktable's %.2f EV step (got %+.3f)" % (WHEEL_STEP_EV, raised))
+                  "the correction under the cursor rises by the %.2f EV step (got %+.3f)" % (WHEEL_STEP_EV, raised))
         yield ("sleep", RENDER_MS)
         after_boxes = coloured_boxes(gl)
         check(after_boxes is not None and after_boxes == before_boxes,
               "the wheel over the image does not zoom the viewer (boxes %r -> %r)" % (before_boxes, after_boxes))
+
+        gt.section("shift scroll")
+        coarse = after_gain - before_gain
+        wheel(gl, red_at, 1, Qt.ShiftModifier)
+        fine = midtones.getValue() - after_gain
+        report("NOTE Midtones moves %+.4f EV a notch, %+.4f EV a Shift notch" % (coarse, fine))
+        want = FINE_WHEEL_STEP_EV / WHEEL_STEP_EV
+        check(coarse != 0.0 and abs(fine / coarse - want) <= FINE_RATIO_TOL,
+              "a Shift notch moves Midtones %.2f of a plain notch (got %+.4f vs %+.4f)" % (want, fine, coarse))
+        yield ("sleep", RENDER_MS)
+
+        gt.section("control scroll")
+        gain = midtones.getValue()
+        frame = app.timelineGetTime()
+        wheel(gl, red_at, -1, Qt.ControlModifier)
+        yield ("sleep", SETTLE_MS)
+        seeked = app.timelineGetTime()
+        report("NOTE Control+wheel: frame %r -> %r" % (frame, seeked))
+        check(seeked != frame, "Control+wheel over the image seeks frames (frame %r -> %r)" % (frame, seeked))
+        check(midtones.getValue() == gain, "Control+wheel leaves Midtones alone")
+        if seeked != frame:
+            wheel(gl, red_at, 1, Qt.ControlModifier)
+            yield ("sleep", RENDER_MS)
         move(gl, red_at)
         yield ("sleep", SETTLE_MS)
         gt.shot("m212-result.png")

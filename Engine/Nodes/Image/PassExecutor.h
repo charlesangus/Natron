@@ -131,7 +131,8 @@ void readChannelRow(const Image* image,
  * @brief One output plane of a render with the images it reads. Image::getBounds() takes the
  * image's lock, which a pool thread must never ask for: behind a writer waiting on an image this
  * render holds for reading, it blocks forever. lock() reads the bounds and takes the accesses on
- * the calling thread, and the pool threads only compute pixel addresses through them.
+ * the calling thread, and the pool threads only compute pixel addresses through them. A job
+ * with no dst only reads, through fillBuffer().
  **/
 struct PlaneJob {
     ImagePtr dst;

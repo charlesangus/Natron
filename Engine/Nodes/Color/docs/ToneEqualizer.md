@@ -37,8 +37,12 @@ darktable `release-5.6.2`), with the guided filter and EIGF of the edge-aware fi
   definition whatever the render window. A mask whose settings are unchanged is kept, so a band
   edit only re-applies the curve.
 - With the node's overlay shown, hovering the viewer writes the mask exposure under the cursor, its
-  band and the correction there into **Cursor Readout**, and draws them next to the cursor. Natron's
-  viewer has no wheel hook for overlays, so darktable's scroll-over-image band edit is not ported.
+  band and the correction there into **Cursor Readout**, and draws them next to the cursor. When
+  no render has kept a mask for the current frame and knobs (on a GPU render, for instance), the
+  readout computes one on the CPU at the viewer's scale and keeps it.
+- Scrolling over the image raises or lowers the curve at the exposure under the cursor, as
+  darktable's scroll edit does: 0.1 EV per wheel notch, 0.02 EV with Shift. A burst of scrolling is
+  one undo step. Control+wheel still seeks frames, and off the image the wheel zooms the viewer.
 - GPU: the estimate and the correction are Slang kernels (`Engine/Gpu/Kernels/toneequal.slang`;
   darktable has no OpenCL tone equalizer), the filters those of the edge-aware library. A frame
   whose mask or pixels exceed 32-bit indices renders on the CPU.
@@ -86,6 +90,6 @@ GUI-only controls, and where each is here.
 | gui mask histogram and its zones | output=zones |  |  | mapped: the zones drawn on the image rather than beside the histogram |
 | gui presets (13) | preset, applyPreset |  |  | mapped |
 | gui cursor exposure readout | cursorReadout, overlay |  |  | mapped |
-| gui scroll over the image to edit the band under the cursor | N/A: the viewer has no wheel hook for overlays |  |  | DEFERRED |
+| gui scroll over the image to edit the band under the cursor | overlay (onOverlayWheel): 0.1 EV a notch, 0.02 EV with Shift |  |  | mapped |
 | gui curve graph drag | N/A: the band knobs edit the curve |  |  | N/A |
 | | output=result | | | EXTRA: darktable's output when the mask display is off |

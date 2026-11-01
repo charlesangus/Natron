@@ -57,8 +57,9 @@ fi
 # release job's output, never the other way round.
 REFS=()
 for ref in release master; do
-    if python3 -I "${ROOT}/tools/raw/make-reference.py" --dry-run "${ONLY[@]}" --ref "${ref}" \
-        "${FIXTURES}" "${LOG_DIR}/out" "${LOG_DIR}/xmp-${ref}" | grep -q " <- "; then
+    listing="$(python3 -I "${ROOT}/tools/raw/make-reference.py" --dry-run "${ONLY[@]}" --ref "${ref}" \
+        "${FIXTURES}" "${LOG_DIR}/out" "${LOG_DIR}/xmp-${ref}")"
+    if [[ "${listing}" == *" <- "* ]]; then
         REFS+=("${ref}")
     fi
 done

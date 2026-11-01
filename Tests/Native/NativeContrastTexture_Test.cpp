@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <list>
 #include <string>
 #include <vector>
@@ -370,6 +371,18 @@ TEST_F(NativeContrastTextureTest, BandWeightsAtZeroMaxLevelAreAllFine)
 
 // At its defaults, and with only the filter settings changed, the node is an identity and passes
 // the source through exactly.
+TEST_F(NativeContrastTextureTest, HalfFloatErrorRejectsNonFinite)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(0., RawReference::halfFloatError(0.5, 0.5));
+    EXPECT_EQ(0., RawReference::halfFloatError(inf, inf));
+    EXPECT_EQ(inf, RawReference::halfFloatError(nan, 0.5));
+    EXPECT_EQ(inf, RawReference::halfFloatError(0.5, nan));
+    EXPECT_EQ(inf, RawReference::halfFloatError(nan, nan));
+    EXPECT_EQ(inf, RawReference::halfFloatError(inf, 0.5));
+}
+
 TEST_F(NativeContrastTextureTest, DefaultsAreIdentity)
 {
     resetProject();

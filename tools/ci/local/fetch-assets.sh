@@ -268,7 +268,6 @@ DARKTABLE_REF="20891f6c6fa7be995e5bf9dff9d1ee5062051773"
 # on master (contrast & texture, src/iop/contrastntexture.c). Bumping DARKTABLE_REF would
 # invalidate every reference made at it, so those modules are ported from, and their references
 # rendered at, this second revision. Its EIGF (src/common/eigf.h, gaussian.c) is the release's.
-# Move it to the 5.8 release tag once there is one.
 DARKTABLE_MASTER_REF="fee19b421fdbf1bddd74307b68499943394993b6"
 
 # ONNXRUNTIME_VERSION: microsoft/onnxruntime's official Linux x64 CPU release,

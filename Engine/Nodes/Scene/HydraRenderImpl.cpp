@@ -90,6 +90,9 @@ const int kMaxRenderPasses = 8;
 // How long a render of another delegate waits between its passes, polling for convergence.
 const std::chrono::milliseconds kConvergencePoll(10);
 
+// How long a render with no abort callback may take to converge.
+const std::chrono::seconds kUnabortableRenderLimit(600);
+
 // The GPU memory the engines may hold together by default.
 const std::size_t kDefaultMemoryBudget = (std::size_t)2 << 30;
 
@@ -128,6 +131,11 @@ struct EngineEntry {
     bool idsDecoded = false;
     std::vector<float> primId;
     std::map<std::uint32_t, std::string> primPaths;
+
+    // A CPU engine's render converted by cpuFrame(), for the windows of the render with serial
+    // cpuSerial, so tiles and planes do not each convert the whole frame.
+    std::uint64_t cpuSerial = 0;
+    HydraRender::Result cpuResult;
 };
 
 // Packs a window of a plane of Storm's AOVs into a buffer, the one conversion every way USDRender
@@ -839,10 +847,19 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     } else {
         // A path tracer renders on threads of its own and converges when it is done; each Render()
         // syncs the stage's changes into it.
+        // Without an abort callback nothing could stop a delegate that never converges.
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         for (;;) {
             engine->Render(stage->GetPseudoRoot(), params);
             if (engine->IsConverged()) {
                 break;
+            }
+            if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
+                *error = "The " + entry.rendererName + " render did not converge within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
+                entry.engine.reset();
+                entry.rendered = false;
+
+                return nullptr;
             }
             if (cancel && cancel->load()) {
                 *error = "The " + entry.rendererName + " render was cancelled.";
@@ -960,10 +977,15 @@ RenderThread::cpuWindow(EngineEntry& entry,
                         std::vector<float>* pixels,
                         std::string* error)
 {
-    HydraRender::Result frame;
-    if (!cpuFrame(entry, &frame, error)) {
-        return false;
+    if (entry.cpuSerial != entry.serial) {
+        HydraRender::Result converted;
+        if (!cpuFrame(entry, &converted, error)) {
+            return false;
+        }
+        entry.cpuResult = std::move(converted);
+        entry.cpuSerial = entry.serial;
     }
+    const HydraRender::Result& frame = entry.cpuResult;
     const int width = entry.width;
     const int height = entry.height;
     const int nComps = window.nComps;

@@ -111,25 +111,32 @@ renderSource(const LiveTextureSource& source,
 
         return LiveTextureBufferConstPtr();
     }
+    // Texture coordinates 0 to 1 span the image's format, its display window: pixels of the
+    // format the image does not cover stay transparent black, and overscan outside it is left out.
+    RectI format;
     RectI rect;
-    const ImagePtr image = renderNodeImageOverDefinition(node, frame, view, ImageLayerDesc::getRGBAComponents(), &rect);
+    ImagePtr image;
+    const bool rendered = renderNodeImageOverFormat(node, frame, view, ImageLayerDesc::getRGBAComponents(), &format, &image, &rect);
     char frameText[32];
     std::snprintf(frameText, sizeof(frameText), "%g", frame);
-    if (!image || rect.isNull()) {
+    if (!rendered || format.isNull() || (image && rect.isNull())) {
         *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
 
         return LiveTextureBufferConstPtr();
     }
-    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(rect.width(), rect.height());
+    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(format.width(), format.height());
     if (!buffer) {
         *failure = "the image of " + node->getFullyQualifiedName() + " at frame " + frameText + " is too large to hold";
 
         return LiveTextureBufferConstPtr();
     }
+    if (!image) {
+        return buffer;
+    }
     const int numComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image.get());
     for (int y = rect.y1; y < rect.y2; ++y) {
-        float* row = buffer->getRow(y - rect.y1);
+        float* row = buffer->getRow(y - format.y1) + std::size_t(rect.x1 - format.x1) * 4;
         switch (image->getBitDepth()) {
         case eImageBitDepthByte:
             copyRow<unsigned char>(access, rect, y, numComps, 1.f / 255.f, row);

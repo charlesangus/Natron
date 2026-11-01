@@ -70,8 +70,6 @@
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
-#include <pxr/imaging/glf/simpleLight.h>
-#include <pxr/imaging/glf/simpleMaterial.h>
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/tokens.h>
@@ -397,23 +395,6 @@ struct SceneViewportRenderer::Implementation {
         return true;
     }
 
-    // A light at the camera, as usdview's default camera light.
-    void setHeadlight()
-    {
-        GlfSimpleLight light;
-
-        light.SetIsCameraSpaceLight(true);
-        light.SetPosition(GfVec4f(0.f, 0.f, 0.f, 1.f));
-        light.SetAmbient(GfVec4f(0.f, 0.f, 0.f, 1.f));
-        light.SetDiffuse(GfVec4f(1.f, 1.f, 1.f, 1.f));
-        light.SetSpecular(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
-        GlfSimpleMaterial material;
-        material.SetAmbient(GfVec4f(0.2f, 0.2f, 0.2f, 1.f));
-        material.SetSpecular(GfVec4f(0.1f, 0.1f, 0.1f, 1.f));
-        material.SetShininess(32.);
-        engine->SetLightingState(GlfSimpleLightVector(1, light), material, GfVec4f(0.01f, 0.01f, 0.01f, 1.f));
-    }
-
     void setCamera(const GfFrustum& frustum,
                    int width,
                    int height,
@@ -423,7 +404,6 @@ struct SceneViewportRenderer::Implementation {
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
         engine->SetPresentationOutput(HgiTokens->OpenGL, VtValue(uint32_t(fbo)));
-        setHeadlight();
     }
 
     // Needs stageMutex: a camera looked through is a prim of the stage.
@@ -1286,8 +1266,14 @@ SceneViewport::onSynced(U64 serial,
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
     if (serial != _imp->requestedSerial) {
-        // A newer request is on its way.
+        // A newer request is on its way, but this one is drawn meanwhile: in playback each frame's
+        // request is overtaken by the next before its sync ends, so drawing only caught-up syncs
+        // would draw almost none. The renderer is consistent: the stage at the frame whose
+        // textures were just rendered.
         publishState();
+        if (ok) {
+            update();
+        }
 
         return;
     }

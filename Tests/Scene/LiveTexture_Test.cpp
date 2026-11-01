@@ -37,13 +37,17 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureImage.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -298,6 +302,63 @@ TEST_F(LiveTextureTest, PrepareRendersAMissingTextureOnce)
     LiveTextureStore::instance().clear();
     EXPECT_EQ(1, LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., ViewIdx(0)));
     EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
+}
+
+// A Constant whose rectangle covers the left half of the format and as much again outside it: the
+// texture spans exactly the format, coloured over the half the image covers and transparent black
+// over the rest, and the overscan beyond the format's left edge is not squeezed in.
+TEST_F(LiveTextureTest, TheTextureSpansTheFormatNotTheRegionOfDefinition)
+{
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    ASSERT_GT(format.width(), 8);
+    ASSERT_GT(format.height(), 8);
+
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    KnobChoice* extent = dynamic_cast<KnobChoice*>(constant->getKnobByName(kNativeGeneratorParamExtent).get());
+    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamBottomLeft).get());
+    KnobDouble* size = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamSize).get());
+    ASSERT_TRUE(color && extent && bottomLeft && size);
+    color->setValue(0.5, ViewSpec::all(), 0);
+    color->setValue(0.25, ViewSpec::all(), 1);
+    color->setValue(0.75, ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    const int half = format.width() / 2;
+    bottomLeft->setValue(format.x1 - half, ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1, ViewSpec::all(), 1);
+    size->setValue(2 * half, ViewSpec::all(), 0);
+    size->setValue(format.height(), ViewSpec::all(), 1);
+
+    LiveTextureSource source;
+    source.node = constant;
+    source.nodeName = constant->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = constant->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+    const std::string uri = source.getUri(1.);
+
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.)) << LiveTextureStore::instance().getFailure(uri);
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(uri);
+    ASSERT_TRUE(bool(buffer));
+    EXPECT_EQ(format.width(), buffer->getWidth());
+    EXPECT_EQ(format.height(), buffer->getHeight());
+
+    const int y = buffer->getHeight() / 2;
+    const float* inside = buffer->getRow(y) + 4 * (half / 2);
+    EXPECT_NEAR(0.5, inside[0], 1e-5);
+    EXPECT_NEAR(0.25, inside[1], 1e-5);
+    EXPECT_NEAR(0.75, inside[2], 1e-5);
+    EXPECT_NEAR(1., inside[3], 1e-5);
+    const float* firstColumn = buffer->getRow(y);
+    EXPECT_NEAR(0.5, firstColumn[0], 1e-5) << "the format's left edge is the image's, not its overscan's";
+    const float* outside = buffer->getRow(y) + 4 * (half + (buffer->getWidth() - half) / 2);
+    for (int c = 0; c < 4; ++c) {
+        EXPECT_EQ(0.f, outside[c]) << "channel " << c << " of the format the image does not cover";
+    }
 }
 
 TEST_F(LiveTextureTest, PrepareOnTheMainThreadWarnsTheConsumer)

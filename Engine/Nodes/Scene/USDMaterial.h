@@ -39,6 +39,9 @@
 
 #define PLUGINID_NATRON_USDMATERIAL "USDMaterial"
 
+#define kUSDMaterialParamShader "shader"
+#define kUSDMaterialShaderLit "lit"
+#define kUSDMaterialShaderEmissive "emissive"
 #define kUSDMaterialParamDiffuseColor "diffuseColor"
 #define kUSDMaterialParamDiffuseTexture "diffuseTexture"
 #define kUSDMaterialParamMetallic "metallic"
@@ -71,6 +74,11 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
  * are in the project working space and written unchanged. A texture path that does not resolve
  * is authored anyway, with a node warning naming it.
  *
+ * Shader picks how the surface shades: Lit, the full UsdPreviewSurface, which only the scene's own
+ * lights light; or Emissive, which gives off its Emissive Color (or texture or input) unchanged by
+ * any light, with no diffuse or specular response, as an image projected or shown on a card wants.
+ * Emissive ignores the diffuse, metallic, roughness and normal controls and inputs.
+ *
  * Optional image inputs (Diffuse Color, Roughness, Metallic, Normal, Emissive Color) drive the
  * same surface inputs, and Normal the surface's normal, from the image of the node connected,
  * live: the texture file is a natron:// URI (LiveTextureStore) per frame, or one for an image
@@ -96,7 +104,8 @@ public:
                        "places the material under its own prim and binds itself to it. Colours are in the project "
                        "working space and written unchanged. An image connected to an input of the same name drives "
                        "it instead, live and animated with no file on disk; the Normal input takes a tangent-space "
-                       "normal map encoded in 0..1.",
+                       "normal map encoded in 0..1. Shader Emissive makes an unlit surface that shows its emissive "
+                       "colour as it is, for projections and image cards.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -132,7 +141,10 @@ private:
                      const LiveTextureSourceList& liveTextures,
                      std::string* errorMessage) const;
 
+    bool isEmissive() const;
+
     KnobStringWPtr _primPath;
+    KnobChoiceWPtr _shader;
     KnobColorWPtr _diffuseColor;
     KnobFileWPtr _diffuseTexture;
     KnobDoubleWPtr _metallic;

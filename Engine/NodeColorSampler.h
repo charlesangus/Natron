@@ -50,14 +50,21 @@ ImagePtr renderNodeImage(const NodePtr& node,
                          RectI* renderedRect);
 
 /**
- * @brief As renderNodeImage(), over the whole region of definition at full scale, with an infinite
- * side clipped to the project format.
+ * @brief As renderNodeImage(), at full scale over the node's output format (its display window, the
+ * project format when it has none): format receives it, renderedRect the part of it inside the region
+ * of definition, which image covers and may exceed. Pixels of the region outside the format are not
+ * rendered.
+ *
+ * Returns false in the cases sampleNodeColor() returns false. Returns true with a null image when the
+ * region of definition misses the format: the format is then all transparent black.
  **/
-ImagePtr renderNodeImageOverDefinition(const NodePtr& node,
-                                       double time,
-                                       ViewIdx view,
-                                       const ImageLayerDesc& layer,
-                                       RectI* renderedRect);
+bool renderNodeImageOverFormat(const NodePtr& node,
+                               double time,
+                               ViewIdx view,
+                               const ImageLayerDesc& layer,
+                               RectI* format,
+                               ImagePtr* image,
+                               RectI* renderedRect);
 
 /**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on

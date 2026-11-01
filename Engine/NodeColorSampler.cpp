@@ -95,7 +95,8 @@ renderLayer(const NodePtr& node,
             unsigned int mipmapLevel,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
-            bool wholeDefinition,
+            bool wholeFormat,
+            RectI* format,
             RectI* roi,
             ImagePtr* image)
 {
@@ -123,26 +124,23 @@ renderLayer(const NodePtr& node,
     }
     const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
-    if (wholeDefinition) {
-        // A generator's infinite region becomes the project format.
-        if (rod.isInfinite()) {
-            Format format;
-            node->getApp()->getProject()->getProjectDefaultFormat(&format);
-            const RectD formatRect = format.toCanonicalFormat();
-            if (rod.x1 <= kOfxFlagInfiniteMin) {
-                rod.x1 = formatRect.x1;
-            }
-            if (rod.y1 <= kOfxFlagInfiniteMin) {
-                rod.y1 = formatRect.y1;
-            }
-            if (rod.x2 >= kOfxFlagInfiniteMax) {
-                rod.x2 = formatRect.x2;
-            }
-            if (rod.y2 >= kOfxFlagInfiniteMax) {
-                rod.y2 = formatRect.y2;
-            }
+    if (wholeFormat) {
+        RectI outputFormat = renderMetadata->getOutputFormat();
+        if (outputFormat.isNull()) {
+            Format projectFormat;
+            node->getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+            outputFormat = projectFormat;
         }
-        *roi = rod.toPixelEnclosing(mipmapLevel, par);
+        *format = outputFormat;
+        // Clipped in canonical coordinates first, so an infinite side never reaches pixel ints.
+        const RectD clipped = rod.intersect(Format(outputFormat, par).toCanonicalFormat());
+        *roi = clipped.isNull() ? RectI() : clipped.toPixelEnclosing(mipmapLevel, par).intersect(outputFormat);
+        if (roi->isNull()) {
+            // Nothing of the image inside its format: a valid, empty result.
+            image->reset();
+
+            return true;
+        }
     } else {
         *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
     }
@@ -196,10 +194,13 @@ renderNodeImageImpl(const NodePtr& node,
                     unsigned int mipmapLevel,
                     const RectI& pixelRect,
                     const ImageLayerDesc& layer,
-                    bool wholeDefinition,
-                    RectI* renderedRect)
+                    bool wholeFormat,
+                    RectI* format,
+                    RectI* renderedRect,
+                    bool* rendered)
 {
-    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!wholeDefinition && pixelRect.isNull())) {
+    *rendered = false;
+    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!wholeFormat && pixelRect.isNull())) {
         return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
@@ -223,8 +224,9 @@ renderNodeImageImpl(const NodePtr& node,
     }
 
     RectI roi;
+    RectI formatRect;
     ImagePtr image;
-    const bool rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, wholeDefinition, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, wholeFormat, &formatRect, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -232,11 +234,14 @@ renderNodeImageImpl(const NodePtr& node,
         appPTR->getAppTLS()->cleanupTLSForThread();
     }
 
-    if (!rendered) {
+    if (!*rendered) {
         return ImagePtr();
     }
     if (renderedRect) {
         *renderedRect = roi;
+    }
+    if (format) {
+        *format = formatRect;
     }
 
     return image;
@@ -252,17 +257,25 @@ renderNodeImage(const NodePtr& node,
                 const ImageLayerDesc& layer,
                 RectI* renderedRect)
 {
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, false, renderedRect);
+    bool rendered;
+
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, false, nullptr, renderedRect, &rendered);
 }
 
-ImagePtr
-renderNodeImageOverDefinition(const NodePtr& node,
-                              double time,
-                              ViewIdx view,
-                              const ImageLayerDesc& layer,
-                              RectI* renderedRect)
+bool
+renderNodeImageOverFormat(const NodePtr& node,
+                          double time,
+                          ViewIdx view,
+                          const ImageLayerDesc& layer,
+                          RectI* format,
+                          ImagePtr* image,
+                          RectI* renderedRect)
 {
-    return renderNodeImageImpl(node, time, view, 0, RectI(), layer, true, renderedRect);
+    bool rendered;
+
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, true, format, renderedRect, &rendered);
+
+    return rendered;
 }
 
 bool

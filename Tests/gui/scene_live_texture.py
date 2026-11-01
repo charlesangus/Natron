@@ -1,6 +1,9 @@
-"""A Constant feeding a USDMaterial's Diffuse Color input colours the card in the 3D view, live.
+"""A Constant feeding a USDMaterial's Emissive Color input colours the card in the 3D view, live.
 
-Graph: Constant1 (red) into USDMaterial1's Diffuse Color input, USDMaterial1 into USDCard1's
+The scene has no light and the view adds none, so the material's Shader is Emissive: the card shows
+the image unlit.
+
+Graph: Constant1 (red) into USDMaterial1's Emissive Color input, USDMaterial1 into USDCard1's
 Material input, USDCard1 into Viewer1. Once the scene view shows the card, the centre of the view
 must be red. Then the Constant's colour is set to green, and nothing else is touched: the view must
 re-sync and show the card green, with no error, within the timeout.
@@ -39,6 +42,9 @@ try:
     color = constant.getParam("color")
     require(color is not None, "Constant1 has a color parameter")
     color.set(1.0, 0.0, 0.0, 1.0)
+    shader = material.getParam("shader")
+    require(shader is not None, "USDMaterial1 has a shader parameter")
+    shader.set("emissive")
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
@@ -100,7 +106,7 @@ try:
         report("SHOT " + path)
 
     def steps():
-        require(material.connectInput(0, constant), "connect Constant1 to USDMaterial1's Diffuse Color input")
+        require(material.connectInput(4, constant), "connect Constant1 to USDMaterial1's Emissive Color input")
         require(card.connectInput(0, material), "connect USDMaterial1 to USDCard1's Material input")
         require(viewer.connectInput(0, card), "connect the Viewer to USDCard1")
         ok = yield ("until", scene_drawn, STARTUP_TIMEOUT_S)

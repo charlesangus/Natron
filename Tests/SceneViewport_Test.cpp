@@ -354,8 +354,10 @@ TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
 
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
     const QImage shaded = render();
-    // Lit head-on by the light at the camera.
-    EXPECT_TRUE(isReddish(pixel(shaded, 128, 128))) << "shaded box: " << pixel(shaded, 128, 128);
+    // The fixture has no light, and the view adds none: the shaded box is black against the grey.
+    const Rgb unlit = pixel(shaded, 128, 128);
+    EXPECT_TRUE((unlit.r < 40) && (unlit.g < 40) && (unlit.b < 40)) << "shaded box with no light: " << unlit;
+    EXPECT_FALSE(isBackground(unlit)) << "shaded box with no light: " << unlit;
 
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeWireframe);
     const QImage wireframe = render();

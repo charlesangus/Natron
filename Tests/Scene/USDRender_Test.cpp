@@ -276,7 +276,18 @@ TEST(USDRenderStorm, PlanesHoldColourPlanarDepthAndPrimIdentity)
     std::string error;
     const int owner = 0;
 
-    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 1., &owner), &result, &error)) << error;
+    // The fixture has no light, and renders add none: a distant light shining down -Z, as the
+    // camera looks, shows the display colours.
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    const PXR_NS::SdfLayerRefPtr lightLayer = SceneOps::createNodeLayer("light");
+    ASSERT_TRUE(bool(lightLayer));
+    {
+        PXR_NS::UsdStageRefPtr lightStage = PXR_NS::UsdStage::Open(lightLayer);
+        ASSERT_TRUE(bool(lightStage));
+        ASSERT_TRUE(bool(PXR_NS::UsdLuxDistantLight::Define(lightStage, PXR_NS::SdfPath("/Key"))));
+    }
+    request.scene = SceneOps::appendLayer(request.scene, lightLayer, 2);
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
     const std::size_t pixels = (std::size_t)kWidth * kHeight;
     ASSERT_EQ(pixels * 4, result.rgba.size());
     ASSERT_EQ(pixels, result.depth.size());

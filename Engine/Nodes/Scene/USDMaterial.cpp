@@ -29,6 +29,7 @@
 #include <string>
 
 #include "Engine/AppManager.h"
+#include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -43,6 +44,11 @@ namespace {
 // The names of the prims the node authors under the material.
 const char* const kSurfaceName = "PreviewSurface";
 const char* const kReaderName = "TexCoordReader";
+// The choices of the Shader knob, in its order.
+enum ShaderEnum {
+    eShaderLit = 0,
+    eShaderEmissive
+};
 // The layer of an image input a live texture reads.
 const char* const kLiveTextureLayer = "rgba";
 
@@ -191,6 +197,28 @@ USDMaterial::initializeKnobs()
     _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Material"),
                                         tr("The path of the material prim the node authors. Its shaders are authored under it."));
 
+    KnobChoicePtr shader = createKnob<KnobChoice>(tr("Shader"));
+    shader->setName(kUSDMaterialParamShader);
+    shader->setHintToolTip(tr("How the surface shades."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kUSDMaterialShaderLit, tr("Lit").toStdString(),
+                                       tr("Diffuse and specular shading from Diffuse Color, Metallic, Roughness and Normal, lit "
+                                          "only by the scene's lights: with none, only Emissive Color shows. Emissive Color adds "
+                                          "light of its own.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption(kUSDMaterialShaderEmissive, tr("Emissive").toStdString(),
+                                       tr("Unlit: the surface shows Emissive Color (or its texture or input) as it is, whatever "
+                                          "the lights, with no diffuse or specular response. For projections and images on "
+                                          "cards. Diffuse Color, Metallic, Roughness and Normal are ignored.")
+                                           .toStdString()));
+        shader->populateChoices(options);
+    }
+    shader->setDefaultValue((int)eShaderLit);
+    shader->setAnimationEnabled(false);
+    page->addKnob(shader);
+    _shader = shader;
+
     _diffuseColor = makeColorKnob(this, page, tr("Diffuse Color"), kUSDMaterialParamDiffuseColor,
                                   tr("The surface's base colour (inputs:diffuseColor), in the project working space, written "
                                      "unchanged."),
@@ -216,6 +244,14 @@ USDMaterial::initializeKnobs()
                                        tr("An image file whose colour replaces Emissive Color, read at the prims' st texture "
                                           "coordinates. Authored even when it does not resolve."));
 } // USDMaterial::initializeKnobs
+
+bool
+USDMaterial::isEmissive() const
+{
+    KnobChoicePtr shader = _shader.lock();
+
+    return shader && (shader->getValue() == (int)eShaderEmissive);
+}
 
 std::string
 USDMaterial::getTexturePath(const KnobFilePtr& knob)
@@ -275,10 +311,25 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
     PXR_NS::UsdShadeInput roughnessInput = surface.CreateInput(PXR_NS::TfToken("roughness"), PXR_NS::SdfValueTypeNames->Float);
     PXR_NS::UsdShadeInput emissiveInput = surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f);
     authored = authored && diffuseInput && metallicInput && roughnessInput && emissiveInput
-        && authorValue(diffuseInput.GetAttr(), edit, isAnimated(diffuseColor), colorAt(diffuseColor))
-        && authorValue(metallicInput.GetAttr(), edit, isAnimated(metallic), floatAt(metallic))
-        && authorValue(roughnessInput.GetAttr(), edit, isAnimated(roughness), floatAt(roughness))
         && authorValue(emissiveInput.GetAttr(), edit, isAnimated(emissiveColor), colorAt(emissiveColor));
+    const bool emissive = isEmissive();
+    if (emissive) {
+        // No diffuse, and the specular workflow with a black specular colour, which, unlike the
+        // metallic workflow's dielectric, reflects nothing: what is left is the emission alone.
+        const PXR_NS::UsdShadeInput specularWorkflow = surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int);
+        const PXR_NS::UsdShadeInput specularColor = surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f);
+        authored = authored && specularWorkflow && specularColor
+            && diffuseInput.Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f))
+            && metallicInput.Set(0.f)
+            && roughnessInput.Set(1.f)
+            && specularWorkflow.Set(1)
+            && specularColor.Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
+    } else {
+        authored = authored
+            && authorValue(diffuseInput.GetAttr(), edit, isAnimated(diffuseColor), colorAt(diffuseColor))
+            && authorValue(metallicInput.GetAttr(), edit, isAnimated(metallic), floatAt(metallic))
+            && authorValue(roughnessInput.GetAttr(), edit, isAnimated(roughness), floatAt(roughness));
+    }
     if (!authored) {
         *errorMessage = tr("USD could not author the surface of the material at %1.").arg(pathString).toStdString();
 
@@ -316,6 +367,9 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
     };
     PXR_NS::UsdShadeShader reader;
     for (const TexturedInput& t : textured) {
+        if (emissive && (t.input != &emissiveInput)) {
+            continue;
+        }
         AuthorFileFunc authorFile;
         if (t.live) {
             const LiveTextureSource live = SceneNodeAuthoring::recordLiveTexture(edit, *t.live);
@@ -358,9 +412,12 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     // The image inputs' identities and hashes, without rendering them: the layer reads nothing
     // else of them, so an upstream image edit re-authors this layer and no other.
     LiveTextureSourceList liveTextures(kUSDMaterialInputCount);
+    const bool emissive = isEmissive();
     ContentHasher facts;
     for (int i = 0; i < kUSDMaterialInputCount; ++i) {
-        const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, i, kLiveTextureLayer, &liveTextures[i]);
+        // An input the shader ignores is left out, so consumers never render its image.
+        const bool used = !emissive || (i == kUSDMaterialInputEmissiveColor);
+        const bool connected = used && SceneNodeAuthoring::getLiveTextureSource(*this, i, kLiveTextureLayer, &liveTextures[i]);
         facts.appendBool(connected);
         if (connected) {
             SceneNodeAuthoring::appendLiveTextureSource(liveTextures[i], &facts);
@@ -385,7 +442,7 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
         { _emissiveTexture.lock(), kUSDMaterialInputEmissiveColor },
     };
     for (const std::pair<KnobFilePtr, int>& knob : textureKnobs) {
-        if (getLiveTexture(liveTextures, knob.second)) {
+        if (getLiveTexture(liveTextures, knob.second) || (emissive && (knob.second != kUSDMaterialInputEmissiveColor))) {
             continue;
         }
         const std::string texturePath = getTexturePath(knob.first);

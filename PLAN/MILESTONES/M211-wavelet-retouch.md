@@ -151,7 +151,7 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
   - verify: Selected retouch-path points become visibly smooth with symmetric tangent handles and undo in one step.
   - size: M
 
-- [ ] M211.P5.T2 — Expose paintbrush tools alongside Roto tools
+- [x] M211.P5.T2 — Expose paintbrush tools alongside Roto tools
   - files: Wavelet Retouch node registration and viewer toolbar integration, GUI test
   - approach: Advertise the retouch node as supporting the relevant RotoPaint brush tools as well as shape tools, with tool changes targeting its hosted context.
   - verify: The node panel and viewer can create and edit brush strokes and Roto shapes on the same node.
@@ -165,3 +165,4 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 
 **Verification gate:** original parity and GUI checks pass; Z smoothing, brush tools and default source behaviour are accepted in a replacement AppImage.
 - 2026-11-01 — P5.T1/T3 at 513102043: Z smoothing fixed in the shared BezierCP smoothing (aligned, equal handles tracing a circle; also affects Roto/RotoPaint). darktable has no source search: the default offset is a fixed fraction of the image per shape kind (circle/ellipse 2% right and up, path 2% right and down, brush 1%), reused for later shapes; ported. P5.T2: the user's "needs paintbrush" overrides the Scope's "curves only" — porting darktable's brush shape plus Shift/Ctrl+Shift-click source placement (PM).
+- 2026-11-01 — P5.T2 at 173c44d05: brush shape ported (tool N, pressure per point with darktable's five modes, per-shape size/hardness/density, GPU render, save/load). Open for UAT: Brush Size is a canonical-pixel diameter (darktable: image-relative); darktable's brush-smoothing preference not ported (implementer).

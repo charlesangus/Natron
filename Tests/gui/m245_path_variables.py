@@ -10,7 +10,9 @@ Sections:
     disabled until "Create Anyway" is ticked; a taken name keeps OK disabled; Cancel creates nothing;
   - write: a Write's file right-click menu offers "Add Project Path..."; for a file in shot's
     folder the dialog starts at [shot] and "Use [shot]" spells the file as [shot]/...; for a new
-    folder it starts at [Project]/renders, and OK creates renders and spells the file through it.
+    folder it starts at [Project]/renders, and OK creates renders and spells the file through it;
+  - undo: one Edit > Undo removes renders and restores the Write's absolute file, one Edit > Redo
+    brings both back; a variable created from the project settings is undone the same way.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m245-path-variables/out -w /home/bosley/git/Natron natron-dev \\
@@ -212,6 +214,26 @@ try:
             check(False, "the right-click menu call completed: " + str(e))
         return seen["entries"] or []
 
+    def edit_menu_action(prefix):
+        win = main_gui()
+        if win is None or win.menuBar() is None:
+            return None
+        for act in win.menuBar().actions():
+            menu = gt.menu_of(act)
+            if menu is not None and act.text().replace("&", "").lower().startswith("edit"):
+                for a in menu.actions():
+                    if a.text().replace("&", "").lower().startswith(prefix):
+                        return hold(a)
+        return None
+
+    def trigger_edit(prefix):
+        a = edit_menu_action(prefix)
+        if a is None or not a.isEnabled():
+            return False
+        a.trigger()
+        QApplication.processEvents()
+        return True
+
     def steps():
         ok = yield ("until", graph_up, STARTUP_TIMEOUT_S)
         require(ok, "the main window and its node graph are up")
@@ -333,6 +355,36 @@ try:
         ok = yield ("until", lambda: write2.getParam("filename").getValue() == "[renders]/out.####.exr", DIALOG_TIMEOUT_S)
         check(ok, "the second Write's file is spelled through [renders] (%r)" % write2.getParam("filename").getValue())
         gt.shot("m245-write-renders.png")
+
+        gt.section("undo")
+        absolute = os.path.join(root, "renders", "out.####.exr")
+        check(trigger_edit("undo"), "the Edit menu undoes the creation")
+        ok = yield ("until", lambda: project_param("renders") is None, DIALOG_TIMEOUT_S)
+        check(ok, "one undo removes renders")
+        check(write2.getParam("filename").getValue() == absolute,
+              "the same undo restores the second Write's file (%r)" % write2.getParam("filename").getValue())
+        check(trigger_edit("redo"), "the Edit menu redoes the creation")
+        ok = yield ("until", lambda: is_path_variable("renders", "[Project]/renders"), DIALOG_TIMEOUT_S)
+        check(ok, "one redo creates renders again")
+        check(write2.getParam("filename").getValue() == "[renders]/out.####.exr",
+              "the same redo spells the second Write's file through [renders] again (%r)"
+              % write2.getParam("filename").getValue())
+
+        require(show_tab(project_panel(), "Variables"), "the project settings panel still has a Variables tab")
+        yield from open_add_dialog()
+        s = dialog_state()
+        s["name"].setText("textures")
+        s["value"].setText("[Project]/textures")
+        yield ("sleep", SETTLE_MS)
+        require(dialog_state()["okEnabled"], "OK is enabled for textures (status %r)" % dialog_state()["status"])
+        s["ok"].click()
+        ok = yield ("until", lambda: modal_class() != DIALOG, DIALOG_TIMEOUT_S)
+        check(ok, "OK closes the dialog")
+        check(is_path_variable("textures", "[Project]/textures"), "textures is a project variable")
+        check(trigger_edit("undo"), "the Edit menu undoes the creation from the project settings")
+        ok = yield ("until", lambda: project_param("textures") is None, DIALOG_TIMEOUT_S)
+        check(ok, "one undo removes textures")
+        check(is_path_variable("renders", "[Project]/renders"), "undoing textures keeps renders")
 
         faulthandler.cancel_dump_traceback_later()
 

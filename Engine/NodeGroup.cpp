@@ -883,46 +883,6 @@ NodeCollection::fixRelativeFilePaths(const std::string& projectPathName,
     }
 }
 
-void
-NodeCollection::fixPathName(const std::string& oldName,
-                            const std::string& newName)
-{
-    NodesList nodes = getNodes();
-    AppInstancePtr appInst = getApplication();
-    if (!appInst) {
-        return;
-    }
-    ProjectPtr project = appInst->getProject();
-
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( (*it)->isActivated() ) {
-            const KnobsVec& knobs = (*it)->getKnobs();
-            for (U32 j = 0; j < knobs.size(); ++j) {
-                KnobStringBase* isString = dynamic_cast< KnobStringBase* >( knobs[j].get() );
-                KnobString* isStringKnob = dynamic_cast<KnobString*>(isString);
-                if ( !isString || isStringKnob || ( knobs[j] == project->getEnvVarKnob() ) ) {
-                    continue;
-                }
-
-                std::string filepath = isString->getValue();
-
-                if ( ( filepath.size() >= (oldName.size() + 2) ) &&
-                     ( filepath[0] == '[') &&
-                     ( filepath[oldName.size() + 1] == ']') &&
-                     ( filepath.substr( 1, oldName.size() ) == oldName) ) {
-                    filepath.replace(1, oldName.size(), newName);
-                    isString->setValue(filepath);
-                }
-            }
-
-            NodeGroup* isGrp = (*it)->isEffectGroup();
-            if (isGrp) {
-                isGrp->fixPathName(oldName, newName);
-            }
-        }
-    }
-}
-
 bool
 NodeCollection::checkIfNodeLabelExists(const std::string & n,
                                        const Node* caller) const

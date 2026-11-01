@@ -42,7 +42,6 @@
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
-#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -340,7 +339,8 @@ KnobGuiFile::onAddProjectPathTriggered()
     }
     const std::string oldValue = knob->getValue();
     std::string newValue;
-    if (AddPathVariableDialog::runForFilePath(getGui(), knob->getHolder()->getApp()->getProject(), oldValue, _lineEdit->parentWidget(), &newValue) && (newValue != oldValue)) {
+    bool created = false;
+    if (AddPathVariableDialog::runForFilePath(getGui(), knob->getHolder()->getApp()->getProject(), knob, _lineEdit->parentWidget(), &newValue, &created) && !created && (newValue != oldValue)) {
         pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldValue, newValue));
     }
 }
@@ -651,7 +651,8 @@ KnobGuiOutputFile::onAddProjectPathTriggered()
     }
     const std::string oldValue = knob->getValue();
     std::string newValue;
-    if (AddPathVariableDialog::runForFilePath(getGui(), knob->getHolder()->getApp()->getProject(), oldValue, _lineEdit->parentWidget(), &newValue) && (newValue != oldValue)) {
+    bool created = false;
+    if (AddPathVariableDialog::runForFilePath(getGui(), knob->getHolder()->getApp()->getProject(), knob, _lineEdit->parentWidget(), &newValue, &created) && !created && (newValue != oldValue)) {
         pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldValue, newValue));
     }
 }
@@ -821,54 +822,6 @@ KnobGuiPath::editUserEntry(QStringList& row)
     }
 
     return false;
-}
-
-void
-KnobGuiPath::entryRemoved(const QStringList& row)
-{
-    KnobPathPtr knob = _knob.lock();
-
-    ///Fix all variables if needed
-    if ( knob && knob->getHolder() && ( knob->getHolder() == getGui()->getApp()->getProject().get() ) &&
-         appPTR->getCurrentSettings()->isAutoFixRelativeFilePathEnabled() ) {
-        getGui()->getApp()->getProject()->fixRelativeFilePaths(row[0].toStdString(), std::string(), false);
-    }
-}
-
-void
-KnobGuiPath::tableChanged(int row,
-                          int col,
-                          std::string* newEncodedValue)
-{
-    KnobTablePtr knob = std::dynamic_pointer_cast<KnobTable>( getKnob() );
-
-    assert(knob);
-
-    if ( knob->getHolder() && knob->getHolder()->isProject() &&
-         appPTR->getCurrentSettings()->isAutoFixRelativeFilePathEnabled() ) {
-        if (col == 0) {
-            std::list<std::vector<std::string> > oldTable, newTable;
-            knob->decodeFromKnobTableFormat(knob->getValue(), &oldTable);
-            knob->decodeFromKnobTableFormat(*newEncodedValue, &newTable);
-
-
-            ///Compare the 2 maps to find-out if a path has changed or just a name
-            if ( ( oldTable.size() == newTable.size() ) && ( row < (int)oldTable.size() ) ) {
-                std::list<std::vector<std::string> >::iterator itOld = oldTable.begin();
-                std::list<std::vector<std::string> >::iterator itNew = newTable.begin();
-                std::advance(itOld, row);
-                std::advance(itNew, row);
-
-
-                if ( (*itOld)[0] != (*itNew)[0] ) {
-                    ///a name has changed
-                    getGui()->getApp()->getProject()->fixPathName( (*itOld)[0], (*itNew)[0] );
-                } else if ( (*itOld)[1] != (*itNew)[1] ) {
-                    getGui()->getApp()->getProject()->fixRelativeFilePaths( (*itOld)[0], (*itNew)[1], false );
-                }
-            }
-        }
-    }
 }
 
 void

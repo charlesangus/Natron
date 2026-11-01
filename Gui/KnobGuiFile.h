@@ -236,8 +236,6 @@ private:
     virtual bool addNewUserEntry(QStringList& row) OVERRIDE FINAL;
     // row has been set-up with old value
     virtual bool editUserEntry(QStringList& row) OVERRIDE FINAL;
-    virtual void entryRemoved(const QStringList& row) OVERRIDE FINAL;
-    virtual void tableChanged(int row, int col, std::string*  newEncodedValue) OVERRIDE FINAL;
     QWidget* _mainContainer;
     LineEdit* _lineEdit;
     Button* _openFileButton;

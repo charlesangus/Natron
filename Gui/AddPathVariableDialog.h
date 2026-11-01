@@ -74,7 +74,8 @@ public:
     }
 
     /**
-     * @brief Once accepted, whether getVariableName() was created by the dialog.
+     * @brief Once accepted, whether getVariableName() was created by the dialog, as an entry of
+     * the undo history.
      **/
     bool hasCreatedVariable() const
     {
@@ -82,16 +83,20 @@ public:
     }
 
     /**
-     * @brief Runs the dialog for a file path: it starts with the folder of filePath, spelled
-     * through the project path naming the longest part of it, and a name made from the folder's.
-     * @returns true with newFilePath set to filePath's file name under the accepted project path,
-     * or false when the dialog was cancelled.
+     * @brief Runs the dialog for the file path parameter fileKnob: it starts with the folder of
+     * its value, spelled through the project path naming the longest part of it, and a name made
+     * from the folder's. Creating a project path also sets fileKnob to its file name under it,
+     * both in one undoable step.
+     * @returns true with newFilePath set to the file name under the accepted project path and
+     * created set to hasCreatedVariable(), or false when the dialog was cancelled. When created is
+     * false, fileKnob is left to the caller to set.
      **/
     static bool runForFilePath(Gui* gui,
                                const ProjectPtr& project,
-                               const std::string& filePath,
+                               const KnobIPtr& fileKnob,
                                QWidget* parent,
-                               std::string* newFilePath);
+                               std::string* newFilePath,
+                               bool* created);
 
     /**
      * @brief absolutePath spelled through the project path whose expanded folder is its longest
@@ -118,6 +123,8 @@ public Q_SLOTS:
     virtual void accept() OVERRIDE;
 
 private:
+    static std::string filePathUnder(const std::string& name, const std::string& fileName);
+
     Gui* _gui;
     ProjectWPtr _project;
     LineEdit* _nameEdit;
@@ -132,6 +139,8 @@ private:
     QString _duplicateOf;
     QString _resultName;
     bool _created;
+    KnobIWPtr _fileKnob;
+    std::string _fileName;
 };
 
 NATRON_NAMESPACE_EXIT

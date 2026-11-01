@@ -26,6 +26,7 @@
 #include "AddPathVariableDialog.h"
 
 #include <map>
+#include <memory>
 #include <vector>
 
 #include <QCheckBox>
@@ -39,10 +40,13 @@
 #include <QVBoxLayout>
 
 #include "Engine/AppManager.h"
+#include "Engine/Knob.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectPathVariableCommands.h"
 
 #include "Gui/DialogButtonBox.h"
 #include "Gui/LineEdit.h"
+#include "Gui/PathVariableUndo.h"
 #include "Gui/SequenceFileDialog.h"
 
 NATRON_NAMESPACE_ENTER
@@ -65,6 +69,8 @@ AddPathVariableDialog::AddPathVariableDialog(Gui* gui,
     , _allowDuplicate(0)
     , _buttons(0)
     , _created(false)
+    , _fileKnob()
+    , _fileName()
 {
     setObjectName(QString::fromUtf8("addPathVariableDialog"));
     setWindowTitle(tr("Add Path Variable"));
@@ -253,7 +259,18 @@ AddPathVariableDialog::accept()
     const std::string name = _nameEdit->text().trimmed().toStdString();
     const std::string value = _valueEdit->text().trimmed().toStdString();
     std::string error;
-    if (!project->addPathVariable(name, value, &error)) {
+    if (!project->canAddPathVariable(name, &error)) {
+        _statusLabel->setText(QString::fromUtf8(error.c_str()));
+
+        return;
+    }
+    std::shared_ptr<AddPathVariableCommand> command = std::make_shared<AddPathVariableCommand>(project, name, value);
+    KnobStringBasePtr fileKnob = std::dynamic_pointer_cast<KnobStringBase>(_fileKnob.lock());
+    if (fileKnob) {
+        command->addValueEdit(fileKnob, fileKnob->getValue(), filePathUnder(name, _fileName));
+    }
+    error = pushPathVariableCommand(_gui, project, command);
+    if (!error.empty()) {
         _statusLabel->setText(QString::fromUtf8(error.c_str()));
 
         return;
@@ -318,16 +335,31 @@ AddPathVariableDialog::availableName(const Project& project,
     return std::string();
 }
 
+std::string
+AddPathVariableDialog::filePathUnder(const std::string& name,
+                                     const std::string& fileName)
+{
+    std::string ret = '[' + name + ']';
+    if (!fileName.empty()) {
+        ret += '/' + fileName;
+    }
+
+    return ret;
+}
+
 bool
 AddPathVariableDialog::runForFilePath(Gui* gui,
                                       const ProjectPtr& project,
-                                      const std::string& filePath,
+                                      const KnobIPtr& fileKnob,
                                       QWidget* parent,
-                                      std::string* newFilePath)
+                                      std::string* newFilePath,
+                                      bool* created)
 {
-    if (!project) {
+    KnobStringBase* isString = dynamic_cast<KnobStringBase*>(fileKnob.get());
+    if (!project || !isString) {
         return false;
     }
+    const std::string filePath = isString->getValue();
     const std::string expanded = project->expandPathPreview(filePath);
     std::string folder;
     if (!expanded.empty()) {
@@ -337,16 +369,15 @@ AddPathVariableDialog::runForFilePath(Gui* gui,
     const std::string name = folder.empty() ? std::string() : availableName(*project, QFileInfo(QString::fromUtf8(folder.c_str())).fileName().toStdString());
 
     AddPathVariableDialog dialog(gui, project, QString::fromUtf8(name.c_str()), QString::fromUtf8(value.c_str()), parent);
+    // The file part is kept as typed, so a frame pattern or a view token survives unexpanded.
+    const std::size_t slash = filePath.find_last_of('/');
+    dialog._fileKnob = fileKnob;
+    dialog._fileName = (slash == std::string::npos) ? filePath : filePath.substr(slash + 1);
     if (!dialog.exec()) {
         return false;
     }
-    // The file part is kept as typed, so a frame pattern or a view token survives unexpanded.
-    const std::size_t slash = filePath.find_last_of('/');
-    const std::string fileName = (slash == std::string::npos) ? filePath : filePath.substr(slash + 1);
-    *newFilePath = '[' + dialog.getVariableName().toStdString() + ']';
-    if (!fileName.empty()) {
-        *newFilePath += '/' + fileName;
-    }
+    *newFilePath = filePathUnder(dialog.getVariableName().toStdString(), dialog._fileName);
+    *created = dialog.hasCreatedVariable();
 
     return true;
 }

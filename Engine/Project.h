@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -461,6 +462,53 @@ public:
      * project's variables group refuses it.
      **/
     KnobIPtr addPathVariable(const std::string& name, const std::string& value, std::string* error = nullptr);
+
+    /**
+     * @brief Deletes the project path name added by addPathVariable(), and returns false without
+     * deleting anything for a built-in path or a parameter outside the project's variables group.
+     * Records nothing in the undo history.
+     **/
+    bool removePathVariable(const std::string& name);
+
+    /**
+     * @brief Gives the project path oldName the script name newName and the label label, and
+     * returns false without a change unless oldName is a string variable of the project and
+     * canAddPathVariable() accepts newName. File paths keep their spelling, see
+     * renamePathVariableInValue(). Records nothing in the undo history.
+     **/
+    bool renamePathVariable(const std::string& oldName, const std::string& newName, const std::string& label);
+
+    /**
+     * @brief Spells value through newName when it starts with the project path [oldName], the
+     * only place a project path is expanded in a file path. Returns whether value is different.
+     **/
+    static bool renamePathVariableInValue(const std::string& oldName, const std::string& newName, std::string* value);
+
+    /**
+     * @brief The project paths the expansion of value goes through: the one value starts with,
+     * the one that path's value starts with, and so on, plus [Project] when the expansion is a
+     * relative path.
+     **/
+    std::set<std::string> getPathVariablesUsedBy(const std::string& value) const;
+
+    /**
+     * @brief The file-path parameters of the project's nodes (input files, output files and
+     * single paths) whose value uses the project path name, directly or through other project
+     * paths (see getPathVariablesUsedBy()).
+     **/
+    KnobsVec getFilePathKnobsUsingPathVariable(const std::string& name) const;
+
+    /**
+     * @brief The file-path parameters of the project's nodes and the string variables of the
+     * project whose value starts with [name], as the value is typed.
+     **/
+    KnobsVec getKnobsSpellingPathVariable(const std::string& name) const;
+
+    /**
+     * @brief Re-evaluates each parameter getFilePathKnobsUsingPathVariable() returns as an edit of
+     * its value does, so that readers list their files again and the hashes follow the new path.
+     **/
+    void refreshFilePathKnobsUsingPathVariable(const std::string& name);
 
     /**
      * @brief Expands the environment variables in the given string that are found in env

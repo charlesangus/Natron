@@ -2949,6 +2949,13 @@ Project::onKnobValueChanged(KnobI* knob,
             _imp->colorManagement->notifyConfigChanged();
         }
         shouldAutoSave = true;
+    } else if (_imp->rfvGroup && (knob->getParentKnob() == _imp->rfvGroup) && dynamic_cast<KnobString*>(knob)) {
+        // A file path names its project paths as text, so it is no listener of the variable.
+        if ((reason != eValueChangedReasonTimeChanged) && !isLoadingProject() && !isProjectClosing()) {
+            refreshFilePathKnobsUsingPathVariable(knob->getName());
+        }
+        ret = false;
+        shouldAutoSave = true;
     } else {
         ret = false;
     }
@@ -3815,6 +3822,189 @@ Project::addPathVariable(const std::string& name,
     }
 
     return knob;
+}
+
+namespace {
+bool
+startsWithPathVariable(const std::string& value,
+                       const std::string& name)
+{
+    return !name.empty() && (value.size() >= (name.size() + 2)) && (value[0] == '[') && (value.compare(1, name.size(), name) == 0) && (value[name.size() + 1] == ']');
+}
+
+bool
+isFilePathKnob(const KnobIPtr& knob)
+{
+    if (dynamic_cast<KnobFile*>(knob.get()) || dynamic_cast<KnobOutputFile*>(knob.get())) {
+        return true;
+    }
+    KnobPath* isPath = dynamic_cast<KnobPath*>(knob.get());
+
+    return isPath && !isPath->isMultiPath();
+}
+
+std::string
+pathKnobValue(const KnobIPtr& knob)
+{
+    KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get());
+
+    return isString ? isString->getValue() : std::string();
+}
+} // anon namespace
+
+bool
+Project::removePathVariable(const std::string& name)
+{
+    if (isBuiltinPathVariableName(name)) {
+        return false;
+    }
+    KnobIPtr knob = getKnobByName(name);
+    if (!knob || !dynamic_cast<KnobString*>(knob.get()) || (knob->getParentKnob() != _imp->rfvGroup)) {
+        return false;
+    }
+    deleteKnob(knob.get(), true);
+    recreateUserKnobs(true);
+    AppInstancePtr app = getApp();
+    if (app) {
+        app->refreshProjectParamsInPython();
+    }
+
+    return true;
+}
+
+bool
+Project::renamePathVariable(const std::string& oldName,
+                            const std::string& newName,
+                            const std::string& label)
+{
+    if ((oldName == newName) || isBuiltinPathVariableName(oldName) || !canAddPathVariable(newName)) {
+        return false;
+    }
+    KnobIPtr knob = getKnobByName(oldName);
+    if (!knob || !dynamic_cast<KnobString*>(knob.get()) || (knob->getParentKnob() != _imp->rfvGroup)) {
+        return false;
+    }
+    knob->setName(newName);
+    if (knob->getName() != newName) {
+        knob->setName(oldName);
+
+        return false;
+    }
+    knob->setLabel(label);
+    recreateUserKnobs(true);
+    AppInstancePtr app = getApp();
+    if (app) {
+        app->refreshProjectParamsInPython();
+    }
+
+    return true;
+}
+
+bool
+Project::renamePathVariableInValue(const std::string& oldName,
+                                   const std::string& newName,
+                                   std::string* value)
+{
+    if (!value || (oldName == newName) || !startsWithPathVariable(*value, oldName)) {
+        return false;
+    }
+    value->replace(1, oldName.size(), newName);
+
+    return true;
+}
+
+std::set<std::string>
+Project::getPathVariablesUsedBy(const std::string& value) const
+{
+    std::set<std::string> used;
+    std::map<std::string, std::string> env;
+
+    getEnvironmentVariables(env);
+    std::string str = value;
+    for (int i = 0; i < NATRON_PROJECT_ENV_VAR_MAX_RECURSION; ++i) {
+        std::map<std::string, std::string>::const_iterator it = env.begin();
+        while ((it != env.end()) && !startsWithPathVariable(str, it->first)) {
+            ++it;
+        }
+        if (it == env.end()) {
+            break;
+        }
+        used.insert(it->first);
+        expandVariable(it->first, it->second, str);
+    }
+    if (!str.empty() && isRelative(str)) {
+        used.insert(NATRON_PROJECT_ENV_VAR_NAME);
+    }
+
+    return used;
+}
+
+KnobsVec
+Project::getFilePathKnobsUsingPathVariable(const std::string& name) const
+{
+    KnobsVec ret;
+    NodesList nodes;
+
+    getNodes_recursive(nodes, true);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (!effect) {
+            continue;
+        }
+        const KnobsVec& knobs = effect->getKnobs();
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            if (!isFilePathKnob(*k)) {
+                continue;
+            }
+            const std::string value = pathKnobValue(*k);
+            if (!value.empty() && getPathVariablesUsedBy(value).count(name)) {
+                ret.push_back(*k);
+            }
+        }
+    }
+
+    return ret;
+}
+
+KnobsVec
+Project::getKnobsSpellingPathVariable(const std::string& name) const
+{
+    KnobsVec ret;
+    NodesList nodes;
+
+    getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        if (!effect) {
+            continue;
+        }
+        const KnobsVec& knobs = effect->getKnobs();
+        for (KnobsVec::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
+            if (isFilePathKnob(*k) && startsWithPathVariable(pathKnobValue(*k), name)) {
+                ret.push_back(*k);
+            }
+        }
+    }
+    if (_imp->rfvGroup) {
+        const KnobsVec variables = _imp->rfvGroup->getChildren();
+        for (KnobsVec::const_iterator k = variables.begin(); k != variables.end(); ++k) {
+            if (dynamic_cast<KnobString*>(k->get()) && startsWithPathVariable(pathKnobValue(*k), name)) {
+                ret.push_back(*k);
+            }
+        }
+    }
+
+    return ret;
+}
+
+void
+Project::refreshFilePathKnobsUsingPathVariable(const std::string& name)
+{
+    const KnobsVec knobs = getFilePathKnobsUsingPathVariable(name);
+
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        (*it)->evaluateValueChange(0, (*it)->getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
+    }
 }
 
 void

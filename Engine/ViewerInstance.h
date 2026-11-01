@@ -291,8 +291,6 @@ public:
 
     void updateViewer(UpdateViewerParamsPtr & frame);
 
-    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
-
     /**
      *@brief Bypasses the cache so the next frame will be rendered fully
      **/

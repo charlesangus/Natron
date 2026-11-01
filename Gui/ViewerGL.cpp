@@ -4381,6 +4381,18 @@ ViewerGL::isWipeHandleVisible() const
 }
 
 void
+ViewerGL::fitImageToFormatUnlessNavigated()
+{
+    {
+        QMutexLocker l(&_imp->zoomCtxMutex);
+        if (_imp->zoomOrPannedSinceLastFit || (_imp->zoomCtx.screenWidth() == 0) || (_imp->zoomCtx.screenHeight() == 0)) {
+            return;
+        }
+    }
+    fitImageToFormat();
+}
+
+void
 ViewerGL::setZoomOrPannedSinceLastFit(bool enabled)
 {
     QMutexLocker l(&_imp->zoomCtxMutex);

@@ -426,6 +426,10 @@ public:
 
     void setZoomOrPannedSinceLastFit(bool enabled);
 
+    // Fits unless the user zoomed or panned since the last fit, or the viewer has no size yet, in
+    // which case its first resize fits.
+    void fitImageToFormatUnlessNavigated();
+
     bool getZoomOrPannedSinceLastFit() const;
 
     virtual ViewerCompositingOperatorEnum getCompositingOperator() const OVERRIDE FINAL;

@@ -504,6 +504,8 @@ private Q_SLOTS:
 
     void onViewerKnobValueChanged(ViewSpec view, int dimension, int reason);
 
+    void onProjectLoaded();
+
 private:
     // Shows the viewer node's knobs in the widgets and in the GL viewer, with no widget signal.
     void refreshFromViewerKnob(const std::string& name);

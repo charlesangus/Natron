@@ -254,6 +254,20 @@ TEST_F(ViewerKnobsTest, RenderRequestedOnlyByProcessingKnobs)
     EXPECT_EQ(start + 7, viewer->getKnobRenderRequestCount());
 }
 
+// The viewer has a settings panel like any node, but outputs no image, so of the knobs every node
+// gets it only takes the label.
+TEST_F(ViewerKnobsTest, HasASettingsPanelWithALabelAndNoImageKnobs)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    EXPECT_TRUE(node->getEffectInstance()->getMakeSettingsPanel());
+    EXPECT_TRUE(bool(knobOf<KnobString>(node, kUserLabelKnobName)));
+    EXPECT_FALSE(bool(node->getKnobByName(kDisableNodeKnobName)));
+    EXPECT_FALSE(bool(node->getKnobByName(kEnableLifeTimeNodeKnobName)));
+    EXPECT_TRUE(bool(knobOf<KnobBool>(node, kViewerParamEnableFps)));
+    EXPECT_TRUE(bool(knobOf<KnobDouble>(node, kViewerParamFps)));
+}
+
 TEST_F(ViewerKnobsTest, ConnectingAnInputSetsTheInputKnobs)
 {
     NodePtr node = createViewer();

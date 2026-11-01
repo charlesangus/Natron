@@ -1140,6 +1140,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->timeLineGui, SIGNAL(boundariesChanged(SequenceTime,SequenceTime)),
                       this, SLOT(onTimelineBoundariesChanged(SequenceTime,SequenceTime)) );
     QObject::connect( gui->getApp()->getProject().get(), SIGNAL(frameRangeChanged(int,int)), _imp->timeLineGui, SLOT(onProjectFrameRangeChanged(int,int)) );
+    // Every resize during a load skips the fit, so a reopened project would keep the zoom the
+    // viewer had before its pane reached its final size.
+    QObject::connect(gui->getApp()->getProject().get(), SIGNAL(loaded()), this, SLOT(onProjectLoaded()));
     QObject::connect( _imp->timeFormat, SIGNAL(currentIndexChanged(int)), _imp->timeLineGui, SLOT(onTimeFormatChanged(int)) );
     _imp->timeLineGui->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 
@@ -1556,6 +1559,12 @@ ViewerTab::refreshProcessingButtonsFromKnobs()
     _imp->activateRenderScale->setChecked(downscale);
     _imp->activateRenderScale->setDown(downscale);
     _imp->renderScaleCombo->setCurrentIndex_no_emit(level);
+}
+
+void
+ViewerTab::onProjectLoaded()
+{
+    _imp->viewer->fitImageToFormatUnlessNavigated();
 }
 
 void

@@ -1,10 +1,12 @@
-"""GUI check that each Viewer node keeps its own view state in knobs (M164.P3.T1).
+"""GUI check that each Viewer node keeps its own view state in knobs, has a settings panel like any
+other node, and opens framed.
 
 Graph: Constant "cA" (0.4, 0.1, 0.2) and Constant "cB" (0.1, 0.3, 0.4) feed Viewer1 (A = input 0,
 B = input 1) and Viewer2 (the same inputs, A = input 0, B = input 1, but with Python later switching
 its A). Viewer2 sits in a pane of its own, so both viewers are on screen at once.
 
 What is checked, in order:
+  fresh        the new project's Viewer1 opens framed: the Fit button leaves its zoom as it is;
   baseline     every viewer knob is reachable with getParam; the two viewers start with equal knobs;
   toolbar      Viewer2's Display menu, then Viewer1's gamma box (typed), Display Channels, wipe
                operator, View menu and gain slider (dragged) change only that viewer's knobs; the
@@ -22,12 +24,17 @@ What is checked, in order:
                screen and a screenshot of both viewers is taken;
   layer        a layer and an alpha channel the input lacks are kept on Viewer2 and shown in its
                layer menu;
-  save/reload  the project is saved, reset and loaded again: every knob of each viewer and each
-               toolbar widget is back, each viewer shows the pixels it showed, and Viewer1's
-               state did not leak into Viewer2.
+  panel        Viewer1's settings panel opens from the node graph and shows Enable Fps and Desired
+               Fps; a Desired Fps typed in the panel reaches the knob and the toolbar's fps box;
+  save/reload  the project is saved, reset and loaded again: each viewer opens framed before any
+               pane is resized, every knob of each viewer (fps included) and each toolbar widget is
+               back, each viewer shows the pixels it showed, and Viewer1's state did not leak into
+               Viewer2; a zoom set after the reload survives a pane resize;
+  creation     a Viewer created with its panel asked for opens no panel, while a Constant does.
 
-Not covered: the zoom (it is not a knob; the ViewerGL zoom factor is not readable from Python) and the
-wipe handle's own drawing (it is not exposed to Python; the screen pixels and a screenshot stand in).
+The zoom is read from the toolbar's zoom menu, which shows the factor the viewer last reported, and
+"framed" means the Fit button leaves that factor unchanged. The wipe handle's own drawing is not
+covered (it is not exposed to Python; the screen pixels and a screenshot stand in).
 
 Run through Tests/gui/run-gui-test.sh at 1920x1080. Screenshots (m164-*.png) and results.txt go to
 $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -69,7 +76,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QMainWindow, QPlainTextEdit, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -248,8 +255,82 @@ try:
     def spin_value(box):
         try:
             return float(box.text())
-        except ValueError:
+        except (ValueError, AttributeError, RuntimeError):
             return None
+
+    # ---- zoom and panels -------------------------------------------------------------------
+
+    def zoom_text(name):
+        combo = combo_with_item(name, "6400%")
+        return combo_current(combo).strip() if combo is not None else None
+
+    def fit_changes_zoom(name):
+        """Returns the zoom shown before and after pressing the Fit button of name's viewer."""
+        before = zoom_text(name)
+        tab = tab_for(name)
+        if tab is not None:
+            QMetaObject.invokeMethod(tab, "centerViewer")
+            QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        return before, zoom_text(name)
+
+    def check_framed(name, when):
+        ok = yield ("until", lambda: viewer_gl(name) is not None and viewer_gl(name).isVisible(), POLL_TIMEOUT_S)
+        require(ok, "%s is on screen %s" % (name, when))
+        yield ("sleep", SETTLE_MS)
+        before, after = yield from fit_changes_zoom(name)
+        check(bool(before) and before == after, "%s opens framed %s (zoom %r, Fit gives %r)" % (name, when, before, after))
+
+    def shown_viewers():
+        """The viewers whose tab is the current one of its pane, found without switching tabs."""
+        names = []
+        for pane in pane_names():
+            tw = app.getTabWidget(pane)
+            if tw is None or tw.count() == 0:
+                continue
+            label = tw.getTabLabel(tw.getCurrentIndex())
+            for name in (V1, V2):
+                if name in label and gt.class_name(tw.currentWidget()) == "ViewerTab":
+                    names.append(name)
+        return names
+
+    def node_graph_view():
+        views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
+        return views[0] if views else None
+
+    def panel_of(node):
+        label = node.getLabel()
+        for panel in gt.widgets_of("NodeSettingsPanel"):
+            try:
+                if not panel.isVisible():
+                    continue
+                for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                    if w.text() == label:
+                        return panel
+            except RuntimeError:
+                continue
+        return None
+
+    def labels_in(panel):
+        out = []
+        for w in panel.findChildren(QLabel):
+            try:
+                out.append(w.text())
+            except RuntimeError:
+                continue
+        return out
+
+    def spin_in(panel, value):
+        for w in panel.findChildren(QWidget):
+            try:
+                if gt.class_name(w) == "SpinBox" and abs((spin_value(w) or -1.0) - value) < 1e-3:
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def fps_box(name):
+        return widget_of(name, ("SpinBox",), "Viewer playback framerate")
 
     # ---- knobs -----------------------------------------------------------------------------
 
@@ -349,6 +430,11 @@ try:
         require(ok, "the main window is active")
         gt.close_all_panels()
         app_var = "app%d" % (app.getAppID() + 1)
+
+        gt.section("fresh")
+        ok = yield ("until", lambda: app.getNode(V1) is not None and tab_for(V1) is not None, POLL_TIMEOUT_S)
+        require(ok, "the new project has %s with a tab" % V1)
+        yield from check_framed(V1, "in a new project")
 
         gt.section("setup")
         app.getProjectParam("frameRange").set(1, 30)
@@ -618,6 +704,32 @@ try:
         check(listed, "Viewer2's layer menu shows the layer as an unlisted entry")
         check(knob_value(viewer1, "layer") == snap1["layer"], "Viewer1's layer did not move")
 
+        # ---- the settings panel ---------------------------------------------------------------
+        gt.section("panel")
+        view = node_graph_view()
+        require(view is not None, "the node graph is on screen")
+        app.selectNode(viewer1, True)
+        QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(viewer1) is not None, POLL_TIMEOUT_S)
+        require(ok, "Viewer1's settings panel opens from the node graph")
+        panel = panel_of(viewer1)
+        texts = " ".join(labels_in(panel))
+        check("Enable Fps" in texts and "Desired Fps" in texts,
+              "the panel shows Enable Fps and Desired Fps (labels: %r)" % (texts[:300],))
+        gt.shot("m164-viewer-panel.png")
+        viewer1.getParam("enableFps").set(True)
+        viewer1.getParam("desiredFps").set(13.5)
+        ok = yield ("until", lambda: spin_in(panel, 13.5) is not None, POLL_TIMEOUT_S)
+        require(ok, "the panel's Desired Fps box follows the knob")
+        type_into(spin_in(panel, 13.5), "12")
+        ok = yield from knobs_until(lambda: abs((knob_value(viewer1, "desiredFps") or 0.0) - 12.0) < 1e-6)
+        check(ok, "a Desired Fps typed in the panel sets the knob (%r)" % (knob_value(viewer1, "desiredFps"),))
+        ok = yield ("until", lambda: abs((spin_value(fps_box(V1)) or 0.0) - 12.0) < 0.01, POLL_TIMEOUT_S)
+        check(ok, "Viewer1's fps box shows the panel's 12 (%r)" % (spin_value(fps_box(V1)),))
+        check(abs((knob_value(viewer2, "desiredFps") or 0.0) - 12.0) > 1e-6, "Viewer2's Desired Fps did not move")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
         # ---- save and reload -----------------------------------------------------------------
         gt.section("save-reload")
         saved1 = snap(viewer1)
@@ -648,9 +760,18 @@ try:
             report("NOTE Viewer2 %s saved %r loaded %r" % (k, saved2[k], got2[k]))
         check(got1["gamma"] == saved1["gamma"] and got2["gamma"] == saved2["gamma"] and got1["gamma"] != got2["gamma"],
               "each viewer reloads its own gamma")
+        check(got1["enableFps"] is True and abs((got1["desiredFps"] or 0.0) - 12.0) < 1e-6,
+              "Viewer1's fps is restored (%r, %r)" % (got1["enableFps"], got1["desiredFps"]))
+
+        # Before any tab is switched or pane split: showing or resizing a viewer fits it anyway.
+        ok = yield ("until", lambda: bool(shown_viewers()), POLL_TIMEOUT_S)
+        require(ok, "a viewer tab is shown after reopening")
+        for name in shown_viewers():
+            yield from check_framed(name, "after reopening")
 
         ok = yield ("until", lambda: tab_for(V1) is not None and tab_for(V2) is not None, POLL_TIMEOUT_S)
         require(ok, "both viewers have a tab after reopening")
+        moved = {"zoom": None}
         home = None
         for pane in pane_names():
             tw = app.getTabWidget(pane)
@@ -659,6 +780,12 @@ try:
         require(home is not None, "Viewer1's tab is in a pane after reopening")
         if home is not None and any(V2 in app.getTabWidget(home).getTabLabel(i)
                                     for i in range(app.getTabWidget(home).count())):
+            zoom_combo = combo_with_item(V1, "6400%")
+            items = combo_items(zoom_combo) if zoom_combo is not None else []
+            if check("200%" in items, "Viewer1's zoom menu offers 200%"):
+                set_combo_index(zoom_combo, items.index("200%"))
+                yield ("sleep", SETTLE_MS)
+                moved["zoom"] = zoom_text(V1)
             split = app.getTabWidget(home).splitHorizontally()
             require(split is not None, "split the pane " + home)
             require(app.moveTab(V2, split), "move %s into a pane of its own again" % V2)
@@ -667,6 +794,15 @@ try:
         ok = yield ("until", lambda: viewer_gl(V1) is not None and viewer_gl(V1).isVisible()
                     and viewer_gl(V2) is not None and viewer_gl(V2).isVisible(), POLL_TIMEOUT_S)
         require(ok, "both viewers are on screen after reopening")
+        if moved["zoom"] is not None:
+            yield ("sleep", SETTLE_MS)
+            check(moved["zoom"] == "200%" and zoom_text(V1) == "200%",
+                  "a zoom set after reopening survives a pane resize (set %r, now %r)" % (moved["zoom"], zoom_text(V1)))
+            QMetaObject.invokeMethod(tab_for(V1), "centerViewer")
+            QApplication.processEvents()
+            yield ("sleep", SETTLE_MS)
+        check(abs((spin_value(fps_box(V1)) or 0.0) - 12.0) < 0.01,
+              "Viewer1's fps box shows the restored 12 (%r)" % (spin_value(fps_box(V1)),))
 
         gamma_box = widget_of(V1, ("SpinBox",), "Viewer gamma correction level")
         gamma_box2 = widget_of(V2, ("SpinBox",), "Viewer gamma correction level")
@@ -702,6 +838,32 @@ try:
         yield ("sleep", SETTLE_MS)
         yield from settle_px(V2)
         gt.shot("m164-two-viewers-reloaded.png")
+        app.selectNode(viewer1, True)
+        QMetaObject.invokeMethod(node_graph_view(), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(viewer1) is not None, POLL_TIMEOUT_S)
+        check(ok, "Viewer1's settings panel opens after reopening")
+        if ok:
+            ok = yield ("until", lambda: panel_of(viewer1) is not None and spin_in(panel_of(viewer1), 12.0) is not None,
+                        POLL_TIMEOUT_S)
+            check(ok, "the reopened panel shows Desired Fps 12")
+
+        # ---- a viewer's panel stays closed when it is created --------------------------------
+        gt.section("creation")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        opened = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
+        control = app.createNode(PLUGIN_CONSTANT, -1, None, opened)
+        require(control is not None, "create a Constant with its panel asked for")
+        control.setPosition(400, 0)
+        ok = yield ("until", lambda: panel_of(control) is not None, POLL_TIMEOUT_S)
+        check(ok, "a Constant created with its panel asked for opens it")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        viewer3 = app.createNode(VIEWER_PLUGIN, -1, None, opened)
+        require(viewer3 is not None, "create a third Viewer with its panel asked for")
+        viewer3.setPosition(400, 200)
+        yield ("sleep", SETTLE_MS * 2)
+        check(not gt.any_panel_open(), "a Viewer created with its panel asked for opens no panel")
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

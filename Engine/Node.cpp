@@ -3887,6 +3887,11 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
         return;
     }
 
+    // Disable, lifetime, caching, preview and the info page act on an image a node outputs; a
+    // viewer outputs none, so its panel holds its own knobs and the label.
+    if (dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+        return;
+    }
 
     ///find in all knobs a page param to set this param into
     const KnobsVec & knobs = _imp->effect->getKnobs();

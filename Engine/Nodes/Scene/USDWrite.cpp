@@ -703,13 +703,9 @@ meshMightVary(const PXR_NS::UsdGeomMesh& mesh)
     return false;
 }
 
-// Faces whose projective depth varies more than this across them show the per-vertex UVs warping.
-constexpr double kBakedProjectionWarpTolerance = 0.01;
-
 struct ProjectionBake {
     // Materials left with their Storm shader, and the gprim bound to each that is not a mesh.
     std::vector<std::pair<std::string, std::string>> unbaked;
-    std::set<std::string> warped;
     std::set<std::string> behind;
     // Materials whose cropped projection shows the plate's data beyond its format once baked.
     std::set<std::string> overscan;
@@ -858,21 +854,15 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 std::size_t offset = 0;
                 for (const int count : counts) {
                     double nearest = HUGE_VAL;
-                    double farthest = -HUGE_VAL;
                     for (int v = 0; (v < count) && (offset + v < indices.size()); ++v) {
                         const int index = indices[offset + v];
                         if ((index >= 0) && ((std::size_t)index < depths.size())) {
                             nearest = std::min(nearest, depths[index]);
-                            farthest = std::max(farthest, depths[index]);
                         }
                     }
                     offset += (std::size_t)std::max(count, 0);
-                    if (nearest <= 0.) {
-                        if (nearest != HUGE_VAL) {
-                            result->behind.insert(prim.GetPath().GetString());
-                        }
-                    } else if (farthest > nearest * (1. + kBakedProjectionWarpTolerance)) {
-                        result->warped.insert(prim.GetPath().GetString());
+                    if ((nearest <= 0.) && (nearest != HUGE_VAL)) {
+                        result->behind.insert(prim.GetPath().GetString());
                     }
                 }
                 if (!primvar.Set(uvs, authored) || !primvar.SetIndices(indices, authored)) {
@@ -884,13 +874,26 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         }
 
         // The plate's texture, already reading st, feeds an unlit preview surface in place of the
-        // projection shader.
+        // projection shader: no diffuse, and the specular workflow with a black specular colour,
+        // which unlike the metallic workflow's dielectric reflects nothing, so only the emission
+        // shows. The plate is premultiplied and the transparent opacity mode attenuates only the
+        // diffuse, so emission over opacity is the live projection's blend.
         const PXR_NS::UsdShadeMaterial material(out->OverridePrim(materialPath));
         PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(out, materialPath.AppendChild(PXR_NS::TfToken("BakedSurface")));
         bool ok = material && surface && surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
         const PXR_NS::UsdShadeInput diffuse = ok ? surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f) : PXR_NS::UsdShadeInput();
         const PXR_NS::UsdShadeInput emissive = ok ? surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f) : PXR_NS::UsdShadeInput();
-        ok = diffuse && diffuse.Set(PXR_NS::GfVec3f(0.f)) && emissive;
+        const PXR_NS::UsdShadeInput metallic = ok ? surface.CreateInput(PXR_NS::TfToken("metallic"), PXR_NS::SdfValueTypeNames->Float) : PXR_NS::UsdShadeInput();
+        const PXR_NS::UsdShadeInput roughness = ok ? surface.CreateInput(PXR_NS::TfToken("roughness"), PXR_NS::SdfValueTypeNames->Float) : PXR_NS::UsdShadeInput();
+        const PXR_NS::UsdShadeInput specularWorkflow = ok ? surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int) : PXR_NS::UsdShadeInput();
+        const PXR_NS::UsdShadeInput specularColor = ok ? surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f) : PXR_NS::UsdShadeInput();
+        const PXR_NS::UsdShadeInput opacityMode = ok ? surface.CreateInput(PXR_NS::TfToken("opacityMode"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeInput();
+        ok = diffuse && diffuse.Set(PXR_NS::GfVec3f(0.f)) && emissive
+            && metallic && metallic.Set(0.f)
+            && roughness && roughness.Set(1.f)
+            && specularWorkflow && specularWorkflow.Set(1)
+            && specularColor && specularColor.Set(PXR_NS::GfVec3f(0.f))
+            && opacityMode && opacityMode.Set(PXR_NS::TfToken("transparent"));
         PXR_NS::UsdShadeConnectableAPI plateSource;
         PXR_NS::TfToken plateOutput;
         PXR_NS::UsdShadeAttributeType plateType;
@@ -898,16 +901,9 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         if (ok && plate && plate.GetConnectedSource(&plateSource, &plateOutput, &plateType)) {
             PXR_NS::UsdShadeShader texture(out->OverridePrim(plateSource.GetPath()));
             const PXR_NS::UsdShadeOutput rgb = texture ? texture.CreateOutput(PXR_NS::TfToken("rgb"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeOutput();
-            ok = rgb && emissive.ConnectToSource(rgb);
-            int outside = 0;
-            const PXR_NS::UsdShadeInput outsideInput = shader.GetInput(PXR_NS::TfToken("outside"));
-            if (ok && outsideInput && outsideInput.Get(&outside) && (outside == (int)USDProject3D::eOutsideTransparent)) {
-                // Outside the frame the black-wrapped texture's alpha is 0: a cutout there.
-                const PXR_NS::UsdShadeOutput alpha = texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float);
-                const PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
-                const PXR_NS::UsdShadeInput threshold = surface.CreateInput(PXR_NS::TfToken("opacityThreshold"), PXR_NS::SdfValueTypeNames->Float);
-                ok = alpha && opacity && threshold && opacity.ConnectToSource(alpha) && threshold.Set(0.5f);
-            }
+            const PXR_NS::UsdShadeOutput alpha = texture ? texture.CreateOutput(PXR_NS::TfToken("a"), PXR_NS::SdfValueTypeNames->Float) : PXR_NS::UsdShadeOutput();
+            const PXR_NS::UsdShadeInput opacity = surface.CreateInput(PXR_NS::TfToken("opacity"), PXR_NS::SdfValueTypeNames->Float);
+            ok = rgb && alpha && opacity && emissive.ConnectToSource(rgb) && opacity.ConnectToSource(alpha);
         } else if (ok) {
             ok = emissive.Set(PXR_NS::GfVec3f(0.f));
         }
@@ -1475,11 +1471,6 @@ USDWrite::writeFrameRange(int firstFrame,
 
         return names.join(QString::fromUtf8(", "));
     };
-    if (!projectionBake.warped.empty()) {
-        warnings.push_back(tr("The projections baked onto %1 warp between their vertices, being UVs: subdivide those meshes "
-                              "for a closer match to the live projection.")
-                               .arg(joinPaths(projectionBake.warped)));
-    }
     if (!projectionBake.behind.empty()) {
         warnings.push_back(tr("Faces of %1 reach behind the projecting camera, where their baked UVs are wrong.")
                                .arg(joinPaths(projectionBake.behind)));

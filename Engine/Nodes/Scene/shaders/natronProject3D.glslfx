@@ -3,15 +3,19 @@
 //
 // Natron's camera projection surface for Storm: the plate, sampled where the
 // fragment's world position, or in Geometry space its position on the object,
-// projects through a camera, shown unlit.
+// projects through a camera, shown unlit and alpha-blended over what is behind
+// it. The plate is premultiplied, as Natron's images are.
 //
 
 -- configuration
 {
+    "metadata": {
+        "materialTag": "translucent"
+    },
     "parameters": {
         "plate": {
             "default": [0.0, 0.0, 0.0, 1.0],
-            "documentation": "The projected image. Connect a texture's rgba output."
+            "documentation": "The projected image, premultiplied. Connect a texture's rgba output."
         },
         "worldToProjector": {
             "default": [1.0, 0.0, 0.0, 0.0,

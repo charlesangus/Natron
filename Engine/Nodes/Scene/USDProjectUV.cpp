@@ -250,6 +250,8 @@ struct USDProjectUV::Result {
     std::vector<std::string> nonMeshGprims;
     std::vector<std::string> malformedMeshes;
     std::size_t pointsBehind = 0;
+    // Camera Path, when the camera scene has no camera there: no mesh gets UVs.
+    std::string missingCamera;
     U64 digest = 0;
 };
 
@@ -452,14 +454,13 @@ USDProjectUV::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    KnobChoicePtr camera = createKnob<KnobChoice>(tr("Camera"));
-    camera->setName(kUSDProjectUVParamCamera);
-    camera->setHintToolTip(tr("The camera to project through: one of the cameras of the Camera input's scene, or of the "
-                              "Scene input's when the Camera input is not connected, by path. Until one is chosen the "
-                              "first camera is used. A chosen camera the scene no longer has is an error naming its path."));
-    camera->setAnimationEnabled(false);
-    page->addKnob(camera);
-    _camera = camera;
+    _camera.create(this, page, kUSDProjectUVParamCamera, kUSDProjectUVParamCameraPath,
+                   tr("The cameras of the Camera input's scene, or of the Scene input's when the Camera input is not "
+                      "connected: picking one sets Camera Path to it."),
+                   tr("The path of the camera to project through, on the Camera input's scene, or the Scene input's "
+                      "when the Camera input is not connected. Empty, the first camera is used. A path the scene does "
+                      "not have yet is kept, with a warning, and the scene passes through unchanged until a camera at "
+                      "that path reaches the node."));
 
     KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
     primPattern->setName(kUSDProjectUVParamPrimPattern);
@@ -695,6 +696,14 @@ USDProjectUV::knobChanged(KnobI* k,
     if (reason == eValueChangedReasonTimeChanged) {
         return false;
     }
+    bool menuStale = false;
+    if (_camera.knobChanged(k, reason, &menuStale)) {
+        if (menuStale) {
+            scheduleCameraMenuRefresh();
+        }
+
+        return true;
+    }
     KnobChoicePtr projection = _projection.lock();
     KnobBoolPtr useFrameHold = _useFrameHold.lock();
     if ((projection && (k == projection.get())) || (useFrameHold && (k == useFrameHold.get()))) {
@@ -721,12 +730,7 @@ USDProjectUV::scheduleCameraMenuRefresh()
 void
 USDProjectUV::refreshCameraMenu()
 {
-    KnobChoicePtr camera = _camera.lock();
-
-    if (!camera) {
-        return;
-    }
-    std::vector<ChoiceOption> options;
+    std::vector<std::string> cameras;
     EffectInstancePtr input = getInput(1);
     if (!input) {
         input = getInput(0);
@@ -737,19 +741,11 @@ USDProjectUV::refreshCameraMenu()
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
         if (lease.isValid()) {
             for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
-                options.push_back(ChoiceOption(path.GetString(), path.GetString(), ""));
+                cameras.push_back(path.GetString());
             }
         }
     }
-    // Repopulating an unchanged menu would move the hash and come back here.
-    const std::vector<ChoiceOption> current = camera->getEntries_mt_safe();
-    bool same = current.size() == options.size();
-    for (std::size_t i = 0; same && (i < options.size()); ++i) {
-        same = current[i].id == options[i].id;
-    }
-    if (!same) {
-        camera->populateChoices(options);
-    }
+    _camera.refreshMenu(cameras);
 }
 
 double
@@ -782,7 +778,6 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     const ScenePayload cameraScene = cameraInput ? args.getInputScene(1) : upstream;
 
     KnobStringPtr patternKnob = _primPattern.lock();
-    KnobChoicePtr cameraKnob = _camera.lock();
     KnobChoicePtr projectionKnob = _projection.lock();
     KnobChoicePtr planeKnob = _plane.lock();
     KnobChoicePtr projectOnKnob = _projectOn.lock();
@@ -795,7 +790,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     KnobChoicePtr fitKnob = _fitMode.lock();
     KnobBoolPtr useFrameHoldKnob = _useFrameHold.lock();
     KnobDoublePtr frameHoldKnob = _frameHold.lock();
-    if (!patternKnob || !cameraKnob || !projectionKnob || !planeKnob || !projectOnKnob || !frustumCullingKnob || !invertUKnob || !invertVKnob
+    if (!patternKnob || !projectionKnob || !planeKnob || !projectOnKnob || !frustumCullingKnob || !invertUKnob || !invertVKnob
         || !uScaleKnob || !vScaleKnob || !primvarKnob || !fitKnob || !useFrameHoldKnob || !frameHoldKnob) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
@@ -804,7 +799,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
 
     Settings settings;
     settings.pattern = patternKnob->getValue();
-    settings.cameraPath = cameraKnob->getActiveEntry().id;
+    settings.cameraPath = _camera.getPath();
     settings.projection = (ProjectionEnum)std::clamp(projectionKnob->getValue(), (int)eProjectionOff, (int)eProjectionCylindrical);
     settings.plane = (PlaneEnum)std::clamp(planeKnob->getValue(), (int)ePlaneXY, (int)ePlaneZX);
     settings.projectOn = (ProjectOnEnum)std::clamp(projectOnKnob->getValue(), (int)eProjectOnBoth, (int)eProjectOnBack);
@@ -826,6 +821,12 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
         clearPersistentMessage(false);
 
         return eStatusOK;
+    }
+    if (!settings.cameraPath.empty() && !(PXR_NS::SdfPath::IsValidPathString(settings.cameraPath) && PXR_NS::SdfPath(settings.cameraPath).IsAbsolutePath() && PXR_NS::SdfPath(settings.cameraPath).IsPrimPath())) {
+        *errorMessage = tr("Camera Path \"%1\" is not an absolute prim path such as /World/Camera.").arg(QString::fromStdString(settings.cameraPath)).toStdString();
+        setPersistentMessage(eMessageTypeError, *errorMessage);
+
+        return eStatusFailed;
     }
     if (!PXR_NS::SdfPath::IsValidNamespacedIdentifier(settings.primvarName)) {
         *errorMessage = tr("\"%1\" is not a valid primvar name.").arg(QString::fromStdString(settings.primvarName)).toStdString();
@@ -902,16 +903,12 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
 
                     return eStatusFailed;
                 }
+            } else if (!stage || !PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(PXR_NS::SdfPath(cameraPath)))) {
+                computed->missingCamera = cameraPath;
             } else {
-                if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !stage) {
-                    *errorMessage = tr("No camera at %1 on the camera scene.").arg(QString::fromStdString(cameraPath)).toStdString();
-                    setPersistentMessage(eMessageTypeError, *errorMessage);
-
-                    return eStatusFailed;
-                }
                 const PXR_NS::SdfPath path(cameraPath);
                 const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(path));
-                cameraVaries = !settings.useFrameHold && camera && cameraMightVary(camera);
+                cameraVaries = !settings.useFrameHold && cameraMightVary(camera);
                 std::vector<double> cameraFrames;
                 if (settings.useFrameHold) {
                     cameraFrames.push_back(settings.frameHold);
@@ -952,12 +949,12 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
             return eStatusFailed;
         }
         std::vector<PXR_NS::SdfPath> found;
-        if (!SceneNodeAuthoring::matchPrims(stage, settings.pattern, &found, errorMessage)) {
+        if (computed->missingCamera.empty() && !SceneNodeAuthoring::matchPrims(stage, settings.pattern, &found, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
         }
-        computed->matchedAny = !found.empty();
+        computed->matchedAny = !found.empty() || !computed->missingCamera.empty();
         const PXR_NS::TfToken primvarName(settings.primvarName);
         const bool filterFaces = (settings.projectOn != eProjectOnBoth) || (settings.frustumCulling && (settings.projection == eProjectionPerspective));
 
@@ -1130,6 +1127,10 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     }
 
     QStringList warnings;
+    if (!result->missingCamera.empty()) {
+        warnings.push_back(tr("No camera at %1 on the camera scene yet; the scene is passed through unchanged.")
+                               .arg(QString::fromStdString(result->missingCamera)));
+    }
     if (!result->matchedAny) {
         warnings.push_back(tr("The prim pattern \"%1\" matches no prim; the scene is passed through unchanged.")
                                .arg(QString::fromStdString(settings.pattern)));

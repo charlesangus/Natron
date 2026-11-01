@@ -2,15 +2,22 @@
 
 Projects its Image input through a camera onto whatever the material it authors is
 bound to, as Nuke's Project3D does. The output is a material: connect it to a
-geometry node's Material input. The projection is per fragment and perspective
+geometry node's Material input, or bind it by its path as any material in the
+scene is bound (a collection binding included). The projection is per fragment and perspective
 correct, so coarse geometry does not warp it. It is a Storm (glslfx) surface: it
 shows in the Viewer's 3D view and in USDRender; USDWrite bakes it to UVs and a
-`UsdPreviewSurface` for other renderers. The surface is unlit: it shows the image as
-it is.
+`UsdPreviewSurface` for other renderers. The surface is unlit and emissive: it shows
+the image as it is, whatever lights the scene has. It is alpha-blended over what is
+behind it, so where the image is transparent the geometry and scene behind show
+through. The image is taken as premultiplied, as Natron's images are.
 
-The camera comes from the Camera input, read where it is wired. Camera lists that
-scene's cameras; until one is chosen the first is used. A chosen camera the scene
-does not have, or no camera at all, is a node error. The camera is stored as values
+The camera comes from the Camera input, read where it is wired, at Camera Path.
+Camera lists that scene's cameras and picks Camera Path from them; Camera Path
+can also name a camera that is not there yet, listed as missing. Until the Camera
+input has a camera at that path the projection shows nothing, with a warning, and
+it projects as soon as one arrives. An empty Camera Path uses the first camera; no
+camera at all then is a node error, as is a Camera Path that is not an absolute
+prim path. The camera is stored as values
 (a matrix per frame when it moves), so the material keeps projecting where the
 camera was wherever it is grafted.
 
@@ -35,6 +42,8 @@ Controls:
 - Clip Near Far: nearer than the camera's near plane or beyond its far one, the
   surface shows Outside.
 - Outside: Black, or Transparent (not drawn). Behind the camera is always Outside.
+  A baked export shows Black as transparent beyond the image's data: the baked
+  texture's border is clear.
 - Fit Mode: how the camera's aperture is conformed to the image's format, as in
   USDRender.
 - Use Frame Hold, Frame Hold: project through the camera as it is at Frame Hold on

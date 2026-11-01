@@ -10,9 +10,11 @@ USDMaterial. The UVs are per vertex, so a projection onto coarse geometry warps
 between vertices; subdivide the mesh where that shows.
 
 The camera comes from the Camera input, read where it is wired, or from the Scene
-input when the Camera input is not connected. Camera lists that scene's cameras;
-until one is chosen the first is used. A chosen camera the scene does not have is
-a node error naming its path.
+input when the Camera input is not connected, at Camera Path. Camera lists that
+scene's cameras and picks Camera Path from them; Camera Path can also name a camera
+that is not there yet, listed as missing. Until that scene has a camera at that path
+the scene passes through unchanged, with a warning. An empty Camera Path uses the
+first camera. A Camera Path that is not an absolute prim path is a node error.
 
 Projection:
 

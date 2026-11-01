@@ -34,6 +34,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -41,6 +42,7 @@
 #define PLUGINID_NATRON_USDPROJECTUV "USDProjectUV"
 
 #define kUSDProjectUVParamCamera "camera"
+#define kUSDProjectUVParamCameraPath "cameraPath"
 #define kUSDProjectUVParamPrimPattern "primPattern"
 #define kUSDProjectUVParamProjection "projection"
 #define kUSDProjectUVParamPlane "plane"
@@ -124,8 +126,8 @@ public:
 
     /**
      * @brief Fills the camera menu with every camera of the camera scene (the Camera input's, else
-     * the Scene input's) at the current frame, keeping the chosen one even when the scene no
-     * longer has it. Main thread only; the node calls it itself, queued, whenever an input or
+     * the Scene input's) at the current frame, then Camera Path when none of them has it. Main
+     * thread only; the node calls it itself, queued, whenever an input or
      * anything upstream changes.
      **/
     void refreshCameraMenu();
@@ -159,7 +161,7 @@ private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 
-    KnobChoiceWPtr _camera;
+    SceneCameraPathKnobs _camera;
     KnobStringWPtr _primPattern;
     KnobChoiceWPtr _projection;
     KnobChoiceWPtr _plane;

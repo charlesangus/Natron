@@ -29,10 +29,12 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include <QString>
 
 #include "Engine/EngineFwd.h"
+#include "Global/Enums.h"
 
 // Free of USD, like the node headers that include it: the knobs the scene create nodes share.
 // Their authoring is in SceneNodeAuthoring.h.
@@ -100,6 +102,34 @@ std::string getSceneNodeDefaultPrimPath(const EffectInstance* effect,
  **/
 void followSceneNodeRename(const KnobStringPtr& knob,
                            const std::string& newDefaultPath);
+
+/**
+ * @brief The camera a node reads, by path. The path knob decides; the menu beside it lists the
+ * cameras the node can see and, picked by the user, writes the path of its pick. A path no camera
+ * has yet is kept and listed as missing, for a camera that arrives upstream later. An empty path
+ * stands for the first camera.
+ **/
+struct SceneCameraPathKnobs {
+    KnobChoiceWPtr menu;
+    KnobStringWPtr path;
+
+    void create(KnobHolder* holder,
+                const KnobPagePtr& page,
+                const char* menuName,
+                const char* pathName,
+                const QString& menuToolTip,
+                const QString& pathToolTip);
+
+    std::string getPath() const;
+
+    // Lists cameras, then the path when none of them has it, and selects the path's entry.
+    void refreshMenu(const std::vector<std::string>& cameras) const;
+
+    // True when k is one of the knobs, with *menuStale set when the menu must be refreshed.
+    bool knobChanged(KnobI* k,
+                     ValueChangedReasonEnum reason,
+                     bool* menuStale) const;
+};
 
 // Hides and disables knob, or shows and enables it.
 void setSceneKnobSecret(const KnobIPtr& knob,

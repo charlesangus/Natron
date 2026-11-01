@@ -266,19 +266,44 @@ TEST_F(USDProjectUVTest, BackOnlyKeepsTheStOfFacesFacingTheCamera)
     expectSameUVs(cardSt, projected, 0.f);
 }
 
-TEST_F(USDProjectUVTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
+// A camera path no camera has yet passes the scene through with a warning until a camera at that path
+// arrives.
+TEST_F(USDProjectUVTest, ACameraPathTheSceneLacksYetPassesTheSceneThroughUntilTheCameraArrives)
 {
     createRig();
     ASSERT_TRUE(bool(projector));
-    KnobChoice* cameraKnob = getKnob<KnobChoice>(projector, kUSDProjectUVParamCamera);
-    ASSERT_TRUE(cameraKnob != NULL);
-    cameraKnob->setActiveEntry(ChoiceOption("/Gone", "/Gone", ""));
+    // Half a unit right, the camera moves the card's projected UVs a quarter of the frame left of its own.
+    getKnob<KnobDouble>(camera, kSceneParamTranslate)->setValue(0.5, ViewSpec::all(), 0);
+    const PXR_NS::VtVec2fArray cardSt = getFlattenedSt(composeNode(card), getNodePath(card));
+    const PXR_NS::VtVec2fArray projectedSt = getFlattenedSt(composeNode(projector), getNodePath(card));
+    ASSERT_EQ(cardSt.size(), projectedSt.size());
+    ASSERT_FALSE(cardSt.empty());
+    EXPECT_NEAR(cardSt[0][0] - 0.25f, projectedSt[0][0], 1e-4f);
+    getKnob<KnobString>(projector, kUSDProjectUVParamCameraPath)->setValue("/Later");
+
+    expectSameUVs(cardSt, getFlattenedSt(composeNode(projector), getNodePath(card)), 0.f);
+    QString message;
+    int type = -1;
+    projector->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Later"))) << message.toStdString();
+
+    getKnob<KnobString>(camera, kSceneParamPrimPath)->setValue("/Later");
+    expectSameUVs(projectedSt, getFlattenedSt(composeNode(projector), getNodePath(card)), 1e-5f);
+    EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
+}
+
+TEST_F(USDProjectUVTest, ACameraPathThatIsNoPrimPathIsANodeError)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobString>(projector, kUSDProjectUVParamCameraPath)->setValue("not a path");
 
     ScenePayload payload;
     std::string error;
     EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error));
     ASSERT_TRUE(projector->hasPersistentMessage());
-    EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("/Gone"))) << getMessage(projector).toStdString();
+    EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("not a path"))) << getMessage(projector).toStdString();
 }
 
 TEST_F(USDProjectUVTest, ThePatternMatchingNothingPassesTheSceneThroughWithAWarning)
@@ -301,7 +326,20 @@ TEST_F(USDProjectUVTest, TheCameraMenuListsTheCameraInputsCameras)
     USDProjectUV* effect = dynamic_cast<USDProjectUV*>(projector->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
     effect->refreshCameraMenu();
-    const std::vector<ChoiceOption> entries = getKnob<KnobChoice>(projector, kUSDProjectUVParamCamera)->getEntries_mt_safe();
+    KnobChoice* menu = getKnob<KnobChoice>(projector, kUSDProjectUVParamCamera);
+    KnobString* path = getKnob<KnobString>(projector, kUSDProjectUVParamCameraPath);
+    ASSERT_TRUE(menu && path);
+    std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
     ASSERT_EQ((std::size_t)1, entries.size());
     EXPECT_EQ(getNodePath(camera).GetString(), entries[0].id);
+
+    // A path none of them has is listed after them; picking a camera sets the path.
+    path->setValue("/Later");
+    effect->refreshCameraMenu();
+    entries = menu->getEntries_mt_safe();
+    ASSERT_EQ((std::size_t)2, entries.size());
+    EXPECT_EQ(std::string("/Later"), entries[1].id);
+    EXPECT_EQ(1, menu->getValue());
+    menu->onValueChanged(0, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_EQ(getNodePath(camera).GetString(), path->getValue());
 }

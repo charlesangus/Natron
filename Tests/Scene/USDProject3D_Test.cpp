@@ -29,6 +29,9 @@
 
 #include <pxr/usd/sdr/shaderNode.h>
 #include <pxr/usd/sdr/shaderProperty.h>
+#include <pxr/usd/usd/collectionAPI.h>
+#include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/tokens.h>
 
 #include "Global/Macros.h"
 
@@ -56,6 +59,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -349,6 +353,67 @@ TEST_F(USDProject3DTest, ACardWithTheProjectionAsItsMaterialIsBoundToIt)
     EXPECT_EQ(USDProject3D::getShaderPath(), asset.GetAssetPath());
 }
 
+// Material assignment binds a material by path through a collection on a root prim; the projection
+// must be a self-contained material that such a binding can name.
+TEST_F(USDProject3DTest, ACollectionBindingBindsTheProjectionToGeometry)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(bool(card));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(bool(merge));
+    ASSERT_TRUE(merge->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(projector, 1));
+
+    PXR_NS::UsdStageRefPtr composed = composeNode(merge);
+    ASSERT_TRUE(bool(composed));
+    const PXR_NS::SdfPath cardPath = getNodePath(card);
+    const PXR_NS::SdfPath materialPath = getNodePath(projector);
+    ASSERT_TRUE(composed->GetPrimAtPath(cardPath).IsValid());
+    EXPECT_FALSE(bool(PXR_NS::UsdShadeMaterialBindingAPI(composed->GetPrimAtPath(cardPath)).ComputeBoundMaterial()));
+
+    // Every connection in the network resolves inside the material, so binding it from anywhere
+    // in the scene, or moving it as one subtree, keeps it whole.
+    const PXR_NS::UsdShadeMaterial material(composed->GetPrimAtPath(materialPath));
+    ASSERT_TRUE(bool(material));
+    int connections = 0;
+    for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(material.GetPrim())) {
+        for (const PXR_NS::UsdAttribute& attribute : prim.GetAttributes()) {
+            PXR_NS::SdfPathVector sources;
+            attribute.GetConnections(&sources);
+            for (const PXR_NS::SdfPath& source : sources) {
+                EXPECT_TRUE(source.HasPrefix(materialPath)) << attribute.GetPath().GetString() << " <- " << source.GetString();
+                ++connections;
+            }
+        }
+    }
+    EXPECT_GT(connections, 0);
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(composed->Flatten());
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim root = stage->GetPrimAtPath(cardPath);
+    ASSERT_TRUE(root.IsValid());
+    const PXR_NS::TfToken name("assign");
+    const PXR_NS::UsdCollectionAPI collection = PXR_NS::UsdCollectionAPI::Apply(root, name);
+    ASSERT_TRUE(bool(collection));
+    ASSERT_TRUE(collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims)));
+    ASSERT_TRUE(collection.CreateIncludesRel().SetTargets({ cardPath }));
+    const PXR_NS::UsdShadeMaterialBindingAPI binding = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
+    ASSERT_TRUE(binding.Bind(collection, PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(materialPath)), name));
+
+    const PXR_NS::UsdShadeMaterial bound = binding.ComputeBoundMaterial();
+    ASSERT_TRUE(bool(bound));
+    EXPECT_EQ(materialPath, bound.GetPath());
+    const PXR_NS::UsdShadeShader shader = bound.ComputeSurfaceSource();
+    ASSERT_TRUE(bool(shader));
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(shader.GetSourceAsset(&asset, PXR_NS::TfToken("glslfx")));
+    EXPECT_EQ(USDProject3D::getShaderPath(), asset.GetAssetPath());
+    // The camera travels with the material as values, so the binding needs nothing else.
+    EXPECT_NEAR(0.5, projectThrough(getMatrix(shader), PXR_NS::GfVec3d(0., 0., 0.))[0], 1e-9);
+}
+
 TEST_F(USDProject3DTest, WithoutACameraTheNodeErrors)
 {
     createRig();
@@ -362,17 +427,84 @@ TEST_F(USDProject3DTest, WithoutACameraTheNodeErrors)
     EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("Camera"))) << getMessage(projector).toStdString();
 }
 
-TEST_F(USDProject3DTest, AChosenCameraTheSceneLacksIsANodeErrorNamingIt)
+// A camera path no camera has yet is kept: nothing projects, the node warns, and the camera is used
+// as soon as one at that path reaches the Camera input.
+TEST_F(USDProject3DTest, ACameraPathTheSceneLacksYetProjectsNothingUntilTheCameraArrives)
 {
     createRig();
     ASSERT_TRUE(bool(projector));
-    getKnob<KnobChoice>(projector, kUSDProject3DParamCamera)->setActiveEntry(ChoiceOption("/Gone", "/Gone", ""));
+    getKnob<KnobString>(projector, kUSDProject3DParamCameraPath)->setValue("/Later");
+
+    PXR_NS::UsdStageRefPtr stage = composeNode(projector);
+    PXR_NS::UsdShadeShader shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    EXPECT_EQ(PXR_NS::GfMatrix4d(0.), getMatrix(shader));
+    QString message;
+    int type = -1;
+    projector->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Later"))) << message.toStdString();
+
+    // With no Camera input at all, the same.
+    projector->disconnectInput(kUSDProject3DInputCamera);
+    stage = composeNode(projector);
+    shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    EXPECT_EQ(PXR_NS::GfMatrix4d(0.), getMatrix(shader));
+    projector->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+
+    ASSERT_TRUE(projector->connectInput(camera, kUSDProject3DInputCamera));
+    getKnob<KnobString>(camera, kSceneParamPrimPath)->setValue("/Later");
+    stage = composeNode(projector);
+    shader = getShader(stage, PXR_NS::SdfPath("/Project1"));
+    ASSERT_TRUE(bool(shader));
+    EXPECT_NEAR(0.5, projectThrough(getMatrix(shader), PXR_NS::GfVec3d(0., 0., 0.))[0], 1e-6);
+    EXPECT_FALSE(projector->hasPersistentMessage()) << getMessage(projector).toStdString();
+}
+
+TEST_F(USDProject3DTest, ACameraPathThatIsNoPrimPathIsANodeError)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobString>(projector, kUSDProject3DParamCameraPath)->setValue("not a path");
 
     ScenePayload payload;
     std::string error;
     EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error));
     ASSERT_TRUE(projector->hasPersistentMessage());
-    EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("/Gone"))) << getMessage(projector).toStdString();
+    EXPECT_TRUE(getMessage(projector).contains(QString::fromUtf8("not a path"))) << getMessage(projector).toStdString();
+}
+
+// The menu lists the Camera input's cameras and a camera path none of them has; picking an entry sets
+// the path.
+TEST_F(USDProject3DTest, TheCameraMenuPicksTheCameraPath)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    USDProject3D* effect = dynamic_cast<USDProject3D*>(projector->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    KnobChoice* menu = getKnob<KnobChoice>(projector, kUSDProject3DParamCamera);
+    KnobString* path = getKnob<KnobString>(projector, kUSDProject3DParamCameraPath);
+    ASSERT_TRUE(menu && path);
+    EXPECT_FALSE(menu->getIsPersistent());
+    effect->refreshCameraMenu();
+    std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+    ASSERT_EQ((std::size_t)1, entries.size());
+    EXPECT_EQ(getNodePath(camera).GetString(), entries[0].id);
+
+    path->setValue("/Later");
+    effect->refreshCameraMenu();
+    entries = menu->getEntries_mt_safe();
+    ASSERT_EQ((std::size_t)2, entries.size());
+    EXPECT_EQ(std::string("/Later"), entries[1].id);
+    EXPECT_EQ(1, menu->getValue());
+
+    menu->onValueChanged(0, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_EQ(getNodePath(camera).GetString(), path->getValue());
+    effect->refreshCameraMenu();
+    EXPECT_EQ((std::size_t)1, menu->getEntries_mt_safe().size());
+    EXPECT_EQ(0, menu->getValue());
 }
 
 namespace {

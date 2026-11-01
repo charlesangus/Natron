@@ -101,6 +101,9 @@ struct USDProject3D::CameraSamples {
     std::vector<double> frames;
     std::vector<PXR_NS::GfMatrix4d> worldToProjector;
     std::vector<PXR_NS::GfVec4f> origin;
+    // Camera Path names a camera the camera scene does not have: one zero matrix, which puts every
+    // point behind the camera, so nothing projects.
+    bool missing = false;
     U64 digest = 0;
 };
 
@@ -164,14 +167,11 @@ USDProject3D::initializeKnobs()
     _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Material"),
                                         tr("The path of the material prim the node authors. Its shaders are authored under it."));
 
-    KnobChoicePtr camera = createKnob<KnobChoice>(tr("Camera"));
-    camera->setName(kUSDProject3DParamCamera);
-    camera->setHintToolTip(tr("The camera to project through: one of the cameras of the Camera input's scene, by path. Until "
-                              "one is chosen the first camera is used. A chosen camera the scene no longer has is an error "
-                              "naming its path."));
-    camera->setAnimationEnabled(false);
-    page->addKnob(camera);
-    _camera = camera;
+    _camera.create(this, page, kUSDProject3DParamCamera, kUSDProject3DParamCameraPath,
+                   tr("The cameras of the Camera input's scene: picking one sets Camera Path to it."),
+                   tr("The path of the camera to project through, on the Camera input's scene. Empty, the first "
+                      "camera is used. A path the scene does not have yet is kept, with a warning, and nothing "
+                      "projects until a camera at that path reaches the Camera input."));
 
     KnobChoicePtr projectionSpace = createKnob<KnobChoice>(tr("Projection Space"));
     projectionSpace->setName(kUSDProject3DParamProjectionSpace);
@@ -319,6 +319,14 @@ USDProject3D::knobChanged(KnobI* k,
     if (reason == eValueChangedReasonTimeChanged) {
         return false;
     }
+    bool menuStale = false;
+    if (_camera.knobChanged(k, reason, &menuStale)) {
+        if (menuStale) {
+            scheduleCameraMenuRefresh();
+        }
+
+        return true;
+    }
     KnobBoolPtr useFrameHold = _useFrameHold.lock();
     KnobDoublePtr frameHold = _frameHold.lock();
     if (useFrameHold && frameHold && (k == useFrameHold.get())) {
@@ -345,12 +353,7 @@ USDProject3D::scheduleCameraMenuRefresh()
 void
 USDProject3D::refreshCameraMenu()
 {
-    KnobChoicePtr camera = _camera.lock();
-
-    if (!camera) {
-        return;
-    }
-    std::vector<ChoiceOption> options;
+    std::vector<std::string> cameras;
     EffectInstancePtr input = getInput(kUSDProject3DInputCamera);
     ScenePayload scene;
     std::string error;
@@ -358,19 +361,11 @@ USDProject3D::refreshCameraMenu()
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
         if (lease.isValid()) {
             for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
-                options.push_back(ChoiceOption(path.GetString(), path.GetString(), ""));
+                cameras.push_back(path.GetString());
             }
         }
     }
-    // Repopulating an unchanged menu would move the hash and come back here.
-    const std::vector<ChoiceOption> current = camera->getEntries_mt_safe();
-    bool same = current.size() == options.size();
-    for (std::size_t i = 0; same && (i < options.size()); ++i) {
-        same = current[i].id == options[i].id;
-    }
-    if (!same) {
-        camera->populateChoices(options);
-    }
+    _camera.refreshMenu(cameras);
 }
 
 double
@@ -424,7 +419,6 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
 {
     const ScenePayload cameraScene = args.getInputScene(kUSDProject3DInputCamera);
 
-    KnobChoicePtr cameraKnob = _camera.lock();
     KnobChoicePtr projectOnKnob = _projectOn.lock();
     KnobBoolPtr cropKnob = _crop.lock();
     KnobBoolPtr clipKnob = _clipNearFar.lock();
@@ -434,7 +428,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     KnobBoolPtr useFrameHoldKnob = _useFrameHold.lock();
     KnobDoublePtr frameHoldKnob = _frameHold.lock();
     KnobStringPtr primPathKnob = _primPath.lock();
-    if (!cameraKnob || !projectOnKnob || !cropKnob || !clipKnob || !outsideKnob || !fitKnob || !spaceKnob || !useFrameHoldKnob || !frameHoldKnob || !primPathKnob) {
+    if (!projectOnKnob || !cropKnob || !clipKnob || !outsideKnob || !fitKnob || !spaceKnob || !useFrameHoldKnob || !frameHoldKnob || !primPathKnob) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
         return eStatusFailed;
@@ -453,7 +447,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
 
         return fail();
     }
-    std::string cameraPath = cameraKnob->getActiveEntry().id;
+    std::string cameraPath = _camera.getPath();
     const int projectOn = std::clamp(projectOnKnob->getValue(), (int)eProjectOnBoth, (int)eProjectOnBack);
     const bool crop = cropKnob->getValue();
     const bool clip = clipKnob->getValue();
@@ -487,78 +481,98 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             samples = _imp->samples;
         }
     }
+    if (!cameraPath.empty() && !(PXR_NS::SdfPath::IsValidPathString(cameraPath) && PXR_NS::SdfPath(cameraPath).IsAbsolutePath() && PXR_NS::SdfPath(cameraPath).IsPrimPath())) {
+        *errorMessage = tr("Camera Path \"%1\" is not an absolute prim path such as /World/Camera.").arg(QString::fromStdString(cameraPath)).toStdString();
+
+        return fail();
+    }
     if (!samples) {
+        const auto missingSamples = []() {
+            std::shared_ptr<CameraSamples> missing = std::make_shared<CameraSamples>();
+            missing->missing = true;
+            missing->worldToProjector.push_back(PXR_NS::GfMatrix4d(0.));
+            missing->origin.push_back(PXR_NS::GfVec4f(0.f, 0.f, 0.f, 1.f));
+            ContentHasher digest;
+            digest.appendBool(true);
+            missing->digest = digest.finalize();
+
+            return missing;
+        };
+        std::shared_ptr<CameraSamples> computed;
         if (cameraScene.isEmpty()) {
-            *errorMessage = tr("No camera to project through: connect one to the Camera input.").toStdString();
-
-            return fail();
-        }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(cameraScene, errorMessage);
-        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = tr("USD could not compose the camera scene.").toStdString();
-            }
-
-            return fail();
-        }
-        if (cameraPath.empty()) {
-            const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
-            if (cameras.empty()) {
-                *errorMessage = tr("The Camera input has no camera to project through.").toStdString();
+            if (cameraPath.empty()) {
+                *errorMessage = tr("No camera to project through: connect one to the Camera input.").toStdString();
 
                 return fail();
             }
-            cameraPath = cameras.front().GetString();
-        }
-        if (!PXR_NS::SdfPath::IsValidPathString(cameraPath)) {
-            *errorMessage = tr("No camera at %1 on the camera scene.").arg(QString::fromStdString(cameraPath)).toStdString();
-
-            return fail();
-        }
-        const PXR_NS::SdfPath path(cameraPath);
-        const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(path));
-        const double fps = layerKey.framesPerSecond;
-        SceneLayerEdit range;
-        range.firstFrame = layerKey.firstFrame;
-        range.lastFrame = layerKey.lastFrame;
-        std::shared_ptr<CameraSamples> computed = std::make_shared<CameraSamples>();
-        // Frames empty means one sample, authored as the default value.
-        std::vector<double> readFrames;
-        if (useFrameHold) {
-            readFrames.push_back(frameHold);
-        } else if (camera && cameraMightVary(camera)) {
-            computed->frames = SceneNodeAuthoring::getSampleFrames(range);
-            readFrames = computed->frames;
+            computed = missingSamples();
         } else {
-            readFrames.push_back(range.firstFrame);
-        }
-        ContentHasher digest;
-        digest.appendU64(readFrames.size());
-        for (double frame : readFrames) {
-            const PXR_NS::UsdTimeCode time(SceneOps::frameToTimeCode(cameraScene, frame, fps));
-            PXR_NS::GfFrustum frustum;
-            if (!HydraRender::cameraFrustum(stage, path, time, aspect, fit, &frustum, errorMessage)) {
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(cameraScene, errorMessage);
+            const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+            if (!stage) {
+                if (errorMessage->empty()) {
+                    *errorMessage = tr("USD could not compose the camera scene.").toStdString();
+                }
+
                 return fail();
             }
-            const PXR_NS::GfMatrix4d matrix = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix() * kClipToFrame;
-            PXR_NS::GfVec4f origin;
-            if (frustum.GetProjectionType() == PXR_NS::GfFrustum::Orthographic) {
-                const PXR_NS::GfVec3d back = -frustum.ComputeViewDirection();
-                origin = PXR_NS::GfVec4f((float)back[0], (float)back[1], (float)back[2], 0.f);
-            } else {
-                const PXR_NS::GfVec3d position = frustum.GetPosition();
-                origin = PXR_NS::GfVec4f((float)position[0], (float)position[1], (float)position[2], 1.f);
+            if (cameraPath.empty()) {
+                const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
+                if (cameras.empty()) {
+                    *errorMessage = tr("The Camera input has no camera to project through.").toStdString();
+
+                    return fail();
+                }
+                cameraPath = cameras.front().GetString();
             }
-            computed->worldToProjector.push_back(matrix);
-            computed->origin.push_back(origin);
-            digest.appendDouble(frame);
-            digest.appendBytes(matrix.data(), 16 * sizeof(double));
-            digest.appendBytes(origin.data(), 4 * sizeof(float));
+            const PXR_NS::SdfPath path(cameraPath);
+            const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(path));
+            if (!camera) {
+                computed = missingSamples();
+            } else {
+                const double fps = layerKey.framesPerSecond;
+                SceneLayerEdit range;
+                range.firstFrame = layerKey.firstFrame;
+                range.lastFrame = layerKey.lastFrame;
+                computed = std::make_shared<CameraSamples>();
+                // Frames empty means one sample, authored as the default value.
+                std::vector<double> readFrames;
+                if (useFrameHold) {
+                    readFrames.push_back(frameHold);
+                } else if (cameraMightVary(camera)) {
+                    computed->frames = SceneNodeAuthoring::getSampleFrames(range);
+                    readFrames = computed->frames;
+                } else {
+                    readFrames.push_back(range.firstFrame);
+                }
+                ContentHasher digest;
+                digest.appendU64(readFrames.size());
+                for (double frame : readFrames) {
+                    const PXR_NS::UsdTimeCode time(SceneOps::frameToTimeCode(cameraScene, frame, fps));
+                    PXR_NS::GfFrustum frustum;
+                    if (!HydraRender::cameraFrustum(stage, path, time, aspect, fit, &frustum, errorMessage)) {
+                        return fail();
+                    }
+                    const PXR_NS::GfMatrix4d matrix = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix() * kClipToFrame;
+                    PXR_NS::GfVec4f origin;
+                    if (frustum.GetProjectionType() == PXR_NS::GfFrustum::Orthographic) {
+                        const PXR_NS::GfVec3d back = -frustum.ComputeViewDirection();
+                        origin = PXR_NS::GfVec4f((float)back[0], (float)back[1], (float)back[2], 0.f);
+                    } else {
+                        const PXR_NS::GfVec3d position = frustum.GetPosition();
+                        origin = PXR_NS::GfVec4f((float)position[0], (float)position[1], (float)position[2], 1.f);
+                    }
+                    computed->worldToProjector.push_back(matrix);
+                    computed->origin.push_back(origin);
+                    digest.appendDouble(frame);
+                    digest.appendBytes(matrix.data(), 16 * sizeof(double));
+                    digest.appendBytes(origin.data(), 4 * sizeof(float));
+                }
+                digest.appendU64(computed->frames.size());
+                computed->digest = digest.finalize();
+            }
+            lease.release();
         }
-        digest.appendU64(computed->frames.size());
-        computed->digest = digest.finalize();
-        lease.release();
 
         samples = computed;
         std::lock_guard<std::mutex> l(_imp->lock);
@@ -743,6 +757,9 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
 
     // Checked on every evaluation: the layer can stay the same while the texture fails.
     QStringList warnings;
+    if (samples->missing) {
+        warnings.push_back(tr("No camera at %1 on the Camera input yet: nothing projects until one is there.").arg(QString::fromStdString(cameraPath)));
+    }
     if (!hasPlate) {
         warnings.push_back(tr("Nothing is connected to the Image input: the projection is black."));
     } else {

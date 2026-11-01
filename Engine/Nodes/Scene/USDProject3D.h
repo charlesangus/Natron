@@ -34,6 +34,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -41,6 +42,7 @@
 #define PLUGINID_NATRON_USDPROJECT3D "USDProject3D"
 
 #define kUSDProject3DParamCamera "camera"
+#define kUSDProject3DParamCameraPath "cameraPath"
 #define kUSDProject3DParamProjectOn "projectOn"
 #define kUSDProject3DParamCrop "crop"
 #define kUSDProject3DParamClipNearFar "clipNearFar"
@@ -99,8 +101,9 @@ public:
         .label = "USDProject3D",
         .description = "Author a material that projects the Image input through a camera, as Nuke's Project3D does: each "
                        "point of the surface shows the image where it lands in the camera's frame, per pixel and "
-                       "perspective-correct, unlit. Connect it to the Material input of a geometry node. The camera "
-                       "comes from the Camera input and is stored in the material as values. In World space the "
+                       "perspective-correct, unlit and alpha-blended over what is behind it. Connect it to the Material "
+                       "input of a geometry node, or bind it as any material is bound. The camera comes from the "
+                       "Camera input, by path, and is stored in the material as values. In World space the "
                        "projection stays where the camera is while the geometry moves through it; in Geometry space "
                        "it is fixed to the geometry where it is connected, so transforms after that carry it along. "
                        "The image's format fills the camera's frame. The material is a Storm shader: it "
@@ -125,7 +128,7 @@ public:
 
     /**
      * @brief Fills the camera menu with every camera of the Camera input's scene at the current
-     * frame, keeping the chosen one even when the scene no longer has it. Main thread only; the
+     * frame, then Camera Path when none of them has it. Main thread only; the
      * node calls it itself, queued, whenever an input or anything upstream changes.
      **/
     void refreshCameraMenu();
@@ -170,7 +173,7 @@ private:
     std::unique_ptr<Implementation> _imp;
 
     KnobStringWPtr _primPath;
-    KnobChoiceWPtr _camera;
+    SceneCameraPathKnobs _camera;
     KnobChoiceWPtr _projectOn;
     KnobBoolWPtr _crop;
     KnobBoolWPtr _clipNearFar;

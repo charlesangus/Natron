@@ -30,9 +30,9 @@ UNTONED_VIEW = "Un-tone-mapped"
 BOX_SIZE = 480.0
 CARD_SHIFT = 1.5
 
-PROJECTUV_KNOBS = ("camera", "primPattern", "projection", "plane", "projectOn", "frustumCulling", "invertU",
+PROJECTUV_KNOBS = ("camera", "cameraPath", "primPattern", "projection", "plane", "projectOn", "frustumCulling", "invertU",
                    "invertV", "uScale", "vScale", "primvarName", "fitMode", "useFrameHold", "frameHold")
-PROJECT3D_KNOBS = ("camera", "projectionSpace", "projectOn", "crop", "clipNearFar", "outside", "fitMode",
+PROJECT3D_KNOBS = ("camera", "cameraPath", "projectionSpace", "projectOn", "crop", "clipNearFar", "outside", "fitMode",
                    "useFrameHold", "frameHold")
 
 try:

@@ -541,10 +541,11 @@ checkProjectedChecker(const std::vector<RenderedPlane>& planes,
 {
     ASSERT_EQ(3u, planes.size()) << what;
     const std::vector<float>& rgba = planes[0].pixels;
-    const std::vector<float>& primId = planes[2].pixels;
+    // The card by its depth, not its primId: the projection is translucent, and Storm's translucent
+    // pass writes no primId, while its opaque fragments still write depth.
+    const std::vector<float>& depth = planes[1].pixels;
     ASSERT_EQ((std::size_t)kWidth * kHeight * 4, rgba.size()) << what;
-    ASSERT_EQ((std::size_t)kWidth * kHeight, primId.size()) << what;
-    const std::uint32_t cardId = bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/Card")));
+    ASSERT_EQ((std::size_t)kWidth * kHeight, depth.size()) << what;
     // Two render pixels: rasterisation and texture filtering stay within that of an edge.
     const double margin = 4.;
     const double cardMargin = 0.5;
@@ -564,7 +565,7 @@ checkProjectedChecker(const std::vector<RenderedPlane>& planes,
                 continue;
             }
             const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
-            if (bitsOf(primId[i]) != cardId) {
+            if (!std::isfinite(depth[i])) {
                 ++wrong;
                 if (firstWrong.empty()) {
                     firstWrong = "(" + std::to_string(x) + ", " + std::to_string(y) + ") is not the card";
@@ -1246,6 +1247,68 @@ TEST_F(USDRenderStormTest, StormProject3DWorld)
 
     // The card covers render pixels 20..180 by 10..90.
     renderProjection(render, projector, 1., 0., RectI(16, 6, 184, 94), kGoldenCaseProject3DWorld);
+}
+
+// The projection is unlit and alpha-blended: a half-transparent premultiplied plate shows as itself
+// over the empty background, whether or not the scene has a light.
+TEST_F(USDRenderStormTest, StormProject3DBlendsItsAlphaUnlit)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* colour = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(colour != nullptr);
+    const double premultiplied[4] = { 0.2, 0., 0., 0.5 };
+    for (int c = 0; c < 4; ++c) {
+        colour->setValue(premultiplied[c], ViewSpec::all(), c);
+    }
+    projector->disconnectInput(kUSDProject3DInputImage);
+    connectNodes(constant, projector, kUSDProject3DInputImage, true);
+    NodePtr merge = render->getInput(0);
+    ASSERT_TRUE(bool(merge));
+
+    for (int lit = 0; lit < 2; ++lit) {
+        if (lit) {
+            NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+            ASSERT_TRUE(bool(light));
+            ASSERT_TRUE(setString(light, kSceneParamPrimPath, "/Key"));
+            connectNodes(light, merge, 2, true);
+        }
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        std::string shaderProblems;
+        bool rendered = false;
+        {
+            USDDiagnostics diagnostics;
+            rendered = renderOffMainThread(render, 1., &planes, &error);
+            shaderProblems = diagnostics.shaderProblems();
+        }
+        EXPECT_TRUE(shaderProblems.empty()) << shaderProblems;
+        ASSERT_TRUE(rendered) << error;
+        ASSERT_EQ(3u, planes.size());
+        const std::vector<float>& rgba = planes[0].pixels;
+        ASSERT_EQ((std::size_t)kWidth * kHeight * 4, rgba.size());
+        // The middle of the projector's frame, which spans 100 x 50 render pixels at the centre.
+        double sum[4] = { 0., 0., 0., 0. };
+        int count = 0;
+        for (int y = kHeight / 2 - 10; y < kHeight / 2 + 10; ++y) {
+            for (int x = kWidth / 2 - 20; x < kWidth / 2 + 20; ++x) {
+                const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+                for (int c = 0; c < 4; ++c) {
+                    sum[c] += rgba[i * 4 + c];
+                }
+                ++count;
+            }
+        }
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(premultiplied[c], sum[c] / count, 0.02) << (lit ? "lit" : "unlit") << ", channel " << c;
+        }
+    }
 }
 
 // In Geometry space with the camera held, the projection is taken where the card is at the hold

@@ -164,6 +164,106 @@ createScenePrimPathKnob(KnobHolder* holder,
     return knob;
 }
 
+void
+SceneCameraPathKnobs::create(KnobHolder* holder,
+                             const KnobPagePtr& page,
+                             const char* menuName,
+                             const char* pathName,
+                             const QString& menuToolTip,
+                             const QString& pathToolTip)
+{
+    KnobChoicePtr menuKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Camera"));
+    menuKnob->setName(menuName);
+    menuKnob->setHintToolTip(menuToolTip);
+    menuKnob->setAnimationEnabled(false);
+    menuKnob->setNotifiesOnReselect(true);
+    // Rebuilt from the path, which alone decides the render.
+    menuKnob->setIsPersistent(false);
+    menuKnob->setEvaluateOnChange(false);
+    page->addKnob(menuKnob);
+    menu = menuKnob;
+
+    KnobStringPtr pathKnob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Camera Path"));
+    pathKnob->setName(pathName);
+    pathKnob->setHintToolTip(pathToolTip);
+    pathKnob->setAnimationEnabled(false);
+    page->addKnob(pathKnob);
+    path = pathKnob;
+}
+
+std::string
+SceneCameraPathKnobs::getPath() const
+{
+    KnobStringPtr pathKnob = path.lock();
+
+    return pathKnob ? pathKnob->getValue() : std::string();
+}
+
+void
+SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras) const
+{
+    KnobChoicePtr menuKnob = menu.lock();
+    if (!menuKnob) {
+        return;
+    }
+    const std::string chosen = getPath();
+    std::vector<ChoiceOption> options;
+    int chosenIndex = -1;
+    for (const std::string& camera : cameras) {
+        if (camera == chosen) {
+            chosenIndex = (int)options.size();
+        }
+        options.push_back(ChoiceOption(camera, camera, ""));
+    }
+    if (!chosen.empty() && (chosenIndex < 0)) {
+        chosenIndex = (int)options.size();
+        options.push_back(ChoiceOption(chosen,
+                                       EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
+                                       EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
+    }
+    // Repopulating an unchanged menu would move the node's hash and come back here.
+    const std::vector<ChoiceOption> current = menuKnob->getEntries_mt_safe();
+    bool same = current.size() == options.size();
+    for (std::size_t i = 0; same && (i < options.size()); ++i) {
+        same = (current[i].id == options[i].id) && (current[i].label == options[i].label);
+    }
+    if (!same) {
+        menuKnob->populateChoices(options);
+    }
+    if ((chosenIndex >= 0) && (menuKnob->getValue() != chosenIndex)) {
+        menuKnob->setValue(chosenIndex);
+    }
+}
+
+bool
+SceneCameraPathKnobs::knobChanged(KnobI* k,
+                                  ValueChangedReasonEnum reason,
+                                  bool* menuStale) const
+{
+    KnobChoicePtr menuKnob = menu.lock();
+    KnobStringPtr pathKnob = path.lock();
+    *menuStale = false;
+    if (!menuKnob || !pathKnob) {
+        return false;
+    }
+    if (k == menuKnob.get()) {
+        const int index = menuKnob->getValue();
+        if (((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited))
+            && (index >= 0) && (index < menuKnob->getNumEntries())) {
+            pathKnob->setValue(menuKnob->getEntry(index).id);
+        }
+
+        return true;
+    }
+    if (k == pathKnob.get()) {
+        *menuStale = true;
+
+        return true;
+    }
+
+    return false;
+}
+
 std::string
 getSceneNodeDefaultPrimPath(const EffectInstance* effect,
                             const std::string& fallbackName)

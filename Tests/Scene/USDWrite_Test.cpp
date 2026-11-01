@@ -725,6 +725,25 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     PXR_NS::SdfAssetPath file;
     ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetInput(PXR_NS::TfToken("file")).Get(&file));
     EXPECT_EQ(std::string("./scene_textures/Plate1_rgba.exr"), file.GetAssetPath());
+    // Unlit and alpha-blended, as the live projection is: the plate's alpha is the opacity and
+    // nothing but the emission shows.
+    const PXR_NS::SdfPath texturePath = source.GetPath();
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacity")).GetConnectedSource(&source, &sourceName, &sourceType));
+    EXPECT_EQ(texturePath, source.GetPath());
+    EXPECT_EQ(std::string("a"), sourceName.GetString());
+    EXPECT_FALSE(bool(surface.GetInput(PXR_NS::TfToken("opacityThreshold"))));
+    PXR_NS::TfToken opacityMode;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&opacityMode));
+    EXPECT_EQ(std::string("transparent"), opacityMode.GetString());
+    PXR_NS::GfVec3f color(1.f);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("diffuseColor")).Get(&color));
+    EXPECT_EQ(PXR_NS::GfVec3f(0.f), color);
+    int specularWorkflow = 0;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("useSpecularWorkflow")).Get(&specularWorkflow));
+    EXPECT_EQ(1, specularWorkflow);
+    color = PXR_NS::GfVec3f(1.f);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("specularColor")).Get(&color));
+    EXPECT_EQ(PXR_NS::GfVec3f(0.f), color);
     const PXR_NS::UsdPrim projection = material.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DShaderName));
     ASSERT_TRUE(projection.IsValid());
     EXPECT_FALSE(projection.IsActive());
@@ -762,7 +781,9 @@ TEST_F(USDWriteProjectionTest, AMovingCameraBakesUVsPerFrame)
     }
 }
 
-TEST_F(USDWriteProjectionTest, ATiltedCoarseCardWarnsThatItsBakeWarps)
+// Per-vertex UVs on a tilted coarse card are not the live projection between its vertices; the export
+// takes them as they are, without a warning.
+TEST_F(USDWriteProjectionTest, ATiltedCoarseCardBakesWithoutAWarning)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -773,10 +794,10 @@ TEST_F(USDWriteProjectionTest, ATiltedCoarseCardWarnsThatItsBakeWarps)
     NodePtr writer = createWriter(card, path, USDWrite::eExportModeFlattened, 1, 1);
     ASSERT_TRUE(writer && getWriter(writer));
     ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
-    ASSERT_TRUE(writer->hasPersistentMessage());
-    const QString message = messageOf(writer);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/Card1"))) << message.toStdString();
-    EXPECT_TRUE(message.contains(QString::fromUtf8("warp"))) << message.toStdString();
+    EXPECT_FALSE(writer->hasPersistentMessage()) << messageOf(writer).toStdString();
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(bool(stOf(stage)));
 }
 
 // In Geometry space with the camera held, the bake keeps the card's UVs where the projection put them

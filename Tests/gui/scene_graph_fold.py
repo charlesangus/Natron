@@ -7,7 +7,8 @@ Checks:
   - selecting /World/Box's row and pressing Fold folds it: natronSceneGraphFolded lists it and the
     viewer redraws (screenshot of the box drawn as its bounding box);
   - Unfold takes the fold away;
-  - closing /World's row folds /World, and opening it again unfolds it;
+  - closing /World's row folds /World, and opening it again opens one level: its children show,
+    each closed;
   - folds made in the panel are transient: viewing the second reader and coming back finds the
     first reader's scene unfolded again;
   - with the Viewer 3D Prim Budget preference at 1, viewing the second reader folds its root prims,
@@ -150,6 +151,8 @@ try:
         viewer.disconnectInput(0)
         return viewer.connectInput(0, node)
 
+    children = sorted([BOX, "/World/Ball", "/World/Cam"])
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the first USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -196,8 +199,13 @@ try:
         yield ("sleep", SETTLE_MS)
         shot("scene-graph-fold-world-closed.png")
         tree().expand(find(WORLD))
-        ok = yield ("until", lambda: folded() == [], POLL_TIMEOUT_S)
-        check(ok, "opening /World's row unfolds it (got %r)" % (folded(),))
+        ok = yield ("until", lambda: folded() == children, POLL_TIMEOUT_S)
+        check(ok, "opening /World's row opens one level: its children show, each closed (got %r)" % (folded(),))
+        world = find(WORLD)
+        check(tree().isExpanded(world), "/World's row is open")
+        for path in children:
+            row = find(path)
+            check(row.isValid() and not tree().isExpanded(row), "%s stays closed under the opened /World" % path)
 
         tree().collapse(find(WORLD))
         ok = yield ("until", lambda: folded() == [WORLD], POLL_TIMEOUT_S)
@@ -241,7 +249,6 @@ try:
 
         other.getParam("openMode").setValue(1)
         other.getParam("openLevels").setValue(1)
-        children = sorted([BOX, "/World/Ball", "/World/Cam"])
         ok = yield ("until", lambda: folded() == children, POLL_TIMEOUT_S)
         check(ok, "Open Levels 1 folds /World's children (got %r)" % (folded(),))
         world = find(WORLD)

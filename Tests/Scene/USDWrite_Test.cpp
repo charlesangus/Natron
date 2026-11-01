@@ -24,6 +24,7 @@
 // ***** END PYTHON BLOCK *****
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include <pxr/usd/usd/primRange.h>
 
 #include "Global/Macros.h"
 
@@ -51,6 +52,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDRead.h"
@@ -543,6 +545,56 @@ TEST_F(USDWriteTest, CorrectedReadsRoundTripInBothModes)
                 EXPECT_TRUE(written->GetSubLayerPaths().empty());
                 EXPECT_TRUE(static_cast<bool>(written->GetAttributeAtPath(PXR_NS::SdfPath("/World/Box.points"))));
             }
+        }
+    }
+}
+
+// The folds USDRead's Open Mode authors are how the Viewer shows a scene: composed they are in
+// the scene, but no written file, in either mode, carries them.
+TEST_F(USDWriteTest, ViewerFoldCustomDataIsNotWritten)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr merge = createGraph(kReferenceScene, 0.);
+    ASSERT_TRUE(bool(merge));
+    NodePtr reader = merge->getInput(0) ? merge->getInput(0)->getInput(0) : NodePtr();
+    ASSERT_TRUE(bool(reader));
+    KnobChoice* openMode = getKnob<KnobChoice>(reader, kUSDReadParamOpenMode);
+    KnobInt* openLevels = getKnob<KnobInt>(reader, kUSDReadParamOpenLevels);
+    ASSERT_TRUE(openMode != NULL && openLevels != NULL);
+    openMode->setValue((int)USDRead::eOpenModeFirstLevels);
+    openLevels->setValue(1);
+
+    const PXR_NS::TfToken foldKey(SceneStage::kViewerFoldKey);
+    const PXR_NS::TfToken levelsKey(SceneStage::kViewerOpenLevelsKey);
+    const auto authorsFolds = [&](const PXR_NS::UsdStageRefPtr& stage) {
+        bool found = false;
+        for (const PXR_NS::UsdPrim& prim : stage->TraverseAll()) {
+            found = found || prim.HasAuthoredCustomDataKey(foldKey) || prim.HasAuthoredCustomDataKey(levelsKey);
+        }
+
+        return found;
+    };
+    PXR_NS::UsdStageRefPtr scene = composeOutput(merge);
+    ASSERT_TRUE(static_cast<bool>(scene));
+    ASSERT_TRUE(authorsFolds(scene));
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        const QString dir = tmp.path() + QString::fromUtf8(mode == USDWrite::eExportModeLayered ? "/layered" : "/flattened");
+        const QString path = dir + QString::fromUtf8("/out.usda");
+        NodePtr writer = createWriter(merge, path, mode, 1, 1);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 1, ViewIdx(0)));
+        ASSERT_TRUE(QFile::exists(path));
+
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(stage));
+        EXPECT_TRUE(static_cast<bool>(stage->GetPrimAtPath(PXR_NS::SdfPath("/Transform1/World/Box")))) << (int)mode;
+        EXPECT_FALSE(authorsFolds(stage)) << (int)mode;
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            EXPECT_FALSE(file.second.contains("viewerFold")) << file.first.toStdString();
+            EXPECT_FALSE(file.second.contains("viewerOpenLevels")) << file.first.toStdString();
         }
     }
 }

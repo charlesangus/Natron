@@ -275,6 +275,7 @@ TEST(SceneFoldTest, ViewerFoldsFollowTheScenesCustomData)
     const PXR_NS::SdfPath heavy("/World/Heavy");
     const PXR_NS::SdfPath light("/World/Light");
     const PXR_NS::SdfPath a("/World/Heavy/A");
+    const PXR_NS::SdfPath b("/World/Heavy/B");
     PXR_NS::SdfLayerRefPtr layer = makeLayer(kScene);
     SceneStage stage(true);
     ASSERT_TRUE(stage.isValid());
@@ -295,8 +296,9 @@ TEST(SceneFoldTest, ViewerFoldsFollowTheScenesCustomData)
     EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy, light }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath>(), &authored));
     EXPECT_TRUE(authored);
 
-    // An override opening a prim opens everything below it; one folding it wins over the scene.
-    EXPECT_EQ((std::set<PXR_NS::SdfPath> { light }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { heavy, false } }, std::set<PXR_NS::SdfPath>()));
+    // An override opening a folded prim opens one level: its children show, each still folded.
+    // One folding a prim wins over the scene.
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { light, a, b }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { heavy, false } }, std::set<PXR_NS::SdfPath>()));
     EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, true } }, std::set<PXR_NS::SdfPath>()));
 
     // A fold authored deeper on an opened prim is kept; one authored open lifts the depth fold.
@@ -307,11 +309,14 @@ TEST(SceneFoldTest, ViewerFoldsFollowTheScenesCustomData)
     }
     stage.sync(stackOf(layer));
     EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath>()));
-    EXPECT_EQ((std::set<PXR_NS::SdfPath> { a }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { heavy, false } }, std::set<PXR_NS::SdfPath>()));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { a, b }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { heavy, false } }, std::set<PXR_NS::SdfPath>()));
+    // Opening a prim that is already open changes nothing.
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, std::set<PXR_NS::SdfPath>()));
 
-    // Defaults fold on top of the scene, and overrides on top of both.
+    // Defaults fold on top of the scene, and overrides on top of both; a folded prim opened by an
+    // override leaves its children folded unless the scene opens them.
     EXPECT_EQ((std::set<PXR_NS::SdfPath> { world }), stage.computeViewerFolds(none, std::set<PXR_NS::SdfPath> { world }));
-    EXPECT_EQ((std::set<PXR_NS::SdfPath> { a }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, std::set<PXR_NS::SdfPath> { world }));
+    EXPECT_EQ((std::set<PXR_NS::SdfPath> { heavy }), stage.computeViewerFolds(std::map<PXR_NS::SdfPath, bool> { { world, false } }, std::set<PXR_NS::SdfPath> { world }));
 
     // Applying writes the folds, bounds included, and a render stage of the scene sees none.
     EXPECT_TRUE(stage.applyViewerFolds(none, std::set<PXR_NS::SdfPath>(), &authored));

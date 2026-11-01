@@ -675,8 +675,8 @@ public:
      **/
     QStringList getFoldedPrims() const;
 
-    // Folds or opens paths until the viewer shows another node; opening a prim opens everything
-    // below it that a customData open level count folds.
+    // Folds or opens paths until the viewer shows another node; opening a prim opens one level: its
+    // children show, folded unless the scene's customData opens them.
     void setFolded(const QStringList& paths, bool folded);
 
 Q_SIGNALS:

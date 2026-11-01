@@ -131,8 +131,8 @@ public:
 
     /**
      * @brief The prims the viewer folds: those the customData above folds, and defaults, then
-     * overrides on top, where true folds a prim and false opens it and everything below it that
-     * an open level count folds (kViewerFoldKey folds stay). Nothing below a folded prim is
+     * overrides on top, where true folds a prim and false opens it; a prim that was folded
+     * opens one level, its children shown and each folded unless the customData opens it. Nothing below a folded prim is
      * listed. authored, if given, is set to whether the customData folds any prim.
      **/
     std::set<PXR_NS::SdfPath> computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,

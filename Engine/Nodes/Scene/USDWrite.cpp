@@ -47,6 +47,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -572,6 +573,25 @@ clipTimeSamples(const PXR_NS::SdfLayerRefPtr& layer,
     }
 } // clipTimeSamples
 
+// The viewer's folds are how a Viewer shows a scene, not part of the scene.
+void
+stripViewerFolds(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    static const PXR_NS::TfToken customDataKey("customData");
+    static const std::vector<PXR_NS::TfToken> foldKeys { PXR_NS::TfToken(SceneStage::kViewerFoldKey), PXR_NS::TfToken(SceneStage::kViewerOpenLevelsKey) };
+    std::vector<PXR_NS::SdfPath> primPaths;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& path) {
+        if (path.IsPrimOrPrimVariantSelectionPath()) {
+            primPaths.push_back(path);
+        }
+    });
+    for (const PXR_NS::SdfPath& path : primPaths) {
+        for (const PXR_NS::TfToken& key : foldKeys) {
+            layer->EraseFieldDictValueByKey(path, customDataKey, key);
+        }
+    }
+}
+
 void
 authorStageMetadata(const PXR_NS::SdfLayerRefPtr& layer,
                     const SceneMetadata& metadata,
@@ -945,6 +965,7 @@ USDWrite::writeFrameRange(int firstFrame,
         }
 
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
+            stripViewerFolds(layer);
             if (stack.hasRange) {
                 clipTimeSamples(layer, stack.startTime, stack.endTime);
             }

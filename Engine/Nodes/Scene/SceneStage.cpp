@@ -468,10 +468,13 @@ SceneStage::computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
     static const PXR_NS::TfToken openLevelsKey(kViewerOpenLevelsKey);
     // The tree's prims, so a fold is always on a row the Scene Graph shows.
     const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
-    // Each prim still to visit, with how many levels below its parent are open: negative for all.
+    // Each prim still to visit, with how many levels below its parent are open: kAllLevels for
+    // all, kChildrenClosed for none after an override opened the parent (not an authored fold).
+    static const int kAllLevels = -1;
+    static const int kChildrenClosed = -2;
     std::vector<std::pair<PXR_NS::UsdPrim, int>> stack;
     for (const PXR_NS::UsdPrim& root : _stage->GetPseudoRoot().GetFilteredChildren(predicate)) {
-        stack.push_back(std::make_pair(root, -1));
+        stack.push_back(std::make_pair(root, kAllLevels));
     }
     while (!stack.empty()) {
         const PXR_NS::UsdPrim prim = stack.back().first;
@@ -479,14 +482,14 @@ SceneStage::computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
         stack.pop_back();
         const PXR_NS::SdfPath& path = prim.GetPath();
 
-        bool folded = (parentLevels == 0);
-        bool byCustomData = folded;
-        int levels = (parentLevels < 0) ? -1 : std::max(parentLevels - 1, 0);
+        bool folded = (parentLevels == 0 || parentLevels == kChildrenClosed);
+        bool byCustomData = (parentLevels == 0);
+        int levels = (parentLevels == kAllLevels) ? kAllLevels : std::max(parentLevels - 1, 0);
         int openLevels = 0;
         if (getCustomDataInt(prim, openLevelsKey, &openLevels)) {
             folded = false;
             byCustomData = false;
-            levels = (openLevels < 0) ? -1 : openLevels;
+            levels = (openLevels < 0) ? kAllLevels : openLevels;
         }
         const PXR_NS::VtValue fold = prim.GetCustomDataByKey(foldKey);
         if (fold.IsHolding<bool>()) {
@@ -501,9 +504,10 @@ SceneStage::computeViewerFolds(const std::map<PXR_NS::SdfPath, bool>& overrides,
         }
         const std::map<PXR_NS::SdfPath, bool>::const_iterator overridden = overrides.find(path);
         if (overridden != overrides.end()) {
+            const bool wasFolded = folded;
             folded = overridden->second;
-            if (!folded) {
-                levels = -1;
+            if (!folded && wasFolded) {
+                levels = kChildrenClosed;
             }
         }
         if (folded) {

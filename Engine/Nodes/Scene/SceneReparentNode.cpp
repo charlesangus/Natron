@@ -36,6 +36,8 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usd/primRange.h>
+
 NATRON_NAMESPACE_ENTER
 
 namespace {

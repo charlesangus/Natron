@@ -351,6 +351,23 @@ TEST_F(NativeContrastTextureTest, BandWeightsArePartitionOfUnity)
     EXPECT_NEAR(1.f, CT::bandWeight(CT::eBandFine, 4, 4.f), 1e-6f);
 }
 
+// A 64 px image at the default detail level has a zero maximum level: every level is then all
+// fine detail, as darktable's NaN-swallowing clamp makes it, without dividing by zero.
+TEST_F(NativeContrastTextureTest, BandWeightsAtZeroMaxLevelAreAllFine)
+{
+    for (int level = 0; level < CT::kMaxLevels; ++level) {
+        const float coarse = CT::bandWeight(CT::eBandCoarse, level, 0.f);
+        const float medium = CT::bandWeight(CT::eBandMedium, level, 0.f);
+        const float fine = CT::bandWeight(CT::eBandFine, level, 0.f);
+        ASSERT_TRUE(std::isfinite(coarse) && std::isfinite(medium) && std::isfinite(fine)) << "level " << level;
+        EXPECT_EQ(0.f, coarse) << "level " << level;
+        EXPECT_NEAR(1.f, coarse + medium + fine, 1e-6f) << "level " << level;
+        EXPECT_NEAR(1.f, fine, 1e-6f) << "level " << level;
+    }
+    const CT::Plan plan = CT::makePlan(CT::Params(), 64.f, 1.f);
+    EXPECT_EQ(0.f, plan.maxDetailLevel);
+}
+
 // At its defaults, and with only the filter settings changed, the node is an identity and passes
 // the source through exactly.
 TEST_F(NativeContrastTextureTest, DefaultsAreIdentity)

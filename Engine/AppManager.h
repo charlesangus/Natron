@@ -548,6 +548,9 @@ public:
 
     virtual void reloadStylesheets() {}
 
+    // A Settings::Viewer3DNavigationEnum preset was chosen.
+    virtual void onViewer3DNavigationChanged(int /*navigation*/) { }
+
 #ifdef USE_NATRON_GIL
     void takeNatronGIL();
 

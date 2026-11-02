@@ -354,6 +354,11 @@ future core work has solid ground to build on.
 | M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
+| M291 | Defocus Reference Harness | todo | M131, M133 |  | E3 | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
+| M292 | Traced Lens Bokeh | todo | M131, M133 |  | E3 | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
+| M293 | ZDefocus Debug Outputs | todo | M131, M133 |  | E3 | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
+| M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
+| M295 | Native DeepDefocus | todo | M294 |  | E8 | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
 
 # Epics
 

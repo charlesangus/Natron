@@ -304,7 +304,11 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    if (_imp->_activeViewer == viewer) {
+        return;
+    }
     _imp->_activeViewer = viewer;
+    Q_EMIT activeViewerChanged();
 }
 
 ViewerTab*

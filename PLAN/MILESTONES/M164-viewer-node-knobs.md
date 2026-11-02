@@ -106,3 +106,13 @@ Filed 2026-10-23 at the user's request. It follows from M16 - Project Format Red
 
 **Verification gate:** full build and tests pass; the Viewer GUI test covers properties, FPS, framing and save/reopen; a new AppImage is accepted by the user.
 - 2026-11-01 — P4 at 7ab6d8e9c and 79c40415c: Viewer has a normal properties panel (Label + its own knobs, no Disable/Info page), closed on creation; viewers fit once a project finishes loading (replacing any saved zoom); viewers are registered headlessly and survive headless load/save; naming a Viewer as a headless render target is refused. To confirm with the user: panel closed on creation, fit replaces saved zoom (implementer).
+
+## Phase 164.5: UAT round 2 fixes
+
+- [ ] M164.P5.T1 — Loading a project crashes
+  - files: `Gui/ViewerTab.*`, `Engine/ViewerInstance.*`, project load path, `Tests/gui/m164_*.py`
+  - approach: User, 2026-11-01: opening any saved project, even a Checkerboard into a Viewer, segfaults on the main thread right after "Loading project:". The crash is in `QReadWriteLock::lockForWrite` on address 0x80, called from a queued slot fired by the File > Open action, so a lock member is reached through a null object. Find the null object (the P4 framing-after-load, Viewer panel or FPS code is the likely suspect) and fix it.
+  - verify: The GUI check saves a Checkerboard → Viewer project, then reopens it through the same path File > Open uses (into a fresh window and into the current one), and the app survives and frames the image.
+  - size: M
+
+**Verification gate:** full build and tests pass; a new AppImage is accepted by the user.

@@ -95,8 +95,7 @@ renderLayer(const NodePtr& node,
             unsigned int mipmapLevel,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
-            bool wholeFormat,
-            RectI* format,
+            const RectI* window,
             RectI* roi,
             ImagePtr* image)
 {
@@ -124,19 +123,12 @@ renderLayer(const NodePtr& node,
     }
     const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
-    if (wholeFormat) {
-        RectI outputFormat = renderMetadata->getOutputFormat();
-        if (outputFormat.isNull()) {
-            Format projectFormat;
-            node->getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
-            outputFormat = projectFormat;
-        }
-        *format = outputFormat;
+    if (window) {
         // Clipped in canonical coordinates first, so an infinite side never reaches pixel ints.
-        const RectD clipped = rod.intersect(Format(outputFormat, par).toCanonicalFormat());
-        *roi = clipped.isNull() ? RectI() : clipped.toPixelEnclosing(mipmapLevel, par).intersect(outputFormat);
+        const RectD clipped = rod.intersect(Format(*window, par).toCanonicalFormat());
+        *roi = clipped.isNull() ? RectI() : clipped.toPixelEnclosing(mipmapLevel, par).intersect(*window);
         if (roi->isNull()) {
-            // Nothing of the image inside its format: a valid, empty result.
+            // Nothing of the image inside the window: a valid, empty result.
             image->reset();
 
             return true;
@@ -194,13 +186,12 @@ renderNodeImageImpl(const NodePtr& node,
                     unsigned int mipmapLevel,
                     const RectI& pixelRect,
                     const ImageLayerDesc& layer,
-                    bool wholeFormat,
-                    RectI* format,
+                    const RectI* window,
                     RectI* renderedRect,
                     bool* rendered)
 {
     *rendered = false;
-    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!wholeFormat && pixelRect.isNull())) {
+    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!window && pixelRect.isNull())) {
         return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
@@ -224,9 +215,8 @@ renderNodeImageImpl(const NodePtr& node,
     }
 
     RectI roi;
-    RectI formatRect;
     ImagePtr image;
-    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, wholeFormat, &formatRect, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -239,9 +229,6 @@ renderNodeImageImpl(const NodePtr& node,
     }
     if (renderedRect) {
         *renderedRect = roi;
-    }
-    if (format) {
-        *format = formatRect;
     }
 
     return image;
@@ -259,21 +246,67 @@ renderNodeImage(const NodePtr& node,
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, false, nullptr, renderedRect, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, &rendered);
 }
 
 bool
-renderNodeImageOverFormat(const NodePtr& node,
+getNodeImageWindow(const NodePtr& node,
+                   double time,
+                   ViewIdx view,
+                   RectI* format,
+                   RectI* window)
+{
+    const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (!effect || !node->isActivated()) {
+        return false;
+    }
+    const NodeMetadataConstPtr metadata = effect->getRenderMetadata(time, view);
+    if (!metadata) {
+        return false;
+    }
+    RectI outputFormat = metadata->getOutputFormat();
+    if (outputFormat.isNull()) {
+        Format projectFormat;
+        node->getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        outputFormat = projectFormat;
+    }
+    if (outputFormat.isNull()) {
+        return false;
+    }
+    *format = outputFormat;
+    *window = outputFormat;
+
+    RectD rod;
+    if (effect->getRegionOfDefinition_public(effect->getRenderHash(), time, RenderScale::identity, view, &rod, nullptr) == eStatusFailed) {
+        // An empty region of definition: the format alone, all transparent black.
+        return true;
+    }
+    // Bounded so a huge or infinite region cannot ask for a texture no memory or GPU could hold;
+    // clipped in canonical coordinates first, so an infinite side never reaches pixel ints.
+    const double par = metadata->getPixelAspectRatio(-1);
+    const RectI bound(outputFormat.x1 - outputFormat.width(), outputFormat.y1 - outputFormat.height(),
+                      outputFormat.x2 + outputFormat.width(), outputFormat.y2 + outputFormat.height());
+    const RectD clipped = rod.intersect(Format(bound, par).toCanonicalFormat());
+    if (!clipped.isNull()) {
+        window->merge(clipped.toPixelEnclosing(0, par).intersect(bound));
+    }
+
+    return true;
+} // getNodeImageWindow
+
+bool
+renderNodeImageOverWindow(const NodePtr& node,
                           double time,
                           ViewIdx view,
                           const ImageLayerDesc& layer,
-                          RectI* format,
+                          const RectI& window,
                           ImagePtr* image,
                           RectI* renderedRect)
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, true, format, renderedRect, &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, &rendered);
 
     return rendered;
 }

@@ -38,6 +38,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Project.h"
 
@@ -674,12 +675,72 @@ recordLiveTexture(const SceneLayerEdit& edit,
 
     recorded.firstFrame = edit.firstFrame;
     recorded.lastFrame = edit.lastFrame;
+    recorded.windows.clear();
+    const NodePtr node = source.node.lock();
+    const std::vector<double> frames = source.varying ? getSampleFrames(edit) : std::vector<double>(1, recorded.getSourceFrame(edit.firstFrame));
+    recorded.windows.reserve(frames.size());
+    for (double frame : frames) {
+        LiveTextureWindow window;
+        if (!node || !getNodeImageWindow(node, frame, ViewIdx(0), &window.format, &window.window)) {
+            window = LiveTextureWindow();
+        }
+        recorded.windows.push_back(window);
+    }
     if (edit.liveTextures) {
         edit.liveTextures->push_back(recorded);
     }
 
     return recorded;
 }
+
+bool
+connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
+                              const SceneLayerEdit& edit,
+                              const PXR_NS::SdfPath& transformPath,
+                              const LiveTextureSource& recorded,
+                              const PXR_NS::UsdShadeOutput& coordinates,
+                              const PXR_NS::UsdShadeInput& st)
+{
+    PXR_NS::UsdShadeShader transform = PXR_NS::UsdShadeShader::Define(stage, transformPath);
+
+    if (!transform || !transform.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdTransform2d")))) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput in = transform.CreateInput(PXR_NS::TfToken("in"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeInput scale = transform.CreateInput(PXR_NS::TfToken("scale"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeInput translation = transform.CreateInput(PXR_NS::TfToken("translation"), PXR_NS::SdfValueTypeNames->Float2);
+    const PXR_NS::UsdShadeOutput result = transform.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2);
+    if (!in || !scale || !translation || !result || !coordinates || !st) {
+        return false;
+    }
+
+    bool windowVaries = false;
+    for (std::size_t i = 1; i < recorded.windows.size(); ++i) {
+        if ((recorded.windows[i].format != recorded.windows[0].format) || (recorded.windows[i].window != recorded.windows[0].window)) {
+            windowVaries = true;
+            break;
+        }
+    }
+    const auto scaleAt = [&recorded](double frame) {
+        double s[2];
+        double t[2];
+        recorded.getWindow(frame).getUvTransform(s, t);
+
+        return PXR_NS::GfVec2f((float)s[0], (float)s[1]);
+    };
+    const auto translationAt = [&recorded](double frame) {
+        double s[2];
+        double t[2];
+        recorded.getWindow(frame).getUvTransform(s, t);
+
+        return PXR_NS::GfVec2f((float)t[0], (float)t[1]);
+    };
+
+    return in.ConnectToSource(coordinates)
+        && authorValue(scale.GetAttr(), edit, windowVaries, scaleAt)
+        && authorValue(translation.GetAttr(), edit, windowVaries, translationAt)
+        && st.ConnectToSource(result);
+} // connectLiveTextureCoordinates
 
 } // namespace SceneNodeAuthoring
 

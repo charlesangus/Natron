@@ -105,10 +105,24 @@ void appendLiveTextureSource(const LiveTextureSource& source,
 
 /**
  * @brief Records source as authored in edit's layer, over edit's frames, and returns it as
- * recorded: its getUri(frame) is what the layer authors at frame.
+ * recorded: its getUri(frame) is what the layer authors at frame, and its getWindow(frame) where
+ * that texture lies over the image, found without rendering.
  **/
 LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
                                     const LiveTextureSource& source);
+
+/**
+ * @brief Connects the texture coordinates st of a texture showing recorded to coordinates, through
+ * a UsdTransform2d defined at transformPath that takes 0 to 1 over the image's format to the
+ * texture's whole window, time-sampled when the window changes over edit's frames. Coordinates
+ * outside 0 to 1 then read the overscan, and the texture's wrap mode applies beyond it.
+ **/
+bool connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
+                                   const SceneLayerEdit& edit,
+                                   const PXR_NS::SdfPath& transformPath,
+                                   const LiveTextureSource& recorded,
+                                   const PXR_NS::UsdShadeOutput& coordinates,
+                                   const PXR_NS::UsdShadeInput& st);
 
 void appendUpstreamMetadata(const ScenePayload& upstream,
                             ContentHasher* h);

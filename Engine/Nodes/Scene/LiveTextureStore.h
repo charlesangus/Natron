@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
 // Free of USD: the store is filled by Natron renders, which know nothing of pxr.
@@ -107,6 +108,28 @@ private:
 typedef std::shared_ptr<const LiveTextureBuffer> LiveTextureBufferConstPtr;
 
 /**
+ * @brief Where a live texture lies, in the full-scale pixel coordinates of its source's image: the
+ * texture holds window, and texture coordinates 0 to 1 span format, so the overscan around the
+ * format is read at coordinates outside 0 to 1. Null when not known.
+ **/
+struct LiveTextureWindow {
+    RectI format;
+    RectI window;
+
+    bool isNull() const
+    {
+        return format.isNull() || window.isNull();
+    }
+
+    /**
+     * @brief The scale and translation that take a texture coordinate over format to one over
+     * window: (1, 1) and (0, 0) when null.
+     **/
+    void getUvTransform(double scale[2],
+                        double translation[2]) const;
+};
+
+/**
  * @brief An image input a scene layer authors as a natron:// texture: which node's image, at
  * which frames, under which URI. Recorded in the layer's payload entry, so consumers find what
  * they must render before Hydra reads the stage, without traversing it.
@@ -124,11 +147,17 @@ struct LiveTextureSource {
     // The frames the layer authors samples at, as SceneNodeAuthoring::getSampleFrames does.
     double firstFrame = 0.;
     double lastFrame = 0.;
+    // Filled by SceneNodeAuthoring::recordLiveTexture: one window per frame from firstFrame when
+    // varying, else one. A texture is rendered over the window its layer authored coordinates for.
+    std::vector<LiveTextureWindow> windows;
 
     // The frame whose image the texture shows at frame: USD holds the sample at or before it.
     double getSourceFrame(double frame) const;
 
     std::string getUri(double frame) const;
+
+    // The window recorded for frame, null when none was.
+    LiveTextureWindow getWindow(double frame) const;
 
     static std::string makeUri(const std::string& nodeName,
                                const std::string& layer,

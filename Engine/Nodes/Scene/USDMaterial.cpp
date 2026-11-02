@@ -111,7 +111,8 @@ makeColorKnob(USDMaterial* holder,
 }
 
 // The texture shader that feeds a surface input: a UsdUVTexture whose file authorFile authors,
-// read at the "st" primvar, whose output output (rgb or r) is connected to input. Scalar inputs
+// read at the "st" primvar (through the window transform of live, when it shows one), whose output
+// output (rgb or r) is connected to input. Scalar inputs
 // and normals read the file's values as they are; colour inputs let the renderer pick the file's
 // colour space. A normal map encodes -1..1 in 0..1, which the texture's scale and bias undo.
 bool
@@ -120,6 +121,8 @@ connectTexture(const PXR_NS::UsdStageRefPtr& stage,
                const PXR_NS::UsdShadeShader& reader,
                const std::string& inputName,
                const AuthorFileFunc& authorFile,
+               const SceneLayerEdit& edit,
+               const LiveTextureSource* live,
                bool isColor,
                bool isNormal,
                PXR_NS::UsdShadeInput& input)
@@ -143,9 +146,13 @@ connectTexture(const PXR_NS::UsdStageRefPtr& stage,
         }
     }
 
+    const bool coordinates = live
+        ? SceneNodeAuthoring::connectLiveTextureCoordinates(stage, edit, materialPath.AppendChild(PXR_NS::TfToken(inputName + "Transform")), *live, readerOutput, st)
+        : (st && readerOutput && st.ConnectToSource(readerOutput));
+
     return fileInput && authorFile(fileInput.GetAttr())
         && colorSpace && colorSpace.Set(PXR_NS::TfToken(isColor ? "auto" : "raw"))
-        && st && readerOutput && st.ConnectToSource(readerOutput)
+        && coordinates
         && output && input.ConnectToSource(output);
 }
 
@@ -317,9 +324,10 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
     PXR_NS::UsdShadeShader reader;
     for (const TexturedInput& t : textured) {
         AuthorFileFunc authorFile;
+        LiveTextureSource live;
         if (t.live) {
-            const LiveTextureSource live = SceneNodeAuthoring::recordLiveTexture(edit, *t.live);
-            authorFile = [&edit, live](const PXR_NS::UsdAttribute& file) {
+            live = SceneNodeAuthoring::recordLiveTexture(edit, *t.live);
+            authorFile = [&edit, &live](const PXR_NS::UsdAttribute& file) {
                 return authorValue(file, edit, live.varying, [&live](double frame) { return PXR_NS::SdfAssetPath(live.getUri(frame)); });
             };
         } else if (!t.file.empty()) {
@@ -340,7 +348,7 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
                 return false;
             }
         }
-        if (!connectTexture(stage, path, reader, t.name, authorFile, t.isColor, t.isNormal, *t.input)) {
+        if (!connectTexture(stage, path, reader, t.name, authorFile, edit, t.live ? &live : nullptr, t.isColor, t.isNormal, *t.input)) {
             *errorMessage = tr("USD could not author the %1 texture of the material at %2.").arg(QString::fromStdString(t.name)).arg(pathString).toStdString();
 
             return false;

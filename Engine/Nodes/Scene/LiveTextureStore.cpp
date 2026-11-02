@@ -111,20 +111,25 @@ renderSource(const LiveTextureSource& source,
 
         return LiveTextureBufferConstPtr();
     }
-    // Texture coordinates 0 to 1 span the image's format, its display window: pixels of the
-    // format the image does not cover stay transparent black, and overscan outside it is left out.
-    RectI format;
-    RectI rect;
-    ImagePtr image;
-    const bool rendered = renderNodeImageOverFormat(node, frame, view, ImageLayerDesc::getRGBAComponents(), &format, &image, &rect);
+    // The texture holds the whole window its layer authored texture coordinates for: the format
+    // with the overscan around it, transparent black where the image does not reach.
+    LiveTextureWindow window = source.getWindow(frame);
     char frameText[32];
     std::snprintf(frameText, sizeof(frameText), "%g", frame);
-    if (!rendered || format.isNull() || (image && rect.isNull())) {
+    if (window.isNull() && !getNodeImageWindow(node, frame, view, &window.format, &window.window)) {
         *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
 
         return LiveTextureBufferConstPtr();
     }
-    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(format.width(), format.height());
+    RectI rect;
+    ImagePtr image;
+    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect);
+    if (!rendered || (image && rect.isNull())) {
+        *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
+
+        return LiveTextureBufferConstPtr();
+    }
+    const std::shared_ptr<LiveTextureBuffer> buffer = LiveTextureBuffer::create(window.window.width(), window.window.height());
     if (!buffer) {
         *failure = "the image of " + node->getFullyQualifiedName() + " at frame " + frameText + " is too large to hold";
 
@@ -136,7 +141,7 @@ renderSource(const LiveTextureSource& source,
     const int numComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image.get());
     for (int y = rect.y1; y < rect.y2; ++y) {
-        float* row = buffer->getRow(y - format.y1) + std::size_t(rect.x1 - format.x1) * 4;
+        float* row = buffer->getRow(y - window.window.y1) + std::size_t(rect.x1 - window.window.x1) * 4;
         switch (image->getBitDepth()) {
         case eImageBitDepthByte:
             copyRow<unsigned char>(access, rect, y, numComps, 1.f / 255.f, row);
@@ -244,6 +249,34 @@ LiveTextureSource::getUri(double frame) const
     h.appendDouble(getSourceFrame(frame));
 
     return makeUri(nodeName, layer, h.finalize());
+}
+
+LiveTextureWindow
+LiveTextureSource::getWindow(double frame) const
+{
+    const double index = varying ? getSourceFrame(frame) - std::ceil(firstFrame) : 0.;
+
+    if ((index < 0.) || (index >= (double)windows.size())) {
+        return LiveTextureWindow();
+    }
+
+    return windows[(std::size_t)index];
+}
+
+void
+LiveTextureWindow::getUvTransform(double scale[2],
+                                  double translation[2]) const
+{
+    if (isNull()) {
+        scale[0] = scale[1] = 1.;
+        translation[0] = translation[1] = 0.;
+
+        return;
+    }
+    scale[0] = (double)format.width() / (double)window.width();
+    scale[1] = (double)format.height() / (double)window.height();
+    translation[0] = (double)(format.x1 - window.x1) / (double)window.width();
+    translation[1] = (double)(format.y1 - window.y1) / (double)window.height();
 }
 
 std::string

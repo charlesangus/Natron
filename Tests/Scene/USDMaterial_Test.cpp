@@ -43,10 +43,12 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -408,6 +410,85 @@ TEST_F(USDMaterialTest, AnAnimatedInputAuthorsOneLiveTexturePerFrame)
         versions.insert(uri.substr(uri.find("?v=")));
     }
     EXPECT_EQ(times.size(), versions.size());
+}
+
+// A live texture's coordinates go through a UsdTransform2d from the st reader that maps 0 to 1 onto
+// the format inside the texture, which holds the overscan too: here a rectangle reaching half a
+// format past the format's left edge, in both material nodes.
+TEST_F(USDMaterialTest, ALiveTextureMapsTheFormatToZeroToOneInsideItsOverscan)
+{
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    ASSERT_GT(format.width(), 8);
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    ASSERT_TRUE(bool(constant));
+    KnobChoice* extent = dynamic_cast<KnobChoice*>(constant->getKnobByName(kNativeGeneratorParamExtent).get());
+    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamBottomLeft).get());
+    KnobDouble* size = dynamic_cast<KnobDouble*>(constant->getKnobByName(kNativeGeneratorParamSize).get());
+    ASSERT_TRUE(extent && bottomLeft && size);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    const int half = format.width() / 2;
+    bottomLeft->setValue(format.x1 - half, ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1, ViewSpec::all(), 1);
+    size->setValue(2 * half, ViewSpec::all(), 0);
+    size->setValue(format.height(), ViewSpec::all(), 1);
+    const double width = format.width() + half;
+    const PXR_NS::GfVec2f expectedScale((float)(format.width() / width), 1.f);
+    const PXR_NS::GfVec2f expectedTranslation((float)(half / width), 0.f);
+
+    NodePtr lit = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr emissive = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Emissive1", { constant });
+    ASSERT_TRUE(lit && emissive);
+    ASSERT_TRUE(lit->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    const struct {
+        NodePtr material;
+        const char* path;
+        const char* input;
+    } cases[] = {
+        { lit, "/Material1", "diffuseColor" },
+        { emissive, "/Emissive1", "emissiveColor" },
+    };
+    for (const auto& c : cases) {
+        PXR_NS::UsdStageRefPtr stage = compose(c.material);
+        ASSERT_TRUE(bool(stage)) << c.path;
+        const PXR_NS::UsdShadeShader texture = textureOf(stage, c.path, c.input);
+        ASSERT_TRUE(bool(texture)) << c.path;
+        PXR_NS::UsdShadeConnectableAPI source;
+        PXR_NS::TfToken sourceName;
+        PXR_NS::UsdShadeAttributeType sourceType;
+        ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("st")).GetConnectedSource(&source, &sourceName, &sourceType)) << c.path;
+        const PXR_NS::UsdShadeShader transform(source.GetPrim());
+        PXR_NS::TfToken id;
+        ASSERT_TRUE(transform.GetShaderId(&id));
+        EXPECT_EQ(PXR_NS::TfToken("UsdTransform2d"), id) << c.path;
+        EXPECT_EQ(PXR_NS::TfToken("result"), sourceName);
+        ASSERT_TRUE(transform.GetInput(PXR_NS::TfToken("in")).GetConnectedSource(&source, &sourceName, &sourceType)) << c.path;
+        ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetShaderId(&id));
+        EXPECT_EQ(PXR_NS::TfToken("UsdPrimvarReader_float2"), id) << c.path;
+
+        const PXR_NS::UsdAttribute scale = transform.GetInput(PXR_NS::TfToken("scale")).GetAttr();
+        const PXR_NS::UsdAttribute translation = transform.GetInput(PXR_NS::TfToken("translation")).GetAttr();
+        EXPECT_EQ((std::size_t)0, scale.GetNumTimeSamples()) << "a static image's window is one default";
+        PXR_NS::GfVec2f value;
+        ASSERT_TRUE(scale.Get(&value));
+        EXPECT_NEAR(expectedScale[0], value[0], 1e-6) << c.path;
+        EXPECT_NEAR(expectedScale[1], value[1], 1e-6) << c.path;
+        ASSERT_TRUE(translation.Get(&value));
+        EXPECT_NEAR(expectedTranslation[0], value[0], 1e-6) << c.path;
+        EXPECT_NEAR(expectedTranslation[1], value[1], 1e-6) << c.path;
+
+        // Consumers render the window the coordinates were authored for.
+        ScenePayload payload;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  c.material->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+            << error;
+        const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+        ASSERT_EQ((std::size_t)1, sources.size()) << c.path;
+        const LiveTextureWindow window = sources[0].getWindow(1.);
+        EXPECT_EQ(RectI(format.x1, format.y1, format.x2, format.y2), window.format) << c.path;
+        EXPECT_EQ(RectI(format.x1 - half, format.y1, format.x2, format.y2), window.window) << c.path;
+    }
 }
 
 TEST_F(USDMaterialTest, TheLitMaterialOffersNoShaderChoice)

@@ -44,15 +44,20 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -69,6 +74,7 @@
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "SceneTestEffect.h"
@@ -816,4 +822,135 @@ TEST_F(USDRenderStormTest, AnAnimatedLiveTextureFollowsTheFrame)
     ASSERT_GT(tenth.count, 500);
     EXPECT_GT(first.rgb[0], 5. * first.rgb[1]) << "frame 1 " << first.rgb[0] << ", " << first.rgb[1] << ", " << first.rgb[2];
     EXPECT_GT(tenth.rgb[1], 5. * tenth.rgb[0]) << "frame 10 " << tenth.rgb[0] << ", " << tenth.rgb[1] << ", " << tenth.rgb[2];
+}
+
+// A quad whose u runs from -0.5 to 1, bound to an emissive material showing a Constant that covers
+// half a format past the format's left edge and the format's left half. Coordinates 0 to 1 span the
+// format, so the overscan shows at negative u, the left third of the quad: the image covers its
+// left two thirds, and the right third, the format's right half, is black.
+TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString quadPath = tmp.path() + QString::fromUtf8("/quad.usda");
+    {
+        QFile file(quadPath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("#usda 1.0\n"
+                   "(\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\n"
+                   "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                   "    int[] faceVertexCounts = [4]\n"
+                   "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                   "    point3f[] points = [(-1.5, -0.5, 0), (1.5, -0.5, 0), (1.5, 0.5, 0), (-1.5, 0.5, 0)]\n"
+                   "    texCoord2f[] primvars:st = [(-0.5, 0), (1, 0), (1, 1), (-0.5, 1)] (\n        interpolation = \"vertex\"\n    )\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                   "    rel material:binding = </Live>\n"
+                   "}\n");
+    }
+
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    ASSERT_GT(format.width(), 8);
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(constant && material && reader && camera && merge && render);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobChoice* extent = knob<KnobChoice>(constant, kNativeGeneratorParamExtent);
+    KnobDouble* bottomLeft = knob<KnobDouble>(constant, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(constant, kNativeGeneratorParamSize);
+    KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+    KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
+    KnobInt* renderSize = knob<KnobInt>(render, kNatronParamFormatSize);
+    KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
+    ASSERT_TRUE(color && extent && bottomLeft && size && file && renderCamera && renderSize && par);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    extent->setValueFromID(kNativeGeneratorExtentSize, 0);
+    const int half = format.width() / 2;
+    bottomLeft->setValue(format.x1 - half, ViewSpec::all(), 0);
+    bottomLeft->setValue(format.y1, ViewSpec::all(), 1);
+    size->setValue(2 * half, ViewSpec::all(), 0);
+    size->setValue(format.height(), ViewSpec::all(), 1);
+    file->setValue(quadPath.toStdString());
+    ASSERT_TRUE(setString(material, kSceneParamPrimPath, "/Live"));
+    ASSERT_TRUE(setString(camera, kSceneParamPrimPath, "/Cam"));
+    ASSERT_TRUE(setTriple(camera, kSceneParamTranslate, 0., 0., 10.));
+    connectNodes(constant, material, kUSDEmissiveMaterialInputEmissive, true);
+    connectNodes(reader, merge, 0, true);
+    connectNodes(material, merge, 1, true);
+    connectNodes(camera, merge, 2, true);
+    connectNodes(merge, render, 0, true);
+    renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
+    renderSize->setValue(kWidth, ViewSpec::all(), 0);
+    renderSize->setValue(kHeight, ViewSpec::all(), 1);
+    par->setValue(1.);
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    bool rendered = false;
+    std::thread worker([&]() {
+        rendered = renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error);
+    });
+    worker.join();
+    ASSERT_TRUE(rendered) << error;
+    ASSERT_EQ(3u, planes.size());
+    const std::vector<float>& rgba = planes[0].pixels;
+    const std::vector<float>& primId = planes[2].pixels;
+    const std::uint32_t quadId = bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/Quad")));
+    int left = kWidth;
+    int right = -1;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            if (bitsOf(primId[(std::size_t)y * (std::size_t)kWidth + (std::size_t)x]) == quadId) {
+                left = std::min(left, x);
+                right = std::max(right, x);
+            }
+        }
+    }
+    ASSERT_GT(right - left, 30) << "the quad is drawn";
+
+    // Mean red and green over the quad's pixels whose horizontal position across it is in [from, to].
+    const auto meanOver = [&](double from,
+                              double to,
+                              double rg[2]) {
+        int count = 0;
+        rg[0] = rg[1] = 0.;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+                const double across = (x - left + 0.5) / (double)(right - left + 1);
+                if ((bitsOf(primId[i]) != quadId) || (across < from) || (across > to)) {
+                    continue;
+                }
+                rg[0] += rgba[i * 4 + 0];
+                rg[1] += rgba[i * 4 + 1];
+                ++count;
+            }
+        }
+        if (count) {
+            rg[0] /= count;
+            rg[1] /= count;
+        }
+
+        return count;
+    };
+    double overscan[2];
+    double formatLeft[2];
+    double formatRight[2];
+    ASSERT_GT(meanOver(0.05, 0.28, overscan), 50);
+    ASSERT_GT(meanOver(0.39, 0.61, formatLeft), 50);
+    ASSERT_GT(meanOver(0.72, 0.95, formatRight), 50);
+    EXPECT_GT(overscan[0], 0.9) << "u < 0 reads the overscan, red " << overscan[0];
+    EXPECT_LT(overscan[1], 0.05);
+    EXPECT_GT(formatLeft[0], 0.9) << "0 < u < 0.5 is the format's left half, red " << formatLeft[0];
+    EXPECT_LT(formatRight[0], 0.05) << "0.5 < u < 1 is the format's right half the image does not cover, red " << formatRight[0];
 }

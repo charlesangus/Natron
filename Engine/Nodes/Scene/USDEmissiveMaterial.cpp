@@ -43,6 +43,7 @@ namespace {
 const char* const kSurfaceName = "PreviewSurface";
 const char* const kReaderName = "TexCoordReader";
 const char* const kTextureName = "emissiveColorTexture";
+const char* const kTransformName = "emissiveColorTransform";
 // The layer of the input's image a live texture reads.
 const char* const kLiveTextureLayer = "rgba";
 } // anonymous namespace
@@ -169,7 +170,8 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
         return true;
     }
 
-    // The image, read at the "st" primvar, its rgb scaled by Emissive Color and fed to the emission.
+    // The image, read at the "st" primvar (through the window transform of a live texture), its rgb
+    // scaled by Emissive Color and fed to the emission.
     PXR_NS::UsdShadeShader reader = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken(kReaderName)));
     const PXR_NS::UsdShadeInput varname = reader ? reader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String) : PXR_NS::UsdShadeInput();
     const PXR_NS::UsdShadeOutput readerOutput = reader ? reader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2) : PXR_NS::UsdShadeOutput();
@@ -188,9 +190,11 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
     if (hasLive) {
         const LiveTextureSource recorded = SceneNodeAuthoring::recordLiveTexture(edit, live);
         textured = textured && fileInput
-            && authorValue(fileInput.GetAttr(), edit, recorded.varying, [&recorded](double frame) { return PXR_NS::SdfAssetPath(recorded.getUri(frame)); });
+            && authorValue(fileInput.GetAttr(), edit, recorded.varying, [&recorded](double frame) { return PXR_NS::SdfAssetPath(recorded.getUri(frame)); })
+            && SceneNodeAuthoring::connectLiveTextureCoordinates(stage, edit, path.AppendChild(PXR_NS::TfToken(kTransformName)), recorded, readerOutput, st);
     } else {
-        textured = textured && fileInput && fileInput.Set(PXR_NS::SdfAssetPath(file));
+        textured = textured && fileInput && fileInput.Set(PXR_NS::SdfAssetPath(file))
+            && st && st.ConnectToSource(readerOutput);
     }
     textured = textured
         && colorSpace && colorSpace.Set(PXR_NS::TfToken("auto"))
@@ -199,7 +203,7 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
 
                    return PXR_NS::GfVec4f(c[0], c[1], c[2], 1.f);
                })
-        && st && st.ConnectToSource(readerOutput) && rgb && emissiveInput.ConnectToSource(rgb);
+        && rgb && emissiveInput.ConnectToSource(rgb);
     if (!textured) {
         *errorMessage = tr("USD could not author the emissive texture of the material at %1.").arg(pathString).toStdString();
 

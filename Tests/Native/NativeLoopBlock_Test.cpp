@@ -506,6 +506,20 @@ protected:
         return true;
     }
 
+    static bool setDoubleKnob(const NodePtr& node,
+                              const char* name,
+                              double value)
+    {
+        KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+
+        if (!knob) {
+            return false;
+        }
+        knob->setValue(value, ViewSpec::all(), 0);
+
+        return true;
+    }
+
     static bool setIterations(const NodePtr& node,
                               int iterations)
     {
@@ -1071,9 +1085,9 @@ TEST_F(NativeLoopBlockTest, FramesIterateOverARelativeFrameRange)
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(end->connectInput(begin, 0));
     ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStart, -2));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, 2));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 1));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesBefore, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesAfter, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 1.));
 
     // The body is asked for every iteration's frame.
     EffectInstancePtr effect = end->getEffectInstance();
@@ -1123,14 +1137,110 @@ TEST_F(NativeLoopBlockTest, FramesIterateOverARelativeFrameRange)
 
     // Frame Step 2 keeps -1, 1 and 3.
     ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamOperation, kLoopEndParamOperationSum));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 2));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 2.));
     float value = -10.f;
     ASSERT_TRUE(renderedValue(end, &value));
     EXPECT_NEAR(3., value, 1e-5);
 
-    // An empty range is black, with a warning.
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, -3));
-    expectBlackWithMessage(end, eMessageTypeWarning, QString::fromUtf8("Frame End is before Frame Start"));
+    // Both distances 0 is the current frame alone.
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesBefore, 0.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesAfter, 0.));
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(1., value, 1e-5);
+
+    // Max Iterations caps the samples of the range: 4 frames by 0.001 is 4001 of them.
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesBefore, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesAfter, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 0.001));
+    expectBlackWithMessage(end, eMessageTypeError, QString::fromUtf8("4001 iterations is more than Max Iterations (1024)"));
+}
+
+// Half a frame before the current frame 1 to it by 0.1 is six samples, 0.5, 0.6, ..., 1, both ends
+// included though 0.5 / 0.1 rounds below 5. A Constant whose value is the time gives each sample's
+// time: their mean is 0.75, their minimum 0.5, values whole frames alone would not give.
+TEST_F(NativeLoopBlockTest, FramesIterateOverFractionalTimes)
+{
+    NodePtr constant = createConstant(0.);
+    NodePtr begin = createLoopBegin();
+    NodePtr end = createLoopEnd(1, kLoopEndParamOperationMean);
+    ASSERT_TRUE(constant && begin && end);
+    KnobColorPtr color = std::dynamic_pointer_cast<KnobColor>(constant->getKnobByName(kConstantParamColor));
+    ASSERT_TRUE(bool(color));
+    for (int twentieth = 0; twentieth <= 40; ++twentieth) {
+        const double time = twentieth / 20.;
+        for (int i = 0; i < color->getDimension(); ++i) {
+            color->setValueAtTime(time, time, ViewSpec::all(), i);
+        }
+    }
+    ASSERT_TRUE(begin->connectInput(constant, 0));
+    ASSERT_TRUE(end->connectInput(begin, 0));
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesBefore, 0.5));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesAfter, 0.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 0.1));
+
+    const std::set<double> needed = framesNeeded(end);
+    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
+        ASSERT_EQ(6u, needed.size());
+        int k = 0;
+        for (double time : needed) {
+            EXPECT_NEAR(0.5 + 0.1 * k, time, 1e-9) << "sample " << k;
+            ++k;
+        }
+        // The last sample is the current frame exactly, sharing its renders and cache entries.
+        EXPECT_EQ(kTime, *needed.rbegin());
+    } else {
+        EXPECT_EQ(std::set<double>({ kTime }), needed);
+    }
+
+    struct Case {
+        const char* operation;
+        float value;
+    };
+    const Case cases[] = {
+        { kLoopEndParamOperationMean, 0.75f },
+        { kLoopEndParamOperationSum, 4.5f },
+        { kLoopEndParamOperationMin, 0.5f },
+        { kLoopEndParamOperationMax, 1.f },
+    };
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.operation);
+        ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamOperation, c.operation));
+        float value = -10.f;
+        ASSERT_TRUE(renderedValue(end, &value));
+        EXPECT_NEAR(c.value, value, 1e-5);
+
+        std::vector<int> unplanned;
+        const RenderMismatch m = renderBothWaysDirect(end, kTime, ViewIdx(0), 0, fullWindow(), poolSizes, std::function<void()>(), 0.f, &unplanned);
+        EXPECT_FALSE(m.any) << describe(m);
+        ASSERT_EQ(poolSizes.size(), unplanned.size());
+        for (std::size_t i = 0; i < unplanned.size(); ++i) {
+            EXPECT_EQ(0, unplanned[i]) << "pool " << poolSizes[i];
+        }
+    }
+
+    // The stop condition reads loop.frame as the sample's fractional time: stopping past 0.75
+    // keeps 0.5, 0.6 and 0.7.
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamOperation, kLoopEndParamOperationMax));
+    ASSERT_TRUE(setStopCondition(end, "loop.frame > 0.75"));
+    float value = -10.f;
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(0.7, value, 1e-5);
+    ASSERT_TRUE(setStopCondition(end, ""));
+
+    // A fractional step changes the hash, and with it the cached output.
+    EffectInstancePtr effect = end->getEffectInstance();
+    const U64 hash = effect->getRenderHash();
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 0.25));
+    EXPECT_NE(hash, effect->getRenderHash());
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(1., value, 1e-5);
+    ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamOperation, kLoopEndParamOperationMean));
+    ASSERT_TRUE(renderedValue(end, &value));
+    EXPECT_NEAR(0.75, value, 1e-5);
 }
 
 // A body that is the same at every frame has one output for all the iterated frames.
@@ -1295,9 +1405,9 @@ TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLo
     ASSERT_TRUE(begin->connectInput(constant, 0));
     ASSERT_TRUE(end->connectInput(begin, 0));
     ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStart, -2));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, 2));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 1));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesBefore, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesAfter, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 1.));
     ASSERT_TRUE(setForceCaching(end, true));
     const std::string controlVar = getApp()->getAppIDString() + "." + control->getFullyQualifiedName();
     ASSERT_TRUE(setStopCondition(end, "loop.iteration >= " + controlVar + ".color.getValue(0)"));

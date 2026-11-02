@@ -59,8 +59,8 @@
 #define kLoopEndParamIterateOver "iterateOver"
 #define kLoopEndParamIterateOverCount "count"
 #define kLoopEndParamIterateOverFrames "frames"
-#define kLoopEndParamFrameStart "frameStart"
-#define kLoopEndParamFrameEnd "frameEnd"
+#define kLoopEndParamFramesBefore "framesBefore"
+#define kLoopEndParamFramesAfter "framesAfter"
 #define kLoopEndParamFrameStep "frameStep"
 #define kLoopEndParamStopCondition "stopCondition"
 #define kLoopEndParamOperation "operation"
@@ -83,6 +83,8 @@
 #define kLoopEndParamClearCache "clearCache"
 
 #define kLoopEndDefaultMaxIterations 1024
+#define kLoopEndMinFrameStep 0.001
+#define kLoopEndFrameSnap 1e-6
 
 NATRON_NAMESPACE_ENTER
 
@@ -370,8 +372,14 @@ private:
         int start = 0;
         int step = 1;
         bool frames = false;
-        int frameStart = 0;
-        int frameStep = 1;
+        // Iterate Over Frames: iteration k renders the body at the frame plus frameFirst + k *
+        // frameStep, the last at the frame plus frameLast.
+        double frameFirst = 0.;
+        double frameLast = 0.;
+        double frameStep = 1.;
+        // Iterate Over Frames with a fractional distance or step: the iterations are apart by
+        // fractions of a frame, which do not subtract exactly.
+        bool fractionalFrames = false;
         // Iterate Over Count under Cross Frame with Subframes on: the iterations of frame f render
         // the body at f - 1 + (k + 1) / count, spread over the interval from the frame before.
         bool subframes = false;
@@ -439,10 +447,10 @@ private:
                        "body read them. Iterate Over Count runs Iterations iterations, loop.iteration "
                        "being Start plus the iteration number times Step, all at the current frame, or, under "
                        "Cross Frame with Subframes, spread over the interval from the frame before. "
-                       "Iterate Over Frames runs one iteration per frame from the current frame plus "
-                       "Frame Start to the current frame plus Frame End, by Frame Step, rendering the "
-                       "body at that frame; loop.iteration is then the iteration number and loop.frame "
-                       "that frame. Accumulate folds the iterations together in order with the "
+                       "Iterate Over Frames runs one iteration per sample from Frames Before the current "
+                       "frame to Frames After it, both included, by Frame Step, rendering the body at "
+                       "that time, fractional ones included; loop.iteration is then the iteration "
+                       "number and loop.frame that time. Accumulate folds the iterations together in order with the "
                        "Operation: their mean, sum, minimum or maximum, each iteration over the ones "
                        "before it (Over), or under them (Under); Reverse Order folds from the last "
                        "iteration to the first. Feedback feeds each iteration's output to the LoopBegins "
@@ -703,9 +711,9 @@ private:
     KnobBoolWPtr _singlePass;
     KnobIntWPtr _singlePassIteration;
     KnobChoiceWPtr _iterateOver;
-    KnobIntWPtr _frameStart;
-    KnobIntWPtr _frameEnd;
-    KnobIntWPtr _frameStep;
+    KnobDoubleWPtr _framesBefore;
+    KnobDoubleWPtr _framesAfter;
+    KnobDoubleWPtr _frameStep;
     KnobStringWPtr _stopCondition;
     KnobBoolWPtr _crossFrame;
     KnobIntWPtr _startFrame;

@@ -409,7 +409,16 @@ double
 LoopEnd::Resolved::offset(int k) const
 {
     if (frames) {
-        return (double)frameStart + (double)k * frameStep;
+        const double at = frameFirst + (double)k * frameStep;
+        const double snap = kLoopEndFrameSnap * frameStep;
+        if ((k == count - 1) && (std::abs(at - frameLast) <= snap)) {
+            return frameLast;
+        }
+        // Samples meant to land on whole frames, the current one above all, land there exactly,
+        // so they share whole-frame renders and cache entries.
+        const double whole = std::round(at);
+
+        return (std::abs(at - whole) <= snap) ? whole : at;
     }
     if (subframes && (count > 1)) {
         // The last iteration lands on the frame itself, exactly.
@@ -424,7 +433,7 @@ LoopEnd::Resolved::loopFrame(double frameK,
                              int k) const
 {
     const double frame = frameK - offset(k);
-    if (!subframes) {
+    if (!subframes && !fractionalFrames) {
         return frame;
     }
     // Undoing a fraction of a frame can miss a whole frame by a rounding error, which would make
@@ -442,7 +451,7 @@ LoopEnd::Resolved::iterationFrom(int i,
                                  double* frameJ,
                                  double* timeJ) const
 {
-    if (!subframes) {
+    if (!subframes && !fractionalFrames) {
         // Whole frames apart, which subtract exactly.
         const double back = offset(i) - offset(j);
         *frameJ = frameI - back;
@@ -1494,8 +1503,8 @@ LoopEnd::appendFeedbackKnobsHash(ContentHasher& h) const
         _iterations.lock(),
         _start.lock(),
         _step.lock(),
-        _frameStart.lock(),
-        _frameEnd.lock(),
+        _framesBefore.lock(),
+        _framesAfter.lock(),
         _frameStep.lock(),
         _stopCondition.lock(),
         _maxIterations.lock(),
@@ -1998,34 +2007,48 @@ LoopEnd::initializeKnobs()
     page->addKnob(step);
     _step = step;
 
-    KnobIntPtr frameStart = createKnob<KnobInt>(tr("Frame Start"));
-    frameStart->setName(kLoopEndParamFrameStart);
-    frameStart->setAnimationEnabled(false);
-    frameStart->setHintToolTip(tr("The first frame iterated over, relative to the current frame."));
-    frameStart->setDisplayMinimum(-10);
-    frameStart->setDisplayMaximum(10);
-    frameStart->setDefaultValue(-2);
-    page->addKnob(frameStart);
-    _frameStart = frameStart;
+    KnobDoublePtr framesBefore = createKnob<KnobDouble>(tr("Frames Before"));
+    framesBefore->setName(kLoopEndParamFramesBefore);
+    framesBefore->setAnimationEnabled(false);
+    framesBefore->setHintToolTip(tr("How far before the current frame the first iteration renders the body, in frames. "
+                                    "Fractional values render subframes: 0.5 starts half a frame before."));
+    framesBefore->setMinimum(0.);
+    framesBefore->setDisplayMinimum(0.);
+    framesBefore->setDisplayMaximum(10.);
+    framesBefore->setIncrement(0.1);
+    framesBefore->setDecimals(3);
+    framesBefore->setDefaultValue(2.);
+    page->addKnob(framesBefore);
+    _framesBefore = framesBefore;
 
-    KnobIntPtr frameEnd = createKnob<KnobInt>(tr("Frame End"));
-    frameEnd->setName(kLoopEndParamFrameEnd);
-    frameEnd->setAnimationEnabled(false);
-    frameEnd->setHintToolTip(tr("The last frame iterated over, relative to the current frame. Before Frame Start, the output is black."));
-    frameEnd->setDisplayMinimum(-10);
-    frameEnd->setDisplayMaximum(10);
-    frameEnd->setDefaultValue(2);
-    page->addKnob(frameEnd);
-    _frameEnd = frameEnd;
+    KnobDoublePtr framesAfter = createKnob<KnobDouble>(tr("Frames After"));
+    framesAfter->setName(kLoopEndParamFramesAfter);
+    framesAfter->setAnimationEnabled(false);
+    framesAfter->setHintToolTip(tr("How far after the current frame the last iteration renders the body, in frames. "
+                                   "Fractional values render subframes."));
+    framesAfter->setMinimum(0.);
+    framesAfter->setDisplayMinimum(0.);
+    framesAfter->setDisplayMaximum(10.);
+    framesAfter->setIncrement(0.1);
+    framesAfter->setDecimals(3);
+    framesAfter->setDefaultValue(2.);
+    page->addKnob(framesAfter);
+    _framesAfter = framesAfter;
 
-    KnobIntPtr frameStep = createKnob<KnobInt>(tr("Frame Step"));
+    KnobDoublePtr frameStep = createKnob<KnobDouble>(tr("Frame Step"));
     frameStep->setName(kLoopEndParamFrameStep);
     frameStep->setAnimationEnabled(false);
-    frameStep->setHintToolTip(tr("How many frames apart the iterated frames are."));
-    frameStep->setMinimum(1);
-    frameStep->setDisplayMinimum(1);
-    frameStep->setDisplayMaximum(10);
-    frameStep->setDefaultValue(1);
+    frameStep->setHintToolTip(tr("How many frames apart the iterations render the body, from Frames Before the current "
+                                 "frame to Frames After it, both included. A fraction renders subframes: Frames Before "
+                                 "0.5, Frames After 0 and Frame Step 0.1 render the body at f - 0.5, f - 0.4, ..., f, "
+                                 "6 iterations. An input that only has whole frames, such as an image sequence, "
+                                 "holds each frame up to the next one."));
+    frameStep->setMinimum(kLoopEndMinFrameStep);
+    frameStep->setDisplayMinimum(0.1);
+    frameStep->setDisplayMaximum(10.);
+    frameStep->setIncrement(0.1);
+    frameStep->setDecimals(3);
+    frameStep->setDefaultValue(1.);
     page->addKnob(frameStep);
     _frameStep = frameStep;
 
@@ -2131,7 +2154,7 @@ LoopEnd::initializeKnobs()
     KnobIntPtr maxIterations = createKnob<KnobInt>(tr("Max Iterations"));
     maxIterations->setName(kLoopEndParamMaxIterations);
     maxIterations->setAnimationEnabled(false);
-    maxIterations->setHintToolTip(tr("A safety cap: more Iterations than this is an error, and the output is black."));
+    maxIterations->setHintToolTip(tr("A safety cap: more iterations than this, from Iterations or from the frame range under Iterate Over Frames, is an error, and the output is black."));
     maxIterations->setMinimum(1);
     maxIterations->setMaximum(kContextCountWarningThreshold);
     maxIterations->setDisplayMinimum(1);
@@ -2228,11 +2251,11 @@ LoopEnd::resolve() const
     KnobBoolPtr singlePass = _singlePass.lock();
     KnobIntPtr singlePassIteration = _singlePassIteration.lock();
     KnobChoicePtr iterateOver = _iterateOver.lock();
-    KnobIntPtr frameStart = _frameStart.lock();
-    KnobIntPtr frameEnd = _frameEnd.lock();
-    KnobIntPtr frameStep = _frameStep.lock();
+    KnobDoublePtr framesBefore = _framesBefore.lock();
+    KnobDoublePtr framesAfter = _framesAfter.lock();
+    KnobDoublePtr frameStep = _frameStep.lock();
 
-    if (!iterations || !start || !step || !maxIterations || !mode || !singlePass || !singlePassIteration || !iterateOver || !frameStart || !frameEnd || !frameStep) {
+    if (!iterations || !start || !step || !maxIterations || !mode || !singlePass || !singlePassIteration || !iterateOver || !framesBefore || !framesAfter || !frameStep) {
         resolved.message = "LoopEnd: missing knobs.";
 
         return resolved;
@@ -2251,11 +2274,23 @@ LoopEnd::resolve() const
     resolved.loopName = loopNameOf(getNode());
     resolved.feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
     resolved.frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
+    const int cap = maxIterations->getValue();
     if (resolved.frames) {
-        resolved.frameStart = frameStart->getValue();
-        resolved.frameStep = std::max(1, frameStep->getValue());
-        const int end = frameEnd->getValue();
-        resolved.count = (end < resolved.frameStart) ? 0 : ((end - resolved.frameStart) / resolved.frameStep + 1);
+        const double before = std::max(0., framesBefore->getValue());
+        const double after = std::max(0., framesAfter->getValue());
+        resolved.frameFirst = -before;
+        resolved.frameLast = after;
+        resolved.frameStep = std::max(kLoopEndMinFrameStep, frameStep->getValue());
+        resolved.fractionalFrames = (before != std::round(before)) || (after != std::round(after)) || (resolved.frameStep != std::round(resolved.frameStep));
+        // Within kLoopEndFrameSnap of a step, the range ends on a sample, which division rounding
+        // would otherwise drop.
+        const double samples = std::floor((before + after) / resolved.frameStep + kLoopEndFrameSnap) + 1.;
+        if (samples > (double)cap) {
+            resolved.message = tr("%1 iterations is more than Max Iterations (%2).").arg(std::min(samples, 1e15), 0, 'f', 0).arg(cap).toStdString();
+
+            return resolved;
+        }
+        resolved.count = (int)samples;
         resolved.start = 0;
         resolved.step = 1;
     } else {
@@ -2265,12 +2300,10 @@ LoopEnd::resolve() const
         KnobBoolPtr subframes = _subframes.lock();
         resolved.subframes = isCrossFrame() && subframes && subframes->getValue();
     }
-    const int cap = maxIterations->getValue();
     if (resolved.count <= 0) {
         resolved.count = 0;
         resolved.messageType = eMessageTypeWarning;
-        resolved.message = resolved.frames ? tr("Frame End is before Frame Start: the output is black.").toStdString()
-                                           : tr("Iterations is 0: the output is black.").toStdString();
+        resolved.message = tr("Iterations is 0: the output is black.").toStdString();
 
         return resolved;
     }
@@ -2511,8 +2544,8 @@ LoopEnd::refreshKnobVisibility()
         std::make_pair(KnobIPtr(_iterations.lock()), !frames),
         std::make_pair(KnobIPtr(_start.lock()), !frames),
         std::make_pair(KnobIPtr(_step.lock()), !frames),
-        std::make_pair(KnobIPtr(_frameStart.lock()), frames),
-        std::make_pair(KnobIPtr(_frameEnd.lock()), frames),
+        std::make_pair(KnobIPtr(_framesBefore.lock()), frames),
+        std::make_pair(KnobIPtr(_framesAfter.lock()), frames),
         std::make_pair(KnobIPtr(_frameStep.lock()), frames),
         std::make_pair(KnobIPtr(_startFrame.lock()), crossFrame),
         std::make_pair(KnobIPtr(_subframes.lock()), crossFrame && !frames),
@@ -2617,8 +2650,8 @@ LoopEnd::knobChanged(KnobI* k,
         _singlePass.lock(),
         _singlePassIteration.lock(),
         _iterateOver.lock(),
-        _frameStart.lock(),
-        _frameEnd.lock(),
+        _framesBefore.lock(),
+        _framesAfter.lock(),
         _frameStep.lock(),
         _stopCondition.lock(),
         _crossFrame.lock(),

@@ -20,14 +20,15 @@ M259 - GPU Placement Under Render Contexts.
   - `loop.count`: `n`, the number of iterations the loop defines;
   - `loop.t`: `k / (n - 1)`, 0 for a single iteration;
   - `loop.frame`: the frame the iteration renders the body at, fractional under
-    [Subframes](#subframes).
+    [Subframes](#subframes) or a fractional frame range.
 - The same values are set as `loops.<name>.*`, `name` being the LoopEnd's `name`. A nested
   loop sets its own `loop.*` and keeps the outer loop's `loops.<name>.*`, so a body reads its
   own loop as `loop.*` and any enclosing one by name.
 - Knob drivers in the body read these variables; body nodes whose knobs read none keep their
   context key and render once for every iteration at the same frame, sharing the cache with
-  ordinary renders of that frame. Under Subframes the iterations render at different times, so an
-  animated body node renders, and is cached, once per iteration.
+  ordinary renders of that frame. Under Subframes or a frame range the iterations render at
+  different times, fractional ones included, so an animated body node renders, and is cached,
+  once per iteration.
 
 ## Drivers
 
@@ -79,12 +80,20 @@ M259 - GPU Placement Under Render Contexts.
 
 - `iterateOver` Count: `iterations` iterations, all at the current frame, except under
   [Subframes](#subframes). 0 iterations outputs black with a warning.
-- `iterateOver` Frames: one iteration per frame from the current frame plus `frameStart`
-  to the current frame plus `frameEnd`, every `frameStep` frames (default -2 to 2 by 1),
-  the body rendered at that frame. The body's frames are reported as the frames the LoopEnd
-  needs. `frameEnd` before `frameStart` outputs black with a warning.
-- More than `maxIterations` (default 1024, at most 4096) is an error rather than a
-  truncated loop.
+- `iterateOver` Frames: one iteration per sample from `framesBefore` frames before the
+  current frame f to `framesAfter` frames after it, every `frameStep` frames, both ends
+  included (default 2 before, 2 after, step 1: f-2 to f+2). The distances are non-negative
+  and `frameStep` is at least 0.001. Fractional values render subframes: before 0.5, after
+  0 and step 0.1 render the body at f-0.5, f-0.4, f-0.3, f-0.2, f-0.1 and f, 6 iterations,
+  and `loop.frame` is that fractional time. The last sample is kept when rounding puts it a
+  hair past the range, and a sample within rounding of a whole frame lands on it exactly.
+  The body's times are reported as the frames the LoopEnd needs. An input with whole frames
+  only, such as an image sequence, holds each frame up to the next, so whole values iterate
+  over whole frames; unlike Count there is no [Subframes](#subframes) switch, the values
+  themselves say whether subframes render. Mean divides by the number of samples.
+- More than `maxIterations` (default 1024, at most 4096) iterations, counted from
+  `iterations` or from the samples of the frame range, is an error rather than a truncated
+  loop.
 
 ## Modes
 
@@ -130,9 +139,9 @@ M259 - GPU Placement Under Render Contexts.
   feeding it, a parameter one of its expressions reads, or a LoopEnd iteration parameter
   changes.
 - Frames: with `iterateOver` Frames, iteration k renders the body at its own frame and reads
-  the previous iteration's output, rendered at the frame before it by `frameStep`. A body
-  adding the frame's image onto the LoopBegin's leaves a trail of the frames from
-  `frameStart` to `frameEnd`. A time offset in the body offsets each iteration again: a node
+  the previous iteration's output, rendered `frameStep` frames before it. A body
+  adding the frame's image onto the LoopBegin's leaves a trail of the samples from
+  `framesBefore` before the current frame to `framesAfter` after it. A time offset in the body offsets each iteration again: a node
   reading the LoopBegin one frame back, over three iterations, reads the loop's input three
   frames back. Feedback from one output frame to the next is `crossFrame`: see
   [Cross Frame](#cross-frame).

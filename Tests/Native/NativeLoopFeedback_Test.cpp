@@ -754,16 +754,16 @@ TEST_F(NativeLoopFeedbackTest, FramesLeaveATrail)
     ASSERT_TRUE(merge->connectInput(frames, 1));
     ASSERT_TRUE(end->connectInput(merge, 0));
     ASSERT_TRUE(setChoiceKnob(end, kLoopEndParamIterateOver, kLoopEndParamIterateOverFrames));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStart, 0));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameEnd, 2));
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 1));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesBefore, 0.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFramesAfter, 2.));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 1.));
 
     // The frames 1, 2 and 3 onto 0.5.
     expectValue(end, 6.5f, "frames 0 to 2");
     expectBothWays(end, countingWindow());
 
     // The frames 1 and 3.
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 2));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 2.));
     expectValue(end, 4.5f, "frame step 2");
     expectBothWays(end, countingWindow());
 }
@@ -893,7 +893,7 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
     expectMoved("edit the knob the expression reads");
     ASSERT_TRUE(setIntKnob(end, kLoopEndParamStart, 2));
     expectMoved("LoopEnd start");
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 3));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 3.));
     expectMoved("LoopEnd frame step");
 
     const U64 beforeAdding = hash;
@@ -915,7 +915,7 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
     ASSERT_TRUE(bool(multiply));
     multiply->setValue(2., ViewSpec::all(), 0);
     EXPECT_EQ(hash, begin->getContentHash()) << "edit below the loop";
-    ASSERT_TRUE(setIntKnob(end, kLoopEndParamFrameStep, 3));
+    ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 3.));
     EXPECT_EQ(hash, begin->getContentHash()) << "LoopEnd knob set to its value";
 }
 

@@ -9,8 +9,12 @@ the frame before, so the image brightens from frame 1 towards 0.1.
   - playback: the trail brightens from frame 1 to frame 10; with Load From Cache on and the Grade
     edited so a render would go dark, frame 10 still shows the baked trail, the LoopEnd warns that
     the frames predate the edit, and a frame past the bake continues, darker, from the last one.
+  - frames: a second loop, Constant (animated) -> LoopBegin -> LoopEnd (Mean, Iterate Over
+    Frames); Frames Before 0.5, Frames After 0 and Frame Step 0.1 typed into its panel's fields
+    hold those values and render without a message; Frame Step 0.001 over Frames Before 2 is 2001
+    samples, more than Max Iterations, and the LoopEnd says so.
 Screenshots: m190-cross-frame-knobs.png, m190-bake-progress.png, m190-trail-baked.png,
-m190-trail-loaded.png in $NATRON_GUI_TEST_OUT.
+m190-trail-loaded.png, m190-fractional-frames.png in $NATRON_GUI_TEST_OUT.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m190_cross_frame.py
 """
@@ -44,13 +48,22 @@ LABELS = {
     "loadFromCache": "Load From Cache",
     "clearCache": "Clear Cache",
 }
+FRAMES_LABELS = {
+    "framesBefore": "Frames Before",
+    "framesAfter": "Frames After",
+    "frameStep": "Frame Step",
+}
 # Screen levels: the centre colour is read from a screen grab, after the viewer's display transform.
 SAME_TOLERANCE = 3
 BRIGHTER_BY = 4
 
 try:
-    from PySide6.QtCore import QMetaObject, QTimer
-    from PySide6.QtWidgets import QApplication, QProgressBar
+    from PySide6.QtCore import QMetaObject, Qt, QTimer
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QProgressBar, QWidget
+    try:
+        from PySide6.QtTest import QTest
+    except ImportError:
+        QTest = None
 
     import guitest as gt
     from guitest import check, report, require
@@ -104,6 +117,45 @@ try:
         yield ("sleep", SETTLE_MS)
         QApplication.processEvents()
         return centre_red()
+
+    def panel_of(node):
+        label = node.getLabel()
+        for panel in gt.widgets_of("NodeSettingsPanel"):
+            if not panel.isVisible():
+                continue
+            for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                try:
+                    if w.text() == label:
+                        _held.append(panel)
+                        return panel
+                except RuntimeError:
+                    continue
+        return None
+
+    def knob_field(panel, script_name):
+        """The first-dimension field of the knob named script_name: its tool tip opens with the script
+        name in bold."""
+        tag = "<b>%s</b>" % script_name
+        for w in panel.findChildren(QWidget):
+            try:
+                if w.objectName() == "dim-0" and w.isVisible() and tag in w.toolTip()[:60]:
+                    _held.append(w)
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def commit_spin(spin, text):
+        """Types text into a SpinBox and presses Return, which commits it as a user edit."""
+        spin.setFocus()
+        spin.selectAll()
+        if QTest is not None:
+            QTest.keyClicks(spin, text)
+            QTest.keyClick(spin, Qt.Key_Return)
+        else:
+            spin.setText(text)
+            spin.returnPressed.emit()
+        QApplication.processEvents()
 
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
@@ -215,6 +267,71 @@ try:
               % (PAST_BAKE, last, past))
         errors = [m for m in gt.viewer_messages() if "error" in m.lower()]
         check(not errors, "the viewer shows no error after loading (got %r)" % errors)
+
+        gt.section("frames")
+        gt.close_all_panels()
+        ramp = app.createNode(CONSTANT_ID)
+        frames_begin = app.createNode(BEGIN_ID)
+        frames_end = app.createNode(END_ID)
+        require(ramp is not None and frames_begin is not None and frames_end is not None,
+                "create the fractional-frames loop's nodes")
+        frames_end.getParam("name").setValue("samples")
+        color = ramp.getParam("color")
+        # Keyed at every twentieth of a frame around frame 6, so each sample reads its own time.
+        for twentieth in range(4 * 20, 7 * 20 + 1):
+            t = twentieth / 20.0
+            for d in range(3):
+                color.setValueAtTime(t / 10.0, t, d)
+        frames_chain = (ramp, frames_begin, frames_end)
+        for i, node in enumerate(frames_chain):
+            node.setPosition(300, i * 110)
+            if i > 0:
+                require(node.connectInput(0, frames_chain[i - 1]), "connect %s" % node.getScriptName())
+        frames_end.getParam("operation").set("mean")
+        frames_end.getParam("iterateOver").set("frames")
+        require(viewer.connectInput(0, frames_end), "the Viewer shows the fractional-frames LoopEnd")
+        for name, label in FRAMES_LABELS.items():
+            param = frames_end.getParam(name)
+            check(param is not None and param.getLabel() == label,
+                  "%s is labelled %r (got %r)" % (name, label, param.getLabel() if param is not None else None))
+
+        app.clearSelection()
+        app.selectNode(frames_end, True)
+        QApplication.processEvents()
+        view = node_graph_view()
+        if view is not None:
+            QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(frames_end) is not None, POLL_TIMEOUT_S)
+        require(ok, "the LoopEnd's settings panel opens")
+        panel = panel_of(frames_end)
+        typed = {"framesBefore": "0.5", "framesAfter": "0", "frameStep": "0.1"}
+        for name, text in typed.items():
+            field = knob_field(panel, name)
+            if check(field is not None, "the panel shows a %s field" % name):
+                commit_spin(field, text)
+        yield ("sleep", 300)
+        for name, text in typed.items():
+            value = frames_end.getParam(name).getValue()
+            check(abs(value - float(text)) < 1e-9, "%s holds %s from the panel (got %r)" % (name, text, value))
+        show_frame = yield from show(py_viewer, 6)
+        check(show_frame is not None, "the viewer shows the fractional-frames loop at frame 6")
+        message = frames_end.getPersistentMessage() or ""
+        check(message == "", "six samples from f - 0.5 to f render without a message (got %r)" % message)
+        gt.shot("m190-fractional-frames.png")
+
+        field = knob_field(panel, "framesBefore")
+        if field is not None:
+            commit_spin(field, "2")
+        field = knob_field(panel, "frameStep")
+        if field is not None:
+            commit_spin(field, "0.001")
+        yield ("sleep", SETTLE_MS)
+        step = frames_end.getParam("frameStep").getValue()
+        check(abs(step - 0.001) < 1e-9, "Frame Step takes 0.001 from the panel (got %r)" % step)
+        yield from show(py_viewer, 6)
+        message = frames_end.getPersistentMessage() or ""
+        check("2001 iterations" in message and "Max Iterations" in message,
+              "2001 samples is more than Max Iterations, and the LoopEnd says so (got %r)" % message)
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

@@ -178,7 +178,7 @@ future core work has solid ground to build on.
 | M242 | Cache Invalidation Audit | done | M178, M185 | bosley-native-nodes | E14 | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
 | M243 | Startup Pane Paint On NVIDIA | todo | - |  | E10 | [M243-startup-pane-paint-on-nvidia.md](PLAN/MILESTONES/M243-startup-pane-paint-on-nvidia.md) |
 | M244 | NVIDIA Test Fixes | todo | M239 |  | E5 | [M244-nvidia-test-fixes.md](PLAN/MILESTONES/M244-nvidia-test-fixes.md) |
-| M245 | Write Path Variables | doing | - | bosley-native-nodes | E3 | [M245-write-path-variables.md](PLAN/MILESTONES/M245-write-path-variables.md) |
+| M245 | Write Path Variables | done | - | bosley-native-nodes | E3 | [M245-write-path-variables.md](PLAN/MILESTONES/M245-write-path-variables.md) |
 | M246 | Vulkan Inference Provider | todo | M203, M204 | | E16 | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
 | M248 | Render Delegate Selection | done | M20 |  | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
@@ -303,7 +303,7 @@ future core work has solid ground to build on.
 | M201 | Trimap Removal | todo | M199 |  | E14 | [M201-trimap-removal.md](PLAN/MILESTONES/M201-trimap-removal.md) |
 | M202 | Clean-Hash Cache Stores | done | M167 | bosley-native-nodes | E14 | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |
 | M203 | ONNX Inference Backend | done | - |  | E16 | [M203-onnx-inference-backend.md](PLAN/MILESTONES/M203-onnx-inference-backend.md) |
-| M204 | AI Model Manager | doing | M203 | bosley-native-nodes | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
+| M204 | AI Model Manager | done | M203 | bosley-native-nodes | E16 | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
 | M205 | Object Mask To Roto | doing | M203, M204, M146 | bosley-native-nodes | E16 | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
 | M206 | Neural Raw Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
@@ -313,7 +313,7 @@ future core work has solid ground to build on.
 | M211 | Wavelet Retouch | doing | M209, M146 | bosley-native-nodes | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
 | M212 | Tone Equalizer | done | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
 | M213 | Contrast And Texture | done | M209 |  | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |
-| M214 | Colour Balance RGB | doing | - | bosley-native-nodes | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
+| M214 | Colour Balance RGB | done | - | bosley-native-nodes | E17 | [M214-colour-balance-rgb.md](PLAN/MILESTONES/M214-colour-balance-rgb.md) |
 | M215 | Colour Equalizer | doing | M209, M214 | bosley-native-nodes | E17 | [M215-colour-equalizer.md](PLAN/MILESTONES/M215-colour-equalizer.md) |
 | M216 | Auto-Straighten | done | - | bosley-native-nodes | E17 | [M216-auto-straighten.md](PLAN/MILESTONES/M216-auto-straighten.md) |
 | M217 | VectorGenerator Node | todo | M124 |  | E18 | [M217-vectorgenerator-node.md](PLAN/MILESTONES/M217-vectorgenerator-node.md) |

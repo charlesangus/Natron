@@ -31,7 +31,8 @@ EV_TOL = 0.05
 WHEEL_NOTCH = 120
 WHEEL_STEP_EV = 0.1
 FINE_WHEEL_STEP_EV = 0.02
-# The refit is close to linear in the step, so a fine notch moves the gain about a fifth as far.
+# Once the gains sit on the fitted curve the refit is close to linear in the step, so a fine notch
+# moves the gain about a fifth as far.
 FINE_RATIO_TOL = 0.05
 
 INSIDE = (0.0625, 0.0, 0.0)
@@ -222,9 +223,14 @@ try:
               "the wheel over the image does not zoom the viewer (boxes %r -> %r)" % (before_boxes, after_boxes))
 
         gt.section("shift scroll")
-        coarse = after_gain - before_gain
+        # The first notch also moved the band gains onto the fitted curve, so it is no measure of
+        # one step; a second plain notch is.
+        start_gain = midtones.getValue()
+        wheel(gl, red_at, 1)
+        coarse_gain = midtones.getValue()
+        coarse = coarse_gain - start_gain
         wheel(gl, red_at, 1, Qt.ShiftModifier)
-        fine = midtones.getValue() - after_gain
+        fine = midtones.getValue() - coarse_gain
         report("NOTE Midtones moves %+.4f EV a notch, %+.4f EV a Shift notch" % (coarse, fine))
         want = FINE_WHEEL_STEP_EV / WHEEL_STEP_EV
         check(coarse != 0.0 and abs(fine / coarse - want) <= FINE_RATIO_TOL,

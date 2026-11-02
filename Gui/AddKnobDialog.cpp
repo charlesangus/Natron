@@ -35,6 +35,7 @@
 #include <QTextStream>
 #include <QFormLayout>
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h" // KnobFile
 #include "Engine/KnobTypes.h"

@@ -444,6 +444,40 @@ mouseBindingToString(const MouseBinding& binding,
     return ret;
 }
 
+void
+resetMouseActionBindings(MouseAction* action,
+                         int viewer3DNavigation)
+{
+    std::vector<MouseBinding> bindings;
+    if ((action->grouping == QString::fromUtf8(kShortcutGroupViewer3D)) && getViewer3DNavigationPresetBindings(viewer3DNavigation, action->actionID, &bindings)) {
+        action->setBindings(bindings);
+
+        return;
+    }
+    action->modifiers = action->defaultModifiers;
+    action->buttons = action->defaultButtons;
+}
+
+const std::vector<Viewer3DKeyBinding>&
+getViewer3DDefaultKeyBindings()
+{
+    // The view keys are Nuke's.
+    static const std::vector<Viewer3DKeyBinding> bindings = {
+        { kShortcutIDActionViewer3DFrameSelection, kShortcutDescActionViewer3DFrameSelection, Qt::NoModifier, Qt::Key_F },
+        { kShortcutIDActionViewer3DFrameAll, kShortcutDescActionViewer3DFrameAll, Qt::NoModifier, Qt::Key_A },
+        { kShortcutIDActionViewer3DPerspective, kShortcutDescActionViewer3DPerspective, Qt::NoModifier, Qt::Key_V },
+        { kShortcutIDActionViewer3DFront, kShortcutDescActionViewer3DFront, Qt::NoModifier, Qt::Key_Z },
+        { kShortcutIDActionViewer3DBack, kShortcutDescActionViewer3DBack, Qt::ShiftModifier, Qt::Key_Z },
+        { kShortcutIDActionViewer3DRight, kShortcutDescActionViewer3DRight, Qt::NoModifier, Qt::Key_X },
+        { kShortcutIDActionViewer3DLeft, kShortcutDescActionViewer3DLeft, Qt::ShiftModifier, Qt::Key_X },
+        { kShortcutIDActionViewer3DTop, kShortcutDescActionViewer3DTop, Qt::NoModifier, Qt::Key_C },
+        { kShortcutIDActionViewer3DBottom, kShortcutDescActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C },
+        { kShortcutIDActionViewer3DLockView, kShortcutDescActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L },
+    };
+
+    return bindings;
+}
+
 static void
 pushBinding(std::vector<MouseBinding>* bindings,
             Qt::KeyboardModifiers modifiers,
@@ -579,10 +613,11 @@ readShortcutSettings(QSettings& settings,
     const QString nbKey = actionID + QString::fromUtf8("_nbShortcuts");
 
     if (mAction) {
-        if (!settings.contains(nbKey)) {
+        // Non-editable mouse actions always keep their registered bindings.
+        if (!mAction->editable || !settings.contains(nbKey)) {
             return false;
         }
-        // An empty list is a binding the user cleared.
+        // A saved count of zero is a binding the user cleared.
         int nbShortcuts = settings.value(nbKey).toInt();
         std::vector<MouseBinding> bindings;
         for (int i = 0; i < nbShortcuts; ++i) {
@@ -595,6 +630,10 @@ readShortcutSettings(QSettings& settings,
             b.modifiers = Qt::KeyboardModifiers(settings.value(idm).toInt());
             b.button = (Qt::MouseButton)settings.value(idb).toInt();
             bindings.push_back(b);
+        }
+        // Entries that were counted but not saved leave the defaults in place rather than unbinding the action.
+        if ((nbShortcuts > 0) && bindings.empty()) {
+            return false;
         }
         mAction->setBindings(bindings);
 

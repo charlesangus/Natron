@@ -522,6 +522,10 @@ private:
     // Whether navigation moves the camera looked through, not the free camera.
     bool navigatesLockedCamera() const;
 
+    // Unlocks the view once it no longer looks through a camera, writing a move of the camera under
+    // way, so a later look-through starts unlocked.
+    void endLockOutsideLookThrough();
+
     // Starts moving the locked camera's node. False, with the HUD saying why, when it has none.
     bool beginCameraLock();
 

@@ -752,11 +752,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
     EngineEntry& entry = _engines[request.owner];
     _engineCount = _engines.size();
-    if (entry.engine && (entry.renderer != renderer)) {
-        entry.engine.reset();
-        entry.rendered = false;
-    }
-    if (entry.renderer != renderer) {
+    const bool rendererChanged = (entry.renderer != renderer);
+    if (rendererChanged) {
         RenderDelegates::Delegate delegate;
         entry.renderer = renderer;
         entry.rendererName = RenderDelegates::find(renderer, &delegate) ? delegate.displayName : renderer;
@@ -774,6 +771,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const bool edited = entry.stage->sync(request.scene);
     std::optional<StormGLSection> section;
     enterGLSection(&section);
+    // A Storm engine goes inside the section: its HgiGL garbage is shared with the main thread's.
+    if (rendererChanged && entry.engine) {
+        entry.engine.reset();
+        entry.rendered = false;
+    }
     const UsdStageRefPtr& stage = entry.stage->getStage();
     bool headlight = entry.headlight;
     if (edited || !entry.engine) {

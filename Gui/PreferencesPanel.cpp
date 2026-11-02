@@ -1833,11 +1833,11 @@ PreferencesPanel::onResetShortcutButtonClicked()
         ka->currentShortcut = ka->defaultShortcut;
         appPTR->notifyShortcutChanged(ka);
     } else if (ma) {
-        ma->buttons = ma->defaultButtons;
-        _imp->onViewer3DBindingEdited(ma);
+        // Leaves the preference alone: under a preset the reset is that preset's binding.
+        resetMouseActionBindings(ma, (int)appPTR->getCurrentSettings()->getViewer3DNavigation());
     }
-    setItemShortCutText(selection, action, true);
-    _imp->showActionInEditors(action, true);
+    setItemShortCutText(selection, action, false);
+    _imp->showActionInEditors(action, false);
 }
 
 void

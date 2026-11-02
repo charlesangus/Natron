@@ -960,13 +960,31 @@ QString mouseBindingToString(const MouseBinding& binding, bool wheel);
  **/
 bool getViewer3DNavigationPresetBindings(int preset, const QString& actionID, std::vector<MouseBinding>* bindings);
 
+/**
+ * @brief Gives action the bindings a reset restores: under the preset viewer3DNavigation (a
+ * Settings::Viewer3DNavigationEnum), that preset's for a 3D viewer action it covers, otherwise the
+ * action's registered defaults.
+ **/
+void resetMouseActionBindings(MouseAction* action, int viewer3DNavigation);
+
+// A key action of the 3D viewer and its default binding.
+struct Viewer3DKeyBinding {
+    const char* actionID;
+    const char* description;
+    Qt::KeyboardModifiers modifiers;
+    Qt::Key key;
+};
+
+// The 3D viewer's key actions with their default bindings, in the Shortcut Editor's order.
+const std::vector<Viewer3DKeyBinding>& getViewer3DDefaultKeyBindings();
+
 // Writes an action's bindings into settings, which must be inside the action's group.
 void writeShortcutSettings(QSettings& settings, const QString& actionID, const BoundAction& action);
 
 /**
  * @brief Reads an action's bindings back from settings, which must be inside the action's group;
- * an action with nothing saved keeps its bindings. Returns whether a key action read a non-empty
- * key.
+ * an action with nothing saved keeps its bindings, and so does a non-editable mouse action whatever
+ * is saved. Returns whether a key action read a non-empty key.
  **/
 bool readShortcutSettings(QSettings& settings, const QString& actionID, BoundAction* action);
 

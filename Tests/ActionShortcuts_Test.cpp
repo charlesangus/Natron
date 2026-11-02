@@ -173,6 +173,48 @@ TEST_F(ShortcutSettingsTest, UnsavedMouseActionKeepsItsBindings)
     expectBindings({ binding(Qt::ControlModifier, Qt::LeftButton) }, restored.getBindings());
 }
 
+TEST_F(ShortcutSettingsTest, NonEditableMouseActionIgnoresSettings)
+{
+    MouseAction saved;
+    saved.actionID = QString::fromUtf8("pick");
+    saved.editable = true;
+    saved.setBindings({ binding(Qt::ShiftModifier, Qt::RightButton) });
+    write(saved);
+
+    MouseAction pick;
+    pick.actionID = saved.actionID;
+    pick.editable = false;
+    pick.setBindings({ binding(Qt::ControlModifier, Qt::LeftButton) });
+    read(&pick);
+    expectBindings({ binding(Qt::ControlModifier, Qt::LeftButton) }, pick.getBindings());
+
+    {
+        QSettings settings(_path, QSettings::IniFormat);
+        settings.beginGroup(QString::fromUtf8(kShortcutGroupViewer3D));
+        settings.remove(saved.actionID + QString::fromUtf8("_Button0"));
+        settings.endGroup();
+    }
+    read(&pick);
+    expectBindings({ binding(Qt::ControlModifier, Qt::LeftButton) }, pick.getBindings());
+}
+
+TEST_F(ShortcutSettingsTest, EditableMouseActionWithoutSavedButtonsKeepsDefaults)
+{
+    {
+        QSettings settings(_path, QSettings::IniFormat);
+        settings.beginGroup(QString::fromUtf8(kShortcutGroupViewer3D));
+        settings.setValue(QString::fromUtf8(kShortcutIDMouseViewer3DTumble) + QString::fromUtf8("_nbShortcuts"), 1);
+        settings.setValue(QString::fromUtf8(kShortcutIDMouseViewer3DTumble) + QString::fromUtf8("_Modifiers0"), int(Qt::AltModifier));
+        settings.endGroup();
+        settings.sync();
+    }
+
+    MouseAction restored;
+    makeTumble(&restored);
+    read(&restored);
+    expectBindings({ binding(Qt::ControlModifier, Qt::LeftButton) }, restored.getBindings());
+}
+
 TEST_F(ShortcutSettingsTest, KeyActionRoundTrips)
 {
     KeyBoundAction frame;
@@ -247,4 +289,59 @@ TEST(Viewer3DNavigationPresetTest, PresetsFollowTheirApplications)
     ASSERT_TRUE(getViewer3DNavigationPresetBindings(Settings::eViewer3DNavigationHoudini, QString::fromUtf8(kShortcutIDMouseViewer3DTumble), &b));
     expectBindings({ binding(kShortcutModifierSpace, Qt::LeftButton), binding(Qt::AltModifier, Qt::LeftButton) }, b);
     EXPECT_EQ(QString::fromUtf8("Space+LeftButton"), mouseBindingToString(b.front(), false));
+}
+
+TEST(Viewer3DNavigationPresetTest, ResetGivesTheCurrentPresetsBinding)
+{
+    MouseAction tumble;
+    tumble.grouping = QString::fromUtf8(kShortcutGroupViewer3D);
+    tumble.actionID = QString::fromUtf8(kShortcutIDMouseViewer3DTumble);
+    tumble.gesture = eMouseGestureDrag;
+    tumble.editable = true;
+    tumble.defaultModifiers = { Qt::ControlModifier };
+    tumble.defaultButtons = { Qt::LeftButton };
+
+    tumble.setBindings({ binding(Qt::ShiftModifier, Qt::RightButton) });
+    resetMouseActionBindings(&tumble, Settings::eViewer3DNavigationBlender);
+    expectBindings({ binding(Qt::NoModifier, Qt::MiddleButton) }, tumble.getBindings());
+
+    tumble.setBindings({ binding(Qt::ShiftModifier, Qt::RightButton) });
+    resetMouseActionBindings(&tumble, Settings::eViewer3DNavigationHoudini);
+    expectBindings({ binding(kShortcutModifierSpace, Qt::LeftButton), binding(Qt::AltModifier, Qt::LeftButton) }, tumble.getBindings());
+
+    // Custom follows no preset: the registered default comes back.
+    tumble.setBindings({ binding(Qt::ShiftModifier, Qt::RightButton) });
+    resetMouseActionBindings(&tumble, Settings::eViewer3DNavigationCustom);
+    expectBindings({ binding(Qt::ControlModifier, Qt::LeftButton) }, tumble.getBindings());
+
+    // Outside the 3D viewer the preset does not apply.
+    MouseAction pick;
+    pick.grouping = QString::fromUtf8("Viewer");
+    pick.actionID = tumble.actionID;
+    pick.defaultModifiers = { Qt::ShiftModifier };
+    pick.defaultButtons = { Qt::LeftButton };
+    pick.setBindings(std::vector<MouseBinding>());
+    resetMouseActionBindings(&pick, Settings::eViewer3DNavigationBlender);
+    expectBindings({ binding(Qt::ShiftModifier, Qt::LeftButton) }, pick.getBindings());
+}
+
+TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
+{
+    const std::vector<Viewer3DKeyBinding>& keys = getViewer3DDefaultKeyBindings();
+    ASSERT_EQ(std::size_t(10), keys.size());
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        EXPECT_NE(nullptr, keys[i].description) << keys[i].actionID;
+        for (std::size_t j = i + 1; j < keys.size(); ++j) {
+            EXPECT_NE(std::string(keys[i].actionID), std::string(keys[j].actionID));
+            EXPECT_FALSE((keys[i].modifiers == keys[j].modifiers) && (keys[i].key == keys[j].key))
+                << keys[i].actionID << " and " << keys[j].actionID << " share a key";
+        }
+    }
+    bool lockView = false;
+    for (const Viewer3DKeyBinding& k : keys) {
+        if (std::string(k.actionID) == kShortcutIDActionViewer3DLockView) {
+            lockView = (k.modifiers == Qt::ControlModifier) && (k.key == Qt::Key_L);
+        }
+    }
+    EXPECT_TRUE(lockView);
 }

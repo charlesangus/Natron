@@ -1636,30 +1636,11 @@ matchesMouseBinding(const char* actionID,
     return action.matches(modifiers, button);
 }
 
-// The 3D viewer's default key bindings, for a process without the application.
-struct DefaultKeyBinding {
-    const char* actionID;
-    Qt::KeyboardModifiers modifiers;
-    Qt::Key key;
-};
-
-const DefaultKeyBinding kDefaultKeyBindings[] = {
-    { kShortcutIDActionViewer3DFrameSelection, Qt::NoModifier, Qt::Key_F },
-    { kShortcutIDActionViewer3DFrameAll, Qt::NoModifier, Qt::Key_A },
-    { kShortcutIDActionViewer3DPerspective, Qt::NoModifier, Qt::Key_V },
-    { kShortcutIDActionViewer3DFront, Qt::NoModifier, Qt::Key_Z },
-    { kShortcutIDActionViewer3DBack, Qt::ShiftModifier, Qt::Key_Z },
-    { kShortcutIDActionViewer3DRight, Qt::NoModifier, Qt::Key_X },
-    { kShortcutIDActionViewer3DLeft, Qt::ShiftModifier, Qt::Key_X },
-    { kShortcutIDActionViewer3DTop, Qt::NoModifier, Qt::Key_C },
-    { kShortcutIDActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C },
-    { kShortcutIDActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L },
-};
-
-const DefaultKeyBinding*
+// The 3D viewer's default key binding of actionID, for a process without the application.
+const Viewer3DKeyBinding*
 defaultKeyBinding(const char* actionID)
 {
-    for (const DefaultKeyBinding& binding : kDefaultKeyBindings) {
+    for (const Viewer3DKeyBinding& binding : getViewer3DDefaultKeyBindings()) {
         if (std::string(binding.actionID) == actionID) {
             return &binding;
         }
@@ -1676,7 +1657,7 @@ matchesKeyBinding(const char* actionID,
     if (GuiApplicationManager* manager = guiManager()) {
         return manager->matchesKeybind(kShortcutGroupViewer3D, actionID, modifiers, key);
     }
-    const DefaultKeyBinding* binding = defaultKeyBinding(actionID);
+    const Viewer3DKeyBinding* binding = defaultKeyBinding(actionID);
     const Qt::KeyboardModifiers relevant = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier;
 
     return binding && (binding->key == key) && ((modifiers & relevant) == binding->modifiers);
@@ -1717,7 +1698,7 @@ keySequenceOf(const char* actionID)
 
         return sequences.empty() ? QKeySequence() : sequences.front();
     }
-    const DefaultKeyBinding* binding = defaultKeyBinding(actionID);
+    const Viewer3DKeyBinding* binding = defaultKeyBinding(actionID);
 
     return binding ? QKeySequence(int(binding->modifiers) | int(binding->key)) : QKeySequence();
 }
@@ -2113,6 +2094,7 @@ SceneViewport::onSynced(U64 serial,
     }
     if (ok && _imp->renderer.hasScene() && !_imp->renderer.isFramed()) {
         _imp->renderer.frameScene();
+        endLockOutsideLookThrough();
     }
     // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
@@ -2230,10 +2212,7 @@ SceneViewport::setLookThroughCamera(const QString& path)
     }
     _imp->lockedMoveAwaitsSync = false;
     _imp->renderer.setLookThroughCamera(path.toStdString());
-    if (path.isEmpty()) {
-        // The free camera has nothing to lock to.
-        _imp->lockView = false;
-    }
+    endLockOutsideLookThrough();
     _imp->lockMessage.clear();
     publishState();
     update();
@@ -2243,6 +2222,8 @@ void
 SceneViewport::frameScene()
 {
     _imp->renderer.frameScene();
+    endLockOutsideLookThrough();
+    publishState();
     update();
 }
 
@@ -2250,6 +2231,8 @@ void
 SceneViewport::frameSelection()
 {
     _imp->renderer.frameSelection();
+    endLockOutsideLookThrough();
+    publishState();
     update();
 }
 
@@ -2373,6 +2356,7 @@ void
 SceneViewport::setViewMode(SceneViewportRenderer::ViewModeEnum mode)
 {
     _imp->renderer.setViewMode(mode);
+    endLockOutsideLookThrough();
     publishState();
     update();
 }
@@ -2463,6 +2447,22 @@ bool
 SceneViewport::navigatesLockedCamera() const
 {
     return _imp->lockView && !_imp->renderer.getLookThroughCamera().empty();
+}
+
+void
+SceneViewport::endLockOutsideLookThrough()
+{
+    if (!_imp->renderer.getLookThroughCamera().empty()) {
+        return;
+    }
+    if (_imp->cameraLock.active) {
+        endCameraLock();
+    }
+    if (_imp->lockView) {
+        _imp->lockView = false;
+        _imp->lockMessage.clear();
+        publishState();
+    }
 }
 
 bool
@@ -3000,6 +3000,9 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
     case Implementation::eDragRoleNone:
         break;
     }
+    if (navigates) {
+        endLockOutsideLookThrough();
+    }
     update();
     e->accept();
 }
@@ -3176,6 +3179,7 @@ SceneViewport::wheelEvent(QWheelEvent* e)
         return;
     }
     _imp->renderer.dolly(std::pow(0.85, steps));
+    endLockOutsideLookThrough();
     update();
     e->accept();
 }

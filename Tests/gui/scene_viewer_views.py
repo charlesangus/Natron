@@ -19,7 +19,8 @@ at x 3, and a camera /World/Cam read from the file.
 - One-step lock: from the free camera, Ctrl+L with two cameras in the scene opens a menu of them
   and picking LockCam locks to it; the Look Through menu's "Lock to /World/Cam" looks through and
   locks in one pick; with the USDRead alone in view (one camera) Ctrl+L locks to /World/Cam
-  without asking.
+  without asking. A, F or Z leave a locked look-through and end the lock: looking through
+  /World/Cam again afterwards is unlocked.
 - Create Camera from View: from a tumbled free view, the menu entry makes a USDCamera; merged in
   and looked through, it shows what the free view showed.
 
@@ -477,6 +478,21 @@ try:
         yield settle()
         check(look_through(v) == "/World/Cam" and bool(v.property("natronSceneLockView")),
               "Look Through > Lock to /World/Cam looks through it and locks in one pick (%r)" % (look_through(v),))
+        for label, k, mods in (("A (Frame All)", Qt.Key_A, NONE), ("F (Frame Selection)", Qt.Key_F, NONE),
+                               ("Z (Front)", Qt.Key_Z, NONE)):
+            if look_through(v) != "/World/Cam" or not v.property("natronSceneLockView"):
+                ok = yield from with_menu(v, "Lock to /World/Cam")
+                yield settle()
+            key(v, k, mods)
+            yield settle()
+            check(look_through(v) == "" and v.property("natronSceneLockView") is False,
+                  "%s leaves the locked look-through and ends the lock (%r)" % (label, look_through(v)))
+            ok = yield from with_menu(v, "/World/Cam")
+            yield settle()
+            check(look_through(v) == "/World/Cam" and v.property("natronSceneLockView") is False,
+                  "after %s, looking through /World/Cam again does not lock" % (label,))
+            ok = yield from with_menu(v, "Lock to /World/Cam")
+            yield settle()
         ok = yield from with_menu(v, "Free Camera")
         yield settle()
         check(v.property("natronSceneLockView") is False, "the free camera has no lock")

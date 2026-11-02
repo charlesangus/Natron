@@ -2212,10 +2212,9 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         mustRedraw = true;
     }
 
-    if ( !overlaysCaught &&
-         ( buttonDownIsMiddle(e) ||
-           ( ( (e)->buttons() == Qt::RightButton ) && ( buttonMetaAlt(e) == Qt::AltModifier) ) ) &&
-         !modifierHasControl(e) ) {
+    // Alt + left pans unless an overlay claims the press for one of its own Alt drags.
+    const bool altLeftForOverlay = !overlaysCaught && (e->buttons() == Qt::LeftButton) && (buttonMetaAlt(e) == Qt::AltModifier) && !modifierHasControl(e) && _imp->overlay && _imp->viewerTab->overlaysClaimAltPenDown(zoomPos, currentTimeForEvent(e));
+    if (!overlaysCaught && !altLeftForOverlay && (buttonDownIsMiddle(e) || (((e)->buttons() == Qt::RightButton) && (buttonMetaAlt(e) == Qt::AltModifier))) && !modifierHasControl(e)) {
         // middle (or Alt + left) or Alt + right = pan
         _imp->ms = eMouseStateDraggingImage;
         overlaysCaught = true;
@@ -2268,6 +2267,10 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         if (overlaysCaught) {
             mustRedraw = true;
         }
+    }
+    if (!overlaysCaught && altLeftForOverlay) {
+        _imp->ms = eMouseStateDraggingImage;
+        overlaysCaught = true;
     }
 
     if ( !overlaysCaught &&

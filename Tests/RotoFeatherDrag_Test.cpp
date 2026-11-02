@@ -204,3 +204,12 @@ TEST(RotoFeatherDrag, TangentScaleGrowsAwayFromTheCentreAndShrinksTowardsIt)
     EXPECT_NEAR(featherTangentScale(k, pt(0, 10)), 1., kEps);
     EXPECT_EQ(featherTangentScale(k, pt(-60, 0)), 0.);
 }
+
+TEST(RotoFeatherDrag, GrownTangentReachesAtMostHalfWayToItsNeighbour)
+{
+    EXPECT_NEAR(clampFeatherTangentScale(6., 2., 10.), 2.5, kEps);
+    EXPECT_NEAR(clampFeatherTangentScale(1.5, 2., 100.), 1.5, kEps) << "far neighbours leave the growth alone";
+    EXPECT_NEAR(clampFeatherTangentScale(0.5, 4., 2.), 0.5, kEps) << "shrinking is never limited";
+    EXPECT_NEAR(clampFeatherTangentScale(3., 4., 6.), 1., kEps) << "a tangent already past the limit keeps its length";
+    EXPECT_NEAR(clampFeatherTangentScale(3., 0., 6.), 3., kEps);
+}

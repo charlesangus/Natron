@@ -1040,6 +1040,13 @@ RotoPaint::onOverlayPenDown(double time,
 }
 
 bool
+RotoPaint::onOverlayClaimsAltPenDown(double time,
+                                     const QPointF& pos)
+{
+    return _imp->ui->claimsAltPenDown(time, pos);
+}
+
+bool
 RotoPaint::onOverlayPenMotion(double time,
                               const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/,

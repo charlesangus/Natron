@@ -82,6 +82,8 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , shiftDown(0)
     , ctrlDown(0)
     , altDown(0)
+    , altPressClaimed(false)
+    , featherBarKeepsTangents(false)
     , _host(host)
     , _dragRender()
     , _dragRenderWatch()
@@ -3281,12 +3283,65 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
 } // onOverlayPenDoubleClicked
 
 bool
+RotoCurveInteract::claimsAltPenDown(double time,
+                                    const QPointF& pos)
+{
+    altPressClaimed = false;
+    if ((selectedTool != eRotoToolSelectAll) && (selectedTool != eRotoToolSelectFeatherPoints)) {
+        return false;
+    }
+    if (!isFeatherVisible()) {
+        return false;
+    }
+    std::pair<double, double> pixelScale;
+    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    if (!isNearbyFeatherBar(time, pixelScale, pos).first) {
+        return false;
+    }
+
+    // onOverlayPenDown gives points and tangent handles precedence over a feather bar under them.
+    RotoCurveContextPtr context = getCurveContext();
+    assert(context);
+    double nearbyBezierT;
+    int nearbyBezierCPIndex;
+    bool isFeather;
+    BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), kBezierSelectionTolerance * pixelScale.first, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+    if (nearbyBezier) {
+        const Bezier::ControlPointSelectionPrefEnum pref = (selectedTool == eRotoToolSelectFeatherPoints) ? Bezier::eControlPointSelectionPrefFeatherFirst : Bezier::eControlPointSelectionPrefWhateverFirst;
+        int nearbyCpIndex = -1;
+        if (nearbyBezier->isNearbyControlPoint(pos.x(), pos.y(), kControlPointSelectionTolerance * pixelScale.first, pref, &nearbyCpIndex).first) {
+            return false;
+        }
+    }
+    const double tangentSelectionTol = kTangentHandleSelectionTolerance * pixelScale.first;
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        if (selectedTool == eRotoToolSelectAll) {
+            if ((it->first->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0) || (it->second && (it->second->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0))) {
+                return false;
+            }
+        } else {
+            const BezierCPPtr& fp = it->first->isFeatherPoint() ? it->first : it->second;
+            if (fp && (fp->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0)) {
+                return false;
+            }
+        }
+    }
+    altPressClaimed = true;
+
+    return true;
+}
+
+bool
 RotoCurveInteract::onOverlayPenDown(double time,
                                     const QPointF& pos,
                                     double pressure,
                                     double timestamp,
                                     PenType pen)
 {
+    const bool altPress = altPressClaimed;
+    altPressClaimed = false;
+    featherBarKeepsTangents = false;
+
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
     beginDragRender();
@@ -3442,6 +3497,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                     handleBezierSelection(nearbyBezier);
                 }
                 state = eEventStateDraggingFeatherBar;
+                featherBarKeepsTangents = altPress;
                 evaluateOnPenUp = true;
                 didSomething = true;
             } else {
@@ -3476,6 +3532,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                     handleControlPointSelection(featherBarBeingDragged);
                 }
                 state = eEventStateDraggingFeatherBar;
+                featherBarKeepsTangents = altPress;
                 evaluateOnPenUp = true;
                 didSomething = true;
             }
@@ -3934,9 +3991,10 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     }
     case eEventStateDraggingFeatherBar: {
         if (std::shared_ptr<MoveFeatherBarUndoCommand> open = getOpenDragCommand<MoveFeatherBarUndoCommand>(time)) {
-            open->addDelta(dx, dy, altDown != 0);
+            open->addDelta(dx, dy, featherBarKeepsTangents || (altDown != 0));
         } else {
-            pushDragCommand(std::make_shared<MoveFeatherBarUndoCommand>(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time, altDown != 0));
+            pushDragCommand(std::make_shared<MoveFeatherBarUndoCommand>(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time,
+                                                                        featherBarKeepsTangents || (altDown != 0)));
         }
         evaluateOnPenUp = true;
         didSomething = true;

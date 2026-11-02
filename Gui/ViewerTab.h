@@ -95,6 +95,12 @@ public:
 
     bool notifyOverlaysPenDown(const RenderScale & renderScale, PenType pen, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
+    /**
+     * @brief Whether an active overlay takes an Alt+left press at pos, which would otherwise pan
+     * the viewer. Asked before the pan so the press can go to notifyOverlaysPenDown instead.
+     **/
+    bool overlaysClaimAltPenDown(const QPointF& pos, double timestamp);
+
     bool notifyOverlaysPenDoubleClick(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos);
 
     bool notifyOverlaysPenMotion(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
@@ -118,6 +124,7 @@ public:
     bool claimShortcutOverride(QKeyEvent* e);
 
 private:
+    bool overlayTimeAndPosition(const NodePtr& node, const QPointF& pos, double* time, QPointF* transformPos);
 
     bool notifyOverlaysPenDown_internal(const NodePtr& node, const RenderScale & renderScale, PenType pen, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 

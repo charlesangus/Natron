@@ -384,6 +384,10 @@ public:
     int shiftDown;
     int ctrlDown;
     int altDown;
+    // Set when the viewer hands this interact an Alt+left press it would otherwise pan with.
+    bool altPressClaimed;
+    // The feather bar drag under way keeps the feather tangents, as Alt asks.
+    bool featherBarKeepsTangents;
     // Open from pen down to pen up. The drag commands pushed in between carry its key, so one drag
     // is one undo step and the next drag, even of the same points, is another.
     UndoGesture undoGesture;
@@ -689,6 +693,11 @@ public:
     // The host effect's overlay actions forward to these.
     void drawOverlay(double time);
     bool onOverlayPenDown(double time, const QPointF& pos, double pressure, double timestamp, PenType pen);
+    /**
+     * @brief True when an Alt+left press at pos would grab a feather bar, the only Alt drag this
+     * interact takes; every other Alt drag is left to the viewer's pan.
+     **/
+    bool claimsAltPenDown(double time, const QPointF& pos);
     bool onOverlayPenMotion(double time, const QPointF& pos, double pressure, double timestamp);
     bool onOverlayPenUp();
     bool onOverlayPenDoubleClicked(const QPointF& pos);

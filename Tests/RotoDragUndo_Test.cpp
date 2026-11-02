@@ -33,6 +33,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -45,6 +46,7 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoFeatherDrag.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoUndoCommand.h"
@@ -412,6 +414,117 @@ TEST_F(RotoDragUndoTest, GrowingACircleFeatherKeepsItACircle)
         }
         context->removeItem(circle);
     }
+}
+
+namespace {
+
+// Grows every feather of a five-point shape on a circle of radius 60 and returns the shape. The
+// first two points sit 4 degrees apart; when tilt is non-zero the first point's tangents turn
+// outwards by tilt degrees, as a carelessly placed point would.
+BezierPtr
+growPackedShape(const RotoCurveInteractPtr& ui,
+                const RotoContextPtr& context,
+                double tilt,
+                double grow,
+                double time,
+                std::vector<Point>* before)
+{
+    const double cx = 200., cy = 150., r = 60., h = 1.8;
+    const double angles[5] = { 0., 4., 90., 180., 270. };
+    const double deg = std::atan(1.) / 45.;
+    BezierPtr shape = context->makeBezier(cx + r, cy, "Packed", time, false);
+    if (!shape) {
+        return shape;
+    }
+    for (int i = 1; i < 5; ++i) {
+        shape->addControlPoint(cx + r * std::cos(angles[i] * deg), cy + r * std::sin(angles[i] * deg), time);
+    }
+    shape->setCurveFinished(true);
+    for (int i = 0; i < 5; ++i) {
+        const double a = angles[i] * deg;
+        const double t = a - (i == 0 ? tilt * deg : 0.);
+        const double x = cx + r * std::cos(a);
+        const double y = cy + r * std::sin(a);
+        const double hl = (i < 2) ? h : r * 0.5;
+        const double tx = -std::sin(t) * hl;
+        const double ty = std::cos(t) * hl;
+        shape->setPointAtIndex(false, i, time, x, y, x - tx, y - ty, x + tx, y + ty);
+        shape->setPointAtIndex(true, i, time, x, y, x - tx, y - ty, x + tx, y + ty);
+    }
+    before->clear();
+    for (int i = 0; i < 5; ++i) {
+        BezierCPPtr fp = shape->getFeatherPointAtIndex(i);
+        Point p, rh;
+        fp->getPositionAtTime(false, time, ViewIdx(0), &p.x, &p.y);
+        fp->getRightBezierPointAtTime(false, time, ViewIdx(0), &rh.x, &rh.y);
+        before->push_back(p);
+        before->push_back(rh);
+    }
+    PointList points;
+    for (int i = 0; i < 5; ++i) {
+        points.push_back(std::make_pair(shape->getControlPointAtIndex(i), shape->getFeatherPointAtIndex(i)));
+    }
+    std::shared_ptr<MoveFeatherBarUndoCommand> cmd = std::make_shared<MoveFeatherBarUndoCommand>(ui, grow, points, time, false);
+    cmd->redo();
+
+    return shape;
+}
+
+Point
+featherPosition(const BezierPtr& shape,
+                int index,
+                double time)
+{
+    Point p;
+
+    shape->getFeatherPointAtIndex(index)->getPositionAtTime(false, time, ViewIdx(0), &p.x, &p.y);
+
+    return p;
+}
+
+} // namespace
+
+TEST_F(RotoDragUndoTest, GrownFeatherTangentsStopShortOfCloseNeighbours)
+{
+    RotoContextPtr context = _node->getRotoContext();
+    ASSERT_NE(context, nullptr);
+    const double grow = 25.;
+    std::vector<Point> before;
+
+    BezierPtr shape = growPackedShape(_ui, context, 30., grow, _time, &before);
+    ASSERT_NE(shape, nullptr);
+    const Point p0 = featherPosition(shape, 0, _time);
+    const Point p1 = featherPosition(shape, 1, _time);
+    const double gap = std::hypot(p1.x - p0.x, p1.y - p0.y);
+    const double handle = featherHandleLength(shape, 0, _time);
+
+    Point delta;
+    delta.x = p0.x - before[0].x;
+    delta.y = p0.y - before[0].y;
+    const Point k = featherCurvature(before[0], before[1], before[2]);
+    const double handleBefore = std::hypot(before[1].x - before[0].x, before[1].y - before[0].y);
+    ASSERT_GT(handleBefore * featherTangentScale(k, delta), 0.5 * gap) << "the curvature growth alone overruns the close neighbour";
+
+    EXPECT_GT(handle, handleBefore) << "the tangent still grows";
+    EXPECT_LE(handle, 0.5 * gap + 1e-9) << "but stops half way to the neighbouring feather point";
+    context->removeItem(shape);
+}
+
+TEST_F(RotoDragUndoTest, GrownFeatherTangentsOfConsistentCloseNeighboursFollowTheCurvature)
+{
+    RotoContextPtr context = _node->getRotoContext();
+    ASSERT_NE(context, nullptr);
+    const double r = 60., grow = 25.;
+    std::vector<Point> before;
+
+    BezierPtr shape = growPackedShape(_ui, context, 0., grow, _time, &before);
+    ASSERT_NE(shape, nullptr);
+    const Point p0 = featherPosition(shape, 0, _time);
+    const double radius = std::hypot(p0.x - 200., p0.y - 150.);
+    EXPECT_NEAR(r + grow, radius, 1e-6);
+    const double handleBefore = std::hypot(before[1].x - before[0].x, before[1].y - before[0].y);
+    EXPECT_NEAR(handleBefore * radius / r, featherHandleLength(shape, 0, _time), 1e-6) << "spread enough apart, the growth is unchanged";
+    context->removeItem(shape);
 }
 
 TEST_F(RotoDragUndoTest, TransformBox)

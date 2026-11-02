@@ -2475,6 +2475,16 @@ public:
 
     bool onOverlayPenDown_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp, PenType pen) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether this effect's overlay wants an Alt+left press at pos, which the viewer
+     * otherwise keeps for panning. When true the press is sent through onOverlayPenDown_public.
+     **/
+    virtual bool onOverlayClaimsAltPenDown(double /*time*/,
+                                           const QPointF& /*pos*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     bool onOverlayPenMotion_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
 
     bool onOverlayPenDoubleClicked_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos) WARN_UNUSED_RETURN;

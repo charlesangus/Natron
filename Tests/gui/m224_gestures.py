@@ -19,10 +19,13 @@ Checks, each on its own shape:
   - V pressed again cycles the drawing tools (Bezier to Ellipse); Shift+drag draws a circle (equal
     width and height); Ctrl+Shift+drag draws it from the centre (the shape is centred on the press).
   - Ripple edit draws a red border just inside the viewer edges, and no border once it is off.
+  - A plain drag of a feather bar grows the feather tangents with the feather; Alt+drag of the bar
+    moves the feather but keeps its tangents and does not pan the viewer. Alt+drag on empty viewer
+    space pans the viewer and changes no shape.
 Saves screenshots of the sketched shape, the moved pivot and the ripple border.
 
 Modifiers are read by the roto interact from key events, so every modified gesture sends the
-Shift/Control QKeyEvent press before the mouse events and the release after them. Undo is the Edit
+Shift/Control/Alt QKeyEvent press before the mouse events and the release after them. Undo is the Edit
 menu action (the Ctrl+Z shortcut is matched before a sent key event reaches a widget).
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
@@ -128,7 +131,7 @@ try:
         QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, modifiers))
         QApplication.processEvents()
 
-    MOD_KEYS = ((Qt.ShiftModifier, Qt.Key_Shift), (Qt.ControlModifier, Qt.Key_Control))
+    MOD_KEYS = ((Qt.ShiftModifier, Qt.Key_Shift), (Qt.ControlModifier, Qt.Key_Control), (Qt.AltModifier, Qt.Key_Alt))
 
     def hold(widget, modifiers):
         held = Qt.NoModifier
@@ -335,6 +338,21 @@ try:
     def select_tool(gl):
         send_key(gl, Qt.Key_Escape)
         send_key(gl, Qt.Key_Q)
+
+    def pick_select_all():
+        for b in gt.widgets_of("ViewerToolButton"):
+            if not b.isVisible() or b.defaultAction() is None:
+                continue
+            data = b.defaultAction().data()
+            if not (data and len(data) == 2 and data[0] == "SelectionToolButton"):
+                continue
+            for act in b.actions():
+                d = act.data()
+                if d and len(d) == 2 and d[1] == "SelectAllTool":
+                    act.trigger()
+                    QApplication.processEvents()
+                    return True
+        return False
 
     def drawing_tool():
         # The viewer toolbar's shape-drawing button: (pressed, current tool) or None.
@@ -646,6 +664,87 @@ try:
         off_hits, n = red_edges()
         check(off_hits == 0, "the red border goes when ripple edit is turned off (%d/%d)" % (off_hits, n))
 
+    def alt_feather_section(gl, ctx, vmap):
+        ps = vmap.pixel_scale()
+        w, h = float(gl.width()), float(gl.height())
+
+        def all_points(bez):
+            return [point(bez, i) for i in range(5)] + [feather(bez, i) for i in range(5)]
+
+        def canonical_under(p):
+            move(gl, p)
+            return info_mouse()
+
+        gt.section("feather-bar-drag")
+        bez, pts, angles, _c = star(ctx, vmap, gl)
+        yield ("sleep", RENDER_MS)
+        send_key(gl, Qt.Key_Escape)
+        require(pick_select_all(), "picked the Select All tool")
+        click(gl, vmap.to_widget(pts[0][0], pts[0][1]))
+        yield ("sleep", SETTLE_MS)
+        out = (math.cos(angles[0]), math.sin(angles[0]))
+
+        def bar_at():
+            # The bar runs 20 screen pixels outwards from the point; 15 is clear of the point's
+            # own pick radius and of the curve.
+            c = point(bez, 0)
+            return vmap.to_widget(c[0] + out[0] * 15 * ps, c[1] + out[1] * 15 * ps)
+
+        def outward(before, after):
+            return (after[0] - before[0]) * out[0] + (after[1] - before[1]) * out[1]
+
+        before = feather(bez, 0)
+        start = bar_at()
+        drag(gl, start, start + (vmap.to_widget(pts[0][0] + out[0] * 30 * ps, pts[0][1] + out[1] * 30 * ps)
+                                 - vmap.to_widget(pts[0][0], pts[0][1])))
+        yield ("sleep", SETTLE_MS)
+        after = feather(bez, 0)
+        moved = outward(before, after)
+        grew = length(right_off(after)) / length(right_off(before))
+        report("NOTE plain bar drag: feather out %.3f (30 px = %.3f), tangent ratio %.4f" % (moved, 30 * ps, grew))
+        check(moved > 15 * ps, "a plain drag of the feather bar moves the feather outwards")
+        check(grew > 1.05, "a plain drag of the feather bar grows the feather tangents")
+        trigger("undo")
+        yield ("sleep", SETTLE_MS)
+        check(close(feather(bez, 0), before, 1e-6), "one undo restores the feather")
+
+        gt.section("alt-feather-bar-drag")
+        probe = QPointF(w * 0.2, h * 0.2)
+        view_before = canonical_under(probe)
+        click(gl, vmap.to_widget(pts[0][0], pts[0][1]))
+        yield ("sleep", SETTLE_MS)
+        before = feather(bez, 0)
+        start = bar_at()
+        delta = vmap.to_widget(pts[0][0] + out[0] * 30 * ps, pts[0][1] + out[1] * 30 * ps) - vmap.to_widget(pts[0][0], pts[0][1])
+        with_modifiers(gl, Qt.AltModifier, lambda m: drag(gl, start, start + delta, m))
+        yield ("sleep", SETTLE_MS)
+        after = feather(bez, 0)
+        moved = outward(before, after)
+        report("NOTE Alt bar drag: feather out %.3f, tangents %.4f/%.4f -> %.4f/%.4f"
+               % (moved, length(left_off(before)), length(right_off(before)),
+                  length(left_off(after)), length(right_off(after))))
+        check(moved > 15 * ps, "Alt+drag of the feather bar moves the feather outwards")
+        check(abs(length(left_off(after)) - length(left_off(before))) < 1e-6
+              and abs(length(right_off(after)) - length(right_off(before))) < 1e-6,
+              "Alt+drag of the feather bar keeps the feather tangents")
+        check(canonical_under(probe) == view_before, "Alt+drag of the feather bar does not pan the viewer")
+        trigger("undo")
+        yield ("sleep", SETTLE_MS)
+
+        gt.section("alt-drag-pans")
+        shape_before = all_points(bez)
+        view_before = canonical_under(probe)
+        empty = QPointF(w * 0.12, h * 0.85)
+        with_modifiers(gl, Qt.AltModifier, lambda m: drag(gl, empty, empty + QPointF(60, -40), m))
+        yield ("sleep", SETTLE_MS)
+        view_after = canonical_under(probe)
+        report("NOTE Alt drag on empty space: canonical under probe %s -> %s" % (view_before, view_after))
+        check(view_before is not None and view_after is not None
+              and abs(view_after[0] - view_before[0]) > 20 * ps and abs(view_after[1] - view_before[1]) > 10 * ps,
+              "Alt+drag on empty viewer space pans the viewer")
+        check(all(close(a, b, 1e-9) for a, b in zip(all_points(bez), shape_before)),
+              "Alt+drag on empty viewer space changes no shape")
+
     def untone_view():
         """The viewer defaults to a tone-mapped view; absolute pixel checks need the plain one."""
         for w in gt.widgets_of("ComboBox"):
@@ -704,6 +803,9 @@ try:
         for cmd in pivot_section(gl, ctx, vmap):
             yield cmd
         for cmd in ripple_section(gl, roto):
+            yield cmd
+        # Last: its Alt+drag pans the viewer, which the calibration above does not follow.
+        for cmd in alt_feather_section(gl, ctx, vmap):
             yield cmd
         faulthandler.cancel_dump_traceback_later()
 

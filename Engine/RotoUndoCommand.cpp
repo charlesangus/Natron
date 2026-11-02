@@ -26,6 +26,7 @@
 #include "RotoUndoCommand.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -1042,6 +1043,9 @@ struct FeatherBarDrag {
     // Curvature vectors of the circles that leave this point along each tangent through the
     // neighbouring feather point, read before any feather moves; (0, 0) at an open end.
     Point leftCurvature, rightCurvature;
+    // Feather points on either side; null at an open end.
+    BezierCPPtr prevFp, nextFp;
+    Transform::Matrix3x3 transform;
     bool isOnKeyframe;
 };
 
@@ -1072,6 +1076,8 @@ computeFeatherCurvatures(const BezierPtr& curve,
 {
     drag->leftCurvature.x = drag->leftCurvature.y = 0.;
     drag->rightCurvature.x = drag->rightCurvature.y = 0.;
+    drag->prevFp.reset();
+    drag->nextFp.reset();
     const std::list<BezierCPPtr>& fps = curve->getFeatherPoints();
     std::list<BezierCPPtr>::const_iterator cur = std::find(fps.begin(), fps.end(), fp);
     if ((fps.size() < 2) || (cur == fps.end())) {
@@ -1092,6 +1098,8 @@ computeFeatherCurvatures(const BezierPtr& curve,
     } else if (closed) {
         nextFp = fps.front();
     }
+    drag->prevFp = prevFp;
+    drag->nextFp = nextFp;
 
     double x, y, hx, hy;
     fp->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
@@ -1162,9 +1170,35 @@ computeFeatherBarDrag(const BezierCPPtr& cp,
     drag->fp = fp;
     drag->from = f;
     drag->dir = featherDragDirection(c, f, left, right, clockWise);
+    drag->transform = transform;
     computeFeatherCurvatures(curve, fp, time, transform, drag);
 
     return true;
+}
+
+double
+neighbourAwareTangentScale(const FeatherBarDrag& drag,
+                           const BezierCPPtr& neighbour,
+                           bool left,
+                           double scale,
+                           double time)
+{
+    if (!neighbour || (scale <= 1.)) {
+        return scale;
+    }
+    double x, y, hx, hy, nx, ny;
+    drag.fp->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
+    if (left) {
+        drag.fp->getLeftBezierPointAtTime(true, time, ViewIdx(0), &hx, &hy);
+    } else {
+        drag.fp->getRightBezierPointAtTime(true, time, ViewIdx(0), &hx, &hy);
+    }
+    neighbour->getPositionAtTime(true, time, ViewIdx(0), &nx, &ny);
+    const Point p = transformedPoint(x, y, drag.transform);
+    const Point h = transformedPoint(hx, hy, drag.transform);
+    const Point n = transformedPoint(nx, ny, drag.transform);
+
+    return clampFeatherTangentScale(scale, std::hypot(h.x - p.x, h.y - p.y), std::hypot(n.x - p.x, n.y - p.y));
 }
 } // anonymous namespace
 
@@ -1222,6 +1256,7 @@ MoveFeatherBarUndoCommand::moveFeathers(double dx,
 
     const double s = _byDistance ? dx : featherDragDistance(drags.front().dir, dx, dy);
     const bool autoKeying = roto->getCurveContext()->isAutoKeyingEnabled();
+    std::list<std::pair<const FeatherBarDrag*, Point>> moved;
     for (std::list<FeatherBarDrag>::const_iterator it = drags.begin(); it != drags.end(); ++it) {
         if (!autoKeying && !it->isOnKeyframe) {
             continue;
@@ -1233,11 +1268,23 @@ MoveFeatherBarUndoCommand::moveFeathers(double dx,
         }
         const Point to = applyFeatherDistance(it->from, it->dir, s);
         curve->moveFeatherByIndex(index, _time, to.x - it->from.x, to.y - it->from.y);
-        if (!keepTangents) {
-            Point delta;
-            delta.x = to.x - it->from.x;
-            delta.y = to.y - it->from.y;
-            curve->scaleFeatherTangentsByIndex(index, _time, featherTangentScale(it->leftCurvature, delta), featherTangentScale(it->rightCurvature, delta));
+        Point delta;
+        delta.x = to.x - it->from.x;
+        delta.y = to.y - it->from.y;
+        moved.push_back(std::make_pair(&*it, delta));
+    }
+    if (!keepTangents) {
+        // Tangents are limited against where the neighbours ended up, so every feather moves first.
+        for (std::list<std::pair<const FeatherBarDrag*, Point>>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
+            const FeatherBarDrag& drag = *it->first;
+            BezierPtr curve = drag.fp->getBezier();
+            const int index = curve->getFeatherPointIndex(drag.fp);
+            if (index < 0) {
+                continue;
+            }
+            const double leftScale = neighbourAwareTangentScale(drag, drag.prevFp, true, featherTangentScale(drag.leftCurvature, it->second), _time);
+            const double rightScale = neighbourAwareTangentScale(drag, drag.nextFp, false, featherTangentScale(drag.rightCurvature, it->second), _time);
+            curve->scaleFeatherTangentsByIndex(index, _time, leftScale, rightScale);
         }
     }
 

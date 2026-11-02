@@ -84,6 +84,14 @@ Point featherCurvature(const Point& p0, const Point& p1, const Point& p3);
  **/
 double featherTangentScale(const Point& curvature, const Point& delta);
 
+/**
+ * @brief Limits a tangent scale so the grown tangent reaches at most half way to the neighbouring
+ * feather point on its side. Two tangents facing each other across a segment then never pass one
+ * another, which is what tears a feather when closely packed points grow. A scale that does not
+ * grow the tangent, or a tangent already longer than that reach, is left as it is.
+ **/
+double clampFeatherTangentScale(double scale, double tangentLength, double neighbourDistance);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_RotoFeatherDrag_h

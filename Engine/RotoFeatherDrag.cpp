@@ -139,4 +139,16 @@ featherTangentScale(const Point& curvature,
     return std::max(0., 1. - (curvature.x * delta.x + curvature.y * delta.y));
 }
 
+double
+clampFeatherTangentScale(double scale,
+                         double tangentLength,
+                         double neighbourDistance)
+{
+    if ((scale <= 1.) || (tangentLength <= 0.)) {
+        return scale;
+    }
+
+    return std::min(scale, std::max(1., 0.5 * neighbourDistance / tangentLength));
+}
+
 NATRON_NAMESPACE_EXIT

@@ -306,6 +306,8 @@ try:
         ok = yield ("until", lambda: panel_of(frames_end) is not None, POLL_TIMEOUT_S)
         require(ok, "the LoopEnd's settings panel opens")
         panel = panel_of(frames_end)
+        # The panel's widgets are only visible once it has been laid out and shown.
+        yield ("until", lambda: all(knob_field(panel, n) is not None for n in FRAMES_LABELS), POLL_TIMEOUT_S)
         typed = {"framesBefore": "0.5", "framesAfter": "0", "frameStep": "0.1"}
         for name, text in typed.items():
             field = knob_field(panel, name)

@@ -1184,7 +1184,6 @@ Retouch::knobChanged(KnobI* k,
     }
     if (k && (k == _ui->resetCloneOffsetButton.lock().get())) {
         _ui->cloneOffset = std::make_pair(0., 0.);
-        _hasCloneOffset = true;
         redrawOverlayInteract();
 
         return true;
@@ -1199,53 +1198,6 @@ Retouch::knobChanged(KnobI* k,
     }
 
     return StagedImageEffect::knobChanged(k, reason, view, time, originatedFromMainThread);
-}
-
-void
-Retouch::defaultSourceOffset(RotoToolEnum tool,
-                             double width,
-                             double height,
-                             double* dx,
-                             double* dy)
-{
-    // darktable's initial_source_pos with its default spot sizes, y flipped from its top-down image
-    // space: a circle or ellipse takes its source up and right by its radii, a path down and right by
-    // 2% of the image, a brush by 1%. Natron's rectangle is a path.
-    switch (tool) {
-    case eRotoToolDrawEllipse:
-        *dx = 0.02 * width;
-        *dy = 0.01414 * height;
-        break;
-    case eRotoToolSolidBrush:
-    case eRotoToolOpenBezier:
-        *dx = 0.01 * width;
-        *dy = -0.01 * height;
-        break;
-    default:
-        *dx = 0.02 * width;
-        *dy = -0.02 * height;
-        break;
-    }
-}
-
-bool
-Retouch::sourceImageSize(double time,
-                         double* width,
-                         double* height) const
-{
-    const ViewIdx view(0);
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    RectD image;
-    if (metadata) {
-        image = PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, metadata->getPixelAspectRatio(getSourceInput()));
-    }
-    if (image.isNull() && !sourceRoD(time, view, &image)) {
-        return false;
-    }
-    *width = image.width();
-    *height = image.height();
-
-    return (*width > 0.) && (*height > 0.);
 }
 
 void
@@ -1266,51 +1218,10 @@ Retouch::applyNewShapeSourceOffsets()
         KnobDoublePtr offset = itemKnob<KnobDouble>(item, kRetouchShapeParamSourceOffset);
         if (offset && !offset->isAnimated(0, ViewSpec::all()) && !offset->isAnimated(1, ViewSpec::all())
             && (offset->getValueAtTime(time, 0) == 0.) && (offset->getValueAtTime(time, 1) == 0.)) {
-            double dx, dy;
-            if (newShapeSourceOffset(it->tool, &dx, &dy)) {
-                setShapeSourceOffset(item, time, dx, dy);
-            }
+            setShapeSourceOffset(item, time, _ui->cloneOffset.first, _ui->cloneOffset.second);
         }
         it = _newShapes.erase(it);
     }
-}
-
-bool
-Retouch::newShapeSourceOffset(RotoToolEnum tool,
-                              double* dx,
-                              double* dy)
-{
-    if (!_hasCloneOffset) {
-        if (!previewSourceOffset(tool, dx, dy)) {
-            return false;
-        }
-        _ui->cloneOffset = std::make_pair(*dx, *dy);
-        _hasCloneOffset = true;
-    }
-    *dx = _ui->cloneOffset.first;
-    *dy = _ui->cloneOffset.second;
-
-    return true;
-}
-
-bool
-Retouch::previewSourceOffset(RotoToolEnum tool,
-                             double* dx,
-                             double* dy) const
-{
-    if (_hasCloneOffset) {
-        *dx = _ui->cloneOffset.first;
-        *dy = _ui->cloneOffset.second;
-
-        return true;
-    }
-    double width = 0., height = 0.;
-    if (!sourceImageSize(getCurrentTime(), &width, &height)) {
-        return false;
-    }
-    defaultSourceOffset(tool, width, height, dx, dy);
-
-    return true;
 }
 
 bool
@@ -1456,8 +1367,8 @@ Retouch::drawOverlay(double time,
             centre = QPointF(cx, cy);
             hasCentre = viewport->getViewportRect().contains(cx, cy);
         }
-        std::pair<double, double> offset;
-        if (hasCentre && previewSourceOffset(tool, &offset.first, &offset.second) && ((offset.first != 0.) || (offset.second != 0.))) {
+        const std::pair<double, double> offset = _ui->cloneOffset;
+        if (hasCentre && ((offset.first != 0.) || (offset.second != 0.))) {
             double radius;
             KnobDoublePtr brushSize = _brushSize.lock();
             if ((tool == eRotoToolSolidBrush) && brushSize) {
@@ -1499,13 +1410,10 @@ Retouch::onOverlayPenDown(double time,
     // RotoPaint's clone gesture: Ctrl+drag keeps the source where it is and moves the pen away.
     if (isDrawingTool(tool) && !_ui->getBezierBeingBuild() && !_ui->getStrokeBeingPainted() && newShapesTakeSource()
         && _ui->isCloneOffsetDragModifier()) {
-        double dx, dy;
-        if (newShapeSourceOffset(tool, &dx, &dy)) {
-            _ui->startCloneOffsetDrag(pos);
-            redrawOverlayInteract();
+        _ui->startCloneOffsetDrag(pos);
+        redrawOverlayInteract();
 
-            return true;
-        }
+        return true;
     }
     if ((tool == eRotoToolSelectAll) || (tool == eRotoToolSelectCurves) || (tool == eRotoToolSelectPoints)) {
         RotoDrawableItemPtr item = pickSource(time, pos);

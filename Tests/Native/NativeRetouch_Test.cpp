@@ -870,31 +870,6 @@ TEST_F(NativeRetouchTest, SmoothCapsUnevenChordsAndFollowsOpenEnds)
     EXPECT_NEAR(-10., ly - y, 1e-9);
 }
 
-// darktable's default sources, in Natron's y-up canonical space: an ellipse up and right by its
-// default radii, a path or rectangle down and right by 2% of the image, a brush by 1%.
-TEST(NativeRetouchSource, DefaultOffsetIsDarktablesFractionOfTheImage)
-{
-    const double w = 2000.;
-    const double h = 1000.;
-    double dx = 0., dy = 0.;
-
-    Retouch::defaultSourceOffset(eRotoToolDrawEllipse, w, h, &dx, &dy);
-    EXPECT_DOUBLE_EQ(dx, 40.);
-    EXPECT_DOUBLE_EQ(dy, 14.14);
-
-    Retouch::defaultSourceOffset(eRotoToolDrawBezier, w, h, &dx, &dy);
-    EXPECT_DOUBLE_EQ(dx, 40.);
-    EXPECT_DOUBLE_EQ(dy, -20.);
-
-    Retouch::defaultSourceOffset(eRotoToolDrawRectangle, w, h, &dx, &dy);
-    EXPECT_DOUBLE_EQ(dx, 40.);
-    EXPECT_DOUBLE_EQ(dy, -20.);
-
-    Retouch::defaultSourceOffset(eRotoToolSolidBrush, w, h, &dx, &dy);
-    EXPECT_DOUBLE_EQ(dx, 20.);
-    EXPECT_DOUBLE_EQ(dy, -10.);
-}
-
 // With no shapes, or shapes only on scales the node skips, the output is the input.
 TEST_F(NativeRetouchTest, NoShapesIsIdentity)
 {
@@ -1394,7 +1369,7 @@ ctrlDragSource(Retouch* effect,
 } // anon namespace
 
 // RotoPaint's clone offset on Retouch's shapes: Ctrl+drag keeps the drawn source where it is while
-// the pen moves, makes no shape, and every later shape takes the offset until Reset Transform.
+// the pen moves, makes no shape, and every later shape takes the offset until Reset Clone Offset.
 TEST_F(NativeRetouchTest, CtrlDragSetsTheCarriedSourceOffset)
 {
     NodePtr node = makeRetouch(makeSource(false), 0);
@@ -1407,16 +1382,15 @@ TEST_F(NativeRetouchTest, CtrlDragSetsTheCarriedSourceOffset)
     ui->setCurrentTool(ui->drawBrushAction.lock());
     ASSERT_EQ(eRotoToolSolidBrush, ui->getSelectedTool());
 
-    double defaultDx = 0., defaultDy = 0.;
-    ASSERT_TRUE(effect->previewSourceOffset(eRotoToolSolidBrush, &defaultDx, &defaultDy));
-    EXPECT_NE(0., defaultDx);
+    EXPECT_DOUBLE_EQ(0., ui->cloneOffset.first);
+    EXPECT_DOUBLE_EQ(0., ui->cloneOffset.second);
 
     const QPointF press(40., 30.);
     const QPointF release(10., 12.);
     ctrlDragSource(effect, press, release);
     EXPECT_TRUE(context->getCurvesByRenderOrder(false).empty());
-    EXPECT_DOUBLE_EQ(defaultDx + press.x() - release.x(), ui->cloneOffset.first);
-    EXPECT_DOUBLE_EQ(defaultDy + press.y() - release.y(), ui->cloneOffset.second);
+    EXPECT_DOUBLE_EQ(press.x() - release.x(), ui->cloneOffset.first);
+    EXPECT_DOUBLE_EQ(press.y() - release.y(), ui->cloneOffset.second);
     const std::pair<double, double> carried = ui->cloneOffset;
 
     RotoStrokeItemPtr first = paintBrush(effect, QPointF(10., 12.));
@@ -1433,10 +1407,12 @@ TEST_F(NativeRetouchTest, CtrlDragSetsTheCarriedSourceOffset)
     ASSERT_EQ(1u, strokes.size());
     EXPECT_GE(strokes[0].size(), 5u);
 
-    // From a zero offset the source lands where the Ctrl+drag started, as on a RotoPaint clone stroke.
+    // Reset Clone Offset returns to zero, from where the source lands where the Ctrl+drag started,
+    // as on a RotoPaint clone stroke.
     KnobButtonPtr reset = ui->resetCloneOffsetButton.lock();
     ASSERT_TRUE(bool(reset));
     EXPECT_EQ(std::string(kRotoUIParamResetCloneOffset), reset->getName());
+    EXPECT_EQ(std::string("Reset Clone Offset"), reset->getLabel());
     reset->trigger();
     EXPECT_DOUBLE_EQ(0., ui->cloneOffset.first);
     EXPECT_DOUBLE_EQ(0., ui->cloneOffset.second);

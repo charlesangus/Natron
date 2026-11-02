@@ -205,10 +205,6 @@ public:
     /// The offset from a shape to its source, canonical, at time.
     static void readShapeSourceOffset(const RotoDrawableItemPtr& item, double time, double* dx, double* dy);
 
-    /// darktable's default offset from a shape drawn with tool to its source, canonical, on an image
-    /// width by height: a fixed fraction of the image per kind of shape.
-    static void defaultSourceOffset(RotoToolEnum tool, double width, double height, double* dx, double* dy);
-
     /// The per-shape knobs, owned by host or, without one, detached. withBrush adds the brush knobs.
     static std::vector<KnobIPtr> createShapeKnobs(Retouch* host, bool withBrush);
 
@@ -225,17 +221,6 @@ public:
      * the shape is not a brush or covers nothing.
      **/
     static bool rasterizeBrushShape(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full, RetouchCore::Region* roi, std::vector<float>* mask);
-
-    /**
-     * @brief The source offset a new shape gets, canonical: the offset RotoPaint's clone brush
-     * carries from stroke to stroke (the interact's cloneOffset, moved by Ctrl+drag and zeroed by
-     * Reset Transform). Until either sets it, it starts at darktable's default for tool. False
-     * when it is unset and the image size is unknown.
-     **/
-    bool newShapeSourceOffset(RotoToolEnum tool, double* dx, double* dy);
-
-    /// The offset newShapeSourceOffset() would give, without starting it; false when unknown.
-    bool previewSourceOffset(RotoToolEnum tool, double* dx, double* dy) const;
 
     static std::vector<ChoiceOption> algorithmOptions();
     static std::vector<ChoiceOption> blurTypeOptions();
@@ -319,9 +304,6 @@ private:
     // True when shapes the drawing tools make now take a source (Clone or Heal).
     bool newShapesTakeSource() const;
 
-    // The canonical size of the image the source is read from, for darktable's default source.
-    bool sourceImageSize(double time, double* width, double* height) const;
-
     // The shape whose source outline is under pos, if any.
     RotoDrawableItemPtr pickSource(double time, const QPointF& pos) const;
 
@@ -382,9 +364,6 @@ private:
 
     // Shapes created since the last pen down, waiting for their default source.
     std::list<NewShape> _newShapes;
-    // Whether the interact's cloneOffset has been set, by darktable's default for the first shape,
-    // a Ctrl+drag or Reset Transform; until then it is not the offset new shapes get.
-    bool _hasCloneOffset = false;
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
     // The drag's offset is the offset at the press moved by the pen since the press; it is never read

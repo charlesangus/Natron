@@ -129,7 +129,7 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
 
 #define kRotoUIParamResetCloneOffset "resetCloneOffsetButton"
-#define kRotoUIParamResetCloneOffsetLabel "Reset Transform"
+#define kRotoUIParamResetCloneOffsetLabel "Reset Clone Offset"
 #define kRotoUIParamResetCloneOffsetHint "Reset the transform applied before cloning to identity"
 
 // The right click menu
@@ -531,7 +531,7 @@ public:
     /// same as drawArrow but the two ends will make an angle of 90 degrees
     void drawBendedArrow(double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
 
-    /// Creates the Reset Transform button, which sets cloneOffset back to 0, on page.
+    /// Creates the Reset Clone Offset button, which sets cloneOffset back to 0, on page.
     KnobButtonPtr createResetCloneOffsetKnob(const KnobPagePtr& page);
 
     /// Ctrl+drag, with no other modifier: the gesture that moves cloneOffset.

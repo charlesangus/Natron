@@ -11,7 +11,7 @@ rectangle by script, presses Z in the viewer and checks every corner gets the eq
 handles of the circle through the corners, then undoes it. Picks the Brush tool, drags a brush
 stroke across the viewer and checks it becomes a "Brush1" shape in the curve list with the node's
 Brush Size, drawn with its dashed source line, and that the brush outline stays drawn around the
-pen in the middle of the stroke. Presses Reset Transform, then sets the source offset as on a
+pen in the middle of the stroke. Sets a small carried offset with a Ctrl+drag before the brush stroke so its source line is visible, presses Reset Clone Offset later, then sets the source offset as on a
 RotoPaint clone stroke: Ctrl held, the pen dragged from S to D with the Ellipse Tool. Draws an
 ellipse and checks its Source Offset is S - D, so a shape drawn from D takes its source at the
 clicked S, then draws a second ellipse and checks it keeps the offset. Screenshots of the panel and
@@ -45,6 +45,7 @@ OFFSET_X = 700.0
 DRAG = (80, -50)  # widget pixels, y down
 MIN_OUTLINE_PIXELS = 100
 MIN_BRUSH_LINE_PIXELS = 40
+BRUSH_SOURCE_PIXELS = 8  # widget pixels between a brush stroke and its source
 BRUSH_BAND = 15  # widget pixels around the stroke's path that its source line may fall in
 OUTLINE_GAP = 8  # widget pixels between the shape's handles and the source outline's columns
 # The rectangle Z smooths: its corner and side, in canonical pixels.
@@ -507,9 +508,16 @@ try:
         def to_widget(p):
             return (source_centre[0] + (p[0] - origin[0]) * scale, source_centre[1] - (p[1] - origin[1]) * scale)
 
-        before = dim_red_pixels(grab_viewer())
         w = visible_viewer()
         start = to_widget(BRUSH_FROM)
+        names_before_offset = item_names(ctx)
+        QApplication.sendEvent(w, QKeyEvent(QEvent.KeyPress, Qt.Key_Control, Qt.ControlModifier))
+        drag(w, (start[0] + BRUSH_SOURCE_PIXELS, start[1] + BRUSH_SOURCE_PIXELS), start, Qt.ControlModifier)
+        QApplication.sendEvent(w, QKeyEvent(QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier))
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        check(item_names(ctx) == names_before_offset, "the Ctrl+drag before the stroke makes no shape")
+        before = dim_red_pixels(grab_viewer())
         end = to_widget(BRUSH_TO)
         send_mouse(w, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
         for i in range(1, 17):
@@ -536,7 +544,7 @@ try:
         else:
             report("NOTE the brush item has no Python wrapper with params")
         # The brush is not selected, so its source line is dashed at half alpha, offset from the
-        # stroke by the brush's default source offset of a few widget pixels.
+        # stroke by the carried source offset.
         band_x = (min(start[0], end[0]) - BRUSH_BAND, max(start[0], end[0]) + BRUSH_BAND)
         band_y = (min(start[1], end[1]) - BRUSH_BAND, max(start[1], end[1]) + BRUSH_BAND)
         added = [p for p in dim_red_pixels(grab_viewer()) - before
@@ -548,7 +556,7 @@ try:
 
         gt.section("source-offset")
         reset = node.getParam("resetCloneOffsetButton")
-        require(reset is not None, "the Retouch viewer toolbar has Reset Transform")
+        require(reset is not None, "the Retouch viewer toolbar has Reset Clone Offset")
         reset.trigger()
         ellipse_tool = node.getParam("DrawEllipseTool")
         require(ellipse_tool is not None, "the Retouch toolbar has the Ellipse Tool")

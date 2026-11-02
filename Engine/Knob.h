@@ -2514,6 +2514,14 @@ public:
      **/
     T getValueAtTime(double time, int dimension = 0, ViewSpec view = ViewSpec::current(), bool clampToMinMax = true, bool byPassMaster = false)  WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether setValue(value) on dimension at the current time would change it as the GUI
+     * shows it. While a render queues writes, the value the render reads is stale, so a dimension
+     * with a queued write counts as changing: skipping the write would let the queued value land
+     * after it. Main thread only.
+     **/
+    bool isValueChangeAtCurrentTime(const T& value, int dimension = 0) WARN_UNUSED_RETURN;
+
     virtual double getRawCurveValueAt(double time, ViewSpec view,  int dimension)  OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual double getValueAtWithExpression(double time, ViewSpec view, int dimension)  OVERRIDE FINAL WARN_UNUSED_RETURN;
 

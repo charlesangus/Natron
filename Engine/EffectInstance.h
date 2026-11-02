@@ -2511,6 +2511,19 @@ public:
 
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Ends the undo step a Viewer gesture opened when its press was taken, if one is open.
+     * Every Viewer release calls it, so a release that does not reach the owner of the step, or
+     * reaches no overlay at all, still ends it. Main thread only.
+     **/
+    static void closeOverlayEditStep();
+
+    /**
+     * @brief closeOverlayEditStep() when the open step belongs to this effect, for instance when
+     * its settings panel closes mid-gesture. Main thread only.
+     **/
+    void closeOverlayEditStepIfOwner() const;
+
     void setInteractColourPicker_public(const OfxRGBAColourD& color, bool setColor, bool hasColor);
 
     virtual bool isDoingInteractAction() const OVERRIDE FINAL WARN_UNUSED_RETURN;

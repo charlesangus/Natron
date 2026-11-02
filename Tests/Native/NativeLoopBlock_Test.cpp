@@ -1442,7 +1442,7 @@ TEST_F(NativeLoopBlockTest, AStopConditionReadsAParameterByBareNodeName)
 TEST_F(NativeLoopBlockTest, AnUneditedAbortableLoopRenderIsNotAborted)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr begin = createLoopBegin(std::string());
+    NodePtr begin = createLoopBegin();
     NodePtr body = createDrivenCounter();
     NodePtr end = createLoopEnd(8, kLoopEndParamOperationMean);
     ASSERT_TRUE(constant && begin && body && end);
@@ -1472,7 +1472,7 @@ TEST_F(NativeLoopBlockTest, EditingTheBodyMidRenderAbortsTheLoopsRender)
         SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
         getApp()->getProject()->reset(false, true);
         NodePtr constant = createConstant(1.);
-        NodePtr begin = createLoopBegin(std::string());
+        NodePtr begin = createLoopBegin();
         NodePtr body = createDrivenCounter();
         NodePtr end = createLoopEnd(iterations, kLoopEndParamOperationMean);
         ASSERT_TRUE(constant && begin && body && end);

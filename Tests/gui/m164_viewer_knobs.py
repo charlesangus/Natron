@@ -6,7 +6,6 @@ B = input 1) and Viewer2 (the same inputs, A = input 0, B = input 1, but with Py
 its A). Viewer2 sits in a pane of its own, so both viewers are on screen at once.
 
 What is checked, in order:
-  fresh        the new project's Viewer1 opens framed: the Fit button leaves its zoom as it is;
   baseline     every viewer knob is reachable with getParam; the two viewers start with equal knobs;
   toolbar      Viewer2's Display menu, then Viewer1's gamma box (typed), Display Channels, wipe
                operator, View menu and gain slider (dragged) change only that viewer's knobs; the
@@ -31,6 +30,9 @@ What is checked, in order:
                back, each viewer shows the pixels it showed, and Viewer1's state did not leak into
                Viewer2; a zoom set after the reload survives a pane resize;
   creation     a Viewer created with its panel asked for opens no panel, while a Constant does.
+  fresh        a new project window (app.newProject(), as File > New Project) opens with a Viewer1
+               that is framed: the Fit button leaves its zoom as it is. A project started from a
+               script has no Viewer, so this is the only way to reach the new-project viewer.
 
 The zoom is read from the toolbar's zoom menu, which shows the factor the viewer last reported, and
 "framed" means the Fit button leaves that factor unchanged. The wipe handle's own drawing is not
@@ -73,6 +75,7 @@ ROI_KNOBS = ["enableRegionOfInterest", "userRoIBottomLeft", "userRoISize"]
 
 try:
     import NatronEngine
+    import NatronGui
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
@@ -150,17 +153,20 @@ try:
     _tab_holders = []
     _tabs = {}
 
-    def tab_for(name):
-        """The ViewerTab of the viewer node name, made the current tab of its pane."""
-        cached = _tabs.get(name)
+    def tab_for(name, owner=None):
+        """The ViewerTab of the viewer node name in owner's window (the test's app by default), made
+        the current tab of its pane."""
+        owner = owner or app
+        key = (owner.getAppID(), name)
+        cached = _tabs.get(key)
         if cached is not None:
             try:
                 cached.isVisible()
                 return cached
             except RuntimeError:
-                _tabs.pop(name, None)
+                _tabs.pop(key, None)
         for pane in pane_names():
-            tw = app.getTabWidget(pane)
+            tw = owner.getTabWidget(pane)
             if tw is None:
                 continue
             for i in range(tw.count()):
@@ -172,7 +178,7 @@ try:
                     if widget is None or gt.class_name(widget) != "ViewerTab":
                         continue
                     _tab_holders.append(tw)
-                    _tabs[name] = widget
+                    _tabs[key] = widget
                     return widget
         return None
 
@@ -194,10 +200,12 @@ try:
         found = children_of(tab, class_names, needle) if tab is not None else []
         return found[0] if found else None
 
-    def viewer_gl(name):
-        tab = tab_for(name)
+    def gl_in(tab):
         found = children_of(tab, ("ViewerGL",)) if tab is not None else []
         return found[0] if found else None
+
+    def viewer_gl(name):
+        return gl_in(tab_for(name))
 
     def combo_items(combo):
         return [str(i) for i in (combo.property("natronItems") or [])]
@@ -260,25 +268,34 @@ try:
 
     # ---- zoom and panels -------------------------------------------------------------------
 
-    def zoom_text(name):
-        combo = combo_with_item(name, "6400%")
-        return combo_current(combo).strip() if combo is not None else None
+    def zoom_in(tab):
+        for c in (children_of(tab, ("ComboBox",)) if tab is not None else []):
+            if "6400%" in combo_items(c):
+                return combo_current(c).strip()
+        return None
 
-    def fit_changes_zoom(name):
-        """Returns the zoom shown before and after pressing the Fit button of name's viewer."""
-        before = zoom_text(name)
-        tab = tab_for(name)
+    def zoom_text(name):
+        return zoom_in(tab_for(name))
+
+    def fit_changes_zoom(find_tab):
+        """Returns the zoom shown before and after pressing the Fit button of the viewer tab
+        find_tab returns."""
+        before = zoom_in(find_tab())
+        tab = find_tab()
         if tab is not None:
             QMetaObject.invokeMethod(tab, "centerViewer")
             QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
-        return before, zoom_text(name)
+        return before, zoom_in(find_tab())
 
-    def check_framed(name, when):
-        ok = yield ("until", lambda: viewer_gl(name) is not None and viewer_gl(name).isVisible(), POLL_TIMEOUT_S)
+    def check_framed(name, when, owner=None):
+        def find_tab():
+            return tab_for(name, owner)
+
+        ok = yield ("until", lambda: gl_in(find_tab()) is not None and gl_in(find_tab()).isVisible(), POLL_TIMEOUT_S)
         require(ok, "%s is on screen %s" % (name, when))
         yield ("sleep", SETTLE_MS)
-        before, after = yield from fit_changes_zoom(name)
+        before, after = yield from fit_changes_zoom(find_tab)
         check(bool(before) and before == after, "%s opens framed %s (zoom %r, Fit gives %r)" % (name, when, before, after))
 
     def shown_viewers():
@@ -430,11 +447,6 @@ try:
         require(ok, "the main window is active")
         gt.close_all_panels()
         app_var = "app%d" % (app.getAppID() + 1)
-
-        gt.section("fresh")
-        ok = yield ("until", lambda: app.getNode(V1) is not None and tab_for(V1) is not None, POLL_TIMEOUT_S)
-        require(ok, "the new project has %s with a tab" % V1)
-        yield from check_framed(V1, "in a new project")
 
         gt.section("setup")
         app.getProjectParam("frameRange").set(1, 30)
@@ -864,6 +876,19 @@ try:
         viewer3.setPosition(400, 200)
         yield ("sleep", SETTLE_MS * 2)
         check(not gt.any_panel_open(), "a Viewer created with its panel asked for opens no panel")
+
+        # A project opened from a startup script gets no Viewer, so the new project is a window
+        # of its own, as File > New Project opens it. It comes last: it covers the first window.
+        gt.section("fresh")
+        opened_app = app.newProject()
+        require(opened_app is not None, "app.newProject() opened a new project window")
+        fresh = NatronGui.natron.getGuiInstance(opened_app.getAppID())
+        require(fresh is not None, "the new project window has a GuiApp")
+        ok = yield ("until", lambda: fresh.getNode(V1) is not None and tab_for(V1, fresh) is not None,
+                    STARTUP_TIMEOUT_S)
+        require(ok, "the new project has %s with a tab" % V1)
+        yield from check_framed(V1, "in a new project", fresh)
+        gt.shot("m164-new-project.png")
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

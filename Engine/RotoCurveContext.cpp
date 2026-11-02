@@ -1567,8 +1567,6 @@ RotoCurveContext::getItemByName(const std::string& n) const
 RotoLayerPtr
 RotoCurveContext::getDeepestSelectedLayer() const
 {
-    QMutexLocker l(&_imp->rotoContextMutex);
-
     return findDeepestSelectedLayer();
 }
 

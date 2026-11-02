@@ -116,9 +116,12 @@ RotoCurveInteract::getCurrentTime() const
 std::pair<double, double>
 RotoCurveInteract::getPixelScale() const
 {
-    std::pair<double, double> pixelScale;
-
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    std::pair<double, double> pixelScale(1., 1.);
+    // Scripts and tests drive the pen without a viewer.
+    OverlaySupport* viewport = _host->getCurrentViewportForOverlays();
+    if (viewport) {
+        viewport->getPixelScale(pixelScale.first, pixelScale.second);
+    }
 
     return pixelScale;
 }
@@ -1575,7 +1578,7 @@ RotoCurveInteract::isNearbySelectedCpsCrossHair(const QPointF& pos) const
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     double xHairMidSizeX = kXHairSelectedCpsBox * pixelScale.first;
     double xHairMidSizeY = kXHairSelectedCpsBox * pixelScale.second;
@@ -2064,7 +2067,7 @@ RotoCurveInteract::smoothSelectedCurve()
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
     RotoCurveContextPtr context = getCurveContext();
     double time = context->getTimelineCurrentTime();
     std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
@@ -2110,7 +2113,7 @@ RotoCurveInteract::cuspSelectedCurve()
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
     RotoCurveContextPtr context = getCurveContext();
     double time = context->getTimelineCurrentTime();
     std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas;
@@ -2228,7 +2231,7 @@ RotoCurveInteract::moveSelectedCpsWithKeyArrows(int x,
 
     if (!points.empty()) {
         std::pair<double, double> pixelScale;
-        _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+        pixelScale = getPixelScale();
         double time = _host->getCurrentTime();
 
         MoveControlPointsUndoCommand* cmd = new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
@@ -2750,7 +2753,7 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
     bool didSomething = false;
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     if (selectedTool == eRotoToolSelectAll) {
         double bezierSelectionTolerance = kBezierSelectionTolerance * pixelScale.first;
@@ -2792,7 +2795,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     undoGesture.begin();
 
     std::pair<double, double> pixelScale;
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     bool didSomething = false;
     double tangentSelectionTol = kTangentHandleSelectionTolerance * pixelScale.first;
@@ -3174,7 +3177,7 @@ RotoCurveInteract::onOverlayPenMotion(double time,
 {
     std::pair<double, double> pixelScale;
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    pixelScale = getPixelScale();
 
     RotoCurveContextPtr context = getCurveContext();
     assert(context);

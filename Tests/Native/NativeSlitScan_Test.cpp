@@ -382,7 +382,7 @@ TEST_F(NativeSlitScanTest, ClipWarningFollowsAnAnimatedWindow)
     EXPECT_TRUE(slit->hasPersistentMessage());
     EXPECT_EQ((std::size_t)11, framesNeeded(slit, 120.).size());
     EXPECT_FALSE(slit->hasPersistentMessage());
-    framesNeeded(slit, 100.);
+    expectRender(slit, 100., false, [](int /*x*/, int y) { return std::max(100. - kSlitScanMaxFrames + 1, std::floor(100. - 100. * y / 7. + 0.5)); });
     EXPECT_TRUE(slit->hasPersistentMessage());
 }
 

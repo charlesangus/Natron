@@ -498,6 +498,8 @@ SlitScan::renderOp(const RenderActionArgs& args,
         return eStatusFailed;
     }
     const SlitScanTime::Window& w = plan.window;
+    // Frames-needed results are cached per hash and time, so a render refreshes the warning too.
+    updateClipMessage(w);
     const bool useMap = !w.constant && (plan.settings.function == SlitScanTime::eRetimeFunctionRetimeMap);
     const bool vertical = (plan.settings.function == SlitScanTime::eRetimeFunctionVerticalSlit);
     const RectI& roi = args.roi;
@@ -774,6 +776,7 @@ SlitScan::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     const SlitScanTime::Window& w = plan.window;
+    updateClipMessage(w);
     const bool useMap = !w.constant && (plan.settings.function == SlitScanTime::eRetimeFunctionRetimeMap);
 
     SlitScanGpuParams params = SlitScanGpuParams();

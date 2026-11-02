@@ -819,6 +819,38 @@ ColorEqualizer::~ColorEqualizer()
 {
 }
 
+void
+ColorEqualizer::releaseFrame()
+{
+    std::lock_guard<std::mutex> lock(_frameMutex);
+
+    ++_frameGeneration;
+    _frameKey.clear();
+    _frame.reset();
+}
+
+void
+ColorEqualizer::purgeCaches()
+{
+    releaseFrame();
+    StagedImageEffect::purgeCaches();
+}
+
+void
+ColorEqualizer::onInputChanged(int inputNo)
+{
+    releaseFrame();
+    StagedImageEffect::onInputChanged(inputNo);
+}
+
+bool
+ColorEqualizer::holdsFrame() const
+{
+    std::lock_guard<std::mutex> lock(_frameMutex);
+
+    return bool(_frame);
+}
+
 const NodeSpec*
 ColorEqualizer::nodeSpec() const
 {
@@ -1470,6 +1502,8 @@ ColorEqualizer::knobChanged(KnobI* k,
                             double time,
                             bool originatedFromMainThread)
 {
+    releaseFrame();
+
     const KnobButtonPtr applyButton = _applyPreset.lock();
 
     if (applyButton && (k == applyButton.get())) {
@@ -1568,7 +1602,6 @@ StatusEnum
 ColorEqualizer::renderOp(const RenderActionArgs& args,
                          const StagePlan& plan)
 {
-    const PassList list = opPasses(args.time, args.view, args.mappedScale);
     const ColorEqualizerParams params = getParams(args.time, args.view);
     const ColorEqualizerData data = commit(params);
     const WorkingSpace ws = resolveWorkingSpace(this);
@@ -1673,17 +1706,8 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
-        std::shared_ptr<const std::vector<float>> values;
-        std::unique_lock<std::mutex> frameLock(_frameMutex, std::defer_lock);
         const std::string key = frameKey + '|' + layerIds[j] + '|' + std::to_string(job.nComps) + '|' + std::to_string(job.channels.to_ulong());
-        if (processing && planeSize && (planes.count() > 0)) {
-            // Concurrent windows wait for the one computing the frame, then share it.
-            frameLock.lock();
-            if (_frame && (_frameKey == key)) {
-                values = _frame;
-            }
-        }
-        if (frameLock.owns_lock() && !values) {
+        const auto computeFrame = [&]() -> std::shared_ptr<const std::vector<float>> {
             std::shared_ptr<std::vector<float>> computed = std::make_shared<std::vector<float>>();
             std::vector<float>& result = *computed;
             const int nComps = job.nComps;
@@ -1696,7 +1720,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
             std::vector<float> source(planeSize * fullPlanes.count());
             fillBuffer(full, fullPlanes, bufferRect, Boundary::Zero, nThreads, cancel, source.data());
             if (cancel.check()) {
-                return eStatusOK;
+                return std::shared_ptr<const std::vector<float>>();
             }
             result.resize(planeSize * planes.count());
             if (nComps < 3) {
@@ -1732,11 +1756,11 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
                     }
                 });
                 if (cancel.check()) {
-                    return eStatusOK;
+                    return std::shared_ptr<const std::vector<float>>();
                 }
                 process(data, (float)args.mappedScale.toOfxPointD().x, rgba.data(), out.data(), width, height, frame, parallel);
                 if (cancel.check()) {
-                    return eStatusOK;
+                    return std::shared_ptr<const std::vector<float>>();
                 }
                 const bool convertBack = (params.output == ColorEqualizerParams::eOutputResult);
                 parallel(height, [&](int y) {
@@ -1765,15 +1789,71 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
                     }
                 });
                 if (cancel.check()) {
-                    return eStatusOK;
+                    return std::shared_ptr<const std::vector<float>>();
                 }
             }
-            _frame = computed;
-            _frameKey = key;
-            values = computed;
-        }
-        if (frameLock.owns_lock()) {
-            frameLock.unlock();
+            return std::shared_ptr<const std::vector<float>>(computed);
+        };
+
+        std::shared_ptr<const std::vector<float>> values;
+        if (processing && planeSize && (planes.count() > 0)) {
+            // Windows of a frame being computed wait for it and share it; a computation abandoned
+            // by cancellation leaves the next waiter to compute it.
+            std::shared_ptr<FrameComputation> mine;
+            std::uint64_t generation = 0;
+            {
+                std::unique_lock<std::mutex> lock(_frameMutex);
+                for (;;) {
+                    if (_frame && (_frameKey == key)) {
+                        values = _frame;
+                        break;
+                    }
+                    std::map<std::string, std::shared_ptr<FrameComputation>>::iterator found = _framesComputing.find(key);
+                    if (found == _framesComputing.end()) {
+                        mine = std::make_shared<FrameComputation>();
+                        _framesComputing[key] = mine;
+                        generation = _frameGeneration;
+                        break;
+                    }
+                    const std::shared_ptr<FrameComputation> other = found->second;
+                    _frameComputed.wait(lock, [&other]() {
+                        return other->done;
+                    });
+                    if (other->values) {
+                        values = other->values;
+                        break;
+                    }
+                }
+            }
+            if (mine) {
+                struct Publish {
+                    ColorEqualizer* self;
+                    const std::string& key;
+                    const std::shared_ptr<FrameComputation>& computation;
+                    std::uint64_t generation;
+                    std::shared_ptr<const std::vector<float>> result;
+
+                    ~Publish()
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(self->_frameMutex);
+                            computation->values = result;
+                            computation->done = true;
+                            self->_framesComputing.erase(key);
+                            if (result && (generation == self->_frameGeneration)) {
+                                self->_frame = result;
+                                self->_frameKey = key;
+                            }
+                        }
+                        self->_frameComputed.notify_all();
+                    }
+                } publish { this, key, mine, generation, std::shared_ptr<const std::vector<float>>() };
+                publish.result = computeFrame();
+                values = publish.result;
+            }
+            if (!values) {
+                return eStatusOK;
+            }
         }
 
         WindowLayout layout;

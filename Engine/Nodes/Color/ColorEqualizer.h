@@ -39,7 +39,10 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <condition_variable>
+#include <cstdint>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -185,6 +188,11 @@ public:
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
+    virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    /// Whether the node still holds a whole-frame result renderOp() computed.
+    bool holdsFrame() const WARN_UNUSED_RETURN;
 
     /// The node names, red to magenta, as the per-node knobs end.
     static const char* nodeName(int node) WARN_UNUSED_RETURN;
@@ -301,9 +309,21 @@ private:
     KnobDoubleWPtr _paramSize;
     KnobChoiceWPtr _output;
 
+    void releaseFrame();
+
+    struct FrameComputation {
+        bool done = false;
+        std::shared_ptr<const std::vector<float>> values;
+    };
+
     // The last whole-frame result renderOp() computed, the processed planes over the region of
-    // definition, under the key of what it depends on.
+    // definition, under the key of what it depends on. _framesComputing lets windows of a frame
+    // being computed wait for it without blocking other frames; a computation that started before
+    // the frame was last released does not keep its result.
     mutable std::mutex _frameMutex;
+    std::condition_variable _frameComputed;
+    std::map<std::string, std::shared_ptr<FrameComputation>> _framesComputing;
+    std::uint64_t _frameGeneration = 0;
     std::string _frameKey;
     std::shared_ptr<const std::vector<float>> _frame;
 };

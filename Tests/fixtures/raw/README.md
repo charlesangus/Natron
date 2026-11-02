@@ -123,7 +123,7 @@ references do not change.
 
 ### Color equalizer
 
-`canon-eos-5d-mark-iii-colorequal-*.tif` (`make-reference.py --only colorequal`, 20 jobs) are the
+`canon-eos-5d-mark-iii-colorequal-*.tif` (`make-reference.sh --only colorequal`, 20 jobs) are the
 same develop as color balance rgb's with color equalizer on (params version 4, every field not
 listed at its default), RGB half float 192x192 crops. `Tests/Native/NativeColorEqualizer_Test.cpp`
 feeds colour balance rgb's `-base.tif` to ColorEqualizer in a Linear Rec.2020 project. darktable

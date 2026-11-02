@@ -27,7 +27,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <list>
 #include <string>
 #include <vector>
@@ -678,6 +677,47 @@ TEST_F(NativeColorEqualizerTest, OutputDoesNotDependOnTheRequestedRegion)
     EXPECT_EQ(0u, mismatches);
 }
 
+// The whole-frame result a render leaves behind is released when the caches are purged, a control
+// changes or an input is reconnected.
+TEST_F(NativeColorEqualizerTest, ReleasesTheFrame)
+{
+    setWorkingSpace(kLinearRec2020);
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+    NodePtr node = makeNode();
+    ASSERT_TRUE(bool(source) && bool(node));
+    setParitySourceComponents(source, "rgba");
+    connectNodes(source, node, kColorEqualizerInputSource, true);
+    ColorEqualizer* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::string error;
+    // Only renderOp() keeps the frame; a GPU render never reaches it.
+    GpuPlacementOffGuard cpuOnly;
+    const auto render = [&]() {
+        std::vector<RenderedPlane> out;
+        ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &out, &error)) << error;
+        ASSERT_TRUE(effect->holdsFrame());
+    };
+
+    EXPECT_FALSE(effect->holdsFrame());
+    render();
+    effect->purgeCaches();
+    EXPECT_FALSE(effect->holdsFrame());
+
+    render();
+    ASSERT_TRUE(setKnobValues(node, kColorEqualizerParamContrast, { 0.5 }));
+    EXPECT_FALSE(effect->holdsFrame());
+
+    render();
+    disconnectNodes(source, node, true);
+    EXPECT_FALSE(effect->holdsFrame());
+}
+
 /**
  * Each make-reference.py colorequal job against process() in linear Rec. 2020, fed colour balance
  * rgb's "base" crop (the same develop without the module). Both run the guided filters over the whole
@@ -685,7 +725,6 @@ TEST_F(NativeColorEqualizerTest, OutputDoesNotDependOnTheRequestedRegion)
  * develop, which the references only hold a crop of. So only the crop's interior, a halo in from
  * each edge, is compared, and at large sizes, where the filters subsample, process() is given the
  * part of the crop whose own grid is darktable's.
- * Skipped until the references are rendered.
  **/
 TEST_F(NativeColorEqualizerTest, MatchesDarktable)
 {
@@ -693,17 +732,7 @@ TEST_F(NativeColorEqualizerTest, MatchesDarktable)
     int width = 0;
     int height = 0;
     std::string error;
-
-    std::vector<float> probe;
-    int probeWidth = 0;
-    int probeHeight = 0;
-    if (!RawReference::readReference(referencePath("colorbalancergb", "base"), &base, &width, &height, &error)
-        || !RawReference::readReference(referencePath("colorequal", "defaults"), &probe, &probeWidth, &probeHeight, &error)) {
-        // The bundled gtest has no GTEST_SKIP.
-        std::printf("no darktable references yet (tools/raw/make-reference.sh --only colorequal): %s\n", error.c_str());
-
-        return;
-    }
+    ASSERT_TRUE(RawReference::readReference(referencePath("colorbalancergb", "base"), &base, &width, &height, &error)) << error;
 
     const char* const nodeNames[] = { "red", "orange", "yellow", "green", "cyan", "blue", "lavender", "magenta" };
     std::vector<ReferenceJob> jobs = {

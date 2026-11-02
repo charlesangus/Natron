@@ -39,7 +39,7 @@ REFERENCE_NODES = [("Transform", "net.sf.openfx.TransformPlugin")]
 try:
     from PySide6.QtCore import QMetaObject, QRect
     from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLineEdit, QScrollArea, QTabWidget
+    from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QLabel, QLineEdit, QScrollArea, QTabWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -126,6 +126,18 @@ try:
         fields = visible_in(page, page.findChildren(QLineEdit) + page.findChildren(QComboBox))
         return min(left_of(page, w) for w in fields) if fields else None
 
+    def fields_of(page):
+        """The page's visible text fields, spinboxes included, and menus, Natron's ComboBox among them."""
+        menus = [w for w in page.findChildren(QFrame) if gt.class_name(w) == "ComboBox"]
+        return visible_in(page, page.findChildren(QLineEdit) + page.findChildren(QComboBox) + menus)
+
+    def row_start(page, row, fields):
+        """Where row's first field starts: a knob laid on the same line as the one before it
+        follows that knob's field, so the row starts at the leftmost field level with it."""
+        y = centre_y_of(page, row[0])
+        level = [w for w in fields if abs(centre_y_of(page, w) - y) <= row[0].height() // 2]
+        return min(left_of(page, w) for w in level + row)
+
     def check_layout(name, page):
         column = field_column(page)
         rows = spinbox_rows(page)
@@ -135,8 +147,9 @@ try:
         report("NOTE %s: field column at x=%d, %d spinbox row(s)" % (name, column, len(rows)))
         late = []
         spread = []
+        fields = fields_of(page)
         for row in rows:
-            first = left_of(page, row[0]) - column
+            first = row_start(page, row, fields) - column
             if first > FIELD_START_SLACK_PX:
                 late.append(first)
             for a, b in zip(row, row[1:]):

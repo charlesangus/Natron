@@ -179,6 +179,19 @@ try:
                     return True
         return False
 
+    def visible_point(image, anchor, test):
+        """The pixel nearest anchor that passes test: a guide's published point is on one of its
+        segments, which the scene's geometry may hide there, and a click picks what is drawn."""
+        if image is None or test(image.pixelColor(anchor.x(), anchor.y())):
+            return anchor
+        best = None
+        for y in range(image.height()):
+            for x in range(image.width()):
+                d = (x - anchor.x()) ** 2 + (y - anchor.y()) ** 2
+                if (best is None or d < best[0]) and test(image.pixelColor(x, y)):
+                    best = (d, QPoint(x, y))
+        return best[1] if best is not None else anchor
+
     def count_pixels(image, test):
         """How many pixels of every other row and column pass test."""
         if image is None:
@@ -328,7 +341,8 @@ try:
                (SMALL_GUIDE_SIZE, small_camera, small_light, LARGE_GUIDE_SIZE, large_camera, large_light))
         check(large_camera > small_camera * 1.5, "the camera guide grows with the guide size")
         check(large_light > small_light, "the light guide grows with the guide size")
-        cam_point = guides()[cam_path][1]
+        cam_point = visible_point(image, guides()[cam_path][1], is_camera_colour)
+        report("NOTE resized camera guide anchor %r, clicked at %r" % (guides()[cam_path][1], cam_point))
         click(v, cam_point)
         yield settle()
         check(selection() == [cam_path], "a click on the resized camera guide selects the camera (%r)" % (selection(),))

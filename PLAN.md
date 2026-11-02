@@ -17,6 +17,8 @@ future core work has solid ground to build on.
 
 - **Six lanes, same-file rule waived (user, 2026-10-27):** bosley-native-nodes runs six parallel lanes across E13, E9, E3, E10, E15, E16, E17 plus M224, M163 and M242; lanes may overlap files and accept rebases. M64 - Tiled Rendering gates nothing. A milestone blocked on user feedback pauses and its lane takes the next one.
 
+- **No GPU-host timing gates for placement (user, 2026-11-02):** GPU placement is weight-based (M239); the cost-seed algorithm is gone, so milestones need no per-node GPU-host timing measurements before merge. Drop such gate lines when found. Timings that are a milestone's own deliverable (a perf spike, documented node timings) are unaffected.
+
 - **Never port display-referred nodes (user, 2026-10-30):** darktable and other ports must operate on scene-linear data; a module that only makes sense display-referred is not ported.
 
 - **Stop Docker containers gracefully (user, 2026-10-27):** never `docker kill`, `docker rm -f` or SIGKILL a running natron-dev (or any Natron) container; `docker stop` (SIGTERM, a timeout of 30 s or more) and then `docker rm`. Killed containers left GPU/driver memory held on the host, which looked like M225's "memory not released" bug.

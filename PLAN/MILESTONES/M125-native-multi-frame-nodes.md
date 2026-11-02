@@ -169,4 +169,4 @@ Scouted facts (scouted 2026-10-13 on main `338d9324a`; M85 - Native GPU Kernels 
 - 2026-10-13 — **TimeDissolve is retired, not ported** (user): animating native Dissolve's `which` is sufficient.
 - 2026-10-13 — **All time nodes on the GPU, to maximise residency** (user), on M124 - Native Time Remaps' multi-time views.
 - 2026-10-30 — **UAT passed (user).** The native multi-frame nodes are accepted; M125.P3.T3 and the remaining verification gate still run before merge.
-- 2026-11-02 — The defocus_retime before/after GPU-host timing (P3.T3 and that gate line) is dropped (user).
+- 2026-11-02 — The defocus_retime before/after GPU-host timing (P3.T3 and that gate line) is dropped: placement no longer uses cost seeds, a project-wide decision (user).

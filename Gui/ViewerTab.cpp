@@ -1156,6 +1156,10 @@ ViewerTab::refreshSceneDisplayTransform()
         transform.config = colorManagement->getConfig();
         transform.colorSpace = project->getWorkingColorSpace();
     }
+    if (_imp->viewerNode) {
+        transform.gain = _imp->viewerNode->getGain();
+        transform.gamma = _imp->viewerNode->getGamma();
+    }
     _imp->sceneViewport->setDisplayTransform(transform);
 }
 

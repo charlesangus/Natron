@@ -285,6 +285,7 @@ ViewerTab::setGain(double d)
     _imp->gainSlider->seekScalePosition(fstop);
     _imp->viewer->setGain(d);
     _imp->viewerNode->onGainChanged(d);
+    refreshSceneDisplayTransform();
     _imp->toggleGainButton->setDown(d != 1.);
     _imp->toggleGainButton->setChecked(d != 1.);
     _imp->lastFstopValue = fstop;
@@ -302,6 +303,7 @@ ViewerTab::setGamma(double gamma)
     _imp->gammaBox->setValue(gamma);
     _imp->gammaSlider->seekScalePosition(gamma);
     _imp->viewerNode->onGammaChanged(gamma);
+    refreshSceneDisplayTransform();
     _imp->viewer->setGamma(gamma);
     _imp->toggleGammaButton->setDown(gamma != 1.);
     _imp->toggleGammaButton->setChecked(gamma != 1.);

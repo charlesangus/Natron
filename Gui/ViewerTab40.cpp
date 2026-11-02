@@ -1239,6 +1239,7 @@ ViewerTab::onGainToggled(bool clicked)
     double gain = std::pow(2, value);
     _imp->viewer->setGain(gain);
     _imp->viewerNode->onGainChanged(gain);
+    refreshSceneDisplayTransform();
 }
 
 void
@@ -1252,6 +1253,7 @@ ViewerTab::onGainSliderChanged(double v)
     double gain = std::pow(2, v);
     _imp->viewer->setGain(gain);
     _imp->viewerNode->onGainChanged(gain);
+    refreshSceneDisplayTransform();
     _imp->lastFstopValue = v;
 }
 
@@ -1266,6 +1268,7 @@ ViewerTab::onGainSpinBoxValueChanged(double v)
     double gain = std::pow(2, v);
     _imp->viewer->setGain(gain);
     _imp->viewerNode->onGainChanged(gain);
+    refreshSceneDisplayTransform();
     _imp->lastFstopValue = v;
 }
 
@@ -1284,6 +1287,7 @@ ViewerTab::onGammaToggled(bool clicked)
     _imp->gammaSlider->seekScalePosition(value);
     _imp->viewer->setGamma(value);
     _imp->viewerNode->onGammaChanged(value);
+    refreshSceneDisplayTransform();
 }
 
 void
@@ -1296,6 +1300,7 @@ ViewerTab::onGammaSliderValueChanged(double value)
     _imp->gammaBox->setValue(value);
     _imp->viewer->setGamma(value);
     _imp->viewerNode->onGammaChanged(value);
+    refreshSceneDisplayTransform();
     _imp->lastGammaValue = value;
 }
 
@@ -1309,6 +1314,7 @@ ViewerTab::onGammaSpinBoxValueChanged(double value)
     _imp->gammaSlider->seekScalePosition(value);
     _imp->viewer->setGamma(value);
     _imp->viewerNode->onGammaChanged(value);
+    refreshSceneDisplayTransform();
     _imp->lastGammaValue = value;
 }
 

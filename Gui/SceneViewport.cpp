@@ -31,6 +31,7 @@
 #include <condition_variable>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -164,16 +165,9 @@ appendToList(const char* list,
     return existing.empty() ? item : existing + ", " + item;
 }
 
-/**
- * @brief A copy of config with processor baked into an extra display and view, kBakeDisplay and
- * kBakeView, reached from kBakeInputSpace. Hydra reads OCIO's process-wide current config, which
- * OpenFX plugins read too, so the copy keeps everything config has and hides what it adds from
- * listings: the display stays out of the active displays and the colour spaces are inactive.
- * Throws what OpenColorIO throws.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-bakeDisplayTransform(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                     const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+// Throws what OpenColorIO throws.
+OCIO_NAMESPACE::GroupTransformRcPtr
+bakeToLut(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
 {
     const unsigned long n = kBakeLutSize;
     // Offsetting by 2^min puts scene-linear 0 on the first grid point.
@@ -216,6 +210,19 @@ bakeDisplayTransform(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
     baked->appendTransform(shaper);
     baked->appendTransform(lut);
 
+    return baked;
+}
+
+/**
+ * @brief A copy of config with transform as an extra display and view, kBakeDisplay and kBakeView,
+ * reached from kBakeInputSpace. Hydra reads OCIO's process-wide current config, which OpenFX
+ * plugins read too, so the copy keeps everything config has and hides what it adds from listings:
+ * the display stays out of the active displays and the colour spaces are inactive.
+ **/
+OCIO_NAMESPACE::ConstConfigRcPtr
+configWithViewportView(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                       const OCIO_NAMESPACE::ConstTransformRcPtr& transform)
+{
     OCIO_NAMESPACE::ConfigRcPtr copy = config->createEditableCopy();
     std::string activeDisplays;
     for (int i = 0; i < config->getNumDisplays(); ++i) {
@@ -226,7 +233,7 @@ bakeDisplayTransform(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
     copy->addColorSpace(input);
     OCIO_NAMESPACE::ColorSpaceRcPtr output = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
     output->setName(kBakeOutputSpace);
-    output->setTransform(baked, OCIO_NAMESPACE::COLORSPACE_DIR_FROM_REFERENCE);
+    output->setTransform(transform, OCIO_NAMESPACE::COLORSPACE_DIR_FROM_REFERENCE);
     copy->addColorSpace(output);
     const std::string inactive = appendToList(config->getInactiveColorSpaces(),
                                               std::string(kBakeInputSpace) + ", " + kBakeOutputSpace);
@@ -237,17 +244,27 @@ bakeDisplayTransform(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
     return copy;
 }
 
-// Main thread only. Baking evaluates the transform at every LUT grid point, so each one is kept.
-OCIO_NAMESPACE::ConstConfigRcPtr
-cachedBake(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-           const std::string& colorSpace,
-           const std::string& display,
-           const std::string& view,
-           const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+std::string
+displayTransformKey(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                    const std::string& colorSpace,
+                    const std::string& display,
+                    const std::string& view)
 {
-    static std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> cache;
-    const std::string key = std::string(config->getCacheID()) + '\n' + colorSpace + '\n' + display + '\n' + view;
-    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator found = cache.find(key);
+    return std::string(config->getCacheID()) + '\n' + colorSpace + '\n' + display + '\n' + view;
+}
+
+// Main thread only. Baking evaluates the transform at every LUT grid point, so each one is kept.
+// The viewer's gain and gamma stay out of the bake, so dragging them reuses it.
+OCIO_NAMESPACE::ConstTransformRcPtr
+cachedLut(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+          const std::string& colorSpace,
+          const std::string& display,
+          const std::string& view,
+          const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+{
+    static std::map<std::string, OCIO_NAMESPACE::ConstTransformRcPtr> cache;
+    const std::string key = displayTransformKey(config, colorSpace, display, view);
+    std::map<std::string, OCIO_NAMESPACE::ConstTransformRcPtr>::const_iterator found = cache.find(key);
     if (found != cache.end()) {
         return found->second;
     }
@@ -255,10 +272,123 @@ cachedBake(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
     if (cache.size() >= kMaxBakes) {
         cache.clear();
     }
-    OCIO_NAMESPACE::ConstConfigRcPtr baked = bakeDisplayTransform(config, processor);
+    OCIO_NAMESPACE::ConstTransformRcPtr baked = bakeToLut(processor);
     cache[key] = baked;
 
     return baked;
+}
+
+// The 2D viewer multiplies the working-space image by gain before its display transform.
+OCIO_NAMESPACE::TransformRcPtr
+viewerGainTransform(double gain)
+{
+    const double m[16] = {
+        gain, 0., 0., 0.,
+        0., gain, 0., 0.,
+        0., 0., gain, 0.,
+        0., 0., 0., 1.
+    };
+    OCIO_NAMESPACE::MatrixTransformRcPtr matrix = OCIO_NAMESPACE::MatrixTransform::Create();
+    matrix->setMatrix(m);
+
+    return matrix;
+}
+
+/**
+ * @brief After its display transform the 2D viewer takes each channel, negatives as 0, to the power
+ * 1 / gamma, which ExponentTransform's default negative style does. A gamma of 0 or less shows
+ * which values reach 1; OpenColorIO has no step, so the steepest ramp its RangeTransform accepts,
+ * 2^-16 wide just below 1, stands in for it.
+ **/
+OCIO_NAMESPACE::TransformRcPtr
+viewerGammaTransform(double gamma)
+{
+    if (gamma <= 0.) {
+        OCIO_NAMESPACE::RangeTransformRcPtr range = OCIO_NAMESPACE::RangeTransform::Create();
+        range->setMinInValue(1. - std::exp2(-16.));
+        range->setMaxInValue(1.);
+        range->setMinOutValue(0.);
+        range->setMaxOutValue(1.);
+
+        return range;
+    }
+    const double exponent = 1. / gamma;
+    const double values[4] = { exponent, exponent, exponent, 1. };
+    OCIO_NAMESPACE::ExponentTransformRcPtr power = OCIO_NAMESPACE::ExponentTransform::Create();
+    power->setValue(values);
+
+    return power;
+}
+
+std::string
+exactText(double value)
+{
+    std::ostringstream os;
+    os << std::hexfloat << value;
+
+    return os.str();
+}
+
+/**
+ * @brief configWithViewportView() of gain, then displayView, then gamma, as the 2D viewer applies
+ * them. displayKey names displayView within config. Main thread only. Each gain and gamma is a
+ * config of its own; a few are kept for toggling.
+ **/
+OCIO_NAMESPACE::ConstConfigRcPtr
+cachedViewportConfig(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                     const std::string& displayKey,
+                     double gain,
+                     double gamma,
+                     const OCIO_NAMESPACE::ConstTransformRcPtr& displayView)
+{
+    static std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> cache;
+    const std::string key = displayKey + '\n' + exactText(gain) + '\n' + exactText(gamma);
+    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator found = cache.find(key);
+    if (found != cache.end()) {
+        return found->second;
+    }
+    const std::size_t kMaxConfigs = 8;
+    if (cache.size() >= kMaxConfigs) {
+        cache.clear();
+    }
+    OCIO_NAMESPACE::GroupTransformRcPtr chain = OCIO_NAMESPACE::GroupTransform::Create();
+    if (gain != 1.) {
+        chain->appendTransform(viewerGainTransform(gain));
+    }
+    chain->appendTransform(displayView->createEditableCopy());
+    if (gamma != 1.) {
+        chain->appendTransform(viewerGammaTransform(gamma));
+    }
+    OCIO_NAMESPACE::ConstConfigRcPtr result = configWithViewportView(config, chain);
+    cache[key] = result;
+
+    return result;
+}
+
+/**
+ * @brief The sRGB encoding Hydra's colour correction applies without OpenColorIO, for when the
+ * viewer's gain or gamma have to go with it, added to the config $OCIO names, the one OpenFX
+ * plugins read unless told otherwise. Main thread only. Throws what OpenColorIO throws.
+ **/
+OCIO_NAMESPACE::ConstConfigRcPtr
+srgbViewportConfig(double gain,
+                   double gamma)
+{
+    static std::string loadedFrom;
+    static OCIO_NAMESPACE::ConstConfigRcPtr base;
+    const std::string env = TfGetenv("OCIO");
+    if (!base || (env != loadedFrom)) {
+        base = OCIO_NAMESPACE::Config::CreateFromEnv();
+        loadedFrom = env;
+    }
+    OCIO_NAMESPACE::ExponentWithLinearTransformRcPtr encode = OCIO_NAMESPACE::ExponentWithLinearTransform::Create();
+    const double exponent[4] = { 2.4, 2.4, 2.4, 1. };
+    const double offset[4] = { 0.055, 0.055, 0.055, 0. };
+    encode->setGamma(exponent);
+    encode->setOffset(offset);
+    encode->setDirection(OCIO_NAMESPACE::TRANSFORM_DIR_INVERSE);
+
+    return cachedViewportConfig(base, std::string(base->getCacheID()) + "\nsRGB", gain, gamma, encode);
 }
 
 /**
@@ -922,7 +1052,8 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
 {
     const DisplayTransform& current = _imp->displayTransform;
     if ((transform.config == current.config) && (transform.colorSpace == current.colorSpace)
-        && (transform.display == current.display) && (transform.view == current.view)) {
+        && (transform.display == current.display) && (transform.view == current.view)
+        && (transform.gain == current.gain) && (transform.gamma == current.gamma)) {
         return;
     }
     _imp->displayTransform = transform;
@@ -935,9 +1066,15 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
     if (useOpenColorIO) {
         try {
             OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(transform.config, transform.colorSpace, transform.display, transform.view);
-            if (needsLutTextures(processor)) {
-                DisplayTransform baked;
-                baked.config = cachedBake(transform.config, transform.colorSpace, transform.display, transform.view, processor);
+            const bool lutTextures = needsLutTextures(processor);
+            if (lutTextures || (transform.gain != 1.) || (transform.gamma != 1.)) {
+                const OCIO_NAMESPACE::ConstTransformRcPtr displayView = lutTextures
+                    ? cachedLut(transform.config, transform.colorSpace, transform.display, transform.view, processor)
+                    : OCIO_NAMESPACE::ConstTransformRcPtr(processor->createGroupTransform());
+                DisplayTransform baked = transform;
+                baked.config = cachedViewportConfig(transform.config,
+                                                    displayTransformKey(transform.config, transform.colorSpace, transform.display, transform.view),
+                                                    transform.gain, transform.gamma, displayView);
                 baked.colorSpace = kBakeInputSpace;
                 baked.display = kBakeDisplay;
                 baked.view = kBakeView;
@@ -955,6 +1092,26 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
         } catch (const std::exception& e) {
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             useOpenColorIO = false;
+            background[0] = background[1] = background[2] = kBackgroundSrgb;
+        }
+    }
+    if (!useOpenColorIO && ((transform.gain != 1.) || (transform.gamma != 1.)) && !TfGetenv("OCIO").empty()) {
+        try {
+            DisplayTransform graded = transform;
+            graded.config = srgbViewportConfig(transform.gain, transform.gamma);
+            graded.colorSpace = kBakeInputSpace;
+            graded.display = kBakeDisplay;
+            graded.view = kBakeView;
+            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(graded.config, graded.colorSpace, graded.display, graded.view);
+            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
+            processor->getDefaultCPUProcessor()->applyRGB(rgb);
+            for (int c = 0; c < 3; ++c) {
+                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
+            }
+            _imp->hydraTransform = graded;
+            useOpenColorIO = true;
+        } catch (const std::exception& e) {
+            qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             background[0] = background[1] = background[2] = kBackgroundSrgb;
         }
     }

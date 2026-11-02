@@ -55,6 +55,7 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/ViewerInstance.h"
 #include "Gui/GuiGLRequirements.h"
 
 #include <pxr/base/gf/vec4f.h>
@@ -606,6 +607,119 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
     const Rgb projected = pixel(render(), 97, 128);
     EXPECT_NEAR(srgb.r, projected.r, 8) << projected;
     EXPECT_NEAR(srgb.b, projected.b, 8) << projected;
+}
+
+// The viewer's gain and gamma reach the card and the background as applyViewerDisplayTransform(),
+// the 2D viewer's own maths, computes them: gain before the display transform, gamma after, a
+// gamma of 0 a threshold at 1. Through a view Hydra draws analytically and one it is given baked,
+// and, without a config, around the sRGB transform. Back at 1 they leave the plain transform.
+TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
+{
+    if (_skip) {
+        return;
+    }
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    const ScopedOcioEnv env(kStudioURI);
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    struct Case {
+        const char* view;
+        double gain;
+        double gamma;
+    };
+    const Case cases[] = {
+        { "Un-tone-mapped", 0.5, 1.8 },
+        { "Un-tone-mapped", 4., 0. },
+        { kSDRView, 0.5, 1.8 },
+        { kSDRView, 2., 0.6 },
+    };
+    // The bake's error, up to 2/255 before gamma, grows a little through it.
+    const float bakeTolerance = 3.f / 255.f;
+
+    for (const Case& c : cases) {
+        const std::string label = std::string(c.view) + " gain " + std::to_string(c.gain) + " gamma " + std::to_string(c.gamma);
+        const ProjectColorManagement::DisplayProcessorPtr processor = cm.getDisplayProcessor(kWorkingSpace, kDisplay, c.view, std::string(), &error);
+        ASSERT_TRUE(processor != nullptr) << error;
+        float plain[8] = { 0.6f, 0.f, 0.5f, 1.f, 0.05f, 0.05f, 0.05f, 1.f };
+        applyViewerDisplayTransform(*processor, plain, 2, 1., 0., 1.);
+        float graded[8] = { 0.6f, 0.f, 0.5f, 1.f, 0.05f, 0.05f, 0.05f, 1.f };
+        applyViewerDisplayTransform(*processor, graded, 2, c.gain, 0., c.gamma);
+        const Rgb plainPlate { codeValue(plain[0]), codeValue(plain[1]), codeValue(plain[2]) };
+        const Rgb expected { codeValue(graded[0]), codeValue(graded[1]), codeValue(graded[2]) };
+        // Otherwise the checks below could not tell gain and gamma from their absence.
+        ASSERT_GT(std::abs(expected.r - plainPlate.r) + std::abs(expected.b - plainPlate.b), 20) << label << ": " << expected;
+
+        SceneViewportRenderer::DisplayTransform transform;
+        transform.config = cm.getConfig();
+        transform.colorSpace = kWorkingSpace;
+        transform.display = kDisplay;
+        transform.view = c.view;
+        transform.gain = c.gain;
+        transform.gamma = c.gamma;
+        _renderer.setDisplayTransform(transform);
+        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << label;
+
+        // Hydra built its pass from OpenColorIO's current config, which holds what it was given.
+        OCIO_NAMESPACE::DisplayViewTransformRcPtr viewportView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+        viewportView->setSrc("Natron 3D Viewport Input");
+        viewportView->setDisplay("Natron 3D Viewport");
+        viewportView->setView("Baked");
+        OCIO_NAMESPACE::ConstProcessorRcPtr given = OCIO_NAMESPACE::GetCurrentConfig()->getProcessor(viewportView);
+        OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+        shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+        given->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+        EXPECT_EQ(0u, shader->getNumTextures()) << label;
+        float givenPixels[6] = { 0.6f, 0.f, 0.5f, 0.05f, 0.05f, 0.05f };
+        OCIO_NAMESPACE::PackedImageDesc givenImage(givenPixels, 2, 1, 3);
+        given->getDefaultCPUProcessor()->apply(givenImage);
+        for (int i = 0; i < 3; ++i) {
+            EXPECT_NEAR(graded[i], givenPixels[i], bakeTolerance) << label << " plate " << i;
+            EXPECT_NEAR(graded[4 + i], givenPixels[3 + i], bakeTolerance) << label << " background " << i;
+        }
+
+        float reported[3];
+        _renderer.getBackgroundColor(reported);
+        EXPECT_NEAR(std::min(std::max(graded[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
+
+        const QImage image = render();
+        const Rgb projected = pixel(image, 97, 128);
+        EXPECT_NEAR(expected.r, projected.r, 8) << label << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.g, projected.g, 8) << label << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.b, projected.b, 8) << label << ": " << projected << " expected " << expected;
+        const Rgb outside = pixel(image, 20, 128);
+        EXPECT_NEAR(codeValue(graded[4]), outside.r, 4) << label << ": " << outside;
+
+        transform.gain = 1.;
+        transform.gamma = 1.;
+        _renderer.setDisplayTransform(transform);
+        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << label;
+        const Rgb restored = pixel(render(), 97, 128);
+        EXPECT_NEAR(plainPlate.r, restored.r, 8) << label << ": " << restored << " expected " << plainPlate;
+        EXPECT_NEAR(plainPlate.b, restored.b, 8) << label << ": " << restored << " expected " << plainPlate;
+        if (std::string(c.view) != kSDRView) {
+            EXPECT_FALSE(OCIO_NAMESPACE::GetCurrentConfig()->getColorSpace("Natron 3D Viewport Input")) << label << ": the plain view needs no copy of the config";
+        }
+    }
+
+    SceneViewportRenderer::DisplayTransform srgbGraded;
+    srgbGraded.gain = 0.5;
+    srgbGraded.gamma = 1.8;
+    _renderer.setDisplayTransform(srgbGraded);
+    EXPECT_TRUE(_renderer.isUsingOpenColorIO());
+    const Rgb graded = pixel(render(), 97, 128);
+    EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.3f), 1.f / 1.8f)), graded.r, 8) << graded;
+    EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.25f), 1.f / 1.8f)), graded.b, 8) << graded;
+
+    _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
+    EXPECT_FALSE(_renderer.isUsingOpenColorIO());
+    const Rgb plain = pixel(render(), 97, 128);
+    EXPECT_NEAR(codeValue(srgbEncode(0.6f)), plain.r, 8) << plain;
+    EXPECT_NEAR(codeValue(srgbEncode(0.5f)), plain.b, 8) << plain;
 }
 
 // /World/Cam sits at (1, 1, 10) with the fallback aperture (vertical 15.2908 mm) and a 35 mm lens:

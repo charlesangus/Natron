@@ -132,3 +132,4 @@ wheel dolly, `F` = frame all, a single selected path, fixed near/far planes).
 
 **Verification gate:** release and 3D GUI suites pass; the supplied NVIDIA scene is crash-free; camera knobs track locked navigation; the user accepts the replacement AppImage.
 - 2026-11-01 — P5 at 7c92ec3a6: camera knobs were written with UserEdited (panel doesn't refresh) — now NatronGuiEdited; knobs update on release, per the earlier decision (user may want live). NVIDIA crash: HgiGL's garbage collector is process-global and not thread safe, and USDRender's render thread and the 3D view each drive an HgiGL — all Storm work now runs in a process-wide StormGLSection. Unproven on NVIDIA until the user retests (PM).
+- 2026-11-02 — UAT passed (user).

@@ -123,3 +123,11 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 - 2026-11-01 — UAT round 2: no longer crashes (user); P4 for an optional headlight (off by default) and a separate emissive node.
 - 2026-11-02 — P4 at 8aaa5bf81: Headlight knob on USDRender and a Viewer 3D Headlight preference (context menu), both off by default; USDEmissiveMaterial (one Emissive input, Emissive Color tints it); USDMaterial's Shader knob removed. Merge notes: M234's projection must switch to USDEmissiveMaterial; M229's lighting mode defaults to Auto (adds a headlight when the scene has none), which contradicts the user's off-by-default — whichever of M229/M233 merges second folds the headlight into one viewer control defaulting to off (PM). To confirm with the user: headlight toggle as a preference shared by all viewers; Emissive Color tints rather than a separate intensity (implementer).
 - 2026-11-02 — Headlight toggle as a preference shared by all viewers: confirmed (user). Emissive Color as a tint (colour multiplier, above 1 brightens): confirmed (user).
+
+## Phase 233.5: Keep the data window
+
+- [ ] M233.P5.T1 — Textures keep data outside the format
+  - files: the live-texture upload and UV mapping from P3.T1 (grep the format crop), live-texture tests
+  - approach: User, 2026-11-02: "should preserve the data window (e.g. in case the object has uv coordinates outside 0-1)". UV 0–1 still maps to the format, but the uploaded texture covers the whole data window, so UVs outside 0–1 sample the overscan pixels instead of clamping or wrapping. Outside the data window, sampling follows the material's wrap mode.
+  - verify: A test with overscan (data window larger than the format) and a card whose UVs extend past 0–1 shows the overscan pixels at those UVs; 0–1 still lands on the format.
+  - size: M

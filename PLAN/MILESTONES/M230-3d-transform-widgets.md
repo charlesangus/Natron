@@ -65,3 +65,4 @@ handles on its first match (`drawTransformHandles`, `getHandleTarget` in
   - size: L
 
 **Verification gate:** startup smoke tests cover Vulkan failure; 3D widget tests pass; the user can launch and exercise the replacement AppImage.
+- 2026-11-02 — Approved: no longer crashes on the user's host, cause unknown (user).

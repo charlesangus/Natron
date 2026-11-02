@@ -369,6 +369,7 @@ future core work has solid ground to build on.
 | M299 | Roto Render Performance | todo | M224, M276, M300 |  | E6 | [M299-roto-render-performance.md](PLAN/MILESTONES/M299-roto-render-performance.md) |
 | M304 | Roto Points Snapping To Origin | todo | M224, M261 |  | E6 | [M304-roto-points-snapping-to-origin.md](PLAN/MILESTONES/M304-roto-points-snapping-to-origin.md) |
 | M305 | Stale Viewer Keyframe Markers | todo | M275, M261 |  | E10 | [M305-stale-viewer-keyframe-markers.md](PLAN/MILESTONES/M305-stale-viewer-keyframe-markers.md) |
+| M306 | Knob Row Layout | todo | M229 |  | E10 | [M306-knob-row-layout.md](PLAN/MILESTONES/M306-knob-row-layout.md) |
 
 # Epics
 

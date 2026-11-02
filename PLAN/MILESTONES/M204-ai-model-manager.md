@@ -105,3 +105,4 @@ Deps: M203 - ONNX Inference Backend. See `DECISIONS/2026-10-25-darktable-ai-and-
   - size: M
 
 **Verification gate:** release tests and packaging checks pass; the user downloads a model successfully from the replacement AppImage.
+- 2026-11-02 — UAT passed (user).

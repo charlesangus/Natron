@@ -100,3 +100,12 @@ Acceptance sketch:
   - approach: User, 2026-11-01: "iterate over 'frame' should be able to select fractional frames before/after, and fractional 'frame step' (i.e before 0.5, after 0, frame step .1 will render ten steps from half a frame before to the current frame)". Replace the integer Frame Start / Frame End / Frame Step with double knobs Frames Before / Frames After (non-negative distances from the current frame) and Frame Step (> 0, fractional allowed). Samples run from f − before to f + after in Frame Step increments, both ends included, with an epsilon so rounding doesn't drop the last sample. Each sample is evaluated at its fractional time through the P3.T1 path (inputs, driven knobs, the loop's frame variable, caching), and the hashes keep the fractional times distinct. Accumulate's Mean divides by the real sample count. Integer-only inputs (sequence readers) behave as they do for Count subframes. No backward compatibility: the old knobs are removed.
   - verify: A unit test renders Frames mode with before 0.5, after 0, step 0.1 on an input animated in time and checks the samples land at f−0.5, f−0.4, …, f and that Mean averages them; the GUI check sets fractional values from the panel.
   - size: M
+
+## Phase 190.5: Subframes always means subframes
+
+- [ ] M190.P5.T1 — Subframes requests fractional times whatever is upstream
+  - files: `Engine/Nodes/Loop/LoopEnd.*`, `Engine/Nodes/Loop/LoopBegin.*`, `Engine/Nodes/Loop/docs/LoopEnd.md`, loop tests
+  - approach: User, 2026-11-02: "it should always do subframes when checked, it's too hard to guess what upstream nodes are doing, our node knows what it wants and asks for it. If the upstream node only has whole frames, that's fine." With Subframes checked, every sample asks its inputs for its own fractional time; remove any detection of whole-frame-only inputs and any fallback to whole-frame steps. Unchecked keeps whole-frame steps. Tooltip and docs say so.
+  - verify: A test with a whole-frame-only input (an image sequence reader) and Subframes checked shows the requested times are fractional and the render succeeds; unchecked requests whole frames.
+  - size: M
+- 2026-11-02 — Frames Before/After defaults keep the old range (2, 2) (user).

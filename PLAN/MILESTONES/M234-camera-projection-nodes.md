@@ -100,3 +100,11 @@ their images through M233 - Live Node Textures. Survey:
 - 2026-11-01 — P3 at 970cc4920: projection shader translucent (premultiplied plate), export bake unlit+blended; cameraPath knob decides the camera, dropdown fills it, a missing path is allowed with a warning; warp warning removed. P3.T3 partial: binding through M236-style collection binding tested; the real Assign Material render waits for M236. Risk: blended surfaces write no prim IDs, so picking projected surfaces may break; Project3D goldens may need re-recording (implementer).
 - 2026-11-01 — Rebased onto M233's format-only textures (a13baa781): projections request a definition-covering variant (`natron://...&cover=definition`, keyed apart in the store), so overscan still projects with Crop off; materials keep format-only textures; USDWrite exports the variant as <node>_<layer>_definition.exr (PM decision, implementer).
 - 2026-11-01 — The 3D viewport never applied colour correction (no renderer AOV, so HdxColorCorrectionTask skipped): now wired to the viewer's OCIO display/view (in progress). Storm doesn't highlight translucent surfaces: accepted for this milestone, filed as M278 - Translucent Selection Highlight (PM).
+
+## Phase 234.6: Viewer gain and gamma in 3D
+
+- [ ] M234.P6.T1 — The 3D viewport follows the viewer's gain and gamma
+  - files: `Gui/SceneViewport.*`, `Gui/ViewerTab*`, `Tests/SceneViewport_Test.cpp`
+  - approach: User, 2026-11-02: the 3D viewport "should follow gain and gamma too". Apply the viewer's gain (exposure, before the display transform) and gamma (after it) in the 3D viewport exactly as the 2D viewer does, including the enable toggles, refreshing when they change. Fold them into the same baked colour path as the OCIO display transform where possible.
+  - verify: A test sets gain and gamma on the viewer and checks the 3D card's pixel matches the 2D viewer's maths for the same input; toggling them off restores the plain transform.
+  - size: M

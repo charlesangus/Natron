@@ -105,3 +105,4 @@ Add Lanczos 2/3/4, a Hann-windowed Sinc with a Lobes knob, Blackman-Harris, Gaus
   - size: M
 
 **Verification gate:** `tools/ci/remote/build.sh release --tests` passes in full, including `ctest -R "Resampler|StagedResample|NativeTransform|NativeReformat|NativeGolden|NativeTransformGpu"` on lavapipe; the GUI bench is not required (no NodeGraph diff); the Xvfb screenshot of Transform's filter panel was shared and approved.
+- 2026-11-02 — **Same filters everywhere (user):** option (a), the new kernels and Filter entries apply to every node sharing the resampler.

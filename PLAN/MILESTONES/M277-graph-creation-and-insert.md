@@ -55,3 +55,12 @@ Make shortcut-created and drag-inserted nodes follow normal node-creation placem
 
 - 2026-11-01 — Implemented at 5ddfa06c8. Variadic layout is generic in NodeGui for any native node spec with a variadic input run (USDMerge, USDXformPrim, USDScopePrim, RFVSwitch). Python preset Merges now connect to the selection and open their panel like Tab-created nodes (implementer).
 - 2026-11-01 — PR #155 review: a connected node is inserted only through free non-mask inputs (a node with only its mask free gets no insert), and a pipe whose source already feeds the dragged node draws no hint (review fix).
+
+## Phase 277.2: Node creation at the root
+
+- [ ] M277.P2.T1 — Shortcut placement lives in node creation, not in the Merge presets
+  - files: `Gui/Resources/PyPlugs/initGui.py`, the Python node-creation API (`app.createNode` and friends in `Engine/`/`Gui/` Python bindings), `Gui/NodeGraph*`, tests
+  - approach: User, 2026-11-02: "just make sure this isn't a bandaid on the merge nodes; it should be changing the underlying behaviour of python node creation (can preserve the old behaviour as another function or make this a new function)". Check how P1 made `;`/`'` place and connect the node. If it is special-cased in the Merge preset scripts or initGui.py, move it into Python node creation itself: a creation call from the GUI follows the same placement and connection rules as the Tab menu (selected node, connect-to-A/B preference, cursor position), as a new function or a flag, with the old raw behaviour kept as a separate function for scripts. The shortcuts call that. The connect side follows the global preference (user, 2026-11-02).
+  - verify: A test creates nodes through the Python API from the GUI path with a node selected and checks placement and connection match Tab-menu creation; the raw function still creates an unconnected node at the given position.
+  - size: M
+- 2026-11-02 — UAT passed (user), pending P2 (node creation at the root).

@@ -107,3 +107,4 @@ Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfv
 - 2026-10-27 — **Frame range follows the Set too (bosley-native-nodes):** P1.T2 found format, RoD and layers already follow the Set below a node (M71), but frame range read the project's values. For consistency the frame range is computed under each input's context and its cache keyed by context. Code for P1.T1-P2.T1 at f2e3d8525; P1.T1's engine part was already in M71 (`registerRFVListeners`), `knobsAge` no longer exists.
 
 2026-10-27: Phases 72.1, 72.2, 72.4, 72.5 done; release gate 491/491; RFVRead GUI check passes; AppImage and M72-uat.md ready; draft PR stacked on #122. UAT pending (P3.T2).
+- 2026-11-02 — UAT passed (user).

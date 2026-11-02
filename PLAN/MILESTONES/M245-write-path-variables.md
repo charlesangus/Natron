@@ -104,3 +104,4 @@ adds headless render tests, and gets the bench running on the original comps.
 
 **Verification gate:** original path expansion/bench gate passes; nested creation, duplicate handling and RFV integration are accepted in the replacement AppImage.
 - 2026-11-01 — P4.T2 design (implementer, at f052e6570): project paths reuse the RFV system — every project text variable is a `[name]` path whose value may nest others; the projectPaths table keeps only the built-ins [Project] (set on save/load, needed by GUI-launched background renders) and [OCIO], which win over any variable and can't be taken. Follow-up in progress: rename rewrite, undo of creation, value-change refresh, dead table-editor code.
+- 2026-11-02 — Approved, good for now (user).

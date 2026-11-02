@@ -72,3 +72,12 @@ add them (usdview draws its own). Our overlay pass sits next to `drawGrid` in
 **Verification gate:** original 3D display checks pass; guide scale and USD knob layouts are accepted in the replacement AppImage.
 - 2026-11-01 — P3 at 31eb1683c: guide size is a Preferences value (viewer3DGuideSize, scene units, default 3), replacing the fixed 1 unit; not metre-based since USD defaults metersPerUnit to 0.01. Odd USD knob layout was the shared numeric widget: a range-less hidden slider left no stretch, spreading spinboxes — fixed for all such knobs (implementer).
 - 2026-11-02 — Merge note: M233 - Live Node Textures adds a headlight that is off by default (user, 2026-11-01); this milestone's lighting mode defaults to Auto, which adds one when the scene has none. Whichever merges second folds them into one viewer control defaulting to off (PM).
+
+## Phase 229.4: UAT round 2
+
+- [ ] M229.P4.T1 — Guides with real sizes are accurate
+  - files: the light and camera guide drawing (grep the guide size use), tests
+  - approach: User, 2026-11-02: M229 passes "if the guides for things with actual sizes (e.g. rect light, sphere light) are accurate". Guides for prims with authored sizes (rect light width/height, sphere and disk light radius, cylinder light length/radius, camera frustum and aperture) must draw at the prim's real size and transform, not the Viewer 3D Guide Size; the preference only sizes guides with no intrinsic size (distant and dome light arrows, axes).
+  - verify: A test reads back the drawn guide extents for a rect light (width 2, height 1, scaled) and a sphere light (radius 0.5) and checks they match the prim's world-space size.
+  - size: M
+- 2026-11-02 — UAT passed on the condition that sized guides are accurate (P4) (user). The user couldn't find the guide-size preference: the AppImage they tested (2026-10-28) predates P3; it is Preferences > Viewers > Viewer 3D Guide Size (PM).

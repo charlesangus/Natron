@@ -53,7 +53,6 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
-#include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
@@ -73,6 +72,9 @@ NATRON_NAMESPACE_ENTER
 namespace RC = RetouchCore;
 
 namespace {
+// The source mark of a shape tool, which has no brush footprint to draw.
+const double kSourceMarkRadiusPixels = 3.5;
+
 template <typename T>
 std::shared_ptr<T>
 itemKnob(const RotoDrawableItemPtr& item,
@@ -452,6 +454,9 @@ Retouch::initializeKnobs()
     _ui->createViewerButtonKnobs(page);
     _ui->createBrushToolbarKnobs(_ui->createToolbarKnobs(eRotoCurveToolSetAll));
     _ui->createRightClickMenuKnobs(page);
+    KnobButtonPtr resetCloneOffset = _ui->createResetCloneOffsetKnob(page);
+    resetCloneOffset->setSecretByDefault(false);
+    addKnobToViewerUI(resetCloneOffset);
 
     const std::vector<ChoiceOption> algorithms = algorithmOptions();
 
@@ -912,12 +917,6 @@ Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
         if (brushPressure) {
             itemKnob<KnobChoice>(item, kRetouchShapeParamBrushPressure)->setValue(brushPressure->getValue(), ViewSpec::all(), 0, true);
         }
-        // A stroke's lifetime defaults to the single frame it was painted on, which the interact
-        // never sets; a retouch brush lasts for every frame, like the node's Bezier shapes.
-        KnobChoicePtr lifeTime = itemKnob<KnobChoice>(item, kRotoDrawableItemLifeTimeParam);
-        if (lifeTime) {
-            lifeTime->setValue((int)eRotoPaintItemLifeTimeTypeAll, ViewSpec::all(), 0, true);
-        }
     }
 
     // Keep the panel's Scale / Algorithm column current.
@@ -939,7 +938,7 @@ Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
         }
     }
 
-    _newShapes.push_back(NewShape { item, _ui ? _ui->getSelectedTool() : eRotoToolDrawBezier, _drawPressPos });
+    _newShapes.push_back(NewShape { item, _ui ? _ui->getSelectedTool() : eRotoToolDrawBezier });
 } // Retouch::onCurveItemCreated
 
 RC::ShapeSettings
@@ -1149,6 +1148,7 @@ Retouch::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll, shortcuts);
     RetouchInteract::getBrushToolbarShortcuts(shortcuts);
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel));
 }
 
 void
@@ -1181,6 +1181,13 @@ Retouch::knobChanged(KnobI* k,
 
     if (k && _ui->onKnobChanged(k, time, &ret)) {
         return ret;
+    }
+    if (k && (k == _ui->resetCloneOffsetButton.lock().get())) {
+        _ui->cloneOffset = std::make_pair(0., 0.);
+        _hasCloneOffset = true;
+        redrawOverlayInteract();
+
+        return true;
     }
     if (k && ((k == _scales.lock().get()) || (k->getName() == kRetouchShapeParamScale) || (k->getName() == kRetouchShapeParamAlgorithm))) {
         RotoCurveContextPtr context = getNode()->getCurveContext();
@@ -1242,7 +1249,7 @@ Retouch::sourceImageSize(double time,
 }
 
 void
-Retouch::applyDefaultSourceOffsets()
+Retouch::applyNewShapeSourceOffsets()
 {
     const double time = getCurrentTime();
     const RotoStrokeItemPtr painting = _ui->getStrokeBeingPainted();
@@ -1259,14 +1266,8 @@ Retouch::applyDefaultSourceOffsets()
         KnobDoublePtr offset = itemKnob<KnobDouble>(item, kRetouchShapeParamSourceOffset);
         if (offset && !offset->isAnimated(0, ViewSpec::all()) && !offset->isAnimated(1, ViewSpec::all())
             && (offset->getValueAtTime(time, 0) == 0.) && (offset->getValueAtTime(time, 1) == 0.)) {
-            QPointF anchor = it->anchor;
-            // darktable anchors a circle's or ellipse's source to its centre.
-            if (it->tool == eRotoToolDrawEllipse) {
-                const RectD bbox = item->getBoundingBox(time);
-                anchor = QPointF((bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2.);
-            }
             double dx, dy;
-            if (takeNewShapeSourceOffset(it->tool, anchor, &dx, &dy)) {
+            if (newShapeSourceOffset(it->tool, &dx, &dy)) {
                 setShapeSourceOffset(item, time, dx, dy);
             }
         }
@@ -1274,83 +1275,51 @@ Retouch::applyDefaultSourceOffsets()
     }
 }
 
-void
-Retouch::placeSource(const QPointF& pos,
-                     bool absolute)
-{
-    _sourcePlacement = absolute ? eSourcePlacementAbsolute : eSourcePlacementRelativePending;
-    _placedSource[0] = pos.x();
-    _placedSource[1] = pos.y();
-}
-
 bool
-Retouch::takeNewShapeSourceOffset(RotoToolEnum tool,
-                                  const QPointF& anchor,
-                                  double* dx,
-                                  double* dy)
+Retouch::newShapeSourceOffset(RotoToolEnum tool,
+                              double* dx,
+                              double* dy)
 {
-    switch (_sourcePlacement) {
-    case eSourcePlacementAbsolute:
-        *dx = _placedSource[0] - anchor.x();
-        *dy = _placedSource[1] - anchor.y();
-
-        return true;
-    case eSourcePlacementRelativePending:
-        *dx = _placedSource[0] - anchor.x();
-        *dy = _placedSource[1] - anchor.y();
-        _sessionSourceOffset[0] = *dx;
-        _sessionSourceOffset[1] = *dy;
-        _hasSessionSourceOffset = true;
-        _sourcePlacement = eSourcePlacementRelative;
-
-        return true;
-    case eSourcePlacementRelative:
-        break;
-    }
-    if (!_hasSessionSourceOffset) {
-        double width = 0., height = 0.;
-        if (!sourceImageSize(getCurrentTime(), &width, &height)) {
+    if (!_hasCloneOffset) {
+        if (!previewSourceOffset(tool, dx, dy)) {
             return false;
         }
-        defaultSourceOffset(tool, width, height, &_sessionSourceOffset[0], &_sessionSourceOffset[1]);
-        _hasSessionSourceOffset = true;
+        _ui->cloneOffset = std::make_pair(*dx, *dy);
+        _hasCloneOffset = true;
     }
-    *dx = _sessionSourceOffset[0];
-    *dy = _sessionSourceOffset[1];
+    *dx = _ui->cloneOffset.first;
+    *dy = _ui->cloneOffset.second;
 
     return true;
 }
 
 bool
-Retouch::previewSourcePosition(RotoToolEnum tool,
-                               const QPointF& cursor,
-                               QPointF* source) const
+Retouch::previewSourceOffset(RotoToolEnum tool,
+                             double* dx,
+                             double* dy) const
 {
-    // While a shape is being drawn darktable's absolute source follows the pen from the press.
-    const bool drawing = (_ui->getBezierBeingBuild() || _ui->getStrokeBeingPainted());
-    switch (_sourcePlacement) {
-    case eSourcePlacementAbsolute:
-    case eSourcePlacementRelativePending:
-        *source = QPointF(_placedSource[0], _placedSource[1]);
-        if (drawing) {
-            *source += cursor - _drawPressPos;
-        }
+    if (_hasCloneOffset) {
+        *dx = _ui->cloneOffset.first;
+        *dy = _ui->cloneOffset.second;
 
         return true;
-    case eSourcePlacementRelative:
-        break;
     }
-    double dx = _sessionSourceOffset[0], dy = _sessionSourceOffset[1];
-    if (!_hasSessionSourceOffset) {
-        double width = 0., height = 0.;
-        if (!sourceImageSize(getCurrentTime(), &width, &height)) {
-            return false;
-        }
-        defaultSourceOffset(tool, width, height, &dx, &dy);
+    double width = 0., height = 0.;
+    if (!sourceImageSize(getCurrentTime(), &width, &height)) {
+        return false;
     }
-    *source = QPointF(cursor.x() + dx, cursor.y() + dy);
+    defaultSourceOffset(tool, width, height, dx, dy);
 
     return true;
+}
+
+bool
+Retouch::newShapesTakeSource() const
+{
+    KnobChoicePtr algorithm = _algorithm.lock();
+    const int newAlgorithm = algorithm ? algorithm->getValue() : (int)RC::eAlgorithmHeal;
+
+    return (newAlgorithm == (int)RC::eAlgorithmClone) || (newAlgorithm == (int)RC::eAlgorithmHeal);
 }
 
 RotoDrawableItemPtr
@@ -1474,33 +1443,33 @@ Retouch::drawOverlay(double time,
         glDisable(GL_LINE_STIPPLE);
     }
 
-    // darktable's mark where the next shape's source goes, from the cursor.
+    // Where the next shape's source goes, drawn as RotoPaint's clone brush draws it.
     const RotoToolEnum tool = _ui->getSelectedTool();
-    KnobChoicePtr algorithm = _algorithm.lock();
-    const int newAlgorithm = algorithm ? algorithm->getValue() : (int)RC::eAlgorithmHeal;
-    if (isDrawingTool(tool) && !isDrawingPassiveOverlay() && ((newAlgorithm == (int)RC::eAlgorithmClone) || (newAlgorithm == (int)RC::eAlgorithmHeal))) {
-        double cx, cy;
-        viewport->getCursorPosition(cx, cy);
-        QPointF source;
-        if (viewport->getViewportRect().contains(cx, cy) && previewSourcePosition(tool, QPointF(cx, cy), &source)) {
-            double psx, psy;
-            viewport->getPixelScale(psx, psy);
-            const double hx = 3.5 * psx;
-            const double hy = 3.5 * psy;
-            for (int l = 0; l < 2; ++l) {
-                glLineWidth((l == 0 ? 3. : 1.) * screenPixelRatio);
-                if (l == 0) {
-                    glColor4d(.3, .3, .3, .8);
-                } else {
-                    glColor4d(.8, .8, .8, .8);
-                }
-                glBegin(GL_LINES);
-                glVertex2d(source.x() - hx, source.y());
-                glVertex2d(source.x() + hx, source.y());
-                glVertex2d(source.x(), source.y() - hy);
-                glVertex2d(source.x(), source.y() + hy);
-                glEnd();
+    if (isDrawingTool(tool) && !isDrawingPassiveOverlay() && newShapesTakeSource()) {
+        QPointF centre;
+        bool hasCentre = true;
+        if (painting || (_ui->state == eEventStateDraggingCloneOffset)) {
+            centre = _ui->lastMousePos;
+        } else {
+            double cx, cy;
+            viewport->getCursorPosition(cx, cy);
+            centre = QPointF(cx, cy);
+            hasCentre = viewport->getViewportRect().contains(cx, cy);
+        }
+        std::pair<double, double> offset;
+        if (hasCentre && previewSourceOffset(tool, &offset.first, &offset.second) && ((offset.first != 0.) || (offset.second != 0.))) {
+            double radius;
+            KnobDoublePtr brushSize = _brushSize.lock();
+            if ((tool == eRotoToolSolidBrush) && brushSize) {
+                radius = brushSize->getValue() / 2.;
+            } else {
+                double psx, psy;
+                viewport->getPixelScale(psx, psy);
+                radius = kSourceMarkRadiusPixels * psx;
             }
+            std::pair<double, double> viewportSize;
+            viewport->getViewportSize(viewportSize.first, viewportSize.second);
+            _ui->drawCloneSource(centre, offset, radius, 1., screenPixelRatio, viewportSize);
         }
     }
 } // Retouch::drawOverlay
@@ -1527,15 +1496,16 @@ Retouch::onOverlayPenDown(double time,
     }
 
     const RotoToolEnum tool = _ui->getSelectedTool();
-    if (isDrawingTool(tool) && !_ui->getBezierBeingBuild()) {
-        // darktable: Shift-click places the next shape's source, Ctrl+Shift-click every later one's.
-        if ((_ui->shiftDown > 0) && (_ui->altDown == 0)) {
-            placeSource(pos, _ui->ctrlDown > 0);
+    // RotoPaint's clone gesture: Ctrl+drag keeps the source where it is and moves the pen away.
+    if (isDrawingTool(tool) && !_ui->getBezierBeingBuild() && !_ui->getStrokeBeingPainted() && newShapesTakeSource()
+        && _ui->isCloneOffsetDragModifier()) {
+        double dx, dy;
+        if (newShapeSourceOffset(tool, &dx, &dy)) {
+            _ui->startCloneOffsetDrag(pos);
             redrawOverlayInteract();
 
             return true;
         }
-        _drawPressPos = pos;
     }
     if ((tool == eRotoToolSelectAll) || (tool == eRotoToolSelectCurves) || (tool == eRotoToolSelectPoints)) {
         RotoDrawableItemPtr item = pickSource(time, pos);
@@ -1564,6 +1534,13 @@ Retouch::onOverlayPenMotion(double time,
                             double pressure,
                             double timestamp)
 {
+    if (_ui->state == eEventStateDraggingCloneOffset) {
+        _ui->dragCloneOffset(pos.x() - _ui->lastMousePos.x(), pos.y() - _ui->lastMousePos.y());
+        _ui->lastMousePos = pos;
+        redrawOverlayInteract();
+
+        return true;
+    }
     RotoDrawableItemPtr dragged = _draggedSource.lock();
     if (dragged) {
         _dragEnd[0] = _dragStart[0] + (pos.x() - _dragPressPos.x());
@@ -1575,7 +1552,7 @@ Retouch::onOverlayPenMotion(double time,
     }
 
     const bool ret = _ui->onOverlayPenMotion(time, pos, pressure, timestamp);
-    // The source mark follows the cursor.
+    // The source follows the cursor.
     if (isDrawingTool(_ui->getSelectedTool())) {
         redrawOverlayInteract();
     }
@@ -1592,6 +1569,12 @@ Retouch::onOverlayPenUp(double /*time*/,
                         double /*pressure*/,
                         double /*timestamp*/)
 {
+    if (_ui->state == eEventStateDraggingCloneOffset) {
+        _ui->state = eEventStateNone;
+        redrawOverlayInteract();
+
+        return true;
+    }
     RotoDrawableItemPtr dragged = _draggedSource.lock();
     if (dragged) {
         _draggedSource.reset();
@@ -1606,7 +1589,7 @@ Retouch::onOverlayPenUp(double /*time*/,
         return true;
     }
     const bool ret = _ui->onOverlayPenUp();
-    applyDefaultSourceOffsets();
+    applyNewShapeSourceOffsets();
 
     return ret;
 }
@@ -1630,7 +1613,7 @@ Retouch::onOverlayKeyDown(double /*time*/,
 {
     const bool ret = _ui->onOverlayKeyDown(key);
     // Return closes an open Bezier.
-    applyDefaultSourceOffsets();
+    applyNewShapeSourceOffsets();
 
     return ret;
 }

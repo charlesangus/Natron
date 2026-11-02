@@ -227,34 +227,15 @@ public:
     static bool rasterizeBrushShape(const RotoDrawableItemPtr& item, double time, double scale, const RectI& full, RetouchCore::Region* roi, std::vector<float>* mask);
 
     /**
-     * @brief Where the source of a new shape goes, from darktable's Shift-click (relative) and
-     * Ctrl+Shift-click (absolute) before drawing. Relative is the first shape's offset reused by
-     * every later one; a Shift-click sets the next shape's source and makes its offset the new
-     * relative one; a Ctrl+Shift-click puts the source of every later shape at that point.
+     * @brief The source offset a new shape gets, canonical: the offset RotoPaint's clone brush
+     * carries from stroke to stroke (the interact's cloneOffset, moved by Ctrl+drag and zeroed by
+     * Reset Transform). Until either sets it, it starts at darktable's default for tool. False
+     * when it is unset and the image size is unknown.
      **/
-    enum SourcePlacementEnum {
-        eSourcePlacementRelative = 0,
-        eSourcePlacementRelativePending,
-        eSourcePlacementAbsolute,
-    };
+    bool newShapeSourceOffset(RotoToolEnum tool, double* dx, double* dy);
 
-    /// Records a Shift-click (absolute = false) or Ctrl+Shift-click (absolute = true) at pos, canonical.
-    void placeSource(const QPointF& pos, bool absolute);
-
-    /**
-     * @brief The source offset a new shape anchored at anchor gets, canonical; false when it has
-     * none yet (relative with no shape drawn and no image size). tool picks darktable's default.
-     * Consumes a pending relative placement.
-     **/
-    bool takeNewShapeSourceOffset(RotoToolEnum tool, const QPointF& anchor, double* dx, double* dy);
-
-    /// Where the source of a shape anchored at the cursor would go, canonical; false when unknown.
-    bool previewSourcePosition(RotoToolEnum tool, const QPointF& cursor, QPointF* source) const;
-
-    SourcePlacementEnum getSourcePlacement() const
-    {
-        return _sourcePlacement;
-    }
+    /// The offset newShapeSourceOffset() would give, without starting it; false when unknown.
+    bool previewSourceOffset(RotoToolEnum tool, double* dx, double* dy) const;
 
     static std::vector<ChoiceOption> algorithmOptions();
     static std::vector<ChoiceOption> blurTypeOptions();
@@ -332,8 +313,11 @@ private:
      **/
     std::vector<RetouchCore::Shape> collectShapes(double time, const RenderScale& scale, const RectI& full) const;
 
-    // The finished shapes of a new drawing get darktable's default source.
-    void applyDefaultSourceOffsets();
+    // The finished shapes of a new drawing get the carried source offset.
+    void applyNewShapeSourceOffsets();
+
+    // True when shapes the drawing tools make now take a source (Clone or Heal).
+    bool newShapesTakeSource() const;
 
     // The canonical size of the image the source is read from, for darktable's default source.
     bool sourceImageSize(double time, double* width, double* height) const;
@@ -394,20 +378,13 @@ private:
     struct NewShape {
         RotoDrawableItemWPtr item;
         RotoToolEnum tool;
-        // The press that created the shape: darktable anchors a path's or brush's source to its first point.
-        QPointF anchor;
     };
 
     // Shapes created since the last pen down, waiting for their default source.
     std::list<NewShape> _newShapes;
-    // As in darktable, the first drawn shape's default source is reused by every later one until the
-    // node is reloaded.
-    bool _hasSessionSourceOffset = false;
-    double _sessionSourceOffset[2] = { 0., 0. };
-    SourcePlacementEnum _sourcePlacement = eSourcePlacementRelative;
-    double _placedSource[2] = { 0., 0. };
-    // The last press with a drawing tool, the anchor of the shape it creates.
-    QPointF _drawPressPos;
+    // Whether the interact's cloneOffset has been set, by darktable's default for the first shape,
+    // a Ctrl+drag or Reset Transform; until then it is not the offset new shapes get.
+    bool _hasCloneOffset = false;
     // The source being dragged.
     RotoDrawableItemWPtr _draggedSource;
     // The drag's offset is the offset at the press moved by the pen since the press; it is never read

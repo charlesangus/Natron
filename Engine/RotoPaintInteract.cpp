@@ -61,12 +61,10 @@ RotoPaintInteract::RotoPaintInteract(RotoPaintPrivate* p)
     , p(p)
     , strokeBeingPaint()
     , strokeBeingPaintedTimelineFrame(0)
-    , cloneOffset()
     , lastPaintToolAction()
     , lastTabletDownTriggeredEraser(false)
     , mouseCenterOnSizeChange()
 {
-    cloneOffset.first = cloneOffset.second = 0.;
 }
 
 // make_shared enabler (because make_shared needs access to the private constructor)
@@ -458,8 +456,7 @@ RotoPaintInteract::makeStroke(bool prepareForLater,
     buildUpKnob->setValue(buildUp);
     effectKnob->setValue(effectValue);
     if (!prepareForLater) {
-        KnobIntPtr lifeTimeFrameKnob = strokeBeingPaint->getLifeTimeFrameKnob();
-        lifeTimeFrameKnob->setValue( time );
+        startLifeTimeAtCurrentFrame(strokeBeingPaint);
     }
     if ( (strokeType == eRotoStrokeTypeClone) || (strokeType == eRotoStrokeTypeReveal) ) {
         timeOffsetKnob->setValue(timeOffset);
@@ -522,28 +519,9 @@ RotoPaintInteract::drawPaintToolOverlay(double screenPixelRatio,
                 glTranslated(direction * shadow.x, -direction * shadow.y, 0);
                 glMatrixMode(GL_MODELVIEW);
                 drawEllipse(ellipsePos.x(), ellipsePos.y(), halfBrush, halfBrush, l, 1.f, 1.f, 1.f, opacity);
-
-                glColor3f(.5f * l * opacity, .5f * l * opacity, .5f * l * opacity);
-
-                if (((selectedTool == eRotoToolClone) || (selectedTool == eRotoToolReveal)) && ((cloneOffset.first != 0) || (cloneOffset.second != 0))) {
-                    glLineWidth(1.5 * screenPixelRatio);
-                    glBegin(GL_LINES);
-
-                    if (state == eEventStateDraggingCloneOffset) {
-                        // draw a line between the center of the 2 ellipses
-                        glVertex2d(ellipsePos.x(), ellipsePos.y());
-                        glVertex2d(ellipsePos.x() + cloneOffset.first, ellipsePos.y() + cloneOffset.second);
-                    }
-                    // draw a cross in the center of the source ellipse
-                    glVertex2d(ellipsePos.x() + cloneOffset.first, ellipsePos.y() + cloneOffset.second - halfBrush);
-                    glVertex2d(ellipsePos.x() + cloneOffset.first, ellipsePos.y() + cloneOffset.second + halfBrush);
-                    glVertex2d(ellipsePos.x() + cloneOffset.first - halfBrush, ellipsePos.y() + cloneOffset.second);
-                    glVertex2d(ellipsePos.x() + cloneOffset.first + halfBrush, ellipsePos.y() + cloneOffset.second);
-                    glEnd();
-
-                    // draw the source ellipse
-                    drawEllipse(ellipsePos.x() + cloneOffset.first, ellipsePos.y() + cloneOffset.second, halfBrush, halfBrush, l, 1.f, 1.f, 1.f, opacity / 2.);
-                }
+            }
+            if (((selectedTool == eRotoToolClone) || (selectedTool == eRotoToolReveal)) && ((cloneOffset.first != 0) || (cloneOffset.second != 0))) {
+                drawCloneSource(ellipsePos, cloneOffset, halfBrush, opacity, screenPixelRatio, viewportSize);
             }
         }
     }
@@ -580,8 +558,8 @@ RotoPaintInteract::onPaintToolPenDown(double /*time*/,
     case eRotoToolSmear:
     case eRotoToolDodge:
     case eRotoToolBurn: {
-        if (((selectedTool == eRotoToolClone) || (selectedTool == eRotoToolReveal)) && ctrlDown && !shiftDown && !altDown) {
-            state = eEventStateDraggingCloneOffset;
+        if (((selectedTool == eRotoToolClone) || (selectedTool == eRotoToolReveal)) && isCloneOffsetDragModifier()) {
+            startCloneOffsetDrag(pos);
         } else if (shiftDown && !ctrlDown && !altDown) {
             state = eEventStateDraggingBrushSize;
             mouseCenterOnSizeChange = pos;
@@ -607,8 +585,7 @@ RotoPaintInteract::onPaintToolPenDown(double /*time*/,
 
                 context->getNode()->getApp()->setUserIsPainting(context->getNode(), strokeBeingPaint, true);
 
-                KnobIntPtr lifeTimeFrameKnob = strokeBeingPaint->getLifeTimeFrameKnob();
-                lifeTimeFrameKnob->setValue(context->getTimelineCurrentTime());
+                startLifeTimeAtCurrentFrame(strokeBeingPaint);
 
                 strokeBeingPaint->appendPoint(true, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
             } else {
@@ -694,8 +671,7 @@ RotoPaintInteract::onPaintStatePenMotion(const QPointF& pos,
         break;
     }
     case eEventStateDraggingCloneOffset: {
-        cloneOffset.first -= dx;
-        cloneOffset.second -= dy;
+        dragCloneOffset(dx, dy);
         onBreakMultiStrokeTriggered();
         break;
     }

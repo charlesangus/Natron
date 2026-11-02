@@ -10,8 +10,12 @@ the shape and checks its scale and column, then undoes the move with Edit > Undo
 rectangle by script, presses Z in the viewer and checks every corner gets the equal, opposite
 handles of the circle through the corners, then undoes it. Picks the Brush tool, drags a brush
 stroke across the viewer and checks it becomes a "Brush1" shape in the curve list with the node's
-Brush Size, drawn with its dashed source line. Screenshots of
-the panel and the viewer at each step go to $NATRON_GUI_TEST_OUT.
+Brush Size, drawn with its dashed source line, and that the brush outline stays drawn around the
+pen in the middle of the stroke. Presses Reset Transform, then sets the source offset as on a
+RotoPaint clone stroke: Ctrl held, the pen dragged from S to D with the Ellipse Tool. Draws an
+ellipse and checks its Source Offset is S - D, so a shape drawn from D takes its source at the
+clicked S, then draws a second ellipse and checks it keeps the offset. Screenshots of the panel and
+the viewer at each step go to $NATRON_GUI_TEST_OUT.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m211-shots/out -e GUI_TEST_TIMEOUT=300 \\
@@ -50,6 +54,11 @@ SQUARE_SIZE = 300.0
 BRUSH_FROM = (300.0, 150.0)
 BRUSH_TO = (900.0, 230.0)
 BRUSH_SIZE = 60.0
+MIN_OUTLINE_ANGLES = 0.6  # the share of directions around the pen where the brush outline is found
+# The Ctrl+drag that sets the source offset, and the ellipses drawn after it, in canonical pixels.
+OFFSET_FROM = (1500.0, 800.0)
+OFFSET_TO = (1200.0, 700.0)
+ELLIPSE_DRAGS = (((1100.0, 650.0), (1180.0, 600.0)), ((1600.0, 300.0), (1680.0, 250.0)))
 
 try:
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QPointF, QRect, Qt, QTimer
@@ -198,11 +207,48 @@ try:
         QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, Qt.NoModifier))
         QApplication.processEvents()
 
-    def send_mouse(widget, kind, pos, button, buttons):
+    def send_mouse(widget, kind, pos, button, buttons, modifiers=Qt.NoModifier):
         local = QPointF(pos[0], pos[1])
         glob = QPointF(widget.mapToGlobal(QPoint(int(pos[0]), int(pos[1]))))
-        QApplication.sendEvent(widget, QMouseEvent(kind, local, glob, button, buttons, Qt.NoModifier))
+        QApplication.sendEvent(widget, QMouseEvent(kind, local, glob, button, buttons, modifiers))
         QApplication.processEvents()
+
+    def drag(widget, start, end, modifiers=Qt.NoModifier, steps=8):
+        send_mouse(widget, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton, modifiers)
+        for i in range(1, steps + 1):
+            f = i / float(steps)
+            p = (start[0] + f * (end[0] - start[0]), start[1] + f * (end[1] - start[1]))
+            send_mouse(widget, QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton, modifiers)
+        send_mouse(widget, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton, modifiers)
+
+    def outline_angles(img, centre, radius):
+        """The share of 72 directions from centre with a near-white pixel within 3 widget pixels
+        of radius: the brush outline, drawn white over the dark plate."""
+        import math
+        if img is None:
+            return 0.0
+        hits = 0
+        for k in range(72):
+            a = 2.0 * math.pi * k / 72.0
+            for dr in range(-3, 4):
+                x = int(round(centre[0] + (radius + dr) * math.cos(a)))
+                y = int(round(centre[1] + (radius + dr) * math.sin(a)))
+                if 0 <= x < img.width() and 0 <= y < img.height():
+                    c = img.pixelColor(x, y)
+                    if min(c.red(), c.green(), c.blue()) > 150:
+                        hits += 1
+                        break
+        return hits / 72.0
+
+    def item_names(ctx):
+        names = set()
+        pending = list(ctx.getBaseLayer().getChildren())
+        while pending:
+            item = pending.pop()
+            names.add(item.getScriptName())
+            if hasattr(item, "getChildren"):
+                pending.extend(item.getChildren())
+        return names
 
     def edit_menu_action(prefix):
         win = main_window()
@@ -470,7 +516,15 @@ try:
             f = i / 16.0
             p = (start[0] + f * (end[0] - start[0]), start[1] + f * (end[1] - start[1]) - 20.0 * f * (1.0 - f))
             send_mouse(w, QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
-        send_mouse(w, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+            if i == 8:
+                # Mid-stroke, with the button still down.
+                yield ("sleep", SETTLE_MS)
+                mid = grab_viewer()
+                share = outline_angles(mid, p, BRUSH_SIZE / 2.0 * scale)
+                report("NOTE brush outline mid-stroke around %r: %.2f of directions" % (p, share))
+                check(share >= MIN_OUTLINE_ANGLES, "the brush outline stays drawn around the pen while painting")
+                if mid is not None:
+                    mid.save(os.path.join(gt.OUT, "retouch_viewer_mid_stroke.png"))
         yield ("sleep", 2 * SETTLE_MS)
         brush_text = shape_column_text(node, "Brush1")
         report("NOTE brush column text %r" % (brush_text,))
@@ -491,6 +545,45 @@ try:
         check(len(added) > MIN_BRUSH_LINE_PIXELS, "the brush's dashed source line is drawn")
         screen_crop("retouch_viewer_brush.png", visible_viewer())
         gt.shot("retouch_screen_brush.png")
+
+        gt.section("source-offset")
+        reset = node.getParam("resetCloneOffsetButton")
+        require(reset is not None, "the Retouch viewer toolbar has Reset Transform")
+        reset.trigger()
+        ellipse_tool = node.getParam("DrawEllipseTool")
+        require(ellipse_tool is not None, "the Retouch toolbar has the Ellipse Tool")
+        ellipse_tool.trigger()
+        yield ("sleep", SETTLE_MS)
+        w = visible_viewer()
+        names_before = item_names(ctx)
+        QApplication.sendEvent(w, QKeyEvent(QEvent.KeyPress, Qt.Key_Control, Qt.ControlModifier))
+        drag(w, to_widget(OFFSET_FROM), to_widget(OFFSET_TO), Qt.ControlModifier)
+        QApplication.sendEvent(w, QKeyEvent(QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier))
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        check(item_names(ctx) == names_before, "the Ctrl+drag sets the offset and makes no shape")
+        want = (OFFSET_FROM[0] - OFFSET_TO[0], OFFSET_FROM[1] - OFFSET_TO[1])
+        tol = 3.0 / scale
+        for k, (a, b) in enumerate(ELLIPSE_DRAGS):
+            ellipse_tool.trigger()
+            yield ("sleep", SETTLE_MS)
+            before = item_names(ctx)
+            drag(visible_viewer(), to_widget(a), to_widget(b))
+            yield ("sleep", SETTLE_MS)
+            made = sorted(item_names(ctx) - before)
+            report("NOTE ellipse %d made %r" % (k + 1, made))
+            if not check(len(made) == 1, "drawing ellipse %d makes one shape" % (k + 1)):
+                continue
+            made_offset = ctx.getItemByName(made[0]).getParam("sourceOffset")
+            got = (made_offset.getValue(0), made_offset.getValue(1))
+            report("NOTE ellipse %d source offset %r, expected %r within %.1f" % (k + 1, got, want, tol))
+            if k == 0:
+                check(abs(got[0] - want[0]) <= tol and abs(got[1] - want[1]) <= tol,
+                      "the shape's source lands at the Ctrl+drag's press, as on a RotoPaint clone stroke")
+            else:
+                check(abs(got[0] - want[0]) <= tol and abs(got[1] - want[1]) <= tol,
+                      "the next shape keeps the offset")
+        screen_crop("retouch_viewer_source_offset.png", visible_viewer())
 
         faulthandler.cancel_dump_traceback_later()
 

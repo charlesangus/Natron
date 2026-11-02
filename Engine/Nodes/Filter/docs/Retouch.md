@@ -61,17 +61,19 @@ brush mask; Roto feather does not apply to it.
 
 Source Offset goes from the shape to its source, in canonical pixels, x right and y up. The viewer
 draws each Clone and Heal shape's source as a dashed outline with a line to the shape; dragging
-the outline moves the source. As in darktable, the first shape drawn in the viewer takes a source
-at a fixed fraction of the image: an ellipse 2% of the width to the right and 1.414% of the height
-up, a Bezier or rectangle 2% to the right and 2% down. Every later shape drawn in the viewer reuses
-that first offset until the node is reloaded. A brush shape's source is 1% of the width right and
-1% of the height down. A shape made by script takes 0, 0. A source outside the image is cropped to it.
-As in darktable, Shift-click in the viewer with a drawing tool (Bezier, ellipse, rectangle or
-brush) places the next shape's source there: that shape's offset is from its anchor (an ellipse's
-centre, a Bezier's, rectangle's or brush's first point) to the click, and later shapes reuse it.
-Ctrl+Shift-click places every later shape's source at the click, until the next Shift-click.
-While a drawing tool is active the viewer marks where the next Clone or Heal shape's source goes
-with a small cross.
+the outline moves the source. New Clone and Heal shapes drawn in the viewer take their source as
+RotoPaint's clone brush does: Ctrl+drag with a drawing tool (Bezier, ellipse, rectangle or brush)
+leaves the source where it is drawn and moves the pen away from it, and every later shape keeps that
+offset from the shape's centre or first point. Reset Transform in the viewer toolbar sets the offset
+to 0, 0. Until either is used, the offset starts at darktable's fraction of the image: an ellipse 2%
+of the width to the right and 1.414% of the height up, a Bezier or rectangle 2% to the right and 2%
+down, a brush 1% of the width right and 1% of the height down. A shape made by script takes 0, 0.
+A source outside the image is cropped to it. While a drawing tool is active the viewer draws where
+the next Clone or Heal shape's source goes: the brush footprint for the brush, a small circle
+otherwise.
+The brush footprint and the stroke being painted stay drawn while painting. A brush shape has
+RotoPaint's stroke lifetime: it shows on the frame it was painted on, and its Life Time can be All,
+Single, From Start, To End or Custom, as for a RotoPaint stroke.
 Copy to Scale N and Move to Scale N in a shape's right-click menu put a copy of the selected
 shapes, or the shapes themselves, on the Current Scale, as one undoable step.
 

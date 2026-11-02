@@ -60,11 +60,15 @@
 #include "Engine/Nodes/Filter/RetouchRender.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
+#include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoPaint.h"
+#include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/TimeLine.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
 
@@ -1129,6 +1133,10 @@ makeBrushShape(const NodePtr& node,
         return RotoStrokeItemPtr();
     }
     RotoStrokeItemPtr stroke = std::make_shared<RotoStrokeItem>(eRotoStrokeTypeSolid, context, context->generateUniqueName(kRetouchBrushBaseName), RotoLayerPtr());
+    Retouch* effect = dynamic_cast<Retouch*>(node->getEffectInstance().get());
+    if (effect) {
+        effect->getInteract()->startLifeTimeAtCurrentFrame(stroke);
+    }
     context->onItemCreated(stroke, false);
     context->addItem(context->getOrCreateBaseLayer(), 0, stroke, RotoItem::eSelectionReasonOther);
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -1345,53 +1353,49 @@ TEST_F(NativeRetouchTest, BrushSaveLoadRoundTrip)
     }
 }
 
-// darktable's source placement: Shift-click puts the next shape's source there and keeps that
-// offset for later shapes; Ctrl+Shift-click puts every later shape's source there.
-TEST_F(NativeRetouchTest, SourcePlacementIsRelativeOrAbsolute)
+namespace {
+// A brush shape painted through the overlay, the way the viewer paints one.
+RotoStrokeItemPtr
+paintBrush(Retouch* effect,
+           const QPointF& start)
 {
-    NodePtr node = makeRetouch(makeSource(false), 0);
-    Retouch* effect = effectOf(node);
-    ASSERT_TRUE(effect != NULL);
-    EXPECT_EQ(Retouch::eSourcePlacementRelative, effect->getSourcePlacement());
-
-    double dx = 0., dy = 0.;
-    effect->placeSource(QPointF(30., 20.), false);
-    EXPECT_EQ(Retouch::eSourcePlacementRelativePending, effect->getSourcePlacement());
-    QPointF preview;
-    ASSERT_TRUE(effect->previewSourcePosition(eRotoToolSolidBrush, QPointF(5., 5.), &preview));
-    EXPECT_EQ(QPointF(30., 20.), preview);
-    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolSolidBrush, QPointF(10., 12.), &dx, &dy));
-    EXPECT_DOUBLE_EQ(20., dx);
-    EXPECT_DOUBLE_EQ(8., dy);
-    EXPECT_EQ(Retouch::eSourcePlacementRelative, effect->getSourcePlacement());
-    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawEllipse, QPointF(40., 2.), &dx, &dy));
-    EXPECT_DOUBLE_EQ(20., dx);
-    EXPECT_DOUBLE_EQ(8., dy);
-    ASSERT_TRUE(effect->previewSourcePosition(eRotoToolDrawBezier, QPointF(1., 2.), &preview));
-    EXPECT_EQ(QPointF(21., 10.), preview);
-
-    effect->placeSource(QPointF(7., 9.), true);
-    EXPECT_EQ(Retouch::eSourcePlacementAbsolute, effect->getSourcePlacement());
-    for (const QPointF& anchor : { QPointF(10., 12.), QPointF(-3., 40.) }) {
-        ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawBezier, anchor, &dx, &dy));
-        EXPECT_DOUBLE_EQ(7. - anchor.x(), dx);
-        EXPECT_DOUBLE_EQ(9. - anchor.y(), dy);
+    const RenderScale scale = RenderScale::identity;
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), start, start, 1., 0., ePenTypeLMB));
+    RotoStrokeItemPtr stroke = effect->getInteract()->getStrokeBeingPainted();
+    for (int i = 1; i <= 4; ++i) {
+        const QPointF p(start.x() + 5. * i, start.y() + i);
+        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), p, p, 1., 0.));
     }
-    EXPECT_EQ(Retouch::eSourcePlacementAbsolute, effect->getSourcePlacement());
+    const QPointF end(start.x() + 20., start.y() + 4.);
+    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), end, end, 1., 0.));
+    EXPECT_FALSE(bool(effect->getInteract()->getStrokeBeingPainted()));
 
-    // A new relative placement replaces the absolute one, and its offset the old one.
-    effect->placeSource(QPointF(0., 0.), false);
-    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawRectangle, QPointF(4., -2.), &dx, &dy));
-    EXPECT_DOUBLE_EQ(-4., dx);
-    EXPECT_DOUBLE_EQ(2., dy);
-    ASSERT_TRUE(effect->takeNewShapeSourceOffset(eRotoToolDrawRectangle, QPointF(50., 50.), &dx, &dy));
-    EXPECT_DOUBLE_EQ(-4., dx);
-    EXPECT_DOUBLE_EQ(2., dy);
+    return stroke;
 }
 
-// The brush tool through the overlay: a Shift-click places the source, then a drag paints a brush
-// shape whose source is at the click, measured from its first point.
-TEST_F(NativeRetouchTest, BrushToolPaintsAShapeWithThePlacedSource)
+// RotoPaint's clone gesture: Ctrl held at pen down, the pen dragged from `from` to `to`.
+void
+ctrlDragSource(Retouch* effect,
+               const QPointF& from,
+               const QPointF& to)
+{
+    const RenderScale scale = RenderScale::identity;
+    const RetouchInteractPtr& ui = effect->getInteract();
+    ui->ctrlDown = 1;
+    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), from, from, 1., 0., ePenTypeLMB));
+    EXPECT_EQ(eEventStateDraggingCloneOffset, ui->state);
+    const QPointF mid((from.x() + to.x()) / 2., (from.y() + to.y()) / 2.);
+    EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), mid, mid, 1., 0.));
+    EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), to, to, 1., 0.));
+    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), to, to, 1., 0.));
+    EXPECT_EQ(eEventStateNone, ui->state);
+    ui->ctrlDown = 0;
+}
+} // anon namespace
+
+// RotoPaint's clone offset on Retouch's shapes: Ctrl+drag keeps the drawn source where it is while
+// the pen moves, makes no shape, and every later shape takes the offset until Reset Transform.
+TEST_F(NativeRetouchTest, CtrlDragSetsTheCarriedSourceOffset)
 {
     NodePtr node = makeRetouch(makeSource(false), 0);
     Retouch* effect = effectOf(node);
@@ -1402,37 +1406,134 @@ TEST_F(NativeRetouchTest, BrushToolPaintsAShapeWithThePlacedSource)
     ASSERT_TRUE(bool(ui));
     ui->setCurrentTool(ui->drawBrushAction.lock());
     ASSERT_EQ(eRotoToolSolidBrush, ui->getSelectedTool());
-    const RenderScale scale = RenderScale::identity;
 
-    const QPointF click(40., 30.);
-    ui->shiftDown = 1;
-    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), click, click, 1., 0., ePenTypeLMB));
+    double defaultDx = 0., defaultDy = 0.;
+    ASSERT_TRUE(effect->previewSourceOffset(eRotoToolSolidBrush, &defaultDx, &defaultDy));
+    EXPECT_NE(0., defaultDx);
+
+    const QPointF press(40., 30.);
+    const QPointF release(10., 12.);
+    ctrlDragSource(effect, press, release);
     EXPECT_TRUE(context->getCurvesByRenderOrder(false).empty());
-    EXPECT_EQ(Retouch::eSourcePlacementRelativePending, effect->getSourcePlacement());
-    ui->shiftDown = 0;
-    ignore_result(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), click, click, 1., 0.));
+    EXPECT_DOUBLE_EQ(defaultDx + press.x() - release.x(), ui->cloneOffset.first);
+    EXPECT_DOUBLE_EQ(defaultDy + press.y() - release.y(), ui->cloneOffset.second);
+    const std::pair<double, double> carried = ui->cloneOffset;
 
-    const QPointF start(10., 12.);
-    EXPECT_TRUE(effect->onOverlayPenDown_public(kTime, scale, ViewIdx(0), start, start, 1., 0., ePenTypeLMB));
-    for (int i = 1; i <= 4; ++i) {
-        const QPointF p(start.x() + 5. * i, start.y() + i);
-        EXPECT_TRUE(effect->onOverlayPenMotion_public(kTime, scale, ViewIdx(0), p, p, 1., 0.));
+    RotoStrokeItemPtr first = paintBrush(effect, QPointF(10., 12.));
+    RotoStrokeItemPtr second = paintBrush(effect, QPointF(60., 40.));
+    ASSERT_TRUE(first && second);
+    for (const RotoStrokeItemPtr& brush : { first, second }) {
+        double dx = 0., dy = 0.;
+        Retouch::readShapeSourceOffset(brush, kTime, &dx, &dy);
+        EXPECT_DOUBLE_EQ(carried.first, dx);
+        EXPECT_DOUBLE_EQ(carried.second, dy);
     }
-    const QPointF end(start.x() + 20., start.y() + 4.);
-    EXPECT_TRUE(effect->onOverlayPenUp_public(kTime, scale, ViewIdx(0), end, end, 1., 0.));
-
-    const std::list<RotoDrawableItemPtr> curves = context->getCurvesByRenderOrder(false);
-    ASSERT_EQ(1u, curves.size());
-    RotoStrokeItemPtr brush = std::dynamic_pointer_cast<RotoStrokeItem>(curves.front());
-    ASSERT_TRUE(bool(brush));
-    EXPECT_FALSE(bool(ui->getStrokeBeingPainted()));
-    double dx = 0., dy = 0.;
-    Retouch::readShapeSourceOffset(brush, kTime, &dx, &dy);
-    EXPECT_DOUBLE_EQ(30., dx);
-    EXPECT_DOUBLE_EQ(18., dy);
-    EXPECT_EQ(Retouch::eSourcePlacementRelative, effect->getSourcePlacement());
     const RectI full(0, 0, kParitySourceWidth, kParitySourceHeight);
-    const std::vector<std::vector<RC::BrushPoint>> strokes = Retouch::readBrushStrokes(brush, kTime, 1., full);
+    const std::vector<std::vector<RC::BrushPoint>> strokes = Retouch::readBrushStrokes(first, kTime, 1., full);
     ASSERT_EQ(1u, strokes.size());
     EXPECT_GE(strokes[0].size(), 5u);
+
+    // From a zero offset the source lands where the Ctrl+drag started, as on a RotoPaint clone stroke.
+    KnobButtonPtr reset = ui->resetCloneOffsetButton.lock();
+    ASSERT_TRUE(bool(reset));
+    EXPECT_EQ(std::string(kRotoUIParamResetCloneOffset), reset->getName());
+    reset->trigger();
+    EXPECT_DOUBLE_EQ(0., ui->cloneOffset.first);
+    EXPECT_DOUBLE_EQ(0., ui->cloneOffset.second);
+    ui->setCurrentTool(ui->drawEllipseAction.lock());
+    ASSERT_EQ(eRotoToolDrawEllipse, ui->getSelectedTool());
+    ctrlDragSource(effect, QPointF(70., 50.), QPointF(30., 20.));
+    EXPECT_DOUBLE_EQ(40., ui->cloneOffset.first);
+    EXPECT_DOUBLE_EQ(30., ui->cloneOffset.second);
+}
+
+// A Retouch brush gets a new RotoPaint stroke's lifetime knobs, defaults and visibility.
+TEST_F(NativeRetouchTest, BrushLifetimeMatchesARotoPaintStroke)
+{
+    const int paintFrame = 5;
+    struct TimelineAt {
+        AppInstancePtr app;
+        int restore;
+        TimelineAt(const AppInstancePtr& a, int frame)
+            : app(a)
+            , restore(a->getTimeLine()->currentFrame())
+        {
+            app->getTimeLine()->seekFrame(frame, false, NULL, eTimelineChangeReasonOtherSeek);
+        }
+
+        ~TimelineAt()
+        {
+            app->getTimeLine()->seekFrame(restore, false, NULL, eTimelineChangeReasonOtherSeek);
+        }
+    };
+    const TimelineAt timeline(getApp(), paintFrame);
+
+    NodePtr paintNode = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(paintNode));
+    RotoPaint* paint = dynamic_cast<RotoPaint*>(paintNode->getEffectInstance().get());
+    ASSERT_TRUE(paint != NULL);
+    RotoPaintInteractPtr paintUi = paint->getInteract();
+    ASSERT_TRUE(bool(paintUi));
+    paintUi->setCurrentTool(paintUi->brushAction.lock());
+    ASSERT_EQ(eRotoToolSolidBrush, paintUi->getSelectedTool());
+    paintUi->makeStroke(false, RotoPoint(10., 10., 1., 0.));
+    RotoStrokeItemPtr paintStroke = paintUi->strokeBeingPaint;
+    ASSERT_TRUE(bool(paintStroke));
+
+    NodePtr node = makeRetouch(makeSource(false), 0);
+    Retouch* effect = effectOf(node);
+    ASSERT_TRUE(effect != NULL);
+    const RetouchInteractPtr& ui = effect->getInteract();
+    ui->setCurrentTool(ui->drawBrushAction.lock());
+    RotoStrokeItemPtr brush = paintBrush(effect, QPointF(10., 12.));
+    ASSERT_TRUE(bool(brush));
+
+    KnobChoicePtr paintLifeTime = std::dynamic_pointer_cast<KnobChoice>(paintStroke->getKnobByName(kRotoDrawableItemLifeTimeParam));
+    KnobChoicePtr lifeTime = std::dynamic_pointer_cast<KnobChoice>(brush->getKnobByName(kRotoDrawableItemLifeTimeParam));
+    ASSERT_TRUE(paintLifeTime && lifeTime);
+    EXPECT_EQ(paintLifeTime->getLabel(), lifeTime->getLabel());
+    EXPECT_EQ(paintLifeTime->getDefaultValue(0), lifeTime->getDefaultValue(0));
+    EXPECT_EQ(paintLifeTime->getValue(), lifeTime->getValue());
+    EXPECT_EQ((int)eRotoPaintItemLifeTimeTypeSingle, lifeTime->getValue());
+    const std::vector<ChoiceOption> paintModes = paintLifeTime->getEntries_mt_safe();
+    const std::vector<ChoiceOption> modes = lifeTime->getEntries_mt_safe();
+    ASSERT_EQ(paintModes.size(), modes.size());
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        EXPECT_EQ(paintModes[i].id, modes[i].id) << i;
+    }
+    KnobIntPtr paintFrameKnob = paintStroke->getLifeTimeFrameKnob();
+    KnobIntPtr frameKnob = brush->getLifeTimeFrameKnob();
+    ASSERT_TRUE(paintFrameKnob && frameKnob);
+    EXPECT_EQ(paintFrameKnob->getDefaultValue(0), frameKnob->getDefaultValue(0));
+    EXPECT_EQ(paintFrame, paintFrameKnob->getValue());
+    EXPECT_EQ(paintFrame, frameKnob->getValue());
+    KnobBoolPtr paintActivated = paintStroke->getActivatedKnob();
+    KnobBoolPtr activated = brush->getActivatedKnob();
+    ASSERT_TRUE(paintActivated && activated);
+    EXPECT_EQ(paintActivated->getDefaultValue(0), activated->getDefaultValue(0));
+
+    struct Visibility {
+        RotoPaintItemLifeTimeTypeEnum mode;
+        bool before, at, after;
+    };
+    const Visibility cases[] = {
+        { eRotoPaintItemLifeTimeTypeAll, true, true, true },
+        { eRotoPaintItemLifeTimeTypeSingle, false, true, false },
+        { eRotoPaintItemLifeTimeTypeFromStart, true, true, false },
+        { eRotoPaintItemLifeTimeTypeToEnd, false, true, true },
+        { eRotoPaintItemLifeTimeTypeCustom, true, true, false },
+    };
+    for (const RotoStrokeItemPtr& item : { paintStroke, brush }) {
+        item->getActivatedKnob()->setValueAtTime(paintFrame, true, ViewSpec::all(), 0);
+        item->getActivatedKnob()->setValueAtTime(paintFrame + 1, false, ViewSpec::all(), 0);
+    }
+    for (const Visibility& c : cases) {
+        paintLifeTime->setValue((int)c.mode);
+        lifeTime->setValue((int)c.mode);
+        for (const RotoStrokeItemPtr& item : { paintStroke, brush }) {
+            EXPECT_EQ(c.before, item->isActivated(paintFrame - 1)) << c.mode;
+            EXPECT_EQ(c.at, item->isActivated(paintFrame)) << c.mode;
+            EXPECT_EQ(c.after, item->isActivated(paintFrame + 1)) << c.mode;
+        }
+    }
 }

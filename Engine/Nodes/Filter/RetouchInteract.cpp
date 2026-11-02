@@ -174,10 +174,10 @@ RetouchInteract::removeCurve(const RotoDrawableItemPtr& curve)
 }
 
 void
-RetouchInteract::drawPaintToolOverlay(double /*screenPixelRatio*/,
+RetouchInteract::drawPaintToolOverlay(double screenPixelRatio,
                                       const std::pair<double, double>& viewportSize)
 {
-    if ((selectedTool != eRotoToolSolidBrush) || (state == eEventStateBuildingStroke)) {
+    if (selectedTool != eRotoToolSolidBrush) {
         return;
     }
     OverlaySupport* viewport = getHost()->getCurrentViewportForOverlays();
@@ -185,10 +185,19 @@ RetouchInteract::drawPaintToolOverlay(double /*screenPixelRatio*/,
     if (!viewport || !size) {
         return;
     }
-    double x, y;
-    viewport->getCursorPosition(x, y);
-    if (!viewport->getViewportRect().contains(x, y)) {
-        return;
+    const bool building = (state == eEventStateBuildingStroke) && _stroke;
+    // While painting the footprint follows the pen, as RotoPaint's does, since the viewer may not
+    // have moved its cursor yet.
+    QPointF centre;
+    if (building || (state == eEventStateDraggingCloneOffset)) {
+        centre = lastMousePos;
+    } else {
+        double x, y;
+        viewport->getCursorPosition(x, y);
+        if (!viewport->getViewportRect().contains(x, y)) {
+            return;
+        }
+        centre = QPointF(x, y);
     }
     GLdouble projection[16];
     glGetDoublev(GL_PROJECTION_MATRIX, projection);
@@ -196,12 +205,29 @@ RetouchInteract::drawPaintToolOverlay(double /*screenPixelRatio*/,
     const double shadowX = 2. / (projection[0] * viewportSize.first);
     const double shadowY = 2. / (projection[5] * viewportSize.second);
     const double radius = size->getValue() / 2.;
+    std::list<std::list<std::pair<Point, double>>> strokes;
+    if (building) {
+        _stroke->evaluateStroke(0, getCurveContext()->getTimelineCurrentTime(), &strokes);
+    }
+    GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_CURRENT_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_LINE_SMOOTH);
     for (int l = 0; l < 2; ++l) {
         glMatrixMode(GL_PROJECTION);
         const int direction = (l == 0) ? 1 : -1;
         glTranslated(direction * shadowX, -direction * shadowY, 0);
         glMatrixMode(GL_MODELVIEW);
-        drawEllipse(x, y, radius, radius, l, 1.f, 1.f, 1.f, 1.f);
+        drawEllipse(centre.x(), centre.y(), radius, radius, l, 1.f, 1.f, 1.f, 1.f);
+        glLineWidth(1.5 * screenPixelRatio);
+        glColor4d(.5 * l, .5 * l, .5 * l, 1.);
+        for (std::list<std::list<std::pair<Point, double>>>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
+            glBegin(GL_LINE_STRIP);
+            for (std::list<std::pair<Point, double>>::const_iterator p = it->begin(); p != it->end(); ++p) {
+                glVertex2d(p->first.x, p->first.y);
+            }
+            glEnd();
+        }
     }
 }
 
@@ -220,6 +246,7 @@ RetouchInteract::onPaintToolPenDown(double /*time*/,
     }
     const std::string name = context->generateUniqueName(kRetouchBrushBaseName);
     _stroke = std::make_shared<RotoStrokeItem>(eRotoStrokeTypeSolid, context, name, RotoLayerPtr());
+    startLifeTimeAtCurrentFrame(_stroke);
     // The host gives the stroke its retouch knobs here, as for a loaded one.
     context->onItemCreated(_stroke, false);
     RotoLayerPtr layer = context->getDeepestSelectedLayer();
@@ -228,6 +255,7 @@ RetouchInteract::onPaintToolPenDown(double /*time*/,
     }
     context->addItem(layer, 0, _stroke, RotoItem::eSelectionReasonOther);
     _stroke->appendPoint(true, RotoPoint(pos.x(), pos.y(), pressure, timestamp));
+    lastMousePos = pos;
     state = eEventStateBuildingStroke;
     getHost()->setCurrentCursor(eCursorBlank);
     context->evaluateChange_noIncrement();

@@ -395,17 +395,7 @@ RotoPaint::initializeKnobs()
     generalPage->addKnob(sourceType);
     _imp->ui->sourceTypeChoice = sourceType;
 
-
-    KnobButtonPtr resetCloneOffset = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamResetCloneOffsetLabel) );
-    resetCloneOffset->setName(kRotoUIParamResetCloneOffset);
-    resetCloneOffset->setHintToolTip( tr(kRotoUIParamResetCloneOffsetHint) );
-    resetCloneOffset->setEvaluateOnChange(false);
-    resetCloneOffset->setSecretByDefault(true);
-    resetCloneOffset->setInViewerContextCanHaveShortcut(true);
-    resetCloneOffset->setInViewerContextNewLineActivated(true);
-    generalPage->addKnob(resetCloneOffset);
-    addOverlaySlaveParam(resetCloneOffset);
-    _imp->ui->resetCloneOffsetButton = resetCloneOffset;
+    KnobButtonPtr resetCloneOffset = _imp->ui->createResetCloneOffsetKnob(generalPage);
 
     addKnobToViewerUI(multiStroke);
     multiStroke->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);

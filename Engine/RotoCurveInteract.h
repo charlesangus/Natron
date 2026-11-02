@@ -128,6 +128,10 @@ struct PluginActionShortcut;
 #define kRotoUIParamDrawRectangleToolButtonActionLabel "Rectangle Tool"
 #define kRotoUIParamDrawRectangleToolButtonActionHint "Draw Rectangle"
 
+#define kRotoUIParamResetCloneOffset "resetCloneOffsetButton"
+#define kRotoUIParamResetCloneOffsetLabel "Reset Transform"
+#define kRotoUIParamResetCloneOffsetHint "Reset the transform applied before cloning to identity"
+
 // The right click menu
 #define kRotoUIParamRightClickMenu kNatronOfxParamRightClickMenu
 
@@ -348,6 +352,9 @@ public:
     int shiftDown;
     int ctrlDown;
     int altDown;
+    // From the pen to the point a clone brush, or a Retouch shape, takes its source from, canonical.
+    // Ctrl+drag moves it and every later stroke or shape carries it.
+    std::pair<double, double> cloneOffset;
     // Open from pen down to pen up. The drag commands pushed in between carry its key, so one drag
     // is one undo step and the next drag, even of the same points, is another.
     UndoGesture undoGesture;
@@ -398,6 +405,7 @@ public:
     KnobButtonWPtr addKeyframeButton;
     KnobButtonWPtr removeKeyframeButton;
     KnobButtonWPtr showTransformHandle;
+    KnobButtonWPtr resetCloneOffsetButton;
 
 private:
     EffectInstance* _host;
@@ -522,6 +530,36 @@ public:
 
     /// same as drawArrow but the two ends will make an angle of 90 degrees
     void drawBendedArrow(double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
+
+    /// Creates the Reset Transform button, which sets cloneOffset back to 0, on page.
+    KnobButtonPtr createResetCloneOffsetKnob(const KnobPagePtr& page);
+
+    /// Ctrl+drag, with no other modifier: the gesture that moves cloneOffset.
+    bool isCloneOffsetDragModifier() const;
+
+    /// Starts a Ctrl+drag of cloneOffset with the pen at pos.
+    void startCloneOffsetDrag(const QPointF& pos);
+
+    /**
+     * @brief Moves the pen by (dx, dy) during a Ctrl+drag of cloneOffset: the source stays where
+     * it is and the pen moves away from it. False when no such drag is under way.
+     **/
+    bool dragCloneOffset(double dx, double dy);
+
+    /**
+     * @brief Draws where a stroke painted from centre takes its source: a cross and a circle of
+     * radius around centre moved by offset, shadowed, and while cloneOffset is dragged a line
+     * between the two.
+     **/
+    void drawCloneSource(const QPointF& centre,
+                         const std::pair<double, double>& offset,
+                         double radius,
+                         double opacity,
+                         double screenPixelRatio,
+                         const std::pair<double, double>& viewportSize);
+
+    /// Starts item's life time on the timeline's current frame, as a new paint stroke's.
+    void startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item);
 
     void handleBezierSelection(const BezierPtr& curve);
 

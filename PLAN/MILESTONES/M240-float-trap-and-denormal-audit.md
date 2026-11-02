@@ -96,7 +96,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R NativeGpuCapability` passes on RADV and lavapipe.
   - size: M
 
-- [ ] M240.P3.T3 — Divide-by-alpha parity of M122's colour nodes on RADV
+- [x] M240.P3.T3 — Divide-by-alpha parity of M122's colour nodes on RADV
   - files: `Tests/Native/NativeColorspaceGpu_Test.cpp`, `Tests/Native/NativeColourUtilGpu_Test.cpp`, `Tests/Native/NativeHueGpu_Test.cpp`, the matching `Engine/Nodes/Color/*` kernels
   - approach: On RADV (AMD Radeon AI PRO R9700), exact parity fails only in the "divide by A" cases: NativeColorspaceGpu `MatchesTheCpuRender` (e.g. gpu 0.719309 vs cpu 0.719320, -152.43 vs -152.54 masked), NativeColourUtilGpu `ChainRunsAsOneRegion` (7 mismatches), and NativeHueGpu `HueCorrectMatchesTheCpuRender` (-27.6866 vs -27.6861). lavapipe passes. The errors are far beyond 1 ulp, so this looks like the GPU's unpremultiply dividing by a small or flushed alpha differently, or a fast reciprocal. Find the step and make CPU and GPU agree, or bound the comparison with a recorded reason if it is inherent.
   - verify: `ctest -R "NativeColorspaceGpu|NativeColourUtilGpu|NativeHueGpu"` passes on RADV and lavapipe.
@@ -153,3 +153,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-27 — **P3.T1 root cause (gpu):** the white cases run through Noise's default 4-octave fBm, which ends with `sum / bound`. RADV lowers that to `v_rcp_f32` and a multiply, which isn't correctly rounded, while the CPU divide is. It isn't fma contraction (every op carries `NoContraction`). `noisecore.slang` now corrects the quotient with an exact remainder (`divideRounded`, using fma-free exact products), so the cases stay exact.
 
 - 2026-10-28 — **RADV run after rebasing onto main at 50ee71b60 (gpu):** P3.T1 (Noise) and P3.T2 (NativeGpuCapability) pass. Seven suites fail. Three are P3.T3's. Two are new from main's M209 - Edge-Aware Filter Library and M101 - Clean-Sheet Merge Node and are added as P3.T4 and P3.T5. `PersistentMessageTest` and `ShuffleRenderTest` belong to M271 - Persistent Message Test Failures, so this gate doesn't count them.
+
+- 2026-11-02 — **P3.T3 root cause and fix (gpu):** the same as P3.T1's. RADV divides by an approximate reciprocal, and hue, atan and unpremultiply maths amplify the 1–2 ulp quotient error to the reported 1e-5–1e-3 differences. `divideRounded` moved from `noisecore.slang` to a shared `exactdivide.slang`, and every float division in the colorspace, hue, colourutil, gradeops and pixelwrap kernels goes through it. Verified on main at adb2df7d0: the three suites, plus Noise, Grade, Saturation, ColorMath, StagedImageEffect and PixelWrap, pass on RADV and lavapipe.

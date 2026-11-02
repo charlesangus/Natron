@@ -4,6 +4,8 @@
 
 Render true per-sample deep data from MoonRay into a DeepImage, in process, through the transport chosen by M255 - Delegate Output Spikes.
 
+Transport (2026-11-01, user): the delegate fills the host-side deep render-buffer handle M286 - Utility Renderer Deep Output defines (`HydraDeepBuffer`, converted into `DeepImage` by USDRender); no other transport is designed here.
+
 Blocked on: M255 - Delegate Output Spikes has shown MoonRay can produce in-process deep and the user has approved the transport.
 
 Acceptance sketch:

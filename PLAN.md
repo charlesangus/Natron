@@ -342,6 +342,18 @@ future core work has solid ground to build on.
 | M276 | Cache Responsiveness Audit | todo | M260 |  | E14 | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
 | M277 | Graph Creation And Insert | doing | M192, M193 | bosley-native-nodes | E10 | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 | M278 | Translucent Selection Highlight | todo | M234 |  | E9 | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
+| M279 | Utility Renderer Foundation | todo | M248 |  | E19 | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
+| M280 | Utility Renderer GPU Path | todo | M279, M253 |  | E19 | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
+| M281 | Utility Materials And Lights | todo | M280, M233, M234 |  | E19 | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
+| M283 | Utility Sampling And Motion Blur | todo | M280, M253 |  | E19 | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
+| M282 | Utility Reflection And Refraction | todo | M281, M283 |  | E19 | [M282-utility-reflection-and-refraction.md](PLAN/MILESTONES/M282-utility-reflection-and-refraction.md) |
+| M284 | Utility Renderer Subdivision | todo | M280 |  | E19 | [M284-utility-renderer-subdivision.md](PLAN/MILESTONES/M284-utility-renderer-subdivision.md) |
+| M285 | Utility Renderer AOVs | todo | M256, M282, M283 |  | E19 | [M285-utility-renderer-aovs.md](PLAN/MILESTONES/M285-utility-renderer-aovs.md) |
+| M286 | Utility Renderer Deep Output | todo | M285 |  | E19 | [M286-utility-renderer-deep-output.md](PLAN/MILESTONES/M286-utility-renderer-deep-output.md) |
+| M288 | Utility Renderer Projection Modes | todo | M281, M283 |  | E19 | [M288-utility-renderer-projection-modes.md](PLAN/MILESTONES/M288-utility-renderer-projection-modes.md) |
+| M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
+| M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
+| M287 | Utility Renderer Displacement | todo | M289 |  | E19 | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
 
 # Epics
 
@@ -365,6 +377,7 @@ future core work has solid ground to build on.
 | E16 | AI Tools | Bring darktable's ONNX-based AI tools in as scene-linear-safe nodes and a Roto object-select tool, on an on-demand model manager. |
 | E17 | darktable Image Tools | Port darktable's scene-referred image modules as native nodes on a shared edge-aware filter library. |
 | E18 | Motion Vectors | Generate dense motion vectors natively and move Roto, paint and SplineWarp curves along them. |
+| E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
 - M230 - 3D Transform Widgets (bosley-native-nodes): the startup SIGSEGV on the NVIDIA host doesn't reproduce here (Mesa, GL on and compute forced unavailable starts cleanly) and isn't in the branch's diff. Needed from the user: (1) does a main-based AppImage also print "vkCreateDevice failed" on that machine now; (2) a backtrace (`coredumpctl gdb` then `bt`, or `gdb -batch -ex run -ex bt` on the unpacked AppImage's bin/Natron.bin); (3) does it still crash with `NATRON_GPU=off`, or with `NATRON_VIEWER_HANDOFF=cpu`? The next AppImage prints the VkResult. Also: M228's M228-r2-scene.ntpz and M228-r2-segfaults.txt aren't on this host.

@@ -1,1 +1,5 @@
 ## Pending
+
+### 2026-11-01T12:00:00Z — change-request
+- refs: M255
+- Narrow M255 - Delegate Output Spikes' deep spike (Phase 255.2) per the new project decision `PLAN/DECISIONS/2026-11-01-natron-utility-renderer.md` (user, 2026-11-01): the deep transport is no longer an open fork. M286 - Utility Renderer Deep Output defines it — a delegate's `HdRenderBuffer::GetResource()` returns a host-defined `HydraDeepBuffer` handle (per-pixel counts, offsets, named float channels) that USDRender converts into `DeepImage`. M255.P2.T1 and M255.P2.T2 should only establish whether Cycles and MoonRay can fill that buffer in-process (and the patch each needs), and M255.P2.T3 should drop "recommended transport" from its comparison. Record this in M255's `## Decisions`. The AOV spike (Phase 255.1) is unchanged, though M256 - Delegate AOV Selection now also has Natron Utility as its first full client (M285 - Utility Renderer AOVs), whose AOVs carry per-AOV metadata (Cryptomatte manifests) — worth checking in each candidate mechanism.

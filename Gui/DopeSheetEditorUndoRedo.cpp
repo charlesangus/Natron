@@ -28,16 +28,19 @@
 #include <algorithm>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 #include <QDebug>
 
+#include "Engine/Bezier.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Time/FrameRange.h"
 #include "Engine/Nodes/Time/TimeOffset.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -60,6 +63,29 @@ typedef std::map<KnobIWPtr, KnobGui *> KnobsAndGuis;
 
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+/**
+ * @brief Returns the knob whose curve a key edit must change. A slaved knob shows and renders
+ * its master's curve and leaves its own unused: a roto item's knobs are slaved to the host's
+ * proxy knobs while the item is selected, so editing the item knob itself would change nothing.
+ **/
+KnobIPtr
+editedKnob(const KnobIPtr& knob,
+           int dimension,
+           int* editedDimension)
+{
+    *editedDimension = dimension;
+    if (!knob || (dimension < 0)) {
+        return knob;
+    }
+    std::pair<int, KnobIPtr> master = knob->getMaster(dimension);
+    if (!master.second) {
+        return knob;
+    }
+    *editedDimension = master.first;
+
+    return master.second;
+}
 
 /**
  * @brief Move the node 'reader' on project timeline, by offsetting its
@@ -200,23 +226,244 @@ moveGroupNode(DopeSheetEditor* model,
     }
 } // moveGroupNode
 
+/**
+ * @brief Moves a shape's keys from the first to the second time of each pair. The whole shape
+ * is refused when a key would land on a key that is not moving, two keys would land together,
+ * or the keys would have to pass through each other, because Bezier::moveKeyframe overwrites
+ * whatever key sits at the target time.
+ **/
+bool
+moveShapeKeyframes(const BezierPtr& bezier,
+                   const std::vector<std::pair<double, double>>& moves)
+{
+    std::set<double> existing;
+    bezier->getKeyframeTimes(&existing);
+
+    std::set<double> sources;
+    std::set<double> targets;
+    for (std::size_t i = 0; i < moves.size(); ++i) {
+        sources.insert(moves[i].first);
+        if (!targets.insert(moves[i].second).second) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < moves.size(); ++i) {
+        if (existing.count(moves[i].second) && !sources.count(moves[i].second)) {
+            return false;
+        }
+    }
+
+    // A key can move once no pending key still sits at its target.
+    std::list<std::pair<double, double>> pending;
+    for (std::size_t i = 0; i < moves.size(); ++i) {
+        if (moves[i].first != moves[i].second) {
+            pending.push_back(moves[i]);
+        }
+    }
+    std::vector<std::pair<double, double>> ordered;
+    while (!pending.empty()) {
+        std::list<std::pair<double, double>>::iterator next = pending.begin();
+        for (; next != pending.end(); ++next) {
+            bool blocked = false;
+            for (std::list<std::pair<double, double>>::iterator other = pending.begin(); other != pending.end(); ++other) {
+                if ((other != next) && (other->first == next->second)) {
+                    blocked = true;
+                    break;
+                }
+            }
+            if (!blocked) {
+                break;
+            }
+        }
+        if (next == pending.end()) {
+            return false;
+        }
+        ordered.push_back(*next);
+        pending.erase(next);
+    }
+
+    std::list<std::pair<double, KeyframeTypeEnum>> interpolations;
+    bezier->getKeyframeTimesAndInterpolation(&interpolations);
+    for (std::size_t i = 0; i < ordered.size(); ++i) {
+        KeyframeTypeEnum interp = eKeyframeTypeSmooth;
+        bool hasInterp = false;
+        for (std::list<std::pair<double, KeyframeTypeEnum>>::iterator it = interpolations.begin(); it != interpolations.end(); ++it) {
+            if (it->first == ordered[i].first) {
+                interp = it->second;
+                hasInterp = true;
+                break;
+            }
+        }
+        bezier->moveKeyframe(ordered[i].first, ordered[i].second);
+        // moveKeyframe re-creates the key with the default interpolation.
+        if (hasInterp) {
+            int index = bezier->getKeyFrameIndex(ordered[i].second);
+            if (index >= 0) {
+                bezier->setKeyFrameInterpolation(interp, index);
+            }
+        }
+    }
+
+    return true;
+} // moveShapeKeyframes
+
+/**
+ * @brief Moves the shape keys in 'keys' to the times 'targetTime' gives, shape by shape,
+ * recording each shape's prior state in 'states' and each key's times in 'times'.
+ **/
+template <typename TargetTime>
+void
+applyShapeKeyMoves(const DopeSheetKeyPtrList& keys,
+                   TargetTime targetTime,
+                   DSShapeKeysStates* states,
+                   std::list<DSShapeKeyTimes>* times)
+{
+    std::map<BezierPtr, std::list<DopeSheetKeyPtr>> byShape;
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        BezierPtr bezier = (*it)->bezier.lock();
+        if (bezier) {
+            byShape[bezier].push_back(*it);
+        }
+    }
+
+    times->clear();
+    for (std::map<BezierPtr, std::list<DopeSheetKeyPtr>>::iterator it = byShape.begin(); it != byShape.end(); ++it) {
+        states->recordBefore(it->first);
+
+        std::vector<std::pair<double, double>> moves;
+        for (std::list<DopeSheetKeyPtr>::iterator k = it->second.begin(); k != it->second.end(); ++k) {
+            double time = (*k)->key.getTime();
+            moves.push_back(std::make_pair(time, targetTime(time)));
+        }
+        bool moved = moveShapeKeyframes(it->first, moves);
+
+        std::size_t i = 0;
+        for (std::list<DopeSheetKeyPtr>::iterator k = it->second.begin(); k != it->second.end(); ++k, ++i) {
+            DSShapeKeyTimes keyTimes;
+            keyTimes.key = *k;
+            keyTimes.before = moves[i].first;
+            keyTimes.after = moved ? moves[i].second : moves[i].first;
+            (*k)->key.setTime(keyTimes.after);
+            times->push_back(keyTimes);
+        }
+        if (moved) {
+            it->first->getContext()->evaluateChange();
+        }
+    }
+}
+
+void
+setShapeKeyTimes(const std::list<DSShapeKeyTimes>& times,
+                 bool after)
+{
+    for (std::list<DSShapeKeyTimes>::const_iterator it = times.begin(); it != times.end(); ++it) {
+        it->key->key.setTime(after ? it->after : it->before);
+    }
+}
+
+void
+recordShapeKeyTimesAfter(std::list<DSShapeKeyTimes>* times)
+{
+    for (std::list<DSShapeKeyTimes>::iterator it = times->begin(); it != times->end(); ++it) {
+        it->after = it->key->key.getTime();
+    }
+}
+
+bool
+shapeKeysAlive(const DopeSheetKeyPtrList& keys)
+{
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if ((*it)->bezier.expired()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
+////////////////////////// DSShapeKeysStates //////////////////////////
+
+void
+DSShapeKeysStates::recordBefore(const BezierPtr& bezier)
+{
+    for (std::list<State>::iterator it = _states.begin(); it != _states.end(); ++it) {
+        if (it->bezier.lock() == bezier) {
+            return;
+        }
+    }
+    State state;
+    state.bezier = bezier;
+    state.before.reset(new Bezier(bezier->getContext(), bezier->getScriptName(), bezier->getParentLayer(), false));
+    state.before->clone(bezier.get());
+    _states.push_back(state);
+}
+
+void
+DSShapeKeysStates::recordAfter()
+{
+    for (std::list<State>::iterator it = _states.begin(); it != _states.end(); ++it) {
+        BezierPtr bezier = it->bezier.lock();
+        if (!bezier) {
+            continue;
+        }
+        it->after.reset(new Bezier(bezier->getContext(), bezier->getScriptName(), bezier->getParentLayer(), false));
+        it->after->clone(bezier.get());
+    }
+}
+
+void
+DSShapeKeysStates::restore(bool after)
+{
+    for (std::list<State>::iterator it = _states.begin(); it != _states.end(); ++it) {
+        BezierPtr bezier = it->bezier.lock();
+        BezierPtr state = after ? it->after : it->before;
+        if (!bezier || !state) {
+            continue;
+        }
+        bezier->clone(state.get());
+        bezier->getContext()->evaluateChange();
+    }
+}
+
+bool
+DSShapeKeysStates::allAlive() const
+{
+    for (std::list<State>::const_iterator it = _states.begin(); it != _states.end(); ++it) {
+        if (it->bezier.expired()) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 ////////////////////////// DSMoveKeysCommand //////////////////////////
 
-DSMoveKeysAndNodesCommand::DSMoveKeysAndNodesCommand(const DopeSheetKeyPtrList &keys,
+DSMoveKeysAndNodesCommand::DSMoveKeysAndNodesCommand(const DopeSheetKeyPtrList& keys,
                                                      const std::vector<DSNodePtr>& nodes,
                                                      double dt,
-                                                     DopeSheetEditor *model,
-                                                     QUndoCommand *parent)
-    : QUndoCommand(parent),
-    _keys(keys),
-    _nodes(),
-    _dt(dt),
-    _model(model)
+                                                     DopeSheetEditor* model,
+                                                     QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _keys()
+    , _shapeKeys()
+    , _shapeKeyTimes()
+    , _shapeStates()
+    , _firstRedoCalled(false)
+    , _nodes()
+    , _dt(dt)
+    , _model(model)
 {
     setText( tr("Move selected keys") );
+    for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (!(*it)->bezier.expired()) {
+            _shapeKeys.push_back(*it);
+        } else {
+            _keys.push_back(*it);
+        }
+    }
     std::set<NodePtr> nodesSet;
     for (std::vector<DSNodePtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         DopeSheetItemType type = (*it)->getItemType();
@@ -250,6 +497,13 @@ DSMoveKeysAndNodesCommand::DSMoveKeysAndNodesCommand(const DopeSheetKeyPtrList &
             nodesSet.insert( isEffect->getNode() );
         }
     }
+    for (DopeSheetKeyPtrList::iterator it = _shapeKeys.begin(); it != _shapeKeys.end(); ++it) {
+        BezierPtr bezier = (*it)->bezier.lock();
+        NodePtr host = bezier ? bezier->getContext()->getNode() : NodePtr();
+        if (host) {
+            nodesSet.insert(host);
+        }
+    }
 
     for (std::set<NodePtr>::iterator it = nodesSet.begin(); it != nodesSet.end(); ++it) {
         _allDifferentNodes.push_back(*it);
@@ -260,12 +514,36 @@ void
 DSMoveKeysAndNodesCommand::undo()
 {
     moveSelection(-_dt);
+    if (isObsolete() || _shapeKeys.empty()) {
+        return;
+    }
+    _shapeStates.restore(false);
+    setShapeKeyTimes(_shapeKeyTimes, false);
+    _model->refreshSelectionBboxAndRedrawView();
 }
 
 void
 DSMoveKeysAndNodesCommand::redo()
 {
     moveSelection(_dt);
+    if (isObsolete() || _shapeKeys.empty()) {
+        return;
+    }
+    if (!_firstRedoCalled) {
+        moveShapeKeys(_dt);
+        _shapeStates.recordAfter();
+        _firstRedoCalled = true;
+    } else {
+        _shapeStates.restore(true);
+        setShapeKeyTimes(_shapeKeyTimes, true);
+    }
+    _model->refreshSelectionBboxAndRedrawView();
+}
+
+void
+DSMoveKeysAndNodesCommand::moveShapeKeys(double dt)
+{
+    applyShapeKeyMoves(_shapeKeys, [dt](double time) { return time + dt; }, &_shapeStates, &_shapeKeyTimes);
 }
 
 void
@@ -277,6 +555,11 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
 
             return;
         }
+    }
+    if (!shapeKeysAlive(_shapeKeys)) {
+        setObsolete(true);
+
+        return;
     }
 
     /*
@@ -319,15 +602,21 @@ DSMoveKeysAndNodesCommand::moveSelection(double dt)
     }
 
     //////////Handle selected keyframes
+    std::set<std::tuple<KnobI*, int, double>> movedKeys;
     for (DopeSheetKeyPtrList::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKeyPtr& selectedKey = (*it);
-        KnobIPtr knob = selectedKey->knob.lock();
-        if (offsetsMovedWithNodes.count(knob)) {
+        if (offsetsMovedWithNodes.count(selectedKey->knob.lock())) {
+            continue;
+        }
+        int dimension;
+        KnobIPtr knob = editedKnob(selectedKey->knob.lock(), selectedKey->dimension, &dimension);
+        if (!movedKeys.insert(std::make_tuple(knob.get(), dimension, selectedKey->key.getTime())).second) {
+            selectedKey->key.setTime(selectedKey->key.getTime() + dt);
             continue;
         }
 
         knob->moveValueAtTime(eCurveChangeReasonDopeSheet, selectedKey->key.getTime(), ViewIdx(0),
-                              selectedKey->dimension,
+                              dimension,
                               dt, 0, &selectedKey->key);
     }
     ////////////Handle selected nodes
@@ -385,6 +674,19 @@ DSMoveKeysAndNodesCommand::mergeWith(const QUndoCommand *other)
         return false;
     }
 
+    if (cmd->_shapeKeys.size() != _shapeKeys.size()) {
+        return false;
+    }
+    {
+        DopeSheetKeyPtrList::const_iterator itOther = cmd->_shapeKeys.begin();
+
+        for (DopeSheetKeyPtrList::const_iterator it = _shapeKeys.begin(); it != _shapeKeys.end(); ++it, ++itOther) {
+            if (*itOther != *it) {
+                return false;
+            }
+        }
+    }
+
     {
         DopeSheetKeyPtrList::const_iterator itOther = cmd->_keys.begin();
 
@@ -403,22 +705,33 @@ DSMoveKeysAndNodesCommand::mergeWith(const QUndoCommand *other)
     }
 
     _dt += cmd->_dt;
+    // The merged command has already been applied, so this one's edited state is the current one.
+    _shapeStates.recordAfter();
+    recordShapeKeyTimesAfter(&_shapeKeyTimes);
 
     return true;
 }
 
 //////////////////////////DSTransformKeysCommand //////////////////////////
 
-DSTransformKeysCommand::DSTransformKeysCommand(const DopeSheetKeyPtrList &keys,
+DSTransformKeysCommand::DSTransformKeysCommand(const DopeSheetKeyPtrList& keys,
                                                const Transform::Matrix3x3& transform,
-                                               DopeSheetEditor *model,
-                                               QUndoCommand *parent)
+                                               DopeSheetEditor* model,
+                                               QUndoCommand* parent)
     : QUndoCommand(parent)
     , _firstRedoCalled(false)
     , _transform(transform)
+    , _keys()
+    , _shapeKeys()
+    , _shapeKeyTimes()
+    , _shapeStates()
     , _model(model)
 {
     for (DopeSheetKeyPtrList::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (!(*it)->bezier.expired()) {
+            _shapeKeys.push_back(*it);
+            continue;
+        }
         KnobIPtr knob = (*it)->knob.lock();
         if (!knob) {
             continue;
@@ -470,8 +783,12 @@ DSTransformKeysCommand::undo()
     }
 
     for (TransformKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
-        it->knob.lock()->cloneCurve(ViewSpec::all(), it->dimension, *it->oldCurve);
+        int dimension;
+        KnobIPtr knob = editedKnob(it->knob.lock(), it->dimension, &dimension);
+        knob->cloneCurve(ViewSpec::all(), dimension, *it->oldCurve);
     }
+    _shapeStates.restore(false);
+    setShapeKeyTimes(_shapeKeyTimes, false);
     for (std::list<KnobHolder*>::iterator it = differentKnobs.begin(); it != differentKnobs.end(); ++it) {
         (*it)->endChanges();
     }
@@ -522,11 +839,17 @@ DSTransformKeysCommand::redo()
         for (TransformKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
             it->newCurve.reset(new Curve(*it->knob.lock()->getCurve(ViewIdx(0), it->dimension)));
         }
+        transformShapeKeys();
+        _shapeStates.recordAfter();
         _firstRedoCalled = true;
     } else {
         for (TransformKeys::iterator it = _keys.begin(); it != _keys.end(); ++it) {
-            it->knob.lock()->cloneCurve(ViewIdx(0), it->dimension, *it->newCurve);
+            int dimension;
+            KnobIPtr knob = editedKnob(it->knob.lock(), it->dimension, &dimension);
+            knob->cloneCurve(ViewIdx(0), dimension, *it->newCurve);
         }
+        _shapeStates.restore(true);
+        setShapeKeyTimes(_shapeKeyTimes, true);
     }
 
     for (std::list<KnobHolder*>::iterator it = differentKnobs.begin(); it != differentKnobs.end(); ++it) {
@@ -548,19 +871,34 @@ DSTransformKeysCommand::knobsAreAlive() const
         }
     }
 
-    return true;
+    return shapeKeysAlive(_shapeKeys);
+}
+
+void
+DSTransformKeysCommand::transformShapeKeys()
+{
+    const Transform::Matrix3x3 transform = _transform;
+
+    applyShapeKeyMoves(_shapeKeys, [transform](double time) {
+        Transform::Point3D p;
+        p.x = time;
+        p.y = 0;
+        p.z = 1;
+
+        return Transform::matApply(transform, p).x; }, &_shapeStates, &_shapeKeyTimes);
 }
 
 void
 DSTransformKeysCommand::transformKey(const DopeSheetKeyPtr& key)
 {
-    KnobIPtr knob = key->knob.lock();
+    int dimension;
+    KnobIPtr knob = editedKnob(key->knob.lock(), key->dimension, &dimension);
 
     if (!knob) {
         return;
     }
 
-    knob->transformValueAtTime(eCurveChangeReasonDopeSheet, key->key.getTime(), ViewSpec::all(), key->dimension, _transform, &key->key);
+    knob->transformValueAtTime(eCurveChangeReasonDopeSheet, key->key.getTime(), ViewSpec::all(), dimension, _transform, &key->key);
 }
 
 int
@@ -582,6 +920,18 @@ DSTransformKeysCommand::mergeWith(const QUndoCommand *other)
     if ( cmd->_keys.size() != _keys.size() ) {
         return false;
     }
+    if (cmd->_shapeKeys.size() != _shapeKeys.size()) {
+        return false;
+    }
+    {
+        DopeSheetKeyPtrList::const_iterator itOther = cmd->_shapeKeys.begin();
+
+        for (DopeSheetKeyPtrList::const_iterator it = _shapeKeys.begin(); it != _shapeKeys.end(); ++it, ++itOther) {
+            if (*itOther != *it) {
+                return false;
+            }
+        }
+    }
     {
         TransformKeys::const_iterator itOther = cmd->_keys.begin();
 
@@ -600,6 +950,9 @@ DSTransformKeysCommand::mergeWith(const QUndoCommand *other)
     }
 
     _transform = Transform::matMul(_transform, cmd->_transform);
+    // The merged command has already been applied, so this one's edited state is the current one.
+    _shapeStates.recordAfter();
+    recordShapeKeyTimesAfter(&_shapeKeyTimes);
 
     return true;
 }
@@ -970,13 +1323,23 @@ DSSlipReaderCommand::slipReader(double dt)
 
 ////////////////////////// DSRemoveKeysCommand //////////////////////////
 
-DSRemoveKeysCommand::DSRemoveKeysCommand(const std::vector<DopeSheetKey> &keys,
-                                         DopeSheetEditor *model,
-                                         QUndoCommand *parent)
-    : QUndoCommand(parent),
-    _keys(keys),
-    _model(model)
+DSRemoveKeysCommand::DSRemoveKeysCommand(const std::vector<DopeSheetKey>& keys,
+                                         DopeSheetEditor* model,
+                                         QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _keys()
+    , _shapeKeys()
+    , _shapeStates()
+    , _firstRedoCalled(false)
+    , _model(model)
 {
+    for (std::vector<DopeSheetKey>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (!it->bezier.expired()) {
+            _shapeKeys.push_back(*it);
+        } else {
+            _keys.push_back(*it);
+        }
+    }
     setText( tr("Delete selected keyframes") );
 }
 
@@ -1002,20 +1365,61 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
             return;
         }
     }
+    for (std::vector<DopeSheetKey>::iterator it = _shapeKeys.begin(); it != _shapeKeys.end(); ++it) {
+        if (it->bezier.expired()) {
+            setObsolete(true);
+
+            return;
+        }
+    }
+
+    if (add) {
+        _shapeStates.restore(false);
+    } else if (!_firstRedoCalled) {
+        for (std::vector<DopeSheetKey>::iterator it = _shapeKeys.begin(); it != _shapeKeys.end(); ++it) {
+            BezierPtr bezier = it->bezier.lock();
+            _shapeStates.recordBefore(bezier);
+            bezier->removeKeyframe(it->key.getTime());
+        }
+        _shapeStates.recordAfter();
+        _firstRedoCalled = true;
+    } else {
+        _shapeStates.restore(true);
+    }
+    if (!add) {
+        for (std::vector<DopeSheetKey>::iterator it = _shapeKeys.begin(); it != _shapeKeys.end(); ++it) {
+            DSKnobPtr knobContext = it->context.lock();
+            if (knobContext) {
+                knobContext->getTreeItem()->setSelected(false);
+            }
+        }
+    }
 
     std::set<KnobIPtr> knobsSet;
+    // Several selected items' knobs can be slaved to one proxy knob, whose key must be edited once.
+    std::set<std::tuple<KnobI*, int, double>> editedKeys;
     for (std::vector<DopeSheetKey>::iterator it = _keys.begin(); it != _keys.end(); ++it) {
         const DopeSheetKey& selected = (*it);
-        KnobIPtr knob = selected.knob.lock();
+        int dimension;
+        KnobIPtr knob = editedKnob(selected.knob.lock(), selected.dimension, &dimension);
 
+        if (!editedKeys.insert(std::make_tuple(knob.get(), dimension, selected.key.getTime())).second) {
+            if (!add) {
+                DSKnobPtr knobContext = selected.context.lock();
+                if (knobContext) {
+                    knobContext->getTreeItem()->setSelected(false);
+                }
+            }
+            continue;
+        }
         std::pair<std::set<KnobIPtr>::iterator, bool> ok = knobsSet.insert(knob);
         if (ok.second) {
             knob->beginChanges();
         }
         if (add) {
-            KnobGui::setKnobKeyframe(knob, selected.key.getTime(), selected.key, selected.dimension, ViewIdx(0));
+            KnobGui::setKnobKeyframe(knob, selected.key.getTime(), selected.key, dimension, ViewIdx(0));
         } else {
-            KnobGui::removeKnobKeyframe(knob, selected.key.getTime(), selected.dimension, ViewIdx(0));
+            KnobGui::removeKnobKeyframe(knob, selected.key.getTime(), dimension, ViewIdx(0));
             DSKnobPtr knobContext = selected.context.lock();
             if (knobContext) {
                 knobContext->getTreeItem()->setSelected(false);
@@ -1032,13 +1436,23 @@ DSRemoveKeysCommand::addOrRemoveKeyframe(bool add)
 
 ////////////////////////// DSSetSelectedKeysInterpolationCommand //////////////////////////
 
-DSSetSelectedKeysInterpolationCommand::DSSetSelectedKeysInterpolationCommand(const std::list<DSKeyInterpolationChange> &changes,
-                                                                             DopeSheetEditor *model,
-                                                                             QUndoCommand *parent)
-    : QUndoCommand(parent),
-    _changes(changes),
-    _model(model)
+DSSetSelectedKeysInterpolationCommand::DSSetSelectedKeysInterpolationCommand(const std::list<DSKeyInterpolationChange>& changes,
+                                                                             DopeSheetEditor* model,
+                                                                             QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _changes()
+    , _shapeChanges()
+    , _shapeStates()
+    , _firstRedoCalled(false)
+    , _model(model)
 {
+    for (std::list<DSKeyInterpolationChange>::const_iterator it = changes.begin(); it != changes.end(); ++it) {
+        if (!it->_key->bezier.expired()) {
+            _shapeChanges.push_back(*it);
+        } else {
+            _changes.push_back(*it);
+        }
+    }
     setText( tr("Set selected keys interpolation") );
 }
 
@@ -1064,24 +1478,59 @@ DSSetSelectedKeysInterpolationCommand::setInterpolation(bool undo)
             return;
         }
     }
+    for (std::list<DSKeyInterpolationChange>::iterator it = _shapeChanges.begin(); it != _shapeChanges.end(); ++it) {
+        if (it->_key->bezier.expired()) {
+            setObsolete(true);
+
+            return;
+        }
+    }
+
+    if (undo) {
+        _shapeStates.restore(false);
+    } else if (!_firstRedoCalled) {
+        std::set<BezierPtr> edited;
+        for (std::list<DSKeyInterpolationChange>::iterator it = _shapeChanges.begin(); it != _shapeChanges.end(); ++it) {
+            BezierPtr bezier = it->_key->bezier.lock();
+            _shapeStates.recordBefore(bezier);
+            int index = bezier->getKeyFrameIndex(it->_key->key.getTime());
+            if (index >= 0) {
+                bezier->setKeyFrameInterpolation(it->_newInterpType, index);
+                edited.insert(bezier);
+            }
+        }
+        // setKeyFrameInterpolation neither re-renders nor signals.
+        for (std::set<BezierPtr>::iterator it = edited.begin(); it != edited.end(); ++it) {
+            (*it)->getContext()->evaluateChange();
+        }
+        _shapeStates.recordAfter();
+        _firstRedoCalled = true;
+    } else {
+        _shapeStates.restore(true);
+    }
+    for (std::list<DSKeyInterpolationChange>::iterator it = _shapeChanges.begin(); it != _shapeChanges.end(); ++it) {
+        it->_key->key.setInterpolation(undo ? it->_oldInterpType : it->_newInterpType);
+    }
 
     for (std::list<DSKeyInterpolationChange>::iterator it = _changes.begin(); it != _changes.end(); ++it) {
         KeyframeTypeEnum interp = undo ? it->_oldInterpType : it->_newInterpType;
+        int dimension;
+        KnobIPtr knob = editedKnob(it->_key->knob.lock(), it->_key->dimension, &dimension);
 
-        it->_key->knob.lock()->setInterpolationAtTime(eCurveChangeReasonDopeSheet,
-                                                      ViewSpec::all(),
-                                                      it->_key->dimension,
-                                                      it->_key->key.getTime(),
-                                                      interp,
-                                                      &it->_key->key);
+        knob->setInterpolationAtTime(eCurveChangeReasonDopeSheet,
+                                     ViewSpec::all(),
+                                     dimension,
+                                     it->_key->key.getTime(),
+                                     interp,
+                                     &it->_key->key);
         // Only Free and Broken keys carry weights; setTangentsAtTime would turn any other key into one of them.
         if (undo && interpolationHasWeights(it->_oldInterpType)) {
-            it->_key->knob.lock()->setTangentsAtTime(eCurveChangeReasonDopeSheet,
-                                                     ViewSpec::all(),
-                                                     it->_key->dimension,
-                                                     it->_key->key.getTime(),
-                                                     it->_oldTangents,
-                                                     &it->_key->key);
+            knob->setTangentsAtTime(eCurveChangeReasonDopeSheet,
+                                    ViewSpec::all(),
+                                    dimension,
+                                    it->_key->key.getTime(),
+                                    it->_oldTangents,
+                                    &it->_key->key);
         }
     }
 
@@ -1103,7 +1552,11 @@ DSPasteKeysCommand::DSPasteKeysCommand(const std::vector<DopeSheetKey> &keys,
     _model(model)
 {
 
+    // Shape keys are not pasted: they carry no values, and shape rows have no knob to paste onto.
     for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
+        if (!(*it)->getInternalKnob()) {
+            continue;
+        }
         DstKnob dst;
         dst.knob = (*it)->getInternalKnob();
         dst.dimension = (*it)->getDimension();
@@ -1113,13 +1566,14 @@ DSPasteKeysCommand::DSPasteKeysCommand(const std::vector<DopeSheetKey> &keys,
     _refTime = _model->getTimelineCurrentTime();
     setText( tr("Paste keyframes") );
     for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (!keys[i].bezier.expired()) {
+            continue;
+        }
         _keys.push_back(keys[i]);
         if (_refKeyindex == -1) {
-            _refKeyindex = i;
-        } else {
-            if ( keys[i].key.getTime() < _keys[_refKeyindex].key.getTime() ) {
-                _refKeyindex = i;
-            }
+            _refKeyindex = (int)_keys.size() - 1;
+        } else if (keys[i].key.getTime() < _keys[_refKeyindex].key.getTime()) {
+            _refKeyindex = (int)_keys.size() - 1;
         }
     }
 }
@@ -1190,13 +1644,17 @@ DSPasteKeysCommand::addOrRemoveKeyframe(bool add)
                         KeyFrame k = _keys[i].key;
                         k.setTime(setTime);
 
-                        knob->setKeyFrame(k, ViewSpec::all(), j, eValueChangedReasonNatronGuiEdited);
+                        int editedDim;
+                        KnobIPtr edited = editedKnob(knob, j, &editedDim);
+                        edited->setKeyFrame(k, ViewSpec::all(), editedDim, eValueChangedReasonNatronGuiEdited);
                     }
                 }
             } else {
                 for (int j = 0; j < knob->getDimension(); ++j) {
                     if ( (dim == -1) || (j == dim) ) {
-                        knob->deleteValueAtTime(eCurveChangeReasonDopeSheet, setTime, ViewSpec::all(), j, i == 0);
+                        int editedDim;
+                        KnobIPtr edited = editedKnob(knob, j, &editedDim);
+                        edited->deleteValueAtTime(eCurveChangeReasonDopeSheet, setTime, ViewSpec::all(), editedDim, i == 0);
                     }
                 }
             }

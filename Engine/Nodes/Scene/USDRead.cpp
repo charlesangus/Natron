@@ -25,28 +25,20 @@
 
 #include "USDRead.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cmath>
-#include <cstdint>
-#include <mutex>
 #include <string>
-#include <vector>
 
-#include <QFileInfo>
 #include <QString>
 #include <QStringList>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ContentHasher.h"
-#include "Engine/FileStampRegistry.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
@@ -73,20 +65,6 @@ takeUsdErrors(PXR_NS::TfErrorMark& mark)
     return text;
 }
 
-// What a USD stage would read as the layer's time codes per second.
-double
-getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer)
-{
-    if (layer->HasTimeCodesPerSecond()) {
-        return layer->GetTimeCodesPerSecond();
-    }
-    if (layer->HasFramesPerSecond()) {
-        return layer->GetFramesPerSecond();
-    }
-
-    return layer->GetTimeCodesPerSecond();
-}
-
 QString
 upAxisName(SceneMetadata::UpAxisEnum upAxis)
 {
@@ -101,40 +79,18 @@ upAxisToken(SceneMetadata::UpAxisEnum upAxis)
 } // anonymous namespace
 
 struct USDRead::Implementation {
-    mutable std::mutex fileLayerMutex;
-    // The file's layer the current layer sublayers, held so it stays open until the next
-    // authoring replaces it: a stage composed meanwhile finds it rather than reading the file.
-    PXR_NS::SdfLayerRefPtr fileLayer;
-    // Every file layer the file brings in, the file's own first, as of the last authoring or
-    // Reload: what Reload reloads.
-    std::vector<PXR_NS::SdfLayerRefPtr> closure;
-    // Their files on disk, in the same order, then the files the closure names that could not be
-    // opened: stamped as missing, so one appearing re-keys the node at the next load or Reload.
-    std::vector<std::string> closurePaths;
-    // The links out of their root the file's layer stack authors, as of the closure's walk.
-    SceneLinkIndex links;
-    // SceneOps::getFileLayerReloadCount() when closure was walked: authoring skips the walk,
-    // which visits every spec of every layer, while closure starts with the layer it sublayers
-    // and no reload has run since. Reload walks afresh, which also finds files that were missing.
-    std::uint64_t closureReloadCount;
-    // The stamps of closurePaths as of the last time the file was loaded (File set, project
-    // loaded) or reloaded: keys the node, so a file brought in that changed on disk, however
-    // deep, re-keys it then, including while the application was closed. Taken only when the
-    // files are read, never by an evaluation, so an evaluation cannot re-key the node while the
-    // layers still hold what was read before.
-    std::atomic<U64> closureDigest;
+    SceneFileSource source;
     // What the metrics correction reads the file through: a payload of one layer sublayering
     // sourceFileLayer at the file's rate, so a pooled stage composes it (payloads included) in the
     // file's own time codes, and a toggle flip or a project change finds that stage again.
+    std::mutex correctionMutex;
     PXR_NS::SdfLayerRefPtr sourceFileLayer;
     U64 sourceDigest;
     double sourceTimeCodesPerSecond;
-    ScenePayload source;
+    ScenePayload correctionSource;
 
     Implementation()
-        : closureReloadCount(0)
-        , closureDigest(0)
-        , sourceDigest(0)
+        : sourceDigest(0)
         , sourceTimeCodesPerSecond(0.)
     {
     }
@@ -142,8 +98,8 @@ struct USDRead::Implementation {
     ScenePayload getCorrectionSource(const PXR_NS::SdfLayerRefPtr& fileLayer,
                                      double timeCodesPerSecond)
     {
-        const U64 digest = closureDigest.load();
-        std::lock_guard<std::mutex> lock(fileLayerMutex);
+        const U64 digest = source.getDigest();
+        std::lock_guard<std::mutex> lock(correctionMutex);
 
         if ((sourceFileLayer != fileLayer) || (sourceDigest != digest) || (sourceTimeCodesPerSecond != timeCodesPerSecond)) {
             PXR_NS::SdfLayerRefPtr wrapper = SceneOps::createNodeLayer("USDRead-source");
@@ -153,65 +109,13 @@ struct USDRead::Implementation {
             h.appendString(fileLayer->GetIdentifier());
             h.appendU64(digest);
             h.appendDouble(timeCodesPerSecond);
-            source = SceneOps::appendLayer(ScenePayload(), wrapper, h.finalize());
+            correctionSource = SceneOps::appendLayer(ScenePayload(), wrapper, h.finalize());
             sourceFileLayer = fileLayer;
             sourceDigest = digest;
             sourceTimeCodesPerSecond = timeCodesPerSecond;
         }
 
-        return source;
-    }
-
-    void setClosure(const PXR_NS::SdfLayerRefPtr& layer)
-    {
-        // Read before the walk, so a reload during it leaves the result marked stale.
-        const std::uint64_t reloadCount = SceneOps::getFileLayerReloadCount();
-        std::vector<std::string> missing;
-        std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer, &missing) : std::vector<PXR_NS::SdfLayerRefPtr>();
-        std::vector<std::string> paths;
-        paths.reserve(layers.size() + missing.size());
-        for (const PXR_NS::SdfLayerRefPtr& l : layers) {
-            paths.push_back(l->GetRealPath());
-        }
-        paths.insert(paths.end(), missing.begin(), missing.end());
-        SceneLinkIndex fileLinks = SceneOps::findLayerStackLinks(layer);
-        std::lock_guard<std::mutex> lock(fileLayerMutex);
-        closure.swap(layers);
-        closurePaths.swap(paths);
-        links.swap(fileLinks);
-        closureReloadCount = reloadCount;
-    }
-
-    // Walks layer's closure unless the last walk was of layer and no reload has run since: file
-    // layers are never edited, so only a reload changes what they bring in.
-    void updateClosure(const PXR_NS::SdfLayerRefPtr& layer)
-    {
-        {
-            std::lock_guard<std::mutex> lock(fileLayerMutex);
-            if (!closure.empty() && (closure.front() == layer) && (closureReloadCount == SceneOps::getFileLayerReloadCount())) {
-                return;
-            }
-        }
-        setClosure(layer);
-    }
-
-    // Hashes the registry's stamps of closurePaths: those recorded when each file was first
-    // looked at, until a Reload drops them.
-    U64 stampClosurePaths()
-    {
-        std::vector<std::string> paths;
-        {
-            std::lock_guard<std::mutex> lock(fileLayerMutex);
-            paths = closurePaths;
-        }
-        FileStampRegistry& stamps = FileStampRegistry::instance();
-        ContentHasher h;
-        h.appendU64(paths.size());
-        for (const std::string& path : paths) {
-            h.appendU64(path.empty() ? 0 : stamps.stamp(path));
-        }
-
-        return h.finalize();
+        return correctionSource;
     }
 };
 
@@ -386,43 +290,12 @@ USDRead::knobChanged(KnobI* k,
     if (!reload || (k != reload.get())) {
         return false;
     }
-    // The layers to read again: those the last authoring found, or, if this node has not
-    // authored yet, those of the file's layer if another consumer has it open.
-    std::vector<PXR_NS::SdfLayerRefPtr> layers;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        layers = _imp->closure;
-    }
-    if (layers.empty() && filename) {
-        const std::string path = filename->getSingleFilePath();
-        PXR_NS::SdfLayerHandle open = path.empty() ? PXR_NS::SdfLayerHandle() : PXR_NS::SdfLayer::Find(path);
-        if (open) {
-            layers = SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open));
-        }
-    }
     std::vector<std::string> reloaded;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        reloaded = _imp->closurePaths;
-    }
-    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
-        reloaded.push_back(layer->GetRealPath());
-    }
     std::string error;
-    if (!layers.empty() && !SceneOps::reloadFileLayers(layers, &error)) {
+    if (!_imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), &error, &reloaded)) {
         setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
     } else {
         clearPersistentMessage(false);
-    }
-    // A reload can change what the file brings in. The file's layer is the same object, reloaded
-    // in place.
-    _imp->setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
-    // A file the reload left out of the closure was still reloaded for every other consumer.
-    FileStampRegistry& stamps = FileStampRegistry::instance();
-    for (const std::string& path : reloaded) {
-        if (!path.empty()) {
-            stamps.invalidate(path);
-        }
     }
     purgeCaches();
     // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
@@ -431,17 +304,7 @@ USDRead::knobChanged(KnobI* k,
     if (node) {
         node->markHashDirty();
     }
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        reloaded.insert(reloaded.end(), _imp->closurePaths.begin(), _imp->closurePaths.end());
-    }
-    if (filename) {
-        reloaded.push_back(filename->getResolvedPath());
-    }
-    std::sort(reloaded.begin(), reloaded.end());
-    reloaded.erase(std::unique(reloaded.begin(), reloaded.end()), reloaded.end());
-    reloaded.erase(std::remove(reloaded.begin(), reloaded.end(), std::string()), reloaded.end());
-    KnobFile::reloadNodesReadingFiles(reloaded, this);
+    SceneFileSource::reloadOtherReaders(reloaded, filename ? filename->getResolvedPath() : std::string(), this);
 
     return true;
 }
@@ -456,18 +319,7 @@ USDRead::purgeCaches()
     if (filename) {
         filename->invalidateFileStamp();
     }
-    std::vector<std::string> paths;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        paths = _imp->closurePaths;
-    }
-    FileStampRegistry& stamps = FileStampRegistry::instance();
-    for (const std::string& path : paths) {
-        if (!path.empty()) {
-            stamps.invalidate(path);
-        }
-    }
-    _imp->closureDigest = _imp->stampClosurePaths();
+    _imp->source.purgeStamps();
     invalidateSceneLayer();
     clearActionsCache();
 } // USDRead::purgeCaches
@@ -483,31 +335,9 @@ USDRead::purgeCachesKeepingFileStamps()
 bool
 USDRead::refreshFileDependencies(const std::vector<std::string>& paths)
 {
-    PXR_NS::SdfLayerRefPtr root;
-    bool reads = false;
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        for (const std::string& path : _imp->closurePaths) {
-            if (std::find(paths.begin(), paths.end(), path) != paths.end()) {
-                reads = true;
-                break;
-            }
-        }
-        if (!_imp->closure.empty()) {
-            root = _imp->closure.front();
-        }
-    }
-    if (!reads) {
+    if (!_imp->source.refresh(paths)) {
         return false;
     }
-    if (root && SceneOps::checkUsdRuntime(nullptr)) {
-        // The reloaded layers can bring in other files; the walk opens them.
-        SceneWriteBarrier::ReadScope read;
-        PXR_NS::TfErrorMark mark;
-        _imp->setClosure(root);
-        mark.Clear();
-    }
-    _imp->closureDigest = _imp->stampClosurePaths();
     invalidateSceneLayer();
     clearActionsCache();
 
@@ -526,21 +356,8 @@ void
 USDRead::stampClosure()
 {
     KnobFilePtr filename = _filename.lock();
-    const std::string path = filename ? filename->getSingleFilePath() : std::string();
-    PXR_NS::SdfLayerRefPtr layer;
 
-    if (!path.empty() && SceneOps::checkUsdRuntime(nullptr)) {
-        // Opens files, as authoring does: no layer reload may run meanwhile.
-        SceneWriteBarrier::ReadScope read;
-        PXR_NS::TfErrorMark mark;
-        layer = PXR_NS::SdfLayer::FindOrOpen(path);
-        // Authoring reports a file USD cannot read.
-        mark.Clear();
-        _imp->setClosure(layer);
-    } else {
-        _imp->setClosure(PXR_NS::SdfLayerRefPtr());
-    }
-    _imp->closureDigest = _imp->stampClosurePaths();
+    _imp->source.load(filename ? filename->getSingleFilePath() : std::string());
     NodePtr node = getNode();
     if (node) {
         node->markHashDirty();
@@ -551,7 +368,7 @@ void
 USDRead::appendNodeContentHash(ContentHasher& h) const
 {
     // The file's own stamp is in the File knob's hash; this covers every file it brings in.
-    h.appendU64(_imp->closureDigest.load());
+    h.appendU64(_imp->source.getDigest());
 }
 
 bool
@@ -565,23 +382,8 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     // One layer per file, shared with every other consumer through USD's layer registry, and
     // never edited here: Reload reloads it in place behind SceneWriteBarrier, and every stage
     // composing it follows.
-    PXR_NS::SdfLayerRefPtr fileLayer;
-    std::string diagnostic;
-    {
-        PXR_NS::TfErrorMark mark;
-        fileLayer = PXR_NS::SdfLayer::FindOrOpen(path);
-        diagnostic = takeUsdErrors(mark);
-    }
+    PXR_NS::SdfLayerRefPtr fileLayer = SceneFileSource::openLayer(path, errorMessage);
     if (!fileLayer) {
-        // USD posts nothing for a file that is not there.
-        if (!diagnostic.empty()) {
-            *errorMessage = diagnostic;
-        } else if (!QFileInfo::exists(QString::fromStdString(path))) {
-            *errorMessage = tr("%1 does not exist.").arg(QString::fromStdString(path)).toStdString();
-        } else {
-            *errorMessage = tr("USD could not read %1.").arg(QString::fromStdString(path)).toStdString();
-        }
-
         return false;
     }
 
@@ -607,7 +409,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     }
     // The same rate as the file, so USD applies no rate conversion across the sublayer arc and
     // the offset below is the whole time mapping.
-    const double timeCodesPerSecond = getTimeCodesPerSecond(fileLayer);
+    const double timeCodesPerSecond = SceneFileSource::getTimeCodesPerSecond(fileLayer);
     layer->SetTimeCodesPerSecond(timeCodesPerSecond);
 
     // A stage time t reads the sublayer at t - offset, so (f + frameOffset) in project frames is
@@ -636,14 +438,9 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        _imp->fileLayer = fileLayer;
-    }
-    _imp->updateClosure(fileLayer);
+    _imp->source.hold(fileLayer);
     if (edit.sublayerLinks) {
-        std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-        *edit.sublayerLinks = _imp->links;
+        *edit.sublayerLinks = _imp->source.getLinks();
     }
 
     return true;
@@ -691,19 +488,19 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (project) {
-        bool upAxisAuthored = false;
-        bool metersPerUnitAuthored = false;
-        {
-            std::lock_guard<std::mutex> lock(_imp->fileLayerMutex);
-            if (_imp->fileLayer) {
-                const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
-                upAxisAuthored = _imp->fileLayer->HasField(root, PXR_NS::UsdGeomTokens->upAxis);
-                metersPerUnitAuthored = _imp->fileLayer->HasField(root, PXR_NS::UsdGeomTokens->metersPerUnit);
-            }
-        }
-        const QString fallback = tr(" (unauthored, USD fallback)");
         const SceneMetadata::UpAxisEnum projectUpAxis = project->isProjectUpAxisZ() ? SceneMetadata::eUpAxisZ : SceneMetadata::eUpAxisY;
         const double projectMetersPerUnit = project->getProjectMetersPerUnit();
+        // Whether the file authors each aspect, so a difference from a USD fallback says so.
+        bool upAxisAuthored = false;
+        bool metersPerUnitAuthored = false;
+        std::string openError;
+        PXR_NS::SdfLayerRefPtr fileLayer = SceneFileSource::openLayer(path, &openError);
+        if (fileLayer) {
+            const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+            upAxisAuthored = fileLayer->HasField(root, PXR_NS::UsdGeomTokens->upAxis);
+            metersPerUnitAuthored = fileLayer->HasField(root, PXR_NS::UsdGeomTokens->metersPerUnit);
+        }
+        const QString fallback = tr(" (unauthored, USD fallback)");
         QStringList differences;
         if (scene.upAxis != projectUpAxis) {
             differences << tr("The file's up axis is %1%2; the project's is %3. Match Project Up Axis converts it.")

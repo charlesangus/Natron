@@ -300,13 +300,14 @@ def defocus_retime():
     plate = grade("plate_grade", plate, mult=(1.1, 1.0, 0.9, 1.0))
     plate = blur("plate_soften", plate, 12.0)
 
-    tb = single("net.sf.openfx.TimeBlur", "timeblur", plate)
-    p(tb, "division").set(5)
+    tb = single("TimeBlur", "timeblur", plate)
+    p(tb, "divisions").set(5)
     p(tb, "shutter").set(1.0)
     rt = single("Retime", "retime", tb)
     p(rt, "speed").set(0.5)
-    fb = single("net.sf.openfx.FrameBlend", "frameblend", rt)
-    p(fb, "frameRange").set(-2, 2)
+    fb = single("FrameBlend", "frameblend", rt)
+    p(fb, "startFrame").set(-2)
+    p(fb, "endFrame").set(2)
 
     far = blur("defocus_far", fb, 300.0)
     far = grade("defocus_far_grade", far, mult=(0.9, 0.95, 1.0, 1.0))

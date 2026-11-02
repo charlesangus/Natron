@@ -344,6 +344,10 @@ public:
 
     Viewer3DNavigationEnum getViewer3DNavigation() const;
 
+    // How long camera frustums reach and how big light icons are in the viewer's 3D view, in
+    // scene units.
+    double getViewer3DGuideSize() const;
+
     // Sets the preference, which applies a preset's bindings to the 3D viewer's shortcuts.
     void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
 
@@ -661,6 +665,7 @@ private:
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
     KnobChoicePtr _viewer3DNavigation;
+    KnobDoublePtr _viewer3DGuideSize;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

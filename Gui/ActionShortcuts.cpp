@@ -194,6 +194,11 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionScriptShowOutput);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DFrameSelection);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DFrameAll);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DWireframe);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DShaded);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DUnshaded);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DShowGrid);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DShowGuides);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -473,6 +478,12 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DTop, kShortcutDescActionViewer3DTop, Qt::NoModifier, Qt::Key_C },
         { kShortcutIDActionViewer3DBottom, kShortcutDescActionViewer3DBottom, Qt::ShiftModifier, Qt::Key_C },
         { kShortcutIDActionViewer3DLockView, kShortcutDescActionViewer3DLockView, Qt::ControlModifier, Qt::Key_L },
+        // Maya's 4/5/6 draw-mode keys, with Ctrl: plain digits connect the viewer's inputs.
+        { kShortcutIDActionViewer3DWireframe, kShortcutDescActionViewer3DWireframe, Qt::ControlModifier, Qt::Key_4 },
+        { kShortcutIDActionViewer3DShaded, kShortcutDescActionViewer3DShaded, Qt::ControlModifier, Qt::Key_5 },
+        { kShortcutIDActionViewer3DUnshaded, kShortcutDescActionViewer3DUnshaded, Qt::ControlModifier, Qt::Key_6 },
+        { kShortcutIDActionViewer3DShowGrid, kShortcutDescActionViewer3DShowGrid, Qt::ControlModifier, Qt::Key_G },
+        { kShortcutIDActionViewer3DShowGuides, kShortcutDescActionViewer3DShowGuides, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_G },
     };
 
     return bindings;

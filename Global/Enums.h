@@ -605,6 +605,7 @@ enum DopeSheetItemType {
     eDopeSheetItemTypeRetime,
     eDopeSheetItemTypeTimeOffset,
     eDopeSheetItemTypeFrameRange,
+    eDopeSheetItemTypeAppendClip,
     eDopeSheetItemTypeGroup,
 
     // Others

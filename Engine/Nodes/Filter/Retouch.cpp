@@ -53,6 +53,7 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
@@ -911,6 +912,12 @@ Retouch::onCurveItemCreated(const RotoDrawableItemPtr& item)
         if (brushPressure) {
             itemKnob<KnobChoice>(item, kRetouchShapeParamBrushPressure)->setValue(brushPressure->getValue(), ViewSpec::all(), 0, true);
         }
+        // A stroke's lifetime defaults to the single frame it was painted on, which the interact
+        // never sets; a retouch brush lasts for every frame, like the node's Bezier shapes.
+        KnobChoicePtr lifeTime = itemKnob<KnobChoice>(item, kRotoDrawableItemLifeTimeParam);
+        if (lifeTime) {
+            lifeTime->setValue((int)eRotoPaintItemLifeTimeTypeAll, ViewSpec::all(), 0, true);
+        }
     }
 
     // Keep the panel's Scale / Algorithm column current.
@@ -1420,11 +1427,10 @@ Retouch::drawOverlay(double time,
         // A Bezier's source is its outline moved; a brush's is its centre line moved.
         std::vector<QPointF> outline;
         bool closed = true;
-        RectD bbox;
         BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
         if (bezier) {
             std::list<ParametricPoint> points;
-            bezier->evaluateAtTime_DeCasteljau(true, time, 0, 50, &points, &bbox);
+            bezier->evaluateAtTime_DeCasteljau(true, time, 0, 50, &points, NULL);
             for (std::list<ParametricPoint>::const_iterator p = points.begin(); p != points.end(); ++p) {
                 outline.push_back(QPointF(p->x, p->y));
             }
@@ -1432,18 +1438,17 @@ Retouch::drawOverlay(double time,
             double radius = 0.;
             if (brushCentreLine(*it, time, &outline, &radius)) {
                 closed = false;
-                bbox.x1 = bbox.x2 = outline.front().x();
-                bbox.y1 = bbox.y2 = outline.front().y();
-                for (const QPointF& p : outline) {
-                    bbox.x1 = std::min(bbox.x1, p.x());
-                    bbox.x2 = std::max(bbox.x2, p.x());
-                    bbox.y1 = std::min(bbox.y1, p.y());
-                    bbox.y2 = std::max(bbox.y2, p.y());
-                }
             }
         }
         if (outline.empty()) {
             continue;
+        }
+        RectD bbox(outline.front().x(), outline.front().y(), outline.front().x(), outline.front().y());
+        for (const QPointF& p : outline) {
+            bbox.x1 = std::min(bbox.x1, p.x());
+            bbox.x2 = std::max(bbox.x2, p.x());
+            bbox.y1 = std::min(bbox.y1, p.y());
+            bbox.y2 = std::max(bbox.y2, p.y());
         }
         const bool isSelected = (*it == dragged) || (std::find(selected.begin(), selected.end(), *it) != selected.end());
         double color[4];

@@ -40,6 +40,8 @@ RADIUS = 150.0
 OFFSET_X = 700.0
 DRAG = (80, -50)  # widget pixels, y down
 MIN_OUTLINE_PIXELS = 100
+MIN_BRUSH_LINE_PIXELS = 40
+BRUSH_BAND = 15  # widget pixels around the stroke's path that its source line may fall in
 OUTLINE_GAP = 8  # widget pixels between the shape's handles and the source outline's columns
 # The rectangle Z smooths: its corner and side, in canonical pixels.
 SQUARE = (1300.0, 300.0)
@@ -175,6 +177,19 @@ try:
             for x in range(img.width()):
                 c = img.pixelColor(x, y)
                 if c.red() > 90 and c.green() < 70 and c.blue() < 70 and c.red() - c.green() > 50:
+                    points.add((x, y))
+        return points
+
+    def dim_red_pixels(img):
+        """The overlay's red at half alpha too, as an unselected shape's antialiased dashes are
+        drawn: too dark for red_pixels, still well clear of the grey plate."""
+        points = set()
+        if img is None:
+            return points
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                if c.red() > 35 and c.red() - c.green() > 20 and c.red() - c.blue() > 20:
                     points.add((x, y))
         return points
 
@@ -433,6 +448,8 @@ try:
                   "one undo puts the cusps back")
 
         gt.section("brush")
+        # Move to Scale 3 left the node on Current Scale 3, the scale new shapes go on.
+        node.getParam("currentScale").setValue(2)
         node.getParam("brushSize").setValue(BRUSH_SIZE)
         tool = node.getParam("DrawBrushTool")
         require(tool is not None, "the Retouch toolbar has the Draw Brush Tool")
@@ -444,7 +461,7 @@ try:
         def to_widget(p):
             return (source_centre[0] + (p[0] - origin[0]) * scale, source_centre[1] - (p[1] - origin[1]) * scale)
 
-        before = red_pixels(grab_viewer())
+        before = dim_red_pixels(grab_viewer())
         w = visible_viewer()
         start = to_widget(BRUSH_FROM)
         end = to_widget(BRUSH_TO)
@@ -464,9 +481,14 @@ try:
             check(brush.getParam("shapeBrushSize").getValue() == BRUSH_SIZE, "the brush takes the node's Brush Size")
         else:
             report("NOTE the brush item has no Python wrapper with params")
-        added = red_pixels(grab_viewer()) - before
-        report("NOTE red pixels added by the brush: %d" % len(added))
-        check(len(added) > MIN_OUTLINE_PIXELS, "the brush's dashed source line is drawn")
+        # The brush is not selected, so its source line is dashed at half alpha, offset from the
+        # stroke by the brush's default source offset of a few widget pixels.
+        band_x = (min(start[0], end[0]) - BRUSH_BAND, max(start[0], end[0]) + BRUSH_BAND)
+        band_y = (min(start[1], end[1]) - BRUSH_BAND, max(start[1], end[1]) + BRUSH_BAND)
+        added = [p for p in dim_red_pixels(grab_viewer()) - before
+                 if band_x[0] <= p[0] <= band_x[1] and band_y[0] <= p[1] <= band_y[1]]
+        report("NOTE red pixels added along the brush: %d" % len(added))
+        check(len(added) > MIN_BRUSH_LINE_PIXELS, "the brush's dashed source line is drawn")
         screen_crop("retouch_viewer_brush.png", visible_viewer())
         gt.shot("retouch_screen_brush.png")
 

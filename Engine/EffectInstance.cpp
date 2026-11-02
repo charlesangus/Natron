@@ -141,7 +141,7 @@ overlayEditStep()
 }
 
 void
-closeOverlayEditStep()
+closeOpenOverlayEditStep()
 {
     OverlayEditStep& step = overlayEditStep();
 
@@ -160,7 +160,7 @@ void
 closeOverlayEditStepOf(const EffectInstance* effect)
 {
     if (overlayEditStep().owner == effect) {
-        closeOverlayEditStep();
+        closeOpenOverlayEditStep();
     }
 }
 
@@ -169,7 +169,7 @@ closeOverlayEditStepOf(const EffectInstance* effect)
 void
 openOverlayEditStep(const EffectInstance* effect)
 {
-    closeOverlayEditStep();
+    closeOpenOverlayEditStep();
     AppInstancePtr app = effect->getApp();
     UndoRecorderPtr recorder = app ? app->getUndoRecorder() : UndoRecorderPtr();
     if (!recorder) {
@@ -184,6 +184,20 @@ openOverlayEditStep(const EffectInstance* effect)
 }
 
 } // anonymous namespace
+
+void
+EffectInstance::closeOverlayEditStep()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    closeOpenOverlayEditStep();
+}
+
+void
+EffectInstance::closeOverlayEditStepIfOwner() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+    closeOverlayEditStepOf(this);
+}
 
 EffectInstance::~EffectInstance()
 {
@@ -4034,7 +4048,7 @@ EffectInstance::onOverlayPenDown_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    closeOverlayEditStep();
+    closeOpenOverlayEditStep();
     if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
         return false;
     }

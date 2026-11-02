@@ -92,7 +92,7 @@ setOverlayKnobValue(const KnobDoublePtr& knob,
     if (!knob) {
         return;
     }
-    if (knob->getValueAtTime(knob->getCurrentTime(), dimension, ViewSpec::current(), false) == value) {
+    if (!knob->isValueChangeAtCurrentTime(value, dimension)) {
         return;
     }
     recordKnobEdit(knob);

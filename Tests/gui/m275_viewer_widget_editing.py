@@ -13,6 +13,10 @@ Ctrl+Z/Ctrl+Shift+Z each step over the drag as one entry. Every drag is then rep
 same values into the spin boxes of an identically keyed second node, and the two nodes' keys
 (times, values, interpolation and slopes) must match.
 
+A last Position drag closes the node's panel before the button is released, so the widget never
+sees its release. An edit typed into another node afterwards must be an undo step of its own: one
+Ctrl+Z undoes only that edit, and a second one undoes the drag.
+
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     NATRON_GUI_TEST_OUT=build/m275-shots GUI_TEST_TIMEOUT=300 \
         Tests/gui/run-gui-test.sh Tests/gui/m275_viewer_widget_editing.py build/fast/App/Natron
@@ -419,6 +423,60 @@ try:
         check(lit >= 4, "%s: the widget is drawn at the keyed value for frame %d (%d lit pixels at %r)" % (name, frame, lit, centre))
         gt.shot("%s-f%d.png" % (name, frame))
 
+    def lost_release(node, other):
+        """Drags node's point and closes its panel before the release, then types a rotate value
+        into other's panel: the drag's undo step must have ended without its release."""
+        label = "lost release"
+        gt.section(label)
+        yield from open_only_panel(node)
+        frame = 35
+        viewer.seek(frame)
+        yield ("sleep", RENDER_MS)
+        gl = viewer_gl()
+        require(gl is not None, "the viewer is visible")
+        m = calibrate(gl)
+        t = node.getParam("translate")
+        start = to_widget(m, t.getValueAtTime(frame, 0), t.getValueAtTime(frame, 1))
+        end = start + QPointF(40.0, 20.0)
+        before = values_at(node, POSITION_KEYS, frame)
+
+        move(gl, start)
+        send_mouse(gl, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        for i in range(1, 5):
+            move(gl, start + (end - start) * (i / 4.0), Qt.LeftButton)
+        dragged = values_at(node, POSITION_KEYS, frame)
+        check(not close(dragged, before), "%s: the drag moved the point before its panel closed" % label)
+        gt.close_all_panels()
+        QApplication.processEvents()
+        send_mouse(gl, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+        park(gl)
+        yield ("sleep", SETTLE_MS)
+        check(close(values_at(node, POSITION_KEYS, frame), dragged), "%s: the point stays where the drag left it" % label)
+
+        yield from open_only_panel(other)
+        rotate = other.getParam("rotate")
+        r0 = rotate.getValueAtTime(frame, 0)
+        if not type_into(other, "rotate", 0, r0 + 15.0):
+            return
+        ok = yield ("until", lambda: abs(rotate.getValueAtTime(frame, 0) - (r0 + 15.0)) <= EPS, POLL_TIMEOUT_S)
+        check(ok, "%s: typing into %s's rotate box sets it" % (label, other.getLabel()))
+
+        graph = node_graph_view()
+        if not shortcut(graph, False):
+            return
+        ok = yield ("until", lambda: abs(rotate.getValueAtTime(frame, 0) - r0) <= EPS, POLL_TIMEOUT_S)
+        check(ok, "%s: one Ctrl+Z undoes the typed rotate" % label)
+        yield ("sleep", SETTLE_MS)
+        check(close(values_at(node, POSITION_KEYS, frame), dragged),
+              "%s: the same Ctrl+Z leaves the drag alone, its undo step having ended at the panel close" % label)
+        shortcut(graph, False)
+        ok = yield ("until", lambda: close(values_at(node, POSITION_KEYS, frame), before), POLL_TIMEOUT_S)
+        check(ok, "%s: a second Ctrl+Z undoes the drag" % label)
+        shortcut(graph, True)
+        ok = yield ("until", lambda: close(values_at(node, POSITION_KEYS, frame), dragged), POLL_TIMEOUT_S)
+        check(ok, "%s: Ctrl+Shift+Z redoes the drag" % label)
+        yield ("sleep", SETTLE_MS)
+
     # ---- the test --------------------------------------------------------------------------
 
     def create(plugin_id, x, y):
@@ -537,6 +595,8 @@ try:
         yield from open_only_panel(position_ref)
         yield from replay(position_ref, position_edits)
         compare_with_reference(position, position_ref, POSITION_KEYS, "Position")
+
+        yield from lost_release(position, transform_ref)
 
         # ---- save and reopen ----
         gt.section("reopen")

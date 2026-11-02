@@ -807,6 +807,24 @@ Knob<T>::getValue(int dimension,
 
 template <typename T>
 bool
+Knob<T>::isValueChangeAtCurrentTime(const T& value,
+                                    int dimension)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker kql(&_setValuesQueueMutex);
+        for (typename std::list<QueuedSetValuePtr>::const_iterator it = _setValuesQueue.begin(); it != _setValuesQueue.end(); ++it) {
+            if ((*it)->dimension() == dimension) {
+                return true;
+            }
+        }
+    }
+
+    return getValue(dimension, ViewSpec::current(), false) != value;
+}
+
+template <typename T>
+bool
 Knob<T>::getValueFromCurve(double time,
                            ViewSpec view,
                            int dimension,

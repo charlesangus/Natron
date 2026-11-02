@@ -52,6 +52,53 @@ NATRON_NAMESPACE_ENTER
 typedef std::list<DopeSheetKeyPtr> DopeSheetKeyPtrList;
 
 /**
+ * @brief Whole-shape states around a dope sheet edit of shape keys. Shape keys live on the
+ * control points rather than on a curve, so undo and redo restore clones of each touched
+ * shape instead of replaying the edit.
+ */
+class DSShapeKeysStates {
+public:
+    DSShapeKeysStates()
+        : _states()
+    {
+    }
+
+    // Records the state of a shape before its first edit; later calls for the same shape do nothing.
+    void recordBefore(const BezierPtr& bezier);
+
+    // Records the current state of every recorded shape as its edited state.
+    void recordAfter();
+
+    void restore(bool after);
+
+    bool isEmpty() const
+    {
+        return _states.empty();
+    }
+
+    bool allAlive() const;
+
+private:
+    struct State {
+        BezierWPtr bezier;
+        BezierPtr before;
+        BezierPtr after;
+    };
+
+    std::list<State> _states;
+};
+
+/**
+ * @brief A selected shape key and its time before and after the edit, so undo and redo
+ * keep the selection on the key.
+ */
+struct DSShapeKeyTimes {
+    DopeSheetKeyPtr key;
+    double before;
+    double after;
+};
+
+/**
  * Here you put the definitions of all your dope sheet undo commands.
  *
  *
@@ -139,9 +186,14 @@ private:
      * @brief Move the selected keyframes by 'dt' on the dope sheet timeline.
      */
     void moveSelection(double dt);
+    void moveShapeKeys(double dt);
 
 private:
     DopeSheetKeyPtrList _keys;
+    DopeSheetKeyPtrList _shapeKeys;
+    std::list<DSShapeKeyTimes> _shapeKeyTimes;
+    DSShapeKeysStates _shapeStates;
+    bool _firstRedoCalled;
     // Nodes rather than their dope sheet rows, which are recreated when a panel is rebuilt.
     struct MovedNode {
         NodeWPtr node;
@@ -176,6 +228,7 @@ private:
      * @brief Move the selected keyframes by 'dt' on the dope sheet timeline.
      */
     void transformKey(const DopeSheetKeyPtr& key);
+    void transformShapeKeys();
     bool knobsAreAlive() const;
 
 private:
@@ -195,6 +248,9 @@ private:
     bool _firstRedoCalled;
     Transform::Matrix3x3 _transform;
     TransformKeys _keys;
+    DopeSheetKeyPtrList _shapeKeys;
+    std::list<DSShapeKeyTimes> _shapeKeyTimes;
+    DSShapeKeysStates _shapeStates;
     DopeSheetEditor *_model;
 };
 
@@ -322,6 +378,9 @@ private:
 
 private:
     std::vector<DopeSheetKey> _keys;
+    std::vector<DopeSheetKey> _shapeKeys;
+    DSShapeKeysStates _shapeStates;
+    bool _firstRedoCalled;
     DopeSheetEditor *_model;
 };
 
@@ -373,6 +432,9 @@ private:
 
 private:
     std::list<DSKeyInterpolationChange> _changes;
+    std::list<DSKeyInterpolationChange> _shapeChanges;
+    DSShapeKeysStates _shapeStates;
+    bool _firstRedoCalled;
     DopeSheetEditor *_model;
 };
 

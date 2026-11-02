@@ -166,6 +166,12 @@ struct PluginActionShortcut;
 #define kRotoUIParamRightClickMenuActionLockShapes "lockShapesAction"
 #define kRotoUIParamRightClickMenuActionLockShapesLabel "Lock Shape(s)"
 
+#define kRotoUIParamRightClickMenuActionShowInCurveEditor "showInCurveEditorAction"
+#define kRotoUIParamRightClickMenuActionShowInCurveEditorLabel "Show in Curve Editor"
+
+#define kRotoUIParamRightClickMenuActionRemoveFromCurveEditor "removeFromCurveEditorAction"
+#define kRotoUIParamRightClickMenuActionRemoveFromCurveEditorLabel "Remove from Curve Editor"
+
 // Viewer UI buttons
 
 // Roto
@@ -388,6 +394,7 @@ public:
     KnobButtonWPtr smoothItemMenuAction;
     KnobButtonWPtr removeItemFeatherMenuAction;
     KnobButtonWPtr nudgeLeftMenuAction, nudgeRightMenuAction, nudgeBottomMenuAction, nudgeTopMenuAction;
+    KnobButtonWPtr showInCurveEditorMenuAction, removeFromCurveEditorMenuAction;
 
     // Right click on curve
     KnobButtonWPtr selectAllMenuAction;

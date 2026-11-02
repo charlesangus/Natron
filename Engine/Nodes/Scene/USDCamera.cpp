@@ -681,6 +681,28 @@ USDCamera::onKnobsLoaded()
 }
 
 void
+USDCamera::onEffectCreated(bool /*mayCreateFileDialog*/,
+                           const CreateNodeArgs& /*args*/)
+{
+    // After the knobs are loaded, project or preset, and before any render.
+    stampFileClosure();
+}
+
+void
+USDCamera::stampFileClosure()
+{
+    KnobBoolPtr readFromFile = _readFromFile.lock();
+    KnobFilePtr file = _file.lock();
+    const bool enabled = readFromFile && file && readFromFile->getValue();
+
+    _fileCamera->source.load(enabled ? file->getSingleFilePath() : std::string());
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+}
+
+void
 USDCamera::refreshExtraStateAfterTimeChanged(bool isPlayback,
                                              double time)
 {
@@ -717,8 +739,9 @@ USDCamera::knobChanged(KnobI* k,
     }
 
     if (k == reload.get()) {
+        std::vector<std::string> reloaded;
         std::string error;
-        if (!_fileCamera->source.reload(file->getSingleFilePath(), &error)) {
+        if (!_fileCamera->source.reload(file->getSingleFilePath(), &error, &reloaded)) {
             setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
         } else {
             clearPersistentMessage(false);
@@ -730,7 +753,7 @@ USDCamera::knobChanged(KnobI* k,
         if (node) {
             node->markHashDirty();
         }
-        file->reloadOtherNodesReadingTheseFiles();
+        SceneFileSource::reloadOtherReaders(reloaded, file->getResolvedPath(), this);
         // A camera gone from the file stays selected, so the node reports it.
         refreshCameraChoices(false);
         showFileValues(time);
@@ -738,6 +761,7 @@ USDCamera::knobChanged(KnobI* k,
         return true;
     }
     if (k == readFromFile.get()) {
+        stampFileClosure();
         refreshKnobStates();
         refreshCameraChoices(true);
         showFileValues(time);
@@ -745,6 +769,7 @@ USDCamera::knobChanged(KnobI* k,
         return true;
     }
     if (k == file.get()) {
+        stampFileClosure();
         refreshCameraChoices(true);
         showFileValues(time);
 
@@ -800,6 +825,29 @@ USDCamera::purgeCaches()
     _fileCamera->source.purgeStamps();
     invalidateSceneLayer();
     clearActionsCache();
+}
+
+void
+USDCamera::purgeCachesKeepingFileStamps()
+{
+    // The layers stay as loaded; the next evaluation authors from them again.
+    invalidateSceneLayer();
+    clearActionsCache();
+}
+
+bool
+USDCamera::refreshFileDependencies(const std::vector<std::string>& paths)
+{
+    if (!_fileCamera->source.refresh(paths)) {
+        return false;
+    }
+    invalidateSceneLayer();
+    clearActionsCache();
+    // As after this node's own Reload.
+    refreshCameraChoices(false);
+    showFileValues(getCurrentTime());
+
+    return true;
 }
 
 void

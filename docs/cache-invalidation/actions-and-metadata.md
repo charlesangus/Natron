@@ -140,8 +140,10 @@ summaries in every state, generation++). Metadata frames per state are capped at
   A render thread calling it can see a newer graph than its frame args.
 - `getRenderMetadata(frameArgs, ...)` (7363) asks `getMetadata`. If the answer's hash differs from
   `frameArgs->nodeHash` and is not the unhashed same-state case (7389), it aborts the frame when the
-  render is abortable (7398-7401) and returns the new-state answer anyway (7403). A non-abortable
-  render (for example a Write to disk) goes on with metadata newer than its frame.
+  render is abortable (7398-7401) and returns the new-state answer anyway (7403). Sequence renders,
+  Writes included, are abortable (OutputSchedulerThread.cpp:2436, :2665; abort at :2598-2600), so
+  a write never keeps metadata newer than its frame. The non-abortable renders are viewer and
+  single-frame requests that write no file.
 - `findRenderMetadata` (7334) returns the frame's snapshot or retained answer first, so the mismatch
   path only runs on a snapshot miss.
 
@@ -178,8 +180,12 @@ summaries in every state, generation++). Metadata frames per state are capped at
   node hash (NativeEffectBase.h:635-643, NativeEffectBase.cpp:394). With contexts in use, two
   contexts at the same hash share answers. **Fixed by M202** (per-context LRU).
 - **A4 Newer metadata in non-abortable renders.** See "Metadata during a render" (EffectInstance.cpp:7398-7403).
-  Not fixed by M202.
-- **A5 Same-hash drops skip geometry results.** Latent: see "Not invalidated by".
+  Open. M260 planned to fix "the frame on disk", but writes are abortable, so that case does not
+  arise; what is left is a non-abortable viewer or single-frame request returning new-state
+  metadata, which needs a decision on whether those should abort or keep a snapshot.
+- **A5 Same-hash drops skip geometry results. Fixed in M260.** A same-hash metadata change now
+  clears the node's whole actions cache (identity, RoD and the rest), not only metadata. Test:
+  `RawKindFrameworkTest.AStageChangeUnderTheSameHashRecomputesTheCachedIdentity`.
 
 ## Fixed (historical)
 

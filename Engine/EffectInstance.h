@@ -2033,6 +2033,26 @@ public:
     virtual void purgeCaches()
     {
     };
+
+    /**
+     * @brief Clear All Caches: drops what the node decoded, but the files it reads stay pinned as
+     * they were loaded or reloaded, so a file changed on disk since fails until Reload.
+     **/
+    virtual void purgeCachesKeepingFileStamps()
+    {
+        purgeCaches();
+    }
+
+    /**
+     * @brief Called after files were reloaded and their stamps dropped, for an effect none of whose
+     * file knobs names them: one reading any of paths through another file re-keys on their new
+     * stamps, drops what it read from them, and returns true; the caller then marks its hash.
+     * Main thread only.
+     **/
+    virtual bool refreshFileDependencies(const std::vector<std::string>& /*paths*/)
+    {
+        return false;
+    }
     virtual void clearLastRenderedImage();
 
     void clearActionsCache();

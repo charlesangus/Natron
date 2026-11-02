@@ -44,9 +44,10 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief The file a scene node reads: its layer, from USD's layer registry and never edited, and
  * every file layer it brings in, which Reload reads again in place behind SceneWriteBarrier so
- * every stage composing them follows. The stamps of those files, taken only when they are read
- * again, key the node (appendNodeContentHash), so a Reload that changed any of them, however
- * deep, re-authors the node's layer. Shared by USDRead and USDCamera's file camera.
+ * every stage composing them follows. The stamps of those files, taken only when they are read,
+ * key the node (appendNodeContentHash), so a file brought in that changed on disk, however deep,
+ * re-keys the node at the next load or Reload, including while the application was closed.
+ * Shared by USDRead and USDCamera's file camera.
  **/
 class SceneFileSource {
 public:
@@ -85,13 +86,37 @@ public:
     PXR_NS::UsdStageRefPtr getLastStage() const;
 
     /**
+     * @brief Opens the file at path, none when empty, walks every file it brings in and takes
+     * their stamps into the digest. Outside any render and any SceneWriteBarrier::ReadScope: when
+     * the file changes and when the node is created or loaded.
+     **/
+    void load(const std::string& path);
+
+    /**
      * @brief Reads again every file layer the last walk found or, before any walk, those of the
      * file at path if another consumer has it open, then walks afresh, which also finds files
-     * that were missing. Returns false with *errorMessage set when the reload fails; the walk is
-     * taken either way.
+     * that were missing. Drops the stamps of every file that was in the closure before or is
+     * after, and appends them to *reloadedFiles. Returns false with *errorMessage set when the
+     * reload fails; the walk is taken either way.
      **/
     bool reload(const std::string& path,
-                std::string* errorMessage);
+                std::string* errorMessage,
+                std::vector<std::string>* reloadedFiles);
+
+    /**
+     * @brief EffectInstance::refreshFileDependencies() for the node: when the closure holds one of
+     * paths, walks it afresh, takes the stamps into the digest and returns true. Outside any
+     * SceneWriteBarrier::ReadScope.
+     **/
+    bool refresh(const std::vector<std::string>& paths);
+
+    /**
+     * @brief The part of a Reload that reaches the other nodes, for reloadedFiles and the node's
+     * own file at resolvedPath: KnobFile::reloadNodesReadingFiles(). Main thread only.
+     **/
+    static void reloadOtherReaders(std::vector<std::string> reloadedFiles,
+                                   const std::string& resolvedPath,
+                                   const EffectInstance* reloader);
 
     /**
      * @brief Drops the stamps of the files the last walk found and takes them again into the
@@ -99,18 +124,23 @@ public:
      **/
     void purgeStamps();
 
-    // The digest the last purgeStamps() took, 0 before any.
+    // The digest the last load(), purgeStamps() or refresh() took, 0 before any.
     U64 getDigest() const;
 
 private:
     void setClosure(const PXR_NS::SdfLayerRefPtr& layer);
+
+    // Hashes the registry's stamps of _closurePaths: those recorded when each file was first
+    // looked at, until a Reload drops them.
+    U64 stampClosurePaths() const;
 
     mutable std::mutex _mutex;
     PXR_NS::SdfLayerRefPtr _layer;
     // Every file layer _layer brings in, its own first, as of the last walk: what reload() reads
     // again.
     std::vector<PXR_NS::SdfLayerRefPtr> _closure;
-    // Their files on disk, in the same order.
+    // Their files on disk, in the same order, then the files the closure names that could not be
+    // opened: stamped as missing, so one appearing re-keys the node at the next load or Reload.
     std::vector<std::string> _closurePaths;
     SceneLinkIndex _links;
     // SceneOps::getFileLayerReloadCount() when _closure was walked: hold() skips the walk, which
@@ -118,6 +148,8 @@ private:
     std::uint64_t _closureReloadCount;
     PXR_NS::SdfLayerRefPtr _stageLayer;
     PXR_NS::UsdStageRefPtr _stage;
+    // Taken only when the files are read, never by an evaluation, so an evaluation cannot re-key
+    // the node while the layers still hold what was read before.
     std::atomic<U64> _digest;
 };
 

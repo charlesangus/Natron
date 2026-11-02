@@ -278,8 +278,9 @@ USDRead::knobChanged(KnobI* k,
 
     if (filename && (k == filename.get())) {
         refreshUseFileMetricsEnabled();
+        stampClosure();
 
-        return false;
+        return true;
     }
     if (useFileMetrics && (k == useFileMetrics.get())) {
         useFileMetricsForProject();
@@ -289,8 +290,9 @@ USDRead::knobChanged(KnobI* k,
     if (!reload || (k != reload.get())) {
         return false;
     }
+    std::vector<std::string> reloaded;
     std::string error;
-    if (!_imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), &error)) {
+    if (!_imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), &error, &reloaded)) {
         setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
     } else {
         clearPersistentMessage(false);
@@ -302,9 +304,7 @@ USDRead::knobChanged(KnobI* k,
     if (node) {
         node->markHashDirty();
     }
-    if (filename) {
-        filename->reloadOtherNodesReadingTheseFiles();
-    }
+    SceneFileSource::reloadOtherReaders(reloaded, filename ? filename->getResolvedPath() : std::string(), this);
 
     return true;
 }
@@ -323,6 +323,46 @@ USDRead::purgeCaches()
     invalidateSceneLayer();
     clearActionsCache();
 } // USDRead::purgeCaches
+
+void
+USDRead::purgeCachesKeepingFileStamps()
+{
+    // The layers stay as loaded; the next evaluation authors from them again.
+    invalidateSceneLayer();
+    clearActionsCache();
+}
+
+bool
+USDRead::refreshFileDependencies(const std::vector<std::string>& paths)
+{
+    if (!_imp->source.refresh(paths)) {
+        return false;
+    }
+    invalidateSceneLayer();
+    clearActionsCache();
+
+    return true;
+}
+
+void
+USDRead::onEffectCreated(bool /*mayCreateFileDialog*/,
+                         const CreateNodeArgs& /*args*/)
+{
+    // After the knobs are loaded, project or preset, and before any render.
+    stampClosure();
+}
+
+void
+USDRead::stampClosure()
+{
+    KnobFilePtr filename = _filename.lock();
+
+    _imp->source.load(filename ? filename->getSingleFilePath() : std::string());
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+} // USDRead::stampClosure
 
 void
 USDRead::appendNodeContentHash(ContentHasher& h) const

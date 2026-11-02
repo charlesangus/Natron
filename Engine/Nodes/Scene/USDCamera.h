@@ -110,6 +110,13 @@ public:
      * evaluation authors the layer again. Edits no USD layer: Reload reloads them in place.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void purgeCachesKeepingFileStamps() OVERRIDE FINAL;
+
+    /**
+     * @brief Re-walks and re-keys on the file camera's closure when another reader's Reload
+     * reloaded a file in it: USD reloads each layer in place for every consumer.
+     **/
+    virtual bool refreshFileDependencies(const std::vector<std::string>& paths) OVERRIDE FINAL;
 
 protected:
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
@@ -122,6 +129,14 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    /**
+     * @brief With Read From File, opens the file, walks every file it brings in and keys the node
+     * on their stamps. Outside any render: when the File or Read From File changes and when the
+     * node is created or loaded.
+     **/
+    void stampFileClosure();
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

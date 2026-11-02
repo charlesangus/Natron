@@ -957,7 +957,13 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
         return false;
     }
 
-    return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage);
+    const SceneLayerMemo::KeyCheckFunc keyStillValid = [this, reads](const SceneLayerMemo::Key& authoredUnder) {
+        SceneLayerMemo::Key now;
+
+        return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
+    };
+
+    return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage, keyStillValid);
 }
 
 void

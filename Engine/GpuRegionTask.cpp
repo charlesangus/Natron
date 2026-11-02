@@ -71,6 +71,16 @@ NATRON_NAMESPACE_ENTER
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
+// Only HostImageMemory's large buffers tell the import cache when they are freed. Smaller ones are
+// plain mallocs and disk-cache images are mapped files, so an import of either cached by address
+// could outlive the memory and serve a later allocation at that address.
+bool
+mayCacheImport(const void* data,
+               std::size_t bytes)
+{
+    return data && (bytes > 0) && (HostImageMemory::bytesFrom(data) >= bytes);
+}
+
 void
 logRegion(const NodePtr& node,
           const QString& message)
@@ -1178,6 +1188,7 @@ private:
             }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
+            options.cacheImport = mayCacheImport(data, slot.uploadBytes);
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), slot.uploadBytes }, slot.uploadTarget.buffer(), 0, done, options);
@@ -1442,7 +1453,7 @@ private:
             const RectI bounds = slot.source->getBounds();
             Image::ReadAccess access(slot.source.get());
             const unsigned char* data = access.pixelAt(bounds.x1, bounds.y1);
-            if (!data || (bytes == 0) || (HostImageMemory::bytesFrom(data) < bytes)) {
+            if (!mayCacheImport(data, bytes)) {
                 continue;
             }
             // prepareImport() only pins the range.
@@ -1683,6 +1694,7 @@ private:
             }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
+            options.cacheImport = mayCacheImport(data, bytes);
             const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), 0, { data, bytes }, slot.downloadDone, options);
             if (!status) {
                 return failGpu(producerTask, "download failed", status);
@@ -2284,6 +2296,7 @@ private:
             }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
+            options.cacheImport = mayCacheImport(data, bytes);
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
@@ -2487,6 +2500,7 @@ private:
             }
             gpu::TransferPath path = gpu::TransferPath::Staging;
             options.path = &path;
+            options.cacheImport = mayCacheImport(data, range.second);
             gpu::TimelineValue done;
             const gpu::GpuStatus status = _runtime.download(handle.buffer(), range.first, { data, range.second }, done, options);
             if (!status) {

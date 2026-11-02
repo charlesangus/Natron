@@ -85,6 +85,7 @@ set(Tests_SOURCES
     KnobContentHash_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
+    KnobQueuedValueChange_Test.cpp
     LazyHash_Test.cpp
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp

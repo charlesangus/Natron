@@ -48,12 +48,15 @@ def _natronAddMergePresets():
         param.setAll()
 
     def createMerge(operation, allLayers=False):
-        # Created in the active project with no group, so a tab menu's creation context, when the
-        # action is chosen from one, decides the graph and the position.
-        app = NatronGui.natron.getActiveInstance()
+        # createNodeInGraph() creates the node as the nodes menu does, in the graph and at the
+        # position of the creation context the tab menu or the node graph's shortcut sets.
+        active = NatronGui.natron.getActiveInstance()
+        if active is None:
+            return None
+        app = NatronGui.natron.getGuiInstance(active.getAppID())
         if app is None:
             return None
-        node = app.createNode("Merge")
+        node = app.createNodeInGraph("Merge")
         if node is None:
             return None
         param = node.getParam("operation")

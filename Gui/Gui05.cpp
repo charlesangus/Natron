@@ -305,10 +305,11 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
-    if (viewer == _imp->_activeViewer) {
+    if (_imp->_activeViewer == viewer) {
         return;
     }
     _imp->_activeViewer = viewer;
+    Q_EMIT activeViewerChanged();
     // RFVRead lists what reaches it from the active viewer.
     RFV::scheduleReaderRefresh(getApp());
 }

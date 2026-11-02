@@ -76,7 +76,7 @@ that is specific to one kind of data -- see "Single hierarchy" above. What it
 does add is kind-agnostic: the spec, the `route()` identity hook, `KnobReader`
 and `bakeParams()`, and the GPU virtuals (`canRenderOnGpu()`, `renderGpu()`,
 `getGpuInputRoI()`, `getGpuInputLayer()`, `getGpuExtraInputLayers()`,
-`getGpuStageSummary()`, `gpuCostHint()`), which refuse by default
+`getGpuStageSummary()`, `gpuWeight()`), which refuse by default
 (`getGpuExtraInputLayers()` asks for no extra layers). The engine casts to
 `NativeEffectBase` to reach them.
 
@@ -550,16 +550,10 @@ Files a port adds, per node (`<Dir>` is the node's directory under
       fields (`Engine/Nodes/NodeSpec.h`), not part of the fragment. CMake builds
       `NativeRegistryAll.inc` from `Nodes/*.reg.inc`. An I-node's fragment also
       holds its `NATRON_I_VARIANT` line, see step 4.
-- [ ] `Engine/Nodes/<Dir>/<Node>.costseed.inc`: GPU cost model seed rows, built
-      from `NATRON_GPU_COST_SEED_CPU_ROW`, `_CPU_MOTION_BLUR_ROW`, `_CPU_SIGMA_ROW`
-      and `_GPU_ROW`. CMake aggregates them into `GpuCostSeedsAll.inc`. Regenerate
-      with `tools/bench/render-profile-report.py ... --emit-cost-table <source root>`
-      rather than writing rows by hand. A node the tool has no rows for, such as
-      one that `Engine/GpuCostSeeds/inputs.txt` never renders, has no fragment:
-      `RenderProfileReportSelfTest` fails on any fragment the tool would not
-      write, a hand-written row-less one included. Delete
-      `Engine/GpuCostSeeds/ofx/<plugin-id>.inc` for the OFX plug-in the port
-      supersedes, or the plug-in keeps a second seed.
+- [ ] `gpuWeight()` override, when the OpKind default is wrong for the node: cost that
+      grows with a knob such as a size (return `gpuSizeScaledWeight(...)`), or work
+      heavy enough to always want the GPU (return `GpuWeight::heavy()`). Leave it out
+      otherwise.
 - [ ] `Engine/Nodes/<Dir>/docs/<Node>.md`: the node's doc, with a `Tolerance:` line
       (`Tolerance: none recorded.`, or `Tolerance:` followed by the table of
       class and test constant, as in `Color/docs/Grade.md`).
@@ -583,7 +577,7 @@ plug-in has no fragment, when two fragments share an ID, when a marker names an
 ID a native node registers, or names a replacement that is not a registered
 native plug-in. `OfxRetired_Test` fails when a marker names an ID no loaded OFX
 bundle provides (a typo), or when a retired ID is still registered as an OFX
-plug-in. Neither checks the cost seed, doc, icon or kernel fragments.
+plug-in. Neither checks the doc, icon or kernel fragments.
 
 ## Data kinds
 
@@ -1087,8 +1081,8 @@ with `bake()`/`Params` as for Point.
 point pass, over scratch slots; `Pass::lineX()`, `lineY()`, `gather()` and
 `point()` build them and say their halo and growth. `PassList::gpu` is one
 recorder for the whole list, because Blur's GPU kernels fuse their passes. An op
-may add `costHint(params, ctx)` for the GPU cost model; without it the list's
-sigma gives one. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
+with a Passes list weighs Filter by default; one whose cost follows a size
+returns `gpuSizeScaledWeight()` from `gpuWeight()`. EdgeDetect's recorder (`edgeDetectGpuRecorder()` in
 `EdgeDetect.cpp`) runs its pre-blur, derivative, combine and morphology passes
 over the same buffer the CPU passes use. A node narrows the region of definition the list gives by
 overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
@@ -1097,7 +1091,10 @@ overriding `clipRegionOfDefinition()` (Blur's "Crop To Format").
 `Params` and a `RouteContext` (the time, the view and which inputs are
 connected). Any op kind may also have `route()`: the host asks it first and an
 answer other than `None` makes the node an identity of that input (Dissolve at
-an integer `which`).
+an integer `which`), and its frames needed are then that input at the time the
+route names, or none for `Black`. A route at another time than the one asked
+is how a node remaps time: the scheduler plans an identity task on the input at
+that time, and GPU placement keeps the region going through it.
 
 **Resample** has two forms, and an op has exactly one.
 
@@ -1236,10 +1233,9 @@ dependencies, form a run, and a run with a task that has no GPU path (neither
 cached nor an identity) stays on the CPU entirely, so a mosaic never crosses
 between the devices in the middle of it (`placeGraph()`, `taskReadsRaw()`). A raw node renders
 at full scale only, and a region refuses such a node at a proxy level, so its task there is never
-a GPU candidate (`makeGpuQueryForTask()`). The raw nodes have no cost seed rows, so the cost
-model does not price them: a region of two or more connected GPU candidates with no priced member
-goes to the GPU without a cost check, and a lone unpriced candidate stays on the CPU
-(`PlacementInputs::isPriced`).
+a GPU candidate (`makeGpuQueryForTask()`). Raw nodes are Custom, so they weigh Heavy by default and a
+single GPU candidate among them is placed on the GPU when its largest image reaches
+`kGpuRegionMinPixels`.
 
 ### Edge-aware library
 
@@ -1318,6 +1314,15 @@ lays out itself, `GpuOpRef::runtime(shader, inputs)` for a runtime shader, or
 `GpuOpRef::none()` to stay on the CPU. A block over the recorder's 64 KB, or a
 component count outside `acceptedComponents`, stays on the CPU too.
 
+An op declares how much it weighs for GPU placement (`Engine/GpuWeight.h`) with an
+optional `std::optional<GpuWeight> gpuWeight(params, context) const`; without it, or
+when it returns an empty optional, the weight follows the op's `OpKind`: Point,
+Composite and Route are Point (1), Passes and Resample are Filter
+(`kGpuFilterWeight`), Custom is Heavy. A Filter whose cost follows a size returns
+`gpuSizeScaledWeight(sizeInPixelsAtTheContextScale)`, which is capped. An op that
+renders through a runtime shader, or averages several matrices per pixel, returns
+`GpuWeight::heavy()`.
+
 A runtime shader finds its source and destination by name, not by binding: its
 only storage buffers are the blocks named `Src` and `Dst`
 (`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set
@@ -1384,6 +1389,21 @@ declares it through `getRegionsOfInterest()`, `addInputLayersNeeded()`
 and `getFramesNeeded()` (Dissolve and Merge do). `isIdentity()` is composed from
 `route()` and the op, matching the OpenFX conditions so identities become
 identity tasks. No node here touches deep data or GL.
+
+A node that reads an input at another time than the one rendered declares the
+times in `getFramesNeeded()` and fetches them with
+`NativeEffectBase::fetchInputAt(inputNb, time, args, layer, mapToClipPrefs,
+roiPixel)`, never with `getImage()` at a time of its own. `fetchInputAt()`
+checks the time against the declaration: a time that is not one of the frames
+a declared range plans (its min, then each whole frame up to its max) posts an
+error naming it and returns null, and the render fails instead of pulling an
+unplanned frame. The scheduler prefetches at most
+`NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING` (4) frames per declared range, so a
+node needing scattered times declares one range per time; frames beyond the
+cap of one range are still fetched, but as unplanned pulls. On the GPU, the
+same declaration reaches `GpuQuery::inputTimes`, and `GpuRenderArgs` hands an
+op an input at another time than the one rendered through `inputAt(inputNb,
+time)`.
 
 ### Threading
 

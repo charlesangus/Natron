@@ -660,7 +660,7 @@ Q_SIGNALS:
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                               const std::string& ocioSource,
-                                              bool concatenation) const;
+                                              U64 renderSettings) const;
 
     // Emits projectLayersChanged() and refreshes every node's channel selector menus;
     // called after a registry mutation outside of project load (load batches its own

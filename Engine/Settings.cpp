@@ -51,6 +51,7 @@
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
@@ -450,6 +451,7 @@ Settings::initializeKnobsRendering()
                                                                "transformations.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
     _activateTransformConcatenationSupport->setName("transformCatSupport");
     _renderingPage->addKnob(_activateTransformConcatenationSupport);
+    _renderAffectingKnobs.push_back(_activateTransformConcatenationSupport);
 }
 
 void
@@ -651,6 +653,13 @@ Settings::initializeKnobsProjectSetup()
                                          "RawDemosaic, RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
                                          "or creating a Read from Python never does."));
     _projectsPage->addKnob(_developRawOnRead);
+
+    _developRawDenoise = AppManager::createKnob<KnobBool>(this, tr("Develop RAW Denoise"));
+    _developRawDenoise->setName("developRawDenoise");
+    _developRawDenoise->setHintToolTip(tr("If checked, the Develop RAW chain also has DenoiseProfiled between RawDemosaic and "
+                                          "RawInputColor, where darktable runs its denoise (profiled), with the camera's noise "
+                                          "profile found from the file."));
+    _projectsPage->addKnob(_developRawDenoise);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
     _autoPreviewEnabledForNewProjects->setName("enableAutoPreviewNewProjects");
@@ -1695,6 +1704,7 @@ Settings::setDefaultValues()
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
     _developRawOnRead->setDefaultValue(true);
+    _developRawDenoise->setDefaultValue(false);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
 
@@ -3466,6 +3476,12 @@ Settings::isDevelopRawOnReadEnabled() const
 }
 
 bool
+Settings::isDevelopRawDenoiseEnabled() const
+{
+    return _developRawDenoise->getValue();
+}
+
+bool
 Settings::isAiEnabled() const
 {
     return _aiEnabled->getValue();
@@ -3544,6 +3560,32 @@ bool
 Settings::areRGBPixelComponentsSupported() const
 {
     return _activateRGBSupport->getValue();
+}
+
+U64
+Settings::getRenderAffectingDigest() const
+{
+    ContentHasher h;
+
+    h.appendU64(_renderAffectingKnobs.size());
+    for (std::size_t i = 0; i < _renderAffectingKnobs.size(); ++i) {
+        h.appendString(_renderAffectingKnobs[i]->getName());
+        h.appendU64(_renderAffectingKnobs[i]->getContentHash());
+    }
+
+    return h.finalize();
+}
+
+bool
+Settings::isRenderAffecting(const KnobI* knob) const
+{
+    for (std::size_t i = 0; i < _renderAffectingKnobs.size(); ++i) {
+        if (_renderAffectingKnobs[i].get() == knob) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool

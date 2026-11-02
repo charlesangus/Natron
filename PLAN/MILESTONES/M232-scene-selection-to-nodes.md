@@ -77,3 +77,4 @@ Variadic input layout for USDMerge, USD transform and RFVSwitch moved to M277.P2
 
 **Verification gate:** all selection and Tab-menu tests pass; patterns, wrapping, and typed filtering are accepted in the replacement AppImage.
 - 2026-11-01 — P3 at b15e5b2ab: prim path set as the initial value on create-from-selection (root cause of the user's report unconfirmed — recheck in UAT); USDXformPrim Mode knob (Graft default, Wrap when created from a selection): /World/Box becomes /World/Wrap1/Box, links retargeted; Tab menu filtered by the selection's single output kind (any-kind nodes still shown, menu commands hidden while filtered). To confirm with the user: "current node" = last-opened panel (implementer).
+- 2026-11-02 — USDMaterial is a source (no scene input), so it is not offered when creating after a scene node; the scene-filtered Tab list is USDEditTransform, USDPrune and the other scene-input nodes (PM, from review; verify line amended).

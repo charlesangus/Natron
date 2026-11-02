@@ -29,8 +29,12 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <map>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <QActionGroup>
 #include <QContextMenuEvent>
@@ -111,6 +115,150 @@ double
 degreesToRadians(double d)
 {
     return d * M_PI / 180.;
+}
+
+// A display transform Hydra cannot draw is baked into a log2 shaper and a 3D LUT, which it can.
+// The shaper spans scene-linear 0 to 2^8, finest near 2^-10, so highlights still tone-map.
+const float kBakeLog2Min = -10.f;
+const float kBakeLog2Max = 8.f;
+const unsigned long kBakeLutSize = 65;
+const char* const kBakeInputSpace = "Natron 3D Viewport Input";
+const char* const kBakeOutputSpace = "Natron 3D Viewport Output";
+const char* const kBakeDisplay = "Natron 3D Viewport";
+const char* const kBakeView = "Baked";
+
+OCIO_NAMESPACE::ConstProcessorRcPtr
+displayViewProcessor(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                     const std::string& colorSpace,
+                     const std::string& display,
+                     const std::string& view)
+{
+    OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+    displayView->setSrc(colorSpace.c_str());
+    displayView->setDisplay(display.c_str());
+    displayView->setView(view.c_str());
+
+    return config->getProcessor(displayView);
+}
+
+// Hydra's colour correction task (v26.08 hdx/colorCorrectionTask.cpp) loses the sampler name of
+// every 1D and 2D LUT texture OpenColorIO asks for, and the draw then fails with a GL error,
+// leaving only the clear colour on screen. ACES 2.0 output transforms need such textures;
+// analytic transforms and 3D LUTs do not.
+bool
+needsLutTextures(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+{
+    OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+    shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+    processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+
+    return shader->getNumTextures() > 0;
+}
+
+std::string
+appendToList(const char* list,
+             const std::string& item)
+{
+    const std::string existing = list ? list : "";
+
+    return existing.empty() ? item : existing + ", " + item;
+}
+
+/**
+ * @brief A copy of config with processor baked into an extra display and view, kBakeDisplay and
+ * kBakeView, reached from kBakeInputSpace. Hydra reads OCIO's process-wide current config, which
+ * OpenFX plugins read too, so the copy keeps everything config has and hides what it adds from
+ * listings: the display stays out of the active displays and the colour spaces are inactive.
+ * Throws what OpenColorIO throws.
+ **/
+OCIO_NAMESPACE::ConstConfigRcPtr
+bakeDisplayTransform(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                     const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+{
+    const unsigned long n = kBakeLutSize;
+    // Offsetting by 2^min puts scene-linear 0 on the first grid point.
+    const float offset = std::exp2(kBakeLog2Min);
+    std::vector<float> grid(n);
+    for (unsigned long i = 0; i < n; ++i) {
+        const float t = float(i) / float(n - 1);
+        grid[i] = std::exp2(kBakeLog2Min + t * (kBakeLog2Max - kBakeLog2Min)) - offset;
+    }
+    std::vector<float> rgb(n * n * n * 3);
+    std::size_t p = 0;
+    for (unsigned long r = 0; r < n; ++r) {
+        for (unsigned long g = 0; g < n; ++g) {
+            for (unsigned long b = 0; b < n; ++b) {
+                rgb[p++] = grid[r];
+                rgb[p++] = grid[g];
+                rgb[p++] = grid[b];
+            }
+        }
+    }
+    OCIO_NAMESPACE::PackedImageDesc image(rgb.data(), long(n * n * n), 1, 3);
+    processor->getDefaultCPUProcessor()->apply(image);
+
+    OCIO_NAMESPACE::Lut3DTransformRcPtr lut = OCIO_NAMESPACE::Lut3DTransform::Create(n);
+    lut->setInterpolation(OCIO_NAMESPACE::INTERP_TETRAHEDRAL);
+    p = 0;
+    for (unsigned long r = 0; r < n; ++r) {
+        for (unsigned long g = 0; g < n; ++g) {
+            for (unsigned long b = 0; b < n; ++b, p += 3) {
+                lut->setValue(r, g, b, rgb[p], rgb[p + 1], rgb[p + 2]);
+            }
+        }
+    }
+
+    OCIO_NAMESPACE::AllocationTransformRcPtr shaper = OCIO_NAMESPACE::AllocationTransform::Create();
+    shaper->setAllocation(OCIO_NAMESPACE::ALLOCATION_LG2);
+    const float vars[3] = { kBakeLog2Min, kBakeLog2Max, offset };
+    shaper->setVars(3, vars);
+    OCIO_NAMESPACE::GroupTransformRcPtr baked = OCIO_NAMESPACE::GroupTransform::Create();
+    baked->appendTransform(shaper);
+    baked->appendTransform(lut);
+
+    OCIO_NAMESPACE::ConfigRcPtr copy = config->createEditableCopy();
+    std::string activeDisplays;
+    for (int i = 0; i < config->getNumDisplays(); ++i) {
+        activeDisplays = appendToList(activeDisplays.c_str(), config->getDisplay(i));
+    }
+    OCIO_NAMESPACE::ColorSpaceRcPtr input = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
+    input->setName(kBakeInputSpace);
+    copy->addColorSpace(input);
+    OCIO_NAMESPACE::ColorSpaceRcPtr output = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
+    output->setName(kBakeOutputSpace);
+    output->setTransform(baked, OCIO_NAMESPACE::COLORSPACE_DIR_FROM_REFERENCE);
+    copy->addColorSpace(output);
+    const std::string inactive = appendToList(config->getInactiveColorSpaces(),
+                                              std::string(kBakeInputSpace) + ", " + kBakeOutputSpace);
+    copy->setInactiveColorSpaces(inactive.c_str());
+    copy->addDisplayView(kBakeDisplay, kBakeView, kBakeOutputSpace, "");
+    copy->setActiveDisplays(activeDisplays.c_str());
+
+    return copy;
+}
+
+// Main thread only. Baking evaluates the transform at every LUT grid point, so each one is kept.
+OCIO_NAMESPACE::ConstConfigRcPtr
+cachedBake(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+           const std::string& colorSpace,
+           const std::string& display,
+           const std::string& view,
+           const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+{
+    static std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> cache;
+    const std::string key = std::string(config->getCacheID()) + '\n' + colorSpace + '\n' + display + '\n' + view;
+    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator found = cache.find(key);
+    if (found != cache.end()) {
+        return found->second;
+    }
+    const std::size_t kMaxBakes = 8;
+    if (cache.size() >= kMaxBakes) {
+        cache.clear();
+    }
+    OCIO_NAMESPACE::ConstConfigRcPtr baked = bakeDisplayTransform(config, processor);
+    cache[key] = baked;
+
+    return baked;
 }
 
 /**
@@ -244,6 +392,8 @@ struct SceneViewportRenderer::Implementation {
     U64 engineCount = 0;
 
     DisplayTransform displayTransform;
+    // What Hydra is given: displayTransform, or a baked copy of it when Hydra cannot draw it.
+    DisplayTransform hydraTransform;
     bool useOpenColorIO = false;
     float backgroundDisplay[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
     // Set when the engine's colour correction task must be rebuilt from OCIO's current config.
@@ -352,9 +502,9 @@ struct SceneViewportRenderer::Implementation {
         params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
         if (useOpenColorIO) {
             params.colorCorrectionMode = HdxColorCorrectionTokens->openColorIO;
-            params.ocioDisplay = TfToken(displayTransform.display);
-            params.ocioView = TfToken(displayTransform.view);
-            params.ocioColorSpace = TfToken(displayTransform.colorSpace);
+            params.ocioDisplay = TfToken(hydraTransform.display);
+            params.ocioView = TfToken(hydraTransform.view);
+            params.ocioColorSpace = TfToken(hydraTransform.colorSpace);
         } else {
             params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
         }
@@ -426,7 +576,7 @@ struct SceneViewportRenderer::Implementation {
         colorCorrectionDirty = false;
         if (useOpenColorIO) {
             try {
-                OCIO_NAMESPACE::SetCurrentConfig(displayTransform.config);
+                OCIO_NAMESPACE::SetCurrentConfig(hydraTransform.config);
             } catch (const std::exception& e) {
                 qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             }
@@ -776,6 +926,7 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
         return;
     }
     _imp->displayTransform = transform;
+    _imp->hydraTransform = transform;
     _imp->colorCorrectionDirty = true;
 
     bool useOpenColorIO = transform.config && !transform.colorSpace.empty() && !transform.display.empty()
@@ -783,30 +934,28 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
     float background[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
     if (useOpenColorIO) {
         try {
-            OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
-            displayView->setSrc(transform.colorSpace.c_str());
-            displayView->setDisplay(transform.display.c_str());
-            displayView->setView(transform.view.c_str());
-            OCIO_NAMESPACE::ConstProcessorRcPtr processor = transform.config->getProcessor(displayView);
-            // Hydra's colour correction task (v26.08 hdx/colorCorrectionTask.cpp) loses the
-            // sampler name of every 1D and 2D LUT texture OpenColorIO asks for, and the draw
-            // then fails with a GL error, leaving only the clear colour on screen. ACES 2.0
-            // output transforms need such textures; analytic transforms and 3D LUTs do not.
-            OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
-            shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
-            processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
-            if (shader->getNumTextures() > 0) {
-                useOpenColorIO = false;
-            } else {
-                float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
-                processor->getDefaultCPUProcessor()->applyRGB(rgb);
-                for (int c = 0; c < 3; ++c) {
-                    background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
+            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(transform.config, transform.colorSpace, transform.display, transform.view);
+            if (needsLutTextures(processor)) {
+                DisplayTransform baked;
+                baked.config = cachedBake(transform.config, transform.colorSpace, transform.display, transform.view, processor);
+                baked.colorSpace = kBakeInputSpace;
+                baked.display = kBakeDisplay;
+                baked.view = kBakeView;
+                processor = displayViewProcessor(baked.config, baked.colorSpace, baked.display, baked.view);
+                if (needsLutTextures(processor)) {
+                    throw std::runtime_error("the baked display transform still needs 1D or 2D LUT textures");
                 }
+                _imp->hydraTransform = baked;
+            }
+            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
+            processor->getDefaultCPUProcessor()->applyRGB(rgb);
+            for (int c = 0; c < 3; ++c) {
+                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
             }
         } catch (const std::exception& e) {
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             useOpenColorIO = false;
+            background[0] = background[1] = background[2] = kBackgroundSrgb;
         }
     }
     _imp->useOpenColorIO = useOpenColorIO;

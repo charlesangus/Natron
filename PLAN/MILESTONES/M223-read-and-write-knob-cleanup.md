@@ -66,3 +66,4 @@ Acceptance sketch:
 
 **Verification gate:** the original Write/read tests and GUI checks pass; the user accepts the aligned OCIO actions and clean Write file row.
 - 2026-11-01 — UAT approved (user).
+- 2026-11-01 — Review: the File > Render path's createWriterFor connects the new Write to the selected node so it has a format; a Write with no input fails its render with a clear error (PM).

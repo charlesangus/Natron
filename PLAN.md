@@ -371,6 +371,7 @@ future core work has solid ground to build on.
 | M305 | Stale Viewer Keyframe Markers | todo | M275, M261 |  | E10 | [M305-stale-viewer-keyframe-markers.md](PLAN/MILESTONES/M305-stale-viewer-keyframe-markers.md) |
 | M306 | Knob Row Layout | todo | M229 |  | E10 | [M306-knob-row-layout.md](PLAN/MILESTONES/M306-knob-row-layout.md) |
 | M307 | Remove Viewer Auto-Contrast | todo | M164 |  | E10 | [M307-remove-viewer-auto-contrast.md](PLAN/MILESTONES/M307-remove-viewer-auto-contrast.md) |
+| M308 | Knob Label Cleanup | todo | - |  | E10 | [M308-knob-label-cleanup.md](PLAN/MILESTONES/M308-knob-label-cleanup.md) |
 
 # Epics
 

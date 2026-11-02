@@ -48,7 +48,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorBalanceRGB.h"
 #include "Engine/Nodes/Color/DtColorSpaces.h"
-#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -227,13 +226,15 @@ TEST_F(NativeColorBalanceRGBTest, ControlsAndDefaults)
     EXPECT_NEAR(0., knobValue(node, kColorBalanceRGBParamPickSameHue), 1e-7);
     for (const char* name : { kColorBalanceRGBParamPickOffset, kColorBalanceRGBParamPickLift, kColorBalanceRGBParamPickGain, kColorBalanceRGBParamPickPower,
                               kColorBalanceRGBParamPickWhiteFulcrum, kColorBalanceRGBParamPickContrastGreyFulcrum }) {
-        EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobButton>(node->getKnobByName(name)))) << name;
+        KnobColorPtr pick = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(name));
+        ASSERT_TRUE(bool(pick)) << name;
+        EXPECT_EQ(3, pick->getDimension()) << name;
+        for (int d = 0; d < 3; ++d) {
+            EXPECT_DOUBLE_EQ(0., pick->getValue(d)) << name;
+        }
     }
-    for (const char* name : { kColorBalanceRGBParamPickerBottomLeft, kColorBalanceRGBParamPickerSize }) {
-        KnobDoublePtr area = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
-        ASSERT_TRUE(bool(area)) << name;
-        EXPECT_EQ(2, area->getDimension()) << name;
-    }
+    EXPECT_FALSE(bool(node->getKnobByName("pickerBottomLeft")));
+    EXPECT_FALSE(bool(node->getKnobByName("pickerSize")));
 
     const std::pair<const char*, int> choices[] = {
         { kColorBalanceRGBParamPreset, 4 },
@@ -737,40 +738,51 @@ TEST_F(NativeColorBalanceRGBTest, PickedValues)
     EXPECT_LT(graded[0] - graded[2], orange[0] - orange[2]);
 }
 
-// The Pick buttons read the source over the picker area and set the knobs darktable's pickers set.
+// A pick colour knob, set the way the viewer's colour picker sets it, drives the knobs
+// darktable's picker sets, from the colour converted to linear Rec.2020.
 TEST_F(NativeColorBalanceRGBTest, PickersSetTheirKnobs)
 {
     setWorkingSpace(kLinearRec2020);
-    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
     NodePtr node = makeNode();
 
-    ASSERT_TRUE(source && node);
-    const float colour[3] = { 0.5f, 0.25f, 0.1f };
-    ASSERT_TRUE(setKnobValues(source, kConstantParamColor, { colour[0], colour[1], colour[2], 1. }));
-    connectNodes(source, node, 0, true);
+    ASSERT_TRUE(bool(node));
     ColorBalanceRGB* effect = effectOf(node);
     ASSERT_TRUE(effect != NULL);
-    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamPickerBottomLeft, { 4., 4. }));
-    ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamPickerSize, { 16., 16. }));
-
+    const float colour[3] = { 0.5f, 0.25f, 0.1f };
     const ColorBalanceRGBOp::Params p = effect->bakeColorBalanceRGB(kTime, ViewIdx(0));
     const ColorBalanceRGBOp::PickedValues opposite = ColorBalanceRGBOp::pickedValues(p, colour, colour, false);
     const ColorBalanceRGBOp::PickedValues same = ColorBalanceRGBOp::pickedValues(p, colour, colour, true);
+    const auto pick = [&](const char* name) {
+        KnobColorPtr knob = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(name));
+        ASSERT_TRUE(bool(knob)) << name;
+        knob->setValues(colour[0], colour[1], colour[2], ViewSpec::all(), eValueChangedReasonNatronGuiEdited);
+    };
 
-    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::eWheelLift, kTime, ViewIdx(0)));
+    pick(kColorBalanceRGBParamPickLift);
     EXPECT_NEAR(opposite.hue, knobValue(node, kColorBalanceRGBParamLiftHue), 1e-3);
     EXPECT_NEAR(opposite.chroma, knobValue(node, kColorBalanceRGBParamLiftChroma), 1e-5);
+    EXPECT_GT(knobValue(node, kColorBalanceRGBParamLiftChroma), 0.01);
     EXPECT_NEAR(0., knobValue(node, kColorBalanceRGBParamGainChroma), 1e-12);
+    EXPECT_NEAR(0.1845, knobValue(node, kColorBalanceRGBParamContrastGreyFulcrum), 1e-7);
 
     ASSERT_TRUE(setKnobValues(node, kColorBalanceRGBParamPickSameHue, { 1. }));
-    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::eWheelGain, kTime, ViewIdx(0)));
+    pick(kColorBalanceRGBParamPickGain);
     EXPECT_NEAR(same.hue, knobValue(node, kColorBalanceRGBParamGainHue), 1e-3);
     EXPECT_NEAR(same.chroma, knobValue(node, kColorBalanceRGBParamGainChroma), 1e-5);
+    EXPECT_NEAR(opposite.hue, knobValue(node, kColorBalanceRGBParamLiftHue), 1e-3);
 
-    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::ePickerWhiteFulcrum, kTime, ViewIdx(0)));
+    pick(kColorBalanceRGBParamPickWhiteFulcrum);
     EXPECT_NEAR(same.whiteFulcrum, knobValue(node, kColorBalanceRGBParamWhiteFulcrum), 1e-5);
-    ASSERT_TRUE(effect->pickArea(ColorBalanceRGBOp::ePickerContrastGreyFulcrum, kTime, ViewIdx(0)));
+    pick(kColorBalanceRGBParamPickContrastGreyFulcrum);
     EXPECT_NEAR(same.greyFulcrum, knobValue(node, kColorBalanceRGBParamContrastGreyFulcrum), 1e-5);
+
+    // Restoring a pick colour's default leaves the knobs it drove alone.
+    KnobColorPtr white = std::dynamic_pointer_cast<KnobColor>(node->getKnobByName(kColorBalanceRGBParamPickWhiteFulcrum));
+    ASSERT_TRUE(bool(white));
+    white->resetToDefaultValue(0);
+    white->resetToDefaultValue(1);
+    white->resetToDefaultValue(2);
+    EXPECT_NEAR(same.whiteFulcrum, knobValue(node, kColorBalanceRGBParamWhiteFulcrum), 1e-5);
 }
 
 // The wheels draw in the working space: under ACEScct (no matrix to XYZ) a wheel colour is the

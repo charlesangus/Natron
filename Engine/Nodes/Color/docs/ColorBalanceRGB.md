@@ -36,9 +36,8 @@ with other darktable ports live in `Engine/Nodes/Color/DtColorSpaces.h` and
 | grey_fulcrum | contrastGreyFulcrum (minimum 1e-4) | Masks |
 | (GUI mask preview) | output: Result, Shadows Mask, Midtones Mask, Highlights Mask | Masks |
 | (presets) | preset and applyPreset | top |
-| (picker area) | pickerBottomLeft, pickerSize | top |
-| (wheel pickers; ctrl+click) | pickOffset, pickLift, pickGain, pickPower; pickSameHue | 4 Ways, Values group |
-| (fulcrum pickers) | pickWhiteFulcrum, pickContrastGreyFulcrum | Masks |
+| (wheel pickers; ctrl+click) | pickOffset, pickLift, pickGain, pickPower (pick colours); pickSameHue | 4 Ways, Values group |
+| (fulcrum pickers) | pickWhiteFulcrum, pickContrastGreyFulcrum (pick colours) | Masks |
 
 Values are darktable's internal ones: darktable's GUI shows most sliders as percentages, the
 knobs hold the fraction (25 % is 0.25). The presets are darktable's four "basic colorfulness"
@@ -59,14 +58,18 @@ presets; Apply writes every control, resetting the ones a preset does not name.
   the centre is chroma; the outer edge is the chroma knob's soft maximum, and scrolling zooms it.
   Drag the ring to change the hue alone, and double-click to reset the chroma. A drag is one undo
   step. To type values, open the tab's collapsed Values group, which holds the twelve knobs.
-- **Pickers.** darktable's pickers read the area its picker box covers; here the box is the Picker
-  Bottom Left and Picker Size knobs, drawn as a rectangle in the viewer, and each picker is a Pick
-  button beside the knobs it sets. As in darktable they read the node's input, in linear Rec.2020.
-  A wheel's Pick (Offset, Lift, Gain, Power) sets its hue opposite the area's mean colour, which
-  neutralizes a cast, and its chroma to the mean's luminance times chroma; with Pick Same Hue on
-  (darktable's ctrl+click) it takes the mean's own hue. Pick White Fulcrum sets the EV of the
-  luminance of the area's per-channel maximum; Pick Contrast Grey Fulcrum the mean's luminance.
-  Each pick is one undo step.
+- **Pickers.** darktable's pickers read an area it draws over the image. Here each picker is a
+  colour knob with Natron's regular viewer colour picker, so a pick is the colour under the cursor,
+  or the mean of a dragged rectangle, read from the viewer as any colour knob's picker does. When a
+  pick colour changes, the node converts it from the working space to linear Rec.2020 and sets the
+  knobs that picker drives, as one undo step. A wheel's picker (Pick Offset, Pick Lift, Pick Gain,
+  Pick Power, at the end of each wheel's section in the Values group) sets its hue opposite the
+  picked colour's, which neutralizes a cast, and its chroma to the colour's luminance times
+  chroma; with Pick Same Hue on (darktable's ctrl+click) the next pick takes the colour's own hue.
+  Pick White Fulcrum and Pick Contrast Grey Fulcrum use only the luminance of the picked colour:
+  White Fulcrum becomes its EV, Contrast Grey Fulcrum the luminance itself. darktable's white
+  fulcrum takes the per-channel maximum over its area; a single picked colour has no separate
+  maximum, so pick the brightest white directly.
 - **Grey fulcrums stay above 0.** darktable lets Mask Grey Fulcrum and Contrast Grey Fulcrum reach
   0, where the grade divides by zero and renders NaN. Both knobs stop at 1e-4, and the render
   holds an expression or a script to it too.

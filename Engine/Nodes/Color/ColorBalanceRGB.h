@@ -96,8 +96,6 @@
 #define kColorBalanceRGBParamContrastGreyFulcrum "contrastGreyFulcrum"
 #define kColorBalanceRGBParamOutput "output"
 
-#define kColorBalanceRGBParamPickerBottomLeft "pickerBottomLeft"
-#define kColorBalanceRGBParamPickerSize "pickerSize"
 #define kColorBalanceRGBParamPickSameHue "pickSameHue"
 #define kColorBalanceRGBParamPickOffset "pickOffset"
 #define kColorBalanceRGBParamPickLift "pickLift"
@@ -144,8 +142,8 @@ struct ColorBalanceRGBOp {
     };
 
     /**
-     * @brief darktable's area colour pickers: one per wheel (in WheelEnum's order), then White
-     * Fulcrum and Contrast Grey Fulcrum.
+     * @brief darktable's colour pickers, each a pick colour knob: one per wheel (in WheelEnum's
+     * order), then White Fulcrum and Contrast Grey Fulcrum.
      **/
     enum PickerEnum {
         ePickerWhiteFulcrum = eWheelCount,
@@ -154,7 +152,7 @@ struct ColorBalanceRGBOp {
     };
 
     /**
-     * @brief What color_picker_apply() takes from a picked area: a wheel's hue (degrees) and
+     * @brief What color_picker_apply() takes from a picked colour: a wheel's hue (degrees) and
      * chroma, White Fulcrum (EV) and Contrast Grey Fulcrum.
      **/
     struct PickedValues {
@@ -304,10 +302,8 @@ struct ColorBalanceRGBOp {
     KnobDoubleWPtr contrastGreyFulcrum;
     KnobChoiceWPtr output;
 
-    KnobDoubleWPtr pickerBottomLeft;
-    KnobDoubleWPtr pickerSize;
     KnobBoolWPtr pickSameHue;
-    KnobButtonWPtr pickers[ePickerCount];
+    KnobColorWPtr pickers[ePickerCount];
 
     KnobHolder* holder = nullptr;
 };
@@ -347,29 +343,14 @@ public:
     void applyPresetAt(int index);
 
     /**
-     * @brief Reads the source at full scale over the picker area and sets the knobs darktable's
-     * picker sets from it (ColorBalanceRGBOp::PickerEnum), as one undo step. False, changing
-     * nothing, when there is no source or the area misses it.
+     * @brief Sets the knobs darktable's picker sets (ColorBalanceRGBOp::PickerEnum) from the
+     * picker's colour knob at time, read as working-space RGB and converted to darktable's
+     * pipeline space first, as one undo step. False, changing nothing, for an unknown picker.
      **/
-    bool pickArea(int picker,
-                  double time,
-                  ViewIdx view);
+    bool applyPickedColour(int picker,
+                           double time);
 
 private:
-    virtual void initializeKnobs() OVERRIDE FINAL;
-
-    virtual void onKnobsLoaded() OVERRIDE FINAL;
-
-    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
-
-    virtual void onCurrentFrameMetadataChanged(const NodeMetadata& metadata) OVERRIDE FINAL;
-
-    /**
-     * @brief While the picker area knobs are at their defaults, moves those defaults to
-     * darktable's default picker box, 2% to 98% of the source's format.
-     **/
-    void refreshPickerDefaults();
-
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,

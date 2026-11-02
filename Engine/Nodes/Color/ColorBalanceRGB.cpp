@@ -51,11 +51,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
-#include "Engine/Format.h"
-#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Node.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
@@ -480,21 +477,28 @@ pipeToYch(const ColorBalanceRGBOp::Params& params,
     yrgToYch(yrg, ych);
 }
 
-KnobButtonPtr
-addPickButton(KnobHolder* holder,
+KnobColorPtr
+addPickColour(KnobHolder* holder,
               const KnobGroupPtr& group,
               const char* name,
               const char* label,
               const char* hint)
 {
-    KnobButtonPtr button = AppManager::createKnob<KnobButton>(holder, EffectInstance::tr(label).toStdString());
+    KnobColorPtr knob = AppManager::createKnob<KnobColor>(holder, EffectInstance::tr(label).toStdString(), 3);
 
-    button->setName(name);
-    button->setHintToolTip(EffectInstance::tr(hint).toStdString());
-    button->setEvaluateOnChange(false);
-    group->addKnob(button);
+    knob->setName(name);
+    knob->setHintToolTip(EffectInstance::tr(hint).toStdString());
+    for (int d = 0; d < 3; ++d) {
+        knob->setDefaultValue(0., d);
+        knob->setMinimum(-DBL_MAX, d);
+        knob->setMaximum(DBL_MAX, d);
+        knob->setDisplayMinimum(0., d);
+        knob->setDisplayMaximum(1., d);
+    }
+    knob->setEvaluateOnChange(false);
+    group->addKnob(knob);
 
-    return button;
+    return knob;
 }
 
 } // anonymous namespace
@@ -527,51 +531,6 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
         apply->setEvaluateOnChange(false);
         page->addKnob(apply);
         applyPreset = apply;
-    }
-
-    {
-        // darktable's default picker box covers 2% to 98% of the image. It starts on the
-        // project's format here; refreshPickerDefaults() moves it onto the source's.
-        Format format;
-        if (AppInstancePtr app = knobHolder->getApp()) {
-            app->getProject()->getProjectDefaultFormat(&format);
-        }
-        KnobDoublePtr bottomLeft = AppManager::createKnob<KnobDouble>(knobHolder, EffectInstance::tr("Picker Bottom Left").toStdString(), 2);
-        bottomLeft->setName(kColorBalanceRGBParamPickerBottomLeft);
-        bottomLeft->setHintToolTip(EffectInstance::tr("The bottom left corner of the area the Pick buttons read, in pixels of the source.").toStdString());
-        bottomLeft->setSpatial(true);
-        bottomLeft->disableSlider();
-        bottomLeft->setAnimationEnabled(false);
-        bottomLeft->setEvaluateOnChange(false);
-        for (int d = 0; d < 2; ++d) {
-            const double extent = (d == 0) ? (double)format.width() : (double)format.height();
-            const double origin = (d == 0) ? (double)format.x1 : (double)format.y1;
-            bottomLeft->setDecimals(0, d);
-            bottomLeft->setIncrement(1., d);
-            bottomLeft->setDefaultValue(origin + 0.02 * extent, d);
-        }
-        bottomLeft->setAddNewLine(false);
-        page->addKnob(bottomLeft);
-        pickerBottomLeft = bottomLeft;
-
-        KnobDoublePtr size = AppManager::createKnob<KnobDouble>(knobHolder, EffectInstance::tr("Picker Size").toStdString(), 2);
-        size->setName(kColorBalanceRGBParamPickerSize);
-        size->setHintToolTip(EffectInstance::tr("The width and height of the area the Pick buttons read, in pixels of the source.").toStdString());
-        size->setSpatial(true);
-        size->disableSlider();
-        size->setAnimationEnabled(false);
-        size->setEvaluateOnChange(false);
-        size->setDimensionName(0, "w");
-        size->setDimensionName(1, "h");
-        for (int d = 0; d < 2; ++d) {
-            const double extent = (d == 0) ? (double)format.width() : (double)format.height();
-            size->setMinimum(0., d);
-            size->setDecimals(0, d);
-            size->setIncrement(1., d);
-            size->setDefaultValue(0.96 * extent, d);
-        }
-        page->addKnob(size);
-        pickerSize = size;
     }
 
     KnobGroupPtr master = addTab(knobHolder, page, kColorBalanceRGBTabMaster, "Master", "Global grading.");
@@ -628,8 +587,8 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
     {
         KnobBoolPtr sameHue = AppManager::createKnob<KnobBool>(knobHolder, EffectInstance::tr("Pick Same Hue").toStdString());
         sameHue->setName(kColorBalanceRGBParamPickSameHue);
-        sameHue->setHintToolTip(EffectInstance::tr("Off, a wheel's Pick button sets the hue opposite the picked area's, to neutralize its "
-                                                   "colour cast; on, the picked hue itself (darktable's ctrl+click).")
+        sameHue->setHintToolTip(EffectInstance::tr("Off, a wheel's picker sets the hue opposite the picked colour's, to neutralize it; "
+                                                   "on, the picked hue itself (darktable's ctrl+click). Applies at the next pick.")
                                     .toStdString());
         sameHue->setDefaultValue(false);
         sameHue->setAnimationEnabled(false);
@@ -640,43 +599,42 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
     const char* const pickNames[eWheelCount] = { kColorBalanceRGBParamPickOffset, kColorBalanceRGBParamPickLift, kColorBalanceRGBParamPickGain, kColorBalanceRGBParamPickPower };
     const char* const pickLabels[eWheelCount] = { "Pick Offset", "Pick Lift", "Pick Gain", "Pick Power" };
     const auto addWheelPicker = [&](int wheel) {
-        wheels[wheel].hue.lock()->setAddNewLine(false);
-        pickers[wheel] = addPickButton(knobHolder, values, pickNames[wheel], pickLabels[wheel],
-                                       "Sets this wheel's hue opposite the mean colour of the picker area (its own hue with Pick Same Hue) "
-                                       "and its chroma to that colour's luminance times chroma.");
+        pickers[wheel] = addPickColour(knobHolder, values, pickNames[wheel], pickLabels[wheel],
+                                       "Pick a colour in the viewer: the wheel takes the opposite hue to neutralize it (the same hue "
+                                       "with Pick Same Hue), and a chroma from how colourful the colour is.");
     };
     addSeparator(knobHolder, values, "offsetSection", "Global Offset");
     wheels[eWheelOffset].hue = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetHue, "Offset Hue",
                                          "Hue of the global color offset, in degrees.", 0., 0., 360., 0., 360.);
-    addWheelPicker(eWheelOffset);
     wheels[eWheelOffset].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetChroma, "Offset Chroma",
                                             "Chroma of the global color offset.", 0., 0., 1., 0., 0.01);
     wheels[eWheelOffset].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamOffsetLuminance, "Offset Luminance",
                                                "Global luminance offset.", 0., -1., 1., -0.05, 0.05);
+    addWheelPicker(eWheelOffset);
     addSeparator(knobHolder, values, "liftSection", "Shadows Lift");
     wheels[eWheelLift].hue = addDouble(knobHolder, values, kColorBalanceRGBParamLiftHue, "Lift Hue",
                                        "Hue of the color gain in shadows, in degrees.", 0., 0., 360., 0., 360.);
-    addWheelPicker(eWheelLift);
     wheels[eWheelLift].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamLiftChroma, "Lift Chroma",
                                           "Chroma of the color gain in shadows.", 0., 0., 1., 0., 0.5);
     wheels[eWheelLift].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamLiftLuminance, "Lift Luminance",
                                              "Luminance gain in shadows.", 0., -1., 1., -1., 1.);
+    addWheelPicker(eWheelLift);
     addSeparator(knobHolder, values, "gainSection", "Highlights Gain");
     wheels[eWheelGain].hue = addDouble(knobHolder, values, kColorBalanceRGBParamGainHue, "Gain Hue",
                                        "Hue of the color gain in highlights, in degrees.", 0., 0., 360., 0., 360.);
-    addWheelPicker(eWheelGain);
     wheels[eWheelGain].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamGainChroma, "Gain Chroma",
                                           "Chroma of the color gain in highlights.", 0., 0., 1., 0., 0.2);
     wheels[eWheelGain].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamGainLuminance, "Gain Luminance",
                                              "Luminance gain in highlights.", 0., -1., 1., -0.5, 0.5);
+    addWheelPicker(eWheelGain);
     addSeparator(knobHolder, values, "powerSection", "Power");
     wheels[eWheelPower].hue = addDouble(knobHolder, values, kColorBalanceRGBParamPowerHue, "Power Hue",
                                         "Hue of the color exponent in mid-tones, in degrees.", 0., 0., 360., 0., 360.);
-    addWheelPicker(eWheelPower);
     wheels[eWheelPower].chroma = addDouble(knobHolder, values, kColorBalanceRGBParamPowerChroma, "Power Chroma",
                                            "Chroma of the color exponent in mid-tones.", 0., 0., 1., 0., 0.1);
     wheels[eWheelPower].luminance = addDouble(knobHolder, values, kColorBalanceRGBParamPowerLuminance, "Power Luminance",
                                               "Luminance exponent in mid-tones.", 0., -1., 1., -0.25, 0.25);
+    addWheelPicker(eWheelPower);
     const char* const wheelLabels[eWheelCount] = { "Global Offset", "Shadows Lift", "Highlights Gain", "Power" };
     std::vector<KnobSeparator::ColorWheelSpec> wheelSpecs(eWheelCount);
     const std::shared_ptr<WheelColourSpace> wheelSpace = std::make_shared<WheelColourSpace>(knobHolder);
@@ -707,14 +665,14 @@ ColorBalanceRGBOp::createKnobs(KnobHolder* knobHolder,
     addSeparator(knobHolder, masks, "threshold", "Threshold");
     whiteFulcrum = addDouble(knobHolder, masks, kColorBalanceRGBParamWhiteFulcrum, "White Fulcrum",
                              "Peak white luminance, in EV, used to normalize the power function.", 0., -16., 16., -2., 2.);
-    whiteFulcrum.lock()->setAddNewLine(false);
-    pickers[ePickerWhiteFulcrum] = addPickButton(knobHolder, masks, kColorBalanceRGBParamPickWhiteFulcrum, "Pick White Fulcrum",
-                                                 "Sets White Fulcrum to the luminance, in EV, of the per-channel maximum over the picker area.");
+    pickers[ePickerWhiteFulcrum] = addPickColour(knobHolder, masks, kColorBalanceRGBParamPickWhiteFulcrum, "Pick White Fulcrum",
+                                                 "Pick the brightest white in the viewer to set White Fulcrum. Only the luminance of the "
+                                                 "picked colour is used.");
     contrastGreyFulcrum = addDouble(knobHolder, masks, kColorBalanceRGBParamContrastGreyFulcrum, "Contrast Grey Fulcrum",
                                     "Middle-grey luminance the contrast pivots around.", 0.1845, kMinimumGreyFulcrum, 1., 0.1, 0.5);
-    contrastGreyFulcrum.lock()->setAddNewLine(false);
-    pickers[ePickerContrastGreyFulcrum] = addPickButton(knobHolder, masks, kColorBalanceRGBParamPickContrastGreyFulcrum, "Pick Contrast Grey Fulcrum",
-                                                        "Sets Contrast Grey Fulcrum to the luminance of the mean colour over the picker area.");
+    pickers[ePickerContrastGreyFulcrum] = addPickColour(knobHolder, masks, kColorBalanceRGBParamPickContrastGreyFulcrum, "Pick Contrast Grey Fulcrum",
+                                                        "Pick a middle grey in the viewer to set Contrast Grey Fulcrum. Only the luminance of the "
+                                                        "picked colour is used.");
     addSeparator(knobHolder, masks, "maskPreview", "Mask Preview");
     output = addChoice(knobHolder, masks, kColorBalanceRGBParamOutput, "Output",
                        "Result renders the grade. The mask outputs write the opacity of the shadows, mid-tones or highlights "
@@ -1245,130 +1203,27 @@ ColorBalanceRGB::applyPresetAt(int index)
     }
 }
 
-void
-ColorBalanceRGB::initializeKnobs()
-{
-    ImageNode<ColorBalanceRGBOp>::initializeKnobs();
-
-    if (NodePtr node = getNode()) {
-        node->addRectangleInteract(op().pickerBottomLeft.lock(), op().pickerSize.lock(), KnobBoolPtr(), KnobBoolPtr());
-    }
-}
-
-void
-ColorBalanceRGB::onKnobsLoaded()
-{
-    refreshPickerDefaults();
-}
-
-void
-ColorBalanceRGB::onInputChanged(int /*inputNo*/)
-{
-    refreshPickerDefaults();
-}
-
-void
-ColorBalanceRGB::onCurrentFrameMetadataChanged(const NodeMetadata& metadata)
-{
-    ImageNode<ColorBalanceRGBOp>::onCurrentFrameMetadataChanged(metadata);
-    refreshPickerDefaults();
-}
-
-void
-ColorBalanceRGB::refreshPickerDefaults()
-{
-    const KnobDoublePtr bottomLeft = op().pickerBottomLeft.lock();
-    const KnobDoublePtr size = op().pickerSize.lock();
-    EffectInstancePtr input = getInput(0);
-
-    if (!bottomLeft || !size || !input) {
-        return;
-    }
-    const RectI format = input->getMetadata(getCurrentTime(), ViewIdx(0))->getOutputFormat();
-    if (format.isNull()) {
-        return;
-    }
-    // A knob still at its default follows the source; one the user moved keeps its place.
-    for (int d = 0; d < 2; ++d) {
-        const double extent = (d == 0) ? (double)format.width() : (double)format.height();
-        const double origin = (d == 0) ? (double)format.x1 : (double)format.y1;
-        if (!bottomLeft->hasModifications(d)) {
-            bottomLeft->setDefaultValue(origin + 0.02 * extent, d);
-        }
-        if (!size->hasModifications(d)) {
-            size->setDefaultValue(0.96 * extent, d);
-        }
-    }
-}
-
 bool
-ColorBalanceRGB::pickArea(int picker,
-                          double time,
-                          ViewIdx view)
+ColorBalanceRGB::applyPickedColour(int picker,
+                                   double time)
 {
     const ColorBalanceRGBOp& o = op();
-    const KnobDoublePtr bottomLeft = o.pickerBottomLeft.lock();
-    const KnobDoublePtr size = o.pickerSize.lock();
 
-    if ((picker < 0) || (picker >= ColorBalanceRGBOp::ePickerCount) || !bottomLeft || !size || !getInput(0)) {
+    if ((picker < 0) || (picker >= ColorBalanceRGBOp::ePickerCount)) {
         return false;
     }
-    // darktable's dt_color_picker_box(): whole pixels, at least one sampled.
-    const double x = bottomLeft->getValueAtTime(time, 0);
-    const double y = bottomLeft->getValueAtTime(time, 1);
-    RectI box;
-    box.x1 = (int)std::floor(x);
-    box.y1 = (int)std::floor(y);
-    box.x2 = (std::max)((int)std::floor(x + size->getValueAtTime(time, 0)), box.x1 + 1);
-    box.y2 = (std::max)((int)std::floor(y + size->getValueAtTime(time, 1)), box.y1 + 1);
-    const RectD bounds(box.x1, box.y1, box.x2, box.y2);
-    RectI roi;
-    ImagePtr src = getImage(0, time, RenderScale::identity, view, &bounds, &ImageLayerDesc::getRGBAComponents(), false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roi);
-    if (!src || (src->getBitDepth() != eImageBitDepthFloat)) {
+    const KnobColorPtr colour = o.pickers[picker].lock();
+    if (!colour) {
         return false;
     }
-    const RectI area = box.intersect(src->getBounds());
-    const int nComps = (int)src->getComponentsCount();
-    if (area.isNull() || (nComps < 3)) {
-        return false;
+    const ColorBalanceRGBOp::Params params = bakeColorBalanceRGB(time, ViewIdx(0));
+    float rgb[3];
+    for (int c = 0; c < 3; ++c) {
+        rgb[c] = (float)colour->getValueAtTime(time, c);
     }
-    const ColorBalanceRGBOp::Params params = bakeColorBalanceRGB(time, view);
-    // darktable averages its pipeline RGB, so each pixel goes to linear Rec.2020 first; the
-    // maximum is per channel, as its picked_color_max.
-    const int width = area.width();
-    std::vector<float> row((size_t)width * 3);
-    double sum[3] = { 0., 0., 0. };
-    float maximum[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-    std::size_t count = 0;
-    {
-        Image::ReadAccess access(src.get());
-        for (int py = area.y1; py < area.y2; ++py) {
-            const float* pix = (const float*)access.pixelAt(area.x1, py);
-            if (!pix) {
-                continue;
-            }
-            for (int i = 0; i < width; ++i) {
-                for (int c = 0; c < 3; ++c) {
-                    row[(size_t)i * 3 + c] = pix[(size_t)i * nComps + c];
-                }
-            }
-            ColorBalanceRGBOp::workingToPipe(params, row.data(), width);
-            for (int i = 0; i < width; ++i) {
-                for (int c = 0; c < 3; ++c) {
-                    const float v = row[(size_t)i * 3 + c];
-                    sum[c] += v;
-                    maximum[c] = std::max(maximum[c], v);
-                }
-            }
-            count += (std::size_t)width;
-        }
-    }
-    if (count == 0) {
-        return false;
-    }
-    const float mean[3] = { (float)(sum[0] / (double)count), (float)(sum[1] / (double)count), (float)(sum[2] / (double)count) };
+    ColorBalanceRGBOp::workingToPipe(params, rgb, 1);
     const KnobBoolPtr sameHueKnob = o.pickSameHue.lock();
-    const ColorBalanceRGBOp::PickedValues picked = ColorBalanceRGBOp::pickedValues(params, mean, maximum, sameHueKnob && sameHueKnob->getValue());
+    const ColorBalanceRGBOp::PickedValues picked = ColorBalanceRGBOp::pickedValues(params, rgb, rgb, sameHueKnob && sameHueKnob->getValue());
 
     AppInstancePtr app = getApp();
     const bool oneUndoStep = app && !app->isCreatingPythonGroup();
@@ -1394,7 +1249,7 @@ ColorBalanceRGB::pickArea(int picker,
     }
 
     return true;
-} // ColorBalanceRGB::pickArea
+} // ColorBalanceRGB::applyPickedColour
 
 bool
 ColorBalanceRGB::knobChanged(KnobI* k,
@@ -1414,10 +1269,15 @@ ColorBalanceRGB::knobChanged(KnobI* k,
         return true;
     }
     for (int i = 0; i < ColorBalanceRGBOp::ePickerCount; ++i) {
-        const KnobButtonPtr pick = op().pickers[i].lock();
+        const KnobColorPtr pick = op().pickers[i].lock();
         if (pick && (k == pick.get())) {
-            const ViewIdx viewIdx = (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view);
-            (void)pickArea(i, time, viewIdx);
+            AppInstancePtr app = getApp();
+            const bool loading = app && app->getProject() && app->getProject()->isLoadingProject();
+            // A project load or a time change restores the picked colour; only a pick moves the
+            // knobs it drives.
+            if (!loading && (reason != eValueChangedReasonTimeChanged) && (reason != eValueChangedReasonSlaveRefresh) && (reason != eValueChangedReasonRestoreDefault)) {
+                (void)applyPickedColour(i, time);
+            }
 
             return true;
         }

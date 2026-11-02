@@ -6,7 +6,8 @@ The 4 Ways tab is a 2x2 grid of wheels (angle = hue, radius = chroma), each with
 its luminance slider beneath and a value readout, and the knobs' rows in a collapsed Values group.
 In the default layout the panel with its 4 Ways tab must fit the Properties viewport without
 scrolling. A drag on the lift wheel must change liftHue and liftChroma, and one undo must restore
-both.
+both. The pickers are pick colour knobs with the regular eyedropper: setting one, as a viewer pick
+does, must move the knobs it drives.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m214_colour_balance_rgb.py <Natron binary or AppImage>
 """
@@ -264,28 +265,39 @@ try:
             screen_crop("colorbalancergb_masks_" + name, panel_of(node))
         output.setValue(0)
 
-        # The Pick buttons read the input over the picker area, drawn in the viewer.
-        source = app.createNode("net.sf.openfx.ConstantPlugin")
-        require(source is not None, "create a Constant to pick from")
-        source.getParam("color").set(0.5, 0.25, 0.1, 1.0)
-        check(node.connectInput(0, source), "connect the Constant to ColorBalanceRGB")
+        # Each picker is a pick colour knob with the regular viewer eyedropper; setting its
+        # colour, as a viewer pick does, moves the knobs it drives.
+        gt.section("pickers")
+        for gone in ("pickerBottomLeft", "pickerSize"):
+            check(node.getParam(gone) is None, "ColorBalanceRGB has no %s knob" % gone)
+        show_tab(panel_of(node), "Masks")
         yield ("sleep", 300)
-        for button, knobs in (("pickLift", ("liftHue", "liftChroma")),
+        eyedroppers = [w for w in panel_of(node).findChildren(QWidget)
+                       if gt.class_name(w) == "ColorPickerLabel" and w.isVisible()]
+        report("NOTE Masks tab shows %d colour picker buttons" % len(eyedroppers))
+        check(len(eyedroppers) >= 2, "the Masks tab shows an eyedropper for each fulcrum picker")
+        for picker, knobs in (("pickLift", ("liftHue", "liftChroma")),
                               ("pickWhiteFulcrum", ("whiteFulcrum",)),
                               ("pickContrastGreyFulcrum", ("contrastGreyFulcrum",))):
-            param = node.getParam(button)
-            if not check(param is not None, "ColorBalanceRGB has a %s button" % button):
+            param = node.getParam(picker)
+            if not check(param is not None, "ColorBalanceRGB has a %s colour" % picker):
                 continue
+            check(type(param).__name__ == "ColorParam", "%s is a colour knob (got %s)" % (picker, type(param).__name__))
             before = [node.getParam(k).getValue() for k in knobs]
-            param.trigger()
+            param.set(0.5, 0.25, 0.1, 1.0)
             yield ("sleep", 300)
             after = [node.getParam(k).getValue() for k in knobs]
-            report("NOTE %s: %r -> %r" % (button, before, after))
-            check(after != before, "%s sets %s" % (button, ", ".join(knobs)))
-        show_tab(panel_of(node), "Masks")
-        yield ("sleep", 200)
+            report("NOTE %s: %r -> %r" % (picker, before, after))
+            check(after != before, "picking a colour into %s sets %s" % (picker, ", ".join(knobs)))
         screen_crop("colorbalancergb_masks_picked", panel_of(node))
-        source.destroy()
+        values = node.getParam("values")
+        if check(values is not None, "the 4 Ways tab has its Values group"):
+            values.setOpened(True)
+            show_tab(panel_of(node), "4 Ways")
+            yield ("sleep", 400)
+            screen_crop("colorbalancergb_4ways_values_pickers", panel_of(node))
+            values.setOpened(False)
+            yield ("sleep", 200)
         node.destroy()
         yield ("sleep", 200)
 

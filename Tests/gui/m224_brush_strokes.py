@@ -13,6 +13,7 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xv
         -w /home/bosley/git/Natron natron-dev \\
         Tests/gui/run-gui-test.sh Tests/gui/m224_brush_strokes.py build/fast/App/Natron
 """
+import math
 import os
 import sys
 import traceback
@@ -71,6 +72,16 @@ try:
     def interior(pts):
         # The viewer labels the RoD corners, which sit on the strokes' ends.
         return pts[2:-2]
+
+    def path(pts):
+        # Every pixel along the inset stroke, so the gaps between pen moves are covered.
+        inner = interior(pts)
+        out = []
+        for a, b in zip(inner, inner[1:]):
+            n = max(1, int(math.ceil(max(abs(b.x() - a.x()), abs(b.y() - a.y())))))
+            out.extend(QPointF(a.x() + (b.x() - a.x()) * t / float(n), a.y() + (b.y() - a.y()) * t / float(n)) for t in range(n))
+        out.extend(inner[-1:])
+        return out
 
     def clear(rp):
         rg.clear_shapes(rp.getRotoContext())
@@ -139,7 +150,7 @@ try:
 
         def all_red():
             grab = rg.Grab(gl)
-            return all(is_red(grab.colour(p.x(), p.y())) for pts in strokes for p in interior(pts))
+            return all(is_red(grab.colour(p.x(), p.y())) for pts in strokes for p in path(pts))
 
         ok = yield ("until", all_red, CONVERGE_S)
         check(ok, "every stroke is fully on screen once the renders land")
@@ -181,12 +192,9 @@ try:
         require(rg.untone_view(), "picked the Un-tone-mapped view")
         yield ("sleep", RENDER_MS)
 
-        for cmd in no_white_phase(gl, rp, "clone", "CloneToolButton", "CloneTool"):
-            yield cmd
-        for cmd in no_white_phase(gl, rp, "eraser", "PaintBrushToolButton", "EraserTool"):
-            yield cmd
-        for cmd in single_stroke_phase(gl, rp):
-            yield cmd
+        yield from no_white_phase(gl, rp, "clone", "CloneToolButton", "CloneTool")
+        yield from no_white_phase(gl, rp, "eraser", "PaintBrushToolButton", "EraserTool")
+        yield from single_stroke_phase(gl, rp)
         clear(rp)
         faulthandler.cancel_dump_traceback_later()
 

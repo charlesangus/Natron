@@ -429,7 +429,7 @@ TEST(SceneFoldTest, AStageLoadingNothingLoadsWhatTheFoldsLeaveOpen)
     PXR_NS::SdfLayerRefPtr asset = makeLayer("def Xform \"Asset\" {\n    def Cube \"Geo\" {}\n}\n");
     PXR_NS::SdfLayerRefPtr layer = makeLayer("def Xform \"World\" {\n"
                                              "    def Xform \"Outer\" (\n"
-                                             "        customData = { bool \"natron:viewerFold\" = 1 }\n"
+                                             "        customData = { dictionary natron = { bool viewerFold = 1 } }\n"
                                              "    ) {\n"
                                              "        def Xform \"P\" ( payload = @"
                                              + asset->GetIdentifier() + "@</Asset> ) {}\n"

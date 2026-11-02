@@ -232,14 +232,19 @@ try:
         sx = max(1, v.width() // GRID_COLUMNS)
         sy = max(1, v.height() // GRID_ROWS)
         picks = set()
+        hit = None
         for row in range(GRID_ROWS):
             for column in range(GRID_COLUMNS):
-                picked = click(v, QPoint(sx // 2 + column * sx, sy // 2 + row * sy))
+                point = QPoint(sx // 2 + column * sx, sy // 2 + row * sy)
+                picked = click(v, point)
                 if picked:
                     picks.add(tuple(picked))
+                    hit = point
             yield ("sleep", 0)
         require(picks, "a click in the viewer picks the folded /World's bounding box")
         check(picks == {(WORLD,)}, "every pick inside the folded /World selects /World (got %r)" % (sorted(picks),))
+        # The grid's last click may miss and clear the selection; the row check needs a hit last.
+        click(v, hit)
         ok = yield ("until", lambda: selected_rows() == [WORLD], POLL_TIMEOUT_S)
         check(ok, "the pick selects /World's row (got %r)" % (selected_rows(),))
 

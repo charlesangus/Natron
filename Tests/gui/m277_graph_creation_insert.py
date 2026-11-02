@@ -1,4 +1,5 @@
-"""Checks that the mask and stencil shortcuts create like the tab menu, and that dragging a node onto
+"""Checks that the mask and stencil shortcuts create like the tab menu, that GuiApp.createNodeInGraph()
+places and connects like the tab menu while App.createNode() stays raw, and that dragging a node onto
 a pipe skips Viewer pipes, enters a node whose main input is already connected through its first
 free input, and undoes and redoes as one step. Also checks that nodes with a run of numbered scene
 inputs (USDMerge, USDXformPrim) show the compact Merge-like stub layout and still take Y bulk
@@ -6,7 +7,7 @@ connections.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     NATRON_GUI_TEST_OUT=build/m277-gui/out Tests/gui/run-gui-test.sh Tests/gui/m277_graph_creation_insert.py build/release/App/Natron
-Shots: shortcut-<op>-selected.png, shortcut-mask-cursor.png, viewer-pipe.png, insert-preconnected.png,
+Shots: shortcut-<op>-selected.png, shortcut-mask-cursor.png, api-<blur|merge>-selected.png, viewer-pipe.png, insert-preconnected.png,
 layout-<plugin>.png (node graph viewport).
 """
 import os
@@ -151,7 +152,7 @@ try:
         created = new_nodes(before)
         return created[0] if ok and len(created) == 1 else None
 
-    def create_by_tab_menu(graph, entry_name, viewport_pos):
+    def create_by_tab_menu(graph, entry_name, viewport_pos, preset=True):
         before = root_names()
         put_cursor(graph, viewport_pos)
         graph.setFocus()
@@ -167,7 +168,7 @@ try:
         model = view.model()
         entries = [str(model.index(r, 0).data()) for r in range(model.rowCount())]
         row = next((r for r, e in enumerate(entries)
-                    if e.split("[")[0].strip() == entry_name and "[Merge/Merge Presets]" in e), -1)
+                    if e.split("[")[0].strip() == entry_name and (("[Merge/Merge Presets]" in e) == preset)), -1)
         if row < 0:
             report("NOTE tab menu entries for %r: %r" % (entry_name, entries))
             QTest.keyClick(popup, Qt.Key_Escape)
@@ -256,6 +257,70 @@ try:
                       "Mask without a selection matches the tab menu's position (key %r, tab %r)" % (key_pos, tab_pos))
                 gt.close_all_panels()
                 yield from undo_creation(graph, tab.getScriptName())
+
+    def connections(node):
+        return [input_name(node, i) for i in range(3)]
+
+    def api_creation_section(graph):
+        gt.section("python graph creation")
+        src = create(CONSTANT_ID, 0, 2000)
+        gt.close_all_panels()
+        sc = centre(src)
+        frame(graph, 1.0, sc[0], sc[1] + 100)
+        vp = graph.viewport()
+        aside = QPoint(vp.width() // 5, vp.height() // 5)
+        for plugin_id, entry in ((BLUR_ID, "Blur"), (MERGE_ID, "Merge")):
+            select_only([src])
+            before = root_names()
+            node = app.createNodeInGraph(plugin_id)
+            if not check(node is not None and len(new_nodes(before)) == 1,
+                         "createNodeInGraph(%s) creates one node" % plugin_id):
+                continue
+            yield ("sleep", SETTLE_MS)
+            api_pos = node.getPosition()
+            api_inputs = connections(node)
+            check(src.getScriptName() in api_inputs,
+                  "createNodeInGraph(%s) connects the selected node (inputs %r)" % (plugin_id, api_inputs))
+            if plugin_id == MERGE_ID:
+                to_a = NatronEngine.natron.getSettings().getParam("mergeConnectToA").getValue()
+                check(input_name(node, 1 if to_a else 0) == src.getScriptName(),
+                      "createNodeInGraph(Merge) feeds %s as the connect preference says (inputs %r)"
+                      % ("A" if to_a else "B", api_inputs))
+            gt.close_all_panels()
+            snap(graph, "api-%s-selected" % entry.lower())
+            ok = yield from undo_creation(graph, node.getScriptName())
+            check(ok, "createNodeInGraph(%s): one undo removes the node" % plugin_id)
+
+            select_only([src])
+            tab = yield from create_by_tab_menu(graph, entry, aside, preset=False)
+            if not check(tab is not None and tab.getPluginID() == plugin_id,
+                         "%s from the tab menu creates one %s" % (entry, plugin_id)):
+                continue
+            yield ("sleep", SETTLE_MS)
+            tab_pos = tab.getPosition()
+            tab_inputs = connections(tab)
+            check(abs(tab_pos[0] - api_pos[0]) <= POSITION_TOLERANCE
+                  and abs(tab_pos[1] - api_pos[1]) <= POSITION_TOLERANCE and tab_inputs == api_inputs,
+                  "createNodeInGraph(%s) matches the tab menu's position and connection (api %r %r, tab %r %r)"
+                  % (plugin_id, api_pos, api_inputs, tab_pos, tab_inputs))
+            gt.close_all_panels()
+            yield from undo_creation(graph, tab.getScriptName())
+
+        # The raw creation ignores the selection and goes where the script puts it.
+        select_only([src])
+        want = (sc[0] + 700.0, sc[1] - 300.0)
+        before = root_names()
+        props = {"CreateNodeArgsPropNodeInitialPosition": NatronEngine.FloatNodeCreationProperty([want[0], want[1]])}
+        raw = app.createNode(BLUR_ID, -1, None, props)
+        if check(raw is not None and len(new_nodes(before)) == 1, "createNode(%s) creates one node" % BLUR_ID):
+            yield ("sleep", SETTLE_MS)
+            raw_pos = raw.getPosition()
+            check(connections(raw) == [None, None, None]
+                  and abs(raw_pos[0] - want[0]) <= POSITION_TOLERANCE and abs(raw_pos[1] - want[1]) <= POSITION_TOLERANCE,
+                  "createNode() leaves the node unconnected at the given position (got %r %r, want %r)"
+                  % (raw_pos, connections(raw), want))
+            raw.destroy()
+        app.clearSelection()
 
     def drag_beside_pipe(graph, src, dst, mover):
         """Drags mover by its centre until its box sits just right of the src to dst pipe, and
@@ -453,6 +518,7 @@ try:
         require(graph is not None, "found the node graph view")
 
         yield from shortcuts_section(graph)
+        yield from api_creation_section(graph)
         yield from viewer_section(graph)
         yield from preconnected_section(graph)
         yield from layout_section(graph)

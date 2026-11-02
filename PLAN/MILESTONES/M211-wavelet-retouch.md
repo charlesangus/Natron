@@ -166,3 +166,25 @@ Deps: M209 - Edge-Aware Filter Library, M146 - Roto Hosting For Any Node. See `D
 **Verification gate:** original parity and GUI checks pass; Z smoothing, brush tools and default source behaviour are accepted in a replacement AppImage.
 - 2026-11-01 — P5.T1/T3 at 513102043: Z smoothing fixed in the shared BezierCP smoothing (aligned, equal handles tracing a circle; also affects Roto/RotoPaint). darktable has no source search: the default offset is a fixed fraction of the image per shape kind (circle/ellipse 2% right and up, path 2% right and down, brush 1%), reused for later shapes; ported. P5.T2: the user's "needs paintbrush" overrides the Scope's "curves only" — porting darktable's brush shape plus Shift/Ctrl+Shift-click source placement (PM).
 - 2026-11-01 — P5.T2 at 173c44d05: brush shape ported (tool N, pressure per point with darktable's five modes, per-shape size/hardness/density, GPU render, save/load). Open for UAT: Brush Size is a canonical-pixel diameter (darktable: image-relative); darktable's brush-smoothing preference not ported (implementer).
+
+## Phase 211.6: UAT round 2 fixes
+
+- [ ] M211.P6.T1 — The brush overlay stays while drawing
+  - files: `Gui/RetouchInteract.*` / the retouch brush overlay drawing, `Tests/gui/m211_retouch.py`
+  - approach: User, 2026-11-02: "the brush overlay disappears while drawing". Keep the brush footprint (and the in-progress stroke's outline) drawn throughout the stroke, as RotoPaint's brush cursor stays.
+  - verify: The GUI check grabs the viewer mid-stroke and finds the brush outline.
+  - size: M
+
+- [ ] M211.P6.T2 — Heal shapes set their source like paint strokes
+  - files: the RotoPaint clone/reveal source-offset logic (grep the Shift/Ctrl+click source placement and the clone offset knobs in `Engine/RotoPaint*`/`Gui/RotoGui*`), Retouch's heal/clone shapes, tests
+  - approach: User, 2026-11-02: "the roto heal should have the same click-to-set-offset and other offset logic as the paint strokes". Retouch's heal (and clone) shapes reuse RotoPaint's source-offset behaviour exactly: the same click to set the offset, the same relative offset carried to the next shape, the same knobs and defaults. Share the code rather than duplicating it; keep darktable's default offset only where RotoPaint has no equivalent.
+  - verify: The GUI check sets an offset by the same gesture as on a RotoPaint clone stroke and checks the heal shape's source lands at the clicked point, and the next shape keeps the offset.
+  - size: M
+
+- [ ] M211.P6.T3 — Brushes use paint-stroke lifetime
+  - files: Retouch brush items, the RotoPaint stroke lifetime knobs and behaviour (`Engine/RotoPaint*`, `Engine/RotoStrokeItem*`, lifetime knobs), tests
+  - approach: User, 2026-11-02: "brushes should have the same lifetime controls and behaviour as normal paint strokes". Retouch brushes get RotoPaint's stroke lifetime knobs, defaults and behaviour (the same default lifetime as a new RotoPaint stroke, not P5's forced All), through the shared code.
+  - verify: A test compares a new Retouch brush's lifetime knobs and defaults with a new RotoPaint stroke's and checks visibility across frames for each lifetime mode.
+  - size: M
+
+**Verification gate:** Retouch parity and GUI checks pass; a new AppImage is accepted by the user.

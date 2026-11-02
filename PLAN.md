@@ -370,6 +370,7 @@ future core work has solid ground to build on.
 | M304 | Roto Points Snapping To Origin | todo | M224, M261 |  | E6 | [M304-roto-points-snapping-to-origin.md](PLAN/MILESTONES/M304-roto-points-snapping-to-origin.md) |
 | M305 | Stale Viewer Keyframe Markers | todo | M275, M261 |  | E10 | [M305-stale-viewer-keyframe-markers.md](PLAN/MILESTONES/M305-stale-viewer-keyframe-markers.md) |
 | M306 | Knob Row Layout | todo | M229 |  | E10 | [M306-knob-row-layout.md](PLAN/MILESTONES/M306-knob-row-layout.md) |
+| M307 | Remove Viewer Auto-Contrast | todo | M164 |  | E10 | [M307-remove-viewer-auto-contrast.md](PLAN/MILESTONES/M307-remove-viewer-auto-contrast.md) |
 
 # Epics
 
@@ -396,6 +397,8 @@ future core work has solid ground to build on.
 | E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 
 # Open questions
+- **Post-merge checks for the user (user, 2026-11-02):** these merged on approvals given against AppImages that predated their round-1 fixes; test the listed behaviour on main once merged. M228 - 3D Viewer Navigation (camera knobs as GUI edits, Storm GL lock), M229 - 3D Viewer Guides And Display (guide-size preference, sized light guides, number-knob layout), M230 - 3D Transform Widgets (VkResult in the GPU error), M231 - Scene Graph Panel (one-level twirl, Open Mode/Levels, USDExpandHierarchy, Follow chooser), M232 - Scene Selection To Nodes (never UAT-tested; wrap mode, prim path fill, Tab filtering), M245 - Write Path Variables (path variables on project RFVs, dialog, rename rewrite, undo).
+- **M206 - Neural Raw Denoise:** remind the user later about the hand-made darktable 5 reference export (user, 2026-11-02: "remind me later").
 - M230 - 3D Transform Widgets (bosley-native-nodes): the startup SIGSEGV on the NVIDIA host doesn't reproduce here (Mesa, GL on and compute forced unavailable starts cleanly) and isn't in the branch's diff. Needed from the user: (1) does a main-based AppImage also print "vkCreateDevice failed" on that machine now; (2) a backtrace (`coredumpctl gdb` then `bt`, or `gdb -batch -ex run -ex bt` on the unpacked AppImage's bin/Natron.bin); (3) does it still crash with `NATRON_GPU=off`, or with `NATRON_VIEWER_HANDOFF=cpu`? The next AppImage prints the VkResult. Also: M228's M228-r2-scene.ntpz and M228-r2-segfaults.txt aren't on this host.
 
 - M238 - EdgeExtend Options (bosley-native-nodes): which Nuke options to add (recommend all five), replace Size/Slices with push-pull (recommend yes), edge mask in an output channel (recommend yes). See the milestone's Open questions.

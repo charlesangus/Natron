@@ -11,6 +11,10 @@ Checks, per policy:
     Edit > Undo restores Key's translate exactly. Dragging the box (no owner) inserts a
     USDEditTransform between Merge and the Viewer with pattern /World/Box; one Undo removes it and
     reconnects the Viewer to Merge.
+  0 Owner, Else Edit Node, behind a USDEditTransform Shadow (pattern /Rig/Key, between Merge and
+    the Viewer): in Replace mode it discards Key's transform, so dragging the light writes Shadow's
+    translate, leaves Key alone and adds no node; one Undo restores Shadow. In Append mode the drag
+    writes Key again. Shadow is then deleted.
   2 Always Edit Node: dragging the light inserts a USDEditTransform after Merge with pattern
     /Rig/Key and leaves Key alone; a second drag of the same selection reuses it (it is the viewed
     node); Undo twice restores the graph.
@@ -19,7 +23,7 @@ Checks, per policy:
     pattern; one Undo restores both.
 
 Screenshots: scene-policy-owner.png, scene-policy-edit-node.png, scene-policy-always.png,
-scene-policy-open.png (full window), each with a _viewer.png crop of the scene view.
+scene-policy-replace.png, scene-policy-open.png (full window), each with a _viewer.png crop of the scene view.
 
 Mouse and key events are sent to the SceneViewport. Run through Tests/gui/run-gui-test.sh.
 Screenshots and results.txt go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0
@@ -44,6 +48,8 @@ BOX = "/World/Box"
 POLICY_OWNER = 0
 POLICY_OPEN_EDIT = 1
 POLICY_ALWAYS_EDIT = 2
+MODE_APPEND = 0
+MODE_REPLACE = 1
 TRANSLATE_X = 0
 
 try:
@@ -314,6 +320,45 @@ try:
             ok = yield ("until", lambda: edit_nodes() == [], POLL_TIMEOUT_S)
             check(ok and viewer_input() == "Merge", "the graph is as before (%r)" % (viewer_input(),))
         ok = yield from wait_scene()
+
+        # Owner, else edit node: a Replace-mode USDEditTransform matching the light shadows Key.
+        policy.setValue(POLICY_OWNER)
+        shadow = make("USDEditTransform", "Shadow", 150, 300)
+        shadow.getParam("primPattern").setValue(LIGHT)
+        shadow.getParam("mode").setValue(MODE_REPLACE)
+        require(shadow.connectInput(0, merge), "connect Merge into Shadow")
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
+        require(viewer.connectInput(0, shadow), "connect Shadow into the Viewer")
+        ok = yield from wait_scene()
+        require(select_light(v), "a click on the light guide selects %s behind Shadow (got %r)" % (LIGHT, selection()))
+        yield settle()
+        before = values(light_translate)
+        shadow_translate = shadow.getParam("translate")
+        shadow_before = values(shadow_translate)
+        require(drag_x(v), "the X arrow is drawn on the light behind Shadow")
+        report("NOTE Shadow translate %r -> %r" % (shadow_before, values(shadow_translate)))
+        check(values(shadow_translate) != shadow_before, "a Replace-mode USDEditTransform matching the light takes the drag")
+        check(values(light_translate) == before, "and Key, whose transform it discards, is left alone")
+        check([n.getScriptName() for n in edit_nodes()] == ["Shadow"], "and no node is added")
+        ok = yield from wait_scene()
+        save_shots("scene-policy-replace")
+        check(edit_undo(), "Edit > Undo is enabled after the drag")
+        check(values(shadow_translate) == shadow_before, "one Undo restores Shadow's translate exactly")
+        ok = yield from wait_scene()
+        shadow.getParam("mode").setValue(MODE_APPEND)
+        ok = yield from wait_scene()
+        require(select_light(v), "a click on the light guide selects %s in Append mode" % LIGHT)
+        yield settle()
+        require(drag_x(v), "the X arrow is drawn on the light in Append mode")
+        check(values(light_translate) != before and values(shadow_translate) == shadow_before,
+              "an Append-mode USDEditTransform does not shadow Key, which takes the drag")
+        check(edit_undo(), "Edit > Undo undoes the Append-mode drag")
+        check(values(light_translate) == before, "which restores Key's translate exactly")
+        viewer.disconnectInput(0)
+        shadow.destroy()
+        ok = yield ("until", lambda: edit_nodes() == [], POLL_TIMEOUT_S)
+        require(ok, "Shadow is deleted")
 
         # Open edit node.
         policy.setValue(POLICY_OPEN_EDIT)

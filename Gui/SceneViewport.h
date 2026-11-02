@@ -424,8 +424,6 @@ public:
     // Drops the drag preview when a scene requested after serial is synced.
     void clearTransformPreviewAfter(U64 serial);
 
-    bool hasTransformPreview() const;
-
     /**
      * @brief Draws into the framebuffer fbo of the current context, width x height pixels, and
      * leaves the GL state as it found it. Clears to the background when there is no scene.

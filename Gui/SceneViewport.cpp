@@ -2038,14 +2038,6 @@ SceneViewportRenderer::clearTransformPreviewAfter(U64 serial)
 }
 
 bool
-SceneViewportRenderer::hasTransformPreview() const
-{
-    std::lock_guard<std::mutex> lock(_imp->stageMutex);
-
-    return _imp->sceneStage && _imp->sceneStage->hasPreviewTransforms();
-}
-
-bool
 SceneViewportRenderer::render(unsigned int fbo,
                               int width,
                               int height)
@@ -2727,8 +2719,13 @@ struct SceneViewport::Implementation {
     std::shared_ptr<SceneTransformTarget> transformTarget;
     SceneTransformRecorder transformRecorder;
     // Drops a preview whose written drag never reaches the scene shown, as when the node written
-    // is not in the viewed branch.
+    // is not in the viewed branch. Long, since a heavy graph may take a while to evaluate before
+    // it requests the scene with the drag.
     QTimer* previewTimer = nullptr;
+    // While a written drag's preview is shown: the last request made before the write, so any
+    // result for a later one ends the preview.
+    bool previewAwaitsSync = false;
+    U64 previewSerial = 0;
 
     std::function<NodePtr()> viewedNodeProvider;
     std::function<NodePtr(const std::string&)> cameraNodeProvider;
@@ -2838,12 +2835,20 @@ SceneViewport::SceneViewport(QWidget* parent)
     });
     _imp->previewTimer = new QTimer(this);
     _imp->previewTimer->setSingleShot(true);
-    _imp->previewTimer->setInterval(3000);
+    _imp->previewTimer->setInterval(30000);
     QObject::connect(_imp->previewTimer, &QTimer::timeout, this, [this]() {
-        if (_imp->handle == SceneGizmo::kNoHandle) {
-            _imp->renderer.clearTransformPreview();
-            update();
+        if (!_imp->previewAwaitsSync || (_imp->handle != SceneGizmo::kNoHandle)) {
+            return;
         }
+        if ((_imp->requestedSerial > _imp->previewSerial) && (_imp->syncedSerial < _imp->requestedSerial)) {
+            // The scene with the drag is on its way: its result ends the preview.
+            _imp->previewTimer->start();
+
+            return;
+        }
+        _imp->previewAwaitsSync = false;
+        _imp->renderer.clearTransformPreview();
+        update();
     });
 
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
@@ -2920,6 +2925,14 @@ SceneViewport::onSynced(U64 serial,
                         const QString& error)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    if (_imp->previewAwaitsSync && (serial > _imp->previewSerial)) {
+        // A good sync normally drops the preview with the stage update; this covers a failed one
+        // and one synced before the drag's write was known to the renderer.
+        _imp->previewAwaitsSync = false;
+        _imp->previewTimer->stop();
+        _imp->renderer.clearTransformPreview();
+        update();
+    }
     if (serial != _imp->requestedSerial) {
         // A newer request is on its way.
         publishState();
@@ -2968,6 +2981,8 @@ SceneViewport::setFrame(double frame,
         _imp->renderer.clearLookThroughTransform();
     }
     if ((frame != _imp->frame) && (_imp->handle == SceneGizmo::kNoHandle)) {
+        _imp->previewAwaitsSync = false;
+        _imp->previewTimer->stop();
         _imp->renderer.clearTransformPreview();
     }
     _imp->frame = frame;
@@ -4066,6 +4081,7 @@ SceneViewport::beginHandleDrag(const QPoint& pos)
         return false;
     }
     _imp->previewTimer->stop();
+    _imp->previewAwaitsSync = false;
     _imp->handle = handle;
     _imp->handleNode = node;
     _imp->handleChange = 0.;
@@ -4133,9 +4149,11 @@ SceneViewport::endHandleDrag()
     _imp->handleNode.reset();
     _imp->handleChange = 0.;
     _imp->handleChanged = false;
-    if (written) {
+    if (written && (_imp->syncedSerial <= serial)) {
         // The preview stays until the scene with the written drag is shown.
         _imp->renderer.clearTransformPreviewAfter(serial);
+        _imp->previewAwaitsSync = true;
+        _imp->previewSerial = serial;
         _imp->previewTimer->start();
     } else {
         _imp->renderer.clearTransformPreview();

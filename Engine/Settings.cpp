@@ -2687,12 +2687,6 @@ Settings::getViewer3DTransformTarget() const
     return (Viewer3DTransformTargetEnum)_viewer3DTransformTarget->getValue();
 }
 
-void
-Settings::setViewer3DTransformTarget(Viewer3DTransformTargetEnum target)
-{
-    _viewer3DTransformTarget->setValue((int)target);
-}
-
 bool
 Settings::viewerNumberKeys() const
 {

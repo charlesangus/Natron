@@ -152,7 +152,8 @@ void applySceneKnobEdits(const NodePtr& node,
                          const QString& text);
 
 /**
- * @brief The policy the Preferences choose: the knobs of each prim's owner node, else an
+ * @brief The policy the Preferences choose: the knobs of each prim's owner node (or the
+ * matrix of its owning Replace-mode USDEditTransform), else an
  * USDEditTransform; the USDEditTransform whose panel is open; or one at the end of the viewed
  * branch. A USDEditTransform it creates goes after the viewed node, its pattern naming the
  * prims, in the same undo step as the edit.
@@ -180,8 +181,9 @@ private:
  * @brief The node upstream of viewed whose transform knobs place the prim at primPath in viewed's
  * scene: a node with translate, rotate, scale, uniform scale and rotate order knobs whose Prim
  * Path is the prim's, reached through re-parenting nodes (which graft their inputs under their
- * own Prim Path) and not shadowed by a Replace-mode USDEditTransform matching the prim on the
- * way. Null for a prim no such node makes, such as one read from a file.
+ * own Prim Path). An enabled Replace-mode USDEditTransform whose pattern names the prim on the
+ * way discards everything upstream of it, so it is the owner. Null for a prim no such node
+ * makes, such as one read from a file.
  **/
 NodePtr findSceneTransformOwner(const NodePtr& viewed, const std::string& primPath);
 

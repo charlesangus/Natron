@@ -364,7 +364,6 @@ public:
     bool isViewer3DNavigationKnob(const KnobI* knob) const;
 
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
-    void setViewer3DTransformTarget(Viewer3DTransformTargetEnum target);
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
     ///////////////////////////////////////////////////////

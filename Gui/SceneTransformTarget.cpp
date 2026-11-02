@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <utility>
 
 #include <QUndoCommand>
 
@@ -519,6 +520,82 @@ createEditNode(const NodePtr& viewed,
     return node;
 } // createEditNode
 
+std::vector<std::string>
+splitPrimPath(const std::string& path)
+{
+    std::vector<std::string> names;
+    std::size_t pos = 1;
+
+    while (pos <= path.size()) {
+        std::size_t slash = path.find('/', pos);
+        if (slash == std::string::npos) {
+            slash = path.size();
+        }
+        names.push_back(path.substr(pos, slash - pos));
+        pos = slash + 1;
+    }
+
+    return names;
+}
+
+// Whether the USDEditTransform pattern names primPath, by the rules SceneNodeAuthoring::matchPrims
+// applies to a stage: one glob per prim name, as many names as the path has.
+bool
+patternNamesPrim(const std::string& pattern,
+                 const std::string& primPath)
+{
+    if ((primPath.size() < 2) || (primPath[0] != '/')) {
+        return false;
+    }
+    const std::vector<std::string> names = splitPrimPath(primPath);
+    std::size_t pos = 0;
+
+    while (pos < pattern.size()) {
+        const std::size_t begin = pattern.find_first_not_of(" \t\r\n", pos);
+        if (begin == std::string::npos) {
+            break;
+        }
+        std::size_t end = pattern.find_first_of(" \t\r\n", begin);
+        if (end == std::string::npos) {
+            end = pattern.size();
+        }
+        const std::string entry = pattern.substr(begin, end - begin);
+        pos = end;
+        if ((entry.size() < 2) || (entry[0] != '/')) {
+            continue;
+        }
+        const std::vector<std::string> globs = splitPrimPath(entry);
+        if (globs.size() != names.size()) {
+            continue;
+        }
+        bool matched = true;
+        for (std::size_t i = 0; matched && (i < names.size()); ++i) {
+            matched = SceneNodeAuthoring::matchesGlob(names[i], globs[i]);
+        }
+        if (matched) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// A Replace-mode USDEditTransform discards every transform authored upstream of it on the prims
+// it matches, so for those prims it is the only node whose writes show.
+bool
+replacesTransformOf(const NodePtr& node,
+                    const std::string& primPath)
+{
+    USDEditTransform* edit = toEditTransform(node);
+
+    if (!edit || (edit->getMode() != USDEditTransform::eModeReplace)) {
+        return false;
+    }
+    KnobStringPtr pattern = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUSDEditTransformParamPrimPattern));
+
+    return pattern && patternNamesPrim(pattern->getValue(), primPath);
+}
+
 NodePtr
 findOwner(const NodePtr& node,
           const std::string& primPath,
@@ -529,6 +606,9 @@ findOwner(const NodePtr& node,
     }
     std::string inputPath = primPath;
     if (!node->isNodeDisabled()) {
+        if (replacesTransformOf(node, primPath)) {
+            return node;
+        }
         TransformKnobs knobs;
         const bool hasTransform = getTransformKnobs(node, &knobs) && !toEditTransform(node);
         const std::string own = primPathOf(node);
@@ -625,8 +705,20 @@ SceneTransformPolicyTarget::commit(const SceneTransformDrag& drag)
     switch (policy) {
     case Settings::eViewer3DTransformTargetOwner: {
         std::vector<const SceneTransformPrim*> unowned;
+        std::vector<std::pair<NodePtr, std::vector<const SceneTransformPrim*>>> replacing;
         for (const SceneTransformPrim* prim : rest) {
             NodePtr owner = findSceneTransformOwner(viewed, prim->path);
+            if (toEditTransform(owner)) {
+                std::size_t i = 0;
+                while ((i < replacing.size()) && (replacing[i].first != owner)) {
+                    ++i;
+                }
+                if (i == replacing.size()) {
+                    replacing.emplace_back(owner, std::vector<const SceneTransformPrim*>());
+                }
+                replacing[i].second.push_back(prim);
+                continue;
+            }
             const SceneTransformOp* op = owner ? findOp(*prim, getOwnerOpName(owner)) : nullptr;
             std::vector<SceneKnobEdit> edits;
             if (op && makeOpEdits(owner, SceneTransformWidget::loadMatrix(op->space), delta, drag.frame, &edits)) {
@@ -634,6 +726,11 @@ SceneTransformPolicyTarget::commit(const SceneTransformDrag& drag)
                 written = written || !edits.empty();
             } else {
                 unowned.push_back(prim);
+            }
+        }
+        for (const std::pair<NodePtr, std::vector<const SceneTransformPrim*>>& group : replacing) {
+            if (editExistingNode(group.first, group.second, delta, drag.frame, history, text)) {
+                written = true;
             }
         }
         rest.clear();

@@ -289,6 +289,8 @@ try:
                 require(node.connectInput(0, frames_chain[i - 1]), "connect %s" % node.getScriptName())
         frames_end.getParam("operation").set("mean")
         frames_end.getParam("iterateOver").set("frames")
+        # connectInput refuses an input that is already connected, and the Viewer still shows trail.
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, frames_end), "the Viewer shows the fractional-frames LoopEnd")
         for name, label in FRAMES_LABELS.items():
             param = frames_end.getParam(name)

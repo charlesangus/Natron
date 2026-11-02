@@ -62,6 +62,26 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 /**
+ * @brief The frames of a needed range that are rendered ahead: a single time, whole or fractional, as
+ * the effect fetches exactly it; whole frames of a range with whole bounds. A wider range with a
+ * fractional bound is fetched anywhere within it, so none of it is.
+ **/
+std::vector<double>
+framesToRenderAhead(const RangeD& range)
+{
+    std::vector<double> frames;
+    if (range.min == range.max) {
+        frames.push_back(range.min);
+    } else if ((range.min == (int)range.min) && (range.max == (int)range.max)) {
+        for (double f = range.min; f <= range.max; f += 1.) {
+            frames.push_back(f);
+        }
+    }
+
+    return frames;
+}
+
+/**
  * @brief Layers asked of one frame/view at the mipmap level its consumer reads it at.
  **/
 struct PlanesRequest {
@@ -458,68 +478,64 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                 ///For all frames in this view
                 for (U32 range = 0; range < viewIt->second.size(); ++range) {
                     int nbFramesPreFetched = 0;
+                    for (double f : framesToRenderAhead(viewIt->second[range])) {
+                        if (nbFramesPreFetched >= NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING) {
+                            break;
+                        }
+                        /// Render the input image with the bit depth of its preference, at the frame read
+                        const NodeMetadataConstPtr inputMetadata = inputEffect->getRenderMetadata(f, viewIt->first);
+                        const double inputPar = inputMetadata->getPixelAspectRatio(-1);
+                        ImageBitDepthEnum inputPrefDepth = inputMetadata->getBitDepth(-1);
 
-                    // if the range bounds are not ints, the fetched images will probably anywhere within this range - no need to pre-render
-                    if ( (viewIt->second[range].min == (int)viewIt->second[range].min) &&
-                         ( viewIt->second[range].max == (int)viewIt->second[range].max) ) {
-                        for (double f = viewIt->second[range].min;
-                             f <= viewIt->second[range].max && nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
-                             f += 1.) {
-                            /// Render the input image with the bit depth of its preference, at the frame read
-                            const NodeMetadataConstPtr inputMetadata = inputEffect->getRenderMetadata(f, viewIt->first);
-                            const double inputPar = inputMetadata->getPixelAspectRatio(-1);
-                            ImageBitDepthEnum inputPrefDepth = inputMetadata->getBitDepth(-1);
+                        if (!compsNeeded || compsNeeded->empty()) {
+                            continue;
+                        }
 
-                            if (!compsNeeded || compsNeeded->empty()) {
-                                continue;
+                        if (roiIsInRequestPass) {
+                            frameArgs->request->getFrameViewCanonicalRoI(f, viewIt->first, &roi);
+                        }
+
+                        const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
+                        const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
+                        const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
+
+                        std::map<ImageLayerDesc, ImagePtr> inputImgs;
+                        {
+                            std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
+                            renderArgs.reset(new EffectInstance::RenderRoIArgs(f, //< time
+                                                                               upstreamScale, //< scale
+                                                                               upstreamMipmapLevel, //< mipmapLevel (redundant with the scale)
+                                                                               viewIt->first, //< view
+                                                                               byPassCache,
+                                                                               inputRoIPixelCoords, //< roi in pixel coordinates
+                                                                               RectD(), // < did we precompute any RoD to speed-up the call ?
+                                                                               *compsNeeded, //< requested comps
+                                                                               inputPrefDepth,
+                                                                               false,
+                                                                               effect.get(),
+                                                                               renderStorageMode /*returnStorage*/,
+                                                                               time /*callerRenderTime*/));
+
+                            EffectInstance::RenderRoIRetCode ret;
+                            ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
+                            if (ret != EffectInstance::eRenderRoIRetCodeOk) {
+                                return ret;
                             }
-
-                            if (roiIsInRequestPass) {
-                                frameArgs->request->getFrameViewCanonicalRoI(f, viewIt->first, &roi);
+                        }
+                        for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
+                            if (inputImagesList && it3->second) {
+                                inputImagesList->push_back(it3->second);
                             }
+                        }
 
-                            const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
-                            const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
-                            const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
+                        if (effect->aborted()) {
+                            return EffectInstance::eRenderRoIRetCodeAborted;
+                        }
 
-                            std::map<ImageLayerDesc, ImagePtr> inputImgs;
-                            {
-                                std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
-                                renderArgs.reset(new EffectInstance::RenderRoIArgs(f, //< time
-                                                                                   upstreamScale, //< scale
-                                                                                   upstreamMipmapLevel, //< mipmapLevel (redundant with the scale)
-                                                                                   viewIt->first, //< view
-                                                                                   byPassCache,
-                                                                                   inputRoIPixelCoords, //< roi in pixel coordinates
-                                                                                   RectD(), // < did we precompute any RoD to speed-up the call ?
-                                                                                   *compsNeeded, //< requested comps
-                                                                                   inputPrefDepth,
-                                                                                   false,
-                                                                                   effect.get(),
-                                                                                   renderStorageMode /*returnStorage*/,
-                                                                                   time /*callerRenderTime*/));
-
-                                EffectInstance::RenderRoIRetCode ret;
-                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
-                                if (ret != EffectInstance::eRenderRoIRetCodeOk) {
-                                    return ret;
-                                }
-                            }
-                            for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
-                                if (inputImagesList && it3->second) {
-                                    inputImagesList->push_back(it3->second);
-                                }
-                            }
-
-                            if (effect->aborted()) {
-                                return EffectInstance::eRenderRoIRetCodeAborted;
-                            }
-
-                            if (!inputImgs.empty()) {
-                                ++nbFramesPreFetched;
-                            }
-                        } // for all frames
-                    }
+                        if (!inputImgs.empty()) {
+                            ++nbFramesPreFetched;
+                        }
+                    } // for all frames
                 } // for all ranges
             } // for all views
         } // EffectInstance::NotifyInputNRenderingStarted_RAII
@@ -624,10 +640,7 @@ collectInputRoDWarmItems(const EffectInstancePtr& effect,
         }
         for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
             for (std::vector<RangeD>::const_iterator range = viewIt->second.begin(); range != viewIt->second.end(); ++range) {
-                if ((range->min != (int)range->min) || (range->max != (int)range->max)) {
-                    continue;
-                }
-                for (double f = range->min; f <= range->max; f += 1.) {
+                for (double f : framesToRenderAhead(*range)) {
                     // Clips query the nearest enabled node upstream, with its own render hash.
                     const EffectInstancePtr target = input->getNearestNonDisabled(f);
                     if (!target) {
@@ -1154,26 +1167,23 @@ visitRequestPassItem(bool useTransforms,
             for (U32 range = 0; range < viewIt->second.size(); ++range) {
                 int nbFramesPreFetched = 0;
 
-                // if the range bounds are not ints, the fetched images will probably anywhere within this range - no need to pre-render
-                if ((viewIt->second[range].min == (int)viewIt->second[range].min) && (viewIt->second[range].max == (int)viewIt->second[range].max)) {
-                    for (double f = viewIt->second[range].min; f <= viewIt->second[range].max; f += 1.) {
-                        // Frames past the pre-fetch cap are still walked: getImage pulls them during the
-                        // render and their renderRoI uses this request data.
-                        const bool preFetched = nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
-                        for (const RenderContextPtr& inputContext : inputContexts) {
-                            const RequestPassItem visit = makeVisitItem(inputNode, inputContext, f, viewIt->first, upstreamMipmapLevel, roi);
-                            const U64 inputContextKey = visit.contextKey;
-                            inputItems.push_back(visit);
-                            if (compsNeeded) {
-                                RequestPassItem consumerItem = makeConsumerItem(preFetched ? RequestPassItem::eKindInputEdge : RequestPassItem::eKindInputComponents,
-                                                                                fvRequest, inputNode, inputContextKey, f, viewIt->first, upstreamMipmapLevel, inputNb);
-                                consumerItem.comps = compsNeeded;
-                                inputItems.push_back(consumerItem);
-                            }
+                for (double f : framesToRenderAhead(viewIt->second[range])) {
+                    // Frames past the pre-fetch cap are still walked: getImage pulls them during the
+                    // render and their renderRoI uses this request data.
+                    const bool preFetched = nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
+                    for (const RenderContextPtr& inputContext : inputContexts) {
+                        const RequestPassItem visit = makeVisitItem(inputNode, inputContext, f, viewIt->first, upstreamMipmapLevel, roi);
+                        const U64 inputContextKey = visit.contextKey;
+                        inputItems.push_back(visit);
+                        if (compsNeeded) {
+                            RequestPassItem consumerItem = makeConsumerItem(preFetched ? RequestPassItem::eKindInputEdge : RequestPassItem::eKindInputComponents,
+                                                                            fvRequest, inputNode, inputContextKey, f, viewIt->first, upstreamMipmapLevel, inputNb);
+                            consumerItem.comps = compsNeeded;
+                            inputItems.push_back(consumerItem);
                         }
-                        if (compsNeeded && preFetched) {
-                            ++nbFramesPreFetched;
-                        }
+                    }
+                    if (compsNeeded && preFetched) {
+                        ++nbFramesPreFetched;
                     }
                 }
             }

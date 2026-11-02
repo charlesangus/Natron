@@ -121,3 +121,4 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 **Verification gate:** live-texture tests pass; a new AppImage is accepted by the user.
 - 2026-11-01 — UAT round 2: no longer crashes (user); P4 for an optional headlight (off by default) and a separate emissive node.
+- 2026-11-02 — P4 at 8aaa5bf81: Headlight knob on USDRender and a Viewer 3D Headlight preference (context menu), both off by default; USDEmissiveMaterial (one Emissive input, Emissive Color tints it); USDMaterial's Shader knob removed. Merge notes: M234's projection must switch to USDEmissiveMaterial; M229's lighting mode defaults to Auto (adds a headlight when the scene has none), which contradicts the user's off-by-default — whichever of M229/M233 merges second folds the headlight into one viewer control defaulting to off (PM). To confirm with the user: headlight toggle as a preference shared by all viewers; Emissive Color tints rather than a separate intensity (implementer).

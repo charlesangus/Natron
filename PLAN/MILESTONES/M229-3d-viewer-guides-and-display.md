@@ -71,3 +71,4 @@ add them (usdview draws its own). Our overlay pass sits next to `drawGrid` in
 
 **Verification gate:** original 3D display checks pass; guide scale and USD knob layouts are accepted in the replacement AppImage.
 - 2026-11-01 — P3 at 31eb1683c: guide size is a Preferences value (viewer3DGuideSize, scene units, default 3), replacing the fixed 1 unit; not metre-based since USD defaults metersPerUnit to 0.01. Odd USD knob layout was the shared numeric widget: a range-less hidden slider left no stretch, spreading spinboxes — fixed for all such knobs (implementer).
+- 2026-11-02 — Merge note: M233 - Live Node Textures adds a headlight that is off by default (user, 2026-11-01); this milestone's lighting mode defaults to Auto, which adds one when the scene has none. Whichever merges second folds them into one viewer control defaulting to off (PM).

@@ -2133,6 +2133,11 @@ NativeWrite::render(const RenderActionArgs& args)
     if (rejectUnsupportedFormat(path)) {
         return eStatusFailed;
     }
+    if (!getInput(0)) {
+        setPersistentMessage(eMessageTypeError, tr("The Write has no input, so it has no format to write").toStdString());
+
+        return eStatusFailed;
+    }
 
     bool exists = false;
     if (!overwrite->getValue()) {

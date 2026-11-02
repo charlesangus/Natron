@@ -255,6 +255,15 @@ TEST_F(USDReadTest, ReadsTheFilesPrimsAndMetadata)
     EXPECT_EQ(PXR_NS::TfToken("World"), stage->GetDefaultPrim().GetName());
 }
 
+TEST_F(USDReadTest, TheFileKnobLeavesReloadToTheReloadButton)
+{
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    ASSERT_TRUE(bool(reader));
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file != NULL);
+    EXPECT_FALSE(file->showsReloadButton());
+}
+
 TEST_F(USDReadTest, ReEvaluatingReusesTheLayer)
 {
     NodePtr reader = createReader(kReferenceScene);

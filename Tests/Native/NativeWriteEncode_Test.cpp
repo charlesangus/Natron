@@ -325,6 +325,13 @@ protected:
     QTemporaryDir _dir;
 };
 
+TEST_F(NativeWriteEncodeTest, TheFilenameKnobHasNoRewriteButton)
+{
+    KnobOutputFile* filename = dynamic_cast<KnobOutputFile*>(_writer->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(filename != NULL);
+    EXPECT_FALSE(filename->showsRewriteButton());
+}
+
 TEST_F(NativeWriteEncodeTest, KnobsKeepTheWriteOIIOScriptNames)
 {
     static const char* const kNames[] = {

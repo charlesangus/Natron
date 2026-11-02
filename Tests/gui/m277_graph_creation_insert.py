@@ -166,7 +166,8 @@ try:
         QApplication.processEvents()
         model = view.model()
         entries = [str(model.index(r, 0).data()) for r in range(model.rowCount())]
-        row = next((r for r, e in enumerate(entries) if e.split("[")[0].strip() == entry_name and "[Merge]" in e), -1)
+        row = next((r for r, e in enumerate(entries)
+                    if e.split("[")[0].strip() == entry_name and "[Merge/Merge Presets]" in e), -1)
         if row < 0:
             report("NOTE tab menu entries for %r: %r" % (entry_name, entries))
             QTest.keyClick(popup, Qt.Key_Escape)
@@ -190,6 +191,10 @@ try:
         frame(graph, 1.0, sc[0], sc[1] + 100)
         vp = graph.viewport()
         aside = QPoint(vp.width() // 5, vp.height() // 5)
+        # The "Merge node connect to A input" preference picks the input a new Merge takes the
+        # selected node on, for the shortcut as for the tab menu.
+        to_a = NatronEngine.natron.getSettings().getParam("mergeConnectToA").getValue()
+        fed, fed_label = (1, "A") if to_a else (0, "B")
         for key, operation, entry in ((Qt.Key_Semicolon, "mask", "Mask"), (Qt.Key_Apostrophe, "stencil", "Stencil")):
             select_only([src])
             node = yield from create_by_key(graph, key, aside)
@@ -197,9 +202,9 @@ try:
                 continue
             yield ("sleep", SETTLE_MS)
             name = node.getScriptName()
-            got = (node.getPluginID(), operation_of(node), input_name(node, 0))
+            got = (node.getPluginID(), operation_of(node), input_name(node, fed))
             check(got == (MERGE_ID, operation, src.getScriptName()),
-                  "%s: a %s Merge fed through B by the selected node (got %r)" % (entry, operation, got))
+                  "%s: a %s Merge fed through %s by the selected node (got %r)" % (entry, operation, fed_label, got))
             key_pos = node.getPosition()
             check(key_pos[1] >= src.getPosition()[1] + src.getSize()[1]
                   and abs(centre(node)[0] - sc[0]) < src.getSize()[0],
@@ -218,9 +223,9 @@ try:
             tab_pos = tab.getPosition()
             check(abs(tab_pos[0] - key_pos[0]) <= POSITION_TOLERANCE
                   and abs(tab_pos[1] - key_pos[1]) <= POSITION_TOLERANCE
-                  and input_name(tab, 0) == src.getScriptName() and operation_of(tab) == operation,
-                  "%s: the shortcut matches the tab menu's position and connection (key %r, tab %r, tab B %r)"
-                  % (entry, key_pos, tab_pos, input_name(tab, 0)))
+                  and input_name(tab, fed) == src.getScriptName() and operation_of(tab) == operation,
+                  "%s: the shortcut matches the tab menu's position and connection (key %r, tab %r, tab %s %r)"
+                  % (entry, key_pos, tab_pos, fed_label, input_name(tab, fed)))
             gt.close_all_panels()
             ok = yield from undo_creation(graph, tab.getScriptName())
             check(ok, "%s: one undo removes the tab menu's node" % entry)
@@ -235,7 +240,7 @@ try:
             yield ("sleep", SETTLE_MS)
             key_pos = node.getPosition()
             check(abs(key_pos[0] - want.x()) <= POSITION_TOLERANCE and abs(key_pos[1] - want.y()) <= POSITION_TOLERANCE
-                  and input_name(node, 0) is None,
+                  and input_name(node, 0) is None and input_name(node, 1) is None,
                   "Mask without a selection lands unconnected at the cursor at 2x zoom (node %r, cursor %r)"
                   % (key_pos, (want.x(), want.y())))
             gt.close_all_panels()

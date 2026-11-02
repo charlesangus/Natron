@@ -65,3 +65,4 @@ Acceptance sketch:
   - size: M
 
 **Verification gate:** the original Write/read tests and GUI checks pass; the user accepts the aligned OCIO actions and clean Write file row.
+- 2026-11-01 — UAT approved (user).

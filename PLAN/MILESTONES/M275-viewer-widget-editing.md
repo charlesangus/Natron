@@ -39,3 +39,4 @@ Make edits performed through Viewer overlays behave exactly like edits made thro
 ## Decisions
 
 - 2026-11-01 — Implemented at 27fbe2f73, generically in EffectInstance::onOverlayPen*_public and HostOverlay: a press a widget accepts opens one undo step, release closes it; writes key animated dimensions at the current frame and skip unchanged ones. Roto and Tracker drags also become one undo entry per press-release (accepted, PM).
+- 2026-11-01 — UAT approved (user); follow-up M305 - Stale Viewer Keyframe Markers.

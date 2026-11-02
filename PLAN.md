@@ -366,6 +366,9 @@ future core work has solid ground to build on.
 | M296 | Raw Prepare Output Format | todo | M80 |  | E3 | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
 | M297 | Viewer Node Knobs Follow-ups | todo | M164 |  | E3 | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
 | M298 | RenderIsolation Taskgraph Hang | todo | M177 |  | E3 | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
+| M299 | Roto Render Performance | todo | M224, M276, M300 |  | E6 | [M299-roto-render-performance.md](PLAN/MILESTONES/M299-roto-render-performance.md) |
+| M304 | Roto Points Snapping To Origin | todo | M224, M261 |  | E6 | [M304-roto-points-snapping-to-origin.md](PLAN/MILESTONES/M304-roto-points-snapping-to-origin.md) |
+| M305 | Stale Viewer Keyframe Markers | todo | M275, M261 |  | E10 | [M305-stale-viewer-keyframe-markers.md](PLAN/MILESTONES/M305-stale-viewer-keyframe-markers.md) |
 
 # Epics
 

@@ -181,3 +181,20 @@ Viewers opening framed on a new or opened script is tracked in M164.P4.T2.
 
 **Verification gate:** all Roto/RotoPaint goldens and GUI tests pass; the repaired host bench meets the agreed latency budget; the user accepts creation, brushes, live drag, smoothing and feather behaviour.
 - 2026-11-01 — P6 at 0275b3142: snap-to-0,0 and handle stutter shared a cause (edits during a live render were overwritten by the next copy from the internal curve; pending overlay edits are now flushed first); Multi-Stroke off finished the wrong stroke; clone/eraser footprint removed; RotoPaint tree refresh reconnects only changed merge inputs; S cycle removed; smoothing = M211's shared algorithm; feather tangents scale by local curvature, Alt-drag / Alt+E keep them (Alt+E to confirm with the user). 100-shape latency unproven until the bench runs (P5.T1 host bench).
+
+## Phase 224.7: UAT round 2 fixes
+
+- [ ] M224.P7.T1 — Neighbour-aware feather tangent growth
+  - files: the feather-tangent scaling from P6 (grep the curvature scaling in `Engine/Bezier*`/`Gui/Roto*`), Roto tests
+  - approach: User, 2026-11-01: "the feather tangent growth works well but would be better if they were aware of their neighbours, so closely-packed points didn't overrun their neighbours (which can't be rendered cleanly and causes 'tearing' of the shape); if that's expensive or slows down interactivity though don't bother". Clamp each grown feather tangent so it cannot reach past the neighbouring feather points (for example, cap its length at a fraction of the distance to the adjacent points along the curve) so the feather never self-intersects through growth alone. Only local neighbours count, so the cost stays O(1) per point; measure the drag cost and drop the change if it slows interaction.
+  - verify: A unit test with closely spaced points shows grown tangents no longer cross their neighbours; the spread-out case is unchanged; drag latency in the bench is not worse.
+  - size: M
+
+- [ ] M224.P7.T2 — Alt-drag only over a feather handle
+  - files: `Gui/RotoGui*`/the roto interact handling Alt-drag, `Tests/gui/` roto feather check
+  - approach: User, 2026-11-01: "alt-drag shortcut is already used for viewer pan, so alt-drag just pans the viewer; i'm fine recycling the shortcut, the drag should be disabled when the user is hovering over a feather handle". The roto interact takes Alt-drag only when the press lands on a feather handle; anywhere else, Alt-drag falls through to the viewer pan.
+  - verify: The GUI check Alt-drags on a feather handle (feather tangents keep their length) and on empty viewer space (the viewer pans, no shape changes).
+  - size: M
+
+**Verification gate:** Roto GUI tests pass; a new AppImage is accepted by the user.
+- 2026-11-01 — UAT round 2: tangent growth and handle interactivity accepted; P7 for neighbour-aware growth and Alt-drag only on feather handles (Alt+E question settled: Alt-drag is recycled); render speed follow-up M299 - Roto Render Performance (user).

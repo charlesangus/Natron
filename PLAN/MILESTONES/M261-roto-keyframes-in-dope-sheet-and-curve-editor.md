@@ -118,3 +118,4 @@ Deps: M163 - Incremental Bezier Edits.
 
 **Verification gate:** dope-sheet, curve-editor and viewer GUI tests pass; indicators, brush opacity, interpolation and control-point curves are accepted from the replacement AppImage.
 - 2026-11-01 — P5 at 9d7d41b60. Open: "mask keyframes don't show the blue indicator" was read as Roto shape keys; item-knob keys (opacity, feather) deliberately show no timeline indicator — user to confirm. Curve-editor edits of item knobs may hit the same slaved-knob problem as the dope sheet had (CurveEditorUndoRedo.cpp), unverified (PM).
+- 2026-11-01 — UAT approved (user); follow-up M304 - Roto Points Snapping To Origin.

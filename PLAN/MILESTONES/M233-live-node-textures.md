@@ -104,3 +104,20 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
 
 **Verification gate:** live-texture tests pass on llvmpipe and NVIDIA; animated overscan textures and shader modes are accepted from the replacement AppImage.
 - 2026-11-01 — P3.T1–T3 at 300b0b546: UVs crop to the format (overscan beyond it is not kept — user to confirm); headlight removed from the 3D view and USDRender, so unlit scenes render black; Emissive shader on USDMaterial. P3.T4 (NVIDIA crash) not reproducible here; retest after M228's thread/context fix (PM).
+
+## Phase 233.4: UAT round 2 fixes
+
+- [ ] M233.P4.T1 — Optional headlight, off by default
+  - files: the 3D viewport and USDRender lighting set-up that P3 removed the headlight from, viewer/USDRender knobs, scene viewport tests
+  - approach: User, 2026-11-01: "headlamp maybe should be configurable/can turn it on and off (off by default)". Bring the headlight back behind a toggle, off by default: a Headlight knob on USDRender, and a toggle in the 3D viewer's display options. With it off, unlit scenes stay black as now.
+  - verify: Tests render an unlit diffuse card black with the headlight off and lit with it on, in the viewport and in USDRender; the toggle saves and loads.
+  - size: M
+
+- [ ] M233.P4.T2 — Emissive as its own node
+  - files: `Engine/Nodes/Scene/USDMaterial.*`, a new emissive material node beside it, registration, docs, tests
+  - approach: User, 2026-11-01: "the simpler emissive shader should be its own node, with one input (the emissive texture)". Move the Emissive shader mode off USDMaterial into a new node (for example USDEmissiveMaterial, label matching the script name) with exactly one Image input, the emissive texture, plus its own knobs (material path, assignment, intensity as needed). USDMaterial goes back to its lit shading modes. No backward compatibility.
+  - verify: Tests: the new node's card shows the input image unchanged with no lights; USDMaterial no longer offers Emissive; the projection and live-texture GUI checks use the new node where they used Emissive.
+  - size: M
+
+**Verification gate:** live-texture tests pass; a new AppImage is accepted by the user.
+- 2026-11-01 — UAT round 2: no longer crashes (user); P4 for an optional headlight (off by default) and a separate emissive node.

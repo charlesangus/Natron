@@ -2094,6 +2094,8 @@ ViewerGL::disconnectInputTexture(int textureIndex, bool clearRoD)
             _imp->infoViewer[textureIndex]->setDataWindow(r);
         }
     }
+    // A failed or black render uploads nothing, yet the edit behind it can leave the line stale.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 }
 
 void
@@ -3366,6 +3368,8 @@ ViewerGL::disconnectViewer()
     }
     //resetWipeControls();
     clearViewer();
+    // Failed renders land here rather than in disconnectInputTexture; the line may hold the previous graph's frames.
+    _imp->viewerTab->refreshTimelineCacheLineIfStale();
 }
 
 /* The dataWindow of the currentFrame(BBOX) in canonical coordinates */

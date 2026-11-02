@@ -33,6 +33,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -637,4 +638,195 @@ TEST_F(USDReadTest, TimeMapsBySecondsWithTheFrameOffset)
     valueAtFrame(20., &timeCode, &value);
     EXPECT_DOUBLE_EQ(19.2, timeCode);
     EXPECT_NEAR(24., value, 1e-9);
+}
+
+// A sublayer missing when the file is loaded is part of the closure, stamped as missing: the
+// stamp holds once the file appears, so nothing moves until Reload, which reads it.
+TEST_F(USDReadTest, AMissingSublayerIsStampedAsMissingUntilReload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(top, sceneSublayering("leaf.usda"));
+
+    std::vector<std::string> missing;
+    {
+        PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(top);
+        ASSERT_TRUE(bool(layer));
+        const std::vector<PXR_NS::SdfLayerRefPtr> closure = SceneOps::getFileLayerClosure(layer, &missing);
+        EXPECT_EQ(1u, closure.size());
+    }
+    ASSERT_EQ(1u, missing.size());
+    EXPECT_TRUE(std::filesystem::path(missing[0]).is_absolute()) << missing[0];
+    EXPECT_EQ(std::string("leaf.usda"), std::filesystem::path(missing[0]).lexically_normal().filename().string());
+
+    NodePtr reader = createReader(top);
+    ASSERT_TRUE(bool(reader));
+    const U64 whileMissing = reader->getHashValue();
+
+    writeFile(leaf, leafWithRadius(1.));
+    EXPECT_FALSE(FileStampRegistry::instance().identity(missing[0]).exists) << "the missing sublayer was not stamped when the file was loaded";
+    reader->markHashDirty();
+    EXPECT_EQ(whileMissing, reader->getHashValue());
+
+    pressReload(reader);
+    EXPECT_TRUE(FileStampRegistry::instance().identity(missing[0]).exists);
+    EXPECT_NE(whileMissing, reader->getHashValue());
+    ScenePayload after;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &after, &error)) << error;
+    SceneQueryPool::Lease lease = borrow(after);
+    EXPECT_DOUBLE_EQ(1., leafRadius(lease.getStage()));
+}
+
+// USD reloads a layer in place for every consumer, so one reader's Reload re-keys every other
+// reader of a file in its closure: one reading the sublayer directly, and one sublayering it.
+TEST_F(USDReadTest, AReloadReKeysOtherReadersOfASublayer)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string otherTop = dir.filePath(QString::fromUtf8("otherTop.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(leaf, leafWithRadius(1.));
+    writeFile(top, sceneSublayering("leaf.usda"));
+    writeFile(otherTop, sceneSublayering("leaf.usda"));
+    NodePtr reader = createReader(top);
+    NodePtr leafReader = createReader(leaf);
+    NodePtr otherReader = createReader(otherTop);
+    ASSERT_TRUE(bool(reader) && bool(leafReader) && bool(otherReader));
+    ScenePayload payload;
+    std::string error;
+    for (const NodePtr& n : { reader, leafReader, otherReader }) {
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(n, &payload, &error)) << error;
+    }
+    const U64 leafBefore = leafReader->getHashValue();
+    const U64 otherBefore = otherReader->getHashValue();
+
+    writeFile(leaf, leafWithRadius(2.));
+    pressReload(reader);
+    EXPECT_NE(leafBefore, leafReader->getHashValue()) << "the reader of the sublayer kept its hash";
+    EXPECT_NE(otherBefore, otherReader->getHashValue()) << "the other reader sublayering it kept its hash";
+    ScenePayload after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(otherReader, &after, &error)) << error;
+    SceneQueryPool::Lease lease = borrow(after);
+    EXPECT_DOUBLE_EQ(2., leafRadius(lease.getStage()));
+}
+
+namespace {
+// Ends the session the way quitting does as far as the reader is concerned: the project is gone,
+// no stage holds the files' layers, and the stamps a new process would not have are dropped.
+void
+closeSession(const AppInstancePtr& app,
+             const std::vector<std::string>& files)
+{
+    app->getProject()->reset(false, true);
+    SceneQueryPool::instance().releaseIdle();
+    for (const std::string& file : files) {
+        FileStampRegistry::instance().invalidate(file);
+    }
+}
+
+NodePtr
+openSession(const AppInstancePtr& app,
+            const QString& dirPath,
+            const QString& fileName,
+            const std::string& readerName)
+{
+    if (!app->getProject()->loadProject(dirPath, fileName)) {
+        return NodePtr();
+    }
+
+    return app->getProject()->getNodeByName(readerName);
+}
+} // anonymous namespace
+
+// The reader keys itself on every file its file brings in when it is loaded, not only after a
+// Reload: a sublayer rewritten while the application was closed gives the reloaded project's
+// reader another hash, so nothing cached under the old one, on disk included, is served.
+TEST_F(USDReadTest, ASublayerRewrittenWhileClosedKeysTheReaderAnew)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(leaf, leafWithRadius(1.));
+    writeFile(top, sceneSublayering("leaf.usda"));
+    NodePtr reader = createReader(top);
+    ASSERT_TRUE(bool(reader));
+    const std::string readerName = reader->getScriptName();
+    const U64 firstSession = reader->getHashValue();
+
+    const QString dirPath = dir.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("sublayer-closed.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(getApp()->getProject()->saveProject(dirPath, fileName, &savedFilePath));
+    reader.reset();
+
+    // Unchanged files key the reader as before, so a persisted cache still serves it.
+    closeSession(getApp(), { top, leaf });
+    reader = openSession(getApp(), dirPath, fileName, readerName);
+    ASSERT_TRUE(bool(reader));
+    EXPECT_EQ(firstSession, reader->getHashValue());
+    reader.reset();
+
+    closeSession(getApp(), { top, leaf });
+    writeFile(leaf, leafWithRadius(2.));
+    reader = openSession(getApp(), dirPath, fileName, readerName);
+    ASSERT_TRUE(bool(reader));
+    EXPECT_NE(firstSession, reader->getHashValue());
+}
+
+// The save, rewrite, fresh-load path: the reader loaded after a sublayer changed while the
+// application was closed reads what a reader made afresh on the files reads, under a stack
+// distinct from the first session's.
+TEST_F(USDReadTest, USDReadSublayerChangedWhileClosed)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string top = dir.filePath(QString::fromUtf8("top.usda")).toStdString();
+    const std::string middle = dir.filePath(QString::fromUtf8("middle.usda")).toStdString();
+    const std::string leaf = dir.filePath(QString::fromUtf8("leaf.usda")).toStdString();
+    writeFile(leaf, leafWithRadius(1.));
+    writeFile(middle, sceneSublayering("leaf.usda"));
+    writeFile(top, sceneSublayering("middle.usda"));
+    NodePtr reader = createReader(top);
+    ASSERT_TRUE(bool(reader));
+    const std::string readerName = reader->getScriptName();
+
+    ScenePayload before;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &before, &error)) << error;
+    ASSERT_DOUBLE_EQ(1., leafRadius(SceneOps::compose(before)));
+    const U64 firstSession = reader->getHashValue();
+
+    const QString dirPath = dir.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("sublayer-closed.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(getApp()->getProject()->saveProject(dirPath, fileName, &savedFilePath));
+    reader.reset();
+    const U64 firstStack = before.getStackHash();
+    before = ScenePayload();
+
+    closeSession(getApp(), { top, middle, leaf });
+    // A new process opens the files afresh; a layer still open here would stand for one that
+    // outlived the session.
+    ASSERT_FALSE(bool(PXR_NS::SdfLayer::Find(leaf))) << "the leaf's layer outlived the session";
+    writeFile(leaf, leafWithRadius(2.));
+    reader = openSession(getApp(), dirPath, fileName, readerName);
+    ASSERT_TRUE(bool(reader));
+    EXPECT_NE(firstSession, reader->getHashValue());
+
+    ScenePayload loaded;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &loaded, &error)) << error;
+    EXPECT_NE(firstStack, loaded.getStackHash());
+    EXPECT_DOUBLE_EQ(2., leafRadius(SceneOps::compose(loaded)));
+
+    // The reference: a reader made afresh on the same files.
+    NodePtr fresh = createReader(top);
+    ASSERT_TRUE(bool(fresh));
+    ScenePayload reference;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(fresh, &reference, &error)) << error;
+    EXPECT_DOUBLE_EQ(leafRadius(SceneOps::compose(reference)), leafRadius(SceneOps::compose(loaded)));
 }

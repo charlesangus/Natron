@@ -75,6 +75,10 @@ enum OpKind {
     eOpRevisit, // undoes the last one to three steps
     eOpViewerB, // switches the viewer's B side
     eOpMipmap, // renders at another mipmap level
+    eOpRewriteFile, // rewrites a file a node reads, behind its back
+    eOpReload, // presses a Read's Reload
+    eOpRename, // renames an expression source, often to another node's name plus a digit
+    eOpDynamicExpression, // as setExpression, but finds the node by a computed name the parser cannot see
     eOpCount
 };
 
@@ -88,7 +92,8 @@ opBit(OpKind kind)
 
 // The whole-value expression op stays out of the default mask while its hole is open (see
 // DISABLED_WholeValueExpression_M72). The viewer B and mipmap ops are only exercised by their
-// scripted cases, ViewerABSwitch and IdentityAcrossScales.
+// scripted cases, ViewerABSwitch and IdentityAcrossScales; the file ops only by scripted cases on
+// graphs that list files.
 OpMask defaultOps();
 OpMask allOps();
 
@@ -126,6 +131,8 @@ struct StressGraph {
     RectI window; // at mipmap 0
     int firstTime = 1;
     int lastTime = 6;
+    // Writes version n of a file the graph reads; the builder writes version 0.
+    std::vector<std::function<bool(int version, std::string* error)>> files;
 };
 
 // Creates the graph in app's project; the same builder runs once per pass.
@@ -145,7 +152,14 @@ enum PrimitiveKind {
     ePrimFrameRange,
     ePrimSeek,
     ePrimViewerB,
-    ePrimMipmap
+    ePrimMipmap,
+    // first: the file, input: the version. Until the next Reload, a render may fail or render
+    // nothing, and one that succeeds must equal the last render before the rewrite.
+    ePrimRewriteFile,
+    ePrimReload,
+    ePrimRename, // text: the new script name
+    ePrimSetting, // text: an application Settings knob, set at dim to value; scripted only
+    ePrimAddLayer // text: a project layer added, or grown, to first channels; scripted only
 };
 
 struct Primitive {
@@ -164,6 +178,7 @@ struct Primitive {
     // Expressions name nodes by script name, resolved when the primitive is applied.
     int exprSourceKnob = -1;
     int exprSourceDim = 0; // -1 reads the whole value
+    bool exprDynamic = false; // the source node and getter are found by getattr on computed names
 };
 
 struct Step {
@@ -232,6 +247,12 @@ Primitive setValuePrim(int knob, int dim, double value);
 Primitive setInputPrim(int node, int input, int source);
 Primitive viewerBPrim(int viewerInput);
 Primitive mipmapPrim(int level);
+Primitive rewriteFilePrim(int file, int version);
+Primitive reloadPrim(int node);
+// Each pass starts from the setting's value before the run and puts it back after.
+Primitive settingPrim(const std::string& knobName, int dim, double value);
+// The registry only grows, so this has no inverse; the next pass starts from a reset project.
+Primitive addLayerPrim(const std::string& layerID, int channels);
 Primitive expressionPrim(int knob, int dim, const std::string& text);
 Primitive dimensionExpressionPrim(int knob, int dim, int sourceKnob, int sourceDim);
 

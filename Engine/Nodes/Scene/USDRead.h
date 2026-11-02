@@ -97,6 +97,13 @@ public:
      * them in place.
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void purgeCachesKeepingFileStamps() OVERRIDE FINAL;
+
+    /**
+     * @brief Re-walks and re-keys on the closure when another reader's Reload reloaded a file in
+     * it: USD reloads each layer in place for every consumer.
+     **/
+    virtual bool refreshFileDependencies(const std::vector<std::string>& paths) OVERRIDE FINAL;
 
 private:
     struct Implementation;
@@ -120,6 +127,14 @@ private:
 
     // Sets the project's up axis and meters per unit to the file's, as one undo step.
     void useFileMetricsForProject();
+
+    virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    /**
+     * @brief Opens the file, walks every file it brings in and keys the node on their stamps.
+     * Outside any render: when the File changes and when the node is created or loaded.
+     **/
+    void stampClosure();
 
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,

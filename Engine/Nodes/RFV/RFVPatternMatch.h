@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,52 @@ bool matchesGlob(const std::string& value, const std::string& glob);
  * line is checked for errors, those after the matching one included.
  **/
 int firstMatch(const std::string& value, const std::vector<std::string>& lines, std::string* error = nullptr);
+
+/**
+ * @brief Pattern lines prepared once for matching many values as firstMatch() does: every
+ * regular expression compiled and every glob decoded. Immutable, so threads may share one.
+ **/
+class CompiledPatterns {
+public:
+    explicit CompiledPatterns(const std::vector<std::string>& lines);
+
+    const std::vector<std::string>& getLines() const
+    {
+        return _lines;
+    }
+
+    /**
+     * @brief firstMatch() of value against the lines.
+     **/
+    int firstMatch(const std::string& value) const;
+
+    /**
+     * @brief What firstMatch() gives as its error for these lines, empty when every regular
+     * expression compiles.
+     **/
+    const std::string& getError() const
+    {
+        return _error;
+    }
+
+private:
+    struct Line {
+        enum class Kind {
+            Empty,
+            Glob,
+            Regex,
+            Broken
+        };
+
+        Kind kind = Kind::Empty;
+        std::u32string glob;
+        std::regex regex;
+    };
+
+    std::vector<std::string> _lines;
+    std::vector<Line> _compiled;
+    std::string _error;
+};
 
 } // namespace RFV
 

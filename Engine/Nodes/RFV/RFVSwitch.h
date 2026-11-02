@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -36,6 +37,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/RFV/RFVPatternMatch.h"
 
 #define PLUGINID_NATRON_RFVSWITCH "RFVSwitch"
 #define PLUGIN_MAJOR_NATRON_RFVSWITCH 1
@@ -53,8 +55,8 @@
                                    "pattern starting with re: is an ECMAScript regular expression; any other is a glob, where * " \
                                    "matches any characters, ? one, [abc] one of those and [!abc] one not among them. An empty "   \
                                    "pattern never matches. The value is matched as text: True or False, a whole number as its "   \
-                                   "digits (5.0 as 5), any other number in its shortest exact form, and a list as its items "     \
-                                   "joined by \", \"."
+                                   "digits (5.0 as 5), any other number in its shortest exact form, a choice as the label of "    \
+                                   "its option, and a list as its items joined by \", \"."
 #define kRFVSwitchParamAddAfter "addAfter"
 #define kRFVSwitchParamAddAfterLabel "Add After"
 #define kRFVSwitchParamAddAfterHint "Inserts an empty pattern below this one. The rows and the inputs below it move down one."
@@ -111,6 +113,8 @@ public:
         , _messageErrors()
         , _messageWarnings()
         , _postedMessage()
+        , _compiledMutex()
+        , _compiled()
     {
     }
 
@@ -125,7 +129,7 @@ private:
         .grouping = PLUGIN_GROUP_RFV,
         .majorVersion = PLUGIN_MAJOR_NATRON_RFVSWITCH,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.switchPlugin.png",
+        .icon = NATRON_ICONS_PATH "natron/rfv.svg",
         .outputKind = eDataKindPolymorphic,
         .inputs = kRFVSwitchInputs,
     };
@@ -181,17 +185,13 @@ private:
     // What route() decides at time and view, under the calling thread's context.
     Outcome evaluate(double time, ViewIdx view) const;
 
-    /**
-     * @brief For an integer object read from the project variable name when that is a Choice: the
-     * label of the option it indexes. False, leaving label alone, otherwise.
-     **/
-    bool choiceLabel(const std::string& name,
-                     PyObject* object,
-                     std::string* label) const;
+    // The shown patterns, compiled: rebuilt only when their text changed since the last query.
+    std::shared_ptr<const RFV::CompiledPatterns> compiledPatterns() const;
 
     /**
      * @brief The variable as rfv gives it to an expression of this node at time and view, as the
-     * text patterns are matched against (see kRFVSwitchParamPatternHint). False when it is unset;
+     * text patterns are matched against (see kRFVSwitchParamPatternHint): a Choice as the label
+     * of its option (see RFV::choiceLabel()) in the knob that supplied the value. False when it is unset;
      * error then receives why, if the read failed.
      **/
     bool readVariable(const std::string& name,
@@ -241,6 +241,9 @@ private:
     std::set<std::string> _messageErrors;
     std::set<std::string> _messageWarnings;
     std::string _postedMessage;
+
+    mutable QMutex _compiledMutex;
+    mutable std::shared_ptr<const RFV::CompiledPatterns> _compiled;
 };
 
 NATRON_NAMESPACE_EXIT

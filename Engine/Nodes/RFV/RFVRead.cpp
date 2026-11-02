@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -95,6 +96,7 @@ RFVRead::RFVRead(NodePtr node)
     : NativeEffectBase(node)
     , _variables()
     , _refreshPending(false)
+    , _playbackSettle(NULL)
 {
     QMutexLocker locker(&g_readersMutex);
     g_readers.push_back(this);
@@ -145,8 +147,28 @@ RFVRead::refreshExtraStateAfterTimeChanged(bool isPlayback,
                                            double time)
 {
     NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
+    if (isPlayback) {
+        schedulePlaybackRefresh();
+
+        return;
+    }
+    if (_playbackSettle) {
+        _playbackSettle->stop();
+    }
     AppInstancePtr app = getApp();
     refreshVariablesBelow(RFV::getActiveViewer(app), time);
+}
+
+void
+RFVRead::schedulePlaybackRefresh()
+{
+    if (!_playbackSettle) {
+        _playbackSettle = new QTimer(this);
+        _playbackSettle->setSingleShot(true);
+        _playbackSettle->setInterval(kRFVReadPlaybackSettleMs);
+        QObject::connect(_playbackSettle, &QTimer::timeout, this, [this]() { refreshVariables(); });
+    }
+    _playbackSettle->start();
 }
 
 void
@@ -191,7 +213,14 @@ RFVRead::refreshVariablesBelow(const NodePtr& output,
     for (const RenderContext::Entry& entry : resolved.context->entries()) {
         text += "\n";
         text += entry.first.ns.empty() ? entry.first.name : (entry.first.ns + "." + entry.first.name);
-        text += " = " + RFV::formatValue(entry.second);
+        // A Choice reads as the label RFVSwitch matches, not as the index rfv gives.
+        const std::map<std::string, std::vector<std::string>>::const_iterator labels = entry.first.ns.empty() ? resolved.choiceLabels.find(entry.first.name) : resolved.choiceLabels.end();
+        std::string label;
+        if ((labels != resolved.choiceLabels.end()) && RFV::choiceLabel(entry.second, labels->second, &label)) {
+            text += " = " + RFV::formatValue(RenderContextValue(label));
+        } else {
+            text += " = " + RFV::formatValue(entry.second);
+        }
     }
     for (const std::pair<std::string, std::string>& error : resolved.errors) {
         text += "\n" + error.first + ": " + error.second;

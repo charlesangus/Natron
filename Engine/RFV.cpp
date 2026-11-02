@@ -32,6 +32,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -804,6 +805,35 @@ getVariableValue(const KnobIPtr& knob,
     return false;
 }
 
+std::vector<std::string>
+getChoiceLabels(const KnobIPtr& knob)
+{
+    std::vector<std::string> labels;
+    const KnobChoice* choice = dynamic_cast<const KnobChoice*>(knob.get());
+    if (!choice) {
+        return labels;
+    }
+    for (const ChoiceOption& option : choice->getEntries_mt_safe()) {
+        labels.push_back(option.label.empty() ? option.id : option.label);
+    }
+
+    return labels;
+}
+
+bool
+choiceLabel(const RenderContextValue& value,
+            const std::vector<std::string>& labels,
+            std::string* label)
+{
+    const std::int64_t* index = std::get_if<std::int64_t>(&value);
+    if (!index || (*index < 0) || (*index >= (std::int64_t)labels.size())) {
+        return false;
+    }
+    *label = labels[(std::size_t)*index];
+
+    return true;
+}
+
 bool
 isTimeVarying(const KnobIPtr& knob)
 {
@@ -844,6 +874,7 @@ overlayDeclaredVariables(const KnobHolder* holder,
     RenderContext::Builder builder(base);
     const RFVDeclarationsConstPtr declared = getDeclarationSnapshot(holder);
     for (const VariableDeclaration& declaration : *declared) {
+        RenderContextValue value;
         if (isTimeVarying(declaration.knob)) {
             const KnobHelper* helper = dynamic_cast<const KnobHelper*>(declaration.knob.get());
             const RenderContextPtr incoming = base ? base : RenderContext::empty();
@@ -852,12 +883,17 @@ overlayDeclaredVariables(const KnobHolder* holder,
                 helper->getMemoizedValueContext(&reads, 0);
             }
             const RenderContextPtr captured = reads ? incoming->restrictTo(*reads) : incoming;
-            builder.set(RenderContextName::plain(declaration.name), RenderContextBinding::create(declaration.knob, declaration.name, captured));
+            value = RenderContextBinding::create(declaration.knob, declaration.name, captured);
+        } else if (!getVariableValue(declaration.knob, time, view, &value)) {
             continue;
         }
-        RenderContextValue value;
-        if (getVariableValue(declaration.knob, time, view, &value)) {
-            builder.set(RenderContextName::plain(declaration.name), value);
+        builder.set(RenderContextName::plain(declaration.name), value);
+        // A farther Set's labels must not outlive the value this declaration replaces.
+        std::vector<std::string> labels = getChoiceLabels(declaration.knob);
+        if (labels.empty()) {
+            builder.erase(RenderContextName::choiceLabels(declaration.name));
+        } else {
+            builder.set(RenderContextName::choiceLabels(declaration.name), std::move(labels));
         }
     }
 
@@ -900,77 +936,67 @@ namespace {
         return inputs;
     }
 
-    struct PathEdge {
-        NodePtr consumer;
-        int inputNb;
+    // What a render of node, reached under context at time, pulls from its inputs.
+    struct InputsReached {
+        std::vector<int> inputs;
+        // The input node passes through as an identity, and the time it reads it at; -1 for none.
+        int identityInput = -1;
+        double identityTime = 0.;
     };
 
-    // The edges of the first path found from output's displayed inputs up to target, nearest to
-    // output first. Iterative and visiting each node once, so deep and wide graphs stay linear.
-    bool
-    findPathUpTo(const NodePtr& output,
-                 const NodePtr& target,
-                 std::vector<PathEdge>* path)
+    // A viewer pulls its displayed inputs. Any other node pulls only the input it passes through
+    // when it is an identity under context, such as the input a Switch selects, nothing when it is
+    // an identity of black, and every input otherwise.
+    InputsReached
+    inputsReached(const NodePtr& node,
+                  const RenderContextPtr& context,
+                  double time,
+                  ViewIdx view)
     {
-        if (output == target) {
-            return true;
+        InputsReached reached;
+        if (node->isEffectViewer()) {
+            reached.inputs = displayedInputs(node);
+
+            return reached;
         }
-        struct Step {
-            NodePtr node;
-            std::vector<int> inputs;
-            std::size_t next;
-        };
-        std::vector<Step> stack;
-        std::set<const Node*> visited;
-        stack.push_back(Step { output, displayedInputs(output), 0 });
-        visited.insert(output.get());
-        while (!stack.empty()) {
-            Step& top = stack.back();
-            if (top.next >= top.inputs.size()) {
-                stack.pop_back();
-                continue;
-            }
-            const int inputNb = top.inputs[top.next++];
-            NodePtr input = top.node->getInput(inputNb);
-            if (!input || !visited.insert(input.get()).second) {
-                continue;
-            }
-            if (input == target) {
-                for (const Step& step : stack) {
-                    path->push_back(PathEdge { step.node, step.inputs[step.next - 1] });
+        EffectInstancePtr effect = node->getEffectInstance();
+        if (effect) {
+            ActionContextScope acting(true, context);
+            double identityTime = time;
+            ViewIdx identityView = view;
+            int identityInput = -1;
+            if (effect->isIdentity_public(false, effect->getRenderHash(), time, RenderScale::identity, RectI(0, 0, 1, 1), view, &identityTime, &identityView, &identityInput)) {
+                if (identityInput >= 0) {
+                    reached.inputs.push_back(identityInput);
+                    reached.identityInput = identityInput;
+                    reached.identityTime = identityTime;
+
+                    return reached;
                 }
-
-                return true;
+                if (identityInput == -1) {
+                    return reached;
+                }
             }
-            std::vector<int> inputs;
-            for (int i = 0, n = input->getNInputs(); i < n; ++i) {
-                inputs.push_back(i);
-            }
-            stack.push_back(Step { input, std::move(inputs), 0 });
+        }
+        for (int i = 0, n = node->getNInputs(); i < n; ++i) {
+            reached.inputs.push_back(i);
         }
 
-        return false;
+        return reached;
     }
 
-    // The time consumer, acting under context at time, reads input inputNb at: the time it passes
-    // through as an identity of that input, otherwise the first frame getFramesNeeded() lists for
-    // it, otherwise time. A time node between a reader and the output thus moves the reader's time.
+    // The first frame consumer, acting under context at time, lists in getFramesNeeded() for input
+    // inputNb, otherwise time. A time node between a reader and the output thus moves the reader's
+    // time.
     double
-    inputTimeOf(const EffectInstancePtr& consumer,
-                int inputNb,
-                double time,
-                ViewIdx view,
-                const RenderContextPtr& context)
+    firstFrameNeeded(const EffectInstancePtr& consumer,
+                     int inputNb,
+                     double time,
+                     ViewIdx view,
+                     const RenderContextPtr& context)
     {
         ActionContextScope acting(true, context);
-        const U64 hash = consumer->getRenderHash();
-        double identityTime = time;
-        ViewIdx identityView = view;
-        int identityInput = -1;
-        if (consumer->isIdentity_public(false, hash, time, RenderScale::identity, RectI(0, 0, 1, 1), view, &identityTime, &identityView, &identityInput) && (identityInput == inputNb)) {
-            return identityTime;
-        }
-        const FramesNeededMap needed = consumer->getFramesNeeded_public(hash, time, view, 0);
+        const FramesNeededMap needed = consumer->getFramesNeeded_public(consumer->getRenderHash(), time, view, 0);
         const FramesNeededMap::const_iterator input = needed.find(inputNb);
         if (input == needed.end()) {
             return time;
@@ -984,6 +1010,96 @@ namespace {
         }
 
         return ranges->second.front().min;
+    }
+
+    // A node as a render reaches it from the output: under the context and at the time its
+    // consumer reads it with, and with the errors met working them and its inputs out.
+    struct PathVisit {
+        NodePtr node;
+        RenderContextPtr context;
+        double time;
+        std::vector<std::pair<std::string, std::string>> errors;
+        InputsReached reached;
+        std::size_t next;
+    };
+
+    // The context and time the first path found from output to target reaches target with,
+    // following at each node only the inputs a render of it pulls there (see inputsReached()).
+    // Each consumer's EffectInstance::getInputContexts() is applied to the context its own consumer
+    // gave it, starting from the empty context of a render's root, and each input is read at the
+    // time the consumer passes it through at, else the first frame it needs of it. A node is
+    // explored once per context it reads and time, so deep and wide graphs stay linear while a
+    // node reached under two contexts may pull a different input under each.
+    bool
+    findPathUpTo(const NodePtr& output,
+                 const NodePtr& target,
+                 double time,
+                 ViewIdx view,
+                 RenderContextPtr* pathContext,
+                 double* pathTime,
+                 std::vector<std::pair<std::string, std::string>>* errors)
+    {
+        *pathTime = time;
+        if (output == target) {
+            return true;
+        }
+        typedef std::tuple<const Node*, U64, double> VisitKey;
+        std::set<VisitKey> visited;
+        std::vector<PathVisit> stack;
+        const auto push = [&](const NodePtr& node, const RenderContextPtr& context, double at, std::vector<std::pair<std::string, std::string>>&& edgeErrors) {
+            PathVisit visit { node, context, at, std::move(edgeErrors), InputsReached(), 0 };
+            try {
+                visit.reached = inputsReached(node, context, at, view);
+            } catch (const std::exception& e) {
+                visit.errors.push_back(std::make_pair(node->getScriptName_mt_safe(), std::string(e.what())));
+            }
+            stack.push_back(std::move(visit));
+        };
+        visited.insert(VisitKey(output.get(), restrictContextToNode(RenderContextPtr(), output, NULL), time));
+        push(output, RenderContextPtr(), time, std::vector<std::pair<std::string, std::string>>());
+        while (!stack.empty()) {
+            PathVisit& top = stack.back();
+            if (top.next >= top.reached.inputs.size()) {
+                stack.pop_back();
+                continue;
+            }
+            const int inputNb = top.reached.inputs[top.next++];
+            NodePtr input = top.node->getInput(inputNb);
+            if (!input) {
+                continue;
+            }
+            RenderContextPtr context = top.context;
+            double at = top.time;
+            std::vector<std::pair<std::string, std::string>> edgeErrors;
+            EffectInstancePtr consumer = top.node->getEffectInstance();
+            if (consumer) {
+                try {
+                    at = (top.reached.identityInput == inputNb) ? top.reached.identityTime : firstFrameNeeded(consumer, inputNb, top.time, view, top.context);
+                    std::vector<RenderContextPtr> contexts;
+                    if (consumer->getInputContexts(inputNb, top.time, view, top.context, &contexts) && !contexts.empty()) {
+                        context = contexts.front();
+                    }
+                } catch (const std::exception& e) {
+                    edgeErrors.push_back(std::make_pair(top.node->getScriptName_mt_safe(), std::string(e.what())));
+                }
+            }
+            if (input == target) {
+                for (const PathVisit& visit : stack) {
+                    errors->insert(errors->end(), visit.errors.begin(), visit.errors.end());
+                }
+                errors->insert(errors->end(), edgeErrors.begin(), edgeErrors.end());
+                *pathContext = context;
+                *pathTime = at;
+
+                return true;
+            }
+            if (!visited.insert(VisitKey(input.get(), restrictContextToNode(context, input, NULL), at)).second) {
+                continue;
+            }
+            push(input, context, at, std::move(edgeErrors));
+        }
+
+        return false;
     }
 
     std::string
@@ -1022,28 +1138,10 @@ resolveContextBelow(const NodePtr& output,
                     ViewIdx view)
 {
     ResolvedContext resolved;
-    std::vector<PathEdge> path;
     // A render's root starts from the empty context.
     RenderContextPtr pathContext;
-    if (output && target && findPathUpTo(output, target, &path)) {
+    if (output && target && findPathUpTo(output, target, time, view, &pathContext, &time, &resolved.errors)) {
         resolved.outputName = output->getScriptName_mt_safe();
-        for (const PathEdge& edge : path) {
-            EffectInstancePtr effect = edge.consumer->getEffectInstance();
-            if (!effect) {
-                continue;
-            }
-            std::vector<RenderContextPtr> contexts;
-            double inputTime = time;
-            try {
-                inputTime = inputTimeOf(effect, edge.inputNb, time, view, pathContext);
-                if (effect->getInputContexts(edge.inputNb, time, view, pathContext, &contexts) && !contexts.empty()) {
-                    pathContext = contexts.front();
-                }
-            } catch (const std::exception& e) {
-                resolved.errors.push_back(std::make_pair(edge.consumer->getScriptName_mt_safe(), std::string(e.what())));
-            }
-            time = inputTime;
-        }
     }
     resolved.time = time;
 
@@ -1058,10 +1156,22 @@ resolveContextBelow(const NodePtr& output,
                 continue;
             }
             evaluateVariable(name, declaration.knob, pathContext, time, view, &builder, &resolved);
+            std::vector<std::string> labels = getChoiceLabels(declaration.knob);
+            if (!labels.empty()) {
+                resolved.choiceLabels[declaration.name] = std::move(labels);
+            }
         }
     }
     if (pathContext) {
+        const std::string labelsNamespace = RenderContextName::choiceLabels(std::string()).ns;
         for (const RenderContext::Entry& entry : pathContext->entries()) {
+            if (entry.first.ns == labelsNamespace) {
+                const std::vector<std::string>* labels = std::get_if<std::vector<std::string>>(&entry.second);
+                if (labels && pathContext->find(RenderContextName::plain(entry.first.name))) {
+                    resolved.choiceLabels[entry.first.name] = *labels;
+                }
+                continue;
+            }
             const RenderContextBinding* binding = std::get_if<RenderContextBinding>(&entry.second);
             if (!binding) {
                 builder.set(entry.first, entry.second);

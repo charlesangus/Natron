@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -228,6 +229,20 @@ void rehashExtraContextReaders(const Project& project, const std::string& name, 
 bool getVariableValue(const KnobIPtr& knob, double time, ViewIdx view, RenderContextValue* value);
 
 /**
+ * @brief The labels of a Choice knob's options, in order, an option without a label giving its
+ * id; empty for a knob of another type. MT-safe.
+ **/
+std::vector<std::string> getChoiceLabels(const KnobIPtr& knob);
+
+/**
+ * @brief The text a Choice variable stands for: the label of the option its value, an index,
+ * selects among labels (see getChoiceLabels()). RFVSwitch matches it and RFVRead lists it, while
+ * rfv gives expressions the index.
+ * @returns false for a value that is not an integer, or an index out of labels.
+ **/
+bool choiceLabel(const RenderContextValue& value, const std::vector<std::string>& labels, std::string* label);
+
+/**
  * @brief Whether the variable knob's value may differ between times: it has keyframes or an
  * expression (any, whatever it reads), is linked to a time-varying master, or, unlinked, hashes
  * state outside itself.
@@ -239,7 +254,9 @@ bool isTimeVarying(const KnobIPtr& knob);
  * snapshot (see getDeclarationSnapshot()) set over it. A time-varying variable (see
  * isTimeVarying()) is set to a RenderContextBinding capturing base restricted to what the knob's
  * value reads, which rfv evaluates at the reading expression's time; any other to its value at
- * time and view (see getVariableValue()), evaluated on the calling thread.
+ * time and view (see getVariableValue()), evaluated on the calling thread. A Choice variable also
+ * sets RenderContextName::choiceLabels() of its name to its getChoiceLabels(), and any other erases
+ * it, so the labels always belong to the knob the nearest declaration of the name supplies.
  **/
 RenderContextPtr overlayDeclaredVariables(const KnobHolder* holder, double time, ViewIdx view, const RenderContextPtr& base);
 
@@ -251,6 +268,9 @@ struct ResolvedContext {
     /// Every variable rfv gives the node a value for, as that value at the time resolved for: the
     /// project's variables, with those the Set nodes on the path set over them. Never null.
     RenderContextPtr context;
+    /// The option labels (see getChoiceLabels()) of every variable of context a Choice supplies,
+    /// by name.
+    std::map<std::string, std::vector<std::string>> choiceLabels;
     /// The variables whose value could not be evaluated, with why.
     std::vector<std::pair<std::string, std::string>> errors;
     /// The script name of the output node whose path reaches the node, empty when none does.
@@ -268,8 +288,10 @@ NodePtr getActiveViewer(const AppInstancePtr& app);
 
 /**
  * @brief The context target is reached with from output: along the first path found from the
- * inputs output displays (a viewer's A input, and its B input while it composites them; every
- * input of any other node) up to target, each consumer's EffectInstance::getInputContexts() is
+ * inputs output displays (a viewer's A input, and its B input while it composites them) up to
+ * target, through only the inputs a render pulls (the input a node passes through when it is an
+ * identity under the context it is reached with, as a Switch's selected input; none for an
+ * identity of black; every input otherwise), each consumer's EffectInstance::getInputContexts() is
  * applied to the context its own consumer gave it, starting from the empty context of a render's
  * root, so the Set node nearest to target wins. Every node on the path is asked at the time its
  * consumer reads it at: a consumer passing an input through at another time (a time offset or a

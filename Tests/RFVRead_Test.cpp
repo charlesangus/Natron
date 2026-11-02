@@ -32,9 +32,12 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QString>
+#include <QThread>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 #include "Native/NativePluginIdentity.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 
@@ -45,9 +48,11 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/RFV/RFVRead.h"
 #include "Engine/Nodes/RFV/RFVSet.h"
+#include "Engine/Nodes/RFV/RFVSwitch.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RenderContext.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -191,6 +196,68 @@ protected:
         range->setValue(last, ViewSpec::all(), 1);
         absolute->setValue(false);
         timeOffset->setValue(offset);
+
+        return node;
+    }
+
+    static std::vector<ChoiceOption> choiceOptions(const std::vector<std::string>& labels)
+    {
+        std::vector<ChoiceOption> options;
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            options.push_back(ChoiceOption("option" + std::to_string(i), labels[i], ""));
+        }
+
+        return options;
+    }
+
+    // A Set node declaring the Choice variable name with options labelled labels.
+    NodePtr createChoiceSet(const std::string& name,
+                            const std::vector<std::string>& labels,
+                            int value)
+    {
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
+        if (!set) {
+            ADD_FAILURE() << "no Set node";
+
+            return NodePtr();
+        }
+        EffectInstancePtr effect = set->getEffectInstance();
+        KnobChoicePtr knob = effect->createChoiceKnob(name, name);
+        if (!variablesGroupOf(set)->addKnob(knob)) {
+            ADD_FAILURE() << "the Set node refused " << name;
+
+            return NodePtr();
+        }
+        effect->recreateUserKnobs(false);
+        knob->populateChoices(choiceOptions(labels));
+        knob->setValue(value);
+
+        return set;
+    }
+
+    // An RFVSwitch on variable whose rows hold patterns, one per input.
+    NodePtr createSwitch(const std::string& variable,
+                         const std::vector<std::string>& patterns)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSWITCH), PLUGIN_MAJOR_NATRON_RFVSWITCH);
+        KnobStringPtr variableKnob = node ? std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kRFVSwitchParamVariable)) : KnobStringPtr();
+        KnobIntPtr count = node ? std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kRFVSwitchParamPatternCount)) : KnobIntPtr();
+        if (!variableKnob || !count) {
+            ADD_FAILURE() << "no RFVSwitch node";
+
+            return NodePtr();
+        }
+        variableKnob->setValue(variable);
+        count->setValue((int)patterns.size());
+        for (std::size_t i = 0; i < patterns.size(); ++i) {
+            KnobStringPtr row = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kRFVSwitchParamPattern + std::to_string(i)));
+            if (!row) {
+                ADD_FAILURE() << "no pattern row " << i;
+
+                return NodePtr();
+            }
+            row->setValue(patterns[i]);
+        }
 
         return node;
     }
@@ -423,4 +490,106 @@ TEST_F(RFVReadTest, FrameBlendMovesTheFrameReadToItsFirstFrame)
     const RFV::ResolvedContext resolved = RFV::resolveContextBelow(view, read, 5., ViewIdx(0));
     EXPECT_DOUBLE_EQ(3., resolved.time);
     EXPECT_EQ("30.0", valueOf(resolved, "v"));
+}
+
+// A Choice is listed as the label of its option, from the Choice that supplies it: a Set's with
+// its own options over the project's, and the project's off the Set's path.
+TEST_F(RFVReadTest, ChoiceIsListedAsItsLabel)
+{
+    ProjectPtr project = getApp()->getProject();
+    KnobChoicePtr projectMode = project->createChoiceKnob("mode", "mode");
+    std::string error;
+    ASSERT_TRUE(RFV::addAsVariable(project.get(), projectMode, &error)) << error;
+    projectMode->populateChoices(choiceOptions(std::vector<std::string> { "Alpha", "Beta" }));
+    projectMode->setValue(1);
+
+    NodePtr read = createRead();
+    NodePtr set = createChoiceSet("mode", std::vector<std::string> { "Xray", "Yankee", "Zulu" }, 2);
+    NodePtr view = createDot();
+    ASSERT_TRUE(read && set && view);
+    connectNodes(read, set, 0, true);
+    connectNodes(set, view, 0, true);
+    RFVRead* effect = readEffectOf(read);
+    ASSERT_TRUE(effect != nullptr);
+
+    const RFV::ResolvedContext resolved = RFV::resolveContextBelow(view, read, 1., ViewIdx(0));
+    EXPECT_EQ("2", valueOf(resolved, "mode"));
+    effect->refreshVariablesBelow(view, 1.);
+    EXPECT_EQ("from " + view->getScriptName_mt_safe() + ", frame 1\nmode = 'Zulu'", effect->getVariablesText());
+
+    effect->refreshVariablesBelow(NodePtr(), 1.);
+    EXPECT_EQ("from the project, frame 1\nmode = 'Beta'", effect->getVariablesText());
+}
+
+// Below an RFVSwitch only the input it selects under the context reaching it is on the path: the
+// read on the other input sees the project, unless another path selects it. A node reached under
+// two contexts is explored under each.
+TEST_F(RFVReadTest, UnselectedSwitchBranchIsNotOnThePath)
+{
+    addProjectString("var", "p");
+    NodePtr source = createDot();
+    NodePtr read = createRead();
+    NodePtr rfvSwitch = createSwitch("var", std::vector<std::string> { "a", "b" });
+    NodePtr setA = createStringSet("var", "a");
+    NodePtr setB = createStringSet("var", "b");
+    NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+    NodePtr view = createDot();
+    ASSERT_TRUE(source && read && rfvSwitch && setA && setB && merge && view);
+    connectNodes(source, rfvSwitch, 0, true);
+    connectNodes(read, rfvSwitch, 1, true);
+    connectNodes(rfvSwitch, setA, 0, true);
+    connectNodes(setA, view, 0, true);
+
+    const RFV::ResolvedContext unselected = RFV::resolveContextBelow(view, read, 1., ViewIdx(0));
+    EXPECT_TRUE(unselected.outputName.empty());
+    EXPECT_EQ("'p'", valueOf(unselected, "var"));
+
+    disconnectNodes(setA, view, true);
+    connectNodes(rfvSwitch, setB, 0, true);
+    connectNodes(setA, merge, 0, true);
+    connectNodes(setB, merge, 1, true);
+    connectNodes(merge, view, 0, true);
+    const RFV::ResolvedContext selected = RFV::resolveContextBelow(view, read, 1., ViewIdx(0));
+    EXPECT_EQ(view->getScriptName_mt_safe(), selected.outputName);
+    EXPECT_EQ("'b'", valueOf(selected, "var"));
+    EXPECT_TRUE(selected.errors.empty());
+}
+
+// During playback the list is not resolved on every frame: it is refreshed once, at the
+// timeline's frame, when frames stop arriving.
+TEST_F(RFVReadTest, PlaybackRefreshesOnceFramesStop)
+{
+    NodePtr read = createRead();
+    KnobDoublePtr v;
+    NodePtr set = createDoubleSet("v", &v);
+    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+    ASSERT_TRUE(read && set && viewer && v);
+    v->setValueAtTime(1., 10., ViewSpec::all(), 0);
+    v->setValueAtTime(3., 30., ViewSpec::all(), 0);
+    InspectorNode* inspector = dynamic_cast<InspectorNode*>(viewer.get());
+    ASSERT_TRUE(inspector != nullptr);
+    connectNodes(read, set, 0, true);
+    connectNodes(set, viewer, 0, true);
+    inspector->setInputA(0);
+    ASSERT_EQ(viewer, RFV::getActiveViewer(getApp()));
+    RFVRead* effect = readEffectOf(read);
+    ASSERT_TRUE(effect != nullptr);
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    effect->refreshAfterTimeChange(false, 1.);
+    ASSERT_TRUE(listsLine(effect->getVariablesText(), "v = 10.0")) << effect->getVariablesText();
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    effect->refreshAfterTimeChange(true, 2.);
+    getApp()->getTimeLine()->seekFrame(3, false, NULL, eTimelineChangeReasonOtherSeek);
+    effect->refreshAfterTimeChange(true, 3.);
+    EXPECT_TRUE(listsLine(effect->getVariablesText(), "v = 10.0")) << effect->getVariablesText();
+
+    QElapsedTimer waited;
+    waited.start();
+    while (!listsLine(effect->getVariablesText(), "v = 30.0") && (waited.elapsed() < 5000)) {
+        QCoreApplication::processEvents();
+        QThread::msleep(20);
+    }
+    EXPECT_TRUE(listsLine(effect->getVariablesText(), "v = 30.0")) << effect->getVariablesText();
 }

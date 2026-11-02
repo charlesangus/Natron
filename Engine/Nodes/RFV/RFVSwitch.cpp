@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -317,6 +319,18 @@ RFVSwitch::patterns() const
     return values;
 }
 
+std::shared_ptr<const RFV::CompiledPatterns>
+RFVSwitch::compiledPatterns() const
+{
+    const std::vector<std::string> lines = patterns();
+    QMutexLocker locker(&_compiledMutex);
+    if (!_compiled || (_compiled->getLines() != lines)) {
+        _compiled = std::make_shared<const RFV::CompiledPatterns>(lines);
+    }
+
+    return _compiled;
+}
+
 void
 RFVSwitch::refreshRows()
 {
@@ -442,37 +456,6 @@ RFVSwitch::refreshInputsVisibility()
     }
 }
 
-// A Choice variable is its option's label, the text its menu shows: rfv gives only the index.
-bool
-RFVSwitch::choiceLabel(const std::string& name,
-                       PyObject* object,
-                       std::string* label) const
-{
-    if (!PyLong_Check(object) || PyBool_Check(object)) {
-        return false;
-    }
-    AppInstancePtr app = getApp();
-    ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    KnobChoicePtr choice = project ? std::dynamic_pointer_cast<KnobChoice>(RFV::findDeclaredVariable(project.get(), name)) : KnobChoicePtr();
-    if (!choice) {
-        return false;
-    }
-    const long index = PyLong_AsLong(object);
-    if (PyErr_Occurred()) {
-        PyErr_Clear();
-
-        return false;
-    }
-    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
-    if ((index < 0) || (index >= (long)entries.size())) {
-        return false;
-    }
-    const ChoiceOption& entry = entries[index];
-    *label = entry.label.empty() ? entry.id : entry.label;
-
-    return true;
-}
-
 bool
 RFVSwitch::readVariable(const std::string& name,
                         double time,
@@ -488,7 +471,8 @@ RFVSwitch::readVariable(const std::string& name,
     // rfv resolves the variable for an expression of this node: under the context the node is
     // queried under, an RFVSet's binding evaluated at time, and the project's value otherwise.
     PyRFV::ExpressionScope scope(variable.get(), time, view);
-    PyObject* object = PyRFV::getVariable(name);
+    std::vector<std::string> labels;
+    PyObject* object = PyRFV::getVariable(name, &labels);
     if (!object) {
         *error = takePythonError();
 
@@ -496,7 +480,13 @@ RFVSwitch::readVariable(const std::string& name,
     }
     bool found = false;
     if (object != Py_None) {
-        if (choiceLabel(name, object, value)) {
+        const bool isIndex = !labels.empty() && PyLong_Check(object) && !PyBool_Check(object);
+        long long index = isIndex ? PyLong_AsLongLong(object) : -1;
+        if (isIndex && PyErr_Occurred()) {
+            PyErr_Clear();
+            index = -1;
+        }
+        if (isIndex && RFV::choiceLabel(RenderContextValue((std::int64_t)index), labels, value)) {
             found = true;
         } else if (canonicalText(object, value)) {
             found = true;
@@ -520,14 +510,14 @@ RFVSwitch::evaluate(double time,
         return outcome;
     }
     const std::string name = variable->getValue();
-    const std::vector<std::string> lines = patterns();
 
     std::string value;
     std::string readError;
-    std::string patternError;
     const bool isSet = readVariable(name, time, view, &value, &readError);
     // Matched even when unset, for the errors of the patterns.
-    const int matched = RFV::firstMatch(value, lines, &patternError);
+    const std::shared_ptr<const RFV::CompiledPatterns> compiled = compiledPatterns();
+    const int matched = compiled->firstMatch(value);
+    const std::string& patternError = compiled->getError();
     const int chosen = isSet ? matched : -1;
     const QString patternMessage = patternError.empty() ? QString() : tr("Invalid pattern at %1").arg(QString::fromUtf8(patternError.c_str()));
 
@@ -683,6 +673,8 @@ RFVSwitch::getExtraContextReads() const
         return reads;
     }
     reads.add(RenderContextName::plain(name));
+    // A Set's Choice is matched by the label of its option, so the context key keeps the labels.
+    reads.add(RenderContextName::choiceLabels(name));
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (project) {
@@ -709,6 +701,9 @@ RFVSwitch::appendNodeContentHash(ContentHasher& h) const
         if (reads.readsAll() || reads.contains(RenderContextName::plain(declaration.name))) {
             h.appendString(declaration.name);
             h.appendU64(declaration.knob->getContentHash());
+            for (const std::string& label : RFV::getChoiceLabels(declaration.knob)) {
+                h.appendString(label);
+            }
         }
     }
 }

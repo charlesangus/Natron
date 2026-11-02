@@ -396,10 +396,20 @@ panel therefore shows the project's value.
 ### For node authors
 
 - Expressions need nothing more than `rfv`: the scan above finds what they read.
-- A node that reads a variable outside an expression, by name in C++, adds a
-  `ContextReadSource` (`Engine/RenderContext.h`) to one of its knobs so the
-  engine keys the node by that variable. A source whose reads change calls
-  `invalidateRenderContextReads()`.
+- A node that reads a variable outside an expression, by name in C++, as
+  RFVSwitch does, names it in `EffectInstance::getExtraContextReads()` so the
+  engine keys the node by that variable under a Set; it calls
+  `invalidateRenderContextReads()` when the name changes. Where no Set on the
+  path sets the variable the context holds nothing for it and the project's
+  value is read, which the context key leaves out. So the node also hashes the
+  project variable's content in `appendNodeContentHash()`, and
+  `RFV::appendProjectVariableReads()` adds what that variable's expression reads
+  through `rfv`. No listener links the node to the project's knob, so editing a
+  project variable calls `RFV::rehashExtraContextReaders()`, which marks the
+  hash of every node whose extra reads name it. To read the value, open a
+  `PyRFV::ExpressionScope` on one of the node's knobs and call
+  `PyRFV::getVariable()`, which can also return the option labels of the Choice
+  that supplied the value.
 - A node that sets variables for its inputs, as the Set node does, overrides
   `EffectInstance::getInputContexts()`.
 - An input's metadata, region of definition, layers and frame range are read
@@ -412,7 +422,13 @@ panel therefore shows the project's value.
 ### v1 limits
 
 - A Group node carries no variables of its own.
-- There is no panel that lists the variables a node sees.
+- RFVRead lists what reaches it along the active viewer's path only, not a
+  Write's or another viewer's, and for the first view only.
+- RFVRead follows only the input a node passes through when it is an identity,
+  as asked for a one-pixel region at the frame. A node that reads a range of
+  frames counts as reading the first.
+- RFVRead does not refresh on every frame during playback. It refreshes once
+  frames stop arriving for a quarter of a second.
 
 
 ## I/O nodes

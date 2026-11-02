@@ -234,6 +234,59 @@ protected:
         return set;
     }
 
+    static std::vector<ChoiceOption> choiceOptions(const std::vector<std::string>& labels)
+    {
+        std::vector<ChoiceOption> options;
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            options.push_back(ChoiceOption("option" + std::to_string(i), labels[i], ""));
+        }
+
+        return options;
+    }
+
+    // A Set node declaring the Choice variable name with options labelled labels.
+    NodePtr createChoiceSet(const std::string& name,
+                            const std::vector<std::string>& labels,
+                            int value,
+                            KnobChoicePtr* variable = 0)
+    {
+        NodePtr set = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
+        if (!set) {
+            ADD_FAILURE() << "no Set node";
+
+            return NodePtr();
+        }
+        EffectInstancePtr effect = set->getEffectInstance();
+        KnobChoicePtr knob = effect->createChoiceKnob(name, name);
+        if (!variablesGroupOf(set)->addKnob(knob)) {
+            ADD_FAILURE() << "the Set node refused " << name;
+
+            return NodePtr();
+        }
+        effect->recreateUserKnobs(false);
+        knob->populateChoices(choiceOptions(labels));
+        knob->setValue(value);
+        if (variable) {
+            *variable = knob;
+        }
+
+        return set;
+    }
+
+    KnobChoicePtr addProjectChoice(const std::string& name,
+                                   const std::vector<std::string>& labels,
+                                   int value)
+    {
+        ProjectPtr project = getApp()->getProject();
+        KnobChoicePtr knob = project->createChoiceKnob(name, name);
+        std::string error;
+        EXPECT_TRUE(RFV::addAsVariable(project.get(), knob, &error)) << error;
+        knob->populateChoices(choiceOptions(labels));
+        knob->setValue(value);
+
+        return knob;
+    }
+
     KnobStringPtr addProjectString(const std::string& name,
                                    const std::string& value)
     {
@@ -704,6 +757,73 @@ TEST_F(RFVSwitchTest, EveryVariableTypeIsMatchedAsItsText)
     EXPECT_FALSE(renderPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., true, &pixel, &error));
     EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("mode = \"High Quality\""))) << messageOf(rfvSwitch).toStdString();
 } // EveryVariableTypeIsMatchedAsItsText
+
+// A Choice only a Set declares is matched by the label of its option, whether the Set holds it
+// as a value or, driven by an expression, as a binding; its index never matches.
+TEST_F(RFVSwitchTest, SetOnlyChoiceIsMatchedByItsLabel)
+{
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr b = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr c = createCounting(kTestPluginIDCounting, 30.);
+    NodePtr rfvSwitch = createSwitch("mode", "1\nHigh Quality\nLow Quality");
+    KnobChoicePtr mode;
+    NodePtr set = createChoiceSet("mode", std::vector<std::string> { "Low Quality", "High Quality" }, 1, &mode);
+    ASSERT_TRUE(a && b && c && rfvSwitch && set && mode);
+    ASSERT_TRUE(RFV::findDeclaredVariable(getApp()->getProject().get(), "mode") == nullptr);
+    connectNodes(a, rfvSwitch, 0, true);
+    connectNodes(b, rfvSwitch, 1, true);
+    connectNodes(c, rfvSwitch, 2, true);
+    connectNodes(rfvSwitch, set, 0, true);
+
+    for (RenderSchedulerModeEnum m : kModes) {
+        EXPECT_EQ(20.f, renderFirstPixel(set, m));
+    }
+
+    ASSERT_NO_THROW(mode->setExpression(0, "1 if frame < 1.5 else 0", false, true));
+    ASSERT_TRUE(RFV::isTimeVarying(mode));
+    for (RenderSchedulerModeEnum m : kModes) {
+        EXPECT_EQ(20.f, renderFirstPixel(set, m, 1.));
+        EXPECT_EQ(30.f, renderFirstPixel(set, m, 2.));
+    }
+}
+
+// A Set's Choice overriding a project Choice with other options is matched by the label of the
+// Set's option, not of the project's option at the same index; without the Set, the project's
+// label is matched.
+TEST_F(RFVSwitchTest, SetChoiceOverridingAProjectChoiceUsesItsOwnLabels)
+{
+    addProjectChoice("mode", std::vector<std::string> { "Alpha", "Beta" }, 0);
+    NodePtr a = createCounting(kTestPluginIDCounting, 10.);
+    NodePtr b = createCounting(kTestPluginIDCounting, 20.);
+    NodePtr c = createCounting(kTestPluginIDCounting, 30.);
+    NodePtr rfvSwitch = createSwitch("mode", "Alpha\nBeta\nYankee");
+    NodePtr set = createChoiceSet("mode", std::vector<std::string> { "Xray", "Yankee", "Zulu" }, 1);
+    ASSERT_TRUE(a && b && c && rfvSwitch && set);
+    connectNodes(a, rfvSwitch, 0, true);
+    connectNodes(b, rfvSwitch, 1, true);
+    connectNodes(c, rfvSwitch, 2, true);
+    connectNodes(rfvSwitch, set, 0, true);
+
+    for (RenderSchedulerModeEnum mode : kModes) {
+        EXPECT_EQ(30.f, renderFirstPixel(set, mode));
+        EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
+    }
+
+    // A nearer Set declaring the name as an integer drops the farther Set's labels.
+    NodePtr outer = createNode(QString::fromUtf8(PLUGINID_NATRON_RFVSET));
+    ASSERT_TRUE(bool(outer));
+    KnobIntPtr index = outer->getEffectInstance()->createIntKnob("mode", "mode", 1);
+    ASSERT_TRUE(variablesGroupOf(outer)->addKnob(index));
+    outer->getEffectInstance()->recreateUserKnobs(false);
+    index->setValue(1);
+    disconnectNodes(rfvSwitch, set, true);
+    connectNodes(rfvSwitch, outer, 0, true);
+    connectNodes(outer, set, 0, true);
+    setPatterns(rfvSwitch, "Alpha\n1\nYankee");
+    for (RenderSchedulerModeEnum mode : kModes) {
+        EXPECT_EQ(20.f, renderFirstPixel(set, mode));
+    }
+}
 
 // The message is what the latest render decided under the context it reached the switch with:
 // an RFVSet below overriding a project value that matches nothing leaves no message, a render

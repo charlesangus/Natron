@@ -30,10 +30,13 @@
 
 #include <string>
 
+#include <QtCore/QTimer>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_RFVREAD "RFVRead"
+#define kRFVReadPlaybackSettleMs 250
 #define PLUGIN_MAJOR_NATRON_RFVREAD 1
 
 #define kRFVReadParamVariables "variables"
@@ -120,6 +123,10 @@ private:
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
+    /**
+     * @brief Lists the variables at time from the active viewer, or, during playback, at the
+     * timeline's frame once playback has settled (see schedulePlaybackRefresh()).
+     **/
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback,
                                                    double time) OVERRIDE FINAL;
 
@@ -127,8 +134,13 @@ private:
 
     void scheduleRefresh();
 
+    // Refreshes once frames stop arriving for kRFVReadPlaybackSettleMs: playback moves the time
+    // every frame, and resolving the path each time would hold up the main thread.
+    void schedulePlaybackRefresh();
+
     KnobStringWPtr _variables;
     bool _refreshPending;
+    QTimer* _playbackSettle;
 };
 
 NATRON_NAMESPACE_EXIT

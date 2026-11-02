@@ -198,34 +198,72 @@ firstMatch(const std::string& value,
            const std::vector<std::string>& lines,
            std::string* error)
 {
+    const CompiledPatterns patterns(lines);
     if (error) {
-        error->clear();
+        *error = patterns.getError();
     }
+
+    return patterns.firstMatch(value);
+}
+
+CompiledPatterns::CompiledPatterns(const std::vector<std::string>& lines)
+    : _lines(lines)
+{
     const std::size_t prefixLength = std::strlen(kPatternRegexPrefix);
-    int found = -1;
+    _compiled.resize(lines.size());
     for (std::size_t i = 0; i < lines.size(); ++i) {
         const std::string& line = lines[i];
+        Line& compiled = _compiled[i];
         if (line.empty()) {
             continue;
         }
-        if (line.compare(0, prefixLength, kPatternRegexPrefix) == 0) {
-            // Compiled even past the match, so a broken line is reported wherever it is.
-            try {
-                const std::regex expression(line.substr(prefixLength), std::regex::ECMAScript);
-                if ((found < 0) && std::regex_match(value, expression)) {
-                    found = (int)i;
-                }
-            } catch (const std::regex_error& e) {
-                if (error && error->empty()) {
-                    *error = "Input " + std::to_string(i) + ": " + e.what();
-                }
+        if (line.compare(0, prefixLength, kPatternRegexPrefix) != 0) {
+            compiled.kind = Line::Kind::Glob;
+            compiled.glob = decodeUtf8(line);
+            continue;
+        }
+        // Compiled even past any match, so a broken line is reported wherever it is.
+        try {
+            compiled.regex = std::regex(line.substr(prefixLength), std::regex::ECMAScript);
+            compiled.kind = Line::Kind::Regex;
+        } catch (const std::regex_error& e) {
+            compiled.kind = Line::Kind::Broken;
+            if (_error.empty()) {
+                _error = "Input " + std::to_string(i) + ": " + e.what();
             }
-        } else if ((found < 0) && matchesGlob(value, line)) {
-            found = (int)i;
+        }
+    }
+}
+
+int
+CompiledPatterns::firstMatch(const std::string& value) const
+{
+    std::u32string decoded;
+    bool isDecoded = false;
+    for (std::size_t i = 0; i < _compiled.size(); ++i) {
+        const Line& line = _compiled[i];
+        switch (line.kind) {
+        case Line::Kind::Empty:
+        case Line::Kind::Broken:
+            break;
+        case Line::Kind::Glob:
+            if (!isDecoded) {
+                decoded = decodeUtf8(value);
+                isDecoded = true;
+            }
+            if (matchesGlobDecoded(decoded, line.glob)) {
+                return (int)i;
+            }
+            break;
+        case Line::Kind::Regex:
+            if (std::regex_match(value, line.regex)) {
+                return (int)i;
+            }
+            break;
         }
     }
 
-    return found;
+    return -1;
 }
 
 } // namespace RFV

@@ -633,10 +633,16 @@ TEST_F(USDCameraTest, EditingTheLensKeepsTheFilesSamplesOfTheAttributesLeftAlone
     ASSERT_TRUE(bool(usdCamera));
     EXPECT_EQ((std::size_t)0, usdCamera.GetFocalLengthAttr().GetNumTimeSamples());
     EXPECT_FLOAT_EQ(0.2f, getFloat(usdCamera.GetFocalLengthAttr(), PXR_NS::UsdTimeCode(10.)));
+    // The file's animation is resampled at every project frame, as for a group left unedited.
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 10.);
     const PXR_NS::UsdAttribute aperture = usdCamera.GetHorizontalApertureAttr();
-    EXPECT_EQ((std::size_t)2, aperture.GetNumTimeSamples());
+    EXPECT_EQ((std::size_t)(std::floor(last) - std::ceil(first) + 1.), aperture.GetNumTimeSamples());
     EXPECT_FLOAT_EQ(0.36f, getFloat(aperture, PXR_NS::UsdTimeCode(1.)));
     EXPECT_FLOAT_EQ(0.4f, getFloat(aperture, PXR_NS::UsdTimeCode(10.)));
+    EXPECT_NEAR(0.36 + 0.04 * 4. / 9., getFloat(aperture, PXR_NS::UsdTimeCode(5.)), 1e-6);
 }
 
 TEST_F(USDCameraTest, ShowingTheFilesValuesKeepsTheUsersAnimation)

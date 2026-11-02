@@ -894,10 +894,24 @@ TEST_F(NativeLoopCrossFrameTest, SubstepTimesAreCachedApart)
     RenderedPlane plane;
     ASSERT_TRUE(renderAt(m.end, 1., window, eRenderSchedulerModeLegacy, false, &plane));
     EXPECT_EQ(1, CountingTestRegistry::renders(counting));
+    for (double time : CountingTestRegistry::renderTimes(counting)) {
+        EXPECT_EQ(1., time);
+    }
 
     ASSERT_TRUE(setKnobValues(m.end, kLoopEndParamSubframes, { 1. }));
     cache->clear();
     CountingTestRegistry::reset();
     ASSERT_TRUE(renderAt(m.end, 1., window, eRenderSchedulerModeLegacy, false, &plane));
     EXPECT_EQ(3, CountingTestRegistry::renders(counting));
+    // The counting node ignores the time it is asked for, like a reader of whole frames: it is
+    // still asked for the fractional times, and renders.
+    const std::vector<double> times = CountingTestRegistry::renderTimes(counting);
+    EXPECT_EQ(3u, times.size());
+    int fractional = 0;
+    for (double time : times) {
+        EXPECT_GE(time, 0.25);
+        EXPECT_LE(time, 1.);
+        fractional += (time != std::floor(time)) ? 1 : 0;
+    }
+    EXPECT_GE(fractional, 2);
 }

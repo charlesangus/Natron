@@ -38,6 +38,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <QThread>
 
@@ -71,6 +72,7 @@ public:
         int renders = 0;
         int regionsOfDefinition = 0;
         std::set<Qt::HANDLE> threads;
+        std::vector<double> times;
     };
 
     typedef std::function<void(const Node* node)> RenderHook;
@@ -167,6 +169,25 @@ public:
         if (renderHook) {
             renderHook(node);
         }
+    }
+
+    static void noteRenderTime(const Node* node,
+                               double time)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+
+        records()[node].times.push_back(time);
+    }
+
+    /**
+     * @brief The times the node's render calls ran at since the last reset, in call order.
+     **/
+    static std::vector<double> renderTimes(const NodePtr& node)
+    {
+        std::lock_guard<std::mutex> k(mutex());
+        std::map<const Node*, Record>::const_iterator found = records().find(node.get());
+
+        return found == records().end() ? std::vector<double>() : found->second.times;
     }
 
     static void noteRegionOfDefinition(const Node* node)
@@ -413,6 +434,7 @@ private:
     {
         CountingTestRegistry::ConcurrentRender concurrent;
         CountingTestRegistry::noteRender(getNode().get());
+        CountingTestRegistry::noteRenderTime(getNode().get(), args.time);
 
         KnobIntPtr delayKnob = _delayMs.lock();
         if (delayKnob && (delayKnob->getValue() > 0)) {

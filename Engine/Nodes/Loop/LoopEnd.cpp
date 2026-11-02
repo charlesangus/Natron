@@ -2083,8 +2083,10 @@ LoopEnd::initializeKnobs()
     subframes->setAnimationEnabled(false);
     subframes->setHintToolTip(tr("Under Cross Frame and Iterate Over Count, spreads the iterations of frame f over the "
                                  "interval from the frame before: iteration k renders the body at f - 1 + (k + 1) / "
-                                 "Iterations, the last at f, so an animated input moves smoothly between substeps. Off, "
-                                 "every iteration renders the body at f."));
+                                 "Iterations, the last at f, so an animated input moves smoothly between substeps. The "
+                                 "inputs are always asked for those fractional times; one that only has whole frames, "
+                                 "such as an image sequence, answers with the frame it has. Off, every iteration "
+                                 "renders the body at f."));
     subframes->setDefaultValue(true);
     page->addKnob(subframes);
     _subframes = subframes;

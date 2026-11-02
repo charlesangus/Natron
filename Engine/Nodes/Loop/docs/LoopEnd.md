@@ -181,6 +181,8 @@ M259 - GPU Placement Under Render Contexts.
   animated in the body, or feeding it from the side, is sampled at each of those times, so a
   moving dot merged in at each substep leaves a smooth smear rather than one copy per frame.
   `loop.frame` is the iteration's fractional time; `loop.t` and `loop.iteration` are unchanged.
+- Checked, every substep asks its inputs for its own fractional time, whatever is upstream: the
+  loop does not try to tell which inputs have only whole frames.
 - Off, every iteration renders the body at f, as without Cross Frame: the substeps repeat the
   same frame of an animated input.
 - The rule applies at every frame, `startFrame` and the frames before it included: their
@@ -188,8 +190,8 @@ M259 - GPU Placement Under Render Contexts.
 - The number of substeps is fixed: `iterations` a frame, evenly spaced. Nothing adapts the step
   to how fast the input moves.
 - `iterateOver` Frames ignores it: its iterations render at whole frames apart.
-- A node that only has whole frames, such as a reader of an image sequence, shows whichever
-  frame it gives for a fractional time.
+- A node that only has whole frames, such as a reader of an image sequence, is still asked for
+  the fractional time and shows whichever frame it gives for it.
 
 ## Bake
 

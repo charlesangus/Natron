@@ -33,7 +33,6 @@
 
 #include <algorithm>
 #include <climits>
-#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -46,6 +45,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
 
@@ -467,7 +467,9 @@ RawPrepare::resolveSettings(double time,
     for (int i = 0; i < 4; ++i) {
         s.sub[i] = knobValueAsFloat(black[(std::size_t)i % black.size()]);
         const float whiteF = knobValueAsFloat(white);
-        const float div = (std::isinf(whiteF) && whiteF == s.sub[i]) ? 0.f : whiteF - s.sub[i];
+        // The double difference of two floats rounds to the float difference, so narrowing it
+        // gives the float subtraction's result, overflow and inf - inf included, without its trap.
+        const float div = knobValueAsFloat(differenceOrInfinity(whiteF, s.sub[i]));
         s.div[i] = (div != 0.f) ? div : 1.f;
     }
 

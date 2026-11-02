@@ -31,18 +31,15 @@ NATRON_NAMESPACE_ENTER
 // would overflow, which debug builds trap. Operations that would be invalid on infinite operands
 // give the quiet NaN they would produce; NaN operands pass through the plain operation.
 
-// The double operations below give the infinity of the exact result's sign where the double result
-// would overflow, which debug builds trap. Operations that would be invalid on infinite operands
-// give the quiet NaN they would produce; NaN operands pass through the plain operation.
-
-// Operands below 2^500 cannot overflow, which keeps per-pixel loops on the plain product. Past
+// Operands below 2^500 cannot overflow, which keeps per-pixel loops on the plain product; the quiet
+// comparison lets NaN operands reach the NaN check without raising the invalid exception. Past
 // that the exponent sum separates the certain cases; in between, a quarter of the product is compared
 // against 2^1022, which is exact for the normal operands that reach it.
 inline double
 productOrInfinity(double a,
                   double b)
 {
-    if ((std::fabs(a) < 0x1p500) && (std::fabs(b) < 0x1p500)) {
+    if (std::isless(std::fabs(a), 0x1p500) && std::isless(std::fabs(b), 0x1p500)) {
         return a * b;
     }
     if (std::isnan(a) || std::isnan(b)) {
@@ -115,9 +112,12 @@ differenceOrInfinity(double p,
     return (std::fabs(half) >= 0x1p1023) ? std::copysign(std::numeric_limits<double>::infinity(), half) : p - q;
 }
 
-// x^e for x > 0 and e >= 0. Clear of overflow, log2 decides. Near it, the square of x^(e/2) decides
-// with a margin of 2^-45, far wider than the error of either pow, so only a power within 2^-45 of
-// DBL_MAX may be taken as infinity.
+static_assert(std::numeric_limits<long double>::max_exponent > 1030, "powOrInfinity needs a long double range wider than double's");
+
+// x^e for x > 0 and e >= 0. Clear of overflow, log2 decides. Near it, the long double power, whose
+// range holds it and whose error is 2^-10 of a double ulp, is compared against DBL_MAX and against
+// the halfway point 2^1024 - 2^970 at and past which the double rounds to infinity. Up to DBL_MAX
+// std::pow cannot overflow, since its error is below one ulp; between the two, the double is DBL_MAX.
 inline double
 powOrInfinity(double x,
               double e)
@@ -128,9 +128,12 @@ powOrInfinity(double x,
             return std::numeric_limits<double>::infinity();
         }
         if (e > 1022. / l) {
-            const double h = std::pow(x, 0.5 * e);
-            if ((0x1p-8 * h) * h >= 0x1p1016 * (1. - 0x1p-45)) {
+            const long double wide = std::pow(static_cast<long double>(x), static_cast<long double>(e));
+            if (wide >= 0x1p1024L - 0x1p970L) {
                 return std::numeric_limits<double>::infinity();
+            }
+            if (wide > static_cast<long double>(std::numeric_limits<double>::max())) {
+                return std::numeric_limits<double>::max();
             }
         }
     }
@@ -139,11 +142,12 @@ powOrInfinity(double x,
 }
 
 // A reciprocal below 2^-1024 would overflow, which debug builds trap; 1 / +-0 gives the infinity of
-// the zero's sign, so that is what every operand in that range gives.
+// the zero's sign, so that is what every operand in that range gives. The quiet comparison passes a
+// NaN to the division without raising the invalid exception.
 inline double
 reciprocalOrInfinity(double g)
 {
-    return (std::fabs(g) <= 0x1p-1024) ? std::copysign(std::numeric_limits<double>::infinity(), g) : 1. / g;
+    return std::islessequal(std::fabs(g), 0x1p-1024) ? std::copysign(std::numeric_limits<double>::infinity(), g) : 1. / g;
 }
 
 NATRON_NAMESPACE_EXIT

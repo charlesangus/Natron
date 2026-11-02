@@ -33,6 +33,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -171,10 +172,10 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
 
     // Millimetres to tenths of a scene unit: a tenth of a scene unit is 100 x the project's
     // metersPerUnit mm.
-    const double millimetresToCameraUnits = 1. / (100. * SceneNodeAuthoring::getMetersPerUnit(edit));
+    const double millimetresToCameraUnits = reciprocalOrInfinity(productOrInfinity(100., SceneNodeAuthoring::getMetersPerUnit(edit)));
     const auto lengthAt = [millimetresToCameraUnits](const KnobDoublePtr& knob) {
         return [knob, millimetresToCameraUnits](double frame) {
-            return knobValueAsFloat(knob->getValueAtTime(frame, 0) * millimetresToCameraUnits);
+            return knobValueAsFloat(productOrInfinity(knob->getValueAtTime(frame, 0), millimetresToCameraUnits));
         };
     };
     const auto valueAt = [](const KnobDoublePtr& knob) {

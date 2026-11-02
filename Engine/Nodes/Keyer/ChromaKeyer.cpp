@@ -458,8 +458,8 @@ public:
         p->ys = (float)_ys;
         p->tanAcceptance = (float)_tanAcceptanceAngle2;
         p->tanSuppression = (float)_tanSuppressionAngle2;
-        p->keyLift = (float)_keyLift;
-        p->oneMinusLift = (float)(1. - _keyLift);
+        p->keyLift = knobValueAsFloat(_keyLift);
+        p->oneMinusLift = knobValueAsFloat(1. - _keyLift);
         p->gainXKey = knobValueAsFloat(_gainXKey);
         p->kr = kr;
         p->kb = kb;

@@ -23,6 +23,7 @@
 #include "Global/Macros.h"
 
 #include <cfloat>
+#include <cmath>
 #include <concepts>
 #include <limits>
 #include <memory>
@@ -119,13 +120,14 @@ private:
 inline float
 knobValueAsFloat(double value)
 {
-    // FLT_MAX plus half its spacing is the first double a cast rounds up to infinity.
+    // FLT_MAX plus half its spacing is the first double a cast rounds up to infinity. The quiet
+    // comparisons let a NaN through without raising the invalid exception, which debug builds trap.
     constexpr double roundsToInfinity = (double)FLT_MAX + 0x1p103;
 
-    if (value >= roundsToInfinity) {
+    if (std::isgreaterequal(value, roundsToInfinity)) {
         return std::numeric_limits<float>::infinity();
     }
-    if (value <= -roundsToInfinity) {
+    if (std::islessequal(value, -roundsToInfinity)) {
         return -std::numeric_limits<float>::infinity();
     }
 

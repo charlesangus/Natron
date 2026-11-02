@@ -37,6 +37,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 
 #include <pxr/usd/usd/primRange.h>
@@ -351,7 +352,7 @@ authorTransform(const SceneTransformKnobs& knobs,
         && authorValue(scaleOp.GetAttr(), edit, isAnimated(scale) || isAnimated(uniformScale), [&scale, &uniformScale](double frame) {
                               const double uniform = uniformScale->getValueAtTime(frame, 0);
 
-                              return PXR_NS::GfVec3f(knobValueAsFloat(scale->getValueAtTime(frame, 0) * uniform), knobValueAsFloat(scale->getValueAtTime(frame, 1) * uniform), knobValueAsFloat(scale->getValueAtTime(frame, 2) * uniform));
+                              return PXR_NS::GfVec3f(knobValueAsFloat(productOrInfinity(scale->getValueAtTime(frame, 0), uniform)), knobValueAsFloat(productOrInfinity(scale->getValueAtTime(frame, 1), uniform)), knobValueAsFloat(productOrInfinity(scale->getValueAtTime(frame, 2), uniform)));
                           });
     if (!authored) {
         *errorMessage = EffectInstance::tr("USD could not author the transform of %1.").arg(QString::fromStdString(xformable.GetPath().GetString())).toStdString();

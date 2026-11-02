@@ -86,7 +86,8 @@ struct ErrorStats {
     int64_t maxUlp = 0;
     std::array<uint64_t, 6> hist {}; // 0, 1, 2, 3-4, 5-16, >16
     Worst worst;
-    // Zero leaves values alone; otherwise both got and want are flushed below this before comparing.
+    // Zero leaves values alone; otherwise a got or a reference whose magnitude is below this becomes
+    // the zero of its sign before comparing, and every other reference keeps its double value.
     float flushBelow = 0.f;
 
     void flushSubnormals(float below = FLT_MIN) { flushBelow = below; }
@@ -96,7 +97,9 @@ struct ErrorStats {
     {
         if (flushBelow > 0.f) {
             got = flushed(got, flushBelow);
-            ref = flushed(static_cast<float>(ref), flushBelow);
+            if (std::fabs(ref) < static_cast<double>(flushBelow)) {
+                ref = std::copysign(0., ref);
+            }
         }
         const float want = static_cast<float>(ref);
         Sample s;

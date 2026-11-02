@@ -59,14 +59,21 @@ NodePtr currentNode(Gui* gui);
 KnobStringPtr primKnob(const NodePtr& node);
 
 /**
+ * @brief selected, in the order the user selected it: the paths of order still selected, in that
+ * order, then the newly selected ones in the order selected lists them. Selections are kept in
+ * this order everywhere, so the current prim, the one selected last, is last.
+ **/
+QStringList keepSelectionOrder(const QStringList& order, const QStringList& selected);
+
+/**
  * @brief Why paths can't be set on the current node now, or empty when they can.
  **/
 QString setOnNodeBlocker(Gui* gui, const QStringList& paths);
 
 /**
- * @brief Writes paths into primKnob(currentNode(gui)) as one undo step: the first path for a path
- * knob, all of them joined with spaces for a pattern knob. When it can't, shows why in the status
- * bar and returns false.
+ * @brief Writes paths into primKnob(currentNode(gui)) as one undo step: the last path, the
+ * current prim, for a path knob, all of them joined with spaces in their order for a pattern knob.
+ * When it can't, shows why in the status bar and returns false.
  **/
 bool setOnCurrentNode(Gui* gui, const QStringList& paths);
 
@@ -78,8 +85,8 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
 /**
  * @brief Opens the tab menu listing the node types that take a scene and prims. The node chosen
  * is inserted after viewed, taking its outputs, with its prim knob set to paths, as one undo step.
- * The knob holds paths before the node first evaluates. A USDXformPrim is created in wrap mode,
- * wrapping the first path.
+ * The knob holds paths before the node first evaluates, as setOnCurrentNode() writes them. A
+ * USDXformPrim is created in wrap mode, wrapping the last path.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
 

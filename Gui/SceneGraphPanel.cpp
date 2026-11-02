@@ -29,13 +29,8 @@
 #include "Gui/SceneViewport.h"
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
 #include <list>
-#include <mutex>
 #include <sstream>
-#include <thread>
 #include <vector>
 
 #include <QAction>
@@ -69,12 +64,9 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
-#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
-#include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/ActionShortcuts.h"
 #include "Gui/Gui.h"
@@ -350,6 +342,8 @@ struct SceneGraphPanel::Implementation {
     // The node shown when the panel does not follow the viewer: the pinned node, or the selected
     // node when following the selection. Its own stage is used while the viewer shows another.
     std::shared_ptr<SceneNodeStageSource> pinned;
+    // Why the last evaluation of pinned failed, empty when it did not.
+    QString pinnedError;
     bool userPinned = false;
     U64 pinnedMarkCount = 0;
     QTimer pinnedPoll;
@@ -363,6 +357,9 @@ struct SceneGraphPanel::Implementation {
 
     // Set while the panel and the viewer hand a selection to each other.
     bool syncingSelection = false;
+    // The selected paths in the order they were selected, the viewer's when the panel shows its
+    // selection; see SceneSelectionActions::keepSelectionOrder().
+    QStringList selectionOrder;
 
     // The rows the user expanded, kept across resets, while the rows do not follow the viewer's
     // folds.
@@ -444,6 +441,13 @@ struct SceneGraphPanel::Implementation {
         const std::list<QKeySequence> sequences = manager ? manager->getKeySequenceForAction(QString::fromUtf8(kShortcutGroupViewer3D), QString::fromUtf8(actionID)) : std::list<QKeySequence>();
 
         return sequences.empty() ? QKeySequence() : sequences.front();
+    }
+
+    // Whether the panel's selection can create a node now; when it can't, the create key is left
+    // to the view, where Tab moves the focus.
+    bool canCreateFromSelection(const QStringList& paths) const
+    {
+        return !paths.isEmpty() && SceneSelectionActions::createBlocker(gui, panel->getShownNode()).isEmpty();
     }
 
     void runSelectionAction(int action,
@@ -599,7 +603,15 @@ struct SceneGraphPanel::Implementation {
         QString text;
 
         if (isPinned()) {
-            text = SceneGraphPanel::tr("Pinned to %1").arg(node ? QString::fromStdString(node->getFullyQualifiedName()) : SceneGraphPanel::tr("nothing"));
+            const QString name = node ? QString::fromStdString(node->getFullyQualifiedName()) : SceneGraphPanel::tr("nothing");
+            EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+            if (pinnedError.isEmpty()) {
+                text = SceneGraphPanel::tr("Pinned to %1").arg(name);
+            } else if (!effect || !node->isActivated() || !effect->producesSceneData()) {
+                text = SceneGraphPanel::tr("The pinned node %1 puts out no scene.").arg(name);
+            } else {
+                text = SceneGraphPanel::tr("Pinned to %1, which failed: %2").arg(name, pinnedError);
+            }
         } else if (follow == SceneGraphPanel::eFollowSelection) {
             text = node ? SceneGraphPanel::tr("Selected: %1").arg(QString::fromStdString(node->getFullyQualifiedName()))
                         : SceneGraphPanel::tr("Select a node that puts out a scene");
@@ -868,6 +880,7 @@ struct SceneGraphPanel::Implementation {
         QModelIndex current;
 
         syncingSelection = true;
+        selectionOrder = paths;
         for (const QString& path : paths) {
             const int row = filterMatches.indexOf(path);
             if (row >= 0) {
@@ -1043,7 +1056,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
         create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
         create->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
-        create->setEnabled(SceneSelectionActions::createBlocker(_imp->gui, getShownNode()).isEmpty());
+        create->setEnabled(_imp->canCreateFromSelection(selection));
         QAction* chosen = menu.exec(_imp->tree->viewport()->mapToGlobal(pos));
         if (!chosen) {
             return;
@@ -1140,6 +1153,7 @@ SceneGraphPanel::showNodeScene(const NodePtr& node)
         return;
     }
     _imp->retirePinned();
+    _imp->pinnedError.clear();
     _imp->pinnedPoll.stop();
     if (node) {
         QPointer<SceneGraphPanel> self(this);
@@ -1267,7 +1281,9 @@ SceneGraphPanel::showSelection(const QStringList& paths)
 QStringList
 SceneGraphPanel::getSelection() const
 {
-    return _imp->selectedPaths((_imp->stack->currentWidget() == _imp->results) ? (QAbstractItemView*)_imp->results : (QAbstractItemView*)_imp->tree);
+    const QStringList selected = _imp->selectedPaths((_imp->stack->currentWidget() == _imp->results) ? (QAbstractItemView*)_imp->results : (QAbstractItemView*)_imp->tree);
+
+    return SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, selected);
 }
 
 void
@@ -1307,28 +1323,39 @@ SceneGraphPanel::onViewportSelectionChanged(const QStringList& paths)
 void
 SceneGraphPanel::onTreeSelectionChanged()
 {
-    if (_imp->syncingSelection || !_imp->sharesViewerSelection()) {
+    if (_imp->syncingSelection) {
+        return;
+    }
+    _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, _imp->selectedPaths(_imp->tree));
+    if (!_imp->sharesViewerSelection()) {
         return;
     }
     _imp->syncingSelection = true;
-    _imp->viewport->setSelection(_imp->selectedPaths(_imp->tree));
+    _imp->viewport->setSelection(_imp->selectionOrder);
     _imp->syncingSelection = false;
 }
 
 void
 SceneGraphPanel::onResultsSelectionChanged()
 {
-    if (_imp->syncingSelection || !_imp->sharesViewerSelection()) {
+    if (_imp->syncingSelection) {
+        return;
+    }
+    if (!_imp->sharesViewerSelection()) {
+        _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, _imp->selectedPaths(_imp->results));
+
         return;
     }
     // Selected prims the filter hides stay selected.
-    QStringList paths = _imp->viewport->getSelection();
+    const QStringList viewerSelection = _imp->viewport->getSelection();
+    QStringList paths = viewerSelection;
     for (const QString& match : _imp->filterMatches) {
         paths.removeAll(match);
     }
     paths << _imp->selectedPaths(_imp->results);
+    _imp->selectionOrder = SceneSelectionActions::keepSelectionOrder(viewerSelection, paths);
     _imp->syncingSelection = true;
-    _imp->viewport->setSelection(paths);
+    _imp->viewport->setSelection(_imp->selectionOrder);
     _imp->syncingSelection = false;
 }
 
@@ -1417,12 +1444,13 @@ SceneGraphPanel::onPinnedPoll()
 }
 
 void
-SceneGraphPanel::onPinnedSynced(bool /*ok*/,
-                                const QString& /*error*/)
+SceneGraphPanel::onPinnedSynced(bool ok,
+                                const QString& error)
 {
     if (!_imp->pinned || (_imp->model->getSource() != _imp->pinned)) {
         return;
     }
+    _imp->pinnedError = ok ? QString() : (error.isEmpty() ? tr("unknown error") : error);
     _imp->model->refresh();
     if (!_imp->filterPattern.isEmpty()) {
         _imp->filterDebounce.start();
@@ -1576,10 +1604,11 @@ SceneGraphPanel::eventFilter(QObject* watched,
     if (((watched == _imp->tree) || (watched == _imp->results)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
         const int action = Implementation::selectionActionForKey(k->modifiers(), k->key());
-        if (action != 0) {
+        const QStringList selection = (action != 0) ? getSelection() : QStringList();
+        if ((action == 1) || ((action == 2) && _imp->canCreateFromSelection(selection))) {
             e->accept();
             if (e->type() == QEvent::KeyPress) {
-                _imp->runSelectionAction(action, getSelection());
+                _imp->runSelectionAction(action, selection);
             }
 
             return true;

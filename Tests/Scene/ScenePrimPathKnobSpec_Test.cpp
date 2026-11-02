@@ -114,6 +114,7 @@ TEST_F(ScenePrimPathKnobSpecTest, PluginsKnowTheKindsTheirInputsTake)
         { PLUGINID_NATRON_DEEPMERGE, { eDataKindDeep } },
         { PLUGINID_NATRON_USDMERGE, { eDataKindScene } },
         { PLUGINID_NATRON_USDCAMERA, {} },
+        { PLUGINID_NATRON_GROUP, { eDataKindPolymorphic } },
     };
 
     for (const Expected& e : expected) {
@@ -121,4 +122,13 @@ TEST_F(ScenePrimPathKnobSpecTest, PluginsKnowTheKindsTheirInputsTake)
         ASSERT_TRUE(plugin != nullptr) << e.id;
         EXPECT_EQ(e.kinds, plugin->getInputDataKinds()) << e.id;
     }
+}
+
+TEST_F(ScenePrimPathKnobSpecTest, AGroupsFirstInputTakesAnyKind)
+{
+    Plugin* plugin = appPTR->getPluginBinary(QString::fromUtf8(PLUGINID_NATRON_GROUP), -1, -1, false);
+    ASSERT_TRUE(plugin != nullptr);
+    DataKindEnum kind = eDataKindImage;
+    ASSERT_TRUE(plugin->getFirstInputDataKind(&kind));
+    EXPECT_EQ(eDataKindPolymorphic, kind);
 }

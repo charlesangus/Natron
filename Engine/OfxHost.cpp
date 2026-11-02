@@ -1083,7 +1083,16 @@ OfxHost::loadOFXPlugins()
 
         natronPlugin->setOfxPlugin(p);
         {
-            const bool hasSource = contexts.count(kOfxImageEffectContextGeneral) || contexts.count(kOfxImageEffectContextFilter) || contexts.count(kOfxImageEffectContextPaint) || contexts.count(kOfxImageEffectContextTransition) || contexts.count(kOfxImageEffectContextWriter);
+            // Every context but these two mandates an input clip. Reading the clip descriptors
+            // instead would load each plug-in's binary at startup.
+            bool hasSource = false;
+            for (const std::string& context : contexts) {
+                if ((context != kOfxImageEffectContextGenerator) && (context != kOfxImageEffectContextReader)) {
+                    hasSource = true;
+                    break;
+                }
+            }
+            natronPlugin->setFirstInputDataKind(hasSource, eDataKindImage);
             natronPlugin->setInputDataKinds(hasSource ? std::vector<DataKindEnum> { eDataKindImage } : std::vector<DataKindEnum>());
         }
 

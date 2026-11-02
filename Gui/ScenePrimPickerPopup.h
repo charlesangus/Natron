@@ -63,7 +63,8 @@ public:
 
     ~ScenePrimPickerPopup() override;
 
-    // The paths selected in the tree, in the order they were selected.
+    // The paths selected in the tree, in the order they were selected (see
+    // SceneSelectionActions::keepSelectionOrder()); the knob's own paths keep the knob's order.
     QStringList getTreeSelection() const;
 
 Q_SIGNALS:

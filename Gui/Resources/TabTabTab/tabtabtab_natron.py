@@ -216,9 +216,11 @@ class NatronPlugin(TabTabTabPlugin):
         self._storage_dir = None
         self._pending = []
         self._context = None
+        self._chosen = False
 
     def set_app(self, app):
         self._app = app
+        self._chosen = False
 
     def set_window(self, window):
         self._window = window
@@ -256,8 +258,20 @@ class NatronPlugin(TabTabTabPlugin):
         # The core calls invoke() before it closes the popup. Running the
         # choice now would open its windows (a Read's file dialog, the
         # Preferences) while the popup is still up.
+        self._chosen = True
         self._pending.append(lambda: _trigger_action(app, action))
         QtCore.QTimer.singleShot(0, self._run_pending)
+
+    def closed(self):
+        """The popup closed: a filtered launch closed with no choice tells
+        the app, which would otherwise hold its context for a later choice."""
+        if self._chosen or not self._context or self._app is None:
+            return
+        self._chosen = True
+        try:
+            self._app.triggerTabMenuAction(None)
+        except RuntimeError:
+            pass
 
     def _run_pending(self):
         while self._pending:
@@ -311,6 +325,29 @@ def _attach_popup_to(window):
         pass
 
 
+_close_watcher = None
+_watched_popup = None
+
+
+def _watch_popup_close(popup):
+    # The core hides its popup on every close path (a choice, Escape, a
+    # click outside), and calls invoke() before that on a choice only.
+    global _close_watcher, _watched_popup
+    if not _is_alive(popup) or popup is _watched_popup:
+        return
+    if _close_watcher is None:
+        class _CloseWatcher(QtCore.QObject):
+            def eventFilter(self, watched, event):
+                if event.type() == QtCore.QEvent.Hide:
+                    # After the choice's own deferred trigger, if any.
+                    QtCore.QTimer.singleShot(0, _plugin.closed)
+                return False
+
+        _close_watcher = _CloseWatcher()
+    popup.installEventFilter(_close_watcher)
+    _watched_popup = popup
+
+
 def launch(app, context=None):
     """Open the tab menu for `app`, the GuiApp whose node graph has focus.
 
@@ -330,3 +367,4 @@ def launch(app, context=None):
         space_mode_order=space_mode_order,
         scroll_enabled=scroll_enabled,
     )
+    _watch_popup_close(tabtabtab_nuke_core._tabtabtab_instance)

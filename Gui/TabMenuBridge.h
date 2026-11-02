@@ -67,17 +67,19 @@ struct LaunchContext {
 QString dataKindKey(DataKindEnum kind);
 
 /**
- * @brief Triggers action with a node creation context on the graph that last called launch(): nodes
- * the action creates with no collection go into that graph, and the first one with no position lands
- * at the cursor position recorded then. The context is cleared once the action returns. Without such
- * a graph the action is triggered as is.
+ * @brief Triggers action, the tab menu's choice, with a node creation context on the graph that last
+ * called launch(): nodes the action creates with no collection go into that graph, and the first one
+ * with no position lands at the cursor position recorded then. The context is cleared once the action
+ * returns. Without such a graph the action is triggered as is. A filtered launch's context applies to
+ * this one call only; a null action, which the menu sends when it closes with no choice, drops it.
  **/
 void triggerAction(QAction* action);
 
 /**
  * @brief Triggers action with a node creation context on graph at scenePos, as triggerAction() does
  * for the tab menu's graph, so that a shortcut bound to a nodes menu action creates its node where a
- * plug-in's own shortcut would. Without a graph the action is triggered as is.
+ * plug-in's own shortcut would. Without a graph the action is triggered as is. A filtered launch's
+ * context never applies here.
  **/
 void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scenePos);
 
@@ -92,7 +94,9 @@ void launch(NodeGraph* graph);
 /**
  * @brief Opens the tab menu filtered by context over graph, which holds context.insertAfter. The
  * action chosen is triggered as one undo step, with insertAfter alone selected in graph so that
- * the node it creates is inserted after it; context.created is then called with that node.
+ * the node it creates is inserted after it; context.created is then called with that node. The
+ * selection ends as after any tab menu choice, with the node created selected; the selection the
+ * user had before is not restored.
  **/
 void launch(NodeGraph* graph, const LaunchContext& context);
 

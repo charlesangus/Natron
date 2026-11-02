@@ -1730,8 +1730,12 @@ AppManager::registerBuiltInEffect(const EffectInstancePtr& node,
     if (internalUseOnly) {
         p->setForInternalUseOnly(true);
     }
-    p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
-    {
+    if (dynamic_cast<const NodeGroup*>(node.get())) {
+        // A group's inputs are its Input nodes, and it has none until it is created.
+        p->setFirstInputDataKind(true, eDataKindPolymorphic);
+        p->setInputDataKinds({ eDataKindPolymorphic });
+    } else {
+        p->setFirstInputDataKind(node->getNInputs() > 0, (node->getNInputs() > 0) ? node->getInputDataKind(0) : eDataKindImage);
         std::vector<DataKindEnum> kinds;
         for (int i = 0; i < node->getNInputs(); ++i) {
             if (!node->isInputMask(i)) {
@@ -2256,6 +2260,9 @@ AppManager::loadPythonGroups()
 
             p->setPythonModule(modulePath + moduleName);
             p->setToolsetScript(isToolset);
+            // Its inputs are only known once its script has built it.
+            p->setFirstInputDataKind(true, eDataKindPolymorphic);
+            p->setInputDataKinds({ eDataKindPolymorphic });
         }
     }
 } // AppManager::loadPythonGroups

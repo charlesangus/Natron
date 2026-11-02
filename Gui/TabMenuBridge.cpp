@@ -54,7 +54,8 @@ NATRON_NAMESPACE_ENTER
 namespace {
 QPointer<NodeGraph> g_target;
 QPointF g_scenePos;
-// The filtered launch's context, until the next launch.
+// The filtered launch's context, until the menu's choice is triggered, the menu closes without
+// one, or the next launch.
 std::shared_ptr<TabMenuBridge::LaunchContext> g_context;
 
 // Puts back the context that was set before, however the action returns, so that an action
@@ -148,33 +149,84 @@ selectedOutputKind(NodeGraph* graph,
     return found;
 }
 
-// Triggers action as context says; see TabMenuBridge::launch(NodeGraph*, const LaunchContext&).
+// Puts back the nodes menu's previous args decorator however the action returns.
+class NodesMenuArgsDecoratorScope {
+public:
+    explicit NodesMenuArgsDecoratorScope(const GuiApplicationManager::NodesMenuArgsDecorator& decorator)
+        : _previous(appPTR->swapNodesMenuArgsDecorator(decorator))
+    {
+    }
+
+    ~NodesMenuArgsDecoratorScope()
+    {
+        appPTR->swapNodesMenuArgsDecorator(_previous);
+    }
+
+    NodesMenuArgsDecoratorScope(const NodesMenuArgsDecoratorScope&) = delete;
+    NodesMenuArgsDecoratorScope& operator=(const NodesMenuArgsDecoratorScope&) = delete;
+
+private:
+    GuiApplicationManager::NodesMenuArgsDecorator _previous;
+};
+
+// Closes the undo step it opened however the action returns.
+class UndoStepScope {
+public:
+    UndoStepScope(UndoHistory* history,
+                  const QString& name)
+        : _history(history)
+    {
+        if (_history) {
+            _history->openStep(name);
+        }
+    }
+
+    ~UndoStepScope()
+    {
+        if (_history) {
+            _history->closeStep();
+        }
+    }
+
+    UndoStepScope(const UndoStepScope&) = delete;
+    UndoStepScope& operator=(const UndoStepScope&) = delete;
+
+private:
+    UndoHistory* _history;
+};
+
+// Triggers action on graph as context says; see TabMenuBridge::launch(NodeGraph*, const LaunchContext&).
+// Without a graph, or once its app or group is gone, the action is triggered as is.
 void
 triggerInContext(QAction* action,
                  const TabMenuBridge::LaunchContext& context,
-                 const GuiAppInstancePtr& app,
-                 const NodeCollectionPtr& collection)
+                 NodeGraph* graph,
+                 const QPointF& scenePos)
 {
-    Gui* gui = g_target->getGui();
-    UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
+    Gui* gui = graph ? graph->getGui() : nullptr;
+    GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
+    NodeCollectionPtr collection = graph ? graph->getGroup() : NodeCollectionPtr();
+    if (!app || !collection) {
+        action->trigger();
+
+        return;
+    }
+
     QString text = action->text();
     text.remove(QLatin1Char('&'));
-    if (history) {
-        history->openStep(QCoreApplication::translate("TabMenuBridge", "Create %1").arg(text));
-    }
+    UndoStepScope step(gui->getUndoHistory(), QCoreApplication::translate("TabMenuBridge", "Create %1").arg(text));
 
     NodePtr insertAfter = context.insertAfter.lock();
     NodeGuiPtr afterGui = insertAfter ? std::dynamic_pointer_cast<NodeGui>(insertAfter->getNodeGui()) : NodeGuiPtr();
-    g_target->clearSelection();
+    graph->clearSelection();
     if (afterGui) {
-        g_target->selectNode(afterGui, false);
+        graph->selectNode(afterGui, false);
     }
     const NodesList before = collection->getNodes();
     {
-        NodeCreationContextScope scope(app, collection, g_scenePos);
-        GuiApplicationManager::NodesMenuArgsDecorator previous = appPTR->swapNodesMenuArgsDecorator(context.decorateArgs);
+        NodeCreationContextScope scope(app, collection, scenePos);
+        NodesMenuArgsDecoratorScope decorator(context.decorateArgs);
         action->trigger();
-        appPTR->swapNodesMenuArgsDecorator(previous);
     }
     NodePtr created;
     const NodesList after = collection->getNodes();
@@ -186,10 +238,6 @@ triggerInContext(QAction* action,
     }
     if (created && context.created) {
         context.created(created);
-    }
-
-    if (history) {
-        history->closeStep();
     }
 }
 } // anonymous namespace
@@ -230,15 +278,6 @@ triggerActionInGraph(QAction* action,
 
         return;
     }
-    if (g_context) {
-        // One node per launch: a second trigger, from a nested action, is a plain one.
-        std::shared_ptr<LaunchContext> context;
-        context.swap(g_context);
-        triggerInContext(action, *context, app, collection);
-
-        return;
-    }
-
     NodeCreationContextScope scope(app, collection, scenePos);
     action->trigger();
 }
@@ -246,6 +285,17 @@ triggerActionInGraph(QAction* action,
 void
 triggerAction(QAction* action)
 {
+    // One choice per launch, and a nested trigger from inside the action is a plain one.
+    std::shared_ptr<LaunchContext> context;
+    context.swap(g_context);
+    if (!action) {
+        return;
+    }
+    if (context) {
+        triggerInContext(action, *context, g_target.data(), g_scenePos);
+
+        return;
+    }
     triggerActionInGraph(action, g_target.data(), g_scenePos);
 }
 

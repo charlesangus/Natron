@@ -9,7 +9,8 @@ Checks:
   - choosing USDPrune creates one, between the USDRead and the Viewer, with its pattern set to both
     prims, which are pruned (/World holds only Cam);
   - one Undo removes the USDPrune, reconnects the Viewer to the USDRead and brings the prims back;
-  - Tab on the Scene Graph panel's tree opens the same filtered menu.
+  - Tab on the Scene Graph panel's tree opens the same filtered menu, and once it is closed with
+    no choice, a later tab menu trigger runs without its context.
 
 Shots: scene-create-from-selection-menu.png (the filtered menu) and
 scene-create-from-selection-pruned.png (after creating the USDPrune).
@@ -35,6 +36,7 @@ PRUNE_ID = "USDPrune"
 try:
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
     from PySide6.QtTest import QTest
+    from PySide6.QtGui import QAction
     from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QMainWindow, QTreeView
 
     from guitest import (FIXTURES, check, class_name, finish, menu_of, plugin_problem, report, require, run, shot,
@@ -229,8 +231,8 @@ try:
         check(input_name(viewer) == prune.getScriptName(), "the Viewer now shows the USDPrune (got %r)"
               % (input_name(viewer),))
         pattern = str(prune.getParam("primPattern").getValue())
-        check(sorted(pattern.split(" ")) == sorted([BOX, BALL]),
-              "the USDPrune's pattern holds both prims (got %r)" % (pattern,))
+        check(pattern == BOX + " " + BALL,
+              "the USDPrune's pattern holds both prims, in selection order (got %r)" % (pattern,))
         ok = yield ("until", lambda: world_children() == [CAM], POLL_TIMEOUT_S)
         check(ok, "both prims are pruned: /World holds only Cam (got %r)" % (world_children(),))
         yield ("sleep", SETTLE_MS)
@@ -256,6 +258,20 @@ try:
             close_menu(popup)
         yield ("until", lambda: not any(d.isVisible() for d in widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         check(set(n.getScriptName() for n in app.getChildren()) == before, "closing the menu creates no node")
+
+        # The closed menu's context is gone: a later tab menu trigger is a plain one.
+        yield ("sleep", SETTLE_MS)
+        probe_created = []
+        probe = QAction("Scene Create Probe", main_window())
+        hold(probe)
+        probe.triggered.connect(lambda: probe_created.append(app.createNode(PRUNE_ID)))
+        app.triggerTabMenuAction(probe)
+        QApplication.processEvents()
+        if check(len(probe_created) == 1 and probe_created[0] is not None, "the probe action creates a USDPrune"):
+            got = str(probe_created[0].getParam("primPattern").getValue())
+            check(got != BOX, "a trigger after the closed menu does not fill the selection in (got %r)" % (got,))
+            check(input_name(viewer) == usd.getScriptName(),
+                  "a trigger after the closed menu inserts nothing before the Viewer (got %r)" % (input_name(viewer),))
 
     run(steps())
 except Exception:

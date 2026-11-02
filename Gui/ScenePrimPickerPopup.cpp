@@ -48,6 +48,8 @@ struct ScenePrimPickerPopup::Implementation {
     Gui* gui = nullptr;
     bool multiple = false;
     QStringList current;
+    // The tree's selected paths in the order they were selected.
+    QStringList order;
     bool synced = false;
     std::shared_ptr<SceneNodeStageSource> source;
     SceneGraphModel* model = nullptr;
@@ -64,11 +66,22 @@ struct ScenePrimPickerPopup::Implementation {
         return (viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr;
     }
 
-    // Selects the knob's exact paths; patterns stay unselected.
+    QStringList selectedRows() const
+    {
+        QStringList paths;
+        for (const QModelIndex& row : tree->selectionModel()->selectedRows(0)) {
+            paths << model->pathOf(row);
+        }
+
+        return paths;
+    }
+
+    // Selects the knob's exact paths, in the knob's order; patterns stay unselected.
     void selectCurrent()
     {
         QItemSelection selection;
         QModelIndex last;
+        order.clear();
         for (const QString& path : current) {
             if (path.contains(QLatin1Char('*')) || path.contains(QLatin1Char('?')) || path.contains(QLatin1Char('['))) {
                 continue;
@@ -81,6 +94,7 @@ struct ScenePrimPickerPopup::Implementation {
                 tree->expand(parent);
             }
             selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
+            order << path;
             last = index;
             if (!multiple) {
                 break;
@@ -142,7 +156,10 @@ ScenePrimPickerPopup::ScenePrimPickerPopup(Gui* gui,
     QObject::connect(_imp->buttons, &QDialogButtonBox::accepted, this, &ScenePrimPickerPopup::onAccepted);
     QObject::connect(_imp->buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     QObject::connect(_imp->useViewer, &QPushButton::clicked, this, &ScenePrimPickerPopup::onUseViewerSelection);
-    QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScenePrimPickerPopup::updateButtons);
+    QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
+        _imp->order = SceneSelectionActions::keepSelectionOrder(_imp->order, _imp->selectedRows());
+        updateButtons();
+    });
     QObject::connect(_imp->tree, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
         if (!_imp->multiple && index.isValid()) {
             onAccepted();
@@ -179,12 +196,7 @@ ScenePrimPickerPopup::~ScenePrimPickerPopup()
 QStringList
 ScenePrimPickerPopup::getTreeSelection() const
 {
-    QStringList paths;
-    for (const QModelIndex& row : _imp->tree->selectionModel()->selectedRows(0)) {
-        paths << _imp->model->pathOf(row);
-    }
-
-    return paths;
+    return SceneSelectionActions::keepSelectionOrder(_imp->order, _imp->selectedRows());
 }
 
 void
@@ -229,7 +241,7 @@ ScenePrimPickerPopup::onUseViewerSelection()
         return;
     }
     if (!_imp->multiple) {
-        // The current prim is last.
+        // A path knob takes the current prim, as the selection actions write it.
         paths = QStringList() << paths.back();
     }
     Q_EMIT primsPicked(paths);

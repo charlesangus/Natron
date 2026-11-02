@@ -180,7 +180,8 @@ public:
 
     /**
      * @brief Triggers an action chosen in the tab menu. Nodes it creates with no group go into the graph
-     * the menu was opened over, and the first one with no position lands at the cursor.
+     * the menu was opened over, and the first one with no position lands at the cursor. None, sent
+     * when the menu closes with no choice, ends a filtered launch without creating anything.
      **/
     void triggerTabMenuAction(QAction* action);
 };

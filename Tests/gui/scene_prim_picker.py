@@ -9,6 +9,7 @@ Checks:
   - the popup tree lists Box, Ball and Cam under /World, and allows several rows;
   - picking Box and Ball and pressing OK sets the pattern to "/World/Box /World/Ball";
   - one Undo restores the previous pattern;
+  - picking Cam, Box and Ball, against tree order, sets the pattern in that order;
   - Cancel changes nothing;
   - with Cam selected in the 3D view (through the Scene Graph panel), "Use Viewer Selection"
     sets the pattern to "/World/Cam".
@@ -237,6 +238,20 @@ try:
         undo.trigger()
         QApplication.processEvents()
         check(str(pattern.getValue()) == MARKER, "one Undo restores the previous pattern (got %r)" % (pattern.getValue(),))
+
+        # Click order, not tree order.
+        yield from open_popup()
+        select(popup_tree(), [CAM, BOX, BALL])
+        popup_button(QDialogButtonBox.Ok).click()
+        ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
+        check(ok, "OK closes the picker")
+        picked = str(pattern.getValue())
+        check(picked == " ".join([CAM, BOX, BALL]),
+              "the pattern lists the prims in the order they were picked, not tree order (got %r)" % (picked,))
+        undo = edit_menu_action("undo")
+        require(undo is not None and undo.isEnabled(), "an enabled Undo action is in the Edit menu")
+        undo.trigger()
+        QApplication.processEvents()
 
         # Cancel writes nothing.
         yield from open_popup()

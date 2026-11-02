@@ -28,6 +28,7 @@
 #include <list>
 #include <string>
 
+#include <QSet>
 #include <QStatusBar>
 #include <QUndoCommand>
 #include <QtCore/QCoreApplication>
@@ -103,7 +104,7 @@ knobText(bool takesPattern,
     if (paths.isEmpty()) {
         return std::string();
     }
-    const QString text = takesPattern ? paths.join(QLatin1Char(' ')) : paths.front();
+    const QString text = takesPattern ? paths.join(QLatin1Char(' ')) : paths.back();
 
     return text.trimmed().toStdString();
 }
@@ -155,6 +156,30 @@ pushSet(Gui* gui,
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 namespace SceneSelectionActions {
+QStringList
+keepSelectionOrder(const QStringList& order,
+                   const QStringList& selected)
+{
+    const QSet<QString> selectedSet(selected.begin(), selected.end());
+    QStringList kept;
+    QSet<QString> keptSet;
+
+    for (const QString& path : order) {
+        if (selectedSet.contains(path) && !keptSet.contains(path)) {
+            kept << path;
+            keptSet.insert(path);
+        }
+    }
+    for (const QString& path : selected) {
+        if (!keptSet.contains(path)) {
+            kept << path;
+            keptSet.insert(path);
+        }
+    }
+
+    return kept;
+}
+
 ViewerTab*
 selectionViewer(Gui* gui)
 {

@@ -155,7 +155,8 @@ class _FakeApp(object):
 
     def triggerTabMenuAction(self, action):
         self.triggered.append(action)
-        action.trigger()
+        if action is not None:
+            action.trigger()
 
 
 class _FakeChoiceParam(object):
@@ -202,6 +203,10 @@ class _FakePopup(object):
         self._parent = parent
         self._flags = flags
         self.set_parent_calls = []
+        self.event_filters = []
+
+    def installEventFilter(self, watcher):
+        self.event_filters.append(watcher)
 
     def parent(self):
         return self._parent
@@ -248,6 +253,8 @@ class NatronAdapterTests(unittest.TestCase):
                 scheduled.append((delay_ms, callback))
 
         qtcore.QTimer = _StubQTimer
+        qtcore.QObject = type("QObject", (object,), {})
+        qtcore.QEvent = types.SimpleNamespace(Hide="Hide", Show="Show")
 
         class _StubQFile(object):
             @staticmethod
@@ -729,7 +736,8 @@ class NatronAdapterTests(unittest.TestCase):
         h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
         items = h.module._plugin.get_items()
 
-        # USDMaterial declares a prim path knob but takes no input, so it is not listed.
+        # USDMaterial is a source with no scene input, so nothing can be inserted
+        # after a scene node as one, prim path knob or not.
         self.assertEqual(self._labels(items), ["USDEditTransform", "USDPrune", "USDXformPrim"])
 
     def test_kind_context_without_knob_requirement_keeps_polymorphic_inputs(self):
@@ -767,6 +775,63 @@ class NatronAdapterTests(unittest.TestCase):
             callback()
 
         self.assertEqual(app.triggered, [prune["menuobj"]])
+
+    def _run_scheduled(self, h):
+        while h.scheduled:
+            _delay, callback = h.scheduled.pop(0)
+            callback()
+
+    def test_filtered_launch_closed_without_a_choice_ends_the_launch(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        h.module._plugin.closed()
+
+        self.assertEqual(app.triggered, [None])
+
+    def test_filtered_launch_closed_after_a_choice_sends_the_choice_only(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        prune = [i for i in h.module._plugin.get_items() if i["menupath"].endswith("USDPrune")][0]
+        h.module._plugin.invoke(prune)
+        h.module._plugin.closed()
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered, [prune["menuobj"]])
+
+    def test_plain_launch_closed_without_a_choice_sends_nothing(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        app = _FakeApp()
+
+        h.module.launch(app)
+        h.module._plugin.closed()
+
+        self.assertEqual(app.triggered, [])
+
+    def test_hiding_the_popup_ends_a_filtered_launch_once(self):
+        h = self._load_adapter()
+        self._kind_menu(h)
+        popup = _FakePopup()
+        h.core._tabtabtab_instance = popup
+        app = _FakeApp()
+
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        h.module.launch(app, {"inputKind": "scene", "needsPrimPathKnob": True})
+        self.assertEqual(len(popup.event_filters), 1)
+        watcher = popup.event_filters[0]
+        hide = types.SimpleNamespace(type=lambda: "Hide")
+        self.assertFalse(watcher.eventFilter(popup, hide))
+        self._run_scheduled(h)
+        watcher.eventFilter(popup, hide)
+        self._run_scheduled(h)
+
+        self.assertEqual(app.triggered, [None])
 
     def _selected_kind_menu(self, h):
         def node(label, kinds):

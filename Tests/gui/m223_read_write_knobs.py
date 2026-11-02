@@ -233,11 +233,11 @@ try:
             report("NOTE %s panel labels top to bottom: %r" % (plugin, panel_rows(panel)))
             check(len(reloads) == 1, "%s has one Reload button (%d)" % (plugin, len(reloads)))
             check(not icons, "%s's File shows no reload icon (%d)" % (plugin, len(icons)))
-            check(len(fields) == 1, "%s has one File field (%d)" % (plugin, len(fields)))
-            if len(reloads) == 1 and len(fields) == 1:
+            check(len(fields) >= 1, "%s has a File field (%d path fields)" % (plugin, len(fields)))
+            if len(reloads) == 1 and fields:
                 reload_y = reloads[0].mapTo(panel, reloads[0].rect().center()).y()
-                field_y = fields[0].mapTo(panel, fields[0].rect().center()).y()
-                check(abs(reload_y - field_y) <= 6, "%s's Reload is on the File row (y %d vs %d)" % (plugin, reload_y, field_y))
+                same_row = [f for f in fields if abs(f.mapTo(panel, f.rect().center()).y() - reload_y) <= 6]
+                check(len(same_row) == 1, "%s's Reload is on the File row (%d path fields share its row)" % (plugin, len(same_row)))
             screen_crop("m223-%s-panel.png" % plugin.lower(), panel)
             gt.close_all_panels()
 

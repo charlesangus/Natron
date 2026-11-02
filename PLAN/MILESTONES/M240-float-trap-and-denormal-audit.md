@@ -27,19 +27,7 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 
 - [x] M240.P1.T1 — List overflowing knob-to-float conversions
   - files: `Engine/Nodes/**` (read only), this milestone file
-  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `- [ ] M240.P3.T4 — EdgeAware EIGF parity on RADV
-  - files: `Tests/Native/EdgeAwareGpu_Test.cpp`, the EIGF kernels under `Engine/Nodes/` (M209 - Edge-Aware Filter Library)
-  - approach: On RADV, `EdgeAwareGpu.EigfSurfaceBlur` fails exact parity in the case "97x61 smooth sigma 1e+09 x2 geomean quantization 1": 31 of 5917 floats differ, worst 2.7e-4 (want 0.0998474, got 0.1001173). lavapipe passes. Find the GPU step that differs from the CPU (fast reciprocal, exp/log approximation, reduction order) and make them agree, or bound the comparison with a recorded reason if it is inherent.
-  - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
-  - size: M
-
-- [ ] M240.P3.T5 — Merge parity on RADV
-  - files: `Tests/Native/NativeMergeGpu_Test.cpp`, `Engine/Nodes/Merge/*` kernels (M101 - Clean-Sheet Merge Node)
-  - approach: On RADV, `NativeMergeGpuTest.MatchesTheCpuRender` fails with 8 mismatches at `NativeMergeGpu_Test.cpp:273` in several operations. lavapipe passes. Same method as P3.T3: find the diverging step (often a divide by alpha or a fast reciprocal) and make CPU and GPU agree, or bound it with a recorded reason.
-  - verify: `ctest -R NativeMergeGpu` passes on RADV and lavapipe.
-  - size: M
-
-## Decisions`.
+  - approach: Find every native-node site that narrows a knob value (double) to float: `(float)`, `static_cast<float>` and implicit narrowing into float params in `bake`/`readColor`/param structs. Keep the sites whose knob range allows values beyond FLT_MAX (±DBL_MAX or unbounded). Record the list (file:line, knob, range) under this file's `## Decisions`.
   - verify: the list is recorded, with each entry's knob range checked against its knob definition.
   - size: M
 
@@ -112,6 +100,18 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - files: `Tests/Native/NativeColorspaceGpu_Test.cpp`, `Tests/Native/NativeColourUtilGpu_Test.cpp`, `Tests/Native/NativeHueGpu_Test.cpp`, the matching `Engine/Nodes/Color/*` kernels
   - approach: On RADV (AMD Radeon AI PRO R9700), exact parity fails only in the "divide by A" cases: NativeColorspaceGpu `MatchesTheCpuRender` (e.g. gpu 0.719309 vs cpu 0.719320, -152.43 vs -152.54 masked), NativeColourUtilGpu `ChainRunsAsOneRegion` (7 mismatches), and NativeHueGpu `HueCorrectMatchesTheCpuRender` (-27.6866 vs -27.6861). lavapipe passes. The errors are far beyond 1 ulp, so this looks like the GPU's unpremultiply dividing by a small or flushed alpha differently, or a fast reciprocal. Find the step and make CPU and GPU agree, or bound the comparison with a recorded reason if it is inherent.
   - verify: `ctest -R "NativeColorspaceGpu|NativeColourUtilGpu|NativeHueGpu"` passes on RADV and lavapipe.
+  - size: M
+
+- [ ] M240.P3.T4 — EdgeAware EIGF parity on RADV
+  - files: `Tests/Native/EdgeAwareGpu_Test.cpp`, the EIGF kernels under `Engine/Nodes/` (M209 - Edge-Aware Filter Library)
+  - approach: On RADV, `EdgeAwareGpu.EigfSurfaceBlur` fails exact parity in the case "97x61 smooth sigma 1e+09 x2 geomean quantization 1": 31 of 5917 floats differ, worst 2.7e-4 (want 0.0998474, got 0.1001173). lavapipe passes. Find the GPU step that differs from the CPU (fast reciprocal, exp/log approximation, reduction order) and make them agree, or bound the comparison with a recorded reason if it is inherent.
+  - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
+  - size: M
+
+- [ ] M240.P3.T5 — Merge parity on RADV
+  - files: `Tests/Native/NativeMergeGpu_Test.cpp`, `Engine/Nodes/Merge/*` kernels (M101 - Clean-Sheet Merge Node)
+  - approach: On RADV, `NativeMergeGpuTest.MatchesTheCpuRender` fails with 8 mismatches at `NativeMergeGpu_Test.cpp:273` in several operations. lavapipe passes. Same method as P3.T3: find the diverging step (often a divide by alpha or a fast reciprocal) and make CPU and GPU agree, or bound it with a recorded reason.
+  - verify: `ctest -R NativeMergeGpu` passes on RADV and lavapipe.
   - size: M
 
 ## Decisions

@@ -34,8 +34,8 @@
 #include "Engine/DeepImage.h"
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Nodes/KnobReader.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 

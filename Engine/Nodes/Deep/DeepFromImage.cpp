@@ -39,9 +39,9 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 

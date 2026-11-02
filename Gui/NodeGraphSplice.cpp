@@ -38,19 +38,19 @@
 NATRON_NAMESPACE_ENTER
 
 static std::vector<int>
-freeInputsMasksLast(const SpliceNodeInfo& info)
+freeNonMaskInputs(const SpliceNodeInfo& info)
 {
     std::vector<int> inputs;
-    std::vector<int> masks;
 
     for (std::size_t i = 0; i < info.inputIds.size(); ++i) {
         if (info.inputIds[i] != -1) {
             continue;
         }
-        const bool isMask = (i < info.inputIsMask.size()) && info.inputIsMask[i];
-        (isMask ? masks : inputs).push_back((int)i);
+        if ((i < info.inputIsMask.size()) && info.inputIsMask[i]) {
+            continue;
+        }
+        inputs.push_back((int)i);
     }
-    inputs.insert(inputs.end(), masks.begin(), masks.end());
 
     return inputs;
 }
@@ -118,7 +118,7 @@ planSpliceInternal(const std::vector<SpliceNodeInfo>& selection,
             if ((feeder == -1) || (selectionIds.find(feeder) != selectionIds.end())) {
                 continue;
             }
-            std::vector<int> freeInputs = freeInputsMasksLast(info);
+            std::vector<int> freeInputs = freeNonMaskInputs(info);
             if (freeInputs.empty()) {
                 continue;
             }

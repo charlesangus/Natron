@@ -279,6 +279,20 @@ try:
         ys = [n.getPosition()[1] for n in nodes] + [n.getPosition()[1] + n.getSize()[1] for n in nodes]
         frame(graph, scale, (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
 
+    def count_selection_pixels(graph, img, rect_scene, pad=8.0):
+        p = NatronEngine.natron.getSettings().getParam("selection")
+        rgb = [int(max(0.0, min(1.0, p.getValue(d))) * 255 + 0.5) for d in range(3)]
+        x0, y0, x1, y1 = rect_scene
+        a = graph.mapFromScene(QPointF(x0 - pad, y0))
+        b = graph.mapFromScene(QPointF(x1 + pad, y1))
+        hits = 0
+        for y in range(max(0, min(a.y(), b.y())), min(img.height(), max(a.y(), b.y()))):
+            for x in range(max(0, min(a.x(), b.x())), min(img.width(), max(a.x(), b.x()))):
+                c = img.pixelColor(x, y)
+                if abs(c.red() - rgb[0]) <= 24 and abs(c.green() - rgb[1]) <= 24 and abs(c.blue() - rgb[2]) <= 24:
+                    hits += 1
+        return hits
+
     def viewer_section(graph):
         gt.section("viewer pipe")
         x0, y0 = 2000, 0
@@ -292,7 +306,11 @@ try:
         yield ("sleep", SETTLE_MS)
         end = drag_beside_pipe(graph, src, viewer, mover)
         yield ("sleep", SETTLE_MS)
-        snap(graph, "viewer-pipe")
+        img = snap(graph, "viewer-pipe")
+        pipe_x = (centre(src)[0] + centre(viewer)[0]) / 2.0
+        pipe_rect = (pipe_x, centre(src)[1] + src.getSize()[1], pipe_x, centre(viewer)[1] - viewer.getSize()[1])
+        hits = count_selection_pixels(graph, img, pipe_rect)
+        check(hits == 0, "hovering a Viewer pipe shows no insert highlight (%d Selection-colour pixels)" % hits)
         release(graph, end)
         yield ("sleep", SETTLE_MS)
         check(input_name(viewer, 0) == src.getScriptName() and input_name(mover, 0) is None,

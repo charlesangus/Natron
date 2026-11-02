@@ -221,7 +221,7 @@ TEST(NodeGraphSplice, FreePreferredInputIsTheOnlyEntryInput)
     EXPECT_EQ(0, plan.entryInputs[0]);
 }
 
-TEST(NodeGraphSplice, ConnectedEntryOffersMasksLast)
+TEST(NodeGraphSplice, ConnectedEntryLeavesMasksOut)
 {
     std::vector<SpliceNodeId> inputs;
     inputs.push_back(99);
@@ -237,10 +237,25 @@ TEST(NodeGraphSplice, ConnectedEntryOffersMasksLast)
     SplicePlan plan = planSplice(selection);
 
     ASSERT_TRUE(plan.valid);
-    ASSERT_EQ(2u, plan.entryInputs.size());
+    ASSERT_EQ(1u, plan.entryInputs.size());
     EXPECT_EQ(2, plan.entryInputs[0]);
-    EXPECT_EQ(1, plan.entryInputs[1]);
     EXPECT_EQ(2, plan.entryInput);
+}
+
+TEST(NodeGraphSplice, ConnectedEntryWithOnlyAMaskFreeIsInvalid)
+{
+    std::vector<SpliceNodeId> inputs;
+    inputs.push_back(99);
+    inputs.push_back(-1);
+
+    std::vector<SpliceNodeInfo> selection;
+    selection.push_back(makeInfo(1, inputs, 0, std::vector<SpliceNodeId>()));
+    selection[0].inputIsMask.push_back(false);
+    selection[0].inputIsMask.push_back(true);
+
+    SplicePlan plan = planSplice(selection);
+
+    EXPECT_FALSE(plan.valid);
 }
 
 TEST(NodeGraphSplice, ChainFedFromOutsideEntersItsTop)

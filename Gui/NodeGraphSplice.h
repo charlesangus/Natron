@@ -81,8 +81,8 @@ struct SplicePlan {
 
 // The entry is the one node whose preferred input is free, entered through that input. When no
 // node has a free preferred input, the entry is the one node whose preferred input is fed from
-// outside the selection, entered through any of its free inputs, masks last, so that a node
-// already connected keeps its connections.
+// outside the selection, entered through any of its free non-mask inputs, so that a node
+// already connected keeps its connections and a mask never receives the pipe's image.
 SplicePlan planSplice(const std::vector<SpliceNodeInfo>& selection);
 
 SplicePlan planSpliceForSelection(const NodesGuiList& selection);

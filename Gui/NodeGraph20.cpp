@@ -313,6 +313,18 @@ NodeGraph::checkForSpliceHint()
             if (!srcNode) {
                 continue;
             }
+            // The insert leaves an entry node alone when the pipe's source already feeds it.
+            bool alreadyFeedsEntry = false;
+            const std::vector<NodeWPtr>& entryFeeders = entryNode->getGuiInputs();
+            for (std::size_t f = 0; f < entryFeeders.size(); ++f) {
+                if (entryFeeders[f].lock() == srcNode) {
+                    alreadyFeedsEntry = true;
+                    break;
+                }
+            }
+            if (alreadyFeedsEntry) {
+                continue;
+            }
             int entryInput = -1;
             for (std::size_t e = 0; e < _imp->_spliceEntryInputs.size(); ++e) {
                 if (canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInputs[e], exitNode)) {

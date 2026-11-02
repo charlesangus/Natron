@@ -626,7 +626,7 @@ try:
         # dragged across another pipe, enters through its first free input and keeps its own pipe.
         gt.section("splice-connected-free-input")
         src_n1 = create("net.sf.openfx.ConstantPlugin", 2800, 0)
-        mid_n = create("net.sf.cimg.CImgBlur", 2800, 200)
+        mid_n = create("Merge", 2800, 200)
         connect(mid_n, 0, src_n1)
         src_n2 = create("net.sf.openfx.ConstantPlugin", 3100, 400)
         dst_n2 = create("net.sf.cimg.CImgBlur", 3100, 700)

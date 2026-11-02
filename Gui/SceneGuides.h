@@ -98,8 +98,8 @@ std::vector<Guide> buildGuides(const PXR_NS::UsdStageRefPtr& stage,
                                PXR_NS::UsdTimeCode time,
                                double length);
 
-// The guide under pixel, the index of the nearest within kHitTolerancePixels on screen, or -1.
-// Guides at skipPath are ignored. *world is the point on the guide under the pixel.
+// The index of the guide nearest pixel within kHitTolerancePixels, or -1; *world is the point hit.
+// Guides at skipPath are ignored.
 int hitTest(const SceneGizmo::View& view,
             const std::vector<Guide>& guides,
             const PXR_NS::GfVec2d& pixel,

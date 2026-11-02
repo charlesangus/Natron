@@ -248,7 +248,7 @@ findGuidePrims(const UsdStageRefPtr& stage,
     if (!stage) {
         return prims;
     }
-    for (const UsdPrim& prim : stage->Traverse()) {
+    for (const UsdPrim& prim : stage->Traverse(UsdTraverseInstanceProxies())) {
         if (hasLights && !*hasLights && prim.HasAPI<UsdLuxLightAPI>()) {
             *hasLights = true;
         }

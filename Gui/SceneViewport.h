@@ -237,6 +237,9 @@ public:
         double y = 0.;
     };
 
+    // Off by default: building the records costs a projection per guide segment.
+    void setRecordDrawnGuides(bool record);
+
     const std::vector<DrawnGuide>& getDrawnGuides() const;
 
     void setFreeCamera(const FreeCamera& camera);

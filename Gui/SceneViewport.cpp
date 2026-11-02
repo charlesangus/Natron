@@ -52,6 +52,7 @@
 #include <QUndoCommand>
 #include <QWheelEvent>
 #include <QWidgetAction>
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
 
 #include "Engine/AppInstance.h"
@@ -306,6 +307,11 @@ struct SceneViewportRenderer::Implementation {
     double guidesLength = 0.;
     std::atomic<double> guideSize { 1. };
     std::vector<DrawnGuide> drawnGuides;
+    bool recordDrawnGuides = false;
+    // Indices into guides, unselected cameras, unselected lights and selected ones, without the
+    // look-through camera's.
+    std::vector<int> guideBatches[3];
+    bool guideBatchesValid = false;
 
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
@@ -374,9 +380,31 @@ struct SceneViewportRenderer::Implementation {
             guidesTimeCode = time;
             guidesLength = length;
             guidesValid = true;
+            guideBatchesValid = false;
         }
 
         return guides;
+    }
+
+    const std::vector<int>* currentGuideBatches()
+    {
+        const std::vector<SceneGuides::Guide>& all = currentGuides();
+        if (!guideBatchesValid) {
+            for (std::vector<int>& batch : guideBatches) {
+                batch.clear();
+            }
+            for (int i = 0; i < (int)all.size(); ++i) {
+                const SceneGuides::Guide& guide = all[i];
+                if (guide.path == lookThrough) {
+                    continue;
+                }
+                const bool isCamera = (guide.kind == SceneGuides::eGuideKindCamera);
+                guideBatches[isSelected(guide.path) ? 2 : (isCamera ? 0 : 1)].push_back(i);
+            }
+            guideBatchesValid = true;
+        }
+
+        return guideBatches;
     }
 
     bool isSelected(const std::string& path) const
@@ -871,9 +899,32 @@ struct SceneViewportRenderer::Implementation {
         glPopMatrix();
     }
 
+    void recordDrawnGuide(const SceneGizmo::View& view,
+                          const SceneGuides::Guide& guide,
+                          int width,
+                          int height)
+    {
+        for (std::size_t k = 0; k + 1 < guide.segments.size(); k += 2) {
+            GfVec2d a, b;
+            if (!SceneGizmo::project(view, guide.segments[k], &a) || !SceneGizmo::project(view, guide.segments[k + 1], &b)) {
+                continue;
+            }
+            const GfVec2d middle = (a + b) * 0.5;
+            if ((middle[0] >= 0.) && (middle[0] < width) && (middle[1] >= 0.) && (middle[1] < height)) {
+                DrawnGuide drawn;
+                drawn.path = guide.path;
+                drawn.kind = SceneGuides::getGuideKindName(guide.kind);
+                drawn.x = middle[0];
+                drawn.y = middle[1];
+                drawnGuides.push_back(drawn);
+                break;
+            }
+        }
+    }
+
     // The camera and light guides, but the camera looked through's, as one batch of lines per
     // colour, depth-tested against Storm's presented depth; selected ones in the selection colour.
-    // Records where each is in drawnGuides. Needs stageMutex.
+    // Needs stageMutex.
     void drawGuides(const GfFrustum& frustum,
                     int width,
                     int height)
@@ -883,25 +934,12 @@ struct SceneViewportRenderer::Implementation {
         if (all.empty()) {
             return;
         }
-        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
-        for (const SceneGuides::Guide& guide : all) {
-            if (guide.path == lookThrough) {
-                continue;
-            }
-            for (std::size_t k = 0; k + 1 < guide.segments.size(); k += 2) {
-                GfVec2d a, b;
-                if (!SceneGizmo::project(view, guide.segments[k], &a) || !SceneGizmo::project(view, guide.segments[k + 1], &b)) {
-                    continue;
-                }
-                const GfVec2d middle = (a + b) * 0.5;
-                if ((middle[0] >= 0.) && (middle[0] < width) && (middle[1] >= 0.) && (middle[1] < height)) {
-                    DrawnGuide drawn;
-                    drawn.path = guide.path;
-                    drawn.kind = SceneGuides::getGuideKindName(guide.kind);
-                    drawn.x = middle[0];
-                    drawn.y = middle[1];
-                    drawnGuides.push_back(drawn);
-                    break;
+        const std::vector<int>* batches = currentGuideBatches();
+        if (recordDrawnGuides) {
+            const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+            for (int pass = 0; pass < 3; ++pass) {
+                for (int index : batches[pass]) {
+                    recordDrawnGuide(view, all[index], width, height);
                 }
             }
         }
@@ -933,16 +971,8 @@ struct SceneViewportRenderer::Implementation {
             }
             glLineWidth((pass == 2) ? 2.f : 1.f);
             glBegin(GL_LINES);
-            for (const SceneGuides::Guide& guide : all) {
-                if (guide.path == lookThrough) {
-                    continue;
-                }
-                const bool isCamera = (guide.kind == SceneGuides::eGuideKindCamera);
-                const int guidePass = isSelected(guide.path) ? 2 : (isCamera ? 0 : 1);
-                if (guidePass != pass) {
-                    continue;
-                }
-                for (const GfVec3d& p : guide.segments) {
+            for (int index : batches[pass]) {
+                for (const GfVec3d& p : all[index].segments) {
                     glVertex3d(p[0], p[1], p[2]);
                 }
             }
@@ -1184,6 +1214,12 @@ bool
 SceneViewportRenderer::isSceneLit() const
 {
     return _imp->sceneLit;
+}
+
+void
+SceneViewportRenderer::setRecordDrawnGuides(bool record)
+{
+    _imp->recordDrawnGuides = record;
 }
 
 const std::vector<SceneViewportRenderer::DrawnGuide>&
@@ -1490,6 +1526,7 @@ void
 SceneViewportRenderer::setLookThroughCamera(const std::string& path)
 {
     _imp->lookThrough = path;
+    _imp->guideBatchesValid = false;
     _imp->lookThroughOverridePath.clear();
 }
 
@@ -1523,6 +1560,7 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
 {
     _imp->selected = paths;
     std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    _imp->guideBatchesValid = false;
     _imp->applySelection();
 }
 
@@ -1989,6 +2027,13 @@ keySequenceOf(const char* actionID)
     const Viewer3DKeyBinding* binding = defaultKeyBinding(actionID);
 
     return binding ? QKeySequence(int(binding->modifiers) | int(binding->key)) : QKeySequence();
+}
+
+// A shortcut action's description in the context its translations are extracted under.
+QString
+shortcutText(const char* description)
+{
+    return QCoreApplication::translate("ActionWithShortcut", description);
 }
 
 // The orthographic and perspective views, their key actions and menu labels.
@@ -3221,6 +3266,7 @@ SceneViewport::paintGL()
         // Free navigation stops looking through a camera.
         setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     }
+    _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done.
@@ -3252,7 +3298,7 @@ SceneViewport::paintGL()
         QString mode;
         for (const DrawModeEntry& entry : kDrawModes) {
             if (entry.mode == _imp->renderer.getDrawMode()) {
-                mode = tr(entry.label);
+                mode = shortcutText(entry.label);
             }
         }
         const std::string& camera = _imp->renderer.getLookThroughCamera();
@@ -3262,7 +3308,7 @@ SceneViewport::paintGL()
         } else if (_imp->renderer.getViewMode() != SceneViewportRenderer::eViewModePerspective) {
             for (const ViewModeEntry& entry : kViewModes) {
                 if (entry.mode == _imp->renderer.getViewMode()) {
-                    view = tr(entry.label);
+                    view = shortcutText(entry.label);
                 }
             }
         }
@@ -3728,7 +3774,7 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
 
     QActionGroup* modes = new QActionGroup(&menu);
     for (const DrawModeEntry& item : kDrawModes) {
-        QAction* action = menu.addAction(tr(item.label));
+        QAction* action = menu.addAction(shortcutText(item.label));
         action->setCheckable(true);
         action->setChecked(_imp->renderer.getDrawMode() == item.mode);
         action->setActionGroup(modes);
@@ -3792,7 +3838,7 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QMenu* views = menu.addMenu(tr("View"));
     QActionGroup* viewModes = new QActionGroup(views);
     for (const ViewModeEntry& entry : kViewModes) {
-        QAction* action = views->addAction(tr(entry.label));
+        QAction* action = views->addAction(shortcutText(entry.label));
         action->setCheckable(true);
         action->setChecked(_imp->renderer.getLookThroughCamera().empty() && (_imp->renderer.getViewMode() == entry.mode));
         action->setActionGroup(viewModes);
@@ -3803,7 +3849,7 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
         });
     }
 
-    QAction* lockView = menu.addAction(tr(kShortcutDescActionViewer3DLockView));
+    QAction* lockView = menu.addAction(shortcutText(kShortcutDescActionViewer3DLockView));
     lockView->setCheckable(true);
     lockView->setChecked(navigatesLockedCamera());
     lockView->setShortcut(keySequenceOf(kShortcutIDActionViewer3DLockView));
@@ -3937,14 +3983,14 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
         });
     }
     display->addSeparator();
-    QAction* grid = display->addAction(tr(kShortcutDescActionViewer3DShowGrid));
+    QAction* grid = display->addAction(shortcutText(kShortcutDescActionViewer3DShowGrid));
     grid->setCheckable(true);
     grid->setChecked(_imp->renderer.getShowGrid());
     grid->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGrid));
     QObject::connect(grid, &QAction::toggled, this, [this](bool show) {
         setShowGrid(show);
     });
-    QAction* guides = display->addAction(tr(kShortcutDescActionViewer3DShowGuides));
+    QAction* guides = display->addAction(shortcutText(kShortcutDescActionViewer3DShowGuides));
     guides->setCheckable(true);
     guides->setChecked(_imp->renderer.getShowGuides());
     guides->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGuides));

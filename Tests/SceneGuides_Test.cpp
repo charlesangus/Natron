@@ -33,7 +33,9 @@
 
 #include "Gui/SceneGuides.h"
 
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/diskLight.h>
 
@@ -117,6 +119,43 @@ TEST(SceneGuides, PerspectiveCameraFrustumMatchesGfCamera)
     bool hasLights = true;
     SceneGuides::findGuidePrims(stage, &hasLights);
     EXPECT_FALSE(hasLights);
+}
+
+TEST(SceneGuides, CameraFrustumFollowsApertureAndGuideSizeCappedByFarClip)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateInMemory();
+    PXR_NS::UsdGeomCamera camera = defineCamera(stage, "/Cam", false);
+    camera.CreateVerticalApertureAttr().Set(12.f);
+    std::vector<SceneGuides::Guide> guides = guidesOf(stage);
+    ASSERT_EQ(guides.size(), 1u);
+    EXPECT_TRUE(hasPoint(guides[0].segments, kCameraPosition + GfVec3d(kLength * 18. / 50., kLength * 6. / 50., -kLength)));
+
+    camera.CreateClippingRangeAttr().Set(PXR_NS::GfVec2f(0.1f, 4.f));
+    guides = guidesOf(stage);
+    ASSERT_EQ(guides.size(), 1u);
+    EXPECT_TRUE(hasPoint(guides[0].segments, kCameraPosition + GfVec3d(4. * 18. / 50., 4. * 6. / 50., -4.)));
+    EXPECT_FALSE(hasPoint(guides[0].segments, kCameraPosition + GfVec3d(kLength * 18. / 50., kLength * 6. / 50., -kLength)));
+}
+
+TEST(SceneGuides, FindsCamerasAndLightsInsideInstanceProxies)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateInMemory();
+    PXR_NS::UsdGeomXform::Define(stage, PXR_NS::SdfPath("/Proto"));
+    defineCamera(stage, "/Proto/Cam", false);
+    PXR_NS::UsdLuxDiskLight::Define(stage, PXR_NS::SdfPath("/Proto/Light"));
+    PXR_NS::UsdPrim instance = PXR_NS::UsdGeomXform::Define(stage, PXR_NS::SdfPath("/Inst")).GetPrim();
+    instance.GetReferences().AddInternalReference(PXR_NS::SdfPath("/Proto"));
+    instance.SetInstanceable(true);
+
+    bool hasLights = false;
+    int underInstance = 0;
+    for (const SceneGuides::GuidePrim& prim : SceneGuides::findGuidePrims(stage, &hasLights)) {
+        if (prim.path.HasPrefix(PXR_NS::SdfPath("/Inst"))) {
+            ++underInstance;
+        }
+    }
+    EXPECT_EQ(underInstance, 2);
+    EXPECT_TRUE(hasLights);
 }
 
 TEST(SceneGuides, OrthographicCameraIsABox)

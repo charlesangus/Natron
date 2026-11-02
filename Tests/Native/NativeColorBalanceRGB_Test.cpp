@@ -687,13 +687,20 @@ TEST_F(NativeColorBalanceRGBTest, PickedValues)
     ASSERT_TRUE(effect != NULL);
     const ColorBalanceRGBOp::Params p = effect->bakeColorBalanceRGB(kTime, ViewIdx(0));
 
-    // Neutral colours: no chroma, and the luminance is the grey level.
+    // Neutral colours: no chroma. Filmlight Yrg luminance (0.68990272 L + 0.34832189 M of CIE 2006
+    // LMS) puts D65 white at about 1.0579, not 1, so darktable picks 0.18 grey as about 0.1904.
     {
         const float grey[3] = { 0.18f, 0.18f, 0.18f };
         const float white[3] = { 1.f, 1.f, 1.f };
+        float whiteLms[3];
+        float whiteYrg[3];
+        DtColorSpaces::apply(p.inputMatrix, white, whiteLms);
+        DtColorSpaces::lmsToYrg(whiteLms, whiteYrg);
+        const double whiteY = whiteYrg[0];
+        EXPECT_NEAR(1.0579, whiteY, 1e-3);
         const ColorBalanceRGBOp::PickedValues v = ColorBalanceRGBOp::pickedValues(p, grey, white, false);
-        EXPECT_NEAR(0.18, v.greyFulcrum, 2e-3);
-        EXPECT_NEAR(0., v.whiteFulcrum, 1e-2);
+        EXPECT_NEAR(0.18 * whiteY, v.greyFulcrum, 1e-5);
+        EXPECT_NEAR(std::log2(whiteY), v.whiteFulcrum, 1e-5);
         EXPECT_NEAR(0., v.chroma, 1e-3);
         const float brighter[3] = { 4.f, 2.f, 1.f };
         EXPECT_GT(ColorBalanceRGBOp::pickedValues(p, grey, brighter, false).whiteFulcrum, 1.);

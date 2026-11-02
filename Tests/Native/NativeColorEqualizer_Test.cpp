@@ -42,6 +42,7 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
@@ -698,15 +699,18 @@ TEST_F(NativeColorEqualizerTest, ReleasesTheFrame)
     std::string error;
     // Only renderOp() keeps the frame; a GPU render never reaches it.
     GpuPlacementOffGuard cpuOnly;
+    // A render that bypasses the cache empties the caches afterwards, which purges the node's too;
+    // these go through the cache, which is emptied only where the test purges it.
+    appPTR->clearAllCaches();
     const auto render = [&]() {
         std::vector<RenderedPlane> out;
-        ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &out, &error)) << error;
+        ASSERT_TRUE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &out, &error, false /*byPassCache*/)) << error;
         ASSERT_TRUE(effect->holdsFrame());
     };
 
     EXPECT_FALSE(effect->holdsFrame());
     render();
-    effect->purgeCaches();
+    appPTR->clearAllCaches();
     EXPECT_FALSE(effect->holdsFrame());
 
     render();

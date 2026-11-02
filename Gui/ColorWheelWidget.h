@@ -118,6 +118,11 @@ void drawColorWheelRingOutlines(QPainter& p, const QPointF& centre, double discR
  * gestureFinished, with one gestureMoved per step carrying a delta (absolute for the ring and
  * the reset); the owner applies the edits, makes the gesture one undo step, and calls setValue
  * on finish to re-centre the wheel.
+ *
+ * In polar mode (setPolarMode) the wheel shows a hue and a radius instead of a colour knob's
+ * value: the disc is centred on neutral, painted by the owner's colour function, the puck sits
+ * at the polar value and the owner moves it with setPolarValue. Disc drags are always trackball
+ * steps, with no V/T locks and no overlays; the ring, the reset and the zoom work as above.
  **/
 class ColorWheelWidget
     : public QWidget {
@@ -143,6 +148,24 @@ public:
      **/
     void setValue(const KnobColorValue& value);
     void setRim(double rim);
+
+    /**
+     * @brief The working-space RGB a polar wheel shows at hueDegrees (0 on the right,
+     * counter-clockwise) and radius, in the rim's units. The ring shows each hue at the rim.
+     **/
+    typedef std::function<void(double hueDegrees, double radius, double rgb[3])> PolarColour;
+
+    /**
+     * @brief Turns polar mode on for good, painting the disc and the ring with colour.
+     **/
+    void setPolarMode(const PolarColour& colour);
+    bool isPolarMode() const;
+
+    /**
+     * @brief Puts the puck of a polar wheel at hueDegrees and radius; past the rim it parks on
+     * the edge.
+     **/
+    void setPolarValue(double hueDegrees, double radius);
 
     /**
      * @brief An empty converter means identity.
@@ -217,14 +240,20 @@ public:
     static int maximumDiameter();
 
     /**
-     * @brief This wheel's cap, never below minimumDiameter(). The preferred diameter is
+     * @brief This wheel's cap, never below its floor. The preferred diameter is
      * re-clamped to it.
      **/
     void setMaximumDiameter(int pixels);
     int getMaximumDiameter() const;
 
     /**
-     * @brief The width the owner can spare, clamped to [minimumDiameter, getMaximumDiameter];
+     * @brief This wheel's floor, minimumDiameter() unless set, never above its cap. A compact
+     * layout sets it lower.
+     **/
+    void setMinimumDiameter(int pixels);
+
+    /**
+     * @brief The width the owner can spare, clamped to the wheel's floor and cap;
      * it becomes the sizeHint. The disc images re-render on the next paint at the new size.
      **/
     void setPreferredDiameter(int pixels);
@@ -285,6 +314,8 @@ private:
 
     struct RingCacheKey {
         QSize size;
+        // The rim the polar ring was sampled at, 0 outside polar mode.
+        double rim = 0.0;
         unsigned basisGeneration = 0;
         unsigned converterGeneration = 0;
         bool valid = false;
@@ -322,12 +353,17 @@ private:
     unsigned _basisGeneration;
     unsigned _converterGeneration;
     int _preferredDiameter;
+    int _minDiameter;
     int _maxDiameter;
 
     HitZoneEnum _dragZone;
     QPointF _lastDragPos;
     PlanePoint _gestureOffset;
     bool _gestureMoved;
+
+    bool _polar;
+    PolarColour _polarColour;
+    PlanePoint _polarPoint;
 
     mutable DiscCacheKey _discKey;
     mutable QImage _disc;

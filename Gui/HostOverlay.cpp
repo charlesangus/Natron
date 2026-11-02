@@ -2471,9 +2471,9 @@ PositionInteract::penMotion(double time,
                             const RenderScale& /*renderScale*/,
                             ViewIdx /*view*/,
                             const OfxPointD& pscale,
-                            const QPointF& lastPenPos,
-                            const QPointF &penPos,
-                            const QPoint & /*penPosViewport*/,
+                            const QPointF& /*lastPenPos*/,
+                            const QPointF& penPos,
+                            const QPoint& /*penPosViewport*/,
                             double /*pressure*/)
 {
     KnobDoublePtr knob = _param.lock();
@@ -2486,7 +2486,7 @@ PositionInteract::penMotion(double time,
 
     QPointF pos;
     if (_state == ePositionInteractStatePicked) {
-        pos = lastPenPos;
+        pos = penPos;
     } else {
         double p[2];
         for (int i = 0; i < 2; ++i) {
@@ -2532,8 +2532,8 @@ PositionInteract::penMotion(double time,
 
     if ( (_state != ePositionInteractStateInactive) && _interactiveDrag && valuesChanged ) {
         double p[2];
-        p[0] = fround(lastPenPos.x(), pscale.x);
-        p[1] = fround(lastPenPos.y(), pscale.y);
+        p[0] = fround(penPos.x(), pscale.x);
+        p[1] = fround(penPos.y(), pscale.y);
         for (int i = 0; i < 2; ++i) {
             if (knob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
                 p[i] = knob->normalize(i, time, p[i]);
@@ -3163,8 +3163,8 @@ PositionInteract::penUp(double time,
         if (!_interactiveDrag) {
             KnobDoublePtr knob = _param.lock();
             double p[2];
-            p[0] = fround(lastPenPos.x(), pscale.x);
-            p[1] = fround(lastPenPos.y(), pscale.y);
+            p[0] = fround(penPos.x(), pscale.x);
+            p[1] = fround(penPos.y(), pscale.y);
             for (int i = 0; i < 2; ++i) {
                 if (knob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
                     p[i] = knob->normalize(i, time, p[i]);

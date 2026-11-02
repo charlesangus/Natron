@@ -172,14 +172,14 @@ future core work has solid ground to build on.
 | M238 | EdgeExtend Options | blocked | M123 | bosley-native-nodes | E3 | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | done | - | gpu | E5 | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | doing | - | gpu | E14 | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
-| M241 | Up Axis And Units Policy | doing | M226 | bosley-native-nodes | E9 | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
+| M241 | Up Axis And Units Policy | done | M226 |  | E9 | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
 | M242 | Cache Invalidation Audit | done | M178, M185 | bosley-native-nodes | E14 | [M242-cache-invalidation-audit.md](PLAN/MILESTONES/M242-cache-invalidation-audit.md) |
 | M243 | Startup Pane Paint On NVIDIA | todo | - |  | E10 | [M243-startup-pane-paint-on-nvidia.md](PLAN/MILESTONES/M243-startup-pane-paint-on-nvidia.md) |
 | M244 | NVIDIA Test Fixes | todo | M239 |  | E5 | [M244-nvidia-test-fixes.md](PLAN/MILESTONES/M244-nvidia-test-fixes.md) |
 | M245 | Write Path Variables | doing | - | bosley-native-nodes | E3 | [M245-write-path-variables.md](PLAN/MILESTONES/M245-write-path-variables.md) |
 | M246 | Vulkan Inference Provider | todo | M203, M204 | | E16 | [M246-vulkan-inference-provider.md](PLAN/MILESTONES/M246-vulkan-inference-provider.md) |
 | M247 | Project User Knobs And Root | todo | M16 |  | E14 | [M247-project-user-knobs-and-root.md](PLAN/MILESTONES/M247-project-user-knobs-and-root.md) |
-| M248 | Render Delegate Selection | doing | M20 | bosley-native-nodes | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
+| M248 | Render Delegate Selection | done | M20 |  | E9 | [M248-render-delegate-selection.md](PLAN/MILESTONES/M248-render-delegate-selection.md) |
 | M249 | Bundle Cycles Delegate | doing | M19, M248 | bosley-native-nodes | E9 | [M249-bundle-cycles-delegate.md](PLAN/MILESTONES/M249-bundle-cycles-delegate.md) |
 | M250 | Bundle MoonRay Delegate | doing | M19 | bosley-native-nodes | E9 | [M250-bundle-moonray-delegate.md](PLAN/MILESTONES/M250-bundle-moonray-delegate.md) |
 | M251 | Cycles Rendering | doing | M248, M249 | bosley-native-nodes | E9 | [M251-cycles-rendering.md](PLAN/MILESTONES/M251-cycles-rendering.md) |
@@ -227,7 +227,7 @@ future core work has solid ground to build on.
 | M128 | Native Shape Generators | doing | M120 | bosley-native-nodes | E3 | [M128-native-shape-generators.md](PLAN/MILESTONES/M128-native-shape-generators.md) |
 | M129 | Clean-Sheet Noise Node | done | M120 |  | E3 | [M129-clean-sheet-noise-node.md](PLAN/MILESTONES/M129-clean-sheet-noise-node.md) |
 | M130 | Native Edge-Preserving And Directional Filters | doing | M120 | bosley-native-nodes | E3 | [M130-native-edge-preserving-and-directional-filters.md](PLAN/MILESTONES/M130-native-edge-preserving-and-directional-filters.md) |
-| M131 | Native Defocus Family | doing | M120 | bosley-native-nodes | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
+| M131 | Native Defocus Family | done | M120 |  | E3 | [M131-native-defocus-family.md](PLAN/MILESTONES/M131-native-defocus-family.md) |
 | M132 | Native Lens Distortion | done | M113 |  | E3 | [M132-native-lens-distortion.md](PLAN/MILESTONES/M132-native-lens-distortion.md) |
 | M133 | ZDefocus Lens Aberrations | doing | M131 | bosley-native-nodes | E3 | [M133-zdefocus-lens-aberrations.md](PLAN/MILESTONES/M133-zdefocus-lens-aberrations.md) |
 | M117 | GUI Perf Harness And Baseline | doing | - | bosley-native-nodes | E10 | [M117-gui-perf-harness-and-baseline.md](PLAN/MILESTONES/M117-gui-perf-harness-and-baseline.md) |
@@ -307,7 +307,7 @@ future core work has solid ground to build on.
 | M207 | Neural Denoise | doing | M203, M204 | bosley-native-nodes | E16 | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
 | M208 | Neural Upscale | doing | M203, M204, M207 | bosley-native-nodes | E16 | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | done | - | bosley-native-nodes | E17 | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |
-| M210 | Profiled Denoise | doing | M209 | bosley-native-nodes | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
+| M210 | Profiled Denoise | done | M209 |  | E17 | [M210-profiled-denoise.md](PLAN/MILESTONES/M210-profiled-denoise.md) |
 | M211 | Wavelet Retouch | doing | M209, M146 | bosley-native-nodes | E17 | [M211-wavelet-retouch.md](PLAN/MILESTONES/M211-wavelet-retouch.md) |
 | M212 | Tone Equalizer | doing | M209 | bosley-native-nodes | E17 | [M212-tone-equalizer.md](PLAN/MILESTONES/M212-tone-equalizer.md) |
 | M213 | Contrast And Texture | doing | M209 | bosley-native-nodes | E17 | [M213-contrast-and-texture.md](PLAN/MILESTONES/M213-contrast-and-texture.md) |

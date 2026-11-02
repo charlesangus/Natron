@@ -3988,8 +3988,16 @@ SceneViewport::setFolded(const QStringList& paths,
 {
     std::map<std::string, bool> overrides = _imp->renderer.getFoldOverrides();
     const std::map<std::string, bool> before = overrides;
+    const std::vector<std::string> currentFolds = _imp->renderer.getFoldedPrims();
     for (const QString& path : paths) {
         const std::string key = path.toStdString();
+        if (!folded && (std::find(currentFolds.begin(), currentFolds.end(), key) != currentFolds.end())) {
+            // Opening a closed prim shows each child closed, whatever was done to it earlier.
+            const std::string below = key + "/";
+            for (std::map<std::string, bool>::iterator it = overrides.lower_bound(below); (it != overrides.end()) && (it->first.compare(0, below.size(), below) == 0);) {
+                it = overrides.erase(it);
+            }
+        }
         const std::map<std::string, bool>::const_iterator was = before.find(key);
         if (!folded && (was != before.end()) && was->second
             && (std::find(_imp->reopenedFolds.begin(), _imp->reopenedFolds.end(), key) == _imp->reopenedFolds.end())) {

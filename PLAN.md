@@ -323,7 +323,7 @@ future core work has solid ground to build on.
 | M223 | Read And Write Knob Cleanup | doing | M167 | bosley-native-nodes | E3 | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
 | M224 | Fluid Roto And RotoPaint Interaction | doing | M146, M117 | bosley-native-nodes | E6 | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
 | M225 | ~~Clean Shutdown And Memory Release~~ | cancelled | - |  | E14 | [M225-clean-shutdown-and-memory-release.md](PLAN/MILESTONES/M225-clean-shutdown-and-memory-release.md) |
-| M260 | Cache Invalidation Follow-ups | doing | M242 | bosley-native-nodes | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
+| M260 | Cache Invalidation Follow-ups | done | M242 | bosley-native-nodes | E14 | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | doing | M163 | bosley-native-nodes | E6 | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 | M268 | Edge-Aware Region Independence | doing | M209, M210, M211, M212, M213, M215 | bosley-native-nodes | E17 | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
 | M269 | Remote GUI Checks | done |  | bosley-native-nodes |  | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |

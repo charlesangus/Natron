@@ -15,6 +15,7 @@
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
@@ -214,6 +215,13 @@ registerCacheStressTestPlugins()
     // A filter that stores an actions-cache answer from onInputChanged().
     registerTestBuiltInPlugin<InputChangedTestEffect>();
 }
+
+void
+registerAiTestPlugins()
+{
+    // A constant generator that carries a model knob, for the ModelKnob tests.
+    registerTestBuiltInPlugin<AiModelTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -269,6 +277,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerCacheStressTestPlugins();
+    registerAiTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

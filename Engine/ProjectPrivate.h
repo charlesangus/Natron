@@ -88,6 +88,7 @@ public:
 
     ///Project parameters (settings)
     KnobPathPtr envVars;
+    std::map<std::string, std::string> builtinPathValues; //< envVars' built-in rows when it last changed
     KnobStringPtr projectName; //< name of the project, e.g: "Untitled.ntpz"
     KnobStringPtr projectPath;  //< path of the project, e.g: /Users/Lala/Projects/
     KnobChoicePtr formatKnob; //< built from builtinFormats & additionalFormats
@@ -126,6 +127,7 @@ public:
     KnobStringPtr onNodeCreated;
     KnobStringPtr onNodeDeleted;
     KnobButtonPtr rfvEditKnob;
+    KnobButtonPtr addPathVariableKnob;
     KnobGroupPtr rfvGroup;
     TimeLinePtr timeline; // global timeline
     bool autoSetProjectFormat;

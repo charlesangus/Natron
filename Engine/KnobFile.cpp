@@ -55,6 +55,18 @@ NATRON_NAMESPACE_ENTER
 //using std::make_pair;
 //using std::pair;
 
+namespace {
+void
+expandProjectPath(KnobHolder* holder,
+                  std::string& path)
+{
+    if (path.empty() || !holder || !holder->getApp()) {
+        return;
+    }
+    holder->getApp()->getProject()->canonicalizePath(path);
+}
+} // anon namespace
+
 /***********************************KnobFile*****************************************/
 
 KnobFile::KnobFile(KnobHolder* holder,
@@ -166,13 +178,7 @@ KnobFile::getResolvedPath()
 {
     std::string path = getValue();
 
-    if (path.empty()) {
-        return path;
-    }
-    KnobHolder* holder = getHolder();
-    if (holder && holder->getApp()) {
-        holder->getApp()->getProject()->canonicalizePath(path);
-    }
+    expandProjectPath(getHolder(), path);
 
     return path;
 }
@@ -236,7 +242,10 @@ KnobFile::getFileName(int time,
                       ViewSpec view)
 {
     if (!_isInputImage) {
-        return getValue(0, view);
+        std::string path = getValue(0, view);
+        expandProjectPath(getHolder(), path);
+
+        return path;
     } else {
         ///try to interpret the pattern and generate a filename if indexes are found
         std::vector<std::string> views;
@@ -247,7 +256,10 @@ KnobFile::getFileName(int time,
             view = ViewIdx(0);
         }
 
-        return SequenceParsing::generateFileNameFromPattern(getValue( 0, ViewIdx(0) ), views, time, view);
+        std::string pattern = getValue(0, ViewIdx(0));
+        expandProjectPath(getHolder(), pattern);
+
+        return SequenceParsing::generateFileNameFromPattern(pattern, views, time, view);
     }
 }
 
@@ -309,7 +321,10 @@ KnobOutputFile::generateFileNameAtTime(SequenceTime time,
         view = ViewIdx(0);
     }
 
-    return QString::fromUtf8( SequenceParsing::generateFileNameFromPattern(getValue( 0, ViewIdx(0) ), views, time, view).c_str() );
+    std::string pattern = getValue(0, ViewIdx(0));
+    expandProjectPath(getHolder(), pattern);
+
+    return QString::fromUtf8(SequenceParsing::generateFileNameFromPattern(pattern, views, time, view).c_str());
 }
 
 /***********************************KnobPath*****************************************/

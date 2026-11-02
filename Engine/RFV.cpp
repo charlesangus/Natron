@@ -226,6 +226,10 @@ refreshDeclarationSnapshot(KnobHolder* holder)
     if (changed) {
         // What a Set overrides and what a project variable's readers read follow the declarations.
         invalidateRenderContextReads();
+        Project* isProject = dynamic_cast<Project*>(holder);
+        if (isProject) {
+            isProject->onPathVariableDeclarationsChanged(previous);
+        }
     }
 }
 
@@ -391,6 +395,8 @@ canAddAsVariable(const KnobHolder* holder,
             error = name + ": " + owner + " already has another parameter with that name";
         } else if (project && isAppAttributeName(project->getApp(), name)) {
             error = name + " is an attribute of the app object, so it cannot be a project variable";
+        } else if (project && Project::isBuiltinPathVariableName(name)) {
+            error = name + " is the name of a built-in project path, so it cannot be a project variable";
         }
     }
     if (reason) {

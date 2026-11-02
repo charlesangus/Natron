@@ -16,12 +16,14 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m190_cross_frame.py
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
-BAKE_TIMEOUT_S = 150.0
+# Both bake waits share it, under the watchdog, so a bake that fails reports instead of timing out.
+BAKE_TIMEOUT_S = 200.0
 WATCHDOG_S = 280
 SETTLE_MS = 1500
 CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
@@ -160,11 +162,13 @@ try:
         sampler.timeout.connect(sample_progress)
         sampler.start()
         end.getParam("bake").trigger()
+        bake_deadline = time.time() + BAKE_TIMEOUT_S
         ok = yield ("until", lambda: progress["bars"] > 0 or baked_count() == BAKE_END, BAKE_TIMEOUT_S)
         if progress["bars"] > 0:
             gt.shot("m190-bake-progress.png")
-        ok = yield ("until", lambda: baked_count() == BAKE_END, BAKE_TIMEOUT_S)
-        check(ok, "Bake writes frames 1 to %d (got %d)" % (BAKE_END, baked_count()))
+        ok = yield ("until", lambda: baked_count() == BAKE_END, max(0.0, bake_deadline - time.time()))
+        check(ok, "Bake writes frames 1 to %d (got %d, message %r)"
+              % (BAKE_END, baked_count(), end.getPersistentMessage() or ""))
         check(not os.path.isfile(baked_path(BAKE_END + 1)), "Bake stops at Bake End")
         # The last file appears as it is written; the thread then ends and the task closes.
         yield ("sleep", SETTLE_MS)

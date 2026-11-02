@@ -47,6 +47,8 @@
 #include <QtCore/QStringList>
 #include <QtCore/QThread>
 
+#include <SequenceParsing.h>
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -627,16 +629,41 @@ LoopEnd::bakedFramePath(int frame) const
 {
     KnobOutputFilePtr cacheFile = _cacheFile.lock();
 
-    if (!cacheFile || cacheFile->getValue().empty()) {
+    return bakedFramePath(cacheFile ? cacheFile->getValue() : std::string(), frame);
+}
+
+std::string
+LoopEnd::bakedFramePath(const std::string& cacheFile,
+                        int frame) const
+{
+    if (cacheFile.empty()) {
         return std::string();
     }
-    std::string path = cacheFile->generateFileNameAtTime((SequenceTime)frame, ViewIdx(0)).toStdString();
+    std::vector<std::string> views;
     const AppInstancePtr app = getApp();
+    if (app && app->getProject()) {
+        views = app->getProject()->getProjectViewNames();
+    }
+    std::string path = SequenceParsing::generateFileNameFromPattern(cacheFile, views, frame, 0);
     if (app && app->getProject()) {
         app->getProject()->canonicalizePath(path);
     }
 
     return path;
+}
+
+LoopEnd::BakeSettings
+LoopEnd::bakeSettings() const
+{
+    KnobOutputFilePtr cacheFile = _cacheFile.lock();
+    KnobIntPtr bakeEnd = _bakeEnd.lock();
+    BakeSettings settings;
+
+    settings.cacheFile = cacheFile ? cacheFile->getValue() : std::string();
+    settings.start = crossFrameStart();
+    settings.end = bakeEnd ? bakeEnd->getValue() : settings.start;
+
+    return settings;
 }
 
 bool
@@ -769,7 +796,7 @@ LoopEnd::bakeFrames(bool progressStarted,
                     std::string* error)
 {
     if (progressStarted) {
-        return bakeSequence(true, error);
+        return bakeSequence(true, bakeSettings(), error);
     }
     if (_baking.exchange(true)) {
         *error = tr("A bake of this loop is running.").toStdString();
@@ -777,7 +804,7 @@ LoopEnd::bakeFrames(bool progressStarted,
         return false;
     }
     _bakeCancelled = false;
-    const bool ok = bakeSequence(false, error);
+    const bool ok = bakeSequence(false, bakeSettings(), error);
     _baking = false;
     onBakeFinished();
 
@@ -786,6 +813,7 @@ LoopEnd::bakeFrames(bool progressStarted,
 
 bool
 LoopEnd::bakeSequence(bool progressStarted,
+                      const BakeSettings& settings,
                       std::string* error)
 {
     const AppInstancePtr app = getApp();
@@ -806,21 +834,20 @@ LoopEnd::bakeSequence(bool progressStarted,
 
         return false;
     }
-    const int start = crossFrameStart();
-    KnobIntPtr bakeEndKnob = _bakeEnd.lock();
-    const int end = bakeEndKnob ? bakeEndKnob->getValue() : start;
+    const int start = settings.start;
+    const int end = settings.end;
     if (end < start) {
         *error = tr("Bake End (%1) is before Start Frame (%2).").arg(end).arg(start).toStdString();
 
         return false;
     }
-    const std::string first = bakedFramePath(start);
+    const std::string first = bakedFramePath(settings.cacheFile, start);
     if (first.empty()) {
         *error = tr("Cache File is empty.").toStdString();
 
         return false;
     }
-    if (first == bakedFramePath(start + 1)) {
+    if (first == bakedFramePath(settings.cacheFile, start + 1)) {
         *error = tr("Cache File names every frame %1: put the frame number in it, as in sim.####.exr.")
                      .arg(QString::fromUtf8(first.c_str()))
                      .toStdString();
@@ -918,7 +945,7 @@ LoopEnd::bakeSequence(bool progressStarted,
 
             return false;
         }
-        const std::string path = bakedFramePath(frame);
+        const std::string path = bakedFramePath(settings.cacheFile, frame);
         QDir().mkpath(QFileInfo(QString::fromUtf8(path.c_str())).absolutePath());
         std::string writeError;
         if (!LoopFrameBake::writeFrame(path, *image, format, hash, cancelled, &writeError)) {
@@ -953,9 +980,10 @@ LoopEnd::startBake()
         app->progressStart(node, tr("Baking %1").arg(QString::fromUtf8(node->getLabel().c_str())).toStdString(), std::string(), true);
     }
     const NodeWPtr weakNode = node;
-    _bakeThread = std::thread([this, weakNode]() {
+    const BakeSettings settings = bakeSettings();
+    _bakeThread = std::thread([this, weakNode, settings]() {
         std::string error;
-        const bool ok = bakeSequence(true, &error);
+        const bool ok = bakeSequence(true, settings, &error);
         const bool wasCancelled = _bakeCancelled.load();
         appPTR->getAppTLS()->cleanupTLSForThread();
         _baking = false;

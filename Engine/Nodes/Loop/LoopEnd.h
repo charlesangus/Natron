@@ -607,8 +607,23 @@ private:
     void refreshBakeMessage(MessageTypeEnum type,
                             const std::string& message);
 
+    struct BakeSettings {
+        std::string cacheFile;
+        int start;
+        int end;
+    };
+
+    // Read where the bake was asked for. Bake pressed on the main thread just after an edit of Cache
+    // File or Bake End, while a render holds this node, sees the edit there; the bake thread would
+    // read the value from before it until the queued edit is applied.
+    BakeSettings bakeSettings() const WARN_UNUSED_RETURN;
+
+    std::string bakedFramePath(const std::string& cacheFile,
+                               int frame) const WARN_UNUSED_RETURN;
+
     // bakeFrames() with the bake marked running by the caller.
     bool bakeSequence(bool progressStarted,
+                      const BakeSettings& settings,
                       std::string* error) WARN_UNUSED_RETURN;
 
     // After a bake: the loaded frames' generation moves on, and the viewers render again.

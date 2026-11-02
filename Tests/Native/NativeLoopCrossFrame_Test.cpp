@@ -608,7 +608,7 @@ TEST_F(NativeLoopCrossFrameTest, ALoopBeginWithFeedbackOffPassesItsInputThrough)
     NodePtr source = createLoopBegin(t.dot);
     ASSERT_TRUE(bool(source));
     ASSERT_TRUE(setKnobValues(source, kLoopBeginParamFeedback, { 0. }));
-    ASSERT_TRUE(t.merge->connectInput(source, 1));
+    ASSERT_TRUE(t.merge->replaceInput(source, 1));
     std::shared_ptr<LoopEnd> end = loopEndOf(t.end);
     ASSERT_TRUE(bool(end));
     EXPECT_EQ(2u, end->getLoopBegins().size());
@@ -859,18 +859,28 @@ TEST_F(NativeLoopCrossFrameTest, SubstepsSampleTheInputBetweenFrames)
     }
 }
 
-// Each substep time is its own cache entry for an animated body node: a cached node fed by the
-// dot renders once for the four substeps of a frame at the whole frame, and once more for each
-// of the three fractional times with Subframes.
+// Each substep time is its own cache entry for an animated body node: a cached node fed by an
+// animated plate renders once for the four substeps of a frame at the whole frame, and once more
+// for each of the three fractional times with Subframes.
 TEST_F(NativeLoopCrossFrameTest, SubstepTimesAreCachedApart)
 {
     NodePtr constant = createConstant(1.);
-    NodePtr dot = createQuarterKeyedDot(constant, 10.);
+    // The counting node reads its input at the corner of its render window, the origin: the plate
+    // moves like the dot but covers the origin at every sampled time.
+    NodePtr plate = createDot(constant, -8., std::map<int, double>({ { 0, -48. } }));
     NodePtr counting = createNode(QString::fromUtf8(kTestPluginIDCounting));
-    ASSERT_TRUE(constant && dot && counting);
+    ASSERT_TRUE(constant && plate && counting);
+    ASSERT_TRUE(setKnobValues(plate, kNativeGeneratorParamSize, { 64., 64. }));
+    KnobDoublePtr bottomLeft = std::dynamic_pointer_cast<KnobDouble>(plate->getKnobByName(kNativeGeneratorParamBottomLeft));
+    ASSERT_TRUE(bool(bottomLeft));
+    for (int quarter = 0; quarter <= 8; ++quarter) {
+        const double time = quarter / 4.;
+        bottomLeft->setValueAtTime(time, 8. * time - 48., ViewSpec::all(), 0);
+        bottomLeft->setValueAtTime(time, -8., ViewSpec::all(), 1);
+    }
     ASSERT_TRUE(setKnobValues(counting, "value", { 0. }));
     ASSERT_TRUE(setKnobValues(counting, "cacheOutput", { 1. }));
-    ASSERT_TRUE(counting->connectInput(dot, 0));
+    ASSERT_TRUE(counting->connectInput(plate, 0));
     Smear m = createSmear(counting);
     ASSERT_TRUE(bool(m.end));
     LoopFrameCache* cache = frameCacheOf(m.end);

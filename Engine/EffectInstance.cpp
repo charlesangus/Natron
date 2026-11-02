@@ -77,6 +77,7 @@
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -119,8 +120,90 @@ EffectInstance::EffectInstance(const EffectInstance& other)
     _imp->_publicInterface = this;
 }
 
+namespace {
+
+/*
+ * The edits a Viewer gesture makes, from the press an overlay takes to its release, form one undo
+ * step: a drag is one undo, as an edit in the settings panel is. Overlay events arrive on the main
+ * thread only, so one step at a time is open.
+ */
+struct OverlayEditStep {
+    const EffectInstance* owner = nullptr;
+    std::weak_ptr<UndoRecorderI> recorder;
+};
+
+OverlayEditStep&
+overlayEditStep()
+{
+    static OverlayEditStep step;
+
+    return step;
+}
+
+void
+closeOpenOverlayEditStep()
+{
+    OverlayEditStep& step = overlayEditStep();
+
+    if (!step.owner) {
+        return;
+    }
+    step.owner = nullptr;
+    UndoRecorderPtr recorder = step.recorder.lock();
+    step.recorder.reset();
+    if (recorder) {
+        recorder->closeStep();
+    }
+}
+
+void
+closeOverlayEditStepOf(const EffectInstance* effect)
+{
+    if (overlayEditStep().owner == effect) {
+        closeOpenOverlayEditStep();
+    }
+}
+
+// A step still open here lost its release, for instance to a panel closed mid-drag: it ends now
+// rather than absorbing unrelated edits.
+void
+openOverlayEditStep(const EffectInstance* effect)
+{
+    closeOpenOverlayEditStep();
+    AppInstancePtr app = effect->getApp();
+    UndoRecorderPtr recorder = app ? app->getUndoRecorder() : UndoRecorderPtr();
+    if (!recorder) {
+        return;
+    }
+    NodePtr node = effect->getNode();
+    QString label = node ? QString::fromUtf8(node->getLabel().c_str()) : QString();
+    recorder->openStep(EffectInstance::tr("Edit %1 in Viewer").arg(label).toStdString());
+    OverlayEditStep& step = overlayEditStep();
+    step.owner = effect;
+    step.recorder = recorder;
+}
+
+} // anonymous namespace
+
+void
+EffectInstance::closeOverlayEditStep()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    closeOpenOverlayEditStep();
+}
+
+void
+EffectInstance::closeOverlayEditStepIfOwner() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+    closeOverlayEditStepOf(this);
+}
+
 EffectInstance::~EffectInstance()
 {
+    if (qApp && (QThread::currentThread() == qApp->thread())) {
+        closeOverlayEditStepOf(this);
+    }
 }
 
 void
@@ -3965,6 +4048,7 @@ EffectInstance::onOverlayPenDown_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
+    closeOpenOverlayEditStep();
     if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
         return false;
     }
@@ -3976,6 +4060,7 @@ EffectInstance::onOverlayPenDown_public(double time,
         actualScale = renderScale;
     }
 
+    openOverlayEditStep(this);
     bool ret;
     {
         NON_RECURSIVE_ACTION();
@@ -3994,6 +4079,9 @@ EffectInstance::onOverlayPenDown_public(double time,
         }
 
         _imp->setDuringInteractAction(false);
+    }
+    if (!ret) {
+        closeOverlayEditStepOf(this);
     }
     checkIfRenderNeeded();
 
@@ -4102,6 +4190,8 @@ EffectInstance::onOverlayPenUp_public(double time,
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
     if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+        closeOverlayEditStepOf(this);
+
         return false;
     }
 
@@ -4131,6 +4221,7 @@ EffectInstance::onOverlayPenUp_public(double time,
 
         _imp->setDuringInteractAction(false);
     }
+    closeOverlayEditStepOf(this);
     checkIfRenderNeeded();
 
     return ret;
@@ -4319,6 +4410,8 @@ EffectInstance::onOverlayFocusLost_public(double time,
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
     if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+        closeOverlayEditStepOf(this);
+
         return false;
     }
 
@@ -4341,6 +4434,7 @@ EffectInstance::onOverlayFocusLost_public(double time,
 
         _imp->setDuringInteractAction(false);
     }
+    closeOverlayEditStepOf(this);
     checkIfRenderNeeded();
 
     return ret;

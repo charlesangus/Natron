@@ -4,7 +4,8 @@
 Runs inside the image tools/raw/make-reference.sh builds. Each job writes a sidecar XMP whose
 history packs the parameters of the darktable modules the native nodes port, exports a 32-bit
 float linear TIFF and keeps either a crop of it (camera files), its white-balanced mosaic
-(synthetic DNGs) or all of it (the plate jobs and the jobs that render on a plate). Usage:
+(synthetic DNGs) or all of it (the plate jobs, the jobs that render on a plate and the ashift jobs, which
+render a synthetic image's whole perspective correction). Usage:
 
     make-reference.py [--dry-run] [--only TEXT] [--ref NAME] <fixtures dir> <output dir> <scratch dir>
 
@@ -233,6 +234,39 @@ def sharpen_params():
     return struct.pack("<3f", 2.0, 0.5, 0.5)
 
 
+# AutoStraighten's source: a synthetic linear Rec. 709 image the ashift jobs correct, written as
+# a half-float TIFF that darktable and the test both read.
+ASHIFT_SOURCE = "ashift-source.tif"
+ASHIFT_WIDTH = 160
+ASHIFT_HEIGHT = 120
+ASHIFT_MAX_SAVED_LINES = 50
+ASHIFT_MODES = {"generic": 0, "specific": 1}
+# darktable's warp interpolator for the jobs; AutoStraighten's filter knob is set to match.
+ASHIFT_INTERPOLATOR = "bilinear"
+# (suffix, rotation, lensShiftV, lensShiftH, shear, lens model, focal length, crop factor, lens
+# dependence, aspect adjust, crop box cl cr ct cb). Rotation is AutoStraighten's knob, the slider
+# value; darktable stores its negation. Every crop box is explicit, as darktable-cli never runs the
+# automatic crop the GUI computes; Tests/Native/NativeAutoStraighten_Test.cpp mirrors this table.
+ASHIFT_CASES = [
+    ("rotation", 3.0, 0.0, 0.0, 0.0, "generic", 28.0, 1.0, 100.0, 1.0, (0.0, 1.0, 0.0, 1.0)),
+    ("keystone", 0.0, 0.3, 0.0, 0.0, "generic", 28.0, 1.0, 100.0, 1.0, (0.05, 0.95, 0.04, 0.96)),
+    ("all", -2.0, 0.2, -0.15, 0.05, "generic", 28.0, 1.0, 100.0, 1.0, (0.08, 0.9, 0.06, 0.93)),
+    ("specific", 1.5, -0.25, 0.1, 0.0, "specific", 50.0, 1.5, 60.0, 1.2, (0.0, 1.0, 0.0, 1.0)),
+]
+
+
+def ashift_params(rotation, lens_shift_v, lens_shift_h, shear, mode, focal_length, crop_factor, orthocorr, aspect,
+                  crop):
+    # dt_iop_ashift_params_t, version 5: rotation (stored negated), lens shifts, shear, focal
+    # length, crop factor, orthocorr, aspect, mode, crop mode (off: the box is taken as given),
+    # the crop box, then the saved lines and quad, empty.
+    cl, cr, ct, cb = crop
+    return struct.pack("<8f2i4f%dfi8f" % (ASHIFT_MAX_SAVED_LINES * 4),
+                       -rotation, lens_shift_v, lens_shift_h, shear, focal_length, crop_factor, orthocorr, aspect,
+                       ASHIFT_MODES[mode], 0, cl, cr, ct, cb, *([0.0] * (ASHIFT_MAX_SAVED_LINES * 4)), 0,
+                       *([0.0] * 8))
+
+
 def history_entry(num, operation, enabled, version, params):
     return ("     <rdf:li\n"
             "      darktable:num=\"%d\"\n"
@@ -302,7 +336,7 @@ class Job:
     """
 
     def __init__(self, name, source, entries, what, workflow="none", auto_presets_applied=True, debug=None,
-                 log_line=None, mosaic=None, ref="release", icc="LIN_REC709", size=0, whole=False, half=False):
+                 log_line=None, mosaic=None, ref="release", icc="LIN_REC709", size=0, whole=False, half=False, conf=()):
         self.name = name
         self.source = source
         self.entries = entries
@@ -318,6 +352,8 @@ class Job:
         self.size = size
         self.whole = whole
         self.half = half
+        # Extra darktable-cli --conf settings.
+        self.conf = tuple(conf)
 
 
 def camera_job(fixture, suffix, what, entries, **kwargs):
@@ -508,6 +544,42 @@ def synthetic_jobs():
         jobs.append(mosaic_job("hotpixels-bayer.dng", suffix, "hot pixels %s" % suffix, "unclipped",
                                extra=[("hotpixels", 1, 1, hotpixels_params(**options))]))
     return jobs
+
+
+def ashift_jobs():
+    jobs = []
+    for case in ASHIFT_CASES:
+        suffix, rotation, v, h, shear, mode, focal, crop_factor, orthocorr, aspect, crop = case
+        entries = [
+            ("flip", 0, 2, flip_params()),
+            ("colorin", 1, 7, colorin_params(DT_COLORSPACE_LIN_REC709)),
+            ("colorout", 1, 5, colorout_params()),
+            ("ashift", 1, 5, ashift_params(rotation, v, h, shear, mode, focal, crop_factor, orthocorr, aspect, crop)),
+        ]
+        what = ("ashift rotation %g lensShiftV %g lensShiftH %g shear %g lensModel %s focalLength %g cropFactor %g "
+                "lensDependence %g aspectAdjust %g crop %g %g %g %g, %s interpolation"
+                % (rotation, v, h, shear, mode, focal, crop_factor, orthocorr, aspect, crop[0], crop[1], crop[2],
+                   crop[3], ASHIFT_INTERPOLATOR))
+        jobs.append(Job("ashift-%s.tif" % suffix, ASHIFT_SOURCE, entries, what, whole=True, half=True,
+                        conf=["plugins/lighttable/export/pixel_interpolator_warp=" + ASHIFT_INTERPOLATOR]))
+    return jobs
+
+
+def ashift_scene():
+    """Soft-edged grid lines and colour gradients, band-limited so that the interpolators differ
+    little between the grid's pixels."""
+    y, x = np.mgrid[0:ASHIFT_HEIGHT, 0:ASHIFT_WIDTH].astype(np.float64)
+    image = np.empty((ASHIFT_HEIGHT, ASHIFT_WIDTH, 3))
+    image[:, :, 0] = 0.15 + 0.5 * x / ASHIFT_WIDTH
+    image[:, :, 1] = 0.2 + 0.4 * y / ASHIFT_HEIGHT
+    image[:, :, 2] = 0.25 + 0.2 * np.sin(x / 13.0) * np.cos(y / 11.0)
+    lines = np.zeros((ASHIFT_HEIGHT, ASHIFT_WIDTH))
+    for cx in range(12, ASHIFT_WIDTH, 24):
+        lines = np.maximum(lines, np.exp(-0.5 * ((x - cx) / 1.2) ** 2))
+    for cy in range(10, ASHIFT_HEIGHT, 20):
+        lines = np.maximum(lines, np.exp(-0.5 * ((y - cy) / 1.2) ** 2))
+    image += 0.35 * lines[:, :, None]
+    return np.clip(image, 0.0, 1.0).astype(np.float16)
 
 
 def colour_calibration_jobs(coeffs):
@@ -730,7 +802,7 @@ def contrastntexture_jobs():
     return jobs
 
 
-def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc="LIN_REC709"):
+def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, size=0, icc="LIN_REC709", conf=()):
     if os.path.exists(output):
         os.remove(output)
     config = os.path.join(scratch, "config-" + re.sub(r"[^a-z]+", "-", workflow))
@@ -750,6 +822,8 @@ def darktable_cli(source, xmp, output, scratch, workflow="none", debug=None, siz
         "--conf", "host_memory_limit=4096",
         "--conf", "worker_threads=4", "-t", "4",
     ]
+    for setting in conf:
+        command += ["--conf", setting]
     if debug:
         command += ["-d", debug]
     result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -874,7 +948,7 @@ def run_job(job, out, scratch):
     xmp = os.path.join(scratch, job.name[:-4] + ".xmp")
     write_xmp(xmp, job.entries, job.auto_presets_applied)
     image, log = darktable_cli(os.path.join(scratch, job.source), xmp, os.path.join(scratch, "render.tif"), scratch,
-                               job.workflow, job.debug, job.size, job.icc)
+                               job.workflow, job.debug, job.size, job.icc, job.conf)
     height, width = image.shape[:2]
     logged = [line.strip() for line in log if job.log_line and job.log_line.search(line)]
     for line in logged:
@@ -920,7 +994,7 @@ def revision(ref):
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + denoiseprofile_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs) + contrastntexture_jobs() + toneequal_jobs())
+            + colour_calibration_jobs(coeffs) + contrastntexture_jobs() + ashift_jobs() + toneequal_jobs())
 
 
 def main():
@@ -956,9 +1030,13 @@ def main():
     produced = {job.name for job in jobs}
     cameras = sorted({job.source for job in jobs if job.mosaic is None and job.source in CAMERA_FIXTURES})
     for job in jobs:
-        if job.mosaic is None and job.source not in CAMERA_FIXTURES and job.source not in produced \
-                and job.source != TONEEQUAL_SOURCE:
+        if job.mosaic is None and job.source not in CAMERA_FIXTURES and job.source not in produced | {ASHIFT_SOURCE, TONEEQUAL_SOURCE}:
             raise RuntimeError("%s: its source %s is another job's output; run that job too" % (job.name, job.source))
+    if any(job.source == ASHIFT_SOURCE for job in jobs):
+        path = os.path.join(args.out, ASHIFT_SOURCE)
+        write_reference(path, ashift_scene(), "synthetic AutoStraighten source, linear Rec. 709", True)
+        with open(path, "rb") as src, open(os.path.join(args.scratch, ASHIFT_SOURCE), "wb") as dst:
+            dst.write(src.read())
     for fixture in cameras:
         with open(os.path.join(args.fixtures, fixture), "rb") as src, open(os.path.join(args.scratch, fixture), "wb") as dst:
             dst.write(src.read())

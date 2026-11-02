@@ -263,10 +263,12 @@ PXR_NS::UsdStageRefPtr compose(const ScenePayload& payload);
  * @brief The file layers layer composes: layer itself when it is backed by a file, then every
  * layer its sublayers, references and payloads name, recursively, each once. Asset paths resolve
  * relative to the layer naming them. Files that cannot be opened are skipped, without posting
- * errors to the caller's TfErrorMark. Opens the layers not yet open, and the returned references
- * keep them open.
+ * errors to the caller's TfErrorMark, and their anchored asset paths are appended to
+ * *missingPaths when it is given, each once. Opens the layers not yet open, and the returned
+ * references keep them open.
  **/
-std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer);
+std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
+                                                        std::vector<std::string>* missingPaths = nullptr);
 
 /**
  * @brief Reloads the file layers among layers in place (SdfLayer::ReloadLayers: only those whose

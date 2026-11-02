@@ -540,6 +540,15 @@ public:
         return 0;
     }
 
+    /**
+     * @brief Called by a geometry curve context when item is built, before it is cloned, loaded
+     * or inserted: the host may add per-item knobs with RotoDrawableItem::addHostKnob(), which
+     * are then saved, copied and hashed with the item's own. Main thread.
+     **/
+    virtual void onCurveItemCreated(const RotoDrawableItemPtr& /*item*/)
+    {
+    }
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**
@@ -2033,6 +2042,26 @@ public:
     virtual void purgeCaches()
     {
     };
+
+    /**
+     * @brief Clear All Caches: drops what the node decoded, but the files it reads stay pinned as
+     * they were loaded or reloaded, so a file changed on disk since fails until Reload.
+     **/
+    virtual void purgeCachesKeepingFileStamps()
+    {
+        purgeCaches();
+    }
+
+    /**
+     * @brief Called after files were reloaded and their stamps dropped, for an effect none of whose
+     * file knobs names them: one reading any of paths through another file re-keys on their new
+     * stamps, drops what it read from them, and returns true; the caller then marks its hash.
+     * Main thread only.
+     **/
+    virtual bool refreshFileDependencies(const std::vector<std::string>& /*paths*/)
+    {
+        return false;
+    }
     virtual void clearLastRenderedImage();
 
     void clearActionsCache();
@@ -2492,6 +2521,19 @@ public:
     bool onOverlayFocusGained_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Ends the undo step a Viewer gesture opened when its press was taken, if one is open.
+     * Every Viewer release calls it, so a release that does not reach the owner of the step, or
+     * reaches no overlay at all, still ends it. Main thread only.
+     **/
+    static void closeOverlayEditStep();
+
+    /**
+     * @brief closeOverlayEditStep() when the open step belongs to this effect, for instance when
+     * its settings panel closes mid-gesture. Main thread only.
+     **/
+    void closeOverlayEditStepIfOwner() const;
 
     void setInteractColourPicker_public(const OfxRGBAColourD& color, bool setColor, bool hasColor);
 

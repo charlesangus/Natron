@@ -54,6 +54,7 @@ CLANG_DIAG_ON(uninitialized)
 #include <ofxNatron.h>
 
 #include "Engine/Backdrop.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
@@ -744,6 +745,13 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 void
 NodeGui::onSettingsPanelClosed(bool closed)
 {
+    if (closed) {
+        NodePtr closedNode = getNode();
+        EffectInstancePtr effect = closedNode ? closedNode->getEffectInstance() : EffectInstancePtr();
+        if (effect) {
+            effect->closeOverlayEditStepIfOwner();
+        }
+    }
     // A node nobody looks at is left dirty by the edits upstream of it, and its panel shows it.
     NodePtr node = closed ? NodePtr() : getNode();
     if (node) {

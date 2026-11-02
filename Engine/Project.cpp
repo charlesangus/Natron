@@ -3501,22 +3501,22 @@ Project::getContentDigest() const
     std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = getLayerRegistrySnapshot();
     const std::string ocioSource = getOCIOConfigSource();
     SettingsPtr settings = appPTR->getCurrentSettings();
-    const bool concatenation = settings->isTransformConcatenationEnabled();
+    const U64 renderSettings = settings->getRenderAffectingDigest();
 
     U64 digest;
     {
         QMutexLocker l(&_imp->contentDigestMutex);
-        if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestConcatenation == concatenation)) {
+        if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestRenderSettings == renderSettings)) {
             digest = _imp->contentDigest;
         } else {
-            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, concatenation);
+            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, renderSettings);
             _imp->contentDigestValid = true;
             _imp->contentDigestKnobsGeneration = knobsGeneration;
             _imp->contentDigestFormatsGeneration = formatsGeneration;
             // Holding the snapshot keeps its address from being reused by a later one.
             _imp->contentDigestLayers = layers;
             _imp->contentDigestOCIOSource = ocioSource;
-            _imp->contentDigestConcatenation = concatenation;
+            _imp->contentDigestRenderSettings = renderSettings;
             _imp->contentDigest = digest;
         }
     }
@@ -3536,7 +3536,7 @@ Project::getContentDigest() const
 U64
 Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                                const std::string& ocioSource,
-                                               bool concatenation) const
+                                               U64 renderSettings) const
 {
     ContentHasher h;
 
@@ -3578,7 +3578,7 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
 
     // GPU rendering is left out: GPU and CPU outputs differ by about a rounding step, so either
     // may serve the other.
-    h.appendBool(concatenation);
+    h.appendU64(renderSettings);
 
     return h.finalize();
 }

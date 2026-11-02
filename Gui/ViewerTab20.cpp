@@ -38,10 +38,11 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 #include <QKeyEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -58,8 +59,26 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+// The gesture's undo step ends on every way out of a release, early returns included, and after
+// the owner's own release handler has made its last edits.
+class OverlayEditStepCloser {
+public:
+    OverlayEditStepCloser() = default;
+    OverlayEditStepCloser(const OverlayEditStepCloser&) = delete;
+    OverlayEditStepCloser& operator=(const OverlayEditStepCloser&) = delete;
+
+    ~OverlayEditStepCloser()
+    {
+        EffectInstance::closeOverlayEditStep();
+    }
+};
+
+} // anonymous namespace
+
 #ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-//OpenGL is column-major for matrixes
+// OpenGL is column-major for matrixes
 static void
 transformToOpenGLMatrix(const Transform::Matrix3x3& mat,
                         GLdouble* oglMat)
@@ -565,6 +584,7 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
                                double pressure,
                                double timestamp)
 {
+    OverlayEditStepCloser stepCloser;
     bool didSomething = false;
 
     if ( !getGui()->getApp() || getGui()->getApp()->isClosing() ) {
@@ -1045,6 +1065,8 @@ ViewerTab::notifyOverlaysFocusGained(const RenderScale & renderScale)
 bool
 ViewerTab::notifyOverlaysFocusLost(const RenderScale & renderScale)
 {
+    OverlayEditStepCloser stepCloser;
+
     if ( !getGui()->getApp() || getGui()->getApp()->isClosing() ) {
         return false;
     }

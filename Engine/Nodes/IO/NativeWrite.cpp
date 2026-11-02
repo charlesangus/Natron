@@ -165,7 +165,7 @@ decodeReadBackBand(const ReadBackPlane& plane,
     const int span = hi - lo + 1;
     const RectI window(plane.rect.x1, y1, plane.rect.x2, y2);
     std::vector<float> staging((std::size_t)width * (y2 - y1) * span);
-    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
+    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error, FilePin::eDisk)) {
         return false;
     }
     for (int y = y1; y < y2; ++y) {
@@ -1452,7 +1452,7 @@ NativeWrite::readBackFile(const std::string& path) const
     std::error_code ec;
     if (std::filesystem::is_regular_file(std::filesystem::path(path), ec)) {
         std::string error;
-        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error, FilePin::eDisk);
         if (header && !header->subimages.empty()) {
             file.header = header;
             // Every part of the file carries the attribute, so the first one speaks for the file.

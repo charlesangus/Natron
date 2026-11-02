@@ -54,3 +54,4 @@ Make shortcut-created and drag-inserted nodes follow normal node-creation placem
 ## Decisions
 
 - 2026-11-01 — Implemented at 5ddfa06c8. Variadic layout is generic in NodeGui for any native node spec with a variadic input run (USDMerge, USDXformPrim, USDScopePrim, RFVSwitch). Python preset Merges now connect to the selection and open their panel like Tab-created nodes (implementer).
+- 2026-11-01 — PR #155 review: a connected node is inserted only through free non-mask inputs (a node with only its mask free gets no insert), and a pipe whose source already feeds the dragged node draws no hint (review fix).

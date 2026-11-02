@@ -109,6 +109,21 @@ struct SceneUnmappedLink {
 };
 
 /**
+ * @brief What SceneOps::authorMetricsCorrection converts a source scene from and to, and which of
+ * the two aspects it converts.
+ **/
+struct SceneMetricsCorrection {
+    SceneMetadata::UpAxisEnum fromUpAxis = SceneMetadata::eUpAxisY;
+    double fromMetersPerUnit = 0.01;
+    SceneMetadata::UpAxisEnum toUpAxis = SceneMetadata::eUpAxisY;
+    double toMetersPerUnit = 1.;
+    bool correctUpAxis = false;
+    bool correctUnits = false;
+    // Maps the source stage's times to the target layer's, for the time samples it rescales.
+    PXR_NS::SdfLayerOffset sourceToLayer;
+};
+
+/**
  * @brief The thin interface scene nodes use to author layers, stack them into payloads and
  * compose them. It is deliberately not an abstraction over USD's semantics: nodes author with
  * the Sdf and Usd APIs directly.
@@ -279,6 +294,35 @@ std::uint64_t getFileLayerReloadCount();
 double frameToTimeCode(const ScenePayload& payload,
                        double frame,
                        double framesPerSecond);
+
+/**
+ * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up
+ * axis: +90 for Y to Z, -90 for Z to Y, 0 when the axes match or correctUpAxis is off.
+ **/
+double getMetricsCorrectionAngle(const SceneMetricsCorrection& correction);
+
+/**
+ * @brief The uniform scale fromMetersPerUnit / toMetersPerUnit, or 1 when the two are equal
+ * within UsdGeomLinearUnitsAre()'s tolerance or correctUnits is off.
+ **/
+double getMetricsCorrectionScale(const SceneMetricsCorrection& correction);
+
+/**
+ * @brief Authors into layer the "over"s that convert source, a composed stage that layer is
+ * stronger than, from correction's metrics to its target ones, without reparenting anything.
+ *
+ * The topmost xformable prims under source's defined, non-abstract roots (the root itself, or the
+ * first xformables under a Scope or a typeless prim), and every xformable below them whose op
+ * stack resets, each get xformOp:rotateX:upAxisCorrection and/or xformOp:scale:unitsCorrection
+ * prepended to their composed xformOpOrder, after a leading !resetXformStack!. A name the prim
+ * already has takes the first free "_<n>" suffix. Under a scale, every camera's lengths the
+ * transform does not reach (clippingRange, focusDistance, the focal length and apertures, the
+ * clipping planes' distances) are rescaled, its default and every time sample. Authors nothing
+ * when neither aspect converts anything. Returns the number of prims given corrective ops.
+ **/
+std::size_t authorMetricsCorrection(const PXR_NS::SdfLayerRefPtr& layer,
+                                    const PXR_NS::UsdStageRefPtr& source,
+                                    const SceneMetricsCorrection& correction);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

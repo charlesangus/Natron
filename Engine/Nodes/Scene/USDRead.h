@@ -42,6 +42,9 @@
 #define kUSDReadParamFile "filename"
 #define kUSDReadParamFrameOffset "frameOffset"
 #define kUSDReadParamReload "reload"
+#define kUSDReadParamMatchUpAxis "matchUpAxis"
+#define kUSDReadParamMatchUnits "matchUnits"
+#define kUSDReadParamUseFileMetrics "useFileMetrics"
 
 NATRON_NAMESPACE_ENTER
 
@@ -56,6 +59,10 @@ struct SceneLayerEdit;
  * seconds: frame f of the project reads the file at timecode (f + frame offset) x the file's time
  * codes per second / the project frame rate, which a consumer gets by querying the composed stage
  * at SceneOps::frameToTimeCode(f).
+ *
+ * Match Project Up Axis and Match Project Units convert the file to the project's metrics with
+ * corrective ops over its topmost xformable prims (SceneOps::authorMetricsCorrection); the layer
+ * then carries the project's value for each aspect it converts.
  **/
 class USDRead
     : public NativeEffectBase {
@@ -64,7 +71,8 @@ public:
         .id = PLUGINID_NATRON_USDREAD,
         .label = "USDRead",
         .description = "Read a USD file (.usd, .usda, .usdc, .usdz) or an Alembic file (.abc) as a scene. "
-                       "The file's prims keep their paths and the stage keeps the file's up axis and units. "
+                       "The file's prims keep their paths and the stage keeps the file's up axis and units, unless "
+                       "Match Project Up Axis or Match Project Units converts them to the project's. "
                        "Time maps by seconds: a frame reads the file at the timecode of the same instant, "
                        "shifted by the frame offset.",
         .grouping = PLUGIN_GROUP_3D_USD,
@@ -105,6 +113,14 @@ private:
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    // Use File's Metrics For Project is enabled while the File knob names a single file.
+    void refreshUseFileMetricsEnabled();
+
+    // Sets the project's up axis and meters per unit to the file's, as one undo step.
+    void useFileMetricsForProject();
+
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -112,11 +128,16 @@ private:
     bool authorLayer(const SceneLayerEdit& edit,
                      const std::string& path,
                      double frameOffset,
+                     bool matchUpAxis,
+                     bool matchUnits,
                      std::string* errorMessage);
 
     KnobFileWPtr _filename;
     KnobDoubleWPtr _frameOffset;
     KnobButtonWPtr _reload;
+    KnobBoolWPtr _matchUpAxis;
+    KnobBoolWPtr _matchUnits;
+    KnobButtonWPtr _useFileMetrics;
 
     std::unique_ptr<Implementation> _imp;
 };

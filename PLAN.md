@@ -359,6 +359,7 @@ future core work has solid ground to build on.
 | M293 | ZDefocus Debug Outputs | todo | M131, M133 |  | E3 | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
 | M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
+| M296 | Raw Prepare Output Format | todo | M80 |  | E3 | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
 
 # Epics
 

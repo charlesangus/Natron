@@ -1149,7 +1149,7 @@ TEST_F(RFVSwitchTest, MatchVariableWritesTheMostRows)
 TEST_F(RFVSwitchTest, PatternCountGrowsTheRowsUpToTheMaximum)
 {
     NodePtr rfvSwitch = createSwitch("var", "");
-    ASSERT_TRUE(rfvSwitch);
+    ASSERT_TRUE(bool(rfvSwitch));
     EXPECT_EQ(kRFVSwitchRowChunk, rfvSwitch->getNInputs());
     EXPECT_TRUE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk - 1)));
     EXPECT_FALSE(bool(patternOf(rfvSwitch, kRFVSwitchRowChunk)));

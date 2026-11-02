@@ -299,8 +299,8 @@ protected:
                                       RoIMap* ret) OVERRIDE;
 
     /**
-     * @brief For a Route op, only the input route() chooses, at the time it chooses, and no
-     * input for Black; the default for every other op kind.
+     * @brief Where route() chooses an input, whatever the op kind, only that input at the time
+     * it chooses, and no input where it answers Black; the default where it answers None.
      **/
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
@@ -496,6 +496,13 @@ protected:
      * @brief The StagePlan the GPU executor runs for query.
      **/
     StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The StagePlan render() hands a non-Composite op's renderOp() at time and view.
+     **/
+    StagePlan resolveRenderPlan(double time,
+                                ViewIdx view,
+                                const std::bitset<4>& processChannels) WARN_UNUSED_RETURN;
 
     /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:

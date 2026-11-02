@@ -285,6 +285,9 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain has DenoiseProfiled between RawDemosaic and RawInputColor.
+    bool isDevelopRawDenoiseEnabled() const;
+
     ///////////////////////////////////////////////////////
     // "AI" pane
     bool isAiEnabled() const;
@@ -335,6 +338,15 @@ public:
     bool areRGBPixelComponentsSupported() const;
 
     bool isTransformConcatenationEnabled() const;
+
+    /**
+     * @brief A digest of the knobs that change what a render produces. Project::getContentDigest()
+     * folds it in, so changing one of them re-keys every node. A Settings knob read while rendering
+     * must be flagged with setRenderAffecting() unless either output may serve the other.
+     **/
+    U64 getRenderAffectingDigest() const;
+
+    bool isRenderAffecting(const KnobI* knob) const;
 
     bool useInputAForMergeAutoConnect() const;
 
@@ -534,6 +546,9 @@ private:
     KnobBoolPtr _activateRGBSupport;
     KnobBoolPtr _activateTransformConcatenationSupport;
 
+    // Filled at knob creation only, so it is read without a lock.
+    std::vector<KnobIPtr> _renderAffectingKnobs;
+
     // General/GPU
     KnobPagePtr _gpuPage;
     KnobChoicePtr _gpuComputeMode;
@@ -555,6 +570,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobBoolPtr _developRawDenoise;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
 

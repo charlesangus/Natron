@@ -2419,6 +2419,25 @@ Bezier::setPointPositionAtKeyframe(int index,
     return true;
 } // setPointPositionAtKeyframe
 
+bool
+Bezier::getPointPositionForEdit(int index,
+                                double time,
+                                double* x,
+                                double* y) const
+{
+    const bool useGuiCurve = !canSetInternalPoints();
+    QMutexLocker l(&itemMutex);
+
+    if ((index < 0) || (index >= (int)_imp->points.size())) {
+        return false;
+    }
+    BezierCPs::const_iterator cpIt = _imp->points.begin();
+    std::advance(cpIt, index);
+    (*cpIt)->getPositionAtTime(useGuiCurve, time, ViewIdx(0), x, y);
+
+    return true;
+}
+
 void
 Bezier::requestPointsInCurveEditor(const std::list<BezierCPPtr>& points,
                                    bool show)

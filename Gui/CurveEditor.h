@@ -208,6 +208,11 @@ public:
 
     bool isVisible() const;
 
+    bool hasKnobCurvesShown() const
+    {
+        return _hasKnobCurvesShown;
+    }
+
     void setVisible(bool visible);
 
     NodeCurveEditorElement* findElement(CurveGui* curve) const WARN_UNUSED_RETURN;
@@ -223,6 +228,7 @@ private:
     NodeGuiPtr _node;
     Elements _nodeElements;
     QTreeWidgetItem* _nameItem;
+    bool _hasKnobCurvesShown;
 };
 
 
@@ -337,7 +343,8 @@ public:
     RotoCurveEditorContext(CurveEditor* widget,
                            QTreeWidget* tree,
                            const NodeGuiPtr& node,
-                           QTreeWidgetItem* nodeItem);
+                           QTreeWidgetItem* nodeItem,
+                           bool hostHasKnobCurves);
 
     virtual ~RotoCurveEditorContext() OVERRIDE;
 

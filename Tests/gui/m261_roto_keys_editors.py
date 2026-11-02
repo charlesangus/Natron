@@ -426,7 +426,7 @@ try:
               "undo puts the selected shapes' opacity keys back with their values")
 
         gt.section("framing")
-        # Needs the build with the dope sheet framing over every clip range (not the one before it).
+        # The dope sheet frames the union of every Reader's range.
         # A click on empty space clears any key selection, so F frames the whole project.
         QTest.mouseClick(views[0], Qt.LeftButton, Qt.NoModifier, QPoint(views[0].width() - 6, views[0].height() - 6))
         QApplication.processEvents()
@@ -441,7 +441,7 @@ try:
         report("NOTE framing: view width %d, %d rows with a bar run of 15-40%%, %d rows with 85%%+" % (
             width, len(quarter), len(full)))
         check(len(quarter) >= 3 and len(full) >= 3,
-              "framing the dope sheet shows a 10-frame and a 40-frame Read bar whole (needs the P2.T3 build)")
+              "framing the dope sheet shows a 10-frame and a 40-frame Read bar whole")
         gt.shot("m261-dope-sheet-framing.png")
 
         faulthandler.cancel_dump_traceback_later()

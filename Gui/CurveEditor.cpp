@@ -349,7 +349,8 @@ CurveEditor::addNode(NodeGuiPtr node)
     _imp->nodes.push_back(nodeContext);
 
     if (node->getNode()->getCurveContext()) {
-        RotoCurveEditorContext* rotoEditorCtx = new RotoCurveEditorContext(this, _imp->tree, node, nodeContext->getItem());
+        RotoCurveEditorContext* rotoEditorCtx = new RotoCurveEditorContext(this, _imp->tree, node, nodeContext->getItem(),
+                                                                           nodeContext->hasKnobCurvesShown());
         _imp->rotos.push_back(rotoEditorCtx);
     }
 }
@@ -530,10 +531,11 @@ createElementsForKnob(QTreeWidgetItem* parent,
 
 NodeCurveEditorContext::NodeCurveEditorContext(QTreeWidget* tree,
                                                CurveEditor* curveWidget,
-                                               const NodeGuiPtr &node)
+                                               const NodeGuiPtr& node)
     : _node(node)
     , _nodeElements()
     , _nameItem(0)
+    , _hasKnobCurvesShown(false)
 {
     QTreeWidgetItem* nameItem = new QTreeWidgetItem(tree);
 
@@ -565,6 +567,7 @@ NodeCurveEditorContext::NodeCurveEditorContext(QTreeWidget* tree,
     } else if (!curveContext) {
         nameItem->setHidden(true);
     }
+    _hasKnobCurvesShown = hasAtLeast1KnobWithACurveShown;
     _nameItem = nameItem;
 }
 
@@ -1640,15 +1643,22 @@ struct RotoCurveEditorContextPrivate
     QTreeWidget* tree;
     NodeGuiPtr node;
     QTreeWidgetItem* nameItem;
+    bool hostHasKnobCurves;
     std::list<RotoItemEditorContext* > curves;
 
+    void updateHostRowVisibility()
+    {
+        nameItem->setHidden(!hostHasKnobCurves && curves.empty());
+    }
+
     RotoCurveEditorContextPrivate(CurveEditor* widget,
-                                  QTreeWidget *tree,
+                                  QTreeWidget* tree,
                                   const NodeGuiPtr& node)
         : widget(widget)
         , tree(tree)
         , node(node)
         , nameItem(0)
+        , hostHasKnobCurves(false)
         , curves()
     {
     }
@@ -1657,7 +1667,8 @@ struct RotoCurveEditorContextPrivate
 RotoCurveEditorContext::RotoCurveEditorContext(CurveEditor* widget,
                                                QTreeWidget* tree,
                                                const NodeGuiPtr& node,
-                                               QTreeWidgetItem* nodeItem)
+                                               QTreeWidgetItem* nodeItem,
+                                               bool hostHasKnobCurves)
     : _imp(new RotoCurveEditorContextPrivate(widget, tree, node))
 {
     RotoCurveContextPtr rotoCtx = node->getNode()->getCurveContext();
@@ -1665,6 +1676,7 @@ RotoCurveEditorContext::RotoCurveEditorContext(CurveEditor* widget,
     assert(rotoCtx && nodeItem);
 
     _imp->nameItem = nodeItem;
+    _imp->hostHasKnobCurves = hostHasKnobCurves;
     QObject::connect( rotoCtx.get(), SIGNAL(itemRemoved(RotoItemPtr,int)), this,
                       SLOT(onItemRemoved(RotoItemPtr,int)) );
     QObject::connect( rotoCtx.get(), SIGNAL(itemInserted(int,int)), this, SLOT(itemInserted(int,int)) );
@@ -1682,6 +1694,7 @@ RotoCurveEditorContext::RotoCurveEditorContext(CurveEditor* widget,
             _imp->curves.push_back(c);
         }
     }
+    _imp->updateHostRowVisibility();
 }
 
 RotoCurveEditorContext::~RotoCurveEditorContext()
@@ -1752,6 +1765,7 @@ RotoCurveEditorContext::onItemRemoved(const RotoItemPtr& item,
         if ( (*it)->getRotoItem() == item ) {
             delete *it;
             _imp->curves.erase(it);
+            _imp->updateHostRowVisibility();
 
             return;
         }
@@ -1775,6 +1789,7 @@ RotoCurveEditorContext::itemInserted(int,
         RotoItemEditorContext* b = new RotoItemEditorContext(_imp->tree, _imp->widget, isStroke, this);
         _imp->curves.push_back(b);
     }
+    _imp->updateHostRowVisibility();
 }
 
 void

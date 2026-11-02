@@ -411,7 +411,9 @@ setControlPointValue(BezierCPCurveGui* curve,
         return false;
     }
     double x = 0., y = 0.;
-    cp->getPositionAtTime(false, key->getTime(), ViewIdx(0), &x, &y);
+    if (!bezier->getPointPositionForEdit(index, key->getTime(), &x, &y)) {
+        return false;
+    }
     if (curve->getDimension() == 0) {
         x = value;
     } else {

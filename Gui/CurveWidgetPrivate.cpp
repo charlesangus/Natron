@@ -1215,6 +1215,7 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
     double maxRight = std::numeric_limits<int>::max();
     double epsilon = clampToIntegers ? 1 : 1e-4;
     bool canMoveY = true;
+    bool anyTimeMovable = false;
     std::map<CurveGuiPtr, std::vector<MoveKeysCommand::KeyToMove> > keysToMove;
 
     for (SelectedKeys::iterator it = _selectedKeyFrames.begin(); it != _selectedKeyFrames.end(); ++it) {
@@ -1236,10 +1237,11 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
 
         CurvePtr curve = it->first->getInternalCurve();
         std::vector<MoveKeysCommand::KeyToMove>& vect = keysToMove[it->first];
-        if (dynamic_cast<BezierCPCurveGui*>(it->first.get())) {
-            // A control point's key times are the shape's keyframes, moved in the dope sheet.
-            maxLeft = 0.;
-            maxRight = 0.;
+        // A control point's key times are the shape's keyframes, moved in the dope sheet, so its
+        // keys neither move in time nor limit how far the other selected keys can.
+        const bool isControlPoint = dynamic_cast<BezierCPCurveGui*>(it->first.get()) != 0;
+        if (!isControlPoint) {
+            anyTimeMovable = true;
         }
         if (curve) {
             for (std::list<KeyPtr>::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
@@ -1247,7 +1249,7 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
                 keyToMove.key = *it2;
                 keyToMove.prevIsSelected = false;
                 keyToMove.nextIsSelected = false;
-                if ( (*it2)->hasNext ) {
+                if (!isControlPoint && (*it2)->hasNext) {
                     if ( !_widget->isSelectedKey( it->first, (*it2)->nextKey.getTime() ) ) {
                         double diff = (*it2)->nextKey.getTime() - (*it2)->key.getTime() - epsilon;
                         maxRight = std::max( 0., std::min(diff, maxRight) );
@@ -1255,7 +1257,7 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
                         keyToMove.nextIsSelected = true;
                     }
                 }
-                if ( (*it2)->hasPrevious ) {
+                if (!isControlPoint && (*it2)->hasPrevious) {
                     if ( !_widget->isSelectedKey( it->first, (*it2)->prevKey.getTime() ) ) {
                         double diff = (*it2)->prevKey.getTime()  - (*it2)->key.getTime() + epsilon;
                         maxLeft = std::min( 0., std::max(diff, maxLeft) );
@@ -1278,7 +1280,9 @@ CurveWidgetPrivate::moveSelectedKeyFrames(const QPointF & oldClick_opengl,
 
     dt = std::min(dt, maxRight);
     dt = std::max(dt, maxLeft);
-
+    if (!anyTimeMovable) {
+        dt = 0;
+    }
 
     double dv;
     ///Parametric curve editor (the ones of the KnobParametric) never clamp keyframes to integer in the X direction

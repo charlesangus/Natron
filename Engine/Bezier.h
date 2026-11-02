@@ -283,6 +283,13 @@ public:
     bool setPointPositionAtKeyframe(int index, double time, double x, double y);
 
     /**
+     * @brief Reads the control point's position at time from the curve setPointPositionAtKeyframe
+     * writes to, so a read-modify-write of one coordinate sees the other's pending edit.
+     * Returns false when there is no such point.
+     **/
+    bool getPointPositionForEdit(int index, double time, double* x, double* y) const;
+
+    /**
      * @brief Asks the curve editor to show (or stop showing) the x/y curves of the given
      * control points, which must belong to this shape.
      **/

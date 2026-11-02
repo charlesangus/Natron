@@ -17,6 +17,7 @@ source that another job writes must be rendered at the same revision.
 """
 
 import argparse
+import math
 import os
 import re
 import struct
@@ -645,6 +646,74 @@ def colour_calibration_jobs(coeffs):
     return jobs
 
 
+# toneequal runs on a synthetic linear Rec. 709 half float TIFF the jobs write next to the
+# references, which NativeToneEqualizer_Test feeds the node unchanged; colorin and colorout are
+# identities around it and the whole frame is kept, as half float too. The mask's radius is a
+# share of the larger side and the scene's features scale with the frame.
+TONEEQUAL_SOURCE = "toneequal-source.tif"
+TONEEQUAL_WIDTH = 128
+TONEEQUAL_HEIGHT = 96
+# The band gains of every job, in EV, from -8 EV (blacks) to 0 EV (speculars).
+TONEEQUAL_GAINS = (1.2, 0.9, 0.6, 0.3, 0.0, -0.2, -0.5, -0.8, -1.0)
+TONEEQUAL_DETAILS = {"none": 0, "averaged-guided": 1, "guided": 2, "averaged-eigf": 3, "eigf": 4}
+TONEEQUAL_ESTIMATORS = {"mean": 0, "lightness": 1, "value": 2, "norm1": 3, "norm2": 4, "power-norm": 5, "geomean": 6}
+# (suffix, options); options override toneequal_params()'s defaults. NativeToneEqualizer_Test's
+# kReferenceJobs mirrors this list.
+TONEEQUAL_VARIANTS = (
+    [("bands", {})]
+    + [("details-" + name, {"details": value}) for name, value in TONEEQUAL_DETAILS.items()]
+    + [("estimator-" + name, {"method": value}) for name, value in TONEEQUAL_ESTIMATORS.items()]
+    + [
+        ("compensations-guided", {"details": 2, "exposure_boost": 1.5, "contrast_boost": 0.8}),
+        ("compensations-eigf", {"exposure_boost": -0.5, "contrast_boost": 0.6}),
+        ("smoothing-diffusion", {"smoothing": math.sqrt(2.0) ** 1.5, "iterations": 3, "feathering": 20.0, "blending": 10.0}),
+        ("quantization", {"quantization": 0.5}),
+    ]
+)
+
+
+def toneequal_params(gains=TONEEQUAL_GAINS, blending=5.0, smoothing=math.sqrt(2.0), feathering=1.0, quantization=0.0,
+                     contrast_boost=0.0, exposure_boost=0.0, details=4, method=4, iterations=1):
+    # dt_iop_toneequalizer_params_t, version 2: the nine band gains, blending (per cent of the
+    # largest side), smoothing (the gaussians' sigma), feathering, quantization, the two mask
+    # compensations, details, the luminance estimator and the filter iterations.
+    return struct.pack("<15f3i", *gains, blending, smoothing, feathering, quantization, contrast_boost, exposure_boost,
+                       details, method, iterations)
+
+
+def toneequal_jobs():
+    jobs = []
+    for suffix, options in TONEEQUAL_VARIANTS:
+        entries = [
+            ("flip", 0, 2, flip_params()),
+            ("colorin", 1, 7, colorin_params(DT_COLORSPACE_LIN_REC709)),
+            ("colorout", 1, 5, colorout_params()),
+            ("toneequal", 1, 2, toneequal_params(**options)),
+        ]
+        what = "toneequal %s" % " ".join("%s=%s" % kv for kv in sorted(options.items()))
+        jobs.append(Job("toneequal-%s.tif" % suffix, TONEEQUAL_SOURCE, entries, what.strip(), whole=True, half=True))
+    return jobs
+
+
+def toneequal_scene():
+    """The source: exposures from -10 EV to +1 EV left to right, rippled down the rows, under
+    hard-edged patches 1.5 EV up and a fine texture, tinted by row band so the estimators differ.
+    Rows from the top."""
+    y, x = np.mgrid[0:TONEEQUAL_HEIGHT, 0:TONEEQUAL_WIDTH].astype(np.float64)
+    patch = TONEEQUAL_WIDTH // 8
+    ev = -10.0 + 11.0 * x / (TONEEQUAL_WIDTH - 1) + 0.5 * np.sin(2.0 * np.pi * y / (TONEEQUAL_HEIGHT / 4.0))
+    ev += np.where(((x // patch) + (y // patch)) % 3 == 0, 1.5, 0.0)
+    ev += 0.15 * np.sin(1.3 * x) * np.sin(1.7 * y)
+    tints = np.array([(1.0, 1.0, 1.0), (1.25, 1.0, 0.7), (0.75, 0.95, 1.3)])
+    tint = tints[(y.astype(int) // (TONEEQUAL_HEIGHT // 3)) % 3]
+    return (np.exp2(ev)[:, :, None] * tint).astype(np.float16)
+
+
+def write_toneequal_source(path):
+    tifffile.imwrite(path, np.ascontiguousarray(toneequal_scene()), photometric="rgb", compression="zlib",
+                     description="synthetic linear Rec. 709 half float source of the toneequal references", metadata=None)
+
+
 # darktable's contrast & texture (src/iop/contrastntexture.c at DARKTABLE_MASTER_REF), rendered on
 # a plate: the CR2 developed to linear Rec. 2020 and exported small, then read back as a float TIFF
 # whose input and working profiles are both linear Rec. 2020, so the module's input is the plate.
@@ -925,7 +994,7 @@ def revision(ref):
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
             + cacorrect_jobs() + rawdenoise_jobs() + denoiseprofile_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
-            + colour_calibration_jobs(coeffs) + contrastntexture_jobs() + ashift_jobs())
+            + colour_calibration_jobs(coeffs) + contrastntexture_jobs() + ashift_jobs() + toneequal_jobs())
 
 
 def main():
@@ -961,7 +1030,7 @@ def main():
     produced = {job.name for job in jobs}
     cameras = sorted({job.source for job in jobs if job.mosaic is None and job.source in CAMERA_FIXTURES})
     for job in jobs:
-        if job.mosaic is None and job.source not in CAMERA_FIXTURES and job.source not in produced | {ASHIFT_SOURCE}:
+        if job.mosaic is None and job.source not in CAMERA_FIXTURES and job.source not in produced | {ASHIFT_SOURCE, TONEEQUAL_SOURCE}:
             raise RuntimeError("%s: its source %s is another job's output; run that job too" % (job.name, job.source))
     if any(job.source == ASHIFT_SOURCE for job in jobs):
         path = os.path.join(args.out, ASHIFT_SOURCE)
@@ -983,6 +1052,11 @@ def main():
         path = os.path.join(args.out, dng)
         write_cfa_dng(path, pattern, period, scene, gain_maps, limit)
         with open(path, "rb") as src, open(os.path.join(args.scratch, dng), "wb") as dst:
+            dst.write(src.read())
+    if any(job.source == TONEEQUAL_SOURCE for job in jobs):
+        path = os.path.join(args.out, TONEEQUAL_SOURCE)
+        write_toneequal_source(path)
+        with open(path, "rb") as src, open(os.path.join(args.scratch, TONEEQUAL_SOURCE), "wb") as dst:
             dst.write(src.read())
     for job in jobs:
         run_job(job, args.out, args.scratch)

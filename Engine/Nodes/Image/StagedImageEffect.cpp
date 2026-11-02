@@ -165,6 +165,14 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     return plan;
 }
 
+StagePlan
+StagedImageEffect::resolveRenderPlan(double time,
+                                     ViewIdx view,
+                                     const std::bitset<4>& processChannels)
+{
+    return resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), time, view, processChannels);
+}
+
 bool
 StagedImageEffect::canRenderOnGpu(const GpuQuery& query) const
 {
@@ -848,7 +856,7 @@ StagedImageEffect::render(const RenderActionArgs& args)
             return eStatusFailed;
         }
 
-        return renderOp(args, resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), args.time, args.view, args.processChannels));
+        return renderOp(args, resolveRenderPlan(args.time, args.view, args.processChannels));
     }
     const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
     const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);

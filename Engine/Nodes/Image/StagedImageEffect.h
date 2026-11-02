@@ -498,6 +498,13 @@ protected:
     StagePlan resolveGpuPlan(const GpuQuery& query) const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The StagePlan render() hands a non-Composite op's renderOp() at time and view.
+     **/
+    StagePlan resolveRenderPlan(double time,
+                                ViewIdx view,
+                                const std::bitset<4>& processChannels) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Lets a node narrow the region of definition its passes give, in pixels at scale:
      * rod, which is srcRoD, the source's region, grown unless that is empty. Returns whether it
      * changed rod; the default changes nothing.

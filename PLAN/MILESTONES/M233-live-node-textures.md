@@ -131,3 +131,4 @@ Survey: `PLAN/DESIGN/2026-10-26-3d-mvp-survey.md`.
   - approach: User, 2026-11-02: "should preserve the data window (e.g. in case the object has uv coordinates outside 0-1)". UV 0–1 still maps to the format, but the uploaded texture covers the whole data window, so UVs outside 0–1 sample the overscan pixels instead of clamping or wrapping. Outside the data window, sampling follows the material's wrap mode.
   - verify: A test with overscan (data window larger than the format) and a card whose UVs extend past 0–1 shows the overscan pixels at those UVs; 0–1 still lands on the format.
   - size: M
+- 2026-11-02 — No size cap on the kept overscan: the texture covers the whole data window; managing size is the user's job (user).

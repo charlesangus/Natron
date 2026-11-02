@@ -9,6 +9,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 **In:**
 - An engine-free LensTrace port: all 9 built-in lenses (Double-Gauss, 22mm wide, 250mm tele, fisheye, Cooke triplet, Tessar, Sonnar, Petzval, Planar) and pbrt/Kolb `.dat` lens files with an optional Abbe column.
 - A Lens menu on ZDefocus (Lens and Manual CoC modes) and on Defocus. Defocus also gets a Focus Side choice.
+- A **Lens tab on Defocus** (user, 2026-11-01). `size` stays the primary control. The tab holds `focalLength`, `fStop`, `filmBack`, `focusDistance` and `objectDistance`, plus a `sizeFromLens` toggle, default off. When it is on, the blur size and focus side are computed from those values with ZDefocus's Lens-mode CoC model (`DepthOfField.h`), and `size` is disabled. The same knobs feed a traced lens's table, whether or not the toggle is on.
 - Every Niik-l lens control:
 
   | Knob | Default | Notes |
@@ -49,7 +50,9 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 
 **Assumptions:**
 - Unconfirmed: in Manual CoC mode a traced lens builds its table from the Lens-mode knobs (focal length, f-stop, film back, focus distance), shown while a traced lens is selected. The CoC size still comes from the Manual knobs; only the shape and relative u come from the table.
-- Unconfirmed: on Defocus, a traced lens reveals focalLength/fStop/filmBack and adds `focusSide` (Behind/In Front) plus `relativeDefocus` (default 1 = a point at infinity). u = ±relativeDefocus; `size` still sets the blur radius.
+- **Defocus with `sizeFromLens` on:** the CoC is computed for `objectDistance` against `focusDistance`, in pixels via film back ÷ format width and scaled by render scale. The sign sets the focus side and u comes from the lens geometry, so `focusSide`, `relativeDefocus` and `size` are disabled. If the object is at the focus distance, size is 0 and the node is identity. An object closer than the focal length clamps to the size maximum, as in ZDefocus.
+- Unconfirmed: with `sizeFromLens` off, a traced lens on Defocus takes u = ±`relativeDefocus` (default 1 = a point at infinity) on the side `focusSide` picks (Behind/In Front), `size` sets the blur radius, and the Lens tab knobs build the table.
+- Unconfirmed: distances on Defocus's Lens tab are in metres; focal length and film back are in mm, as in ZDefocus's Lens mode.
 - Unconfirmed: M133's 32 px cell grid is fine enough for traced kernels. Their ρ variation is smooth, and lookups interpolate between table entries.
 - Unconfirmed: the image stages run as one resampling pass after the defocus. Distortion, breathing and lateral CA form one combined warp per channel, and vignetting is a multiply on colour only.
 
@@ -85,8 +88,14 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 
 - [ ] M292.P3.T2 — Defocus Lens knobs and traced kernels (CPU)
   - files: `Engine/Nodes/Filter/Defocus.h`, `Engine/Nodes/Filter/Defocus.cpp`
-  - approach: Add the same five lens knobs, plus `focalLength`, `fStop` and `filmBack` (shown only with a traced lens), and `focusSide` (Behind/In Front) and `relativeDefocus` (default 1). u = ±relativeDefocus, and the radius comes from `size`. Use M133's cell grid for ρ, with kernels cached per cell and channel.
+  - approach: Add the same five lens knobs to the Bokeh tab, and `focusSide` (Behind/In Front) and `relativeDefocus` (default 1). The table parameters come from the Lens tab knobs that M292.P3.T3 adds; until that task lands, use 50 mm, f/2.8, 36 mm film back and 5 m focus as constants. u = ±relativeDefocus, and the radius comes from `size`. Use M133's cell grid for ρ, with kernels cached per cell and channel.
   - verify: `Tests/Native/NativeDefocus_Test.cpp` cases: Procedural is bit-identical to the goldens; Behind and In Front give different kernels for a Petzval lens; a corner cell shows a cat-eye.
+  - size: M
+
+- [ ] M292.P3.T3 — Defocus Lens tab: optional size from lens geometry
+  - files: `Engine/Nodes/Filter/Defocus.h`, `Engine/Nodes/Filter/Defocus.cpp`, `Engine/Nodes/Filter/DepthOfField.h`
+  - approach: Add a second page, "Lens", with `sizeFromLens` (bool, default off, label "Size From Lens"), `focalLength` (mm, 50), `fStop` (2.8), `filmBack` (mm, 36), `focusDistance` (m, 5) and `objectDistance` (m, 10). Labels follow the script names. When `sizeFromLens` is on, compute the signed CoC through `DepthOfField.h`'s Lens-mode function. Use the absolute value as the size in place of `size`, and the sign as the focus side. Disable `size`, `focusSide` and `relativeDefocus`. Use these knobs as the traced lens's table parameters in place of P3.T2's constants. The GPU path reads the resolved size, so it needs no shader change. With the toggle off, behaviour is unchanged.
+  - verify: `Tests/Native/NativeDefocus_Test.cpp` cases: toggle off is bit-identical to the goldens; toggle on with 50 mm, f/2.8, 36 mm, focus 5 m, object 10 m gives the size `DepthOfField.h` predicts, matching a plain Defocus at that size exactly; object at the focus distance is identity; object in front picks the In Front traced kernel.
   - size: M
 
 ## Phase 292.4: Image stages
@@ -127,7 +136,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 
 - [ ] M292.P6.T2 — Goldens, docs and GUI check
   - files: `Tests/Native/goldens/ZDefocus/`, `Tests/Native/goldens/Defocus/` (new traced-lens goldens), `Engine/Nodes/Filter/docs/ZDefocus.md`, `Engine/Nodes/Filter/docs/Defocus.md`, `Tests/gui/m292_traced_lens.py`
-  - approach: Goldens on the parity source for Double-Gauss, Petzval with lensColour on, and the stages at 1, as ≤256 px half-float crops. Docs list each built-in lens with its citation, the lens-file format, and how traced and procedural knobs interact. The GUI script renders a point-light grid with a depth ramp under Xvfb through each built-in lens, centre and corner, and takes screenshots.
+  - approach: Goldens on the parity source for Double-Gauss, Petzval with lensColour on, and the stages at 1, as ≤256 px half-float crops. Docs list each built-in lens with its citation, the lens-file format, and how traced and procedural knobs interact. The GUI script also toggles Defocus's Size From Lens and checks that `size` is disabled. It renders a point-light grid with a depth ramp under Xvfb through each built-in lens, centre and corner, and takes screenshots.
   - verify: `ctest -R "NativeZDefocus|NativeDefocus"` passes; the GUI script passes; screenshots are shared with the user.
   - size: M
 
@@ -138,5 +147,6 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 - 2026-11-01 — **Port LensTrace into our nodes, not Niik-l's LensDefocus node (user, /cat-plan grill):** "Their node is a bit rough around the edges; probably we shouldn't port it exactly. The most interesting part is the lens tracing work."
 - 2026-11-01 — **All four image stages, opt-in (user):** distortion, breathing, lateral colour and vignetting (with spread), each defaulting to 0.
 - 2026-11-01 — **ZDefocus and Defocus get the Lens menu (user):** Defocus adds Focus Side; IDefocus inherits through BokehKernel with no new knobs.
+- 2026-11-01 — **Defocus keeps `size` as the primary control, plus an optional Lens tab (user):** "a second tab that optionally sets the size from lens/f-stop/filmback/focus distance would actually be really nice." `objectDistance` was added because a CoC needs the subject's distance as well as the focus distance.
 - 2026-11-01 — **A traced lens replaces the overlapping procedural aberrations, and the extras stack (user):** blades/rotation shape the iris; onion rings, catadioptric, filter shape and highlight gain stack on top.
 - 2026-11-01 — **GPU residency (user):** the user asked for fully GPU-resident defocus, so traced kernels and image stages run on the GPU with no CPU round-trip.

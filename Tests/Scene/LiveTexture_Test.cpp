@@ -388,8 +388,8 @@ TEST_F(LiveTextureTest, TheTextureHoldsTheOverscanAroundTheFormat)
     EXPECT_EQ(format.height(), formatOnly->getHeight());
 }
 
-// An image far larger than its format is held only as far as the format again on every side.
-TEST_F(LiveTextureTest, TheOverscanHeldIsBoundedByTheFormat)
+// An image far larger than its format is held whole.
+TEST_F(LiveTextureTest, TheWholeDataWindowIsHeld)
 {
     Format format;
     getApp()->getProject()->getProjectDefaultFormat(&format);
@@ -408,7 +408,7 @@ TEST_F(LiveTextureTest, TheOverscanHeldIsBoundedByTheFormat)
     RectI formatRect;
     RectI window;
     ASSERT_TRUE(getNodeImageWindow(constant, 1., ViewIdx(0), &formatRect, &window));
-    EXPECT_EQ(RectI(format.x1 - format.width(), format.y1, format.x2 + format.width(), format.y2 + format.height()), window);
+    EXPECT_EQ(RectI(format.x1 - 10 * format.width(), format.y1, format.x1 + 10 * format.width(), format.y1 + format.height() / 2 + 10 * format.height()), window);
 }
 
 TEST_F(LiveTextureTest, PrepareOnTheMainThreadWarnsTheConsumer)

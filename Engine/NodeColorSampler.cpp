@@ -282,15 +282,12 @@ getNodeImageWindow(const NodePtr& node,
         // An empty region of definition: the format alone, all transparent black.
         return true;
     }
-    // Bounded so a huge or infinite region cannot ask for a texture no memory or GPU could hold;
-    // clipped in canonical coordinates first, so an infinite side never reaches pixel ints.
-    const double par = metadata->getPixelAspectRatio(-1);
-    const RectI bound(outputFormat.x1 - outputFormat.width(), outputFormat.y1 - outputFormat.height(),
-                      outputFormat.x2 + outputFormat.width(), outputFormat.y2 + outputFormat.height());
-    const RectD clipped = rod.intersect(Format(bound, par).toCanonicalFormat());
-    if (!clipped.isNull()) {
-        window->merge(clipped.toPixelEnclosing(0, par).intersect(bound));
+    if (rod.isInfinite() || rod.isNull()) {
+        // The region of definition normally comes back with an infinite side already clipped; one
+        // that is not has no pixels to allocate, so the texture is the format, as in the viewer.
+        return true;
     }
+    window->merge(rod.toPixelEnclosing(0, metadata->getPixelAspectRatio(-1)));
 
     return true;
 } // getNodeImageWindow

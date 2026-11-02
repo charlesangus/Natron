@@ -52,8 +52,8 @@ ImagePtr renderNodeImage(const NodePtr& node,
 /**
  * @brief The part of node's image at time a texture of it holds, in full-scale pixel coordinates,
  * found without rendering: window receives its output format (its display window, the project
- * format when it has none) merged with its region of definition, the latter bounded by the format
- * grown by its own width and height on every side. format receives the format.
+ * format when it has none) merged with its region of definition, whole. An infinite region is not merged,
+ * which leaves the format. format receives the format.
  *
  * Returns false for a null or deactivated node, or one whose format cannot be told.
  **/

@@ -664,7 +664,19 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
         _renderer.setDisplayTransform(transform);
         ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << label;
 
-        // Hydra built its pass from OpenColorIO's current config, which holds what it was given.
+        float reported[3];
+        _renderer.getBackgroundColor(reported);
+        EXPECT_NEAR(std::min(std::max(graded[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
+
+        const QImage image = render();
+        const Rgb projected = pixel(image, 97, 128);
+        EXPECT_NEAR(expected.r, projected.r, 8) << label << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.g, projected.g, 8) << label << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.b, projected.b, 8) << label << ": " << projected << " expected " << expected;
+        const Rgb outside = pixel(image, 20, 128);
+        EXPECT_NEAR(codeValue(graded[4]), outside.r, 4) << label << ": " << outside;
+
+        // Rendering made what Hydra was given OpenColorIO's current config.
         OCIO_NAMESPACE::DisplayViewTransformRcPtr viewportView = OCIO_NAMESPACE::DisplayViewTransform::Create();
         viewportView->setSrc("Natron 3D Viewport Input");
         viewportView->setDisplay("Natron 3D Viewport");
@@ -681,18 +693,6 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
             EXPECT_NEAR(graded[i], givenPixels[i], bakeTolerance) << label << " plate " << i;
             EXPECT_NEAR(graded[4 + i], givenPixels[3 + i], bakeTolerance) << label << " background " << i;
         }
-
-        float reported[3];
-        _renderer.getBackgroundColor(reported);
-        EXPECT_NEAR(std::min(std::max(graded[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
-
-        const QImage image = render();
-        const Rgb projected = pixel(image, 97, 128);
-        EXPECT_NEAR(expected.r, projected.r, 8) << label << ": " << projected << " expected " << expected;
-        EXPECT_NEAR(expected.g, projected.g, 8) << label << ": " << projected << " expected " << expected;
-        EXPECT_NEAR(expected.b, projected.b, 8) << label << ": " << projected << " expected " << expected;
-        const Rgb outside = pixel(image, 20, 128);
-        EXPECT_NEAR(codeValue(graded[4]), outside.r, 4) << label << ": " << outside;
 
         transform.gain = 1.;
         transform.gamma = 1.;

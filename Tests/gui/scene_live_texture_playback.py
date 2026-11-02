@@ -26,7 +26,7 @@ POLL_TIMEOUT_S = 30.0
 PLAY_S = 6.0
 SETTLE_MS = 700
 MIN_CHANGES = 8
-MAX_STALE_S = 1.0
+MAX_STALE_S = 1.5
 
 try:
     from PySide6.QtGui import QGuiApplication

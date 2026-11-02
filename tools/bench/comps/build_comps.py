@@ -303,7 +303,7 @@ def defocus_retime():
     tb = single("net.sf.openfx.TimeBlur", "timeblur", plate)
     p(tb, "division").set(5)
     p(tb, "shutter").set(1.0)
-    rt = single("net.sf.openfx.Retime", "retime", tb)
+    rt = single("Retime", "retime", tb)
     p(rt, "speed").set(0.5)
     fb = single("net.sf.openfx.FrameBlend", "frameblend", rt)
     p(fb, "frameRange").set(-2, 2)

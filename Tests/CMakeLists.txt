@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -85,6 +85,7 @@ set(Tests_SOURCES
     KnobContentHash_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
+    KnobQueuedValueChange_Test.cpp
     LazyHash_Test.cpp
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
@@ -265,6 +266,7 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    ActionShortcuts_Test.cpp
     ColorAdjustPanel_Test.cpp
     ColorEditSlider_Test.cpp
     ColorKnobUndoMerge_Test.cpp
@@ -291,6 +293,7 @@ set(GuiTests_SOURCES
     NodeGraphPickUp_Test.cpp
     NodeGraphSplice_Test.cpp
     RenderDialogRange_Test.cpp
+    RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
     SceneViewport_Test.cpp

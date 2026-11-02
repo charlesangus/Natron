@@ -57,6 +57,8 @@
 #include "Engine/Nodes/Color/Threshold.h"
 #include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/ContrastTexture.h"
+#include "Engine/Nodes/Filter/Defocus.h"
 #include "Engine/Nodes/Filter/EdgeBlur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/EdgeExtend.h"
@@ -65,6 +67,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
+#include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
@@ -79,6 +82,9 @@
 #include "Engine/Nodes/Raw/RawColorCalibration.h"
 #include "Engine/Nodes/Raw/RawHotPixels.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/Nodes/Time/Retime.h"
+#include "Engine/Nodes/Time/TimeWarp.h"
+#include "Engine/Nodes/Transform/AutoStraighten.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/ICornerPin.h"
@@ -128,6 +134,7 @@ gpuCapableIds()
         PLUGINID_NATRON_STMAP,
         PLUGINID_NATRON_IDISTORT,
         PLUGINID_NATRON_LENSDISTORTION,
+        PLUGINID_NATRON_AUTOSTRAIGHTEN,
         PLUGINID_NATRON_KEYER,
         PLUGINID_NATRON_CHROMAKEYER,
         PLUGINID_NATRON_RAWINPUTCOLOR,
@@ -137,6 +144,8 @@ gpuCapableIds()
         PLUGINID_NATRON_NATIVE_MERGE,
         PLUGINID_NATRON_EDGEDETECT,
         PLUGINID_NATRON_IBLUR,
+        PLUGINID_NATRON_DEFOCUS,
+        PLUGINID_NATRON_ZDEFOCUS,
         PLUGINID_NATRON_IERODE,
         PLUGINID_NATRON_IDILATE,
         PLUGINID_NATRON_ITRANSFORM,
@@ -160,6 +169,9 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_TIMEWARP,
+        PLUGINID_NATRON_RETIME,
+        PLUGINID_NATRON_CONTRASTTEXTURE,
     };
 
     return ids;

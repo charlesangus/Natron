@@ -85,6 +85,7 @@ protected:
         return settings ? RectI(0, 0, settings->kept.width(), settings->kept.height()) : RectI();
     }
 
+#ifdef NATRON_HAVE_GPU
     // The GPU render of window in four tiles is the window rendered whole, bit for bit.
     void expectTiledEqualsWhole(GpuParityRuntime& runtime,
                                 const NodePtr& demosaic,
@@ -125,6 +126,7 @@ protected:
         EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << " (whole " << whole.pixels[diff.firstMismatchIndex]
                                        << ", tiled " << assembled[diff.firstMismatchIndex] << ")";
     }
+#endif // NATRON_HAVE_GPU
 };
 
 #ifdef NATRON_HAVE_GPU

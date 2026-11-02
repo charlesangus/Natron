@@ -4861,12 +4861,8 @@ OfxParametricInstance::addControlPoint(int curveIndex,
 #ifdef DEBUG
 //#pragma message WARN("This is a hack, we should extend the parametric suite to add derivatives infos")
 #endif
-    if (effect) {
-        if (effect->getPluginID() == PLUGINID_OFX_TIMEDISSOLVE) {
-            interpolation = eKeyframeTypeHorizontal;
-        } else if (effect->getPluginID() == PLUGINID_OFX_RETIME) {
-            interpolation = eKeyframeTypeCubic;
-        }
+    if (effect && (effect->getPluginID() == PLUGINID_OFX_TIMEDISSOLVE)) {
+        interpolation = eKeyframeTypeHorizontal;
     }
     stat = knob->addControlPoint(eValueChangedReasonPluginEdited, curveIndex, key, value, interpolation);
 

@@ -41,8 +41,8 @@ NATRON_NAMESPACE_ENTER
 namespace SceneGuides {
 namespace {
     const int kCircleSegments = 32;
-    // The smallest a light's own size draws at, in display lengths, so a tiny light stays visible.
-    const double kMinLightSize = 0.03;
+    // Keeps a zero-sized light from collapsing its guide to a point nothing can hit.
+    const double kMinLightSize = 1e-4;
 
     void
     addSegment(const GfMatrix4d& m,
@@ -271,6 +271,11 @@ buildCameraLines(const GfCamera& camera,
     const bool orthographic = camera.GetProjection() == GfCamera::Orthographic;
 
     length = std::max(length, 1e-6);
+    // The authored far clip ends the frustum early when it is closer than the display depth.
+    const double farClip = camera.GetClippingRange().GetMax();
+    if (farClip > 0. && farClip < length) {
+        length = farClip;
+    }
     // A perspective frustum's near plane only sets where its sides start; the sides are drawn from
     // the apex, so any small near gives the same far rectangle.
     frustum.SetNearFar(GfRange1d(orthographic ? 0. : length * 1e-3, length));
@@ -321,7 +326,7 @@ buildLightLines(const UsdPrim& prim,
     const GfMatrix4d& m = localToWorld;
     const GfVec3d o(0., 0., 0.);
     const GfVec3d x(1., 0., 0.), y(0., 1., 0.), z(0., 0., 1.);
-    const double minSize = length * kMinLightSize;
+    const double minSize = kMinLightSize;
 
     switch (kind) {
     case eGuideKindCamera:

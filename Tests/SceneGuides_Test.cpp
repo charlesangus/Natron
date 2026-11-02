@@ -196,6 +196,49 @@ TEST(SceneGuides, EachLightTypeHasLinesAtItsPosition)
     EXPECT_TRUE(hasPoint(guides[1].segments, expected[1].position + GfVec3d(2., 0., 0.)));
 }
 
+TEST(SceneGuides, SizedLightGuidesUseAuthoredSizeInWorldSpace)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateInMemory();
+    PXR_NS::UsdLuxRectLight rect = PXR_NS::UsdLuxRectLight::Define(stage, PXR_NS::SdfPath("/Rect"));
+    rect.CreateWidthAttr().Set(2.f);
+    rect.CreateHeightAttr().Set(1.f);
+    rect.AddTranslateOp().Set(GfVec3d(10., 20., 30.));
+    rect.AddScaleOp().Set(GfVec3d(3., 4., 1.));
+    PXR_NS::UsdLuxSphereLight sphere = PXR_NS::UsdLuxSphereLight::Define(stage, PXR_NS::SdfPath("/Sphere"));
+    sphere.CreateRadiusAttr().Set(0.5f);
+    sphere.AddTranslateOp().Set(GfVec3d(-5., 0., 0.));
+
+    // A guide size far from the lights' own sizes must not change what they draw.
+    for (const double length : { 0.1, 10., 100. }) {
+        const std::vector<SceneGuides::Guide> guides = SceneGuides::buildGuides(stage, SceneGuides::findGuidePrims(stage), PXR_NS::UsdTimeCode::Default(), length);
+        ASSERT_EQ(guides.size(), 2u);
+        ASSERT_EQ(guides[0].path, "/Rect");
+        ASSERT_EQ(guides[1].path, "/Sphere");
+
+        // The rectangle is 2 by 1 scaled by 3 by 4: 6 by 4 in world space. Only the points in its
+        // plane count; the arrow leaves the plane along Z.
+        PXR_NS::GfRange3d rectBox;
+        for (const GfVec3d& p : guides[0].segments) {
+            if (std::abs(p[2] - 30.) < 1e-9) {
+                rectBox.UnionWith(p);
+            }
+        }
+        EXPECT_NEAR(rectBox.GetSize()[0], 6., 1e-5) << length;
+        EXPECT_NEAR(rectBox.GetSize()[1], 4., 1e-5) << length;
+        EXPECT_NEAR(rectBox.GetMidpoint()[0], 10., 1e-5) << length;
+        EXPECT_NEAR(rectBox.GetMidpoint()[1], 20., 1e-5) << length;
+
+        PXR_NS::GfRange3d sphereBox;
+        for (const GfVec3d& p : guides[1].segments) {
+            sphereBox.UnionWith(p);
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            EXPECT_NEAR(sphereBox.GetSize()[axis], 1., 1e-5) << length << " axis " << axis;
+        }
+        EXPECT_TRUE(hasPoint(guides[1].segments, GfVec3d(-4.5, 0., 0.))) << length;
+    }
+}
+
 TEST(SceneGuides, HitTestAndRect)
 {
     PXR_NS::GfFrustum frustum;

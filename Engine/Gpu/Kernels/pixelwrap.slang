@@ -1,4 +1,5 @@
 import gradeops;
+import exactdivide;
 
 // The per-pixel wrapping of a CPU point op: divide by the "(Un)premult by" channel,
 // the op, multiply back, blend with the undivided source by mask x mix, and pass unprocessed
@@ -116,7 +117,7 @@ float4 wrapDivide(float4 v, float d)
         if (int(c) != wrap.skipChannel)
         {
             const uint bit = wrapChannelBit(n, c);
-            precise float q = v[bit] / d;
+            precise float q = divideRounded(v[bit], d);
             v[bit] = q;
         }
     }

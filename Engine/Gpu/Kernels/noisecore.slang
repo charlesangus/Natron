@@ -12,6 +12,8 @@
 // A module: the noise kernel and the test entry (noisecore_test.slang) import it, and it declares
 // no bindings of its own.
 
+import exactdivide;
+
 // ---- libs/noise/Noise4D.h ----
 
 static const uint kPrimeX = 0xF797C5C7u;
@@ -151,50 +153,6 @@ floorV(float a)
 {
     float r = roundEven(a);
     return maskedDecrement(r > a, r);
-}
-
-// a * b as p + e exactly, by Dekker's split: fma() need not round once (lavapipe's does not).
-void
-exactProduct(float a, float b, out float p, out float e)
-{
-    precise float pr = a * b;
-    precise float ca = 4097.0f * a;
-    precise float ah = ca - (ca - a);
-    precise float al = a - ah;
-    precise float cb = 4097.0f * b;
-    precise float bh = cb - (cb - b);
-    precise float bl = b - bh;
-    precise float er = ((ah * bh - pr) + ah * bl + al * bh) + al * bl;
-    p = pr;
-    e = er;
-}
-
-// a / b rounded once, as the CPU divides; the device's quotient may be a few ulps off (RADV
-// multiplies by an approximate reciprocal). For b > 0 and a quotient that is normal or zero, with
-// no product near overflow. One correction step makes the quotient faithful, so its remainder is
-// exact; the remainder against half a gap to each neighbour then picks the rounded quotient.
-// Every step after the two device divisions is an exact add, sub or mul.
-float
-divideRounded(float a, float b)
-{
-    float magnitude = vabs(a);
-    precise float q0 = magnitude / b;
-    if (!(q0 > 0.0f)) {
-        return a / b;
-    }
-    float p;
-    float e;
-    exactProduct(q0, b, p, e);
-    precise float r0 = (magnitude - p) - e;
-    precise float q1 = q0 + r0 / b;
-    exactProduct(q1, b, p, e);
-    precise float r = (magnitude - p) - e;
-    float up = asfloat(asuint(q1) + 1u);
-    float down = asfloat(asuint(q1) - 1u);
-    precise float halfUp = 0.5f * b * (up - q1);
-    precise float halfDown = 0.5f * b * (q1 - down);
-    float q = selectF(r > halfUp, up, selectF(r < -halfDown, down, q1));
-    return asfloat(asuint(q) | (asuint(a) & kSignBit));
 }
 
 // An integral float in the int range, as its two's complement bits.

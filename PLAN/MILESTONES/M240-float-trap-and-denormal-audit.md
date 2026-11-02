@@ -102,13 +102,13 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
   - verify: `ctest -R "NativeColorspaceGpu|NativeColourUtilGpu|NativeHueGpu"` passes on RADV and lavapipe.
   - size: M
 
-- [ ] M240.P3.T4 — EdgeAware EIGF parity on RADV
+- [x] M240.P3.T4 — EdgeAware EIGF parity on RADV
   - files: `Tests/Native/EdgeAwareGpu_Test.cpp`, the EIGF kernels under `Engine/Nodes/` (M209 - Edge-Aware Filter Library)
   - approach: On RADV, `EdgeAwareGpu.EigfSurfaceBlur` fails exact parity in the case "97x61 smooth sigma 1e+09 x2 geomean quantization 1": 31 of 5917 floats differ, worst 2.7e-4 (want 0.0998474, got 0.1001173). lavapipe passes. Find the GPU step that differs from the CPU (fast reciprocal, exp/log approximation, reduction order) and make them agree, or bound the comparison with a recorded reason if it is inherent.
   - verify: `ctest -R EdgeAwareGpu` passes on RADV and lavapipe.
   - size: M
 
-- [ ] M240.P3.T5 — Merge parity on RADV
+- [x] M240.P3.T5 — Merge parity on RADV
   - files: `Tests/Native/NativeMergeGpu_Test.cpp`, `Engine/Nodes/Merge/*` kernels (M101 - Clean-Sheet Merge Node)
   - approach: On RADV, `NativeMergeGpuTest.MatchesTheCpuRender` fails with 8 mismatches at `NativeMergeGpu_Test.cpp:273` in several operations. lavapipe passes. Same method as P3.T3: find the diverging step (often a divide by alpha or a fast reciprocal) and make CPU and GPU agree, or bound it with a recorded reason.
   - verify: `ctest -R NativeMergeGpu` passes on RADV and lavapipe.
@@ -155,3 +155,5 @@ M184 - Variable-Size Filter Kit's RADV run (2026-10-26) found two classes of bug
 - 2026-10-28 — **RADV run after rebasing onto main at 50ee71b60 (gpu):** P3.T1 (Noise) and P3.T2 (NativeGpuCapability) pass. Seven suites fail. Three are P3.T3's. Two are new from main's M209 - Edge-Aware Filter Library and M101 - Clean-Sheet Merge Node and are added as P3.T4 and P3.T5. `PersistentMessageTest` and `ShuffleRenderTest` belong to M271 - Persistent Message Test Failures, so this gate doesn't count them.
 
 - 2026-11-02 — **P3.T3 root cause and fix (gpu):** the same as P3.T1's. RADV divides by an approximate reciprocal, and hue, atan and unpremultiply maths amplify the 1–2 ulp quotient error to the reported 1e-5–1e-3 differences. `divideRounded` moved from `noisecore.slang` to a shared `exactdivide.slang`, and every float division in the colorspace, hue, colourutil, gradeops and pixelwrap kernels goes through it. Verified on main at adb2df7d0: the three suites, plus Noise, Grade, Saturation, ColorMath, StagedImageEffect and PixelWrap, pass on RADV and lavapipe.
+
+- 2026-11-02 — **P3.T4 and P3.T5 landed as one commit (gpu):** RADV's sqrt is faithful but not correctly rounded, like its divide, so `exactdivide.slang` gains `sqrtRounded`. EIGF's two blend kernels and every divide and root in `mergeops.slang` go through the shared module. EIGF quantization snaps iteration 1's output to a power of two, so a 1-ulp difference flips the mask; Merge's chained `1 - x/B` steps amplify a few ulp the same way. Exact parity is the fix, and no tolerance changed. EdgeAware, Merge, GuidedFilter, Keymix and the P3.T3 suites pass on RADV and lavapipe. Left alone, since they pass today: `guidedfilter.slang`'s own divides and sqrt, and `gf_quantize`'s log2/exp2.

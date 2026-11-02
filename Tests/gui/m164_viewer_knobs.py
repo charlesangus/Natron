@@ -33,6 +33,11 @@ What is checked, in order:
   fresh        a new project window (app.newProject(), as File > New Project) opens with a Viewer1
                that is framed: the Fit button leaves its zoom as it is. A project started from a
                script has no Viewer, so this is the only way to reach the new-project viewer.
+  file-open    a CheckerBoard -> Viewer1 project saved from another new window is opened the way
+               File > Open opens it (app.loadProject() runs the same Gui::openProject()): into the
+               untouched new-project window, which replaces its project and its Viewer1 in place,
+               and from the saved, non-empty window, which opens it in a window of its own. Each
+               time the app survives the load, the viewer shows the CheckerBoard and opens framed.
 
 The zoom is read from the toolbar's zoom menu, which shows the factor the viewer last reported, and
 "framed" means the Fit button leaves that factor unchanged. The wipe handle's own drawing is not
@@ -42,6 +47,7 @@ Run through Tests/gui/run-gui-test.sh at 1920x1080. Screenshots (m164-*.png) and
 $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
 import os
+import shutil
 import sys
 import traceback
 
@@ -59,6 +65,7 @@ FAR = 100000.0
 HALF_PI = 1.5707963267948966
 
 PLUGIN_CONSTANT = "net.sf.openfx.ConstantPlugin"
+PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
 VIEWER_PLUGIN = "fr.inria.built-in.Viewer"
 V1 = "Viewer1"
 V2 = "Viewer2"
@@ -89,6 +96,10 @@ try:
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
 
     PROJECT_PATH = os.path.join(gt.OUT, "m164_viewer_knobs.ntpz")
+    CHECKER_PATH = os.path.join(gt.OUT, "m164_checker.ntpz")
+    # Copies no window has open, since opening a project some window already has only raises it.
+    OPEN_EMPTY_PATH = os.path.join(gt.OUT, "m164_checker_into_empty.ntpz")
+    OPEN_BUSY_PATH = os.path.join(gt.OUT, "m164_checker_into_new_window.ntpz")
 
     # ---- plumbing --------------------------------------------------------------------------
 
@@ -889,6 +900,55 @@ try:
         require(ok, "the new project has %s with a tab" % V1)
         yield from check_framed(V1, "in a new project", fresh)
         gt.shot("m164-new-project.png")
+
+        # Opening a project into a window replaces its Viewer1, whose tab is only deleted once
+        # control returns to the event loop, so the load ends while the old tab still exists.
+        gt.section("file-open")
+        maker_app = app.newProject()
+        require(maker_app is not None, "another new project window opened")
+        maker = NatronGui.natron.getGuiInstance(maker_app.getAppID())
+        require(maker is not None, "the other new project window has a GuiApp")
+        ok = yield ("until", lambda: maker.getNode(V1) is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the other new project has %s" % V1)
+        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(False)}
+        checker = maker.createNode(PLUGIN_CHECKER, -1, None, props)
+        require(checker is not None, "create a CheckerBoard", gt.plugin_problem(PLUGIN_CHECKER))
+        require(maker.getNode(V1).connectInput(0, checker), "the CheckerBoard feeds %s" % V1)
+        require(maker.saveProjectAs(CHECKER_PATH), "save the CheckerBoard project to " + CHECKER_PATH)
+        shutil.copyfile(CHECKER_PATH, OPEN_EMPTY_PATH)
+        shutil.copyfile(CHECKER_PATH, OPEN_BUSY_PATH)
+        yield ("sleep", SETTLE_MS)
+
+        def shows_checker(owner):
+            viewer = owner.getNode(V1)
+            source = viewer.getInput(0) if viewer is not None else None
+            return source is not None and source.getPluginID() == PLUGIN_CHECKER
+
+        fresh_id = fresh.getAppID()
+        into_current = fresh.loadProject(OPEN_EMPTY_PATH)
+        require(into_current is not None, "open %s from the untouched new-project window" % OPEN_EMPTY_PATH)
+        check(into_current.getAppID() == fresh_id,
+              "the untouched window opens the project in place (app %d, window %d)"
+              % (into_current.getAppID(), fresh_id))
+        forget_tabs()
+        ok = yield ("until", lambda: shows_checker(fresh) and tab_for(V1, fresh) is not None, LOAD_TIMEOUT_S)
+        require(ok, "%s shows the CheckerBoard after opening into the current window" % V1)
+        yield from check_framed(V1, "after opening into the current window", fresh)
+        gt.shot("m164-open-into-current.png")
+
+        maker_id = maker.getAppID()
+        into_new = maker.loadProject(OPEN_BUSY_PATH)
+        require(into_new is not None, "open %s from the saved, non-empty window" % OPEN_BUSY_PATH)
+        check(into_new.getAppID() != maker_id,
+              "the non-empty window opens the project in a window of its own (app %d)" % into_new.getAppID())
+        opened = NatronGui.natron.getGuiInstance(into_new.getAppID())
+        require(opened is not None, "the window the project opened in has a GuiApp")
+        forget_tabs()
+        ok = yield ("until", lambda: shows_checker(opened) and tab_for(V1, opened) is not None, LOAD_TIMEOUT_S)
+        require(ok, "%s shows the CheckerBoard after opening into a new window" % V1)
+        yield from check_framed(V1, "after opening into a new window", opened)
+        check(maker.getNode(V1) is not None and shows_checker(maker), "the non-empty window keeps its project")
+        gt.shot("m164-open-into-new-window.png")
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

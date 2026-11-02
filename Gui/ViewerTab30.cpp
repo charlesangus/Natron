@@ -395,6 +395,9 @@ ViewerTab::getInternalNode() const
 void
 ViewerTab::discardInternalNodePointer()
 {
+    // The tab outlives its node until its deferred deletion, and the project that destroyed the
+    // node may finish loading first: a fit then would ask a node that is gone for its mipmap level.
+    QObject::disconnect(_imp->projectLoadedConnection);
     _imp->viewerNode = 0;
 }
 

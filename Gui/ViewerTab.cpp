@@ -1142,7 +1142,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( gui->getApp()->getProject().get(), SIGNAL(frameRangeChanged(int,int)), _imp->timeLineGui, SLOT(onProjectFrameRangeChanged(int,int)) );
     // Every resize during a load skips the fit, so a reopened project would keep the zoom the
     // viewer had before its pane reached its final size.
-    QObject::connect(gui->getApp()->getProject().get(), SIGNAL(loaded()), this, SLOT(onProjectLoaded()));
+    _imp->projectLoadedConnection = QObject::connect(gui->getApp()->getProject().get(), SIGNAL(loaded()), this, SLOT(onProjectLoaded()));
     QObject::connect( _imp->timeFormat, SIGNAL(currentIndexChanged(int)), _imp->timeLineGui, SLOT(onTimeFormatChanged(int)) );
     _imp->timeLineGui->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 

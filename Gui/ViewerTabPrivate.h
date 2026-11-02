@@ -189,6 +189,7 @@ struct ViewerTabPrivate
     // The last operator other than None, which toggling the wipe brings back.
     ViewerCompositingOperatorEnum compOperatorPrevious;
     ViewerInstance* viewerNode; // < pointer to the internal node
+    QMetaObject::Connection projectLoadedConnection;
     mutable QMutex visibleToolbarsMutex; //< protects the 4 bool below
     bool infobarVisible;
     bool playerVisible;

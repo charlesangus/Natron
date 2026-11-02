@@ -144,6 +144,7 @@ NodeGraph::buildSplicePlan()
     _imp->_splicePlanBuilt = true;
     _imp->_splicePlanSelection = _imp->_selection;
     _imp->_spliceEntry.reset();
+    _imp->_spliceEntryInputs.clear();
     _imp->_spliceEntryInput = -1;
     _imp->_spliceExit.reset();
 
@@ -166,12 +167,21 @@ NodeGraph::buildSplicePlan()
             exitGui = *it;
         }
     }
-    if (!entryGui || !exitGui || !entryGui->getInputArrow(plan.entryInput)) {
+    if (!entryGui || !exitGui) {
+        return;
+    }
+    std::vector<int> entryInputs;
+    for (std::size_t i = 0; i < plan.entryInputs.size(); ++i) {
+        if (entryGui->getInputArrow(plan.entryInputs[i])) {
+            entryInputs.push_back(plan.entryInputs[i]);
+        }
+    }
+    if (entryInputs.empty()) {
         return;
     }
 
     _imp->_spliceEntry = entryGui;
-    _imp->_spliceEntryInput = plan.entryInput;
+    _imp->_spliceEntryInputs = entryInputs;
     _imp->_spliceExit = exitGui;
 }
 
@@ -194,6 +204,7 @@ NodeGraph::resetSplicePlan()
     _imp->_splicePlanBuilt = false;
     _imp->_splicePlanSelection.clear();
     _imp->_spliceEntry.reset();
+    _imp->_spliceEntryInputs.clear();
     _imp->_spliceEntryInput = -1;
     _imp->_spliceExit.reset();
 }
@@ -247,6 +258,7 @@ NodeGraph::checkForSpliceHint()
     getNodesWithinViewportRect(visibleWidgetRect(), &nodesWithinRect);
 
     Edge* bestPipe = 0;
+    int bestEntryInput = -1;
     double bestDistSq = 0.;
     for (std::set<NodeGui*>::const_iterator it = nodesWithinRect.begin(); it != nodesWithinRect.end(); ++it) {
         NodeGui* destGui = *it;
@@ -255,6 +267,10 @@ NodeGraph::checkForSpliceHint()
         }
         NodePtr destNode = destGui->getNode();
         if (!destNode) {
+            continue;
+        }
+        // A Viewer pipe only shows a node, so it is never a place to insert one.
+        if (destNode->isEffectViewer()) {
             continue;
         }
         EffectInstancePtr destEffect = destNode->getEffectInstance();
@@ -294,11 +310,22 @@ NodeGraph::checkForSpliceHint()
             }
 
             NodePtr srcNode = srcGui->getNode();
-            if (!srcNode || !canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInput, exitNode)) {
+            if (!srcNode) {
+                continue;
+            }
+            int entryInput = -1;
+            for (std::size_t e = 0; e < _imp->_spliceEntryInputs.size(); ++e) {
+                if (canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInputs[e], exitNode)) {
+                    entryInput = _imp->_spliceEntryInputs[e];
+                    break;
+                }
+            }
+            if (entryInput == -1) {
                 continue;
             }
 
             bestPipe = pipe;
+            bestEntryInput = entryInput;
             bestDistSq = distSq;
         }
     }
@@ -309,7 +336,7 @@ NodeGraph::checkForSpliceHint()
         return;
     }
 
-    if (bestPipe == _imp->_splicePipe) {
+    if ((bestPipe == _imp->_splicePipe) && (bestEntryInput == _imp->_spliceEntryInput)) {
         _imp->_hintInputEdge->initLine();
         _imp->_hintOutputEdge->initLine();
 
@@ -318,6 +345,7 @@ NodeGraph::checkForSpliceHint()
 
     clearSpliceHint();
     _imp->_splicePipe = bestPipe;
+    _imp->_spliceEntryInput = bestEntryInput;
     bestPipe->setUseHighlight(true);
 
     _imp->_hintInputEdge->setInputNumber(_imp->_spliceEntryInput);

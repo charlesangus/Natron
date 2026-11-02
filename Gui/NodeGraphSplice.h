@@ -33,10 +33,12 @@ typedef std::intptr_t SpliceNodeId;
 
 // Free (unconnected) input and output slots are -1; any other value is the
 // SpliceNodeId of the node occupying that slot, whether or not that node is
-// part of the selection being planned.
+// part of the selection being planned. inputIsMask runs parallel to inputIds;
+// an input past its end is not a mask.
 struct SpliceNodeInfo {
     SpliceNodeId id;
     std::vector<SpliceNodeId> inputIds;
+    std::vector<bool> inputIsMask;
     int preferredInput;
     std::vector<SpliceNodeId> outputIds;
     bool isBackdrop;
@@ -47,6 +49,7 @@ struct SpliceNodeInfo {
     SpliceNodeInfo()
         : id(-1)
         , inputIds()
+        , inputIsMask()
         , preferredInput(-1)
         , outputIds()
         , isBackdrop(false)
@@ -57,21 +60,29 @@ struct SpliceNodeInfo {
     }
 };
 
+// entryInputs lists the entry's inputs the pipe's source may go into, best first; the caller
+// takes the first one the source can connect to. entryInput is the first of them.
 struct SplicePlan {
     bool valid;
     SpliceNodeId entryId;
     int entryInput;
+    std::vector<int> entryInputs;
     SpliceNodeId exitId;
 
     SplicePlan()
         : valid(false)
         , entryId(-1)
         , entryInput(-1)
+        , entryInputs()
         , exitId(-1)
     {
     }
 };
 
+// The entry is the one node whose preferred input is free, entered through that input. When no
+// node has a free preferred input, the entry is the one node whose preferred input is fed from
+// outside the selection, entered through any of its free inputs, masks last, so that a node
+// already connected keeps its connections.
 SplicePlan planSplice(const std::vector<SpliceNodeInfo>& selection);
 
 SplicePlan planSpliceForSelection(const NodesGuiList& selection);

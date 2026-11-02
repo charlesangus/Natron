@@ -8,6 +8,7 @@
 # Every initGui.py runs in the __main__ namespace, so everything here lives inside one function
 # and only _natronMergePresetActions is left behind.
 
+import NatronEngine
 import NatronGui
 
 
@@ -48,12 +49,19 @@ def _natronAddMergePresets():
         param.setAll()
 
     def createMerge(operation, allLayers=False):
-        # Created in the active project with no group, so a tab menu's creation context, when the
-        # action is chosen from one, decides the graph and the position.
+        # Created in the active project with no group, so the creation context set by the tab menu
+        # or the node graph's shortcut decides the graph and the position. The properties make it a
+        # user creation, as a plug-in action's is: it connects below the selected node, opens its
+        # panel and is one node graph undo step.
         app = NatronGui.natron.getActiveInstance()
         if app is None:
             return None
-        node = app.createNode("Merge")
+        props = {
+            "CreateNodeArgsPropAutoConnect": NatronEngine.BoolNodeCreationProperty(True),
+            "CreateNodeArgsPropAddUndoRedoCommand": NatronEngine.BoolNodeCreationProperty(True),
+            "CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True),
+        }
+        node = app.createNode("Merge", -1, None, props)
         if node is None:
             return None
         param = node.getParam("operation")

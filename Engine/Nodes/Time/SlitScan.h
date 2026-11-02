@@ -29,6 +29,8 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <mutex>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -252,7 +254,8 @@ private:
                 const RenderScale& scale,
                 Plan* plan) const WARN_UNUSED_RETURN;
 
-    void updateClipMessage(double time);
+    // Posts the clip warning for w, or clears the one this node posted when w is not clipped.
+    void updateClipMessage(const SlitScanTime::Window& w);
 
     KnobChoiceWPtr _retimeFunction;
     KnobDoubleWPtr _retimeOffset;
@@ -261,6 +264,8 @@ private:
     KnobIntWPtr _frameRange;
     KnobChoiceWPtr _filter;
     KnobChannelSelectWPtr _retimeMapChannel;
+    std::mutex _clipMessageMutex;
+    std::string _postedClipMessage;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -710,7 +710,8 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
                     entry.times.push_back(task.key.time);
                     continue;
                 }
-                // The request pass plans no edge for a range with fractional bounds, so nothing would be resident.
+                // Regions take whole-frame input times only. A range with fractional bounds is either read anywhere
+                // within it, with no edge planned, or a single fractional time, which is planned but renders on the CPU.
                 if ((range.min != (int)range.min) || (range.max != (int)range.max)) {
                     return false;
                 }

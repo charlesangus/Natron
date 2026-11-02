@@ -62,16 +62,6 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 /**
- * @brief Whether the frames of range are walked: each whole frame of a range with whole-frame bounds, or the one
- * time of a single-time range, fractional or not.
- **/
-bool
-isPlannedRange(const RangeD& range)
-{
-    return (range.min == range.max) || ((range.min == (int)range.min) && (range.max == (int)range.max));
-}
-
-/**
  * @brief Layers asked of one frame/view at the mipmap level its consumer reads it at.
  **/
 struct PlanesRequest {
@@ -630,7 +620,7 @@ collectInputRoDWarmItems(const EffectInstancePtr& effect,
         }
         for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
             for (std::vector<RangeD>::const_iterator range = viewIt->second.begin(); range != viewIt->second.end(); ++range) {
-                if ((range->min != (int)range->min) || (range->max != (int)range->max)) {
+                if (!isPlannedRange(*range)) {
                     continue;
                 }
                 for (double f = range->min; f <= range->max; f += 1.) {

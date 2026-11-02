@@ -49,7 +49,15 @@ struct ClipPlace {
     int min = -1;
     int outMin = 0;
     int outMax = 0;
+    int max = -1;
 };
+
+double
+clipFrame(const ClipPlace& c,
+          double time)
+{
+    return std::clamp(c.min + (time - c.outMin), (double)c.min, (double)std::max(c.min, c.max));
+}
 
 // Lays the clips out up to time, or to the end with lastOnly, leaving the last two placed in
 // *previous and *current, as OFX AppendClip does. Returns false when the answer is already in
@@ -66,8 +74,8 @@ placeClips(std::span<const std::optional<AppendClipRange>> clips,
            AppendClipSources* early,
            std::vector<ClipPlace>* placed = nullptr)
 {
-    *previous = ClipPlace { -1, -1, s.firstFrame, s.firstFrame - 1 };
-    *current = ClipPlace { -1, -1, s.firstFrame, s.firstFrame - 1 };
+    *previous = ClipPlace { -1, -1, s.firstFrame, s.firstFrame - 1, -1 };
+    *current = ClipPlace { -1, -1, s.firstFrame, s.firstFrame - 1, -1 };
     *early = AppendClipSources();
     early->t0 = -1.;
     early->t1 = -1.;
@@ -91,12 +99,12 @@ placeClips(std::span<const std::optional<AppendClipRange>> clips,
         if (current->clip == -1) {
             if (!lastOnly && (time < s.firstFrame)) {
                 early->clip0 = i;
-                early->t0 = r.first + (time - s.firstFrame);
+                early->t0 = r.first;
                 early->alpha0 = (s.fadeIn <= 0) ? 1. : 0.;
 
                 return false;
             }
-            *current = ClipPlace { i, r.first, s.firstFrame, std::max(s.firstFrame + (r.last - r.first), s.firstFrame) };
+            *current = ClipPlace { i, r.first, s.firstFrame, std::max(s.firstFrame + (r.last - r.first), s.firstFrame), r.last };
             if (placed) {
                 placed->push_back(*current);
             }
@@ -107,6 +115,7 @@ placeClips(std::span<const std::optional<AppendClipRange>> clips,
         ClipPlace next;
         next.clip = i;
         next.min = r.first;
+        next.max = r.last;
         next.outMin = std::max(previous->outMax + 1, current->outMax + 1 - dissolve);
         next.outMax = std::max(current->outMax, next.outMin + (r.last - r.first));
         if (!lastOnly && (time < next.outMin)) {
@@ -137,27 +146,27 @@ appendClipSources(std::span<const std::optional<AppendClipRange>> clips,
         return result;
     }
     const int dissolve = std::max(0, settings.crossDissolve);
-    const ClipPlace none { -1, -1, settings.firstFrame, settings.firstFrame - 1 };
+    const ClipPlace none { -1, -1, settings.firstFrame, settings.firstFrame - 1, -1 };
     const auto in = [time](const ClipPlace& c) {
         return (c.clip != -1) && (c.outMin <= time) && (time <= c.outMax);
     };
     if (in(c0) && in(c1)) {
         result.clip0 = c0.clip;
-        result.t0 = c0.min + (time - c0.outMin);
+        result.t0 = clipFrame(c0, time);
         result.alpha0 = 1. - (time + 1 - c1.outMin) / (double)(dissolve + 1);
         result.clip1 = c1.clip;
-        result.t1 = c1.min + (time - c1.outMin);
+        result.t1 = clipFrame(c1, time);
         result.alpha1 = std::max(0., 1. - result.alpha0);
     } else if (in(c0)) {
         c1 = none;
         result.clip0 = c0.clip;
-        result.t0 = c0.min + (time - c0.outMin);
+        result.t0 = clipFrame(c0, time);
         result.alpha0 = 1.;
     } else if (in(c1)) {
         c0 = c1;
         c1 = none;
         result.clip0 = c0.clip;
-        result.t0 = c0.min + (time - c0.outMin);
+        result.t0 = clipFrame(c0, time);
         result.alpha0 = 1.;
         result.t1 = -1.;
     } else {
@@ -165,7 +174,7 @@ appendClipSources(std::span<const std::optional<AppendClipRange>> clips,
         c0 = c1;
         c1 = none;
         result.clip0 = c0.clip;
-        result.t0 = c0.min + (time - c0.outMin);
+        result.t0 = clipFrame(c0, time);
         result.alpha0 = (settings.fadeOut <= 0) ? 1. : 0.;
         result.t1 = -1.;
     }
@@ -538,10 +547,11 @@ AppendClip::renderOp(const RenderActionArgs& args,
         // image, as is a clip with nothing there.
         std::vector<ImagePtr> images(weights.size());
         for (std::size_t i = 0; i < blend.inputs.size(); ++i) {
-            if (!declaresInputTime(blend.inputs[i], args.time, args.view, blend.times[i])) {
+            images[i] = fetchInputAt(blend.inputs[i], blend.times[i], args, &output.first);
+            if (!images[i] && !declaresInputTime(blend.inputs[i], args.time, args.view, blend.times[i])) {
+                // fetchInputAt() has posted why.
                 return eStatusFailed;
             }
-            images[i] = fetchInputAt(blend.inputs[i], blend.times[i], args, &output.first);
         }
         if (!TimeBlend::renderCpu(output.second, args.roi, images, weights)) {
             return eStatusFailed;

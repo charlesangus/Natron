@@ -256,7 +256,7 @@ SlitScan::knobChanged(KnobI* k,
     const KnobIPtr watched[] = { _retimeFunction.lock(), _retimeOffset.lock(), _retimeGain.lock(), _retimeAbsolute.lock(), _frameRange.lock(), _filter.lock() };
     for (const KnobIPtr& knob : watched) {
         if (knob && (knob.get() == k)) {
-            updateClipMessage(time);
+            updateClipMessage(SlitScanTime::window(settingsAt(time, ViewIdx(0)), time));
 
             return true;
         }
@@ -266,13 +266,32 @@ SlitScan::knobChanged(KnobI* k,
 }
 
 void
-SlitScan::updateClipMessage(double time)
+SlitScan::updateClipMessage(const SlitScanTime::Window& w)
 {
-    const SlitScanTime::Window w = SlitScanTime::window(settingsAt(time, ViewIdx(0)), time);
-    if (w.clipped) {
-        setPersistentMessage(eMessageTypeWarning, tr("SlitScan reads at most %1 frames; the window is clipped to frames %2 to %3.").arg(kSlitScanMaxFrames).arg(w.first).arg(w.last).toStdString());
-    } else {
-        clearPersistentMessage(false);
+    const std::string message = w.clipped ? tr("SlitScan reads at most %1 frames; the window is clipped to frames %2 to %3.").arg(kSlitScanMaxFrames).arg(w.first).arg(w.last).toStdString() : std::string();
+    std::string posted;
+    {
+        std::lock_guard<std::mutex> lock(_clipMessageMutex);
+        if (message == _postedClipMessage) {
+            return;
+        }
+        posted = _postedClipMessage;
+        _postedClipMessage = message;
+    }
+    if (!message.empty()) {
+        setPersistentMessage(eMessageTypeWarning, message);
+
+        return;
+    }
+    NodePtr node = getNode();
+    // Only the warning posted here is cleared; another message, such as an undeclared-frame error, stays.
+    if (node) {
+        QString current;
+        int type = 0;
+        node->getPersistentMessage(&current, &type, false);
+        if (current == QString::fromUtf8(posted.c_str())) {
+            node->clearPersistentMessage(false);
+        }
     }
 }
 
@@ -386,11 +405,13 @@ FramesNeededMap
 SlitScan::getFramesNeeded(double time,
                           ViewIdx view)
 {
+    const SlitScanTime::Settings s = settingsAt(time, view);
+    const SlitScanTime::Window w = SlitScanTime::window(s, time);
+    // The window follows animated knobs and loaded projects, so its warning is refreshed wherever a frame is asked for.
+    updateClipMessage(w);
     if (route(time, view).kind != Route::Kind::None) {
         return StagedImageEffect::getFramesNeeded(time, view);
     }
-    const SlitScanTime::Settings s = settingsAt(time, view);
-    const SlitScanTime::Window w = SlitScanTime::window(s, time);
     FramesNeededMap frames;
     for (int f = w.first; f <= w.last; ++f) {
         RangeD range;
@@ -495,12 +516,13 @@ SlitScan::renderOp(const RenderActionArgs& args,
     {
         ImagePtr mapImage;
         if (useMap) {
-            if (!declaresInputTime(kSlitScanInputRetimeMap, args.time, args.view, args.time)) {
-                return eStatusFailed;
-            }
             RectI mapRoI;
             // A selected layer is read as it is stored, not in the clip's colour layout.
-            mapImage = getImage(kSlitScanInputRetimeMap, args.time, args.mappedScale, args.view, NULL, &plan.mapLayer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &mapRoI);
+            mapImage = fetchInputAt(kSlitScanInputRetimeMap, args.time, args, &plan.mapLayer, false /*mapToClipPrefs*/, &mapRoI);
+            if (!mapImage && !declaresInputTime(kSlitScanInputRetimeMap, args.time, args.view, args.time)) {
+                // fetchInputAt() has posted why.
+                return eStatusFailed;
+            }
             if (mapImage && ((mapImage->getBitDepth() != eImageBitDepthFloat) || (plan.mapChannel >= (int)mapImage->getComponentsCount()))) {
                 return eStatusFailed;
             }
@@ -563,10 +585,11 @@ SlitScan::renderOp(const RenderActionArgs& args,
             // is a frame with nothing there, which reads as black.
             std::vector<ImagePtr> images;
             for (std::size_t i = chunk; i < end; ++i) {
-                if (!declaresInputTime(kSlitScanInputSource, args.time, args.view, frames[i])) {
+                ImagePtr image = fetchInputAt(kSlitScanInputSource, frames[i], args, &output.first);
+                if (!image && !declaresInputTime(kSlitScanInputSource, args.time, args.view, frames[i])) {
+                    // fetchInputAt() has posted why.
                     return eStatusFailed;
                 }
-                ImagePtr image = fetchInputAt(kSlitScanInputSource, frames[i], args, &output.first);
                 if (image && (image->getBitDepth() != eImageBitDepthFloat)) {
                     return eStatusFailed;
                 }

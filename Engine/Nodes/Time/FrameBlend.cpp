@@ -386,11 +386,6 @@ FrameBlend::renderOp(const RenderActionArgs& args,
     const Settings settings = settingsAt(args.time, args.view);
     const std::vector<double>& times = settings.samples.times;
     const std::size_t n = times.size();
-    for (double t : times) {
-        if (!declaresInputTime(0, args.time, args.view, t)) {
-            return eStatusFailed;
-        }
-    }
     const std::vector<float> blends = foldBlends(settings.samples);
     const RectI& roi = args.roi;
     const int width = roi.x2 - roi.x1;
@@ -413,6 +408,10 @@ FrameBlend::renderOp(const RenderActionArgs& args,
             std::vector<ImagePtr> images;
             for (std::size_t k = chunk; k < chunkEnd; ++k) {
                 ImagePtr image = fetchInputAt(0, times[k], args, &output.first);
+                if (!image && !declaresInputTime(0, args.time, args.view, times[k])) {
+                    // fetchInputAt() has posted why.
+                    return eStatusFailed;
+                }
                 if (image && (image->getBitDepth() != eImageBitDepthFloat)) {
                     return eStatusFailed;
                 }

@@ -232,12 +232,19 @@ TEST_F(NativeAppendClipTest, LayoutOfThreeClipsWithADissolve)
     // Before the first clip its first frame holds; after the last its last frame does.
     s = appendClipSources(clips, settings, -2.);
     EXPECT_EQ(0, s.clip0);
-    EXPECT_DOUBLE_EQ(-2., s.t0);
+    EXPECT_DOUBLE_EQ(1., s.t0);
     EXPECT_DOUBLE_EQ(1., s.alpha0);
     s = appendClipSources(clips, settings, 25.);
     EXPECT_EQ(2, s.clip0);
-    EXPECT_DOUBLE_EQ(111., s.t0);
+    EXPECT_DOUBLE_EQ(105., s.t0);
     EXPECT_DOUBLE_EQ(1., s.alpha0);
+
+    // A clip shorter than the dissolve holds its last frame for the rest of it.
+    AppendClipSettings longDissolve;
+    longDissolve.crossDissolve = 5;
+    s = appendClipSources(clipList({ AppendClipRange { 1, 10 }, AppendClipRange { 21, 22 } }), longDissolve, 9.);
+    EXPECT_EQ(1, s.clip1);
+    EXPECT_DOUBLE_EQ(22., s.t1);
 
     EXPECT_EQ(0, appendClipLastFrame(clipList({ std::nullopt, std::nullopt }), settings));
     EXPECT_EQ(-1, appendClipSources(clipList({ std::nullopt }), settings, 1.).clip0);

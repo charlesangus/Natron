@@ -366,3 +366,38 @@ TEST_F(NativeSlitScanTest, WideWindowIsClipped)
     setKnob<KnobDouble>(slit, kSlitScanParamRetimeGain, -10.);
     EXPECT_FALSE(slit->hasPersistentMessage());
 }
+
+// The warning follows an animated window wherever its frames are asked for.
+TEST_F(NativeSlitScanTest, ClipWarningFollowsAnAnimatedWindow)
+{
+    NodePtr source = createSequence(1, 200);
+    ASSERT_TRUE(bool(source));
+    NodePtr slit = createSlitScan(source);
+    ASSERT_TRUE(bool(slit));
+    KnobDoublePtr gain = std::dynamic_pointer_cast<KnobDouble>(slit->getKnobByName(kSlitScanParamRetimeGain));
+    ASSERT_TRUE(bool(gain));
+    gain->setValueAtTime(100., -100., ViewSpec::all(), 0);
+    gain->setValueAtTime(120., -10., ViewSpec::all(), 0);
+    EXPECT_EQ((std::size_t)kSlitScanMaxFrames, framesNeeded(slit, 100.).size());
+    EXPECT_TRUE(slit->hasPersistentMessage());
+    EXPECT_EQ((std::size_t)11, framesNeeded(slit, 120.).size());
+    EXPECT_FALSE(slit->hasPersistentMessage());
+    framesNeeded(slit, 100.);
+    EXPECT_TRUE(slit->hasPersistentMessage());
+}
+
+// Clearing the warning leaves a message the node did not post as one.
+TEST_F(NativeSlitScanTest, ClipWarningLeavesOtherMessages)
+{
+    NodePtr source = createSequence(1, 200);
+    ASSERT_TRUE(bool(source));
+    NodePtr slit = createSlitScan(source);
+    ASSERT_TRUE(bool(slit));
+    setKnob<KnobDouble>(slit, kSlitScanParamRetimeGain, -100.);
+    framesNeeded(slit, 150.);
+    EXPECT_TRUE(slit->hasPersistentMessage());
+    slit->setPersistentMessage(eMessageTypeError, "Another message");
+    setKnob<KnobDouble>(slit, kSlitScanParamRetimeGain, -10.);
+    framesNeeded(slit, 150.);
+    EXPECT_TRUE(slit->hasPersistentMessage());
+}

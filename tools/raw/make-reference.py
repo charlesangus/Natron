@@ -175,6 +175,24 @@ def rawdenoise_params(threshold, all_curve=(0.5,) * 5):
     return struct.pack("<f20f20f", threshold, *(xs + ys))
 
 
+DENOISEPROFILE_MODES = {"nlm": 0, "wavelets": 1, "variance": 2, "nlm-auto": 3, "wavelets-auto": 4}
+DENOISEPROFILE_COLOR_MODES = {"rgb": 0, "y0u0v0": 1}
+
+
+def denoiseprofile_params(mode="wavelets", color_mode="y0u0v0", radius=1.0, nbhood=7.0, strength=1.0, shadows=1.0,
+                          bias=0.0, scattering=0.0, central_pixel_weight=0.1, overshooting=1.0, compensate_hilite_pres=1):
+    # dt_iop_denoiseprofile_params_t, version 12: the eight sliders, a[3] and b[3] with a[0] = -1
+    # for the profile darktable finds for the file, the mode, x[6][7] and y[6][7] (all, R, G, B,
+    # Y0, U0V0) flat at 0.5 with the x positions evenly spaced as darktable's defaults are, then
+    # wb_adaptive_anscombe, fix_anscombe_and_nlmeans_norm, use_new_vst, wavelet_color_mode and
+    # compensate_hilite_pres.
+    xs = [k / 6.0 for k in range(7)] * 6
+    ys = [0.5] * 42
+    return struct.pack("<8f3f3fi42f42f5i", radius, nbhood, strength, shadows, bias, scattering, central_pixel_weight,
+                       overshooting, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, DENOISEPROFILE_MODES[mode], *(xs + ys), 1, 1, 1,
+                       DENOISEPROFILE_COLOR_MODES[color_mode], compensate_hilite_pres)
+
+
 def rawprepare_params(black, white, flat_field):
     # dt_iop_rawprepare_params_t, version 2: no crop, the four black levels, the white point and
     # the flat field enum, which sits after two bytes of padding.
@@ -384,6 +402,32 @@ def rawdenoise_jobs():
             jobs.append(camera_job(fixture, "rawdenoise-0.05-" + suffix, "demosaic %s, raw denoise threshold 0.05, "
                                    "all-channels curve %s" % (base, curve),
                                    develop_entries(base, extra=[("rawdenoise", 1, 2, rawdenoise_params(0.05, curve))])))
+    return jobs
+
+
+# (suffix, params): each mode, both wavelet colour modes, and shadows, bias and strength off their
+# defaults, which the auto modes would replace.
+DENOISEPROFILE_VARIANTS = (
+    ("wavelets-y0u0v0", {}),
+    ("wavelets-rgb", {"color_mode": "rgb"}),
+    ("wavelets-auto", {"mode": "wavelets-auto"}),
+    ("nlm", {"mode": "nlm"}),
+    ("nlm-auto", {"mode": "nlm-auto"}),
+    ("nlm-p2-k4-s0.5", {"mode": "nlm", "radius": 2.0, "nbhood": 4.0, "scattering": 0.5, "central_pixel_weight": 0.3}),
+    ("wavelets-shadows-0.5", {"shadows": 0.5}),
+    ("wavelets-bias-minus-2", {"bias": -2.0}),
+    ("wavelets-strength-2", {"strength": 2.0}),
+)
+
+
+def denoiseprofile_jobs():
+    jobs = []
+    for fixture in (CR2, RAF):
+        base = BASE_DEMOSAIC[fixture]
+        for suffix, options in DENOISEPROFILE_VARIANTS:
+            jobs.append(camera_job(fixture, "denoiseprofile-" + suffix, "demosaic %s, denoise (profiled) %s, auto profile"
+                                   % (base, suffix), develop_entries(base, extra=[("denoiseprofile", 1, 12,
+                                                                                   denoiseprofile_params(**options))])))
     return jobs
 
 
@@ -695,7 +739,7 @@ def run_job(job, out, scratch):
 
 def all_jobs(coeffs):
     return (develop_jobs() + demosaic_jobs() + capture_sharpen_jobs() + temperature_jobs(coeffs) + hotpixels_jobs()
-            + cacorrect_jobs() + rawdenoise_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
+            + cacorrect_jobs() + rawdenoise_jobs() + denoiseprofile_jobs() + colorin_jobs() + highlights_jobs() + synthetic_jobs()
             + colour_calibration_jobs(coeffs))
 
 

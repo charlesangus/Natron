@@ -164,6 +164,8 @@ NativeRead::initializeKnobs()
     // NativeEffectBase has no counterpart of an OpenFX clip-preferences slave param, so without
     // this the preferred metadata is only consulted once, at creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
+    // The Reload button reloads File and Proxy File together.
+    filename->setShowsReloadButton(false);
     filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
@@ -181,6 +183,7 @@ NativeRead::initializeKnobs()
     KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy File"));
     proxy->setName(kOfxImageEffectProxyParamName);
     proxy->setAsInputImage();
+    proxy->setShowsReloadButton(false);
     proxy->setHintToolTip(tr("Filename of the proxy images. They are used instead of the images read from the File parameter "
                              "when the render scale is at or below the proxy threshold.\n"
                              "Not available for a camera raw file, which is always read at full size: downscaling the "
@@ -641,6 +644,24 @@ NativeRead::purgeCaches()
     refreshAvailableViews(false);
     refreshProxyScale();
     endChanges(true);
+}
+
+void
+NativeRead::purgeCachesKeepingFileStamps()
+{
+    // The listing stays too: frames that came or went on disk are Reload's to pick up.
+    std::vector<std::string> paths;
+    {
+        std::lock_guard<std::mutex> lock(_listingMutex);
+        for (const std::shared_ptr<const FrameListing>& listing : { _listing, _proxyListing }) {
+            if (listing) {
+                paths.insert(paths.end(), listing->paths.begin(), listing->paths.end());
+            }
+        }
+    }
+    OiioReadSupport::evictHeaders(paths);
+    RawDecodeSupport::evict(paths);
+    clearActionsCache();
 }
 
 ReadTimeDomain::Settings

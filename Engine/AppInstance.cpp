@@ -1108,6 +1108,19 @@ AppInstance::createWriter(const std::string& filename,
     return createNode(args);
 }
 
+NodePtr
+AppInstance::createWriterFor(const NodePtr& source,
+                             CreateNodeArgs& args)
+{
+    NodePtr writer = createWriter(std::string(), args);
+
+    if (writer && source) {
+        writer->connectInput(source, 0);
+    }
+
+    return writer;
+}
+
 static std::string removeTrailingDigits(const std::string& str)
 {
     if (str.empty()) {

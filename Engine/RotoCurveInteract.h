@@ -239,6 +239,8 @@ enum EventStateEnum {
     eEventStateDraggingCloneOffset,
     eEventStateDraggingBrushSize,
     eEventStateDraggingBrushOpacity,
+    // A host's two-point line tool (eRotoToolDrawLine) is dragging the line's end.
+    eEventStateBuildingLine,
 };
 
 enum HoverStateEnum {
@@ -299,7 +301,11 @@ enum RotoToolEnum {
     eRotoToolSmear,
 
     eRotoToolDodge,
-    eRotoToolBurn
+    eRotoToolBurn,
+
+    // A two-point open curve drawn by a click and drag. The curve interact leaves it to the host's
+    // interact, through the paint hooks (AutoStraighten's guide lines).
+    eRotoToolDrawLine
 };
 
 // The curve tool groups RotoCurveInteract::createToolbarKnobs() can create, as a bitmask.

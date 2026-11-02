@@ -540,6 +540,15 @@ public:
         return 0;
     }
 
+    /**
+     * @brief Called by a geometry curve context when item is built, before it is cloned, loaded
+     * or inserted: the host may add per-item knobs with RotoDrawableItem::addHostKnob(), which
+     * are then saved, copied and hashed with the item's own. Main thread.
+     **/
+    virtual void onCurveItemCreated(const RotoDrawableItemPtr& /*item*/)
+    {
+    }
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**

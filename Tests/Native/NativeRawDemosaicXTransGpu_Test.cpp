@@ -235,6 +235,7 @@ protected:
         return bool(*demosaic);
     }
 
+#ifdef NATRON_HAVE_GPU
     // The GPU render of window, RGBA from its bottom row.
     bool renderGpu(GpuParityRuntime& runtime,
                    const NodePtr& demosaic,
@@ -302,6 +303,7 @@ protected:
         EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << " (whole " << whole.pixels[diff.firstMismatchIndex]
                                        << ", tiled " << assembled[diff.firstMismatchIndex] << ")";
     }
+#endif // NATRON_HAVE_GPU
 };
 
 #ifdef NATRON_HAVE_GPU

@@ -85,6 +85,12 @@ try:
                 return hold(b)
         return None
 
+    def visible_button_in(widget, *texts):
+        for b in widget.findChildren(QAbstractButton):
+            if b.text().replace("&", "") in texts and b.isVisible():
+                return hold(b)
+        return None
+
     def child(dialog, cls, name):
         return hold(dialog.findChild(cls, name))
 
@@ -129,11 +135,27 @@ try:
             "allowVisible": allow.isVisible(),
         }
 
+    def current_tab_text(panel):
+        for tabs in panel.findChildren(QTabWidget):
+            for i in range(tabs.count()):
+                if tabs.tabText(i).replace("&", "") == "Variables":
+                    return tabs.tabText(tabs.currentIndex()).replace("&", "")
+        return None
+
+    opened = [0]
+
     def open_add_dialog():
         panel = project_panel()
         require(panel is not None, "the project settings panel is open")
-        button = button_in(panel, ADD_BUTTON)
-        require(button is not None and button.isVisible(), "the Variables tab shows " + ADD_BUTTON)
+        if opened[0]:
+            now = current_tab_text(panel)
+            check(now == "Variables", "creating a variable keeps the Variables tab current (current tab %r)" % now)
+        opened[0] += 1
+        # Creating a variable rebuilds the settings pages: the Variables tab may need re-selecting, and the
+        # replaced page's hidden button lingers until its deferred delete runs.
+        show_tab(panel, "Variables")
+        button = visible_button_in(panel, ADD_BUTTON)
+        require(button is not None, "the Variables tab shows " + ADD_BUTTON)
         button.click()  # the dialog opens from a queued call, after this step
         ok = yield ("until", lambda: modal_class() == DIALOG, DIALOG_TIMEOUT_S)
         require(ok, ADD_BUTTON + " opened the dialog", "modal is %r" % modal_class())

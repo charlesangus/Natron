@@ -635,7 +635,7 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
     const Case cases[] = {
         { "Un-tone-mapped", 0.5, 1.8 },
         { "Un-tone-mapped", 4., 0. },
-        { kSDRView, 0.5, 1.8 },
+        { kSDRView, 0.25, 1.8 },
         { kSDRView, 2., 0.6 },
     };
     // The bake's error, up to 2/255 before gamma, grows a little through it.

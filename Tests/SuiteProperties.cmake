@@ -14,6 +14,14 @@ set(_natron_serial_suites
     AiAbortTiming
 )
 
+# Each suite below keeps every core busy for minutes: whole-frame darktable-parity denoises of
+# 22-24 MP raws, or GPU kernels on llvmpipe. Beside other suites under `ctest -j` they slow down
+# several times over and starve their neighbours past the default timeout, so they run alone.
+set(_natron_core_hogging_suites
+    NativeDenoiseProfiledReferenceTest
+    NativeDenoiseProfiledGpuTest
+)
+
 # Suites whose cases add up to more than the default 300 s, at three times the slower of the
 # legacy and task-graph scheduler runs.
 set(_natron_long_suite_timeouts
@@ -22,6 +30,11 @@ set(_natron_long_suite_timeouts
     # Debug: about 250 s legacy and 350 s task-graph, almost all of it the 100 MP whole-frame
     # renders the suite exists to bound.
     RawLargeTest 1080
+    # Release: about 180 s per site (Bayer, X-Trans). Debug, alone: about 440 s and 500 s, as
+    # the wavelet cases denoise the whole frame whatever the crop.
+    NativeDenoiseProfiledReferenceTest 1800
+    # Debug llvmpipe: about 153 s alone.
+    NativeDenoiseProfiledGpuTest 900
 )
 
 set(_natron_long_suites "")
@@ -34,14 +47,14 @@ foreach(_item IN LISTS _natron_long_suite_timeouts)
     endif()
 endforeach()
 
-foreach(_suite IN LISTS _natron_serial_suites _natron_long_suites)
+foreach(_suite IN LISTS _natron_serial_suites _natron_core_hogging_suites _natron_long_suites)
     if(NOT _suite IN_LIST NATRON_GTEST_SUITE_TESTS)
         message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                             "update the suite name or it would silently lose its properties.")
     endif()
 endforeach()
 
-set_tests_properties(${_natron_serial_suites} PROPERTIES RUN_SERIAL TRUE)
+set_tests_properties(${_natron_serial_suites} ${_natron_core_hogging_suites} PROPERTIES RUN_SERIAL TRUE)
 
 set(_natron_i 0)
 foreach(_suite IN LISTS _natron_long_suites)

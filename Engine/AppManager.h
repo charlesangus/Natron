@@ -247,11 +247,14 @@ public:
     /**
      * @brief The frames the viewer cache holds textures for under the given holder, viewer hash and
      * mipmap level, each with where it is stored (RAM wins over disk when a frame has both). Entries
-     * of other hashes stay in the cache for undo, so they are left out.
+     * of other hashes stay in the cache for undo, so they are left out. With a filter, a frame is
+     * listed only if a lookup under the filter's settings would hit: its textures have those display
+     * settings, are not draft, and cover every tile of the filter.
      **/
     void getViewerCachedFrames(const std::string& holderID,
                                U64 viewerHash,
                                unsigned int mipmapLevel,
+                               const ViewerFrameFilter* filter,
                                std::map<SequenceTime, StorageModeEnum>* frames) const;
 
     void setApplicationsCachesMaximumMemoryPercent(double p);

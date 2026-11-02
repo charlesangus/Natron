@@ -139,6 +139,15 @@ public:
      **/
     void reloadOtherNodesReadingTheseFiles();
 
+    /**
+     * @brief reloadOtherNodesReadingTheseFiles() for files reloaded, their stamps already dropped,
+     * reaching the nodes of every project in the process except reloader: those with a file knob
+     * covering one of paths, as above, and those reading one through another file
+     * (EffectInstance::refreshFileDependencies()). Main thread only.
+     **/
+    static void reloadNodesReadingFiles(const std::vector<std::string>& paths,
+                                        const EffectInstance* reloader);
+
 Q_SIGNALS:
 
     void openFile();

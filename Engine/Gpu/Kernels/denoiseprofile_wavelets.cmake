@@ -1,0 +1,3 @@
+slang_add_kernel(denoiseprofile_wav_decompose Kernels/denoiseprofile_wavelets.slang ENTRY denoiseprofile_wav_decompose REGISTRY NatronGpu)
+slang_add_kernel(denoiseprofile_wav_reduce Kernels/denoiseprofile_wavelets.slang ENTRY denoiseprofile_wav_reduce REGISTRY NatronGpu)
+slang_add_kernel(denoiseprofile_wav_shrink Kernels/denoiseprofile_wavelets.slang ENTRY denoiseprofile_wav_shrink REGISTRY NatronGpu)

@@ -19,6 +19,7 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 - AOVs `color` (flat unlit displayColor × displayOpacity, premultiplied), `depth` (USDRender's existing `depth.Z` convention), `primId` / `instanceId` (USDRender's existing primId hash mapping).
 - Embree runs inside the scheduler's thread budget, not a private pool.
 - Selectable in the 3D viewer from this milestone on (user, 2026-11-01).
+- USD purpose: the render pass draws only rprims whose render tag (`geometry`, `render`, `proxy`, `guide`) is in the pass's render tags, so the viewer's M229 purpose toggles work with Natron Utility. USDRender gains `Purposes` toggles (render on, proxy off, guide off by default — USD's final-frame convention) that set the engine's purpose params for every delegate (user, 2026-11-01).
 
 **Out:**
 - GPU path and device selection — M280 - Utility Renderer GPU Path.
@@ -26,13 +27,14 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 - Pixel samples, filters, motion blur — M283 - Utility Renderer Sampling And Motion Blur (this milestone shoots one centred ray per pixel).
 - Subdivision refinement — M284 - Utility Renderer Subdivision.
 - BasisCurves, Points, volumes — none (a later curves/points milestone, user 2026-11-01).
-- USD purpose selection (render vs proxy prims) — none; USDRender as a whole gets the engine defaults today, for every delegate.
 
 **Edge cases:**
 - Empty scene or no camera: transparent black, with the same camera error USDRender already gives other delegates.
 - Degenerate faces, n-gons, holes (`holeIndices`), left-handed orientation: triangulated through `HdMeshUtil`; degenerate triangles dropped; orientation honoured for the geometric normal.
 - Mesh with no `displayColor`: mid-grey (0.18), matching Storm's fallback.
 - Invisible prims (`visibility` invisible) are not built; toggling visibility only flips instance membership.
+- Render and proxy both enabled on a model with both: both draw (USD semantics; the user asked for it).
+- Purpose toggled: only render-tag membership changes; no geometry rebuild.
 - Edit during a render: Hydra's sync happens before the next render; the in-flight render is aborted through the existing request abort.
 
 **Assumptions:**
@@ -88,10 +90,16 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
   - verify: gtest — USDRender with Renderer = Natron Utility on `Tests/fixtures/scene-reference.usda` produces `rgba`, `depth.Z`, `primId.id`; `depth.Z` and `primId.id` match the Storm render (`USDRenderStorm_Test`'s reference) on interior pixels away from silhouettes, within 1e-4 relative depth.
   - size: M
 
+- [ ] M279.P3.T3 — Purpose through render tags and USDRender toggles
+  - files: `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/Utility/UtilityScene.{h,cpp}`, `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, `Engine/Nodes/Scene/USDRender.cpp`, `Tests/Scene/NatronUtilityPurpose_Test.cpp`
+  - approach: the render pass reads its render tags and builds the instance list only from rprims whose `GetRenderTag()` is included (cite how hdEmbree / HdSt filter by render tags in the pinned USD); changing tags only rebuilds the instance list. Add `HydraRender::Request` purpose flags passed to the engine's render params (`showRender`/`showProxy`/`showGuides`), hashed into the render key. USDRender gets `renderPurpose` ("Render Purpose", on), `proxyPurpose` ("Proxy Purpose", off), `guidePurpose` ("Guide Purpose", off). Read how M229 sets the viewer's purposes and reuse it.
+  - verify: gtest on a `.usda` with a default, a render, a proxy and a guide prim — USDRender with Natron Utility at defaults shows default + render only; toggling proxy shows the proxy; the same toggles change Storm's output too; toggling a purpose leaves the geometry rebuild counter unchanged.
+  - size: L
+
 - [ ] M279.P3.T2 — Golden and viewer GUI check
   - files: `Tests/Scene/NatronUtilityGolden_Test.cpp`, `Tests/fixtures/native-golden/NatronUtility/` (≤256 px half-float crops), `Tests/gui/natron_utility_viewer.py`
   - approach: record a golden of the reference scene's color/depth/primId through the CPU path (crop per the LFS rule). A GUI script selects Natron Utility in the 3D viewer's dropdown, renders, and screenshots.
-  - verify: golden test passes; the GUI script passes under the strict Xvfb runner and its screenshot shows the scene; screenshot shared with the user.
+  - verify: golden test passes; the GUI script passes under the strict Xvfb runner and its screenshot shows the scene, and toggling the viewer's render purpose shows a render-purpose prim; screenshot shared with the user.
   - size: M
 
 **Verification gate:** full build and ctest green (including the new NatronUtility tests and the unchanged Storm tests); the GUI script passes under Xvfb; the user has seen the viewer screenshot.
@@ -102,4 +110,5 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 - 2026-11-01 — **Name "Natron Utility" (user).**
 - 2026-11-01 — **In the viewer from the start (user):** selectable in the 3D viewer's dropdown from this milestone.
 - 2026-11-01 — **Flat unlit stopgap:** the foundation shades flat displayColor; M281 - Utility Renderer Materials And Lights replaces it with lit shading, which is black without lights (user, 2026-11-01).
+- 2026-11-01 — **The renderer handles purpose (user):** render tags honoured in the pass; USDRender gets purpose toggles defaulting to render-purpose only.
 - 2026-11-01 — **Incremental sync:** only dirty meshes rebuild their structures, per the long-lived-scene principle (2026-10-25 review).

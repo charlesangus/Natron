@@ -59,7 +59,7 @@ Scouted facts (2026-10-25; re-check at promotion):
 
 ## Phase 196.3: Re-bench
 
-- [ ] M196.P3.T1 — Re-run the comps bench and record the result
+- [x] M196.P3.T1 — Re-run the comps bench and record the result
   - files: none (results recorded in `## Decisions`)
   - approach: On the GPU host, rerun M156's comps bench with a same-boot GpuBench run and compare exposed-transfer ratio and copy rates with M156.P3.T1's numbers.
   - verify: A Decisions entry with the table, or the measured reason the residual cannot be closed.
@@ -89,3 +89,18 @@ Scouted facts (2026-10-25; re-check at promotion):
 - 2026-10-28 — **P2.T1 lands (a) with no switch (gpu):** Natron always adds `transfer_queue` to `RADV_PERFTEST` before instance creation, appending to any existing value. It routes region copies to a transfer-only family whenever the device exposes one. Other drivers ignore the variable, and a device with no such family keeps today's compute-queue path. Prototype (b) is removed. Setting it ourselves rather than documenting it follows the hard-cut rule: the win (0.54–0.93× comp wall) shouldn't depend on users knowing a RADV flag.
 
 - 2026-10-28 — **P2.T1 verified on RADV (gpu, debug, 3e96a2749 on main 50ee71b60):** `Gpu.GpuQueuePlan` and `Gpu.GpuPerftestToken` pass on both GPU legs. The nine failing suites are exactly the ones main fails on RADV, all owned by M240 - Float Trap And Denormal Audit or M271 - Persistent Message Test Failures. P2.T1 adds no new failures. PR CI covers lavapipe.
+
+- 2026-11-02 — **P3.T1 re-bench (gpu, same boot, R9700 RADV; base 9185c8bae vs new b38b0e27b, release AppImages; 3 rounds rotated; real 8K, checked by EXR header; data in `.local/m196/p3t1-20261102-025857/`).** Median steady-state ms per render; new/base in parentheses:
+
+  | comp | size | base wall | new | base exposed | new |
+  |---|---|---|---|---|---|
+  | keying_grade | uhd | 222 | 145 (0.65) | 83 | 5 (0.06) |
+  | keying_grade | 8k | 690 | 523 (0.76) | 196 | 18 (0.09) |
+  | cg_multipass | uhd | 298 | 186 (0.63) | 129 | 9 (0.07) |
+  | cg_multipass | 8k | 970 | 648 (0.67) | 367 | 31 (0.08) |
+  | defocus_retime | uhd | 3175 | 3100 (0.98) | 170 | 31 (0.19) |
+  | defocus_retime | 8k | 12558 | 12344 (0.98) | 557 | 115 (0.21) |
+
+  - **Copy rates:** new copies all use transfer family 2. Same-boot GpuBench transfer family: 45.2 up, 41–44 down (41.5 beside compute). keying_grade and cg_multipass copies reach 0.83–1.23× of it (most ≥0.89). defocus_retime's reach only 0.53–0.81× (23–37 GB/s), against base's compute-queue 1.0–8.7 GB/s. Compute-queue GpuBench floor: 10.3–10.5 up, 11.5–11.8 down.
+  - **Gate:** exposed transfer passes by a wide margin. The 10% copy-rate clause holds for keying_grade and cg_multipass, but not for defocus_retime. Its residual exposed transfer is 31 ms of 3.1 s (UHD) and 115 ms of 12.3 s (8K), about 1% of wall time.
+

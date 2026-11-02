@@ -2,6 +2,8 @@
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 
+Blocked on: M234 - Camera Projection Nodes merging (its translucent projection shader is what exposes the gap).
+
 Storm (USD 26.08) never binds the selection buffer in its translucent (order-independent transparency) pass, so a selected translucent surface — every M234 - Camera Projection Nodes projected card, and any blended material — shows no selection highlight in the 3D viewport, although picking it works. Found while fixing M234's viewport checks (2026-11-01): a probe shader showed the selection buffer defined in the opaque pass and undefined in the translucent one, before and after selecting.
 
 Acceptance sketch:
